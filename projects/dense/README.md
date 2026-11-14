@@ -478,10 +478,10 @@ from `km::island()`, `km::islands()` and the command's group:
 - **The columns other islands keep come first, the island's own last.** For each
   other island's columns each core packs its output blocks in bfloat16 (the partial
   rounded once) into a buffer of two chunks (a chunk: the fewest whole subblocks of at
-  least 64 KiB) and puts each chunk to that island in one line (`km::put_pages`), not
-  waiting: before its next it waits for the one put still counting (`km::put_wait`)
-  and frees its chunk, while compute fills the other. Then one sync: the last puts
-  counted, a barrier (a binary tree of tokens inside the island, its leader to the
+  least 64 KiB) and puts each chunk to that island as a run (`km::put_pages` with a
+  `km::PutRun`), writing its tiles into the link cores' rings (`km::put_piece`): the
+  chunk is free on return, while compute fills the other. Then one sync: the puts
+  counted (`km::put_wait`, once), a barrier (a binary tree of tokens inside the island, its leader to the
   other leaders through `km::to_island(i).put`, the tree back down). Then each core
   makes its blocks of its own island's columns, and for each the tiles the other
   islands put for it join DST before the K block they are taken at (the reader reads
@@ -527,61 +527,65 @@ the version described above, whose text on one card is 87,888 B (`--kernel-bytes
 
 The same script and kernels on card 0 and on cards 0 and 1, one run a point (three
 single calls, then calls back to back for about three seconds), on 2026-11-15 between
-01:33 and 01:42, the two-card 4096 to 16384 rows between 01:52 and 01:55 after the page calls' port
-moved and the link cores got kernels of their own; every check passed (relative RMS 3.94e-3 to 3.97e-3 on one card,
-4.12e-3 to 4.14e-3 on two: the partial rounded to bf16 once).
+05:15 and 05:25, host load 5 to 8; every check passed (relative RMS 3.94e-3 to 3.96e-3
+on one card and in the rows form, 4.12e-3 to 4.14e-3 in the K form: the partial
+rounded to bf16 once). Two cards, K form: X and W split along K, Y along N, W held once
+(`--place k`, the default). Two cards, rows form: X and Y split along M, W a copy on
+each card (`--place rows`): the replicated weight, nothing crosses. Microseconds, the
+median single call / the loop's time a call; "x" is one card's single over two cards'
+(above 1: two cards are faster).
 
-| Cube | One card, us per call (single) | TFLOP/s | Two cards, us per call (single) | TFLOP/s | Crossed a call, rate | One put, KiB | Puts / sync / own columns, us | Two / one (single) |
+| Cube | One card | Two cards, K form (W sharded) | x | Two cards, rows form (W copied) | x | K form: puts / sync / own, us | K form: crossed a call, rate | Kohaku-TT: one card / two cards (W copied) / two cards (K split) |
 |---|---|---|---|---|---|---|---|---|
-| 128 | 15.7 (7.4) | 0.27 | 38.3 (49.4) | 0.11 | 33 KB, 0.87 GB/s | 8 | 5.2 / 25.1 / 0.0 | 0.41 (0.15) |
-| 256 | 15.5 (11.9) | 2.17 | 51.1 (61.8) | 0.66 | 132 KB, 2.58 GB/s | 16 | 7.6 / 34.5 / 2.4 | 0.30 (0.19) |
-| 512 | 19.3 (16.0) | 13.89 | 255.8 (266.0) | 1.05 | 0.5 MB, 2.09 GB/s | 4 | 113.9 / 130.8 / 5.1 | 0.08 (0.06) |
-| 1024 | 44.6 (41.3) | 48.19 | 309.1 (319.2) | 6.95 | 2.1 MB, 6.82 GB/s | 16 | 141.0 / 147.5 / 18.6 | 0.14 (0.13) |
-| 2048 | 170.6 (144.3) | 100.69 | 607.1 (615.5) | 28.30 | 9.2 MB, 15.13 GB/s | 56 | 318.9 / 207.9 / 75.2 | 0.28 (0.23) |
-| 4096 | 1,539.5 (664.6) | 89.28 | 1,601.2 (1,611.6) | 85.83 | 34.1 MB, 21.29 GB/s | 208 | 850.5 / 452.5 / 291.0 | 0.96 (0.41) |
-| 8192 | 12,463.3 (5,716.0) | 88.22 | 8,478.3 (8,145.2) | 129.68 | 146.0 MB, 17.22 GB/s | 360 | 4,601.0 / 1,155.7 / 3,010.3 | 1.47 (0.70) |
-| 16384 | not run (35,401.8) | 248.47 (single) | 52,854.2 (49,002.8) | 166.42 | 579.8 MB, 10.97 GB/s | 192 | 27,000.9 / 2,920.6 / 23,107.4 | (0.72) |
+| 128 | 7.2 / 16.1 | 71.5 / 39.4 | 0.10 | 7.6 / 41.3 | 0.95 | 10 / 60 / 0 | 33 KB | |
+| 256 | 11.6 / 49.3 | 79.7 / 47.1 | 0.15 | 10.0 / 24.3 | 1.16 | 13 / 62 / 2 | 132 KB | |
+| 512 | 15.9 / 20.3 | 179.9 / 170.7 | 0.09 | 19.8 / 25.6 | 0.80 | 15 / 159 / 5 | 0.53 MB | |
+| 1024 | 43.8 / 47.2 | 180.2 / 179.6 | 0.24 | 40.6 / 46.6 | 1.08 | 55 / 108 / 17 | 2.4 MB, 13.2 GB/s | |
+| 2048 | 167.1 / 195.6 | 368.8 / 399.9 | 0.45 | 125.4 / 134.3 | 1.33 | 174 / 144 / 73 | 9.2 MB, 23.0 GB/s | |
+| 4096 | 655.0 (a) | 1,278.6 / 1,260.0 | 0.51 | 420.7 / 543.9 | 1.56 | 657 / 267 / 332 | 36.7 MB, 29.2 GB/s | 819.8 / 487.3 / 868.8 |
+| 8192 | 4,488.1 (a) | 5,397.1 / 5,947.0 | 0.83 | 2,357.6 (b) | 1.90 | 3,185 / 222 / 2,138 | 135.9 MB, 22.9 GB/s | 4,549.5 / 2,482.8 / 3,930.1 |
+| 16384 | 34,544.8 (a) | 29,151.7 / 37,548.8 | 1.18 | 17,731.5 (b) | 1.95 | 16,691 / 445 / 12,305 | 538.5 MB, 14.3 GB/s | 32,489.3 / 17,067.8 / 32,970.6 |
 
-At 16384 the one-card single call is the linear plan picker's (`island_pieces`: 13 x 16
-blocks, K block 4, 11 x 10 cores; 35,401.8 us against the old rule's 75,169.4, whose
-loop the row had); at 4096 the picker keeps the old plan, and at 8192 the old rule's
-plan is the faster (5,716.0 us against the picker's 26 x 8, K block 2: 5,974.5), so
-those rows stay; the picker's 16384 loop was not run.
+(a) single calls of the one-card table above (`results/one-card-*.json`), not run
+again; (b) single calls of the rows form below (`results/linear-rows-*.json`, an earlier
+head; the rows form puts nothing), not run again. Kohaku-TT: the table "Shapes, one card and two" below, its default two-card form
+(rows split, W all-gathered once to a kept copy on each chip) and its K split. The
+K form's passes are those of the second single call, the slower island's slowest core,
+at 1,350 MHz: the other island's columns made and put, the sync (the puts counted, the
+barrier), the own columns. Crossed is `run.crossings()` over the loop, both ways: the
+pages are exactly the count from the placements and the plan (`Linear.crossed`, whole
+blocks) plus the command's two relayed parts; the rate is over the loop's call. The
+loops from 4096 up lowered the AI clock (one card 1,162 MHz at 2048; two cards 950 to
+1,025 at 4096 rows, 1,093 to 1,187 at 8192 K, 825 to 975 at 16384 K).
 
-"Two / one" is one card's time a call over two cards' (above 1: two cards are faster).
-Crossed is `run.crossings()` over the loop, both ways and every link, a call: its
-pages are exactly the count from the placements and the plan (`Linear.crossed`: every
-block holding some of another island's columns, whole); the bytes past that are the
-command's two relayed parts. Nothing is asked. The passes are the last call's, from
-the writers' wall clocks (T, the command's a6), the slowest core of the slower island,
-in microseconds at 1,350 MHz: the puts (the other islands' columns made and put), the
-sync (the last puts counted, the barrier), the own columns.
+Where two cards win: the rows form from 2048 up (1.33 to 1.95; Kohaku-TT's default
+form 1.68 to 1.90 at 4096 to 16384); the K form only at 16384 (1.18; Kohaku-TT's K
+split 0.94 to 1.16 at 4096 to 16384). Below 2048 a two-card call is the command over
+two islands and the sync (21 to 160 us). The K form's loss, from the passes and the
+writers' counters (T's words 7 to 12, `Linear.passes()`):
 
-What bounds the two-card points, from those counters: at 4096 and 8192 the puts' pass
-is the longest and runs at the put path's rate, not the product's: 17 and 73 MB put by
-an island in 0.85 and 4.6 ms (20 and 16 GB/s each way), against an own pass of the
-same work of 0.29 and 3.01 ms, and the sync then waits for the last puts to land; at
-16384 the puts nearly keep up (27.0 ms against 23.1) and the own pass bounds: the
-island's plan is a rect of 9 x 11 cores (99 of its 118 ranks; one card's is 10 x 12),
-so a quarter of the product takes 23.1 ms where a quarter of a one-card call is 18.8.
-Below 2048 a call is the puts' and the sync's latency (puts of 4 to 16 KiB, a 25 to
-150 us sync). The 8192 plan has K blocks of one tile (its block buffer for the puts
-took the L1 of a larger K block), which makes its own pass about twice the quarter of
-a one-card call. The one-card
-loops from 2048 up ran with the AI clock falling to 800 to 1,100 MHz; the two-card
-loops kept 1,350 MHz except at 16384 (1,193 / 1,256 at the least).
+- **The plan.** The link cores' rings for the puts need a chunk of 192 KiB a link CPU
+  or more (a ring holds 8 slots of an 8 KiB packet at least), and the session sizes
+  that chunk from what is left after the program's buffers, so the K form's plan
+  leaves 655 KB of each core's L1 to it (`link_room`): at 8192 it runs 7 x 8 blocks,
+  K block 4, on 80 of the island's 118 ranks, and its own pass takes 2,138 us where
+  the plan with the whole budget (14 x 12 on 105 ranks, puts without rings) took
+  1,477 and a quarter of a one-card call is 1,122; at 16384 12,305 against 10,330.
+- **The crossing.** A writer spends 663 / 3,810 us a call (8192 / 16384) in
+  `km::put_piece`, of it 603 / 3,616 waiting for its ring's slots, and the puts pass
+  takes that much longer than the own pass of the same work.
+- **The sync**: 69 to 445 us from 4096 up, of it each core's wait for its last
+  confirmations 16 to 243 us.
 
-Two cards open with the session's defaults (every link: 4, two link cores an island,
-118 ranks) and the script's own kernel buffer (96 KiB: a rank's kernels carry only the
-page calls' client side, 94,224 B built off-card). The
-plan is the project's rule on the island's 118 ranks for M x K / 2 x N / 2 tiles, on
-the L1 the larger kernel buffer leaves less the extra buffers (`fitting_plan`), so the
-two-card plans differ from one card's. JSON lines:
-`results/linear-curve-<cube>-<0|0x1>.json`.
+Before this, with line puts (one 64 KiB put in flight a core, no rings, the whole
+budget), the K form took 10,486 / 45,753 us at 8192 / 16384, its puts at 8.8 GB/s each
+way.
+JSON lines: `results/linear-ring-<cube>-<0|0x1|0x1-rows>.json`.
 
 ```
 python projects/dense/linear.py --cube 16384 --cards 0
 python projects/dense/linear.py --cube 16384 --cards 0,1
+python projects/dense/linear.py --cube 4096 --cards 0,1 --place rows
 ```
 
 ### The rows form: W replicated (Kohaku-TT's default form)
