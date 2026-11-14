@@ -842,6 +842,8 @@ def main():
     parser.add_argument("--shape", choices=run.SHAPES, default=None)
     parser.add_argument("--cube", type=int, default=None, help="M = K = N")
     parser.add_argument("--dims", default=None, help="M,K,N")
+    for name in ("m", "k", "n"):
+        parser.add_argument(f"--{name}", type=int, default=None)
     parser.add_argument(
         "--place",
         choices=list(PLACES),
@@ -864,8 +866,14 @@ def main():
     args = parser.parse_args()
     if args.dims:
         dimensions = tuple(int(value) for value in args.dims.split(","))
+    elif args.cube:
+        dimensions = (args.cube,) * 3
+    elif args.shape:
+        dimensions = run.SHAPES[args.shape]
+    elif None in (args.m, args.k, args.n):
+        raise SystemExit("name --shape, --cube, --dims, or all of --m, --k and --n")
     else:
-        dimensions = (args.cube,) * 3 if args.cube else run.SHAPES[args.shape]
+        dimensions = (args.m, args.k, args.n)
     if any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
