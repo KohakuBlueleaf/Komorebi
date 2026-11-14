@@ -1,0 +1,108 @@
+{
+ "shape": "sq8192",
+ "m": 8192,
+ "k": 8192,
+ "n": 8192,
+ "cards": [
+  0
+ ],
+ "upload_s": 0.848,
+ "islands": [
+  {
+   "rows": [
+    0,
+    256
+   ],
+   "plan": {
+    "mt": 256,
+    "kt": 256,
+    "nt": 256,
+    "rows": 10,
+    "cols": 11,
+    "pcm": 26,
+    "pcn": 24,
+    "bm": 7,
+    "bn": 24,
+    "kb": 4,
+    "sh": 1,
+    "sw": 4,
+    "wa": 2,
+    "ww": 2,
+    "layout": "2d",
+    "l1": 1213440,
+    "form": "grid",
+    "nk": 64,
+    "nbh": 4,
+    "nbw": 1,
+    "rect": [
+     0,
+     0,
+     11,
+     10
+    ]
+   }
+  }
+ ],
+ "group": [
+  0,
+  119
+ ],
+ "x280_mhz": 1350,
+ "single_microseconds": [
+  5755.6,
+  5717.34,
+  5700.42
+ ],
+ "loop": {
+  "reps": 700,
+  "seconds": 9.234,
+  "microseconds_per_call": 13192.032,
+  "island_microseconds_median": [
+   16415.71
+  ],
+  "aiclk_mhz": {
+   "0": [
+    800,
+    1033.6,
+    1350
+   ]
+  }
+ },
+ "run": {
+  "cores": 120,
+  "kernel": [
+   "none"
+  ],
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "broadcast_gave_up": []
+ },
+ "readback_s": 0.283,
+ "gflops": 83346.6,
+ "sampled_row_tiles": [
+  67,
+  78,
+  120,
+  135,
+  136,
+  162,
+  182,
+  230
+ ],
+ "check": {
+  "max_rel": 0.006527357704705497,
+  "rms_rel": 0.003966268607081768,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "4.64",
+  "3.49",
+  "3.15"
+ ]
+}
