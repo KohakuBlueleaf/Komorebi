@@ -67,7 +67,7 @@ def pin(base=None):
 
 
 def version(base=None):
-    """The package version: the pin plus our build number, e.g. "0.81.1.3"."""
+    """The package version: the pin plus our build number, e.g. "0.81.1.4"."""
     return manifest(base)["version"]
 
 

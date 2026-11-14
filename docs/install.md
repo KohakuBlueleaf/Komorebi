@@ -100,10 +100,10 @@ Both are built locally ([runtime](../packaging/runtime/README.md),
 packaging/runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 packaging/runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
-pip install dist/komorebi_runtime-0.81.1.3-py3-none-manylinux_2_38_x86_64.whl \
+pip install dist/komorebi_runtime-0.81.1.4-py3-none-manylinux_2_38_x86_64.whl \
     dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl
 kmr setup                                      # the RISC-V compiler, then the card
-kmr doctor                                     # "from komorebi-runtime 0.81.1.3"
+kmr doctor                                     # "from komorebi-runtime 0.81.1.4"
 ```
 
 The two wheels need `numpy` and nothing else: no `ttnn`, no `torch`. From PyPI the
@@ -127,7 +127,7 @@ P150A; no tt-metal tree, no compiler of your own, neither `ttnn` nor `torch`.
 python3.13 -m venv .venv && source .venv/bin/activate
 pip install "komorebi-tt[runtime]"             # komorebi-tt, komorebi-runtime and numpy
 kmr setup                                      # the RISC-V compiler, then the card
-kmr doctor                                     # "from komorebi-runtime 0.81.1.3"
+kmr doctor                                     # "from komorebi-runtime 0.81.1.4"
 ```
 
 `pip install komorebi-tt` without `[runtime]` installs the framework alone, which

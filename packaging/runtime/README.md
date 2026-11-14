@@ -9,8 +9,8 @@ for one card model); `pip install "komorebi-tt[runtime]"` installs it.
 | File | What it is |
 |---|---|
 | `../tt-metal.pin` | The tt-metal release the runtime is built from (`v0.81.1`): `packaging/tt-metal.pin`, the only pin in the repository. |
-| `patches/` | Our patches to that release: a successful kernel build's compiler output goes through tt-metal's logger, and eager launches of a thread that opts in publish their fetch-queue entries together (both from Kohaku-TT's packaging); no path of the build machine in the binaries (the X280 objects and images compiled with `-ffile-prefix-map`, the experimental NoC estimator's table looked up relative to the working directory); and 1250, 1350 and 1500 MHz in the X280 clock table (it held 15, 200, 800, 1000 and 1750), the clocks Komorebi's session defaults to 1350 on. A runtime built without the fourth patch still works: the session falls back to 1000 MHz. |
-| `BUILD` | Our build number. The version is the pin plus it: `0.81.1.3`. A dependent requires `>=0.81.1.N,<0.81.2`. |
+| `patches/` | Our patches to that release: a successful kernel build's compiler output goes through tt-metal's logger, and eager launches of a thread that opts in publish their fetch-queue entries together (both from Kohaku-TT's packaging); no path of the build machine in the binaries (the X280 objects and images compiled with `-ffile-prefix-map`, the experimental NoC estimator's table looked up relative to the working directory); and 1250, 1350 and 1500 MHz in the X280 clock table (it held 15, 200, 800, 1000 and 1750), the clocks Komorebi's session defaults to 1350 on. The table is compiled into the static X280 host runtime that the native host module links, so a session's clocks are those of the tree its module was built in: a `komorebi-tt` wheel built with `--host-module` from a patched tree has them with any runtime build installed. Builds 4 and later carry the fourth patch (0.81.1.3 was built without it); without it the session falls back to 1000 MHz. |
+| `BUILD` | Our build number. The version is the pin plus it: `0.81.1.4`. A dependent requires `>=0.81.1.N,<0.81.2`. |
 | `build_tt_metal.sh` | Clones the pin into a directory, applies the patches, configures it with the X280 runtime and without distributed (OpenMPI cannot be carried in a wheel) and with `-ffile-prefix-map=DIR=.` (so no path of the build machine is written into a library), and builds only what the wheel carries. It installs no system packages: tt-metal's build dependencies must be on the host. |
 | `build_wheel.py` | Builds the wheel from that directory. |
 | `src/komorebi_runtime/` (at the top of the repository) | The locator, the one-time setup steps (`prepare.py`) and the commands. The `komorebi-tt` wheel does not carry it. |
@@ -68,7 +68,7 @@ Nothing runs at import.
 | Call | Answer |
 |---|---|
 | `installed()` | whether the package holds a built runtime (an install of `packaging/runtime/` alone does not) |
-| `manifest()`, `pin()`, `version()` | the build's manifest; `"v0.81.1"`; `"0.81.1.3"` |
+| `manifest()`, `pin()`, `version()` | the build's manifest; `"v0.81.1"`; `"0.81.1.4"` |
 | `lib_dir()`, `tree()` | the libraries; the kernel runtime tree inside the package |
 | `x280()` | the X280 runtime objects in link order, the linker script, the include directory, the idle image |
 | `prime_program()` | the X280 priming program (absent before 0.81.1.3) |
@@ -124,5 +124,5 @@ tree: the X280 objects, linker script, include directory, idle image and compile
 from the package through it, and a `komorebi-tt` wheel built with `--host-module` loads
 its prebuilt `_km_host`, whose rpath `$ORIGIN/../komorebi_runtime/lib` finds this
 package's libraries when both are installed in one environment. `kmr doctor` says
-which was used (`from TT_METAL_HOME` or `from komorebi-runtime 0.81.1.3`).
+which was used (`from TT_METAL_HOME` or `from komorebi-runtime 0.81.1.4`).
 `komorebi-tt`'s extra `runtime` names this package; it is not yet required.
