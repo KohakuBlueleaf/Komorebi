@@ -1,6 +1,5 @@
 // link_rate: cores of one card stream packets over tt-metal's 1-D fabric into the other
-// card, in slow dispatch, in the shapes README.md compares; it prints every core's
-// status and every check the host made.
+// card in the shapes README.md compares; it prints every core's status and the checks.
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -71,9 +70,10 @@ namespace {
         uint32_t packets = 1024;
         uint32_t payload = 4352;
         uint32_t window = 64;
-        uint32_t fused = 0;            // 1: every packet is a fused write and increment
-        uint32_t batch = 64;           // plain mode: packets a count
-        uint32_t wait_every = 0;       // the sender waits for its sends every this many
+        uint32_t fused = 0;       // 1: every packet is a fused write and increment
+        uint32_t batch = 64;      // plain mode: packets a count
+        uint32_t wait_every = 0;  // the sender waits for its sends every this many
+        uint32_t space_every = 1;  // packets a check for free slots in the router (1 or 8)
         std::string place = "spread";  // under, row or spread
         std::string rx_place = "top";  // the receiving cores: top rows, or as place
         uint32_t noc = 0;              // the sender kernels' NoC
@@ -111,6 +111,8 @@ namespace {
                 o.batch = std::stoul(value);
             } else if (key == "--wait-every") {
                 o.wait_every = std::stoul(value);
+            } else if (key == "--space-every") {
+                o.space_every = std::stoul(value);
             } else if (key == "--place") {
                 o.place = value;
             } else if (key == "--rx-place") {
@@ -197,6 +199,9 @@ namespace {
             << ", \"packets\": " << words[kWordPackets]
             << ", \"wrong\": " << words[kWordWrong] << ", \"cycles\": " << cycles
             << ", \"us\": " << (mhz ? cycles / static_cast<double>(mhz) : 0.0)
+            << ", \"wait_cycles\": "
+            << (words[kWordWaitLo] | static_cast<uint64_t>(words[kWordWaitHi]) << 32)
+            << ", \"router_slots\": " << words[kWordSlots]
             << ", \"first_kcycles\": " << words[kWordFirst] << "}";
         return out.str();
     }
@@ -379,7 +384,13 @@ int main(int argc, char** argv) {
             (headers_l1 + 2 * o.window * kHeaderStride + 63) / 64 * 64
         );
         const uint64_t slot_bytes = static_cast<uint64_t>(o.window) * o.payload;
-        if (slots_l1 + slot_bytes > (1536u << 10) - 4096) {
+        // The second CPU of a dual core keeps its status, headers and slots apart.
+        const uint32_t second_shift = (
+            (slots_l1 - status_l1 + slot_bytes + 63) / 64 * 64
+        );
+        if (
+            slots_l1 + (o.dual ? second_shift : 0) + slot_bytes > (1536u << 10) - 4096
+        ) {
             throw std::runtime_error("the window does not fit in L1");
         }
         const uint32_t limit_mcycles = (
@@ -471,13 +482,14 @@ int main(int argc, char** argv) {
             const uint32_t dst_addr = (
                 dram ? dram_bank_address + pair.index * slot_bytes : slots_l1
             );
+            const uint32_t shift = pair.second ? second_shift : 0;
             std::vector<uint32_t> sender_args = {
                 static_cast<uint32_t>(status_buffer->address()),
                 pair.index,
                 kPageBytes,
-                status_l1,
-                headers_l1,
-                slots_l1,
+                status_l1 + shift,
+                headers_l1 + shift,
+                slots_l1 + shift,
                 dst_x,
                 dst_y,
                 dst_addr,
@@ -494,7 +506,8 @@ int main(int argc, char** argv) {
                 static_cast<uint32_t>(o.delay_us * 1350.0),
                 o.fused,
                 o.batch,
-                o.wait_every
+                o.wait_every,
+                o.space_every
             };
             // The second link of a dual core runs on the other data-movement CPU,
             // which uses the other NoC.
@@ -619,7 +632,8 @@ int main(int argc, char** argv) {
                << ", \"window\": " << o.window << ", \"links\": " << o.links
                << ", \"hops\": " << o.hops << ", \"first_link\": " << o.first_link
                << ", \"fused\": " << o.fused << ", \"batch\": " << o.batch
-               << ", \"wait_every\": " << o.wait_every << ", \"place\": \"" << o.place
+               << ", \"wait_every\": " << o.wait_every
+               << ", \"space_every\": " << o.space_every << ", \"place\": \"" << o.place
                << "\", \"rx_place\": \"" << o.rx_place << "\", \"noc\": " << o.noc
                << ", \"target\": \"" << o.target << "\", \"dual\": " << o.dual
                << "}, \"expect\": " << expect << ", \"aiclk_mhz\": [" << clocks.str()
@@ -639,9 +653,8 @@ int main(int argc, char** argv) {
                     pages[to].begin() + (rpage + 1) * words
                 );
             }
-            // The host's own check of what landed: the receiver's copy of its first
-            // slots; or, with no receiver kernel, every slot read back from L1 or
-            // DRAM, and the counter read from L1.
+            // The host's check of what landed: the receiver's copy of its first slots,
+            // or every slot read back (no receiver kernel), and the counter.
             const uint32_t filled = std::min(o.packets, o.window);
             uint32_t host_wrong = 0, host_words = 0, counted = got[kWordPackets];
             if (kernel_receiver) {

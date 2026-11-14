@@ -1,8 +1,6 @@
-"""The link rates of link_rate runs: reads the JSON line of each log named on the
-command line and prints, per run, each pair's rate and their sum by direction. A
-rate is the payload bytes over a span: at the receiver, the bytes after the first
-counted packet over the span from the first count to the last; at the sender, all
-bytes over the span from its first send to its last flush. See README.md.
+"""The link rates of link_rate runs: prints, for each log named on the command line,
+each pair's rate at the receiver (rx) and sender (tx) and their sums by direction.
+See README.md for the two spans.
 """
 
 import json

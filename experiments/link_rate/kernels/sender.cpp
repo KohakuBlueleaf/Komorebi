@@ -1,8 +1,5 @@
-// Sender: streams `packets` packets over its fabric link, packet p from its slot
-// p % window into the destination's same slot. The packet headers are written once
-// before the loop. Either every packet is a fused write and counter increment, or the
-// packets are plain writes and one packet of each batch (and the last) is the fused
-// one. Every wait is bounded.
+// Sender: streams packets over its fabric link from slot p % window into the
+// destination's same slot; headers written once, every wait bounded.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -14,7 +11,7 @@
 
 using namespace tt::tt_fabric;
 
-constexpr uint32_t kArgs = 23;  // before the connection's; the host's: compile arg 0
+constexpr uint32_t kArgs = 24;  // before the connection's; the host's: compile arg 0
 
 inline uint32_t wall_lo() {
     return *reinterpret_cast<volatile uint32_t*>(RISCV_DEBUG_REG_WALL_CLOCK_L);
@@ -72,6 +69,9 @@ void kernel_main() {
     const uint32_t fused = get_arg_val<uint32_t>(i++);  // 1: every packet is counted
     const uint32_t batch = get_arg_val<uint32_t>(i++);  // plain mode: packets a count
     const uint32_t wait_every = get_arg_val<uint32_t>(i++);  // 0: never wait for sends
+    const uint32_t space_every = get_arg_val<uint32_t>(
+        i++
+    );  // 1 or 8: packets a space check
 
     volatile tt_l1_ptr uint32_t*
         status = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(status_l1);
@@ -82,7 +82,8 @@ void kernel_main() {
     uint32_t code = kCodeOk;
     uint32_t sent = 0;
     Clock clock;
-    uint64_t first = 0, last = 0;
+    uint64_t first = 0, last = 0, waited = 0;
+    uint32_t slots_in_router = 0;
     if (
         i != kArgs || get_compile_time_arg_val(0) != kArgs || hops == 0 || hops > 255 ||
         payload == 0 || payload % 16 != 0 || window == 0 || slots_l1 % 16 != 0 ||
@@ -132,6 +133,7 @@ void kernel_main() {
                 );
             }
         }
+        slots_in_router = sender.num_buffers_per_channel;
         sender.open();
         // The wait lets the receiver, launched at about the same time, start first.
         const uint64_t opened = clock.now();
@@ -155,11 +157,27 @@ void kernel_main() {
             }
             const uint32_t slot = p % window;
             const bool counted = fused || (p + 1) % batch == 0 || p + 1 == packets;
-            if (!poll(clock, clock.now(), limit, [&] {
-                return sender.edm_has_space_for_packet<1>();
-            })) {
-                code = kCodeSlotTimeout;
-                break;
+            // One check for the next eight slots covers eight packets.
+            if (space_every == 8 ? p % 8 == 0 : true) {
+                const bool free = (
+                    space_every == 8
+                        ? sender.edm_has_space_for_packet<8>()
+                        : sender.edm_has_space_for_packet<1>()
+                );
+                if (!free) {
+                    const uint64_t waiting = clock.now();
+                    if (!poll(clock, waiting, limit, [&] {
+                        return (
+                            space_every == 8
+                                ? sender.edm_has_space_for_packet<8>()
+                                : sender.edm_has_space_for_packet<1>()
+                        );
+                    })) {
+                        code = kCodeSlotTimeout;
+                        break;
+                    }
+                    waited += clock.now() - waiting;
+                }
             }
             sender.send_payload_without_header_non_blocking_from_address(
                 slots_l1 + slot * payload, payload
@@ -196,6 +214,9 @@ void kernel_main() {
     status[kWordPackets] = sent;
     status[kWordCyclesLo] = static_cast<uint32_t>(cycles);
     status[kWordCyclesHi] = static_cast<uint32_t>(cycles >> 32);
+    status[kWordWaitLo] = static_cast<uint32_t>(waited);
+    status[kWordWaitHi] = static_cast<uint32_t>(waited >> 32);
+    status[kWordSlots] = slots_in_router;
     const InterleavedAddrGen<true> out = {
         .bank_base_address = status_addr, .page_size = page_bytes
     };

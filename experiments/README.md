@@ -162,6 +162,13 @@ place to ask a question and to be wrong.
   1.20 and 1.21 with both at once, every tile exact. A handler holds a fabric
   connection across commands and writes 64 bytes into the other island's L1, exact
   both ways, 1.6 to 1.7 µs a write command.
+- [link_rate](link_rate/README.md): what a link between the two cards carries. One
+  sending core a link, plain writes of 4352-byte payloads and one count for a batch,
+  carries 28 to 29 GB/s a link, 111 to 115 GB/s over four, the same each way at once,
+  wherever the senders sit; a fused write and increment with every packet drops a link
+  to 10.6 GB/s. Packets for a DRAM bank or a core's L1 with no kernel running there
+  land exact at the same rate. Two CPUs of one core each run a link. The sender's own
+  per-packet work, not the link, sets the rate.
 - [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
   bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and

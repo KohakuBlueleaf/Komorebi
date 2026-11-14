@@ -52,10 +52,24 @@ bytes over the span from its first send to its last flush. Every run was checked
 receiver's own check of every slot, and the host's check of the receiver's copy of its
 first slots, are exact in every row below.
 
+Three versions of `kernels/sender.cpp` ran, and a table says which one made its
+numbers (the committed one is C):
+
+- A: the first. It bounded every wait with a helper that also read the wall clock on
+  every packet. Questions 1 to 3.
+- B: reads the clock only when no slot is free, and counts those cycles (words 7 to 9
+  of its status page). Question 4, and question 5 except where it says C.
+- C: B plus `--space-every`, a check for free router slots once for eight packets
+  instead of one. The runs that name it.
+
+One packet costs 162.6 ns in A, 150.7 ns in B and 156.6 ns in C with a 4352-byte
+payload, one link, plain writes: a few instructions move the rate by up to 7 %.
+Question 5 comes back to that.
+
 ## 1. One link, and what each difference costs
 
-16384 packets of 4352 bytes (71 MB), window 64 slots, batch 64, one link (link 0),
-card 0 to card 1, a receiver kernel on card 1. GB/s, rx (tx within 0.02):
+Sender A. 16384 packets of 4352 bytes (71 MB), window 64 slots, batch 64, one link
+(link 0), card 0 to card 1, a receiver kernel on card 1. GB/s, rx (tx within 0.02):
 
 | Sender at | plain writes, no wait | plain, wait every 4 | fused, no wait | fused, wait every 4 |
 |---|---|---|---|---|
@@ -70,11 +84,14 @@ Where the sender sits costs nothing for one link: three places, the same 26.76 t
 four digits. The fused write and increment costs the most: 26.76 to 10.56 GB/s, with
 the wait after every fourth packet on or off. The wait costs 3.2 GB/s (12 %) with
 plain writes and nothing once every packet is fused. The earlier sender had the fused
-packet and the wait, which gives the 10.56 here.
+packet and the wait, which gives the 10.56 here. Sender B on the same link, from a
+spread core, reads 28.87 GB/s plain, 25.22 with the wait, 10.57 fused (question 5), so
+the 26.76 is sender A's own clock read; the order of the three differences is the
+same. Why the fused packet costs so much is shown by question 5.
 
 ## 2. Four links, senders spread, NoC0
 
-16384 packets of 4352 bytes a link, plain writes, batch 64, no wait, one sending core
+Sender A for all rows but the last two, which are sender C. 16384 packets of 4352 bytes a link, plain writes, batch 64, no wait, one sending core
 a link on NoC0, links 0 to 3. "Spread" puts the senders at (0, 1), (3, 3), (6, 5),
 (9, 7); "row" at (0, 0) to (3, 0). GB/s, rx for each link and the sum:
 
@@ -86,14 +103,20 @@ a link on NoC0, links 0 to 3. "Spread" puts the senders at (0, 1), (3, 3), (6, 5
 | spread, NoC0 | spread | card 0 to 1 | 26.76 | 26.76 | 26.74 | 26.76 | 107.03 |
 | spread, NoC0 | spread | both at once, card 0 to 1 | 26.76 | 26.76 | 26.74 | 26.76 | 107.03 |
 | | | both at once, card 1 to 0 | 26.76 | 26.76 | 26.74 | 26.76 | 107.03 |
+| spread, NoC0 (sender C) | top rows | card 0 to 1 | 27.78 | 27.78 | 27.76 | 27.78 | 111.10 |
+| spread, NoC0 (sender C) | top rows | both at once, card 0 to 1 | 27.78 | 27.78 | 27.76 | 27.78 | 111.10 |
+| | | both at once, card 1 to 0 | 27.78 | 27.78 | 27.76 | 27.78 | 111.10 |
 | row 0, NoC0 | top rows | card 0 to 1 | 26.60 | 26.59 | 26.72 | 26.76 | 106.67 |
 | spread, NoC1 | top rows | card 0 to 1 | 26.38 | 26.64 | 26.61 | 26.64 | 106.27 |
 
-Four links carry four times one link, 107 GB/s one way, and both ways at once
-carry the same 107 GB/s each way (214 GB/s in sum): the links do not share anything
-that this load fills. Where the senders sit and which NoC they use move the sum by
-under 1 %: senders along one row lose 0.4 %, NoC1 0.7 %. Four links do not reach the
-120 GB/s of the rougher measurement because a link here carries 26.8 GB/s, not 30.
+Four links carry four times one link: 107.0 GB/s one way with sender A and 111.1 with
+sender C (one link with C: 27.78, question 5), and both ways at once carry the same
+each way, 214 to 222 GB/s in sum. The links do not share anything that this load
+fills. Where the senders sit and which NoC they use move the sum by under 1 %: senders
+along one row lose 0.4 %, NoC1 0.7 %. The sum does not reach the 120 GB/s of the
+rougher measurement because one sending core a link does not push a link past
+about 29 GB/s here (question 5). Sender B on two cores with two links each reached
+115.0 GB/s (question 4).
 
 ## 3. A packet for a card with no kernel running
 
@@ -119,3 +142,79 @@ the DRAM's: the sender cannot get ahead of the link by more than a few packets o
 buffer. The check shows every slot holds the pattern after being zeroed, and that
 every batch's closing packet arrived; the 16384-packet runs reuse each slot 256 times
 with the same bytes, so the check cannot tell one lost packet in the middle from none.
+
+## 4. Two data-movement CPUs of one core, a link each
+
+One core, its CPU 0 (NoC0) sending on link 0 and its CPU 1 (NoC1) sending on link 1,
+a different connection each, and the same two CPUs on a second core for links 2 and 3.
+Sender B, 16384 packets of 4352 bytes a link, plain writes, batch 64, no wait, card 0
+to card 1, receiver kernels on card 1, every slot exact. GB/s, rx:
+
+| Cores | Links | link 0 | link 1 | link 2 | link 3 | sum |
+|---|---|---|---|---|---|---|
+| (0, 1): CPU 0 on NoC0 link 0, CPU 1 on NoC1 link 1 | 2 | 28.80 | 28.73 | - | - | 57.53 |
+| (0, 1) as above, and (3, 3): CPU 0 links 2, CPU 1 link 3 | 4 | 28.80 | 28.73 | 28.78 | 28.73 | 115.04 |
+
+Two CPUs of one core each hold a connection to a different link at the same time and
+each runs as fast as a core alone (28.8 against 28.87 for one link from one core), and
+the NoC1 CPU is no slower than the NoC0 one. Four links run from two cores at 115.0
+GB/s one way. CPU 0 of a Tensix core is on NoC0 and CPU 1 on NoC1, the default NoC
+of each. A first attempt put both CPUs' packet headers, slots and status in the same
+L1 addresses: the second CPU's headers overwrote the first's, so both CPUs sent to the
+first CPU's receiver (it counted 8 of 4) and the second receiver timed out after its
+bound, 10 s; no hang. Two kernels on one core need separate L1 regions: the second
+CPU's status, headers and slots sit one region above the first's.
+
+## 5. What the sender waits on
+
+Sender B, one link, link 0, sender at (0, 1), 16384 packets, plain writes, batch 64,
+card 0 to card 1; "wait" is the cycles the sender spent with no free slot in the
+router's channel (which has 16 slots) of its 3.3 million:
+
+| Payload, sender | GB/s | ns a packet | wait for a free slot |
+|---|---|---|---|
+| 4352 B plain | 28.87 | 150.7 | 0 cycles |
+| 2048 B plain | 13.58 | 150.7 | 0 |
+| 1024 B plain | 6.79 | 150.7 | 0 |
+| 4352 B, wait for sends every 4 packets | 25.22 | 172.5 | 0 |
+| 4352 B fused write and increment, every packet | 10.57 | 411.8 | 64 % of the time |
+| 4352 B plain, sender C | 27.78 | 156.6 | 0 |
+| 4352 B plain, sender C, space check once for 8 packets | 28.16 | 154.5 | 5 % |
+| 1024 B plain, sender C, space check once for 8 packets | 6.93 | 147.7 | 1 % |
+
+- The link is not what the plain sender waits on: it never found the router's 16
+  slots full, and the router took packets as fast as the core could issue them.
+- A packet costs the same time at 1024, 2048 and 4352 bytes: the rate is a count of
+  packets, 6.6 million a second, not of bytes. Each packet is a payload write, a
+  header write and a credit write by one RISC-V core (from the adapter's code), about
+  203 cycles.
+- A few instructions move it (162.6, 150.7, 156.6 ns for three versions of the loop),
+  and four links on four cores, two links on one core, either NoC, all run at that
+  same one-core rate: the core's issue rate sets the 28 to 29 GB/s, not the link.
+- Two things do slow the sender: the fused write and increment (its header carries a
+  flush flag, which was not tried off) makes the router the limit, the sender then
+  waiting for slots 64 % of the time at 411.8 ns a packet; and a wait for the NoC
+  writes to leave every fourth packet adds 21.8 ns a packet.
+- Where the link itself stops, between 28.9 and the 50 GB/s of the line, is not
+  reached with one sending core a link, and a second core on one link's connection
+  is not supported (it hangs): that takes tt-metal's mux cores or a cheaper packet
+  loop, neither run here.
+
+## Running it
+
+Every job runs through a hang watcher and holds both cards. Build the host program
+against a configured tt-metal source tree with `kmr build`, naming this folder's
+`kernels` (an absolute path), then run it with both cards visible and
+`TT_METAL_SLOW_DISPATCH_MODE=1`:
+
+    kmr build host build/link_rate host/link_rate.cpp \
+        -D 'KM_LINK_KERNELS="<this folder>/kernels"'
+    build/link_rate --from 0 --packets 16384 --place spread          # question 1, 5
+    build/link_rate --from both --links 4 --packets 16384            # question 2
+    build/link_rate --from 0 --target dram --packets 16384           # question 3
+    build/link_rate --from 0 --links 4 --dual 1 --packets 16384      # question 4
+    python rates.py <the logs of the runs>
+
+Each run prints one JSON line with every pair's status and the host's checks;
+`rates.py` turns it into the rates above. Receivers and senders bound every wait
+(`--limit-s`, 10 s by default).

@@ -16,6 +16,9 @@ constexpr uint32_t kWordWrong = 3;     // receiver: payload words that differ
 constexpr uint32_t kWordCyclesLo = 4;  // sender: first send to last flush; receiver:
 constexpr uint32_t kWordCyclesHi = 5;  // first count to the last
 constexpr uint32_t kWordFirst = 6;     // receiver: start to the first count, kcycles
+constexpr uint32_t kWordWaitLo = 7;    // sender: cycles spent with no free slot in the
+constexpr uint32_t kWordWaitHi = 8;    // router's channel, before a packet
+constexpr uint32_t kWordSlots = 9;     // sender: the router channel's slots
 
 constexpr uint32_t kCodeOk = 0;
 constexpr uint32_t kCodeArgs = 1;          // the arguments do not fit this source
