@@ -27,6 +27,10 @@ KERNELS = pl.HERE / "kernels" / "linear"
 LINEAR_H = KERNELS / "linear.h"
 L = abi.constants(LINEAR_H, known=abi.headers().constants)
 G = pl.G
+# Two cards: L1 the session keeps at the top of a core (a clash at 1,474,944 of
+# 1,555,968), and the runtime's control block, overlay area and reader slot.
+L1_TOP_LINKED = 81_024
+L1_RUNTIME = 16_960 + 16_256
 log = run.log
 
 
@@ -51,6 +55,15 @@ def extra_bytes(islands):
     """L1 the extra buffers take at most (output subblocks of 4 tiles)."""
     chunk, page = L["kChunk"], L["kPartBytes"]
     return 8 * page + 2 * chunk * page * islands + 2 * L["kSignalBytes"]
+
+
+def l1_budget(session, islands):
+    """L1 for the buffers: the project's budget on one island; on more, what the kernel
+    buffer leaves under the session's own L1 buffers at the top and the runtime's."""
+    if islands == 1:
+        return pl.L1_BUDGET
+    worker = km.session.worker_l1_size(session.kernel_bytes)
+    return min(pl.L1_BUDGET, worker - L1_TOP_LINKED - L1_RUNTIME)
 
 
 def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget):
@@ -94,7 +107,7 @@ class Linear:
         self.islands = len(graph.islands)
         self.nocs = session.sessions[0].nocs()
         part_rows = held_rows(tensors["w"], n_tiles)
-        budget = pl.L1_BUDGET - extra_bytes(self.islands)
+        budget = l1_budget(session, self.islands) - extra_bytes(self.islands)
         self.plan = fitting_plan(
             m_tiles, part_rows, n_tiles, self.nocs.grid, ranks, budget
         )
@@ -291,7 +304,7 @@ def measure(product, cards, seconds):
         clocks = [stack.enter_context(bench.Clock(index)) for index in cards]
         log(f"loop of {reps} calls")
         host_s, microseconds = product.calls(
-            reps, timeout=3 * reps * one_microseconds / 1e6 + 5
+            reps, timeout=3 * reps * max(one_microseconds, 50.0) / 1e6 + 10
         )
     crossed = (product.run.crossings() - before).total()
     report = {

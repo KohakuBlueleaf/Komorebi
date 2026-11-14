@@ -334,7 +334,7 @@ one card through the card's own session. The runs' JSON lines are in `results/`
 | Preset | Cards | Row tiles per island | Loop, us per call | TFLOP/s | Single call, us | AICLK mean, MHz | Upload, s | Read-back, s |
 |---|---|---|---|---|---|---|---|---|
 | `sq8192` | 0 | 256 | 13,562.5 | 81.1 | 5,788 | 1039 | 2.94 | 0.51 |
-| `sq8192` | 0, 1 | 128 / 128 | 4,269.2 | 257.5 | 2,931 | 925 / 980 | 1.23 | 0.27 |
+| `sq8192`, W copied on both islands: no crossing | 0, 1 | 128 / 128 | 4,269.2 | 257.5 | 2,931 | 925 / 980 | 1.23 | 0.27 |
 | `sq8192`, B moved once a call | 0, 1 | 128 / 128 | 27,196.9 | 40.4 | 2,942 | 1350 / 1350 | 1.12 | 0.27 |
 | `sq8192`, by rank | 0 | 256 | 13,192.0 | 83.3 | 5,717 | 1034 | 0.85 | 0.28 |
 | `sq8192`, by rank | 0, 1 | 136 / 120 | 5,242.3 | 209.7 | 4,686 | 970 / 1208 | 1.12 | 0.27 |
@@ -342,9 +342,10 @@ one card through the card's own session. The runs' JSON lines are in `results/`
 | `sq16384`, by rank | 0, 1 | 272 / 240 | 48,306.7 | 182.1 | 42,259 | 1170 / 1173 | 3.99 | 0.28 |
 
 Every check passed (relative RMS 3.96e-3 to 3.97e-3, largest 5.6e-3 to 6.5e-3).
-Placed by island, both islands of `sq8192` get 128 row tiles and the same plan (bands
-of 13 x 24, blocks of 7 x 24, K blocks of 4): 4,269.2 us per call, 0.50 of the best
-one-card run (8,608.3 above) and 0.81 of the by-rank split, whose island 1 got blocks
+Placed by island, with W copied on both islands (nothing crosses; not the
+linear layer of the next section, which holds W once), both islands of `sq8192` get
+128 row tiles and the same plan (bands of 13 x 24, blocks of 7 x 24, K blocks of 4):
+4,269.2 us per call, 0.50 of the best one-card run (8,608.3 above) and 0.81 of the by-rank split, whose island 1 got blocks
 of 12 x 24 with K blocks of 1 tile and was the slower part. Both one-card `sq8192` loops
 ran in the slower of the two modes described above (13,192 and 13,562 us): the same
 plan and kernels as `bench.py`, which runs 21 single calls, then waits 1 s and runs
@@ -381,16 +382,17 @@ island holds) and from `km::island()`, `km::islands()` and the command's group:
   project's plan and its two broadcasts, both inside the island), for every tile of Y.
 - **X through `km::read_pages`**: the row broadcast's sender reads each row of an X
   block where it lives; a row another island holds is asked of it.
-- **The output follows from what the part covers.** All of K: the island's product is
-  Y, written where Y's pages are (a page held by another island would need a write
-  across, which these kernels do not have: they give up). Part of K: the island's
-  fp32 partial sums of all of Y go into P (a scratch tensor at one address on every
-  island); a barrier (a binary tree of `km::emit` inside the island, its leader to the
+- **The output follows from what the parts cover** (every island reads all of W's
+  placement, so all agree). One island holds all of K: its product is Y, written
+  where Y's pages are (a page held by another island would need a write across, which
+  these kernels do not have: they give up), and an island holding none of W does
+  nothing. Else each island holding part of K writes its fp32 partial sums of all of Y
+  into P (a scratch tensor at one address on every island); a barrier (a binary tree of `km::emit` inside the island, its leader to the
   other leaders through `km::to_island(i).put`, the tree back down) says every
   island's are written; then each core takes its share (`km::partition` of the Y pages
-  its island holds over the island's ranks): its island's partial sums of them read
-  here, every other island's asked (`km::ask_pages`, the page path), added in fp32 and
-  written as Y.
+  its island holds over the island's ranks): each holder's partial sums of them, its
+  own island's read here, every other's asked (`km::ask_pages`, the page path), added
+  in fp32 and written as Y.
 
 The reduce over islands is not used for the sums: its relay carries at most 16 KiB a
 send, from one leader a command, where a call's partial sums are the whole of Y
@@ -418,7 +420,72 @@ three-second cool-down); X280 at 1,350 MHz. Both checks passed (relative RMS 3.9
 800 MHz (the slow mode of the results above; the best loop there is 8,608.3 us); in
 the single calls the two sets of kernels take the same time. The linear kernels need
 `--kernel-bytes 81920` (their text is 78,848 B against the default 70,656). JSON lines:
-`results/linear-<cube>-0.json`.
+`results/linear-<cube>-0.json`. These two runs are of the first version of the
+kernels, whose form came from the island's own part of W alone; the curve below is of
+the version described above.
+
+### One card and two, 128 to 16384 cubed
+
+The same script and kernels on card 0 and on cards 0 and 1, W split along K (its
+leading dimension) by the session's default placement, which is the only split along
+a dimension the session offers today: the form with W split along N (X needed by
+every island) waits for a split along another dimension. One run a point (three
+single calls, then calls back to back for about three seconds), on 2026-11-14 and 15
+between 23:50 and 00:20; every check passed (relative RMS 3.94e-3 to 3.97e-3).
+
+| Cube | W's row tiles by island (two cards) | One card, us per call (single) | TFLOP/s | Two cards, us per call (single) | TFLOP/s | Bytes crossed a call | Crossing, GB/s | Two cards / one card |
+|---|---|---|---|---|---|---|---|---|
+| 128 | 4 / 0 | 20.1 (6.7) | 0.21 | 40.3 (6.9) | 0.10 | 0 | | 0.50 |
+| 256 | 8 / 0 | 15.3 (11.3) | 2.19 | 23.0 (11.6) | 1.46 | 0 | | 0.67 |
+| 512 | 16 / 0 | 18.8 (15.2) | 14.31 | 22.2 (15.4) | 12.07 | 0 | | 0.84 |
+| 1024 | 32 / 0 | 43.9 (40.8) | 48.90 | 46.2 (40.8) | 46.44 | 0 | | 0.95 |
+| 2048 | 64 / 0 | 168.1 (140.9) | 102.21 | 173.8 (145.1) | 98.87 | 0 | | 0.97 |
+| 4096 | 118 / 10 | 1,504.6 (660.1) | 91.35 | 13,884.8 (13,816) | 9.90 | 77,190,976 | 5.56 | 0.11 |
+| 8192 | 138 / 118 | 12,582.7 (5,711) | 87.38 | 73,844.4 (73,800) | 14.89 | 417,747,776 | 5.66 | 0.17 |
+| 16384 | 276 / 236 | 89,290.6 (74,080) | 98.51 | 260,911.3 (262,258) | 33.71 | 1,645,431,488 | 6.31 | 0.34 |
+
+"Two cards / one card" is one card's time a call over two cards' (above 1: two cards
+are faster). Bytes crossed are `run.crossings()` over the loop, both ways and every
+link, a call; they equal the count from the placements and the plan (`Linear.crossed`:
+X's rows another island holds, read by the X readers of an island holding part of W,
+and every Y page's partial sums from each other holder, 4 KiB a page) to within the
+barrier's tokens and the chunks' tails.
+
+What the curve says:
+
+- Up to 2048 the default placement puts all of W (and X and Y) on island 0: 32 row
+  tiles over 236 ranks go to ranks 0 to 31, all on island 0, and at 2048 64 to ranks 0
+  to 63. One island then holds all of K, its product is Y, nothing crosses, and two
+  cards take the time of one plus the larger host cost of submitting to two islands
+  (the 128 to 512 loops are the host's: their single calls are 7 to 16 us).
+- From 4096 W is split along K (unevenly: the split follows the ranks, 118 per
+  island) and every call moves each island's fp32 partial sums of the other island's
+  Y pages, plus X's rows the other island holds. The crossing bounds every such point:
+  5.6 to 6.3 GB/s reached, both ways together, asks answered by one page CPU on one
+  link an island. At one link's measured rate (26.8 to 28.9 GB/s, plain writes,
+  [Islands](../../docs/concepts/islands.md)) each way, the crossing of 8192 would take
+  about 7.2 ms a call instead of about 74, and of 16384 about 29 ms instead of about
+  261 (half the bytes each way, computed, not measured); with each island's product
+  (about half of one card's single call), 8192 would still be slower on two cards in
+  this form and 16384 about one card's time.
+- The one-card loops from 2048 up ran with the AI clock falling to 800 to 1,056 MHz;
+  the two-card loops stayed at 1,350 MHz on both cards (each card works less, and
+  waits on the link). Single calls compare the cards at the same clock: at 16384 one
+  card 74,080 us, two 262,258 us.
+
+Two cards open with the session's defaults (every link found: 4, two link cores an
+island, 118 ranks) and `--kernel-bytes 147456`: with the link services the kernels'
+text is 134,896 to 135,776 B, past the two-card default of 114,688. The plan is the
+project's rule on the island's 118 ranks and on the L1 the larger kernel buffer
+leaves (`l1_budget`: rows of cores dropped until the rect lies inside the ranks;
+smaller blocks at 2048 and 4096), so the two-card plans differ from one card's from
+4096 up. JSON lines: `results/linear-curve-<cube>-<0|0x1>.json`, and for 8192 on two
+cards `results/linear-8192-0x1.json`.
+
+```
+python projects/dense/linear.py --cube 16384 --cards 0 --kernel-bytes 81920
+python projects/dense/linear.py --cube 16384 --cards 0,1 --kernel-bytes 147456
+```
 
 ## Files
 
