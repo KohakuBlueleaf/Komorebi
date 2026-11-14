@@ -299,6 +299,11 @@ def run(session, args, generator):
     )
     if timed_out is None:
         report.update(core_counts(states, groups, cores))
+    report["recovery_refused"] = run.recovery_refused
+    report["recoveries"] = [
+        {key: recovery[key] for key in ("handle", "cores", "text")}
+        for recovery in run.recoveries
+    ]
     if timed_out is not None:
         report["timed_out"] = {
             "handle": timed_out.handle,
@@ -306,6 +311,7 @@ def run(session, args, generator):
             "sequence": timed_out.sequence,
             "group": list(timed_out.group),
             "not_reported": timed_out.cores,
+            "message": str(timed_out),
         }
     trace = run.trace()
     if trace is not None:
@@ -332,7 +338,8 @@ def run(session, args, generator):
 def verdict(report, cores, stalled=None):
     """Every core ended, no compute check failed, no job wrong; without a stall, no
     kernel error, no core gave up and every core's counts right; with one, the
-    deadline named the stalled core (`stalled`) among those that did not report."""
+    stalled core (`stalled`) recovered, or named by the deadline among those that did
+    not report (no reset lists, or other commands in flight held it)."""
     ended = set(report["cores_ended"].values()) == {cores}
     ok = ended and report["cores_magic_ok"] == cores and report["compute_wrong"] == 0
     ok &= report.get("jobs_bad", 0) == 0
@@ -341,6 +348,10 @@ def verdict(report, cores, stalled=None):
         return bool(
             ok and report["gave_up_cores"] == 0 and report["core_counts_bad"] == 0
         )
+    if "timed_out" not in report:
+        recovered = [core for entry in report["recoveries"] for core in entry["cores"]]
+        ok &= "timed_out" not in report and report["kernel"]["error_name"] == "none"
+        return bool(ok and stalled in recovered)
     timed_out = report.get("timed_out")
     named = [core["core"] for core in timed_out["not_reported"]] if timed_out else []
     return bool(

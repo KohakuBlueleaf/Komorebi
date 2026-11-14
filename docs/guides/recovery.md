@@ -127,7 +127,8 @@ A step is tried only when the one before it was not enough.
    programs, each core gets the list of the program it holds. The lists are refused
    for a program with semaphores and not made for program switches: `run.recovery` is
    then None and `run.recovery_refused` says why. `session.load(..., recover=False)`
-   leaves them out.
+   leaves them out. A core that other commands in flight also hold is not reset (a
+   reset clears its ring): that stall ends in the time-out, whose text says so.
 
     On several cards each island's dispatcher holds its own island's lists, and the
     give-up's text starts `island i:` and names flat ranks, `rank 128 (island 1, core
