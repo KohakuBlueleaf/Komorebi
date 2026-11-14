@@ -567,27 +567,34 @@ class Session:
             grid = self.grid
             placed = programs.plan(program, grid[0] * grid[1])
             program = placed.programs[0]
+        owner = placed.threads_owner() if placed is not None else program
         if thread not in ("card", "host"):
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
-        works = [program.threads[cluster] for cluster in sorted(program.threads)]
-        program.check_threads()
-        if program.x280_ports is not None and (not works or thread != "card"):
+        works = [owner.threads[cluster] for cluster in sorted(owner.threads)]
+        owner.check_threads()
+        if owner.x280_ports is not None and (not works or thread != "card"):
             raise ValueError(
-                f"{program.name}: X280 ports need its X280 threads on the card"
+                f"{owner.name}: X280 ports need its X280 threads on the card"
             )
         for work in works:
             if thread == "host" and work.host_fallback is None:
                 raise ValueError(
-                    f"{program.name}: the thread on cluster {work.cluster} has no "
+                    f"{owner.name}: the thread on cluster {work.cluster} has no "
                     "host_fallback"
                 )
+        several = (
+            placed.programs if placed is not None and len(placed.programs) > 1 else ()
+        )
         image = Path(image) if image else native.image_path(self.tree)
         if not image.is_file() or image.stat().st_size == 0:
             raise StartError(f"dispatcher image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
         on_card = bool(works) and thread == "card"
         images = (
-            {work.cluster: native.thread_image(work, self.tree) for work in works}
+            {
+                work.cluster: native.thread_image(work, self.tree, several)
+                for work in works
+            }
             if on_card
             else {}
         )
@@ -598,7 +605,7 @@ class Session:
         mhz = aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
-        regions = _bank_regions(self, program, works)
+        regions = _bank_regions(self, owner, works)
         dispatch = module.Dispatch(self.device, self.pll_mhz)
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
         _hook_exit()
@@ -628,7 +635,7 @@ class Session:
                 ),
             )
             check_bases(lim_bases(dispatch.lim_base))
-            plan, port_lines = _port_lines(program, dispatch, rings)
+            plan, port_lines = _port_lines(owner, dispatch, rings)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
             descriptor = backend.describe(
@@ -695,6 +702,7 @@ class Session:
             batch,
             programs=placed.programs if placed is not None else None,
             holds=placed.holds() if placed is not None else None,
+            thread_program=owner,
         )
         self.run = run
         self._starting = None
@@ -702,9 +710,7 @@ class Session:
             run._fail_start(state)
         self.log("ready")
         if works:
-            shared = {
-                name: _host_array(value) for name, value in program.shared.items()
-            }
+            shared = {name: _host_array(value) for name, value in owner.shared.items()}
             peers = _peers(self, dispatch, images) if on_card else {}
             try:
                 for work in works:
@@ -722,7 +728,7 @@ class Session:
                             len(port_lines.cores),
                             port_lines.cores,
                             plan,
-                            program.x280_ports["noc"],
+                            owner.x280_ports["noc"],
                         )
                         thread_run.write_ports()
                     run.threads[cluster] = thread_run

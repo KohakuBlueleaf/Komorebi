@@ -153,13 +153,14 @@ def image_path(tree=None, defines=()):
     return out
 
 
-def thread_image(thread, tree=None):
+def thread_image(thread, tree=None, programs=()):
     """The image of a program's X280 thread (`komorebi.thread.Thread`): its sources
-    linked with the kmx library, built once into the cache."""
+    linked with the kmx library, built once into the cache; `programs`: the run's
+    programs when it has several (their numbers and handlers defined for the C)."""
     tree = _tree(tree)
     sources = [*thread.source_paths(), kmx_directory() / "kmx.c"]
     extra = [Path(i) for i in thread.includes]
-    named = {**thread.handler_defines(), **thread.defines}
+    named = thread.all_defines(programs)
     defines = [f"{name}={value}" for name, value in sorted(named.items())]
     key = source_key([*sources, kmx_directory(), *includes(), *extra], tree)
     key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]

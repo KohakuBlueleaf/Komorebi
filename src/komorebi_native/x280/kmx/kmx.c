@@ -1187,6 +1187,21 @@ void kmx_progress(uint32_t where) {
     x280_fence_ow();
 }
 
+void kmx_command(
+    km_command_t* command,
+    uint32_t program,
+    uint32_t handler,
+    uint32_t first,
+    uint32_t count
+) {
+    /* field by field: a struct assignment may call memset, which does not link */
+    command->sequence = command->land1 = command->land2 = command->land3 = 0;
+    command->hdr = (handler & 0xFFu) | program << 24;
+    command->group = (first & 0xFFFFu) | count << 16;
+    command->a0 = command->a1 = command->a2 = command->a3 = command->a4 = 0;
+    command->a5 = command->a6 = command->a7 = command->a8 = command->a9 = 0;
+}
+
 void kmx_result(uint32_t code, const void* words, uint32_t word_count) {
     volatile kmx_result_block* block = result();
     if (word_count > KMX_RESULT_WORDS_MAX) {

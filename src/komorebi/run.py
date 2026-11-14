@@ -104,6 +104,7 @@ class Run:
         abi_headers=None,
         programs=None,
         holds=None,
+        thread_program=None,
     ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
@@ -116,6 +117,7 @@ class Run:
         # the run's programs by program field; holds[field]: the cores holding it
         self.programs = list(programs or ([program] if program is not None else []))
         self._holds = holds
+        self.thread_program = thread_program or program  # owns the X280 threads
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -381,9 +383,10 @@ class Run:
             raise ValueError(
                 f"cluster {cluster!r}: work clusters are 1 to {self._work_clusters}"
             )
-        thread = None if self.program is None else self.program.threads.get(cluster)
-        if self.program is not None and thread is None:
-            raise ValueError(f"{self.program.name} has no thread on cluster {cluster}")
+        owner = self.thread_program
+        thread = None if owner is None else owner.threads.get(cluster)
+        if owner is not None and thread is None:
+            raise ValueError(f"{owner.name} has no thread on cluster {cluster}")
         if handler.__class__ is not int:
             handler = thread.handler(handler) if thread is not None else int(handler)
         return handler, (self._cluster_base + cluster, 1)

@@ -34,6 +34,12 @@ class Plan:
     programs: tuple
     groups: tuple
     cores: int
+    owner: object = None  # the program that declares the X280 threads and ports
+
+    def threads_owner(self):
+        """The program whose X280 threads and ports the run starts: the one that
+        declares them, else the first."""
+        return self.owner or self.programs[0]
 
     def holds(self):
         """[field] -> bool array over the cores: the cores that hold that program."""
@@ -73,13 +79,14 @@ def plan(spec, cores):
     most = overlay.constants()["kOverlaysMax"] - 1
     if len(programs) > most:
         raise ValueError(f"{len(programs)} programs; a run holds at most {most}")
-    for index, program in enumerate(programs):
+    for program in programs:
         check(program, len(programs))
-        if index and (program.threads or program.x280_ports is not None):
-            raise ProgramError(
-                f"{program.name}: X280 threads and ports belong to the run's first "
-                "program"
-            )
+    owners = [p for p in programs if p.threads or p.x280_ports is not None]
+    if len(owners) > 1:
+        raise ProgramError(
+            f"{', '.join(p.name for p in owners)}: X280 threads and ports belong to "
+            "one program of a run; declare them in one"
+        )
     if ranges is None:
         groups = [Group(0, cores, tuple(range(len(programs))))]
     else:
@@ -110,7 +117,7 @@ def plan(spec, cores):
             )
     for index, program in enumerate(programs):
         program.program_field = index
-    return Plan(tuple(programs), tuple(groups), cores)
+    return Plan(tuple(programs), tuple(groups), cores, owners[0] if owners else None)
 
 
 def check(program, count):

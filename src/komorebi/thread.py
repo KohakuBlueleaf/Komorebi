@@ -34,6 +34,29 @@ def layout():
     return abi.constants(native.kmx_directory() / "kmx_layout.h")
 
 
+def camel(name):
+    """big_step -> BigStep."""
+    return "".join(part.capitalize() for part in name.split("_"))
+
+
+def program_defines(programs):
+    """For a thread in a run of several programs: kProgramSum=1u, the program field of
+    program sum, and kProgramSumHandlerAdd=2u for its handler add."""
+    out = {}
+    for program in programs:
+        prefix = "kProgram" + camel(program.name)
+        named = {prefix: program.program_field}
+        for handler, number in program.handlers.items():
+            named[f"{prefix}Handler{camel(handler)}"] = number
+        for name, value in named.items():
+            if not name.isidentifier() or name in out:
+                raise ValueError(
+                    f"{program.name}: {name!r} is not a C name or is given twice"
+                )
+            out[name] = f"{value}u"
+    return out
+
+
 @dataclass
 class Thread:
     """A program's X280 thread: C `sources` linked with kmx, run on `cluster`;
@@ -109,6 +132,16 @@ class Thread:
             + "".join(part.capitalize() for part in name.split("_")): (f"{number}u")
             for name, number in self.handlers.items()
         }
+
+    def all_defines(self, programs=()):
+        """Every define of the thread's C: its handlers, its `defines` and, in a run of
+        several programs, program_defines of them; a name given twice raises."""
+        out = dict(self.handler_defines())
+        for name, value in [*self.defines.items(), *program_defines(programs).items()]:
+            if name in out:
+                raise ValueError(f"the thread's define {name} is given twice")
+            out[name] = value
+        return out
 
     def region_bytes(self, name):
         value = self.regions[name]

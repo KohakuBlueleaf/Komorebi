@@ -44,6 +44,16 @@ void kmx_flush(int id);
 void kmx_invalidate_at(int id, uint64_t offset, uint64_t bytes);
 void kmx_flush_at(int id, uint64_t offset, uint64_t bytes);
 
+/* Fills `command`: `handler` of `program` (kProgramName in a run of several programs,
+ * else 0) on cores [first, first + count), arguments 0. */
+void kmx_command(
+    km_command_t* command,
+    uint32_t program,
+    uint32_t handler,
+    uint32_t first,
+    uint32_t count
+);
+
 /* The command ring to the dispatcher (core 0; KMX_STOPPED without a ring).
  * submit: KMX_OK and the handle, or KMX_FULL when no slot is free. */
 int kmx_submit(const km_command_t* command, uint32_t* handle);
