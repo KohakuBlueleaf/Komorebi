@@ -111,6 +111,7 @@ class Run:
         switch=None,
         ranks=None,
         island_first=0,
+        island_cores=None,
     ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
@@ -121,7 +122,9 @@ class Run:
         self.cores = grid[0] * grid[1]
         # groups are in flat ranks, of all islands (one island: rank = core)
         self.ranks = ranks or self.cores
-        self.island_first = island_first  # rank island_first + c is core c
+        self.island_first = island_first  # rank island_first + c is core base + c
+        # (base, count): the island's cores of the card (a split card's); default all
+        self.island_cores = island_cores or (0, self.cores)
         self.program = program
         # the run's programs by program field; holds[field]: the cores holding it
         self.programs = list(programs or ([program] if program is not None else []))
@@ -587,8 +590,9 @@ class Run:
     def _part(self, first, count):
         """The cores [low, high) of flat group (first, count) on this island (numbers
         or arrays; low == high: none)."""
-        low = np.clip(first - self.island_first, 0, self.cores)
-        high = np.clip(first + count - self.island_first, low, self.cores)
+        base, cores = self.island_cores
+        low = np.clip(first - self.island_first + base, base, base + cores)
+        high = np.clip(first + count - self.island_first + base, low, base + cores)
         return low, high
 
     def _group(self, group):
