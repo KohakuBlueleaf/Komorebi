@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, the links between islands and what they carry, and what is not built.
+summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, the links between islands and what they carry, messages across a link, and what is not built.
 tags:
   - concepts
   - islands
@@ -142,11 +142,35 @@ held a fabric connection across commands and wrote 64 bytes into the L1 of a cor
 other, exact in both directions, 1.685 µs a command from island 0 to island 1 and 1.585
 the other way (1,000 pipelined to one core).
 
+## Messages across a link
+
+A dynamic run whose group is every rank of two islands (`Session(cards=..., links=1)`)
+forwards to a rank of the other island as to any rank: the kernels do not change. The
+writer flush puts a message for another island into link core 0's outbox; beside the
+RUN the session starts the message service on link core 0, on the CPU that holds link 0
+over the connection it opened at load. The service sends the outbox across, many
+messages to a packet (at most 4352 bytes) and one count a packet, and issues what landed
+from the far island to its ranks. Every wait is bounded and the link has credits, so a
+full far inbox holds the sender. The run ends when both islands are quiet: each service
+sends its island's quiet report across, and the dispatcher's quiet test counts link core
+0's line (sent: messages issued again here; consumed: messages sent across).
+
+[05_forward](../../examples/05_forward/README.md) runs this on two Blackhole p150a cards,
+one link: 16 messages of 4 forwards over 234 message ranks of 238, exact against its
+replay, 27 of the 64 forwards across. Measured before the service moved onto the link
+cores (a link core of its own as a rank, one link,
+[link_service](../../experiments/link_service/README.md)): 6.5 µs a crossing for a single
+message, 4.7 µs in a run of 1000 round trips; about 4.7 million 64-byte messages a second
+each way when messages wait to be batched, 0.6 million a packet a message.
+
+While a run's messages are served, link 0's CPU serves nothing else: with `links=1` a
+dispatcher's command line or a page on link 0 waits until the run ends.
+
 ## What is not built
 
-- **Messages over a link.** `forward` to a rank of another island, `collect` and
-  `broadcast` over islands, and a kernel's own ask for a page another island holds (the
-  host asks for it today).
+- **Collectives over a link.** `collect` and `broadcast` over islands, a dynamic run on
+  part of the ranks of two islands, X280 ranks over a link, and a kernel's own ask for a
+  page another island holds (the host asks for it today).
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **A card split into islands.** The host's graph describes it (`islands.split_card`);
   nothing runs on it.
