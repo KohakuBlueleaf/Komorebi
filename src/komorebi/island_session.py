@@ -63,6 +63,32 @@ def _left(deadline):
     return max(deadline - time.monotonic(), 0.0)
 
 
+def _one_command(handler, firsts, counts, args):
+    """(handler, group, words) when submit_many's arguments are one command (one
+    handler, one first and count, at most one row of integer words), else None: those
+    submit takes as they are (any other form, a wrong one too, goes submit_many's way).
+    """
+    if not isinstance(handler, str | int):  # a Handler is an int
+        number = np.asarray(handler)
+        if number.ndim or number.dtype.kind not in "iu":
+            return None
+        handler = int(number)
+    first, count = np.asarray(firsts), np.asarray(counts)
+    if first.size != 1 or count.size != 1 or first.ndim > 1 or count.ndim > 1:
+        return None
+    if first.dtype.kind not in "iu" or count.dtype.kind not in "iu":
+        return None
+    words = ()
+    if args is not None:
+        args = np.asarray(args)
+        if args.ndim != 2 or args.shape[0] != 1 or args.dtype.kind not in "iu":
+            return None
+        words = args[0].tolist()
+    elif first.ndim + count.ndim == 0:
+        return None  # no row at all (submit_many refuses it)
+    return handler, (int(first.reshape(-1)[0]), int(count.reshape(-1)[0])), words
+
+
 class Crossings:
     """What crossed the links since the run's start: `rows[(link, source, target)]`,
     what island `source` sent to `target` on its link `link` (FIELDS, each a count).
@@ -275,6 +301,15 @@ class IslandRun:
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """n commands at once, as Run.submit_many takes them, the groups in flat
         ranks; each island gets its parts in one submit_many. The tickets, a range."""
+        one = _one_command(handler, firsts, counts, args)
+        if one is not None:  # one command: submit's Python numbers, not numpy's
+            handler, group, words = one
+            if self._dynamic(handler):
+                raise ValueError(
+                    "a dynamic RUN over a link is submitted alone (submit)"
+                )
+            ticket = self.submit(handler, group, words, exclusive=exclusive)
+            return range(ticket, ticket + 1)
         scalar = isinstance(handler, str) or np.ndim(handler) == 0
         handlers, first, count = np.broadcast_arrays(
             np.asarray(0 if scalar else handler),
@@ -405,9 +440,10 @@ class IslandRun:
         in turn (store what its ring has room for, file its events), so that every
         island is fed while the host waits; Run.wait then returns or raises."""
         pending = {}
-        for island in range(len(self.runs)):
+        for island, run in enumerate(self.runs):  # what the stores filed is not waited
             handles = self._parts[island][wanted]
-            pending[island] = np.unique(handles[handles != 0])
+            handles = np.unique(handles[handles != 0])
+            pending[island] = handles[~run._arrived(handles)]
         while any(handles.size for handles in pending.values()):
             if time.monotonic() > deadline:
                 return
