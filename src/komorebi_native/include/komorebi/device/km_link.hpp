@@ -182,9 +182,16 @@ namespace km {
         return view.count() > 2 ? link.core + view.link(island) : link.core;
     }
 
+    // What a wait for outbox room does between two polls (false: stop waiting).
+    struct LinkIdle {
+        bool operator()() const {
+            return true;
+        }
+    };
+
     // `count` messages from `base` for flat rank `flat` into link core `to`'s outbox:
-    // an atomic add reserves, a wait for room (`head`), the messages, the first mark.
-    template <typename CoreType>
+    // reserve, wait for room (`head`; `idle` between polls), write, the first mark.
+    template <typename CoreType, typename Idle = LinkIdle>
     inline uint32_t link_out_put(
         const CoreType& core,
         const LinkArgs& link,
@@ -195,7 +202,8 @@ namespace km {
         uint32_t flat,
         uint32_t base,
         uint32_t stride,
-        uint32_t count
+        uint32_t count,
+        Idle idle = Idle()
     ) {
         if (!link_valid(link, message_bytes) || count > link.outbox) {
             return kWhereLinkArgs;
@@ -234,6 +242,7 @@ namespace km {
         const uint32_t first_position = returned[0];
         // Space: the positions are less than an outbox ahead of the link's head.
         if (first_position + count - head > link.outbox) {
+            bool stopped = false;
             if (!noc_timeout(core, [&] {
                 noc_async_read(
                     core.core_noc(to, link.region + kLinkOutHead), scratch, 16
@@ -248,9 +257,16 @@ namespace km {
                 }
                 invalidate_l1_cache();
                 head = l1(scratch)[0];
-                return first_position + count - head <= link.outbox;
+                if (first_position + count - head <= link.outbox) {
+                    return true;
+                }
+                stopped = !idle();
+                return stopped;
             })) {
                 return kWhereLinkSpace;
+            }
+            if (stopped) {
+                return kWhereLinkSent;
             }
         }
         const MessageMarks marks(first_position, shift, count);
@@ -774,7 +790,11 @@ namespace km {
                             flat,
                             message,
                             entry_,
-                            row
+                            row,
+                            [this] {
+                                send();  // this outbox drains while the next one is full
+                                return where_ == 0;
+                            }
                         )
                         : link_put(
                             core_,
