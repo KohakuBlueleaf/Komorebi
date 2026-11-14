@@ -53,7 +53,8 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `void kmx_command(km_command_t* command, uint32_t program, uint32_t handler, uint32_t first, uint32_t count)` | any | fills `command`: `hdr = handler \| program << 24`, `group = first \| count << 16`, every other word 0 ([several programs](#a-thread-in-a-run-of-several-programs)) | - |
 | `int kmx_block(km_command_t* command, int id, uint64_t offset, uint32_t bytes)` | any | makes `bytes` (1 to 1,024) of region `id` from `offset` (a multiple of 64) the command's block: `a7` and `a8` ([the block of a command](#the-block-of-a-command)) | `KMX_OK`; `KMX_BAD` outside the region or for a bad size or offset |
 | `int kmx_load(uint32_t program, uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event)` | 0 | in a run loaded with a dict, makes cores `[first, first + count)` hold `program` (its field, `kProgram<Name>`): submits the load, waits for its event and, while the dispatcher rejects it busy, waits for the wake and sends it again, all by `deadline` ([a thread gives a group another program](#a-thread-gives-a-group-another-program)) | `KMX_OK` and `event` (may be 0) once the load is done; `KMX_BAD` when the dispatcher refused it or its timeout came (`event` says which) or the run has no record for `program`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
-| `int kmx_fetch(int id, uint64_t offset, const kmx_dram* from, uint64_t bytes, uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event)` | 0 | cores `[first, first + count)` copy `bytes` from `from` (a range of any DRAM bank, or a tensor's pages) into region `id` at `offset`: the region's lines dropped, one command (reserved handler 245) sent again after a busy rejection and waited for by `deadline`, the lines dropped again so the thread reads the new bytes ([another bank](#reading-and-writing-another-bank)) | `KMX_OK` and `event` (may be 0); `KMX_BAD` for a bound (nothing sent), a refusal or the command's timeout (`event` says which); `KMX_LATE` / `KMX_STOPPED`; `KMX_FULL` when 32 events are kept |
+| `int kmx_fetch(int id, uint64_t offset, const kmx_dram* from, uint64_t bytes, uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event)` | 0 | cores `[first, first + count)` copy `bytes` from `from` (a range of any DRAM bank, or a tensor's pages) into region `id` at `offset`: the range's lines dropped, then one command (reserved handler 245) sent again after a busy rejection and waited for by `deadline`; the thread's first read of a line takes the new bytes ([another bank](#reading-and-writing-another-bank)) | `KMX_OK` and `event` (may be 0); `KMX_BAD` for a bound (nothing sent), a refusal or the command's timeout (`event` says which); `KMX_LATE` / `KMX_STOPPED`; `KMX_FULL` when 32 events are kept |
+| `int kmx_fetch_clean(int id, uint64_t offset, const kmx_dram* from, uint64_t bytes, uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event)` | 0 | `kmx_fetch` without the sweep, for a range none of whose lines is in the cluster's cache (not read or written since the load, its last flush or the last fetch into it): the call costs the copy | as `kmx_fetch` |
 | `int kmx_store(int id, uint64_t offset, const kmx_dram* to, uint64_t bytes, uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event)` | 0 | the other way: the region's lines written back, then the cores copy them to `to` | as `kmx_fetch` |
 | `int kmx_fetch_submit(int id, uint64_t offset, const kmx_dram* from, uint64_t bytes, uint32_t first, uint32_t count, uint32_t* handle)`, `kmx_store_submit` | 0 | the same copy, submitted and not waited for: `kmx_wait` takes its event; after a fetch's event, `kmx_invalidate_at(id, offset, bytes)` before reading | `KMX_OK` and the handle; `KMX_FULL` when no slot is free; `KMX_BAD` for a bound |
 | `int kmx_submit(const km_command_t* command, uint32_t* handle)` | 0 | stores `command` as the next command of the ring | `KMX_OK` and the handle (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
@@ -310,11 +311,16 @@ if (kmx_fetch(0, 0, &from, bytes, 0, 4, kmx_time() + KMX_TICKS_PER_SECOND, &even
   the card has, two ranges of one bank apart). A core that finds one false gives up
   with where `copy` and gave `bad_transfer`, having moved nothing, and the run stops as
   for any give-up. Two tensors, or a tensor and a range, are not compared for overlap.
-- **The cache.** A fetch drops the region's lines before the copy (a dirty line written
-  back afterwards would land over the new bytes) and after it; a store writes them back
-  first. Each sweep runs at about 4.5 GB/s of region, so a blocking fetch of 64 MiB takes
-  30.4 ms against the copy's 1.06 ms. So fetch what the thread will read, once; the
-  submit form lets the thread work on something else while the cores copy.
+- **The cache.** A fetch drops the range's lines before the copy (a dirty line written
+  back afterwards would land over the new bytes, a stale one would be read in their
+  place); nothing on the cluster touches the range while the cores copy, so no sweep
+  follows. A store writes the lines back first. A sweep is one line at a time through
+  the cluster's cache controller, 6.1 GB/s of range on one core or four, so a blocking
+  fetch of 64 MiB takes 11.9 ms against the copy's 1.06 ms. A range the thread has not
+  touched since the load, its last flush or the last fetch into it needs no sweep:
+  `kmx_fetch_clean` takes 1.07 ms for the 64 MiB. So fetch what the thread will read,
+  once, into a range it has not read since; the submit form lets the thread work on
+  something else while the cores copy.
 - **What the cores do meanwhile.** The copy is a command: the cores take it in their
   turn behind earlier commands and run nothing else while they copy.
 

@@ -1,0 +1,211 @@
+"""Map/collect over two cards as the islands of one session (`Session(cards=...)`):
+the same program and kernels on every island, groups in flat ranks split by island,
+one input tensor split over the islands; checks the tiles with mapcollect.py's sums
+and times commands. Prints one JSON line. See docs/reference/islands.md."""
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+from mapcollect import rank_sums
+
+import komorebi as km
+
+HERE = Path(__file__).resolve().parent
+KERNELS = HERE / "kernels"
+TILE = 32
+NO_RANK = 0xFFFFFFFF
+STARTED = time.monotonic()
+
+
+def log(message):
+    """A progress line with seconds since start, flushed."""
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
+
+
+def parse():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--cards", default="0,1")
+    parser.add_argument("--nop-rounds", type=int, default=3)
+    parser.add_argument("--nop-jobs", type=int, default=20000, help="per round")
+    parser.add_argument("--map-rounds", type=int, default=3)
+    parser.add_argument("--map-jobs", type=int, default=2000, help="per round")
+    parser.add_argument(
+        "--whole",
+        action="store_true",
+        help="MAP on one group of every rank (needs the island table on the cores)",
+    )
+    parser.add_argument(
+        "--hang", action="store_true", help="a HANG on island 1 must name island 1"
+    )
+    return parser.parse_args()
+
+
+def map_words(source, output, groups):
+    """MAP arguments of each group (first, count): rank r of the group adds input
+    tiles 2r and 2r + 1 of the group's own window and stores page first + r."""
+    groups = np.asarray(groups, np.int64)
+    jobs = len(groups)
+    return np.stack(
+        [
+            np.full(jobs, source.address),
+            2 * groups[:, 1],  # tiles: two a rank
+            np.full(jobs, output.address),
+            groups[:, 0],  # first_page: the group's first rank
+            np.zeros(jobs, np.int64),  # slow_cycles
+            np.full(jobs, NO_RANK),  # slow_rank: none
+            2 * groups[:, 0],  # first_tile
+        ]
+    ).T
+
+
+def timed(run, handler, groups, words=None):
+    """Microseconds a command of one round: submit_many of the groups, then drain."""
+    groups = np.asarray(groups, np.int64)
+    start = time.perf_counter()
+    run.submit_many(handler, groups[:, 0], groups[:, 1], words)
+    run.drain(timeout=30.0)
+    return (time.perf_counter() - start) * 1e6 / len(groups)
+
+
+def median(values):
+    return round(float(np.median(values)), 3)
+
+
+def main():
+    args = parse()
+    cards = [int(card) for card in args.cards.split(",")]
+    report = {"cards": cards}
+    generator = np.random.default_rng(1)
+    with km.Session(cards=cards, log=log) as session:
+        ranks = session.ranks
+        report["ranks"] = ranks
+        report["islands"] = [
+            [session.graph.first(i), session.graph.count(i)]
+            for i in range(len(session.sessions))
+        ]
+        log(f"open: {ranks} ranks, islands {report['islands']}")
+        exact = generator.integers(-2, 3, (2 * ranks * TILE, TILE)).astype(np.float32)
+        source = session.tensor(exact, "bfloat16", "tile")
+        output = session.tensor(
+            np.zeros((ranks * TILE, TILE), np.float32), "bfloat16", "tile"
+        )
+        report["source_parts"] = list(source.placement.parts)
+        log(f"input split {report['source_parts']} at {source.address:#x}")
+        (back,) = session.read_bf16(source)
+        report["source_read_exact"] = bool(np.array_equal(back, exact))
+        log(f"input read back from every island: {report['source_read_exact']}")
+        program = km.Program(
+            "mapcollect",
+            kernels=KERNELS,
+            buffers=[
+                km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16),
+                km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
+            ],
+            compile_args={
+                "reader": source.accessor_args(),
+                "writer": output.accessor_args(),
+            },
+            compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
+            handlers=KERNELS / "mapcollect.h",
+        )
+        run = session.load(program, deadline=1.0)
+        log("loaded on every island")
+        report.update(commands(session, run, args, source, output, ranks))
+        log("stopping")
+        try:
+            results = run.stop()
+            report["kernel_errors"] = [result["error_name"] for result in results]
+            report["kernel_commands"] = [result["commands"] for result in results]
+        except km.KomorebiError as error:
+            report["stop_error"] = str(error)
+        log(f"stopped: {report.get('kernel_errors', report.get('stop_error'))}")
+        (got,) = session.read_bf16(output)
+        log("output read back from every island")
+        report.update(check(exact, got, report["map_groups"]))
+    report["wall_s"] = round(time.monotonic() - STARTED, 1)
+    report["ok"] = bool(
+        report["source_read_exact"]
+        and report["wrong_tiles"] == 0
+        and report.get("kernel_errors", ["stop"]) == ["none"] * len(cards)
+        and report.get("hang_named_island", True)
+    )
+    print(json.dumps(report), flush=True)
+    sys.exit(0 if report["ok"] else 1)
+
+
+def commands(session, run, args, source, output, ranks):
+    """NOP rounds on the first island alone and on every rank; MAP rounds on each
+    island's own group (or every rank with --whole); joined tickets; a HANG."""
+    out = {}
+    graph = session.graph
+    own = [(graph.first(i), graph.count(i)) for i in range(len(session.sessions))]
+    rounds, jobs = args.nop_rounds, args.nop_jobs
+    out["nop_island0_us"] = median(
+        [timed(run, 0, [own[0]] * jobs) for _ in range(rounds)]
+    )
+    log(f"NOP on island 0's {own[0][1]} ranks: {out['nop_island0_us']} us")
+    out["nop_all_us"] = median(
+        [timed(run, 0, [(0, ranks)] * jobs) for _ in range(rounds)]
+    )
+    log(f"NOP on all {ranks} ranks: {out['nop_all_us']} us")
+    tickets = [run.submit(0, (0, ranks)) for _ in range(4)]
+    events = run.wait(tickets, timeout=10.0)
+    out["joined_ticket_parts"] = [
+        [(event.kind, event.auxiliary) for event in parts] for parts in events
+    ]
+    log(f"joined tickets: {out['joined_ticket_parts']}")
+    groups = [(0, ranks)] if args.whole else own
+    handler = run.program.handler("map")
+    alone = [groups[0]] * args.map_jobs
+    out["map_one_group_us"] = median(
+        [
+            timed(run, handler, alone, map_words(source, output, alone))
+            for _ in range(args.map_rounds)
+        ]
+    )
+    log(f"MAP on group {groups[0]}: {out['map_one_group_us']} us")
+    every = [groups[job % len(groups)] for job in range(args.map_jobs)]
+    out["map_groups_us"] = median(
+        [
+            timed(run, handler, every, map_words(source, output, every))
+            for _ in range(args.map_rounds)
+        ]
+    )
+    out["map_groups"] = [list(group) for group in groups]
+    log(f"MAP on groups {groups} in turn: {out['map_groups_us']} us")
+    if args.hang:
+        # Its parts: the last 20 ranks of island 0 and all of island 1. The cores see
+        # their part's ranks, so a0 30 names a rank of island 1's part only.
+        group = (graph.first(1) - 20, graph.count(1) + 20)
+        hang = run.submit("hang", group, [30, 1])  # hang_mode 1: a port arrival
+        try:
+            run.wait(hang, timeout=10.0)
+            out["hang"] = "returned"
+        except km.CommandTimeout as error:
+            out["hang"] = str(error)[:300]
+            out["hang_named_island"] = error.island == 1 and error.given_up
+        log(f"HANG on group {group}: {out['hang']}")
+        out["hang_named_island"] = out.get("hang_named_island", False)
+    return out
+
+
+def check(exact, got, groups):
+    """Every rank's tile of the last MAP round against mapcollect.py's float64 sums,
+    bit-exact (integer inputs)."""
+    sums = np.cumsum(exact.reshape(-1, TILE, TILE).astype(np.float64), 0)
+    prefix = np.concatenate([np.zeros((1, TILE, TILE)), sums])
+    got = got.reshape(-1, TILE, TILE)
+    wrong, checked = 0, 0
+    for first, count in groups:
+        want = rank_sums(prefix, 2 * first, 2 * count, count)
+        wrong += int((got[first : first + count] != want).any(axis=(1, 2)).sum())
+        checked += count
+    return {"tiles_checked": checked, "wrong_tiles": wrong}
+
+
+if __name__ == "__main__":
+    main()

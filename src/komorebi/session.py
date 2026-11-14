@@ -25,6 +25,7 @@ from komorebi import (
     dram,
     formats,
     insn_check,
+    island_session,
     islands,
     layout,
     native,
@@ -404,11 +405,17 @@ def _read_uint32(tensor, device=None, module=None):
 
 
 class Session:
-    """One card: `card` selects it, `device` uses an open one; `grid_timeout` is the
-    timeout of every grid wait. As a context manager it stops a loaded run at
-    the exit (through the runtime on an exception) and closes the device it opened.
-    A session left open is closed the same way at the process's exit and on SIGTERM.
-    """
+    """One card: `card` selects it, `device` uses an open one (`cards` of two or more:
+    an IslandSession); `grid_timeout` is the timeout of every grid wait. As a context
+    manager it stops a loaded run at the exit (through the runtime on an exception) and
+    closes the device it opened; so do the process's exit and SIGTERM."""
+
+    def __new__(cls, *args, cards=None, **options):
+        if cards is not None and len(cards) > 1:
+            if args or "card" in options or "device" in options:
+                raise ValueError("cards= is given alone, without card or device")
+            return island_session.IslandSession(cards, **options)
+        return super().__new__(cls)
 
     def __init__(
         self,
@@ -420,7 +427,12 @@ class Session:
         grid_timeout=10.0,
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
+        cards=None,
     ):
+        if cards is not None:
+            if card is not None and [card] != list(cards):
+                raise ValueError(f"card {card} and cards {cards}")
+            card = next(iter(cards))
         self.card = card
         self.device = device
         self._own_device = device is None
@@ -992,6 +1004,7 @@ class Session:
                 descriptor.run()
             except Exception as error:
                 raise ProgramError(f"{program.name}: launch failed: {error}") from error
+            backend.launch = descriptor  # its program: a core's kernels reloaded
             dispatch.start(str(image))
             self.log("dispatcher started")
             state = dispatch.wait_ready(start + 1.0)
@@ -1377,6 +1390,7 @@ class _Backend:
         self.control_offset = 0
         self.trace_tensor = None
         self.state_tensor = None
+        self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
             ""  # the runtime's error message when an abort did not restore

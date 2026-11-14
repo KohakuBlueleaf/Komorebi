@@ -125,8 +125,21 @@ typedef struct {
 } kmx_dram;
 
 /* Core 0: cores [first, first + count) copy `bytes` from `from` to region `id` at
- * `offset` (64-byte multiples) by `deadline`; the region's lines dropped around it. */
+ * `offset` (64-byte multiples) by `deadline`; the range's lines dropped before it. */
 int kmx_fetch(
+    int id,
+    uint64_t offset,
+    const kmx_dram* from,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+);
+
+/* The same with no sweep: the caller says no line of the range is in the cluster's
+ * cache (not read or written since the load, its last flush or the last fetch). */
+int kmx_fetch_clean(
     int id,
     uint64_t offset,
     const kmx_dram* from,
