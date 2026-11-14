@@ -53,7 +53,8 @@ namespace km {
         return static_cast<int32_t>(sequence - other) > 0;
     }
 
-    // True when core `me` is in the command's group.
+    // True when rank `me` (an island's first rank + its local core) is in the
+    // command's group.
     inline bool in_group(const km_command_t& command, uint32_t me) {
         return me - first(command) <
             count(command);  // unsigned: me < first wraps to a large value
@@ -84,16 +85,16 @@ namespace km {
         return {index * base + (index < extra ? index : extra), base + (index < extra)};
     }
 
-    // Where `me` reports `command` (`parent`; first core: dispatcher), after `want`
-    // reports. Within one row of `row` cores: one level; across rows: via row leaders.
+    // Where core `me` reports a group [first_core, + size) of cores (`parent`; first
+    // core: dispatcher), after `want` reports. One row of `row` cores: one level.
     struct Report {
         uint32_t parent;
         uint32_t want;
     };
 
-    inline Report report_to(const km_command_t& command, uint32_t me, uint32_t row) {
-        const uint32_t first_core = first(command);
-        const uint32_t size = count(command);
+    inline Report report_in(
+        uint32_t first_core, uint32_t size, uint32_t me, uint32_t row
+    ) {
         const uint32_t end = first_core + size;
         if (row == 0 || first_core / row == (end - 1) / row) {
             return {first_core, me == first_core ? size - 1 : 0};
@@ -106,6 +107,11 @@ namespace km {
         const uint32_t row_end = row_first + row < end ? row_first + row : end;
         const uint32_t rows = me == first_core ? (end - 1) / row - first_core / row : 0;
         return {first_core, row_end - lead - 1 + rows};
+    }
+
+    // The same for the command's whole group.
+    inline Report report_to(const km_command_t& command, uint32_t me, uint32_t row) {
+        return report_in(first(command), count(command), me, row);
     }
 
     // Copies a command word by word (from a ring slot or into the job copy).

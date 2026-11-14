@@ -183,6 +183,8 @@ The session sends each group a load of its own program before `session.load` ret
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
 
+- `cards=[a, b, ...]` with two or more cards gives one session over them, each card's chip
+  an island with flat ranks ([Islands](islands.md)); with one card it is `card`.
 - `pll_mhz` is the X280 clock. The runtime's table is 15, 200, 800, 1000, 1250, 1350, 1500
   and 1750 MHz; a runtime built before 1250, 1350 and 1500 were added has 15, 200, 800,
   1000 and 1750. One PLL clocks all four X280 clusters, so the work
@@ -373,16 +375,31 @@ through the PCIe tile. The session finds the mapping in `/proc/self/maps`, keeps
 region `[0, channel)` of it and zeroes the region's last 64 KiB: one 64-byte sequence
 word a core. The rest holds data. Each transfer moves pages between an interleaved
 DRAM tensor and the region: up to 16 cores take a contiguous share each. Each core
-moves its share through two 16 KiB chunks of L1 with tt-metal's PCIe-aware calls
+moves its share through two chunks of L1 (16 KiB each, or a page each when pages are
+larger) with tt-metal's PCIe-aware calls
 (set, the writes or reads, the flush, clear), then writes its sequence word (a fresh
 nonce, its bytes, its rank). The host copies out only after every word arrived. A
 transfer larger than the region's data goes in rounds, one transfer at a time.
 
 | The session | A read (`read`, `read_chunks`) or a write (`write`, `tensor`) goes |
 |---|---|
-| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's loop ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms |
+| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's service overlay ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms |
 | no run, 80 KiB or more | through a one-shot transfer kernel on row 0; its launch costs about 30 ms, as the device API's read of some 76 KiB does |
-| no run and less than 80 KiB, a page over 16 KiB, a tensor in L1, no channel | through the device API, as before |
+| no run and less than 80 KiB, a tensor in L1, no channel | through the device API, as before |
+
+A page over 16 KiB is its own chunk, so it goes through the channel too, in a launch
+when two pages fit a core's L1 and in a run when the run's transfer buffer holds one.
+A load reserves that buffer: two chunks of the largest page among the DRAM tensors the
+session has made, when those take at most half of what a core has left after its
+buffers (a run with overlays, or whose groups switch program, keeps 16 KiB chunks). A
+tensor with larger pages made after the load, or a page too large for the L1 or for
+the region's data, is read through the device API.
+
+What still goes through the device API, and why: a tensor in L1, because the channel
+moves pages between host memory and an interleaved DRAM tensor with the cores' DRAM
+reads and writes, and an L1 tensor is a row in each core's own memory, not pages of
+a bank; and a read of less than 80 KiB without a run, because a launch costs more than
+the device API's read.
 
 Every offset is checked twice before anything moves: on the host (`km.ChannelError`)
 and in the kernel, against the region and the core's L1. A core that refuses writes
@@ -399,8 +416,10 @@ The session takes the channel's address from the driver's own record of the card
 host memory and checks it against the process's mappings (1 GiB, read-write, a file
 named `tenstorrent` for card 0 and `device_<n>_tenstorrent` for card n). The channel
 falls back (reads through the device API, logged once at the open) when the driver did
-not map one (no hugepage), and with `device=`, where the session did not
-see the open. If the open logged the driver's warning that the channel's NoC address
+not map one (no hugepage). A session given a device with `device=` maps the channel
+at its first transfer; it did not see the open, so it cannot read the driver's
+warning, and a transfer whose sequence words do not arrive raises `km.ChannelError`
+within its timeout. If the open logged the driver's warning that the channel's NoC address
 does not match, the cores' writes would not land in this process's mapping. The
 session then closes the device and raises `km.ChannelError`; `channel=0` opens without
 it. The hugepage file keeps its bytes between processes, so the words are zeroed at

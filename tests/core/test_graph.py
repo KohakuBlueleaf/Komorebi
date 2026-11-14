@@ -172,11 +172,13 @@ def test_again_still_set_after_max_runs_is_an_error():
 
 def test_more_ready_commands_than_slots_wait_their_turn():
     graph = Graph()
-    for i in range(20):
-        graph.command(1, group=(i, 1))
+    slots = stream_module.ring_slots()
+    for _ in range(slots + 4):
+        graph.command(1, group=(0, 1))
     result = graph.simulate(delay=3)
-    assert len(result.commands) == 20 and max(x.slot for x in result.commands) == 15
-    assert result.commands[16].pass_index > result.commands[15].pass_index
+    assert len(result.commands) == slots + 4
+    assert max(x.slot for x in result.commands) == slots - 1
+    assert result.commands[slots].pass_index > result.commands[slots - 1].pass_index
 
 
 def test_check_names_the_node_of_a_slice_with_a_non_compute_opcode():

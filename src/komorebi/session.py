@@ -20,7 +20,18 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import abi, dram, formats, insn_check, layout, native, overlay, programs
+from komorebi import (
+    abi,
+    dram,
+    formats,
+    insn_check,
+    island_session,
+    islands,
+    layout,
+    native,
+    overlay,
+    programs,
+)
 from komorebi import channel as channel_module
 from komorebi import state as device_state
 from komorebi import tensor as tensor_module
@@ -395,11 +406,17 @@ def _read_uint32(tensor, device=None, module=None):
 
 
 class Session:
-    """One card: `card` selects it, `device` uses an open one; `grid_timeout` is the
-    timeout of every grid wait. As a context manager it stops a loaded run at
-    the exit (through the runtime on an exception) and closes the device it opened.
-    A session left open is closed the same way at the process's exit and on SIGTERM.
-    """
+    """One card: `card` selects it, `device` uses an open one (`cards` of two or more:
+    an IslandSession); `grid_timeout` is the timeout of every grid wait. As a context
+    manager it stops a loaded run at the exit (through the runtime on an exception) and
+    closes the device it opened; so do the process's exit and SIGTERM."""
+
+    def __new__(cls, *args, cards=None, **options):
+        if cards is not None and len(cards) > 1:
+            if args or "card" in options or "device" in options:
+                raise ValueError("cards= is given alone, without card or device")
+            return island_session.IslandSession(cards, **options)
+        return super().__new__(cls)
 
     def __init__(
         self,
@@ -411,7 +428,12 @@ class Session:
         grid_timeout=10.0,
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
+        cards=None,
     ):
+        if cards is not None:
+            if card is not None and [card] != list(cards):
+                raise ValueError(f"card {card} and cards {cards}")
+            card = next(iter(cards))
         self.card = card
         self.device = device
         self._own_device = device is None
@@ -432,6 +454,9 @@ class Session:
         self._region = channel_module.check_region(channel) if channel else None
         self.channel = None
         self._channel_said = False  # the fallback has been logged
+        # a given device's channel is mapped at the first transfer (open() maps its own)
+        self._channel_mapped = device is None
+        self.largest_page = 0  # bytes of the largest page of a DRAM tensor made so far
         self.transfer_cores = channel_module.CORES_DEFAULT  # cores of a transfer, most
         self.transfer_cycles = None  # the last transfer's span on the cores
 
@@ -479,6 +504,15 @@ class Session:
         self._own_device = True
         if self._region is not None:
             self._open_channel(b"".join(seen).decode(errors="replace"))
+
+    def _map_channel(self):
+        """A session given its device maps the channel at its first transfer. It did
+        not see the open, so the driver's warning is unknown to it: a transfer whose
+        sequence words do not arrive raises ChannelError."""
+        if self._channel_mapped or self._region is None:
+            return
+        self._channel_mapped = True
+        self._open_channel("")
 
     def _open_channel(self, said):
         """Maps the region of the card's channel, or logs why reads go the device API's
@@ -568,6 +602,7 @@ class Session:
         tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid
         )
+        self._note_page(tensor)
         if self._transfer_way([tensor], 0, None) is None:
             tensor.buffer.write(raw)
         else:
@@ -577,9 +612,17 @@ class Session:
     def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
         """A tensor as tensor() makes it, not written."""
         self._module = self._module or native.load_module(self.tree)
-        return tensor_module.empty(
+        tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid, address
         )
+        self._note_page(tensor)
+        return tensor
+
+    def _note_page(self, tensor):
+        """Keeps the largest page of a DRAM tensor: a load sizes the run's transfer
+        buffer by it."""
+        if tensor.in_dram:
+            self.largest_page = max(self.largest_page, tensor.aligned_page_bytes)
 
     def launch(self):
         """An empty native Launch on the open device, for a host-side runner that
@@ -672,16 +715,23 @@ class Session:
     def _transfer_way(self, tensors, first, pages):
         """How a read of these pages goes: "run" (the live run's cores push them),
         "launch" (the transfer kernel, from LAUNCH_MIN_BYTES on), None (the device)."""
+        self._map_channel()
         if self.channel is None or any(not tensor.in_dram for tensor in tensors):
             return None
         largest = max(tensor.aligned_page_bytes for tensor in tensors)
+        if largest > self._region.data:
+            return None
         run = self.run
         if run is not None and not run.stopped:
             transfer = getattr(run.backend, "transfer", None)
             fits = transfer is not None and largest <= transfer.chunk
             return "run" if fits and run.alive() else None
-        if self._starting is not None or largest > channel_module.CHUNK_DEFAULT:
+        if self._starting is not None:
             return None
+        if largest > channel_module.CHUNK_DEFAULT and (
+            channel_module.chunk_for(largest, self.l1()[1]) is None
+        ):
+            return None  # two pages do not fit a core's L1
         total = sum(
             dram.page_range(first, pages, tensor.pages)[1] * tensor.aligned_page_bytes
             for tensor in tensors
@@ -951,7 +1001,7 @@ class Session:
                 )
             if placed is not None:
                 backend.load_programs(placed, descriptor)
-            elif program.overlays:
+            else:
                 backend.load_overlays(program, descriptor)
             self.log("launch")
             # From here the grid may run: an interrupt is delivered when the launch
@@ -961,6 +1011,7 @@ class Session:
                 descriptor.run()
             except Exception as error:
                 raise ProgramError(f"{program.name}: launch failed: {error}") from error
+            backend.launch = descriptor  # its program: a core's kernels reloaded
             dispatch.start(str(image))
             self.log("dispatcher started")
             state = dispatch.wait_ready(start + 1.0)
@@ -1089,18 +1140,20 @@ def _start_loads(run, placed):
 
 def _common_slots(placed, declared, built):
     """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most kOverlaySlotsMax) of the largest part any program has there."""
+    program, the reader one more for the service overlay, at most kOverlaySlotsMax) of
+    the largest part any program has there."""
     most = overlay.constants()["kOverlaySlotsMax"]
     slots = {}
     for made in built:
-        for part, (_, size) in (made.slots if made else {}).items():
+        for part, (_, size) in made.slots.items():
             slots[part] = max(slots.get(part, 0), size)
     count = declared.count
     out = {}
     for part, size in slots.items():
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
-        out[part] = (wanted or min(len(placed.programs), most), size)
+        service = part == "reader"  # the service overlay's slot beside them
+        out[part] = (wanted or min(len(placed.programs) + service, most), size)
     return overlay.Built({}, out)
 
 
@@ -1415,6 +1468,7 @@ class _Backend:
         self.trace_tensor = None
         self.state_tensor = None
         self.inbox = None  # the X280 ranks' messages to each core, in L1
+        self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
             ""  # the runtime's error message when an abort did not restore
@@ -1462,6 +1516,7 @@ class _Backend:
         self.control_offset = (self.control_addr - base) // 4
         check_bases({"control block": self.control_addr})
         self.control_rows = np.zeros((cores, words), dtype=np.uint32)
+        self._island_rows(cores, grid[0])
         if port_lines is not None:
             rows = self.control_rows
             to_offset = (
@@ -1473,6 +1528,18 @@ class _Backend:
                 rows[core, to_offset + abi_headers["KM_X280_TO_BOX"]] = box
             self.control.write(rows)
         return self.control_addr
+
+    def _island_rows(self, cores, columns):
+        """Every core's island area in control_rows: one island, island 0 of 1 with
+        every core a rank (its header line, then its table)."""
+        abi_headers = abi.headers()
+        graph = islands.one(cores, columns)
+        table = np.frombuffer(graph.table(0), np.uint32)
+        header = [0, len(graph.islands), graph.first(0), graph.count(0)]
+        at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
+        line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
+        self.control_rows[:, at : at + line] = header
+        self.control_rows[:, at + line : at + line + len(table)] = table
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
@@ -1494,8 +1561,17 @@ class _Backend:
             (cores * messages.queue_messages // 32, page // 4), "int32"
         )
         self.io.append(queue)
+        body = 0
+        if messages.body_bytes:  # a page of body_bytes a queue position
+            bodies = self.session.empty(
+                (cores * messages.queue_messages, messages.body_bytes // 4), "int32"
+            )
+            self.io.append(bodies)
+            body = bodies.address
         lines = base + abi_headers["KMD_LIM_MESSAGES"]
-        return messages.args(queue.address, lines, x280), messages.compute_args(cores)
+        return messages.args(queue.address, lines, body, x280), messages.compute_args(
+            cores
+        )
 
     def describe(
         self,
@@ -1517,18 +1593,16 @@ class _Backend:
         port = self.port
         grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
-        area = (
-            overlay.constants()["kOverlayAreaBytes"]
-            if program.overlays or placed is not None
-            else 0
-        )
+        area = overlay.constants()["kOverlayAreaBytes"]  # the service overlay's too
         control = self._control_blocks(cores, grid, port_lines, area)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
         cores_tensor = _words(self.session, table)
         self.io = [self.control, cores_tensor]
         if self.session.channel is not None or program.threads:
-            self.transfer = self._transfer_buffer(cores, grid)  # threads' copies too
+            # also the threads' copies
+            chunk = self._transfer_chunk(program, placed, cores)
+            self.transfer = self._transfer_buffer(cores, grid, chunk)
         if self.trace_cap:
             self.trace_tensor = _words(
                 self.session,
@@ -1610,9 +1684,31 @@ class _Backend:
             )
         return launch
 
-    def _transfer_buffer(self, cores, grid):
+    def _transfer_chunk(self, program, placed, cores):
+        """The chunk of the run's transfer buffer: CHUNK_DEFAULT, or the largest page
+        of the session's DRAM tensors when two of them take at most half of what a core
+        has left after its buffers. A run with overlays, or whose groups switch
+        program, keeps the default: it has slots to place."""
+        page = self.session.largest_page
+        held = placed.programs if placed else [program]
+        if (
+            page <= channel_module.CHUNK_DEFAULT
+            or (placed and placed.switch)
+            or any(each.overlays for each in held)
+        ):
+            return channel_module.CHUNK_DEFAULT
+        buffers = max(
+            sum(buffer.page_bytes * buffer.pages for buffer in each.buffers)
+            for each in held
+        )
+        buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
+        spare = self.session.l1()[1] - buffers - self.control.nbytes // cores
+        return (
+            channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
+        )
+
+    def _transfer_buffer(self, cores, grid, chunk):
         """The L1 every core moves a transfer's chunks through (a sharded tensor)."""
-        chunk = channel_module.CHUNK_DEFAULT
         size = 2 * chunk + abi.headers()["KM_TRANSFER_WORD_BYTES"]
         tensor = self.session.empty(
             (cores, (size + NOC_ALIGN) // 4), "uint32", shard_grid=grid
@@ -1649,7 +1745,9 @@ class _Backend:
         _, start = programs.buffer_layout(self._runtime_cbs(), l1_bytes - kernel_free)
         self.switch_layouts, end = {}, start
         for program in placed.programs:
-            layout, last = programs.buffer_layout(_program_cbs(program.buffers), start)
+            # a group's buffers are launched in index order (joint_buffers)
+            ordered = sorted(program.buffers, key=lambda buffer: buffer.index)
+            layout, last = programs.buffer_layout(_program_cbs(ordered), start)
             self.switch_layouts[program.program_field] = layout
             end = max(end, last)
         self.switch_base = l1_bytes - kernel_free
@@ -1718,9 +1816,9 @@ class _Backend:
                 )
 
     def load_overlays(self, program, descriptor):
-        """Builds the program's overlays against the kernels just built, puts each
-        part in every DRAM bank, places the slots in L1 (refused, with the L1 budget
-        table, when they do not fit) and writes the overlay area beside each block."""
+        """Builds the program's overlays and the service overlay against the kernels
+        just built, puts each part in every DRAM bank, places the slots in L1 (refused,
+        with the L1 budget table, when they do not fit), writes each overlay area."""
         session, abi_headers = self.session, abi.headers()
         started = time.perf_counter()
         recipes = {}
@@ -1728,8 +1826,12 @@ class _Backend:
             for row in builds:
                 recipe = overlay.Recipe.from_native(row)
                 recipes[recipe.target] = recipe
-        built = overlay.build(
-            program, recipes, native.cache_directory() / "overlays", session.log
+        built = overlay.build_overlays(
+            [*program.overlays.values(), overlay.service()],
+            program.overlay_slots,
+            recipes,
+            native.cache_directory() / "overlays",
+            session.log,
         )
         program.overlays_built = built
         grid = (self.port.grid_x, self.port.grid_y)
@@ -1769,7 +1871,7 @@ class _Backend:
         self.control_rows[:, at : at + len(area)] = area
         self.control.write(self.control_rows)
         session.log(
-            f"overlays {list(program.overlays)} built and placed: slots from "
+            f"overlays {[*program.overlays, 'service']} built and placed: slots from "
             f"{slot_base:#x}, {image.nbytes:,} B of DRAM "
             f"({time.perf_counter() - started:.2f} s)"
         )
@@ -1795,7 +1897,7 @@ class _Backend:
         c = overlay.constants()
         records = {}
         for program in placed.programs:
-            number = c["kOverlaysMax"] - 1 - program.program_field
+            number = c["kOverlayService"] - 1 - program.program_field
             table = []
             for part in overlay.PARTS:
                 row, size = placed_rows.get((number, part), (None, 0))
@@ -1857,13 +1959,13 @@ class _Backend:
                     }
                 )
             held = [placed.programs[index] for index in group.programs]
-            if not held:
-                built.append(None)
-                continue
             made = overlay.build_overlays(
                 [
-                    programs.program_overlay(program, switch=placed.switch)
-                    for program in held
+                    *(
+                        programs.program_overlay(program, switch=placed.switch)
+                        for program in held
+                    ),
+                    overlay.service(),
                 ],
                 declared,
                 recipes,
@@ -1893,16 +1995,21 @@ class _Backend:
             session.log(f"L1 budget of a core of {names}:\n{table}")
             if not fits:
                 raise L1BudgetError(names, table)
-        images = {}
+        images, stored = {}, []
+        service = overlay.constants()["kOverlayService"]
         for made in built:
-            if made is not None:
-                images.update(made.images)
+            mine = {}
+            for key, image in made.images.items():
+                at = key
+                if key[0] == service:  # a copy for each different build of it
+                    same = [k for k, v in images.items() if k[:2] == key and v == image]
+                    at = same[0] if same else (*key, len(images))
+                images[at] = image
+                mine[key] = at
+            stored.append(mine)
         if placed.switch:  # one set of slots, every program's parts fit any core's
             common = _common_slots(placed, declared, built)
-            built = [
-                overlay.Built(made.images if made else {}, common.slots)
-                for made in built
-            ]
+            built = [overlay.Built(made.images, common.slots) for made in built]
             buffers = largest = self.switch_reserve  # the runtime's buffers included
             rows = [
                 ("circular buffers (the largest program)", buffers),
@@ -1919,7 +2026,7 @@ class _Backend:
                 raise L1BudgetError(", ".join(p.name for p in placed.programs), table)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
         image = _words(session, image_rows)
-        slot_bytes = max(made.slot_bytes for made in built if made is not None)
+        slot_bytes = max(made.slot_bytes for made in built)
         words = (slot_bytes + overlay.ALIGN) // 4
         floor = L1_BYTES - session.l1()[1] + largest + SLOT_MARGIN
         at = slot_address(4 * words, floor)
@@ -1932,10 +2039,8 @@ class _Backend:
         self.io += [image, slots]
         slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
-        for group, made in zip(placed.groups, built, strict=True):
-            if made is None:
-                continue
-            mine = {key: placed_rows[key] for key in made.images}
+        for group, made, keys in zip(placed.groups, built, stored, strict=True):
+            mine = {key: placed_rows[at] for key, at in keys.items()}
             area = overlay.area_words(
                 made, mine, image.address, image.aligned_page_bytes, slot_base
             )

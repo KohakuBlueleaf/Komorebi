@@ -97,7 +97,7 @@ PAIRS = {
 def test_constants_opcodes_and_error_reasons_match_the_header():
     for name, header_name in PAIRS.items():
         assert getattr(stream_module, name) == HEADER_CONSTANTS[header_name], name
-    assert HEADER_CONSTANTS["KM_RING_SLOTS"] >= stream_module.RING_SLOTS
+    assert stream_module.ring_slots() == HEADER_CONSTANTS["KM_RING_SLOTS"]
     for code, (name, _, _) in stream_module.OPS.items():
         assert HEADER_CONSTANTS[f"KM_OP_{name}"] == code
     assert HEADER_CONSTANTS["KM_OP_INVALID"] == 0 and len(stream_module.OPS) == 21
@@ -680,15 +680,16 @@ def test_slots_are_the_lowest_free_one():
     assert [command.slot for command in done.commands] == [0, 1, 2, 1]
 
 
-def test_submit_waits_while_all_16_slots_are_busy():
+def test_submit_waits_while_all_slots_are_busy():
     stream = Stream()
     top = stream.label()
     stream.submit(1, group=(0, 1))
     stream.addi(stream.registers(1)[0], Register(0), 1)
     stream.jmp(top)
     done = stream.simulate(delay=None, max_passes=5)
-    assert len(done.commands) == 16 and done.status == "stuck"
-    assert [command.slot for command in done.commands] == list(range(16))
+    slots = stream_module.ring_slots()
+    assert len(done.commands) == slots and done.status == "stuck"
+    assert [command.slot for command in done.commands] == list(range(slots))
 
 
 def test_alloc_is_the_lowest_first_that_overlaps_nothing():
@@ -1173,10 +1174,12 @@ def test_a_late_orphan_posts_a_timeout_for_its_slot_with_the_ended_requests_id()
     assert len(quiet.events) == 1 and not quiet.stopped
 
 
-def test_the_two_submitters_take_turns_on_free_slots():
+def test_the_two_submitters_take_turns_on_free_slots(monkeypatch):
+    # a pass long enough for the stream to fill every slot and queue its job
+    monkeypatch.setattr(stream_module, "STEP_OPS", 4 * stream_module.ring_slots())
     stream = Stream()
     stream.set(stream.registers(1)[0], 0)
-    for _ in range(16):
+    for _ in range(stream_module.ring_slots()):
         stream.submit(1, group=(0, 1))
     stream.enqueue(2, 1)
     stream.wait(0)

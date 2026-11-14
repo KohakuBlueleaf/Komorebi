@@ -1,6 +1,8 @@
 """Programs in the runtime's form: the program field wherever a command is encoded,
 the two forms, the plan of several programs in one run and the host's refusals."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from fake_port import FakeBackend, FakePort
@@ -143,7 +145,7 @@ def test_a_program_is_an_overlay_numbered_from_63_down(tmp_path):
     second.compile_args = {"reader": [3, 4]}
     programs.plan([first, second], 120)
     made_overlay = programs.program_overlay(second)
-    assert made_overlay.number == overlay.constants()["kOverlaysMax"] - 2
+    assert made_overlay.number == overlay.constants()["kOverlayService"] - 2
     assert made_overlay.program and made_overlay.compile_args["reader"] == [3, 4]
     assert programs.start_buffers(BUFFERS) == (0, 16)
     assert programs.start_buffers([]) == (0, 16)
@@ -288,3 +290,27 @@ def test_each_program_has_room_for_its_own_layout_after_the_runtimes(tmp_path):
     wide = made(tmp_path, "wide", buffers=[km.Buffer(40, "uint32", 64, 1)])
     with pytest.raises(ProgramError, match="below 32"):
         programs.plan({wide: (0, 10)}, 120)
+
+
+def test_buffers_declared_out_of_index_order_are_laid_out_in_index_order(tmp_path):
+    declared = [
+        km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=2),
+        km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
+        km.Buffer(index=2, format="bfloat16", page_bytes=2048, pages=1),
+    ]
+    program = made(tmp_path, "unordered", buffers=declared)
+    plan = programs.plan({program: (0, 10)}, 120)
+    module = SimpleNamespace(kernel_buffer=lambda device: (0, 0x1000, 0x20000))
+    backend = session_module._Backend.__new__(session_module._Backend)
+    backend.session, backend.device, backend.trace_cap = (
+        SimpleNamespace(_module=module),
+        None,
+        0,
+    )
+    backend._switch_layouts(plan)
+    layout = backend.switch_layouts[program.program_field]
+    addresses = [layout[index][0] for index in (0, 2, 16)]
+    assert addresses == sorted(addresses)
+    sizes = [layout[index][1] for index in (0, 2)]
+    assert layout[2][0] == layout[0][0] + sizes[0]
+    assert layout[16][0] == layout[2][0] + sizes[1]

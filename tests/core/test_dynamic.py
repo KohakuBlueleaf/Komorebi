@@ -24,6 +24,8 @@ def test_queue_pages_are_consecutive_per_core():
         {"max_live": 0},
         {"counters": 0},
         {"counters": 5},
+        {"body_bytes": 100},
+        {"body_bytes": 8192},
     ],
 )
 def test_bad_options_are_rejected(options):
@@ -69,6 +71,8 @@ def test_words_follow_the_device_struct():
         "idle": 99,
         "bins": 4,
         "counters": 2,
+        "body": 0,
+        "body_bytes": 0,
         "x280": 0,
         "x280_queue": 0,
         "x280_bank": 0,

@@ -5,16 +5,58 @@
 #include <stdint.h>
 
 #include "km_command.hpp"
+#include "km_island.hpp"
 
 namespace km {
 
     // A slice of the group: rank j (0 <= j < size) is core base + j * stride; this
-    // core is rank `rank`.
+    // core is rank `rank` (size: not in it).
     struct Group {
         uint32_t base;
         uint32_t stride;
         uint32_t size;
         uint32_t rank;
+
+        // The part on this core's island (one island: the group itself).
+        Group local() const {
+            const Islands view(island_area());
+            if (view.ranks() == 0 || stride == 0) {
+                return *this;
+            }
+            const uint32_t low = view.first(), high = low + view.ranks();
+            const uint32_t from = base >= low ? 0 : (low - base + stride - 1) / stride;
+            uint32_t to = base >= high ? 0 : (high - base + stride - 1) / stride;
+            to = to < size ? to : size;
+            if (from >= to) {
+                return {base, stride, 0, 0};
+            }
+            const uint32_t mine = rank - from < to - from ? rank - from : to - from;
+            return {base + from * stride, stride, to - from, mine};
+        }
+
+        // The first rank of island part `part` (parts in island order).
+        uint32_t leader(uint32_t part) const {
+            const Islands view(island_area());
+            const uint32_t island = view.island_of(base) + part;
+            const uint32_t first = view.entry_first(island);
+            return part == 0 || first < base ? base : first;
+        }
+
+        // The leaders of its island parts, one each: on one island the group's first
+        // rank alone; across islands stride 0, the members by leader(j).
+        Group leaders() const {
+            const Islands view(island_area());
+            const uint32_t last = base + (size - 1) * stride;
+            const uint32_t parts = (
+                size == 0 ? 0 : view.island_of(last) - view.island_of(base) + 1
+            );
+            const uint32_t me = base + rank * stride;
+            uint32_t mine = parts;
+            for (uint32_t part = 0; part < parts; part++) {
+                mine = leader(part) == me ? part : mine;
+            }
+            return {base, parts == 1 ? 1u : 0u, parts, rank < size ? mine : parts};
+        }
     };
 
     inline uint32_t core_of(const Group& group, uint32_t rank) {

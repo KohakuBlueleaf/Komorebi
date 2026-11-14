@@ -159,7 +159,7 @@ namespace {
         // in.
         bool start() {
             for (
-                uint32_t offset = KM_CONTROL_RING; offset < KM_CONTROL_RESERVED;
+                uint32_t offset = KM_CONTROL_RING; offset < KM_CONTROL_BYTES;
                 offset += 4
             ) {
                 *l1_word(offset) = 0;

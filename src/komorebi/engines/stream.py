@@ -7,6 +7,8 @@ import struct
 from collections import namedtuple
 from dataclasses import dataclass
 
+from komorebi import abi
+
 MAGIC = 0x4B4D5354
 VERSION = 1
 REGISTERS = 16
@@ -24,7 +26,6 @@ STEP_OPS = 64
 QUEUE_JOBS = 64
 QUEUE_LOOK = 16
 QUEUE_PASSES = 1024
-RING_SLOTS = 16  # the slots it models: a run at ring depth 16, as the card tests run
 HANDLER_USER_MAX = 239
 FLAG_EXCLUSIVE = 2
 FLAG_RESULT = 4
@@ -703,6 +704,11 @@ def simulate(
     )
 
 
+def ring_slots():
+    """The command slots the simulators model: the runtime's, KM_RING_SLOTS."""
+    return abi.headers()["KM_RING_SLOTS"]
+
+
 class _Sim:
     """The state of one stream, the completion table and the queue."""
 
@@ -714,7 +720,7 @@ class _Sim:
         self.deadline_passes = deadline_passes
         self.registers = [0] * REGISTERS
         self.registers[SEED_REGISTER] = header["seed"]
-        self.table = [None] * RING_SLOTS
+        self.table = [None] * ring_slots()
         self.queue, self.commands, self.events = [], [], []
         self.pc = self.steps = self.sequence = self.pending = self.last_result = 0
         self.error = self.halt = None

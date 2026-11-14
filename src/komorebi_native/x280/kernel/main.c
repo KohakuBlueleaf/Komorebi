@@ -12,6 +12,7 @@
 #include "inspect.h"
 #include "kernel.h"
 #include "queue.h"
+#include "reset.h"
 #include "result.h"
 #include "ring.h"
 #include "trap.h"
@@ -294,6 +295,14 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         ring_consumed(ring);
         ring_push(ring, request, KM_EVENT_PONG, 0);
         dispatcher->last_event_mtime = now;
+        return KMD_TAKEN;
+    }
+    if (
+        host && handler == KMD_HANDLER_RESET && count == 1u &&
+        !group_outside(dispatcher, first, count)
+    ) {
+        ring_consumed(ring);
+        reset_command(dispatcher, request, first, argument, (uint32_t)(line[2] >> 32));
         return KMD_TAKEN;
     }
     if (

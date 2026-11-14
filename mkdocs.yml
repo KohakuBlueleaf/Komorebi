@@ -110,6 +110,7 @@ nav:
       - reference/dynamic.md
       - reference/threads.md
       - reference/overlays.md
+      - reference/islands.md
   - Examples:
       - examples/README.md
       - examples/01_mapcollect/README.md
@@ -133,6 +134,8 @@ nav:
       - examples/19_thread_programs/README.md
       - examples/20_message_overlays/README.md
       - examples/21_thread_load/README.md
+      - examples/22_gate/README.md
+      - examples/23_message_body/README.md
       - examples/24_thread_rank/README.md
   - Releases:
       - releases/0.1.0.md

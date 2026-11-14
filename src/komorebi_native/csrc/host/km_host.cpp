@@ -33,6 +33,7 @@
 #include <tt-metalium/buffer.hpp>
 #include <tt-metalium/buffer_distribution_spec.hpp>
 #include <tt-metalium/distributed.hpp>
+#include <tt-metalium/experimental/fabric/fabric.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
 #include <tt-metalium/mesh_buffer.hpp>
@@ -41,6 +42,8 @@
 #include <tt-metalium/tensor_accessor_args.hpp>
 #include <tt-metalium/tt_metal.hpp>
 
+#include "impl/allocator/allocator.hpp"
+#include "impl/buffers/circular_buffer.hpp"
 #include "impl/context/context_types.hpp"
 #include "impl/context/metal_context.hpp"
 #include "impl/kernels/kernel.hpp"
@@ -452,10 +455,121 @@ namespace {
         }
     }
 
+    // The X280 runtime of a mesh of several islands, shared by their Dispatches; empty
+    // until Islands::open_x280.
+    struct IslandRuntime {
+        std::shared_ptr<x280::RuntimeOpenResult> opened;
+    };
+
+    // The tables the open writes into each Tensix core's firmware scratch, which the
+    // kernels' area later covers: bank to NoC, bank offsets, logical to virtual.
+    std::vector<std::pair<uint64_t, std::vector<uint8_t>>> firmware_tables(
+        tt::tt_metal::IDevice* dev
+    ) {
+        namespace tm = tt::tt_metal;
+        const auto& hal = tm::MetalContext::instance().hal();
+        const auto& cluster = tm::MetalContext::instance().get_cluster();
+        const auto& soc = cluster.get_soc_desc(dev->id());
+        const auto* allocator = dev->allocator().get();
+        const auto tensix = tm::HalProgrammableCoreType::TENSIX;
+        const auto xy = [&](uint32_t noc, uint32_t x, uint32_t y) {
+            return (
+                static_cast<uint16_t>(
+                    ((y << hal.get_noc_addr_node_id_bits()) | x)
+                    << hal.get_noc_coord_reg_offset()
+                )
+            );
+        };
+        std::vector<uint16_t> noc_xy;
+        std::vector<int32_t> offsets;
+        const uint32_t dram_banks = allocator->get_num_banks(tm::BufferType::DRAM);
+        const uint32_t l1_banks = allocator->get_num_banks(tm::BufferType::L1);
+        const bool virtualized = (
+            cluster.get_cluster_desc()->get_noc_translation_table_en().at(dev->id()) &&
+            hal.get_virtualized_core_types().contains(
+                tm::dev_msgs::AddressableCoreType::DRAM
+            )
+        );
+        for (uint32_t noc = 0; noc < hal.get_num_nocs(); noc++) {
+            for (uint32_t bank = 0; bank < dram_banks; bank++) {
+                const auto core = (
+                    soc.get_preferred_worker_core_for_dram_view(
+                        allocator->impl().get_dram_channel_from_bank_id(bank), noc
+                    )
+                );
+                noc_xy.push_back(
+                    virtualized
+                        ? xy(noc, core.x, core.y)
+                        : xy(noc,
+                               hal.noc_coordinate(noc, soc.grid_size.x, core.x),
+                               hal.noc_coordinate(noc, soc.grid_size.y, core.y))
+                );
+            }
+        }
+        for (uint32_t noc = 0; noc < hal.get_num_nocs(); noc++) {
+            for (uint32_t bank = 0; bank < l1_banks; bank++) {
+                const auto core = (
+                    cluster.get_virtual_coordinate_from_logical_coordinates(
+                        dev->id(),
+                        allocator->get_logical_core_from_bank_id(bank),
+                        tt::CoreType::WORKER
+                    )
+                );
+                noc_xy.push_back(xy(noc, core.x, core.y));  // Blackhole: as it is
+            }
+        }
+        for (uint32_t bank = 0; bank < dram_banks; bank++) {
+            offsets.push_back(allocator->get_bank_offset(tm::BufferType::DRAM, bank));
+        }
+        for (uint32_t bank = 0; bank < l1_banks; bank++) {
+            offsets.push_back(allocator->get_bank_offset(tm::BufferType::L1, bank));
+        }
+        std::vector<uint8_t> banks(noc_xy.size() * 2 + offsets.size() * 4);
+        std::memcpy(banks.data(), noc_xy.data(), noc_xy.size() * 2);
+        std::memcpy(
+            banks.data() + noc_xy.size() * 2, offsets.data(), offsets.size() * 4
+        );
+        if (
+            banks.size() >
+            hal.get_dev_size(tensix, tm::HalL1MemAddrType::BANK_TO_NOC_SCRATCH)
+        ) {
+            throw std::runtime_error("the bank tables do not fit the firmware scratch");
+        }
+        const auto grid = soc.get_grid_size(tt::CoreType::TENSIX);
+        const auto translated = [&](size_t x, size_t y) {
+            return soc.translate_coord_to(
+                {tt_xy_pair{x, y}, tt::CoreType::TENSIX, tt::CoordSystem::LOGICAL},
+                tt::CoordSystem::TRANSLATED
+            );
+        };
+        const size_t columns = (soc.grid_size.x + 3) / 4 * 4;
+        std::vector<uint8_t> logical(columns + (grid.y + 3) / 4 * 4, 0);
+        for (size_t x = 0; x < grid.x; x++) {
+            logical[x] = static_cast<uint8_t>(translated(x, 0).x);
+        }
+        for (size_t y = 0; y < grid.y; y++) {
+            logical[columns + y] = static_cast<uint8_t>(translated(0, y).y);
+        }
+        return {
+            {
+                hal.get_dev_addr(tensix, tm::HalL1MemAddrType::BANK_TO_NOC_SCRATCH),
+                banks
+            },
+            {hal.get_dev_addr(tensix, tm::HalL1MemAddrType::LOGICAL_TO_VIRTUAL_SCRATCH),
+             logical},
+        };
+    }
+
     // An open card: the 1 x 1 mesh of the first visible device, opened as ttnn's
-    // open_mesh_device opens it, with the program cache off.
+    // open_mesh_device opens it, with the program cache off; or an island of Islands.
     class Device {
     public:
+        Device(
+            std::shared_ptr<MeshDevice> island, std::shared_ptr<IslandRuntime> x280
+        ) :
+            mesh_(std::move(island)), x280_(std::move(x280)) {
+        }
+
         explicit Device(std::optional<size_t> worker_l1_size) {
             namespace distributed = tt::tt_metal::distributed;
             mesh_ = MeshDevice::create(
@@ -531,8 +645,185 @@ namespace {
             tt::tt_metal::distributed::Finish(mesh().mesh_command_queue());
         }
 
+        // The shared X280 runtime of an island; nullptr for a card opened alone.
+        const std::shared_ptr<IslandRuntime>& x280() const {
+            return x280_;
+        }
+
     private:
         std::shared_ptr<MeshDevice> mesh_;
+        std::shared_ptr<IslandRuntime> x280_;
+    };
+
+    // Several chips as one 1 x count mesh with tt-metal's 1-D fabric on (slow
+    // dispatch), each chip an island: a 1 x 1 submesh with its own command queue.
+    class Islands {
+    public:
+        Islands(uint32_t count, std::optional<size_t> worker_l1_size) {
+            namespace distributed = tt::tt_metal::distributed;
+            if (count < 2) {
+                throw std::invalid_argument(
+                    "islands: at least 2 (the fabric's minimum)"
+                );
+            }
+            tt::tt_fabric::SetFabricConfig(tt::tt_fabric::FabricConfig::FABRIC_1D);
+            try {
+                mesh_ = MeshDevice::create(
+                    distributed::MeshDeviceConfig(distributed::MeshShape(1, count)),
+                    DEFAULT_L1_SMALL_SIZE,
+                    DEFAULT_TRACE_REGION_SIZE,
+                    1,
+                    tt::tt_metal::DispatchCoreConfig{},
+                    {},
+                    worker_l1_size.value_or(DEFAULT_WORKER_L1_SIZE)
+                );
+                mesh_->disable_and_clear_program_cache();
+                for (uint32_t island = 0; island < count; island++) {
+                    auto sub = (
+                        mesh_->create_submesh(
+                            distributed::MeshShape(1, 1),
+                            distributed::MeshCoordinate(0, island)
+                        )
+                    );
+                    sub->disable_and_clear_program_cache();
+                    islands_.push_back(std::move(sub));
+                }
+            } catch (...) {
+                close();
+                throw;
+            }
+            x280_ = std::make_shared<IslandRuntime>();
+        }
+
+        ~Islands() {
+            close();
+        }
+
+        uint32_t count() const {
+            return static_cast<uint32_t>(islands_.size());
+        }
+
+        // The chip id of each island, in mesh column order.
+        std::vector<int> chips() const {
+            std::vector<int> out;
+            for (const auto& island : islands_) {
+                out.push_back(chip(*island)->id());
+            }
+            return out;
+        }
+
+        // Island `island` as a Device for a Session given a device.
+        Device device(uint32_t island) const {
+            if (!mesh_ || island >= islands_.size()) {
+                throw std::runtime_error("no such island, or the islands are closed");
+            }
+            return Device(islands_[island], x280_);
+        }
+
+        // Opens the X280 runtime over the whole mesh once; every island's Dispatch
+        // shares it. Raises with the runtime's outcome when it is not ready.
+        void open_x280() {
+            if (!mesh_) {
+                throw std::runtime_error("the islands are closed");
+            }
+            if (x280_->opened) {
+                return;
+            }
+            auto opened = std::make_shared<x280::RuntimeOpenResult>(
+                x280::X280Runtime::open(
+                    mesh_,
+                    x280::RuntimeOpenConfig{
+                        .priming_policy = x280::LimEccPrimingPolicy::RequirePrepared
+                    }
+                )
+            );
+            if (!opened->ready()) {
+                throw std::runtime_error(
+                    std::string("X280 runtime not ready (") +
+                    x280::to_string(opened->outcome) +
+                    (opened->requires_reset() ? ", reset-required" : "") +
+                    "): " + opened->diagnostic
+                );
+            }
+            x280_->opened = std::move(opened);
+        }
+
+        // Drops the runtime (the Dispatches must be closed), the islands, the mesh,
+        // then turns the fabric off.
+        void close() {
+            if (x280_) {
+                x280_->opened.reset();
+            }
+            islands_.clear();
+            if (mesh_) {
+                mesh_->close();
+                mesh_.reset();
+                tt::tt_fabric::SetFabricConfig(tt::tt_fabric::FabricConfig::DISABLED);
+            }
+        }
+
+        bool is_open() const {
+            return mesh_ != nullptr;
+        }
+
+        // Link `link` from island `from` to `to`: (links found, the Ethernet channel a
+        // Tensix core connects through, the Ethernet core's NoC x and y on `from`).
+        std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> link(
+            uint32_t from, uint32_t to, uint32_t link
+        ) const {
+            namespace distributed = tt::tt_metal::distributed;
+            if (
+                !mesh_ || from >= islands_.size() || to >= islands_.size() || from == to
+            ) {
+                throw std::runtime_error("link: two different islands of an open mesh");
+            }
+            const auto source = (
+                mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, from))
+            );
+            const auto target = (
+                mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, to))
+            );
+            const auto links = (
+                tt::tt_fabric::get_forwarding_link_indices(source, target)
+            );
+            if (link >= links.size()) {
+                throw std::runtime_error(
+                    "link " + std::to_string(link) + ": " +
+                    std::to_string(links.size()) + " found"
+                );
+            }
+            // The connection's first argument is the channel; the descriptor is a
+            // scratch.
+            tt::tt_metal::ProgramDescriptor scratch;
+            std::vector<uint32_t> args;
+            tt::tt_fabric::append_fabric_connection_rt_args(
+                source,
+                target,
+                links[link],
+                scratch,
+                tt::tt_metal::CoreCoord{0, 0},
+                args
+            );
+            const auto eth = (
+                tt::tt_fabric::get_forwarding_eth_core(
+                    *mesh_, source, target, links[link]
+                )
+            );
+            const auto core = (
+                chip(*islands_[from])->ethernet_core_from_logical_core(eth)
+            );
+            return {
+                static_cast<uint32_t>(links.size()),
+                args.at(0),
+                static_cast<uint32_t>(core.x),
+                static_cast<uint32_t>(core.y)
+            };
+        }
+
+    private:
+        std::shared_ptr<MeshDevice> mesh_;
+        std::vector<std::shared_ptr<MeshDevice>> islands_;
+        std::shared_ptr<IslandRuntime> x280_;
     };
 
     using MeshBuffer = tt::tt_metal::distributed::MeshBuffer;
@@ -894,6 +1185,440 @@ namespace {
             );
         }
 
+        // Resets core (x, y) alone, restarts its firmware, reloads its kernels as the
+        // launch did. Seconds of reset, firmware, load; firmware -1: never ready.
+        std::array<double, 3> reset_core(uint32_t x, uint32_t y, double timeout_s) {
+            namespace tm = tt::tt_metal;
+            if (!workload_) {
+                throw std::runtime_error("reset_core: the program was not launched");
+            }
+            auto& context = tm::MetalContext::instance();
+            const auto& hal = context.hal();
+            const auto& cluster = context.get_cluster();
+            auto* dev = chip(*mesh_);
+            const auto tensix = tm::HalProgrammableCoreType::TENSIX;
+            const uint32_t index = hal.get_programmable_core_type_index(tensix);
+            const tm::CoreCoord logical{x, y};
+            const auto core = (
+                dev->virtual_core_from_logical_core(logical, tt::CoreType::WORKER)
+            );
+            const tt_cxy_pair where(dev->id(), core);
+            auto& program = workload_->get_programs().begin()->second;
+            auto* group = program.impl().kernels_on_core(logical, index);
+            if (group == nullptr) {
+                throw std::invalid_argument("reset_core: no kernels on that core");
+            }
+            nb::gil_scoped_release release;
+            std::array<double, 3> took{};
+            auto started = Clock::now();
+            const auto lap = [&](size_t part) {
+                const auto now = Clock::now();
+                took[part] = std::chrono::duration<double>(now - started).count();
+                started = now;
+            };
+
+            // The open's firmware start, for this core: firmware images, initial launch
+            // messages, go INIT, read pointers 0, BRISC's boot jump, BRISC released.
+            cluster.assert_risc_reset_at_core(where, tt::umd::RiscType::ALL);
+            lap(0);
+            auto& builds = (
+                tm::BuildEnvManager::get_instance(tm::extract_context_id(dev))
+            );
+            for (
+                uint32_t kind = 0; kind < hal.get_processor_classes_count(tensix);
+                kind++
+            ) {
+                const uint32_t states = (
+                    builds.get_build_index_and_state_count(index, kind, true).second
+                );
+                for (uint32_t risc = 0; risc < states; risc++) {
+                    const auto& image = (
+                        tt::llrt::get_risc_binary(builds.get_firmware_binary_path(
+                            dev->id(), index, kind, risc
+                        ))
+                    );
+                    const uint64_t local = (
+                        hal.get_jit_build_config(index, kind, risc).local_init_addr
+                    );
+                    image.process_spans([&](auto words, uint64_t at, uint32_t count) {
+                        cluster.write_core(
+                            &*words,
+                            count * sizeof(uint32_t),
+                            where,
+                            hal.relocate_dev_addr(at, local, false)
+                        );
+                    });
+                }
+            }
+            for (const auto& [at, bytes] : firmware_tables(dev)) {
+                cluster.write_core(bytes.data(), bytes.size(), where, at);
+            }
+            auto factory = hal.get_dev_msgs_factory(tensix);
+            auto initial = factory.create<tm::dev_msgs::launch_msg_t>();
+            initial.view().kernel_config().mode() = tm::dev_msgs::DISPATCH_MODE_HOST;
+            std::vector<std::byte> launches;
+            for (
+                size_t entry = 0; entry < tm::dev_msgs::launch_msg_buffer_num_entries;
+                entry++
+            ) {
+                launches.insert(
+                    launches.end(), initial.data(), initial.data() + initial.size()
+                );
+            }
+            auto init = factory.create<tm::dev_msgs::go_msg_t>();
+            init.view().signal() = tm::dev_msgs::RUN_MSG_INIT;
+            const uint32_t zero = 0;
+            const auto address = [&](tm::HalL1MemAddrType type) {
+                return hal.get_dev_addr(tensix, type);
+            };
+            cluster.write_core_immediate(
+                launches.data(),
+                launches.size(),
+                where,
+                address(tm::HalL1MemAddrType::LAUNCH)
+            );
+            cluster.write_core_immediate(
+                init.data(), init.size(), where, address(tm::HalL1MemAddrType::GO_MSG)
+            );
+            cluster.write_core_immediate(
+                &zero,
+                sizeof(zero),
+                where,
+                address(tm::HalL1MemAddrType::LAUNCH_MSG_BUFFER_RD_PTR)
+            );
+            cluster.write_core_immediate(
+                &zero, sizeof(zero), where, address(tm::HalL1MemAddrType::GO_MSG_INDEX)
+            );
+            const auto& boot = hal.get_jit_build_config(index, 0, 0);
+            cluster.write_core(
+                &boot.fw_launch_addr_value, sizeof(uint32_t), where, boot.fw_launch_addr
+            );
+            cluster.l1_barrier(dev->id());
+            cluster.deassert_risc_reset_at_core(where, tt::umd::RiscType::BRISC);
+            std::unordered_set<tm::CoreCoord> left{core};
+            try {
+                tt::llrt::internal_::wait_until_cores_done(
+                    context,
+                    dev->id(),
+                    tm::dev_msgs::RUN_MSG_INIT,
+                    left,
+                    static_cast<int>(timeout_s * 1000.0)
+                );
+            } catch (const std::exception&) {
+                return {took[0], -1.0, 0.0};
+            }
+            lap(1);
+
+            // The launch's writes for this core (slow dispatch): kernel binaries,
+            // circular buffer configs, semaphores, runtime arguments, launch and go.
+            const uint64_t config_base = address(tm::HalL1MemAddrType::KERNEL_CONFIG);
+            for (const auto kernel_id : group->kernel_ids) {
+                program.impl().get_kernel(kernel_id)->configure(
+                    dev,
+                    logical,
+                    static_cast<uint32_t>(config_base),
+                    group->kernel_text_offsets.data()
+                );
+            }
+            const auto& config = program.impl().get_program_config(index);
+            const uint32_t max_buffers = hal.get_num_dataflow_buffers();
+            std::vector<uint32_t> cbs(config.cb_size / sizeof(uint32_t));
+            const uint32_t remote_offset = config.local_cb_size / sizeof(uint32_t);
+            for (
+                const auto& buffer : program.impl().circular_buffers_on_core(logical)
+            ) {
+                for (const uint32_t buffer_index : buffer->local_buffer_indices()) {
+                    const uint32_t base = (
+                        buffer_index * UINT32_WORDS_PER_LOCAL_CIRCULAR_BUFFER_CONFIG
+                    );
+                    const uint32_t pages = buffer->num_pages(buffer_index);
+                    cbs[base] = buffer->address();
+                    cbs[base + 1] = buffer->size();
+                    cbs[base + 2] = pages;
+                    cbs[base + 3] = buffer->size() / pages;
+                }
+                for (const uint32_t buffer_index : buffer->remote_buffer_indices()) {
+                    const uint32_t base = (
+                        remote_offset +
+                        (max_buffers - 1 - buffer_index) *
+                            UINT32_WORDS_PER_REMOTE_CIRCULAR_BUFFER_CONFIG
+                    );
+                    cbs[base] = buffer->config_address();
+                    cbs[base + 1] = buffer->page_size(buffer_index);
+                }
+            }
+            if (!cbs.empty()) {
+                cluster.write_core(
+                    dev->id(), core, cbs, config_base + config.cb_offset
+                );
+            }
+            program.impl().init_semaphores(*dev, logical, index);
+            auto launch = group->launch_msg.view();
+            auto kernel_config = launch.kernel_config();
+            const uint64_t args_base = (
+                static_cast<uint64_t>(kernel_config.kernel_config_base()[index]) +
+                hal.get_l1_noc_offset(tensix)
+            );
+            for (const auto kernel_id : group->kernel_ids) {
+                const auto& kernel = program.impl().get_kernel(kernel_id);
+                const uint32_t processor = (
+                    hal.get_processor_index(
+                        kernel->get_kernel_programmable_core_type(),
+                        kernel->get_kernel_processor_class(),
+                        kernel->get_kernel_processor_type(0)
+                    )
+                );
+                const auto offsets = kernel_config.rta_offset()[processor];
+                const auto& args = kernel->runtime_args(logical);
+                if (!args.empty()) {
+                    cluster.write_core(
+                        dev->id(), core, args, args_base + offsets.rta_offset()
+                    );
+                }
+                const auto& common = kernel->common_runtime_args();
+                if (!common.empty()) {
+                    cluster.write_core(
+                        dev->id(), core, common, args_base + offsets.crta_offset()
+                    );
+                }
+            }
+            cluster.l1_barrier(dev->id());
+            kernel_config.host_assigned_id() = program.get_runtime_id();
+            kernel_config.mode() = tm::dev_msgs::DISPATCH_MODE_HOST;
+            cluster.write_core_immediate(
+                launch.data(),
+                launch.size(),
+                where,
+                address(tm::HalL1MemAddrType::LAUNCH)
+            );
+            tt_driver_atomics::sfence();
+            cluster.write_core_immediate(
+                group->go_msg.data(),
+                group->go_msg.size(),
+                where,
+                address(tm::HalL1MemAddrType::GO_MSG)
+            );
+            lap(2);
+            return took;
+        }
+
+        // The dispatcher's reset of core (x, y) (KMD_HANDLER_RESET): reset_core's
+        // writes as a write list of km_dispatch.h, in whole 64-byte lines.
+        nb::bytes reset_list(uint32_t x, uint32_t y) {
+            namespace tm = tt::tt_metal;
+            if (!workload_) {
+                throw std::runtime_error("reset_list: the program was not launched");
+            }
+            const auto& hal = tm::MetalContext::instance().hal();
+            auto* dev = chip(*mesh_);
+            const auto tensix = tm::HalProgrammableCoreType::TENSIX;
+            const uint32_t index = hal.get_programmable_core_type_index(tensix);
+            const tm::CoreCoord logical{x, y};
+            auto& program = workload_->get_programs().begin()->second;
+            auto* group = program.impl().kernels_on_core(logical, index);
+            if (group == nullptr) {
+                throw std::invalid_argument("reset_list: no kernels on that core");
+            }
+            if (
+                !program.impl()
+                                .semaphores_on_core(logical, tt::CoreType::WORKER)
+                .empty()
+            ) {
+                throw std::invalid_argument("reset_list: the core has semaphores");
+            }
+            std::vector<uint32_t> list;
+            const auto entry = [&](
+                uint32_t kind, uint64_t at, uint32_t size, uint32_t value
+            ) {
+                list.insert(list.end(), {kind, static_cast<uint32_t>(at), size, value});
+            };
+            const auto write = [&](uint64_t at, const void* data, size_t size) {
+                if (size % 4 != 0 || at % 4 != 0 || at + size > KMD_L1_BYTES) {
+                    throw std::runtime_error("reset_list: a write not of whole words");
+                }
+                entry(KMD_RESET_WRITE, at, static_cast<uint32_t>(size), 0);
+                const size_t start = list.size();
+                list.resize(start + (size + 15) / 16 * 4, 0);
+                std::memcpy(list.data() + start, data, size);
+            };
+            const auto address = [&](tm::HalL1MemAddrType type) {
+                return hal.get_dev_addr(tensix, type);
+            };
+            const auto image = [&](const ll_api::memory& memory, auto at) {
+                memory.process_spans([&](auto words, uint64_t span, uint32_t count) {
+                    write(at(span), &*words, count * sizeof(uint32_t));
+                });
+            };
+
+            entry(KMD_RESET_ASSERT, 0, 0, 0);
+            auto& builds = (
+                tm::BuildEnvManager::get_instance(tm::extract_context_id(dev))
+            );
+            for (
+                uint32_t kind = 0; kind < hal.get_processor_classes_count(tensix);
+                kind++
+            ) {
+                const uint32_t states = (
+                    builds.get_build_index_and_state_count(index, kind, true).second
+                );
+                for (uint32_t risc = 0; risc < states; risc++) {
+                    const uint64_t local = (
+                        hal.get_jit_build_config(index, kind, risc).local_init_addr
+                    );
+                    image(
+                        tt::llrt::get_risc_binary(builds.get_firmware_binary_path(
+                            dev->id(), index, kind, risc
+                        )),
+                        [&](uint64_t span) {
+                            return hal.relocate_dev_addr(span, local, false);
+                        }
+                    );
+                }
+            }
+            for (const auto& [at, bytes] : firmware_tables(dev)) {
+                write(at, bytes.data(), bytes.size());
+            }
+            auto factory = hal.get_dev_msgs_factory(tensix);
+            auto initial = factory.create<tm::dev_msgs::launch_msg_t>();
+            initial.view().kernel_config().mode() = tm::dev_msgs::DISPATCH_MODE_HOST;
+            std::vector<std::byte> launches;
+            for (
+                size_t entry = 0; entry < tm::dev_msgs::launch_msg_buffer_num_entries;
+                entry++
+            ) {
+                launches.insert(
+                    launches.end(), initial.data(), initial.data() + initial.size()
+                );
+            }
+            write(
+                address(tm::HalL1MemAddrType::LAUNCH), launches.data(), launches.size()
+            );
+            auto go = factory.create<tm::dev_msgs::go_msg_t>();
+            go.view().signal() = tm::dev_msgs::RUN_MSG_INIT;
+            write(address(tm::HalL1MemAddrType::GO_MSG), go.data(), go.size());
+            const uint32_t zero = 0;
+            write(address(tm::HalL1MemAddrType::LAUNCH_MSG_BUFFER_RD_PTR), &zero, 4);
+            write(address(tm::HalL1MemAddrType::GO_MSG_INDEX), &zero, 4);
+            const auto& boot = hal.get_jit_build_config(index, 0, 0);
+            write(boot.fw_launch_addr, &boot.fw_launch_addr_value, 4);
+            entry(KMD_RESET_RELEASE, 0, 0, 0);
+            // The firmware's DONE: the go message's signal byte (its mask from a go
+            // message whose signal is all ones) reads RUN_MSG_DONE.
+            auto mask = factory.create<tm::dev_msgs::go_msg_t>();
+            mask.view().signal() = 0xFF;
+            uint32_t mask_word = 0, done_word = 0;
+            std::memcpy(&mask_word, mask.data(), 4);
+            go.view().signal() = tm::dev_msgs::RUN_MSG_DONE;
+            std::memcpy(&done_word, go.data(), 4);
+            entry(
+                KMD_RESET_WAIT,
+                address(tm::HalL1MemAddrType::GO_MSG),
+                mask_word,
+                done_word & mask_word
+            );
+
+            const uint64_t config_base = address(tm::HalL1MemAddrType::KERNEL_CONFIG);
+            const uint64_t key = (
+                builds.get_device_build_env(dev->build_id()).build_key()
+            );
+            for (const auto kernel_id : group->kernel_ids) {
+                const auto& kernel = program.impl().get_kernel(kernel_id);
+                const auto& binaries = kernel->binaries(key);
+                for (size_t binary = 0; binary < binaries.size(); binary++) {
+                    const uint32_t processor = (
+                        hal.get_processor_index(
+                            kernel->get_kernel_programmable_core_type(),
+                            kernel->get_kernel_processor_class(),
+                            kernel->get_kernel_processor_type(static_cast<int>(binary))
+                        )
+                    );
+                    const uint64_t at = (
+                        config_base + group->kernel_text_offsets[processor]
+                    );
+                    image(*binaries[binary], [&](uint64_t) {
+                        return at;
+                    });
+                }
+            }
+            const auto& config = program.impl().get_program_config(index);
+            const uint32_t max_buffers = hal.get_num_dataflow_buffers();
+            std::vector<uint32_t> cbs(config.cb_size / sizeof(uint32_t));
+            const uint32_t remote_offset = config.local_cb_size / sizeof(uint32_t);
+            for (
+                const auto& buffer : program.impl().circular_buffers_on_core(logical)
+            ) {
+                for (const uint32_t buffer_index : buffer->local_buffer_indices()) {
+                    const uint32_t base = (
+                        buffer_index * UINT32_WORDS_PER_LOCAL_CIRCULAR_BUFFER_CONFIG
+                    );
+                    const uint32_t pages = buffer->num_pages(buffer_index);
+                    cbs[base] = buffer->address();
+                    cbs[base + 1] = buffer->size();
+                    cbs[base + 2] = pages;
+                    cbs[base + 3] = buffer->size() / pages;
+                }
+                for (const uint32_t buffer_index : buffer->remote_buffer_indices()) {
+                    const uint32_t base = (
+                        remote_offset +
+                        (max_buffers - 1 - buffer_index) *
+                            UINT32_WORDS_PER_REMOTE_CIRCULAR_BUFFER_CONFIG
+                    );
+                    cbs[base] = buffer->config_address();
+                    cbs[base + 1] = buffer->page_size(buffer_index);
+                }
+            }
+            if (!cbs.empty()) {
+                write(config_base + config.cb_offset, cbs.data(), cbs.size() * 4);
+            }
+            auto launch = group->launch_msg.view();
+            auto kernel_config = launch.kernel_config();
+            const uint64_t args_base = (
+                static_cast<uint64_t>(kernel_config.kernel_config_base()[index]) +
+                hal.get_l1_noc_offset(tensix)
+            );
+            for (const auto kernel_id : group->kernel_ids) {
+                const auto& kernel = program.impl().get_kernel(kernel_id);
+                const uint32_t processor = (
+                    hal.get_processor_index(
+                        kernel->get_kernel_programmable_core_type(),
+                        kernel->get_kernel_processor_class(),
+                        kernel->get_kernel_processor_type(0)
+                    )
+                );
+                const auto offsets = kernel_config.rta_offset()[processor];
+                const auto& args = kernel->runtime_args(logical);
+                if (!args.empty()) {
+                    write(
+                        args_base + offsets.rta_offset(), args.data(), args.size() * 4
+                    );
+                }
+                const auto& common = kernel->common_runtime_args();
+                if (!common.empty()) {
+                    write(
+                        args_base + offsets.crta_offset(),
+                        common.data(),
+                        common.size() * 4
+                    );
+                }
+            }
+            kernel_config.host_assigned_id() = program.get_runtime_id();
+            kernel_config.mode() = tm::dev_msgs::DISPATCH_MODE_HOST;
+            write(address(tm::HalL1MemAddrType::LAUNCH), launch.data(), launch.size());
+            write(
+                address(tm::HalL1MemAddrType::GO_MSG),
+                group->go_msg.data(),
+                group->go_msg.size()
+            );
+            entry(KMD_RESET_END, 0, 0, 0);
+            list.resize((list.size() + 15) / 16 * 16, 0);
+            return (
+                nb::bytes(
+                    reinterpret_cast<const char*>(list.data()),
+                    list.size() * sizeof(uint32_t)
+                )
+            );
+        }
+
     private:
         std::shared_ptr<MeshDevice> mesh_;
         tt::tt_metal::ProgramDescriptor desc_;
@@ -916,7 +1641,7 @@ namespace {
     public:
         Dispatch(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz) :
             mesh_(std::move(mesh_device)) {
-            opened_ = std::make_unique<x280::RuntimeOpenResult>(x280::X280Runtime::open(
+            opened_ = std::make_shared<x280::RuntimeOpenResult>(x280::X280Runtime::open(
                 mesh_,
                 x280::RuntimeOpenConfig{
                     .priming_policy = x280::LimEccPrimingPolicy::RequirePrepared
@@ -927,6 +1652,26 @@ namespace {
                 opened_.reset();
                 throw std::runtime_error("X280 runtime not ready: " + why);
             }
+            try {
+                boot(pll_mhz);
+                locate();
+            } catch (...) {
+                close();
+                throw;
+            }
+        }
+
+        // An island's dispatch: the mesh's shared runtime, this island's chip only.
+        Dispatch(
+            std::shared_ptr<MeshDevice> island,
+            std::shared_ptr<x280::RuntimeOpenResult> shared,
+            uint32_t pll_mhz
+        ) :
+            mesh_(std::move(island)), opened_(std::move(shared)) {
+            if (!opened_ || !opened_->ready()) {
+                throw std::runtime_error("the islands' X280 runtime is not open");
+            }
+            chip_id_ = chip(*mesh_)->id();
             try {
                 boot(pll_mhz);
                 locate();
@@ -1815,12 +2560,26 @@ namespace {
             return const_cast<Work&>(std::as_const(*this).work(cluster, open));
         }
 
+        // The runtime's tiles, or an island's chip's tiles only.
+        std::vector<x280::TileId> tile_ids() const {
+            auto ids = x280_runtime().tile_ids();
+            if (chip_id_ >= 0) {
+                std::erase_if(ids, [&](const x280::TileId& id) {
+                    return id.chip_id != chip_id_;
+                });
+                if (ids.empty()) {
+                    throw std::runtime_error("the island's chip has no X280 tile");
+                }
+            }
+            return ids;
+        }
+
         // Boots the tiles to their idle image if they are not idle, then sets the
         // clock.
         void boot(uint32_t pll_mhz) {
             auto& runtime = x280_runtime();
             bool all_idle = true;
-            for (const auto& id : runtime.tile_ids()) {
+            for (const auto& id : tile_ids()) {
                 all_idle = all_idle && runtime.tile(id).inspect().resident_idle_live;
             }
             if (!all_idle) {
@@ -1830,14 +2589,14 @@ namespace {
                     );
                 }
                 x280::MultiTileBootRequest request;
-                request.tiles = runtime.tile_ids();
+                request.tiles = tile_ids();
                 request.idle_image_path = idle_image_path;
                 request.allow_reset_release = true;
                 if (!runtime.boot_tiles(request).ready()) {
                     throw std::runtime_error("X280 boot_tiles failed");
                 }
             }
-            runtime.set_pll(runtime.tile_ids().front().chip_id, pll_mhz);
+            runtime.set_pll(tile_ids().front().chip_id, pll_mhz);
         }
 
         std::array<uint32_t, 2> translated(uint32_t x, uint32_t y) const {
@@ -1853,7 +2612,7 @@ namespace {
         // Cluster 0, its LIM layout, the grid's panels, the host window and buffer.
         void locate() {
             auto& runtime = x280_runtime();
-            const auto ids = runtime.tile_ids();
+            const auto ids = tile_ids();
             tile_ = &runtime.tile(ids.front());
             work_.resize(ids.size());
             for (
@@ -1953,7 +2712,8 @@ namespace {
         }
 
         std::shared_ptr<MeshDevice> mesh_;
-        std::unique_ptr<x280::RuntimeOpenResult> opened_;
+        std::shared_ptr<x280::RuntimeOpenResult> opened_;  // shared on islands
+        int chip_id_ = -1;  // an island's chip: only its tiles; -1 every tile
         x280::X280Tile* tile_ = nullptr;
         uint64_t run_ = 0;
         std::shared_ptr<tt::umd::IoWindow> win_;         // host -> LIM, write-combining
@@ -2005,6 +2765,30 @@ NB_MODULE(_km_host, m) {
             nb::gil_scoped_release release;
             device.finish();
         });
+    nb::class_<Islands>(m, "Islands")
+        .def(
+            nb::init<uint32_t, std::optional<size_t>>(),
+            nb::arg("count"),
+            nb::arg("worker_l1_size") = nb::none()
+        ).def_prop_ro("is_open", &Islands::is_open).def("count", &Islands::count)
+        .def("chips", &Islands::chips)
+        .def("device", &Islands::device, nb::arg("island"))
+        .def(
+            "link",
+            &Islands::link,
+            nb::arg("source"),
+            nb::arg("target"),
+            nb::arg("link") = 0
+        ).def(
+            "open_x280",
+            [](Islands& islands) {
+                nb::gil_scoped_release release;
+                islands.open_x280();
+            }
+        ).def("close", [](Islands& islands) {
+            nb::gil_scoped_release release;
+            islands.close();
+        });
     nb::class_<DeviceBuffer>(m, "Buffer")
         .def(
             nb::init<
@@ -2053,7 +2837,14 @@ NB_MODULE(_km_host, m) {
             nb::arg("flags") = std::vector<std::pair<std::string, bool>>{},
             nb::arg("noc") = nb::none()
         ).def("build", &Launch::build).def("recipes", &Launch::recipes)
-        .def("run", &Launch::run);
+        .def("run", &Launch::run)
+        .def(
+            "reset_core",
+            &Launch::reset_core,
+            nb::arg("x"),
+            nb::arg("y"),
+            nb::arg("timeout_s")
+        ).def("reset_list", &Launch::reset_list, nb::arg("x"), nb::arg("y"));
     m.def(
         "write_l1",
         [](
@@ -2137,7 +2928,12 @@ NB_MODULE(_km_host, m) {
         .def(
             "__init__",
             [](Dispatch* self, const Device& device, uint32_t pll_mhz) {
-                new (self) Dispatch(device.shared(), pll_mhz);
+                if (device.x280()) {
+                    new (self)
+                        Dispatch(device.shared(), device.x280()->opened, pll_mhz);
+                } else {
+                    new (self) Dispatch(device.shared(), pll_mhz);
+                }
             },
             nb::arg("device"),
             nb::arg("pll_mhz") = 1000

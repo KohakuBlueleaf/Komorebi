@@ -41,6 +41,7 @@ REQUIRED = [
     "komorebi_native/kernels/program_writer.cpp",
     "komorebi_native/kernels/program_compute.cpp",
     "komorebi_native/kernels/messages_compute.cpp",
+    "komorebi_native/kernels/service_reader.cpp",
     "komorebi/overlay.py",
     "komorebi_native/x280/kernel/main.c",
     "komorebi_native/x280/kernel/km_dispatch.h",

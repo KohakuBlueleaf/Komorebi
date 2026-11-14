@@ -129,6 +129,32 @@
 /* Kernel to engine, once after a KMD_REJECT_BUSY: a slot or the queue has room. */
 #define KMD_EVENT_WAKE 0x12u
 
+/* Host to kernel: reset core `first` (group of one) by the write list of a1 bytes at a0
+ * in the upload region; PONG {KMD_RESET_*, ticks}. DROP's number: engine-only. */
+#define KMD_HANDLER_RESET 247u
+/* A write list entry: four words {kind, address, bytes or mask, value}, then for a
+ * WRITE its bytes, padded to 16. ASSERT and RELEASE write the soft-reset register. */
+#define KMD_RESET_END 0u
+#define KMD_RESET_WRITE 1u  /* `bytes` (a multiple of 4) to L1 `address` */
+#define KMD_RESET_ASSERT 2u /* the five RISC CPUs in reset */
+/* BRISC out of reset, its firmware releases the others */
+#define KMD_RESET_RELEASE 3u
+#define KMD_RESET_WAIT 4u /* until (L1 word at address & mask) == value, 1 s */
+#define KMD_RESET_ENTRY 16u
+/* The Tensix soft-reset register and its RISC bits (blackhole tensix.h:
+ * RISCV_DEBUG_REG_SOFT_RESET_0; RISCV_SOFT_RESET_0_BRISC, _TRISCS, _NCRISC). */
+#define KMD_SOFT_RESET_ADDR 0xFFB121B0u
+#define KMD_SOFT_RESET_RISCS 0x47800u
+/* What the runtime's release of BRISC leaves: the others in reset, bit 31 asking for
+ * the staggered start (the UMD's deassert with staggered_start). */
+#define KMD_SOFT_RESET_RELEASE 0x80047000u
+#define KMD_RESET_WAIT_TICKS 50000000u
+/* PONG auxiliary of a reset: 0 done, else the step that failed. */
+#define KMD_RESET_OK 0u
+#define KMD_RESET_BAD_LIST 1u    /* an entry outside the region, L1 or alignment */
+#define KMD_RESET_NO_WINDOW 2u   /* a window did not read back as programmed */
+#define KMD_RESET_NO_FIRMWARE 3u /* a WAIT ran out */
+
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */
 #define KMD_HANDLER_CHECK_UPLOAD 246u
@@ -250,6 +276,9 @@ enum {
 #define KMD_WIN_WORK 19u /* work cluster c's ring area: KMD_WIN_WORK + c - 1 */
 /* one core's L1, re-aimed for each core an inspect reads */
 #define KMD_WIN_INSPECT 22u
+/* a reset's core: its L1, then its soft-reset register (cleared after each reset) */
+#define KMD_WIN_RESET 23u
+#define KMD_WIN_RESET_REGISTER 24u
 
 /* The X280 ranks of a dynamic program in messages_handler's bits 32 to 39: work cluster
  * c's X280 cores 0 to count - 1 (count 1 to KM_X280_RANKS_MAX; 0: none). */

@@ -136,6 +136,15 @@ int kmx_cluster(void) {
     return (int)kmx_args_get()->cluster;
 }
 
+int kmx_island(void) {
+    return (int)(kmx_args_get()->island & 0xFFFFu);
+}
+
+int kmx_islands(void) {
+    const uint32_t islands = kmx_args_get()->island >> 16;
+    return islands == 0 ? 1 : (int)islands;
+}
+
 void* kmx_region(int id, uint64_t* bytes) {
     const kmx_args* arguments = kmx_args_get();
     if (id < 0 || (uint32_t)id >= arguments->nregions) {
@@ -1383,8 +1392,8 @@ static int copy_command(
     return KMX_OK;
 }
 
-/* Core 0: the copy's command, the region's lines dropped first (a store's written
- * back), then submitted and waited for (`deadline`) or only submitted (`handle`). */
+/* Core 0: the copy's command, the range's lines dropped first unless `clean` (a
+ * store's written back), then submitted and waited for or only submitted (`handle`). */
 static int copy_run(
     int id,
     uint64_t offset,
@@ -1393,6 +1402,7 @@ static int copy_run(
     uint32_t first,
     uint32_t count,
     int fetch,
+    int clean,
     uint64_t deadline,
     kmx_event* event,
     uint32_t* handle
@@ -1405,16 +1415,14 @@ static int copy_run(
     if (status != KMX_OK) {
         return status;
     }
-    kmx_flush_at(id, offset, bytes);
+    if (!clean) {
+        kmx_flush_at(id, offset, bytes);
+    }
     if (handle != 0) {
         return kmx_ring_submit(&g_ring, &command, handle);
     }
     kmx_event own;
-    status = until_done(&command, deadline, event != 0 ? event : &own);
-    if (status == KMX_OK && fetch) {
-        kmx_invalidate_at(id, offset, bytes); /* lines the cache took meanwhile */
-    }
-    return status;
+    return until_done(&command, deadline, event != 0 ? event : &own);
 }
 
 int kmx_fetch(
@@ -1427,7 +1435,20 @@ int kmx_fetch(
     uint64_t deadline,
     kmx_event* event
 ) {
-    return copy_run(id, offset, from, bytes, first, count, 1, deadline, event, 0);
+    return copy_run(id, offset, from, bytes, first, count, 1, 0, deadline, event, 0);
+}
+
+int kmx_fetch_clean(
+    int id,
+    uint64_t offset,
+    const kmx_dram* from,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+) {
+    return copy_run(id, offset, from, bytes, first, count, 1, 1, deadline, event, 0);
 }
 
 int kmx_store(
@@ -1440,7 +1461,7 @@ int kmx_store(
     uint64_t deadline,
     kmx_event* event
 ) {
-    return copy_run(id, offset, to, bytes, first, count, 0, deadline, event, 0);
+    return copy_run(id, offset, to, bytes, first, count, 0, 0, deadline, event, 0);
 }
 
 int kmx_fetch_submit(
@@ -1455,7 +1476,7 @@ int kmx_fetch_submit(
     return (
         handle == 0
             ? KMX_BAD
-            : copy_run(id, offset, from, bytes, first, count, 1, 0, 0, handle)
+            : copy_run(id, offset, from, bytes, first, count, 1, 0, 0, 0, handle)
     );
 }
 
@@ -1471,7 +1492,7 @@ int kmx_store_submit(
     return (
         handle == 0
             ? KMX_BAD
-            : copy_run(id, offset, to, bytes, first, count, 0, 0, 0, handle)
+            : copy_run(id, offset, to, bytes, first, count, 0, 0, 0, 0, handle)
     );
 }
 

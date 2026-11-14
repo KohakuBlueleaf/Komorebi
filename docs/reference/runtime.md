@@ -70,7 +70,8 @@ void kernel_main() {           // compute.cpp: the body runs on all three thread
 | `device/km_worker.hpp` | `km::Reader`, `km::Writer`, `km::Compute` | yes |
 | `device/km_completion.hpp` | `km::complete`: a core's completion report | yes |
 | `device/km_trace.hpp` | `km::Trace`: per-command timestamps | yes |
-| `device/km_group.hpp` | groups of a group, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
+| `device/km_group.hpp` | groups of a group, `local()` and `leaders()`, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
+| `device/km_island.hpp` | the island table, rank resolve, the island questions ([islands](#islands)) | none |
 | `device/km_port.hpp` | emit, arrive, take, reduce ([ports](ports.md)) | yes |
 | `device/km_broadcast.hpp` | broadcast ([broadcasts](broadcast.md)) | yes |
 | `device/km_movement.hpp` | both data movers on one stream: patterns, buffer pairs, streams, `km::move`, `km::Movement` ([movement](movement.md)) | yes |
@@ -346,29 +347,31 @@ per-slot parts are counted from `kStReader` (128).
 
 Every core has one control block in L1, at the same address everywhere (`args().control`,
 a multiple of 16). Offsets are in bytes, and every offset has a static assert in
-`km_abi.h`. The ring, DONE and state parts follow `KM_RING_SLOTS` (64); every offset
-after them is derived from the one before.
+`km_abi.h`. The DONE, state and ring parts follow `KM_RING_SLOTS` (64); every offset
+is derived from the one before. The ring is last, so the words the kernels use most sit
+at small offsets.
 
 | Offset | Name | Contents |
 |---|---|---|
-| 0x000 | `KM_CONTROL_RING` | 64 ring slots of one command each (64 bytes) |
-| 0x1000 | `KM_CONTROL_RESERVED` | reserved, 16 bytes |
-| 0x1010 | `KM_CONTROL_STOP` | stop flag: nonzero makes every wait give up |
-| 0x1040 | `KM_CONTROL_DONE` | 64 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned, word 2 (`kDoneReader`) the last whose reader body returned |
-| 0x1440 | `KM_CONTROL_BOOT` | start-up check-ins at a leader, one 16-byte slot per rank |
-| 0x1540 | `KM_CONTROL_STATE` | 144 state words |
-| 0x1780 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
-| 0x17C0 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
-| 0x1800 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
-| 0x1A00 | `KM_CONTROL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
-| 0x1A80 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
-| 0x1D00 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
-| 0x1DC0 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
-| 0x2600 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
-| 0x2640 | `KM_CONTROL_BLOCK` | 2 block areas of 1,088 bytes (`KM_BLOCK_AREA_BYTES`), the reader's then the writer's: a line whose word 0 is the sequence of the command read in, then up to 1,024 bytes of its block ([the block](#the-block)) |
-| 0x2EC0 | `KM_CONTROL_ABORT` | 64 abort words, one per slot: the sequence of the slot's command the dispatcher gave up |
-| 0x2FC0 | `KM_CONTROL_LIVE` | live words (`km::kLv*`, 512 bytes): per kernel its wait's where code, its command's sequence and slot, the commands it has left; the trace's address and capacity, the commands given up; then what a give-up clears ([live words](#live-words)) |
-| 0x31C0 | `KM_CONTROL_BYTES` | size of the control block |
+| 0x000 | `KM_CONTROL_RESERVED` | reserved, 16 bytes |
+| 0x010 | `KM_CONTROL_STOP` | stop flag: nonzero makes every wait give up |
+| 0x040 | `KM_CONTROL_DONE` | 64 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned, word 2 (`kDoneReader`) the last whose reader body returned |
+| 0x440 | `KM_CONTROL_BOOT` | start-up check-ins at a leader, one 16-byte slot per rank |
+| 0x540 | `KM_CONTROL_STATE` | 144 state words |
+| 0x780 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
+| 0x7C0 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
+| 0x800 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
+| 0xA00 | `KM_CONTROL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
+| 0xA80 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
+| 0xD00 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
+| 0xDC0 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
+| 0x1600 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
+| 0x1640 | `KM_CONTROL_BLOCK` | 2 block areas of 1,088 bytes (`KM_BLOCK_AREA_BYTES`), the reader's then the writer's: a line whose word 0 is the sequence of the command read in, then up to 1,024 bytes of its block ([the block](#the-block)) |
+| 0x1EC0 | `KM_CONTROL_ABORT` | 64 abort words, one per slot: the sequence of the slot's command the dispatcher gave up |
+| 0x1FC0 | `KM_CONTROL_LIVE` | live words (`km::kLv*`, 512 bytes): per kernel its wait's where code, its command's sequence and slot, the commands it has left; the trace's address and capacity, the commands given up; then what a give-up clears ([live words](#live-words)) |
+| 0x21C0 | `KM_CONTROL_ISLANDS` | the island area, 192 bytes: a header line (this island, the islands, its first rank, its ranks), then the island table ([islands](#islands)) |
+| 0x2280 | `KM_CONTROL_RING` | 64 ring slots of one command each (64 bytes) |
+| 0x3280 | `KM_CONTROL_BYTES` | size of the control block |
 
 ### Live words
 
@@ -390,6 +393,34 @@ them.
 Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing
 is on.
+
+## Islands
+
+An island is a set of cores that reach the others only through links; its table entry
+names its ranks. Ranks are flat and contiguous by island, so a group word `first |
+count << 16` names flat ranks, and a core's rank is its island's first rank plus its
+local core (the core table's index). A command reaches every core of the island; the
+cores of the group's part there run it, and the part completes through the first of its
+cores in the group (`km::local_part`), so an event's first core is a local core of the
+island whose dispatcher sends it. A message's destination is a flat rank of 16 bits;
+the writer turns it into a local core. The host writes the island area at load: on one
+island the header is island 0 of 1 with every core a rank, and every answer below is
+the one of a run without islands.
+
+| Call | Answer | On one island |
+|---|---|---|
+| `km::island()`, `km::islands()` | this core's island, the islands of the run | 0, 1 |
+| `km::island_of(rank)`, `km::crosses(rank)` | the island that holds `rank`; whether a send to it crosses a link | 0, false |
+| `km::resolve(rank)` | its island, then the local core (this island) or this island's next link toward it | `{0, true, rank}` |
+| `km::hops(i)`, `km::neighbours()` | links crossed to island `i`; the islands one link away, a bit each | 0, 0 |
+| `km::rate(i)` | bytes a second toward `i`: `km::kRateLocal` here, 0 (not known) for another (the table holds no rate) | `kRateLocal` |
+| `group.local()`, `group.leaders()` | the group's part on this island; the first rank of each island part | the group; its first rank |
+| `km::partition(items, part, parts)` | part `part` of `parts` of `items` | `partition(items, 0, 1)`: all items |
+
+A table entry is 8 bytes, little-endian: first rank (16 bits), ranks (16), next link (8,
+`KM_ISLAND_NO_LINK` 0xFF in the holder's own entry), hops (8), zero (16), as the host's
+`komorebi.islands.ENTRY`; `KM_ISLANDS_MAX` (16) entries. On an X280 thread,
+`kmx_island()` and `kmx_islands()` answer the same (0 and 1 on one island).
 
 ## Trace
 

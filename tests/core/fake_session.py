@@ -87,6 +87,9 @@ class SessionBackend(FakeBackend):
         self.log.append("describe")
         return FakeLaunch(self.session._module)
 
+    def load_overlays(self, program, descriptor):
+        """Every run's service overlay: nothing to place without a card."""
+
     def finish(self, timeout):
         self.log.append("finish")
         try:

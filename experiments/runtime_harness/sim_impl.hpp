@@ -365,7 +365,7 @@ namespace kmsim {
             }
             if (q.src == n) {
                 return (
-                    at + q.bytes <= KM_CONTROL_RESERVED ||
+                    (at >= KM_CONTROL_RING && at + q.bytes <= KM_CONTROL_BYTES) ||
                     (at == KM_CONTROL_STOP && q.bytes == 4) ||
                     (
                         at >= KM_CONTROL_ABORT &&

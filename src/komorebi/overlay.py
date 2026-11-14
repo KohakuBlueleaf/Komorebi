@@ -97,6 +97,16 @@ def constants():
     return abi.constants(path, known=abi.headers().constants)
 
 
+def service():
+    """The runtime's service overlay: the reader part that serves PUSH, PULL and COPY,
+    in every run under the last number; a core loads it on its first such command."""
+    include = _env.include_directory()
+    if include is None:
+        raise FileNotFoundError("the native kernels are not beside the package")
+    source = include.parent / "kernels" / "service_reader.cpp"
+    return Overlay("service", constants()["kOverlayService"], {"reader": source})
+
+
 def overlays_from_header(path):
     """`constexpr uint32_t kOverlayName = n;` lines of a header as {"name": n}."""
     found = {}
@@ -500,23 +510,27 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
     persistent kernels) and sizes the slots as `declared_slots` (Slots) says: a Built.
     """
     by_part = {TARGETS[target]: recipe for target, recipe in recipes.items()}
-    declared, images, extents = {}, {}, {}
+    declared, images, extents, served = {}, {}, {}, {}
+    number = constants()["kOverlayService"]
     for kernel in KERNELS:
         if any(kernel in overlay.sources for overlay in overlays):
             declared[kernel] = declared_slots.of(kernel, overlays)
     for overlay in overlays:
         for kernel, part in overlay.parts():
-            linked = build_part(
-                by_part[part], overlay, kernel, part, cache, declared[kernel][1]
-            )
+            # the service part sizes its slot (at least), whatever was declared
+            size = None if overlay.number == number else declared[kernel][1]
+            linked = build_part(by_part[part], overlay, kernel, part, cache, size)
             images[overlay.number, part] = linked.image
             extents.setdefault(part, []).append(linked.extent)
+            if overlay.number == number:
+                served[part] = linked.extent
             log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
     slots = {}
     for kernel, (count, size) in declared.items():
         for part in KERNEL_PARTS[kernel]:
             largest = -(-max(extents[part]) // ALIGN) * ALIGN
-            slots[part] = (count, size if size is not None else largest)
+            least = -(-served.get(part, 0) // ALIGN) * ALIGN
+            slots[part] = (count, max(size, least) if size is not None else largest)
     return Built(images, slots)
 
 
