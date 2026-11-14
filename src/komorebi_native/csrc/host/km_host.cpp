@@ -513,6 +513,19 @@ namespace {
             return {static_cast<uint32_t>(core.x), static_cast<uint32_t>(core.y)};
         }
 
+        // The host address of the driver's own mapping of the card's host channel (its
+        // hugepage of host memory channel 0); 0 when it mapped none, or on a mock.
+        uint64_t host_channel() const {
+            auto* dev = chip(mesh());
+            const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+            if (cluster.get_target_device_type() != tt::TargetDevice::Silicon) {
+                return 0;
+            }
+            return (
+                reinterpret_cast<uintptr_t>(cluster.host_dma_address(0, dev->id(), 0))
+            );
+        }
+
         // Waits until every launched program has finished.
         void finish() const {
             tt::tt_metal::distributed::Finish(mesh().mesh_command_queue());
@@ -1946,6 +1959,7 @@ NB_MODULE(_km_host, m) {
         .def("grid", &Device::grid)
         .def("worker_core", &Device::worker_core, nb::arg("x"), nb::arg("y"))
         .def("dram_core", &Device::dram_core, nb::arg("bank"))
+        .def("host_channel", &Device::host_channel)
         // A std::shared_ptr<MeshDevice>, for native modules of their own that take
         // the device; the capsule's name is checked on the receiving side.
         .def(

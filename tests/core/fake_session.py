@@ -116,6 +116,9 @@ class FakeDevice:
     def finish(self):
         self.log.append("synchronize")
 
+    def host_channel(self):
+        return 0  # the driver mapped no host memory
+
 
 class FakeLaunch:
     """The native Launch: build() and run() call the fake module's kernel_build and

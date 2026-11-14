@@ -29,17 +29,19 @@ def test_the_region_is_a_multiple_of_64_kib_inside_the_channel():
             ch.check_region(wrong)
 
 
-def test_the_cards_channel_is_found_in_the_maps_and_nothing_else():
-    line = (
-        "7f0000000000-7f0040000000 rw-s 00000000 00:2f 7 /dev/hugepages-1G/device_{}_t"
-    )
-    maps = "\n".join([line.format(0) + "enstorrent", line.format(1) + "enstorrent"])
-    assert ch.find(maps, 1) == (
-        0x7F0000000000,
-        "/dev/hugepages-1G/device_1_tenstorrent",
-    )
-    assert ch.find(maps, 2)[0] is None
-    assert ch.find(maps.replace("rw-s", "r--s"), 1)[0] is None
+def test_the_cards_channel_is_the_drivers_mapping_under_either_name():
+    line = "7f00{}0000000-7f00{}0000000 rw-s 00000000 00:2f 7 /dev/hugepages-1G/{}"
+    line += "tenstorrent"
+    for name in ("", "device_1_"):  # card 0's file, card 1's file
+        maps = "\n".join([line.format(0, 4, name), line.format(4, 8, "x")])
+        assert ch.find(maps, 0x7F0000000000) == (
+            0x7F0000000000,
+            f"/dev/hugepages-1G/{name}tenstorrent",
+        )
+        assert ch.find(maps, 0)[0] is None  # the driver mapped none
+        assert ch.find(maps, 0x7F0000100000)[0] is None
+        assert ch.find(maps.replace("rw-s", "r--s"), 0x7F0000000000)[0] is None
+    assert ch.find(line.format(0, 2, ""), 0x7F0000000000)[0] is None  # 512 MiB
     assert ch.warning_in(
         "NOC address of a hugepage does not match the expected address"
     )

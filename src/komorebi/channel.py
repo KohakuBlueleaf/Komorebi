@@ -62,16 +62,19 @@ def warning_in(text):
     return None
 
 
-def find(maps, card):
-    """(address, path) of card `card`'s channel in a /proc/<pid>/maps text: its one
-    read-write 1 GiB hugepage mapping; or (None, why)."""
+def find(maps, address):
+    """(address, path) of the card's channel in a /proc/<pid>/maps text: the read-write
+    1 GiB mapping of a file named ...tenstorrent that starts at `address`, the driver's
+    record of its host memory; or (None, why)."""
+    if not address:
+        return None, "the driver mapped no host memory for the card"
     found = []
     for line in maps.splitlines():
         matched = MAPS_LINE.match(line.strip())
-        if matched and matched[4].endswith(f"/device_{card}_tenstorrent"):
+        if matched and int(matched[1], 16) == address:
             found.append(matched)
-    if len(found) != 1:
-        return None, f"{len(found)} hugepage mappings of card {card}, expected one"
+    if len(found) != 1 or not found[0][4].endswith("tenstorrent"):
+        return None, f"no hugepage mapping of the card at {address:#x}"
     start, end, perms = int(found[0][1], 16), int(found[0][2], 16), found[0][3]
     if end - start != CHANNEL_BYTES or not perms.startswith("rw"):
         return None, f"{found[0][4]}: not a read-write mapping of {CHANNEL_BYTES} bytes"

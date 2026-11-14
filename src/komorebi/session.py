@@ -474,11 +474,11 @@ class Session:
         _LIVE.add(self)
         self._own_device = True
         if self._region is not None:
-            self._open_channel(card, b"".join(seen).decode(errors="replace"))
+            self._open_channel(b"".join(seen).decode(errors="replace"))
 
-    def _open_channel(self, card, said):
-        """Maps the region of card `card`'s channel, or logs why reads go the device
-        API's way; ChannelError (the device closed) if the open logged the warning."""
+    def _open_channel(self, said):
+        """Maps the region of the card's channel, or logs why reads go the device API's
+        way; ChannelError (the device closed) if the open logged the warning."""
         warning = channel_module.warning_in(said)
         if warning is not None:
             self.close()
@@ -488,7 +488,9 @@ class Session:
                 "process holding the card's memory, or open with channel=0"
             )
         with open("/proc/self/maps") as maps:
-            address, where = channel_module.find(maps.read(), card)
+            address, where = channel_module.find(
+                maps.read(), self.device.host_channel()
+            )
         if address is None:
             self.log(f"host channel not used ({where}): reads go through the device")
             self._channel_said = True

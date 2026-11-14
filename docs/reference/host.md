@@ -390,8 +390,11 @@ three, every byte compared; `experiments/host_push/framework.py`):
 | channel, no run | 0.030 | 0.050 | 0.047 | 0.041 |
 | channel, in a run | 0.0067 | 0.023 | 0.0055 | 0.026 |
 
-The channel falls back (reads through the device API, logged once at the open) when
-the driver did not map one (no hugepage), and with `device=`, where the session did not
+The session takes the channel's address from the driver's own record of the card's
+host memory and checks it against the process's mappings (1 GiB, read-write, a file
+named `tenstorrent` for card 0 and `device_<n>_tenstorrent` for card n). The channel
+falls back (reads through the device API, logged once at the open) when the driver did
+not map one (no hugepage), and with `device=`, where the session did not
 see the open. If the open logged the driver's warning that the channel's NoC address
 does not match, the cores' writes would not land in this process's mapping. The
 session then closes the device and raises `km.ChannelError`; `channel=0` opens without
