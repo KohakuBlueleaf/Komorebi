@@ -629,7 +629,9 @@ and one open.
   received across, and the counts unchanged: island 0's link core 0 then sends the
   verdict to every link core (its island's others, and across), and each island's link
   core 0 shows its line idle with the island's totals, which ends that island's part.
-  Every wait is bounded. One link between two islands, at most three link cores an
+  Every wait is bounded. A link core that waits for room in another link core's outbox
+  keeps sending its own meanwhile, so messages that cross an island both ways do not
+  wait for each other. One link between two islands, at most three link cores an
   island.
 - **Commands across.** A dispatcher sends a command to every island its group
   reaches; each island writes its own part of a far dispatcher's inbox (the 16 slots

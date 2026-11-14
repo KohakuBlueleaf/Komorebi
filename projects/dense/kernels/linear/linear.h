@@ -17,7 +17,7 @@ constexpr uint32_t kCbRow = 0;
 constexpr uint32_t kCbCol = 1;
 constexpr uint32_t kCbYOut = 16;
 constexpr uint32_t kCbPart = 24;
-constexpr uint32_t kCbSend = 17;  // bf16, one output block (pages consecutive)
+constexpr uint32_t kCbSend = 17;  // bf16, two chunks of the tiles put (put_chunk)
 constexpr uint32_t kCbSent = 5;   // bf16, an output subblock from one other island
 constexpr uint32_t kCbToken = 6;
 constexpr uint32_t kCbArrive = 7;
@@ -26,12 +26,20 @@ constexpr uint32_t kBf16Bytes = 2048;
 constexpr uint32_t kPartBytes = 4096;  // fp32
 constexpr uint32_t kSignalBytes = 32;
 constexpr uint32_t kStampBytes = 64;
+// A put's tiles at least (64 KiB): a chunk is the smallest whole number of subblocks
+// at or over it.
+constexpr uint32_t kPutTiles = 32;
 // T's words: the command taken, the other islands' columns put (sent), the sync done,
 // its own columns written (the wall clock, AICLK cycles).
 constexpr uint32_t kStampStart = 0;
 constexpr uint32_t kStampPut = 1;
 constexpr uint32_t kStampSynced = 2;
 constexpr uint32_t kStampEnd = 3;
+// Inside the sync: the last put counted, the island's tree up, the leaders' crossing
+// (the leader) or the tree's word down.
+constexpr uint32_t kStampSettled = 4;
+constexpr uint32_t kStampUp = 5;
+constexpr uint32_t kStampDown = 6;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
@@ -49,7 +57,9 @@ constexpr uint32_t kArgCore = km::kBroadcastArgs;
 constexpr uint32_t kCoreRank = 0;
 constexpr uint32_t kCoreM0 = 1;
 constexpr uint32_t kCoreN0 = 2;
-constexpr uint32_t kCorePlan = 3;
+constexpr uint32_t kCoreSent = 3;      // its first page in a set of S
+constexpr uint32_t kCoreSetPages = 4;  // the pages of a set
+constexpr uint32_t kCorePlan = 5;
 constexpr uint32_t kPlMt = 0;
 constexpr uint32_t kPlKt = 1;
 constexpr uint32_t kPlNt = 2;
@@ -97,7 +107,7 @@ struct Holding {
     }
 };
 
-inline Holding holding(uint32_t tensor, uint32_t at, uint32_t pages) {
+[[gnu::noinline]] inline Holding holding(uint32_t tensor, uint32_t at, uint32_t pages) {
     const km::Islands view(km::island_area());
     const volatile uint32_t* entry = km::tensor_entry(view, tensor);
     if (entry == nullptr) {  // a bank address: one island holds every page
@@ -133,7 +143,8 @@ inline Span k_part(uint32_t w, uint32_t at, uint32_t k_whole, uint32_t n_whole) 
     return {0, 0};
 }
 
-// The columns of Y ([M, N] tiles, split along N, or all of it) island `at` keeps.
+// The columns of Y ([M, N] tiles: split along N, along M, or all of it) island `at`
+// keeps of the rows it keeps.
 inline Span columns(uint32_t y, uint32_t at, uint32_t m_tiles, uint32_t n_whole) {
     const Holding part = holding(y, at, m_tiles * n_whole);
     if (part.pages == m_tiles * n_whole) {
@@ -142,7 +153,59 @@ inline Span columns(uint32_t y, uint32_t at, uint32_t m_tiles, uint32_t n_whole)
     if (part.pages != 0 && part.all == n_whole && part.inner == 1) {
         return {part.first, part.steps};
     }
+    if (part.pages != 0 && part.all == m_tiles && part.inner == n_whole) {
+        return {0, n_whole};
+    }
     return {0, 0};
+}
+
+// The rows of Y island `at` keeps: its whole rows when Y is split along M, else all
+// (none where it holds nothing).
+inline Span kept_rows(uint32_t y, uint32_t at, uint32_t m_tiles, uint32_t n_whole) {
+    const Holding part = holding(y, at, m_tiles * n_whole);
+    if (part.pages == 0) {
+        return {0, 0};
+    }
+    if (
+        part.pages != m_tiles * n_whole && part.all == m_tiles && part.inner == n_whole
+    ) {
+        return {part.first, part.steps};
+    }
+    return {0, m_tiles};
+}
+
+// The rows of the product island `at` makes: the rows of X ([M, K] tiles) it holds
+// when X is split along M, else every row (its part of K for all of them).
+inline Span made_rows(uint32_t x, uint32_t at, uint32_t m_tiles, uint32_t k_whole) {
+    const Holding part = holding(x, at, m_tiles * k_whole);
+    if (
+        part.pages != 0 && part.pages != m_tiles * k_whole && part.all == m_tiles &&
+        part.inner == k_whole
+    ) {
+        return {part.first, part.steps};
+    }
+    return {0, part.pages != 0 ? m_tiles : 0};
+}
+
+// The columns island `to` keeps of the rows island `from` makes: none unless `to`
+// keeps every one of those rows.
+[[gnu::noinline]] inline Span window(
+    uint32_t x,
+    uint32_t y,
+    uint32_t from,
+    uint32_t to,
+    uint32_t m,
+    uint32_t k,
+    uint32_t n
+) {
+    const Span made = made_rows(x, from, m, k), kept = kept_rows(y, to, m, n);
+    if (
+        made.count == 0 || made.first < kept.first ||
+        made.first + made.count > kept.first + kept.count
+    ) {
+        return {0, 0};
+    }
+    return columns(y, to, m, n);
 }
 
 // The islands in the order an island computes their columns: the next one first, its
@@ -151,15 +214,17 @@ inline uint32_t island_at(uint32_t here, uint32_t turn) {
     return (here + turn) % km::islands();
 }
 
-// Whether any island puts to another: one holds part of K and another keeps columns.
-// The same answer on every island (no sync when false).
-inline bool exchanging(uint32_t w, uint32_t y, uint32_t m, uint32_t k, uint32_t n) {
+// Whether any island puts to another: one holds part of K and another keeps columns
+// of the rows it makes. The same answer on every island (no sync when false).
+[[gnu::noinline]] inline bool exchanging(
+    uint32_t x, uint32_t w, uint32_t y, uint32_t m, uint32_t k, uint32_t n
+) {
     for (uint32_t from = 0; from < km::islands(); ++from) {
         if (k_part(w, from, k, n).count == 0) {
             continue;
         }
         for (uint32_t to = 0; to < km::islands(); ++to) {
-            if (to != from && columns(y, to, m, n).count != 0) {
+            if (to != from && window(x, y, from, to, m, k, n).count != 0) {
                 return true;
             }
         }
@@ -167,21 +232,46 @@ inline bool exchanging(uint32_t w, uint32_t y, uint32_t m, uint32_t k, uint32_t 
     return false;
 }
 
+// The other islands that put to island `here` (each a K block of a block: k blocks
+// 0 ..): those holding part of K that make rows `here` keeps columns of.
+[[gnu::noinline]] inline uint32_t senders_to(
+    uint32_t x,
+    uint32_t w,
+    uint32_t y,
+    uint32_t here,
+    uint32_t m,
+    uint32_t k,
+    uint32_t n
+) {
+    uint32_t senders = 0;
+    for (uint32_t turn = 1; turn < km::islands(); ++turn) {
+        const uint32_t from = island_at(here, turn);
+        senders += (
+            k_part(w, from, k, n).count != 0 &&
+            window(x, y, from, here, m, k, n).count != 0
+        );
+    }
+    return senders;
+}
+
 inline uint32_t blocks_of(uint32_t numerator, uint32_t denominator) {
     return (numerator + denominator - 1) / denominator;
 }
 
-// S: a set a sending island (sent_set), in a set each plan core's output blocks in the
-// order it makes them (core m0 / pcm x blocks_of(nt, pcn) + n0 / pcn), tiles as packed.
+// S: a set a sending island (sent_set), in a set every core's output blocks in the
+// order it makes them (its first page a core word), tiles as packed.
 struct Sent {
-    uint32_t cores;
-    uint32_t blocks;
-    uint32_t block_tiles;
+    uint32_t set_pages;
+    uint32_t first;
 
-    uint32_t page(uint32_t set, uint32_t core, uint32_t block) const {
-        return ((set * cores + core) * blocks + block) * block_tiles;
+    uint32_t page(uint32_t set, uint32_t tile) const {
+        return set * set_pages + first + tile;
     }
 };
+
+inline uint32_t put_chunk(uint32_t subblock_tiles) {
+    return blocks_of(kPutTiles, subblock_tiles) * subblock_tiles;
+}
 
 inline uint32_t sent_set(uint32_t from, uint32_t to) {
     return (from + km::islands() - to - 1) % km::islands();

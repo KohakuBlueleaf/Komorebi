@@ -45,10 +45,8 @@ void kernel_main() {
         const uint32_t k_blocks = blocks_of(mine.count, k_block_tiles);
         const uint32_t last_k_block_tiles = mine.count - (k_blocks - 1) * k_block_tiles;
         // the other islands that put here: sender j's tiles join at K block j
-        uint32_t senders = 0;
-        for (uint32_t turn = 1; turn < islands; ++turn) {
-            senders += k_part(w, island_at(here, turn), k_whole, n_whole).count != 0;
-        }
+        const uint32_t x = command.a0;
+        const uint32_t senders = senders_to(x, w, y, here, m_tiles, k_whole, n_whole);
         if (!included || mine.count == 0) {
             return;
         }
@@ -59,7 +57,7 @@ void kernel_main() {
         uint32_t taken = 0;
         for (uint32_t turn = 1; ok && turn <= islands; ++turn) {
             const uint32_t to = island_at(here, turn);
-            if (columns(y, to, m_tiles, n_whole).count == 0) {
+            if (window(x, y, here, to, m_tiles, k_whole, n_whole).count == 0) {
                 continue;
             }
             const bool own = to == here;

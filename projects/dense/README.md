@@ -466,24 +466,32 @@ words (the tensor table: which K rows of W and which columns of Y an island hold
 from `km::island()`, `km::islands()` and the command's group:
 
 - **Each island computes its partial product X_i x W_i (M x N) from what it holds.**
-  Its ranks run the grid form above (the project's plan for M x the island's K x one
-  island's columns, its two broadcasts inside the island). Nothing of X or W crosses
-  and no page is asked across: a row of X is read only where it is held.
+  Its ranks run the grid form above (M x the island's K x one island's columns, its two
+  broadcasts inside the island). Nothing of X or W crosses and no page is asked across:
+  a row of X is read only where it is held. A broadcast reaches a straight run of
+  cores that make the same rows (X) or columns (W), so each group of cores sharing
+  broadcasts is a rectangle, but the island need not be one: where the link cores take
+  the end of the last row, the plan may cover the ranks with two rectangles sharing one
+  block and K block (beside: columns split; below: rows split), each in bands of whole
+  blocks, chosen by a cost of blocks a core and the block's shape. The K block is the
+  one-card plan's at that size.
 - **The columns other islands keep come first, the island's own last.** For each
   other island's columns each core packs its output blocks in bfloat16 (the partial
-  rounded once) and puts each whole block to that island in one line
-  (`km::put_pages`), not waiting: before its next block it waits for the one put still
-  counting (`km::put_wait`) and frees the block's buffer. Then one sync: the last puts
+  rounded once) into a buffer of two chunks (a chunk: the fewest whole subblocks of at
+  least 64 KiB) and puts each chunk to that island in one line (`km::put_pages`), not
+  waiting: before its next it waits for the one put still counting (`km::put_wait`)
+  and frees its chunk, while compute fills the other. Then one sync: the last puts
   counted, a barrier (a binary tree of tokens inside the island, its leader to the
   other leaders through `km::to_island(i).put`, the tree back down). Then each core
   makes its blocks of its own island's columns, and for each the tiles the other
   islands put for it join DST before the K block they are taken at (the reader reads
   them from the island's own DRAM); the sum is written to Y here.
 - **Where the put tiles land: S**, a scratch tensor on every island (`copy=True`),
-  laid out block by block: a set a sending island, in a set each plan core's output
-  blocks in the order it makes them, a block's tiles in the order compute packs them.
-  The plan is the command's, the same on every island, so both sides name the same
-  pages, and one put is one whole block (consecutive pages).
+  laid out block by block: a set a sending island, in a set each core's output blocks
+  in the order it makes them (its first page a core argument), a block's tiles in the
+  order compute packs them. The plan is the same on every island, so both sides name
+  the same pages, and a core's chunks are consecutive pages; a block wholly past the
+  island's columns is not put.
 
 So two islands cross M x N / 2 tiles each way, one M x N bf16 matrix in all, once a
 call (whole blocks: a block past Y's edge crosses its padding too).
@@ -532,7 +540,13 @@ moved and the link cores got kernels of their own; every check passed (relative 
 | 2048 | 170.6 (144.3) | 100.69 | 607.1 (615.5) | 28.30 | 9.2 MB, 15.13 GB/s | 56 | 318.9 / 207.9 / 75.2 | 0.28 (0.23) |
 | 4096 | 1,539.5 (664.6) | 89.28 | 1,601.2 (1,611.6) | 85.83 | 34.1 MB, 21.29 GB/s | 208 | 850.5 / 452.5 / 291.0 | 0.96 (0.41) |
 | 8192 | 12,463.3 (5,716.0) | 88.22 | 8,478.3 (8,145.2) | 129.68 | 146.0 MB, 17.22 GB/s | 360 | 4,601.0 / 1,155.7 / 3,010.3 | 1.47 (0.70) |
-| 16384 | 90,231.8 (75,169.4) | 97.48 | 52,854.2 (49,002.8) | 166.42 | 579.8 MB, 10.97 GB/s | 192 | 27,000.9 / 2,920.6 / 23,107.4 | 1.71 (1.53) |
+| 16384 | not run (35,401.8) | 248.47 (single) | 52,854.2 (49,002.8) | 166.42 | 579.8 MB, 10.97 GB/s | 192 | 27,000.9 / 2,920.6 / 23,107.4 | (0.72) |
+
+At 16384 the one-card single call is the linear plan picker's (`island_pieces`: 13 x 16
+blocks, K block 4, 11 x 10 cores; 35,401.8 us against the old rule's 75,169.4, whose
+loop the row had); at 4096 the picker keeps the old plan, and at 8192 the old rule's
+plan is the faster (5,716.0 us against the picker's 26 x 8, K block 2: 5,974.5), so
+those rows stay; the picker's 16384 loop was not run.
 
 "Two / one" is one card's time a call over two cards' (above 1: two cards are faster).
 Crossed is `run.crossings()` over the loop, both ways and every link, a call: its
@@ -568,6 +582,43 @@ two-card plans differ from one card's. JSON lines:
 ```
 python projects/dense/linear.py --cube 16384 --cards 0
 python projects/dense/linear.py --cube 16384 --cards 0,1
+```
+
+### The rows form: W replicated (Kohaku-TT's default form)
+
+`--place rows` places X and Y split along M (each island half the rows) and W as a
+copy on every island: the replicated weight, Kohaku-TT's default two-card form, not
+this kernel's weight-sharded answer (`--place k`, above). The same kernels take it
+from the placements alone: an island makes the rows of X it holds, no other island
+keeps columns of those rows, so the puts' pass is empty and there is no sync; each
+island runs the product of its rows with its own plan. Nothing crosses in a call (the
+crossings count 0 bytes). Against it, the half product (M/2 x K x N) on card 0 with a
+one-card session, the same kernels; single calls, medians of three, on 2026-11-15 at
+02:45, every check passed. The island's and the call's times are each island's part
+by its dispatcher's ticks (the call: the later island); the product is the kernels'
+span (the first core taking the command to the last ending, the writers' clocks);
+host is the host's time from submit to the event.
+
+| Shape (M x K x N) | Half on one card: plan, part / product / host, us | Two cards, an island: plan; island 0, 1 part, us | Two-card call / host, us | Call / half |
+|---|---|---|---|---|
+| 4096 x 32768 x 4096 | 8 x 11, K block 8, 12 x 8 cores; 2,816.6 / 2,811.1 / 3,189.4 | the same block, 10 x 8 + 2 x 8 cores; 2,877.5, 2,890.2 | 2,916.5 / 3,381.0 | 1.035 |
+| 8192 cubed | 13 x 12, K block 4, 11 x 10; 2,350.1 / 2,346.1 / 2,669.9 | the same block, 10 x 10 + 2 x 5; 2,357.6, 2,357.4 | 2,357.6 / 2,873.6 | 1.003 |
+| 16384 cubed | 13 x 16, K block 4, 11 x 10; 17,725.5 / 17,696.4 / 18,067.2 | 13 x 16, K block 2, 10 x 10 + 2 x 7; 20,208.4, 20,309.6 | 20,674.5 / 21,267.5 | 1.166 |
+
+The differences, named: at 16384 the plan: an island's buffers may use 1,312,176 B
+(the two-card session keeps 49,728 B in every core, a host transfer buffer of 32,848
+and a 96 KiB kernel buffer) where one card's use 1,380,000, and 13 x 16 blocks with
+K block 4 need 1,369,216, so the island takes K block 2: its product is 2.4 to 3.3 ms
+longer; at 4096 x 32768 x 4096 the island's two rectangles where one 12 x 8 would
+fit (the picker's tie), 2 % longer products. The command's way in and its completion
+on an island (part less product) are 3 to 35 us on either side, the same on one card
+and two. The host's time from submit to the event is 320 to 340 us past the part on
+one card and 470 to 520 on two. JSON lines: `results/linear-half-<shape>.json`,
+`results/linear-rows-<shape>.json`.
+
+```
+python projects/dense/linear.py --dims 4096,32768,4096 --place rows --cards 0,1 --seconds 0
+python projects/dense/linear.py --dims 2048,32768,4096 --cards 0 --seconds 0
 ```
 
 ### Measured before: W split along N
