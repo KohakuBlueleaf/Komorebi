@@ -125,6 +125,10 @@
 #define KM_FLAG_RESULT 4u
 /* dispatcher: a queued job; `first` is ignored, the group allocator chooses it */
 #define KM_FLAG_QUEUE 8u
+/* dispatcher: one island's part of a group its submitter split over islands (the host
+ * sends the flat line to each island it touches): the dispatcher runs its own part
+ * and never crosses the line to another island. A spanning line without it crosses. */
+#define KM_FLAG_PART 16u
 #define KM_GROUP_ALL(n) ((uint32_t)(n) << 16) /* first 0, count n */
 /* A command to the X280 thread of work cluster c (1 to 3): first is
    KM_GROUP_CLUSTER_BASE + c, count 1. No core has such a first. */

@@ -1,5 +1,6 @@
 // Map/collect writer: MAP stores the core's tile at output page a3 first_page + rank;
-// STALL reports for every core but a0 stalled_rank; HANG waits on purpose.
+// STALL reports for every core but a0 stalled_rank; HANG waits on purpose; COUNT
+// counts.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -9,6 +10,7 @@
 void kernel_main() {
     constexpr auto output_args = TensorAccessorArgs<0>();
     km::Writer writer;
+    uint32_t counted = 0;  // COUNTs with a0 0 this core took
     writer.run([&](const km_command_t& command) {
         const uint32_t index = writer.me() - km::first(command);
         switch (km::handler(command)) {
@@ -84,6 +86,14 @@ void kernel_main() {
                     sum += block.words[word] * (x0 + word);
                 }
                 writer.result(sum);
+                return true;
+            }
+            case kHandlerCount: {
+                if (command.a0 == 0) {
+                    counted++;
+                } else {
+                    writer.result(counted);
+                }
                 return true;
             }
             default:

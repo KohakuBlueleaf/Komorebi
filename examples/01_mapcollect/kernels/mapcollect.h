@@ -32,6 +32,9 @@ constexpr uint32_t kHandlerHang = 8;
 constexpr uint32_t kHangPort = 1;    // the reader, for an arrival at port 0
 constexpr uint32_t kHangInput = 2;   // compute, for 2 input tiles (the reader sends 1)
 constexpr uint32_t kHangOutput = 3;  // the writer, for 2 output tiles (compute sends 1)
+// COUNT (a test): a0 0, every core of the group adds one to its count of COUNTs (a
+// word of the writer, 0 at the load); a0 1, the writer gives its count as the result.
+constexpr uint32_t kHandlerCount = 9;
 
 constexpr uint32_t kCbIn = 0;
 constexpr uint32_t kCbOut = 16;
