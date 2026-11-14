@@ -193,6 +193,12 @@ namespace km {
             ) == kGaveNone;
         }
 
+        // `ready` at once, else waited for as wait() does.
+        template <typename Kernel, typename Ready>
+        static bool soon(const Kernel& kernel, Ready ready) {
+            return ready() || wait(kernel, ready);
+        }
+
         // Header `which`, routed one chip on: a write of `bytes` to `to`, or (bytes 0)
         // an increment of the word at `to`.
         LinkHeaderAt header(uint32_t which, uint64_t to, uint32_t bytes) const {
@@ -258,9 +264,8 @@ namespace km {
         }
 
 #if !defined(KM_WIRE)
-        // The next ask's bytes from the asker's L1 into the far rank's, a count once
-        // all landed (its port, else a spare word): what it asks next lands after.
-        // False: none.
+        // The next ask's bytes into the far rank's L1, a count once all landed (its
+        // port, else a spare word), so its next ask lands after; false: none.
         template <typename Kernel>
         bool stream(const Kernel& kernel) {
             const uint32_t ask = next_ask();
@@ -291,33 +296,56 @@ namespace km {
             );
             auto& sender = link_sender();
             uint32_t sent_mark[kRelaySlots] = {};
-            uint32_t k = 0;
-            for (uint32_t off = 0; ok && off < bytes; off += KM_RELAY_CHUNK, k++) {
+            const uint32_t chunks = (bytes + KM_RELAY_CHUNK - 1) / KM_RELAY_CHUNK;
+            // Slot s's read carries transaction id 1 + s: reads run ahead in the slots.
+            const auto read = [&](uint32_t k) {
+                const uint32_t off = k * KM_RELAY_CHUNK;
+                noc_async_read_set_trid(1 + k % kRelaySlots);
+                noc_async_read(
+                    kernel.core_noc(source, from + off),
+                    area_ + kRelaySlotAt + (k % kRelaySlots) * KM_RELAY_CHUNK,
+                    bytes - off < KM_RELAY_CHUNK ? bytes - off : KM_RELAY_CHUNK
+                );
+            };
+            uint32_t ahead = ok ? (chunks < kRelaySlots ? chunks : kRelaySlots) : 0;
+            for (uint32_t k = 0; k < ahead; k++) {
+                read(k);
+            }
+            for (uint32_t k = 0; ok && k < chunks; k++) {
+                const uint32_t s = k % kRelaySlots, off = k * KM_RELAY_CHUNK;
                 const uint32_t n = (
                     bytes - off < KM_RELAY_CHUNK ? bytes - off : KM_RELAY_CHUNK
                 );
-                const uint32_t s = k % kRelaySlots;
                 const uint32_t slot = area_ + kRelaySlotAt + s * KM_RELAY_CHUNK;
-                if (k >= kRelaySlots) {  // the slot again, once its packet left L1
-                    ok = wait(kernel, [&] {
-                        return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, sent_mark[s]);
+                const uint32_t last = (k + kRelaySlots - 1) % kRelaySlots;
+                if (k != 0 && ahead < chunks) {  // the last packet's slot, once it left
+                    ok = soon(kernel, [&] {
+                        return (
+                            noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, sent_mark[last])
+                        );
                     });
+                    if (ok) {
+                        read(ahead++);
+                    }
                 }
+                ok = ok && soon(kernel, [&] {
+                    return (
+                        ncrisc_noc_read_with_transaction_id_flushed(noc_index, 1 + s)
+                    );
+                });
                 if (!ok) {
                     break;
                 }
-                noc_async_read(kernel.core_noc(source, from + off), slot, n);
-                noc_async_read_barrier();
                 const LinkHeaderAt made = (
                     link_header(area_ + KM_RELAY_STAGE + s * 64, 1)
                 );
                 const uint64_t at = link_noc(xy & 0xFFFFu, xy >> 16, to + off);
-                if (off + n == bytes) {
+                if (k + 1 == chunks) {
                     link_counted_write(made, at, counter, 1, n);
                 } else {
                     link_write(made, at, n);
                 }
-                ok = wait(
+                ok = soon(
                     kernel,
                     [&] {
                         return sender.space();
@@ -326,6 +354,10 @@ namespace km {
                     sender.send(made, slot, n);
                 sent_mark[s] = noc_nonposted_writes_num_issued[noc_index];
             }
+            noc_async_read_set_trid(0);
+            ok = ok && wait(kernel, [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            });
             ok = ok && wait(kernel, [] {
                 return link_sent();
             });  // the slots and headers free for the next ask
