@@ -1,6 +1,7 @@
 // The reader: loads and calls the overlay a command names, and writes its result and
-// the cycles of load() and call() to the core's line in DRAM.
+// the cycles of load() and call() to the core's line of the lines tensor.
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_overlay.hpp"
 #include "overlays.h"
 
@@ -33,12 +34,12 @@ void kernel_main() {
         line[3] = static_cast<uint32_t>(called - loaded);
         line[4] = held;
         line[5] = command.a0;
-        const InterleavedAddrGen<true> lines = {
-            .bank_base_address = command.a2, .page_size = kLineWords * 4
-        };
-        noc_async_write(
-            get_write_ptr(kCbLine), get_noc_addr(reader.me(), lines), kLineWords * 4
-        );
+        const km::Tensor<0> lines(command.a2);
+        if (!km::write_pages(
+            reader, command, lines, reader.me(), 1, get_write_ptr(kCbLine)
+        )) {
+            return;
+        }
         noc_async_write_barrier();
     });
 }

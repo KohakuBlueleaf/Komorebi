@@ -1,6 +1,7 @@
 """Two overlays loaded and called in turn on every core: mix (a reader part) and scale
 (reader, compute and writer parts). Every result is checked; the cycles of load() and
-call() are printed, loading and held. One JSON line. Example: python overlays.py
+call() are printed, loading and held. --far: two cards, island 0's cores, the lines and
+tiles held by island 1. One JSON line. Example: python overlays.py
 """
 
 import argparse
@@ -33,12 +34,18 @@ def parse():
     parser.add_argument("--tiles", type=int, default=1, help="scale's tiles a core")
     parser.add_argument("--steps", type=int, default=64, help="mix's loop steps")
     parser.add_argument("--slots", type=int, default=1, help="slots of each kernel")
+    parser.add_argument(
+        "--far",
+        action="store_true",
+        help="cards 0 and 1: island 0's cores write lines and tiles island 1 holds",
+    )
     return parser.parse_args()
 
 
 # --8<-- [start:program]
-def program(slots):
-    """Three kernels of the kernel form; two overlays, `slots` slots each kernel."""
+def program(slots, lines, tiles):
+    """Three kernels of the kernel form; two overlays, `slots` slots each kernel; the
+    reader writes `lines`, scale's writer part `tiles` (their tensor arguments)."""
     tile = dict(format="bfloat16", page_bytes=TILE_BYTES, pages=2)
     made = km.Program(
         "overlays",
@@ -49,6 +56,7 @@ def program(slots):
             km.Buffer(CONSTANTS["kCbOut"], **tile),
             km.Buffer(CONSTANTS["kCbLine"], "uint32", 64, 1),
         ],
+        compile_args={"reader": lines.tensor_args(), "writer": tiles.tensor_args()},
     )
     made.overlay("mix", KERNELS / "mix")  # mix/reader.cpp
     made.overlay("scale", KERNELS / "scale")  # scale/: reader, compute, writer.cpp
@@ -84,10 +92,12 @@ def scaled(cores, tiles, scalar):
 class Rounds:
     """Submits RUN for one overlay to every core and checks every result."""
 
-    def __init__(self, session, run, cores, args):
-        self.session, self.run, self.cores, self.args = session, run, cores, args
-        self.lines = session.empty((cores, 16), "uint32")
-        self.tiles = session.empty((cores * args.tiles, TILE_BYTES // 2), "uint16")
+    def __init__(self, session, cores, args, held):
+        self.session, self.run, self.cores, self.args = session, None, cores, args
+        self.lines = session.empty((cores, 16), "uint32", **held)
+        self.tiles = session.empty(
+            (cores * args.tiles, TILE_BYTES // 2), "uint16", **held
+        )
         self.times = {}  # (overlay, loading or held) -> [(load, call)]
         self.wrong = 0
         self.commands = 0
@@ -120,17 +130,35 @@ class Rounds:
             self.times.setdefault(key, []).append((int(load), int(call)))
 
 
+def opened(args):
+    """The session: one card, or (--far) cards 0 and 1 with a link."""
+    if args.far:
+        return km.Session(cards=[0, 1], links=1, log=log)
+    return km.Session(log=log)
+
+
 def main():
     args = parse()
-    with km.Session(log=log) as session:
-        grid = session.grid
-        cores = args.cores or grid[0] * grid[1]
-        log(f"device open, grid {grid}; {cores} cores, {args.slots} slot(s) a kernel")
-        run = session.load(program(args.slots))
-        built = run.program.overlays_built
+    with opened(args) as session:
+        held, card = {}, None
+        if args.far:  # island 0's ranks run; island 1's ranks hold the pages
+            graph = session.graph
+            cores = args.cores or graph.count(0)
+            held = {"group": (graph.first(1), graph.count(1))}
+            card = session.sessions[0].card
+        else:
+            grid = session.grid
+            cores = args.cores or grid[0] * grid[1]
+            card = session.card
+        log(
+            f"device open; {cores} cores, {args.slots} slot(s) a kernel, far {args.far}"
+        )
+        rounds = Rounds(session, cores, args, held)
+        run = session.load(program(args.slots, rounds.lines, rounds.tiles))
+        rounds.run = run.island(0) if args.far else run
+        built = rounds.run.program.overlays_built
         sizes = {f"{n}-{p}": len(i) for (n, p), i in sorted(built.images.items())}
-        rounds = Rounds(session, run, cores, args)
-        mhz = [aiclk_mhz(session.card)]
+        mhz = [aiclk_mhz(card)]
         try:
             # --8<-- [start:turns]
             for seed in range(args.rounds):  # in turn: each load replaces the other
@@ -141,7 +169,7 @@ def main():
                     rounds.once(name, seed)
             # --8<-- [end:turns]
             log(f"{rounds.commands} commands, {rounds.wrong} wrong")
-            mhz.append(aiclk_mhz(session.card))
+            mhz.append(aiclk_mhz(card))
         finally:
             run.stop()
     table = {}
@@ -155,6 +183,7 @@ def main():
     print(f"every result exact: {rounds.wrong == 0} ({rounds.commands} commands)")
     out = {
         "cores": cores,
+        "far": args.far,
         "slots": args.slots,
         "tiles": args.tiles,
         "steps": args.steps,

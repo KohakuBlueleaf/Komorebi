@@ -102,6 +102,9 @@ def programs(tensors, work):
         "spin",
         kernels=KERNELS / "spin",
         buffers=[km.Buffer(C["TP_CB_LINE"], "uint32", C["TP_LINE_BYTES"], 1)],
+        compile_args={
+            "reader": tensors["costs"].tensor_args() + tensors["outs"].tensor_args()
+        },
         handlers={"spin": C["TP_HANDLER_SPIN"]},
     )
     tile = dict(format="bfloat16", page_bytes=C["TP_TILE_BYTES"], pages=2)

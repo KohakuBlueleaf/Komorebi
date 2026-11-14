@@ -1,6 +1,7 @@
 // Overlay sparse, its reader part: each unit's result tile written two values a word
 // on this core; fast on units of kind 1, `penalty` cycles more on the others.
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "../../split.h"
 
@@ -12,9 +13,7 @@ namespace {
 }  // namespace
 
 uint32_t km_overlay(km::Reader& reader, const ts_range& range) {
-    const InterleavedAddrGen<true> tiles = {
-        .bank_base_address = range.tiles, .page_size = TS_TILE_BYTES
-    };
+    const km::Tensor<0> tiles(range.tiles);
     const uint32_t tile = get_write_ptr(TS_CB_TILE);
     volatile tt_l1_ptr uint32_t* pairs = km::l1(tile);
     for (uint32_t unit = range.first; unit < range.first + range.count; unit++) {
@@ -30,7 +29,11 @@ uint32_t km_overlay(km::Reader& reader, const ts_range& range) {
                 uint32_t(kTwice[TS_SMALL(unit, index + 1) - 1]) << 16
             );
         }
-        noc_async_write(tile, get_noc_addr(range.page + unit, tiles), TS_TILE_BYTES);
+        if (!km::write_pages_at(
+            reader, range.slot, range.sequence, tiles, range.page + unit, 1, tile
+        )) {
+            return unit - range.first;
+        }
         noc_async_write_barrier();
     }
     return range.count;

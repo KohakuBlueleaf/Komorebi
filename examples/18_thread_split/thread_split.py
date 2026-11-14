@@ -1,7 +1,7 @@
-"""Thread split: every core pulls ranges of work from its X280 core, and each answer's
-word names the overlay to run on the range (three overlays, fast on different units).
-Passes: each overlay for everything, the host's fixed split, the thread's choice from
-the cores' tells; then the pull alone with and without a word. See README.md."""
+"""Thread split: every core pulls ranges of work from its X280 core; each answer's word
+names the overlay to run on the range (three, fast on different units). Passes: each
+overlay alone, the host's split, the thread's choice; the pull alone with and without a
+word. --far: island 0 of two cards runs, island 1 holds the pages. See README.md."""
 
 import argparse
 import json
@@ -39,6 +39,11 @@ def parse():
     parser.add_argument("--penalty", type=int, default=20000, help="cycles off kind")
     parser.add_argument("--pull-units", type=int, default=0, help="0: 64 a core")
     parser.add_argument("--slots", type=int, default=2, help="the reader's slots")
+    parser.add_argument(
+        "--far",
+        action="store_true",
+        help="cards 0 and 1: island 0's cores write tiles and lines island 1 holds",
+    )
     args = parser.parse_args()
     if not 1 <= args.per <= 255 or args.run < 1:
         parser.error("--per: 1 to 255 (a tell counts kinds in bytes); --run: 1 or more")
@@ -82,8 +87,10 @@ def results(units):
 
 
 # --8<-- [start:program]
-def program(args, words):
-    """Three kernel-form kernels, three overlays, the thread, every core's port."""
+def program(args, words, tiles, lines, thread=True):
+    """Three kernel-form kernels, three overlays, the thread, every core's port (none
+    of the two with `thread` False); the reader and its overlays write `tiles` and
+    `lines`, the dense overlay's writer part `tiles`."""
     tile = dict(format="bfloat16", page_bytes=C["TS_TILE_BYTES"], pages=2)
     made = km.Program(
         "thread_split",
@@ -96,18 +103,31 @@ def program(args, words):
             km.Buffer(C["TS_CB_JOB_WRITER"], "uint32", 64, 2),
             km.Buffer(C["TS_CB_LINE"], "uint32", 64, 1),
         ],
+        compile_args={
+            "reader": tiles.tensor_args() + lines.tensor_args(),
+            "writer": tiles.tensor_args(),
+        },
     )
     made.overlay("plain", KERNELS / "plain", number=C["TS_OVERLAY_PLAIN"])
     made.overlay("sparse", KERNELS / "sparse", number=C["TS_OVERLAY_SPARSE"])
     made.overlay("dense", KERNELS / "dense", number=C["TS_OVERLAY_DENSE"])
     made.slots(count={"reader": args.slots})  # fewer than three: loads happen
+    if not thread:
+        return made
     made.thread(
         cluster=CLUSTER,
         sources=[HERE / "thread" / "split.c"],
         includes=[HERE],
-        regions={"unused": 4096},
+        regions={"ticks": 4096},
         words=words,
         deadline=60.0,
+        # islands: the passes wait for the host's command (the far island loads after)
+        **(
+            {"handlers": {"passes": C["TS_THREAD_PASSES"]}}
+            | {"defines": {"TS_STARTED_BY_HOST": "1"}}
+            if args.far
+            else {}
+        ),
     )
     made.ports()  # every core, dealt over the thread's X280 cores
     return made
@@ -184,33 +204,72 @@ def table(args, cores, lines, ticks, megahertz, unit_kinds, choice):
     return rows, penalized
 
 
+class Passes:
+    """The thread's passes as the host's command ran them (--far): their event."""
+
+    def __init__(self, event):
+        done = event.kind == "done"
+        self.state = event.kind
+        self.code = event.result if done else None
+        self.error = "none" if done else event.kind
+        self.words = []
+
+
+def started_passes(part):
+    """Island 0's thread runs the passes on its command, waited for (--far)."""
+    handle = part.submit("passes", cluster=CLUSTER, args=(), result=True)
+    return Passes(part.wait(handle, timeout=120.0))
+
+
+def opened(args):
+    """The session: one card, or (--far) cards 0 and 1 with a link."""
+    if args.far:
+        return km.Session(cards=[0, 1], links=1, log=log)
+    return km.Session(log=log)
+
+
 def main():
     args = parse()
-    with km.Session(log=log) as session:
-        grid = session.grid
-        cores = grid[0] * grid[1]
+    with opened(args) as session:
+        held = {}
+        if args.far:  # island 0's ranks and thread run; island 1's ranks hold the pages
+            graph = session.graph
+            cores, card = graph.count(0), session.sessions[0].card
+            held = {"group": (graph.first(1), graph.count(1))}
+        else:
+            grid = session.grid
+            cores, card = grid[0] * grid[1], session.card
         args.pull_units = args.pull_units or 64 * cores
         unit_kinds = kinds(args.units, args.run)
         bounds = stripes(args.units, args.per, cores)
         choice = host_split(unit_kinds, bounds)
         tiles = session.empty(
-            (C["TS_WORK_PASSES"] * args.units, C["TS_TILE_VALUES"]), "uint16"
+            (C["TS_WORK_PASSES"] * args.units, C["TS_TILE_VALUES"]), "uint16", **held
         )
-        lines = session.empty((C["TS_PASSES"] * cores, C["TS_LINE"]), "uint32")
+        lines = session.empty((C["TS_PASSES"] * cores, C["TS_LINE"]), "uint32", **held)
         words = [
             args.units, args.per, args.run, args.penalty, tiles.address,
             lines.address, args.pull_units, *split_words(choice),
         ]  # fmt: skip
-        run = session.load(program(args, words))
-        megahertz = aiclk_mhz(session.card)
-        log(f"loaded, {cores} cores, aiclk {megahertz} MHz")
-        try:
-            thread = run.thread_results(timeout=180.0)
-        except km.ThreadFailed as failure:
-            thread = failure.results
-        result = thread[CLUSTER]
+        made = program(args, words, tiles, lines)
+        if args.far:  # island 1 without the thread: its cores get no command
+            made = [made, program(args, words, tiles, lines, thread=False)]
+        run = session.load(made)
+        megahertz = aiclk_mhz(card)
+        log(f"loaded, {cores} cores, aiclk {megahertz} MHz, far {args.far}")
+        if args.far:
+            result = started_passes(run.island(0))
+        else:
+            try:
+                thread = run.thread_results(timeout=180.0)
+            except km.ThreadFailed as failure:
+                thread = failure.results
+            result = thread[CLUSTER]
         log(f"thread: {result.state}, code {result.code}, error {result.error}")
         run.stop()
+        if args.far:
+            raw = run.island(0).threads[CLUSTER].read("ticks").view(np.uint32)
+            result.words = raw[: C["TS_PASSES"]].tolist()
         (raw_lines,) = session.read(lines)
         (raw_tiles,) = session.read(tiles)
     got_lines = raw_lines.view(np.uint32).reshape(C["TS_PASSES"] * cores, -1)
@@ -229,6 +288,7 @@ def main():
         )
     out = {
         "cores": cores,
+        "far": args.far,
         "units": args.units,
         "per": args.per,
         "run": args.run,

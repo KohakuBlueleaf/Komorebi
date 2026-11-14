@@ -14,7 +14,7 @@ and calls it.
 
 | Handler | Arguments | What a core does |
 |---|---|---|
-| `RUN` | a0 the overlay, a1 a seed, a2 the lines' DRAM address, a3 tiles, a4 the scalar (float32 bits), a5 steps, a6 the tiles' DRAM address | the reader loads the overlay (every part, the writer's and compute's too) and calls its part; the writer and compute load (the meeting) and call theirs. The reader writes its result, the cycles of `load()` and `call()` and whether the part was held to the core's line in DRAM |
+| `RUN` | a0 the overlay, a1 a seed, a2 the lines tensor, a3 tiles, a4 the scalar (float32 bits), a5 steps, a6 the tiles tensor (each its reference word) | the reader loads the overlay (every part, the writer's and compute's too) and calls its part; the writer and compute load (the meeting) and call theirs. The reader writes its result, the cycles of `load()` and `call()` and whether the part was held to the core's line in DRAM |
 
 The host checks every result: mix's word against the same loop in Python, scale's tiles
 value by value, and each core's line names the overlay asked for. It runs the two overlays
@@ -68,10 +68,13 @@ A Komorebi install and a card prepared as in [Running on a card](../../docs/inst
 python overlays.py                       # every core of the grid, one slot a kernel
 python overlays.py --cores 12 --rounds 10
 python overlays.py --slots 2 --tiles 2   # two slots: both overlays stay
+python overlays.py --far                 # cards 0 and 1: the pages on the other island
 ```
 
-`--cores 0` (the default) is every core of the grid. The script exits non-zero if a result
-differs.
+`--cores 0` (the default) is every core of the grid. The reader and scale's writer part
+write the lines and tiles with `km::write_pages` and `km::write_pages_at`, so with `--far`
+(island 0's ranks run, island 1's ranks hold both tensors) the same kernels and overlays
+put every page across the link. The script exits non-zero if a result differs.
 
 ## Numbers
 

@@ -8,6 +8,10 @@
  * page, a3 the run, a4 the penalty, a5 the lines, a6 the pass, a7 1: it only pulls. */
 enum { TS_HANDLER_PASS = 1 };
 
+/* The thread's own command, built with TS_STARTED_BY_HOST (islands): the passes, their
+ * ticks to the thread's region 0. Without it the thread runs them at its start. */
+enum { TS_THREAD_PASSES = 1 };
+
 /* The overlays, by the kind of unit each is fast on; the word of a pull names one. */
 enum {
     TS_OVERLAY_PLAIN = 1,  /* reader part: writes the result tiles value by value */
@@ -43,8 +47,9 @@ enum { TS_JOB_OVERLAY, TS_JOB_FIRST, TS_JOB_COUNT, TS_JOB_WORDS = 16 };
 /* The argument of every overlay's reader part. */
 typedef struct {
     uint32_t first, count; /* the range */
-    uint32_t tiles, page;  /* the tiles' DRAM address, the pass's first page */
+    uint32_t tiles, page;  /* the tiles' tensor (its word), the pass's first page */
     uint32_t run, penalty;
+    uint32_t slot, sequence; /* the command's, for the page calls */
 } ts_range;
 
 /* The dense overlay's compute and writer arguments. */
@@ -54,6 +59,7 @@ typedef struct {
 
 typedef struct {
     uint32_t first, count, tiles, page;
+    uint32_t slot, sequence;
 } ts_drain;
 
 /* The thread's words. Pass modes: one overlay for everything, the host's split (a
