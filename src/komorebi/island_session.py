@@ -739,6 +739,87 @@ class IslandRun:
         two reads, `after - before`, is what crossed between them."""
         return Crossings({}) if self._counts is None else self._counts()
 
+    def all_gather(self, tensor, first=0, pages=None, timeout=10.0):
+        """All-gather of pages first .. first + pages - 1 (default to the end) of the
+        copy `tensor`, island c's share (layout.partition of the pages, c of the
+        islands) written on island c: on return every island's copy holds every
+        share. One island: returns at once. km::all_gather on every rank (GATHER)."""
+        first, pages = self._collective(tensor, first, pages)
+        if len(self.runs) < 2 or pages == 0:
+            return None
+        h = abi.headers()
+        words = [0] * 7
+        words[h["KM_COLL_TENSOR"]] = tensor.address
+        words[h["KM_COLL_FIRST"]] = first
+        words[h["KM_COLL_PAGES"]] = pages
+        return self._served(h["KM_HANDLER_GATHER"], [words] * len(self.runs), timeout)
+
+    def all_reduce(self, tensor, scratch, first=0, pages=None, timeout=10.0):
+        """All-reduce of pages first .. first + pages - 1 of the copy `tensor` (each
+        island's copy its partial): every copy then holds the sum in the tensor's
+        format. `scratch`: a copy of 2 x pages pages. One island: returns at once;
+        else REDUCE on every rank (km::all_reduce, the run's transfer buffer)."""
+        first, pages = self._collective(tensor, first, pages)
+        kinds = {"int32": 0, "uint32": 0, "float32": 1, "bfloat16": 2}
+        if tensor.dtype not in kinds:
+            raise KomorebiError(
+                f"all_reduce adds int32, float32, bfloat16: not {tensor.dtype}"
+            )
+        if len(self.runs) < 2 or pages == 0:
+            return None
+        self._collective(scratch, 0, 2 * pages)
+        if scratch.aligned_page_bytes != tensor.aligned_page_bytes:
+            raise KomorebiError("all_reduce: the scratch's pages differ in size")
+        transfers = [run.backend.transfer for run in self.runs]
+        if any(t is None or t.chunk < tensor.aligned_page_bytes for t in transfers):
+            raise KomorebiError("all_reduce: the run has no transfer buffer of a page")
+        h = abi.headers()
+        words = [0] * 7
+        words[h["KM_COLL_TENSOR"]] = tensor.address
+        words[h["KM_COLL_FIRST"]] = first
+        words[h["KM_COLL_PAGES"]] = pages
+        words[h["KM_COLL_SCRATCH"]] = scratch.address
+        words[h["KM_COLL_SUM"]] = kinds[tensor.dtype]
+        by_island = []
+        for transfer in transfers:  # the folds' L1: each island's run's own
+            words[h["KM_COLL_BUFFER"]] = transfer.address
+            words[h["KM_COLL_ROOM"]] = 2 * transfer.chunk
+            by_island.append(list(words))
+        return self._served(h["KM_HANDLER_REDUCE"], by_island, timeout)
+
+    def _collective(self, tensor, first, pages):
+        """(first, pages) of a collective on `tensor`, checked: a copy, the pages in
+        it, the islands joined (the link services)."""
+        pages = tensor.pages - first if pages is None else pages
+        if not getattr(tensor.placement, "copy", False):
+            raise KomorebiError("a collective's tensor is a copy (copy=True)")
+        if first < 0 or pages < 0 or first + pages > tensor.pages:
+            raise KomorebiError(
+                f"pages {first} + {pages}: the tensor has {tensor.pages}"
+            )
+        if len(self.runs) > 1 and self._counts is None:
+            raise KomorebiError("a collective crosses links: the session has none")
+        return first, pages
+
+    def _served(self, handler, words, timeout):
+        """A command of the runtime's service overlay on every rank, a part on each
+        island (as submit) with that island's `words`, waited for; its events, island
+        order."""
+        group = (0, self.cores)
+        self._grow(1)
+        ticket = self._next
+        for island, _first, _count in self.graph.split(group):
+            run = self.runs[island]
+            try:
+                handle = run._queue_command(
+                    handler, run._group(group), words[island], False, run._flag_part
+                )
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+            self._parts[island][ticket] = handle
+        self._next += 1
+        return self.wait(ticket, timeout)
+
 
 class IslandSession:
     """Cards as islands of one 1 x n fabric mesh, the X280 runtime once over it, a

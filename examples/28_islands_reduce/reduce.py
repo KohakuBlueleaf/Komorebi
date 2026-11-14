@@ -1,0 +1,135 @@
+"""All-reduce across islands: a tensor held as a copy on every island, each copy that
+island's partial; one call and every island holds the sum, added in the tensor's
+format. The call from a kernel (`km::all_reduce`) and from the host
+(`run.all_reduce`), on two cards and on one. Prints one JSON line. See README.md."""
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+import komorebi as km
+from komorebi import formats
+
+KERNELS = Path(__file__).resolve().parent / "kernels"
+CONSTANTS = km.abi.constants(KERNELS / "reduce.h", known=km.abi.headers().constants)
+TILE = 32
+SUM = {"int32": 0, "float32": 1, "bfloat16": 2}  # km::Sum
+STARTED = time.monotonic()
+
+
+def log(message):
+    """A progress line with seconds since start, flushed."""
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
+
+
+def parse():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--cards", default="0,1")
+    parser.add_argument(
+        "--islands", type=int, default=0, help="one card split into this many islands"
+    )
+    parser.add_argument("--dtype", choices=sorted(SUM), default="float32")
+    parser.add_argument("--pages", type=int, default=256, help="tiles")
+    parser.add_argument("--rounds", type=int, default=10)
+    parser.add_argument("--wait", type=float, default=0.5, help="wait limit, seconds")
+    return parser.parse_args()
+
+
+def write_copy(session, tensor, island, values):
+    """Island `island`'s copy of `tensor` becomes `values` (through its host channel,
+    with the run loaded)."""
+    raw, _ = formats.to_bytes(values, tensor.dtype, tensor.layout)
+    pages = raw.reshape(tensor.pages, tensor.page_bytes)
+    session.sessions[island].write(tensor.parts[island], pages)
+
+
+def read_copy(session, tensor, island):
+    """Island `island`'s copy of `tensor`, its values."""
+    (raw,) = session.sessions[island].read(tensor.parts[island])
+    return formats.from_bytes(raw, tensor.shape, tensor.dtype, tensor.layout)
+
+
+def program():
+    return km.Program(
+        "islands_reduce",
+        kernels=KERNELS,
+        buffers=[
+            km.Buffer(
+                CONSTANTS["kCbFold"],
+                "uint32",
+                CONSTANTS["kFoldBytes"],
+                CONSTANTS["kFoldPages"],
+            )
+        ],
+        handlers=KERNELS / "reduce.h",
+    )
+
+
+def main():
+    args = parse()
+    cards = [int(card) for card in args.cards.split(",")]
+    opened = {"cards": cards}
+    if args.islands:  # one card split, its islands in a line
+        opened = {"card": cards[0], "islands": args.islands, "line": True}
+    report = {"cards": cards, "dtype": args.dtype, "pages": args.pages}
+    generator = np.random.default_rng(1)
+    with km.Session(**opened, log=log) as session:
+        ranks = session.ranks
+        islands = len(session.sessions)
+        report["islands"] = islands
+        # small integers: every sum is exact in each format, in any order
+        partials = [
+            generator.integers(-8, 9, (args.pages * TILE, TILE)).astype(np.float32)
+            for _ in range(islands)
+        ]
+        want = np.sum(partials, axis=0)
+        if args.dtype == "int32":
+            partials = [p.astype(np.int32) for p in partials]
+            want = want.astype(np.int32)
+        zeros = np.zeros_like(partials[0])
+        tensor = session.tensor(zeros, args.dtype, "tile", copy=True)
+        scratch = session.tensor(
+            np.concatenate([zeros, zeros]), args.dtype, "tile", copy=True
+        )
+        report["bytes"] = tensor.pages * tensor.page_bytes
+        run = session.load(program(), wait=args.wait)
+        words = [tensor.address, 0, args.pages, scratch.address, SUM[args.dtype]]
+
+        def from_a_kernel():  # REDUCE on every rank: each makes the call
+            run.wait(run.submit("reduce", (0, ranks), words))
+
+        def from_the_host():
+            run.all_reduce(tensor, scratch)
+
+        for name, call in (("kernel", from_a_kernel), ("host", from_the_host)):
+            times, exact = [], True
+            for _ in range(args.rounds):  # the partials written again each round
+                for island, partial in enumerate(partials):
+                    write_copy(session, tensor, island, partial)
+                start = time.perf_counter()
+                call()
+                times.append((time.perf_counter() - start) * 1e6)
+                exact &= all(
+                    np.array_equal(read_copy(session, tensor, island), want)
+                    for island in range(islands)
+                )
+            report[f"{name}_exact"] = bool(exact)
+            report[f"{name}_us"] = round(float(np.median(times)), 2)
+            log(f"from the {name}: {report[f'{name}_us']} us, exact {exact}")
+        report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+    report["ok"] = (
+        report["kernel_exact"]
+        and report["host_exact"]
+        and set(report["kernel_errors"]) == {"none"}
+    )
+    report["wall_s"] = round(time.monotonic() - STARTED, 1)
+    print(json.dumps(report), flush=True)
+    sys.exit(0 if report["ok"] else 1)
+
+
+if __name__ == "__main__":
+    main()

@@ -444,7 +444,8 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
                 host &&
                 (
                     handler == KM_HANDLER_PUSH || handler == KM_HANDLER_PULL ||
-                    handler == KM_HANDLER_PAGES
+                    handler == KM_HANDLER_PAGES || handler == KM_HANDLER_GATHER ||
+                    handler == KM_HANDLER_REDUCE
                 )
             )
         ) ||
