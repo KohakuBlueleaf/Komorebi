@@ -133,3 +133,9 @@ place to ask a question and to be wrong.
   in its cluster's region and inboxes in the cores' L1, the dispatcher's own end:
   exact, 2.6 µs a round trip (0.87 for an ask), 12.9 M round trips a second on 12 X280
   cores; a proper build is about 900 lines, most in the generic reader.
+- [decode_shape](decode_shape/README.md): the shape of an LLM decode step, a chain of
+  K-split products (seven 4096 x 4096 a layer, 32 layers of random weights, 20 tokens)
+  driven by the host, a stream and an X280 thread: 52.6, 20.9 and 20.9 ms a token, the
+  weights read at 143, 360 and 360 GB/s against a ceiling of 503; parts-only products
+  without the completion boundary at 458 GB/s; two chains on halves of the grid 1.12
+  times one on all of it.

@@ -1,0 +1,173 @@
+{
+ "plan": "whole",
+ "split": [
+  14,
+  1,
+  16,
+  5
+ ],
+ "cores": 112,
+ "layers": 32,
+ "tokens": 20,
+ "d": 4096,
+ "write_mb_s": 116.6,
+ "write_s": 64.48,
+ "deadline_s": 9.96,
+ "failed": "KomorebiError: thread: Event(handle=8976, kind='timeout', auxiliary=1, ticks=498002693, result=None)",
+ "checks": {
+  "host": {
+   "max_rel": 0.028409090909090908,
+   "rms_rel": 0.021308323945073118,
+   "ok": true
+  },
+  "stream": {
+   "max_rel": 0.028409090909090908,
+   "rms_rel": 0.021308323945073118,
+   "ok": true
+  },
+  "thread": {
+   "max_rel": 0.028409090909090908,
+   "rms_rel": 0.021308323945073118,
+   "ok": true
+  }
+ },
+ "cases": [
+  {
+   "case": "host:full:x:1",
+   "way": "host",
+   "mode": "full",
+   "exclusive": true,
+   "window": 1,
+   "chains": 1,
+   "tokens": 20,
+   "layers": 32,
+   "products": 4480,
+   "seconds": 1.0525,
+   "ms_per_token": 52.627,
+   "us_per_layer": 1644.6,
+   "us_per_product": 234.94,
+   "weight_gbs": 142.8,
+   "mean_w": 77.55724752147063,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "event_us": {
+    "median": 90.3,
+    "min": 89.6,
+    "sum_s": 0.4046
+   }
+  },
+  {
+   "case": "stream:full:x:1",
+   "way": "stream",
+   "mode": "full",
+   "exclusive": true,
+   "window": 1,
+   "chains": 1,
+   "tokens": 20,
+   "layers": 32,
+   "products": 4480,
+   "seconds": 0.4175,
+   "ms_per_token": 20.874,
+   "us_per_layer": 652.33,
+   "us_per_product": 93.19,
+   "weight_gbs": 360.1,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ]
+  },
+  {
+   "case": "thread:full:x:1",
+   "way": "thread",
+   "mode": "full",
+   "exclusive": true,
+   "window": 1,
+   "chains": 1,
+   "thread_ticks": 20841298,
+   "stats_slot": 1,
+   "tokens": 20,
+   "layers": 32,
+   "products": 4480,
+   "seconds": 0.4172,
+   "ms_per_token": 20.861,
+   "us_per_layer": 651.89,
+   "us_per_product": 93.13,
+   "weight_gbs": 360.3,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 4480,
+    "rejected": 0,
+    "not_done": 0,
+    "event_sum_s": 0.405,
+    "event_max_us": 91.68,
+    "event_min_us": 89.64
+   }
+  },
+  {
+   "case": "host:parts:x:1",
+   "way": "host",
+   "mode": "parts",
+   "exclusive": true,
+   "window": 1,
+   "chains": 1,
+   "tokens": 20,
+   "layers": 32,
+   "products": 4480,
+   "seconds": 1.019,
+   "ms_per_token": 50.948,
+   "us_per_layer": 1592.13,
+   "us_per_product": 227.45,
+   "weight_gbs": 147.5,
+   "mean_w": 78.45369418379995,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "event_us": {
+    "median": 79.78,
+    "min": 79.02,
+    "sum_s": 0.3575
+   }
+  },
+  {
+   "case": "stream:full:-:1",
+   "way": "stream",
+   "mode": "full",
+   "exclusive": false,
+   "window": 1,
+   "chains": 1,
+   "tokens": 20,
+   "layers": 32,
+   "products": 4480,
+   "seconds": 0.4167,
+   "ms_per_token": 20.835,
+   "us_per_layer": 651.1,
+   "us_per_product": 93.01,
+   "weight_gbs": 360.7,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ]
+  }
+ ],
+ "load_avg": [
+  "5.51",
+  "5.06",
+  "4.56"
+ ],
+ "ok": false
+}
