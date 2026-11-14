@@ -272,7 +272,8 @@ class IslandRun:
     def wait(self, tickets, timeout=10.0):
         """Sends what is queued and waits, within one `timeout` for all, for every
         part of the tickets. Returns per ticket the tuple of its parts' events in
-        island order (one tuple, or a list for a list of tickets)."""
+        island order (one tuple, or a list for a list of tickets); the first holds the
+        group's first rank, so its result word is the command's, as on one island."""
         single = isinstance(tickets, int | np.integer)
         wanted = np.asarray([tickets] if single else list(tickets), np.int64)
         if not wanted.size:
