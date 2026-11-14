@@ -1,0 +1,113 @@
+{
+ "shape": "sq2048",
+ "m": 2048,
+ "k": 2048,
+ "n": 2048,
+ "plan": {
+  "mt": 64,
+  "kt": 64,
+  "nt": 64,
+  "rows": 10,
+  "cols": 8,
+  "pcm": 7,
+  "pcn": 8,
+  "bm": 7,
+  "bn": 8,
+  "kb": 16,
+  "sh": 1,
+  "sw": 4,
+  "wa": 2,
+  "ww": 2,
+  "layout": "2d",
+  "l1": 1229824,
+  "form": "grid",
+  "nk": 4,
+  "nbh": 1,
+  "nbw": 1,
+  "rect": [
+   0,
+   0,
+   8,
+   10
+  ]
+ },
+ "upload_s": 0.275,
+ "x280_mhz": 1350,
+ "deadline_s": 0.053,
+ "reduce": "owner",
+ "profile_mhz": 1350,
+ "load_microseconds": null,
+ "single_microseconds": {
+  "median": 142.3,
+  "min": 140.12
+ },
+ "loop": {
+  "reps": 28110,
+  "batch": 28110,
+  "seconds": 4.841,
+  "wall_seconds": 4.847,
+  "microseconds_per_call": 172.203,
+  "command_microseconds_median": 179.94,
+  "mean_w": 139.11168939457124,
+  "peak_w": 191.0,
+  "open_w": 71.6002498351473,
+  "joules_per_call": 0.02398656479235354,
+  "aiclk_mhz": [
+   1050,
+   1167.6,
+   1350
+  ]
+ },
+ "tflops": 99.76521421810305,
+ "cut_microseconds_per_call": {
+  "broadcasts_only": 132.756,
+  "product_only": 107.737
+ },
+ "run": {
+  "cores": 120,
+  "kernel": "none",
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "broadcast_wait_cycles_max": [
+   4784330168,
+   5000390269
+  ],
+  "broadcast_gave_up": []
+ },
+ "readback_s": 0.443,
+ "profile": {
+  "slowest_core": 109,
+  "slowest_microseconds": 137.899,
+  "mean_busy_over_slowest": 0.681,
+  "partitions_of_slowest": {
+   "read_A_dram": 0.0,
+   "row_broadcast": 0.604,
+   "read_W_dram": 0.563,
+   "column_broadcast": 0.176,
+   "writer_waits_for_output": 0.201,
+   "write": 0.02,
+   "unpack_waits_for_A": 0.064,
+   "unpack_waits_for_W": 0.176,
+   "unpack_waits_for_partials": 0.016,
+   "matrix_unit": 0.698,
+   "pack_waits_for_space": 0.036,
+   "pack": 0.675
+  }
+ },
+ "check": {
+  "max_rel": 0.0052040222255456976,
+  "rms_rel": 0.0039627952365804,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "3.56",
+  "4.61",
+  "4.82"
+ ]
+}

@@ -1,0 +1,165 @@
+{
+ "m": 16384,
+ "k": 16384,
+ "n": 16384,
+ "cards": [
+  0,
+  1
+ ],
+ "links": 0,
+ "split_w": 0,
+ "split_x": 0,
+ "upload_s": 2.241,
+ "placements": {
+  "x": [
+   [
+    0,
+    276
+   ],
+   [
+    276,
+    236
+   ]
+  ],
+  "w": [
+   [
+    0,
+    276
+   ],
+   [
+    276,
+    236
+   ]
+  ],
+  "y": [
+   [
+    0,
+    276
+   ],
+   [
+    276,
+    236
+   ]
+  ],
+  "p": [
+   [
+    0,
+    1
+   ],
+   [
+    0,
+    1
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350,
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 512,
+   "kt": 276,
+   "nt": 512,
+   "rows": 9,
+   "cols": 12,
+   "pcm": 57,
+   "pcn": 44,
+   "bm": 4,
+   "bn": 44,
+   "kb": 2,
+   "sh": 1,
+   "sw": 4,
+   "wa": 2,
+   "ww": 2,
+   "layout": "2d",
+   "l1": 1131520,
+   "form": "grid",
+   "nk": 138,
+   "nbh": 15,
+   "nbw": 1,
+   "rect": [
+    0,
+    0,
+    12,
+    9
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 59276,
+    "NCRISC": 56996,
+    "TRISC0": 12584,
+    "TRISC1": 6400,
+    "TRISC2": 7156
+   },
+   "total": 143440
+  },
+  "crossed_bytes": {
+   "x": 558759936,
+   "y": 0,
+   "partials": 1073741824,
+   "all": 1632501760
+  },
+  "loop": {
+   "single_microseconds": [
+    248660.22,
+    249521.6,
+    248789.12
+   ],
+   "reps": 13,
+   "seconds": 3.242,
+   "microseconds_per_call": 249358.494,
+   "part_microseconds_median": [
+    249214.0,
+    249204.26
+   ],
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 202024.0,
+    "pages": 534976.0,
+    "parts": 2.0,
+    "puts": 0.0,
+    "bytes": 1645431488.0
+   },
+   "aiclk_mhz": {
+    "0": [
+     1343,
+     1349.8,
+     1350
+    ],
+    "1": [
+     1350,
+     1350.0,
+     1350
+    ]
+   }
+  },
+  "run": {
+   "cores": 236,
+   "kernel": [
+    "none",
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "check": {
+   "max_rel": 0.0055574524070737255,
+   "rms_rel": 0.00396046152963508,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 2.655
+  },
+  "tflops": 35.27,
+  "crossed_gb_per_s": 6.6,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "4.00",
+  "4.89",
+  "4.83"
+ ]
+}

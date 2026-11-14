@@ -183,6 +183,11 @@ class IslandTensor:
             raise KomorebiError("the islands' accessor arguments differ")
         return args[0]
 
+    def tensor_args(self):
+        """What km::Tensor reads (compile arguments): the accessor's; with the
+        tensor's reference word (`address`), what a kernel's page calls take."""
+        return self.accessor_args()
+
     def holders(self, first, pages):
         """[(island, first, pages, index)] of the pages first .. first + pages - 1:
         runs each held by one island at consecutive indices of its part (a copy:
@@ -210,6 +215,7 @@ class IslandRun:
         # core 0 of each island serves it (a PAGES command of mode MESSAGES)
         self.linked = linked
         self.session = None  # the IslandSession with links: a link core's reset
+        self._links_reset = {}  # (island, k) -> its run's link events at its reset
         self.cores = graph.ranks
         self.program = self.runs[0].program
         self._next = 1  # the next ticket
@@ -436,7 +442,25 @@ class IslandRun:
         again (the session's reset_link): {island, core, by, seconds, ...}."""
         if self.session is None:
             raise ValueError("a run without links has no link core to reset")
-        return self.session.reset_link(island, k, timeout)
+        done = self.session.reset_link(island, k, timeout)
+        self._links_reset[island, k] = len(self.runs[island].link_events)
+        return done
+
+    @property
+    def links_hung(self):
+        """(island, link core) of each link core a give-up found hung (its dispatcher's
+        KMD_EVENT_LINK) and not reset since: run.reset_link(island, k) recovers it."""
+        out = []
+        for island, run in enumerate(self.runs):
+            for at, event in enumerate(run.link_events):
+                key = (island, event["link"])
+                if (
+                    event["what"] in ("hung", "lost")
+                    and at >= self._links_reset.get(key, 0)
+                    and key not in out
+                ):
+                    out.append(key)
+        return out
 
     def _ranked(self, island, cores):
         """Core dicts of island `island` (its own core numbers in `core`) with their
@@ -471,6 +495,7 @@ class IslandRun:
                 error.given_up,
                 [ranks.get(core, core) for core in error.recovered],
                 ranks=True,
+                links=error.links,
             )
         return _named(error, island)
 
@@ -1133,10 +1158,13 @@ class IslandSession:
         if self.links:
             programs = self._linked(programs)
         defines = [one.defines for one in programs]
+        if len(self.sessions) > 1:  # a tensor's word may name its table entry
+            for one, own in zip(programs, defines):
+                one.defines = {**own, "KM_TENSOR_TABLE": 1}
         if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
             asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
-            for one, own in zip(programs, defines):
-                one.defines = {**own, "KM_PAGE_LINKS": 1, **asks}
+            for one in programs:
+                one.defines = {**one.defines, "KM_PAGE_LINKS": 1, **asks}
         plans = self._links()
         tables = self._tables_for_load()
         runs = []
@@ -1274,10 +1302,24 @@ class IslandSession:
         held = [
             2 * k + cpu for cpu in range(2) if 2 * k + cpu < len(self.channels[island])
         ]
+        drops = []
+        areas = getattr(self, "_link_areas", None)
+        if k == 0 and areas:  # lines given up with their commands: never sent
+            area = areas[0].address
+            for name in ("ASK", "PUT"):
+                drops += [
+                    area + h[f"KM_{name}_TAIL"],
+                    area + h[f"KM_{name}_TAKEN"],
+                    area + h[f"KM_{name}_LINES"],
+                    h["KM_ASK_SLOTS"],
+                ]
         started = time.perf_counter()
         try:
             reset = run.reset_core(
-                core, timeout, channels=[self.channels[island][link] for link in held]
+                core,
+                timeout,
+                channels=[self.channels[island][link] for link in held],
+                drops=drops,
             )
             group = self.graph.link_group(island, k, 1)
             run.wait(run._queue_command(h["KM_HANDLER_NOP"], group), timeout)

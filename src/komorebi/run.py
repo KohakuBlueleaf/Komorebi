@@ -31,6 +31,7 @@ from komorebi.program import Handler
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
 NO_LIST = 0xFF  # a core with no kept reset list (KMD_RESET_DIRECTORY)
+LINK_EVENTS = ("gave", "hung", "lost")  # KMD_LINK_*: what a link event says
 RESET_STATUS = ("BAD_LIST", "NO_WINDOW", "NO_FIRMWARE", "NO_LIST")  # KMD_RESET_*
 
 M32 = abi.M32
@@ -186,6 +187,7 @@ class Run:
         self._given_up = {}  # handle -> (its timeout event, the cores at the deadline)
         self._given_up_seen = 0  # the dispatcher's count of give-ups, as last read
         self.stalls = []  # the watcher's KMD_EVENT_STALL events: stage, req, ticks
+        self.link_events = []  # KMD_EVENT_LINK: a give-up on a link core (_links)
         # The dispatcher's kept reset list ({offset, bytes, seconds}), or why not
         self.recovery, self.recovery_refused = None, "not asked for"
         self._reserved = []  # (offset, bytes) of the upload region the run holds
@@ -479,20 +481,24 @@ class Run:
         self.recovery_refused = None
         return True
 
-    def reset_core(self, core, timeout=10.0, channels=()):
+    def reset_core(self, core, timeout=10.0, channels=(), drops=()):
         """Resets core `core` (this card's core number) and loads its kernels again
         while the other cores run: by the dispatcher from its kept list (`recovery`),
-        else by the host, which first closes its fabric connections on `channels`.
+        else by the host: its connections on `channels` closed, `drops` emptied first.
         Returns {core, by, seconds, x280_seconds}; KomorebiError if it did not return.
         """
         if not 0 <= core < self.cores:
             raise ValueError(f"core {core}: the grid has {self.cores}")
         started = time.perf_counter()
         number = NO_LIST if self.recovery is None else self._core_list[core]
-        if number == NO_LIST or channels:
+        if number == NO_LIST or channels or drops:
             x, y = core % self.grid[0], core // self.grid[0]
             parts = self.backend.launch.reset_core(
-                x, y, min(timeout, 2.0), [int(channel) for channel in channels]
+                x,
+                y,
+                min(timeout, 2.0),
+                [int(channel) for channel in channels],
+                [int(word) for word in drops],
             )
             if parts[1] == -2:
                 raise KomorebiError(
@@ -763,11 +769,40 @@ class Run:
                 )
         return rows[~mine]
 
+    def _links(self, rows):
+        """Keeps the dispatcher's KMD_EVENT_LINK events (a give-up on link core `link`:
+        what, req the host command named or 0, ticks) in `link_events`; the others."""
+        kind = self.h.constants.get("KMD_EVENT_LINK")
+        mine = (rows[:, 2] & 0xFF) == kind
+        if kind is None or not mine.any():
+            return rows
+        names = {self.h[f"KMD_LINK_{name.upper()}"]: name for name in LINK_EVENTS}
+        for _, req, status, ticks in rows[mine].tolist():
+            what = int(status) >> 16 & 0xFF
+            self.link_events.append(
+                {
+                    "link": int(status) >> 8 & 0xFF,
+                    "what": names.get(what, str(what)),
+                    "req": int(req),
+                    "ticks": int(ticks),
+                }
+            )
+        return rows[~mine]
+
+    def links_named(self, handle):
+        """The link events that name command `handle` (link, what), oldest first."""
+        req = handle & M32
+        return [
+            (event["link"], event["what"])
+            for event in self.link_events
+            if req and event["req"] == req
+        ]
+
     def _take(self, rows):
         """Files a block of events (index, req, status, ticks). Every event is of a
         handle from the oldest without one on, so its low 32 bits name it."""
         rows = np.asarray(rows).reshape(-1, 4)
-        rows = self._stalls(rows)
+        rows = self._links(self._stalls(rows))
         if not len(rows):
             return
         if self._engine_state is not None:  # the engines' events go to their handles
@@ -857,6 +892,7 @@ class Run:
             cores,
             given_up=True,
             recovered=[core["core"] for core in cores if core.get("reset")],
+            links=self.links_named(handle),
         )
 
     def _unsequence(self, handle):

@@ -1,0 +1,165 @@
+{
+ "m": 8192,
+ "k": 8192,
+ "n": 8192,
+ "cards": [
+  0,
+  1
+ ],
+ "links": 0,
+ "split_w": 0,
+ "split_x": 0,
+ "upload_s": 0.767,
+ "placements": {
+  "x": [
+   [
+    0,
+    138
+   ],
+   [
+    138,
+    118
+   ]
+  ],
+  "w": [
+   [
+    0,
+    138
+   ],
+   [
+    138,
+    118
+   ]
+  ],
+  "y": [
+   [
+    0,
+    138
+   ],
+   [
+    138,
+    118
+   ]
+  ],
+  "p": [
+   [
+    0,
+    1
+   ],
+   [
+    0,
+    1
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350,
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 256,
+   "kt": 138,
+   "nt": 256,
+   "rows": 9,
+   "cols": 11,
+   "pcm": 29,
+   "pcn": 24,
+   "bm": 8,
+   "bn": 24,
+   "kb": 2,
+   "sh": 1,
+   "sw": 4,
+   "wa": 2,
+   "ww": 2,
+   "layout": "2d",
+   "l1": 1065984,
+   "form": "grid",
+   "nk": 69,
+   "nbh": 4,
+   "nbw": 1,
+   "rect": [
+    0,
+    0,
+    11,
+    9
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 59276,
+    "NCRISC": 56996,
+    "TRISC0": 12584,
+    "TRISC1": 6400,
+    "TRISC2": 7156
+   },
+   "total": 143440
+  },
+  "crossed_bytes": {
+   "x": 145981440,
+   "y": 0,
+   "partials": 268435456,
+   "all": 414416896
+  },
+  "loop": {
+   "single_microseconds": [
+    78340.9,
+    78332.5,
+    78331.42
+   ],
+   "reps": 39,
+   "seconds": 3.054,
+   "microseconds_per_call": 78319.413,
+   "part_microseconds_median": [
+    78299.14,
+    78299.28
+   ],
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 52042.0,
+    "pages": 136816.0,
+    "parts": 2.0,
+    "puts": 0.0,
+    "bytes": 417747776.0
+   },
+   "aiclk_mhz": {
+    "0": [
+     1350,
+     1350.0,
+     1350
+    ],
+    "1": [
+     1343,
+     1349.8,
+     1350
+    ]
+   }
+  },
+  "run": {
+   "cores": 236,
+   "kernel": [
+    "none",
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "check": {
+   "max_rel": 0.006527357704705497,
+   "rms_rel": 0.003966260373030369,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 0.554
+  },
+  "tflops": 14.04,
+  "crossed_gb_per_s": 5.33,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "3.42",
+  "4.93",
+  "4.84"
+ ]
+}

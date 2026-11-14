@@ -1,0 +1,113 @@
+{
+ "shape": "sq1024",
+ "m": 1024,
+ "k": 1024,
+ "n": 1024,
+ "plan": {
+  "mt": 32,
+  "kt": 32,
+  "nt": 32,
+  "rows": 8,
+  "cols": 8,
+  "pcm": 4,
+  "pcn": 4,
+  "bm": 4,
+  "bn": 4,
+  "kb": 16,
+  "sh": 1,
+  "sw": 4,
+  "wa": 2,
+  "ww": 2,
+  "layout": "2d",
+  "l1": 607232,
+  "form": "grid",
+  "nk": 2,
+  "nbh": 1,
+  "nbw": 1,
+  "rect": [
+   0,
+   0,
+   8,
+   8
+  ]
+ },
+ "upload_s": 0.22,
+ "x280_mhz": 1350,
+ "deadline_s": 0.05,
+ "reduce": "owner",
+ "profile_mhz": 1350,
+ "load_microseconds": null,
+ "single_microseconds": {
+  "median": 40.8,
+  "min": 40.18
+ },
+ "loop": {
+  "reps": 98040,
+  "batch": 98040,
+  "seconds": 4.214,
+  "wall_seconds": 4.236,
+  "microseconds_per_call": 42.987,
+  "command_microseconds_median": 40.82,
+  "mean_w": 116.03197568906147,
+  "peak_w": 121.0,
+  "open_w": 70.92644565375848,
+  "joules_per_call": 0.005013353115070629,
+  "aiclk_mhz": [
+   1343,
+   1349.3,
+   1350
+  ]
+ },
+ "tflops": 49.95658333914904,
+ "cut_microseconds_per_call": {
+  "broadcasts_only": 32.632,
+  "product_only": 19.87
+ },
+ "run": {
+  "cores": 120,
+  "kernel": "none",
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "broadcast_wait_cycles_max": [
+   3974208153,
+   4442013217
+  ],
+  "broadcast_gave_up": []
+ },
+ "readback_s": 0.695,
+ "profile": {
+  "slowest_core": 87,
+  "slowest_microseconds": 38.644,
+  "mean_busy_over_slowest": 0.664,
+  "partitions_of_slowest": {
+   "read_A_dram": 0.0,
+   "row_broadcast": 0.568,
+   "read_W_dram": 0.551,
+   "column_broadcast": 0.147,
+   "writer_waits_for_output": 0.201,
+   "write": 0.037,
+   "unpack_waits_for_A": 0.339,
+   "unpack_waits_for_W": 0.204,
+   "unpack_waits_for_partials": 0.009,
+   "matrix_unit": 0.375,
+   "pack_waits_for_space": 0.018,
+   "pack": 0.377
+  }
+ },
+ "check": {
+  "max_rel": 0.0052967913942715975,
+  "rms_rel": 0.003964679658713562,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "6.43",
+  "5.51",
+  "4.88"
+ ]
+}

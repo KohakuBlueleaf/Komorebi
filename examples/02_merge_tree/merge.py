@@ -76,8 +76,8 @@ def program(args, input_tensor, output_tensor):
             km.Buffer(CONSTANTS["kCbOut"], "float32", page, CONSTANTS["kOutPages"]),
         ],
         compile_args={
-            "reader": input_tensor.accessor_args(),
-            "writer": output_tensor.accessor_args(),
+            "reader": input_tensor.tensor_args(),
+            "writer": output_tensor.tensor_args(),
         },
         # the compute kernel copies float32 tiles into DST unrounded
         compute={

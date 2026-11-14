@@ -32,6 +32,7 @@ constexpr uint32_t kRecordWords = 4;     // words of a record
 constexpr uint32_t kResultWords = 48;
 constexpr uint32_t kResultWrong = kDataWords;
 constexpr uint32_t kNone = 0xFFFFFFFFu;
+constexpr uint32_t kAskPort = 0;  // pages another island holds count here
 
 // Reader arguments: the broadcast's words. Compute: whether the core is included.
 constexpr uint32_t kArgWords = 0;

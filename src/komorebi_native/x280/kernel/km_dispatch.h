@@ -148,6 +148,13 @@
 #define KMD_STALL_BACK 2u /* core 0: re-entered its loop; ticks since SEEN */
 /* core 2: core 0 did not take the interrupt; the run ends */
 #define KMD_STALL_LOST 3u
+/* Kernel to host: a give-up on link core k of this island (inspect.h); auxiliary k |
+ * KMD_LINK_* << 8, req the host command given up (0: the dispatcher's own). */
+#define KMD_EVENT_LINK 0x14u
+#define KMD_LINK_GAVE 1u /* a command of the link core given up; the core left it */
+/* the link core did not leave it: it waits for the host's reset (run.reset_link) */
+#define KMD_LINK_HUNG 2u
+#define KMD_LINK_LOST 3u /* a command whose traffic the hung link core held */
 /* Core 2's watch of core 0: a look every KMD_WATCH_POLL_TICKS (1 ms); a stall is no
  * pass for KMD_WATCH_STALL_TICKS (100 ms); core 0 has KMD_WATCH_BACK_TICKS (50 ms). */
 #define KMD_WATCH_POLL_TICKS 50000u
@@ -193,6 +200,9 @@
 #define KMD_RESET_NO_LIST 4u     /* a give-up's core with no kept list (a link core) */
 /* A core's state word of its kernels' end bytes (km::kStEnds): not 0 once one ended */
 #define KMD_STATE_ENDS (2u * KM_RING_SLOTS + 12u)
+/* A kernel's live word of its runtime wait (km::kLvWhere + role) when it waits for an
+ * island's answer to its ask or put (km::kWhereAsk) */
+#define KMD_WHERE_ASK 52u
 
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */

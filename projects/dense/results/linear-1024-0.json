@@ -1,0 +1,127 @@
+{
+ "m": 1024,
+ "k": 1024,
+ "n": 1024,
+ "cards": [
+  0
+ ],
+ "links": 0,
+ "upload_s": 0.152,
+ "placements": {
+  "x": [
+   [
+    0,
+    1024
+   ]
+  ],
+  "w": [
+   [
+    0,
+    1024
+   ]
+  ],
+  "y": [
+   [
+    0,
+    1024
+   ]
+  ],
+  "p": [
+   [
+    0,
+    1024
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 32,
+   "kt": 32,
+   "nt": 32,
+   "rows": 8,
+   "cols": 8,
+   "pcm": 4,
+   "pcn": 4,
+   "bm": 4,
+   "bn": 4,
+   "kb": 16,
+   "sh": 1,
+   "sw": 4,
+   "wa": 2,
+   "ww": 2,
+   "layout": "2d",
+   "l1": 607232,
+   "form": "grid",
+   "nk": 2,
+   "nbh": 1,
+   "nbw": 1,
+   "rect": [
+    0,
+    0,
+    8,
+    8
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 26348,
+    "NCRISC": 26340,
+    "TRISC0": 13288,
+    "TRISC1": 5588,
+    "TRISC2": 6264
+   },
+   "total": 78848
+  },
+  "crossed_bytes": {
+   "x": 0,
+   "partials": 0,
+   "all": 0
+  },
+  "loop": {
+   "single_microseconds": [
+    41.62,
+    40.7,
+    40.44
+   ],
+   "reps": 73711,
+   "seconds": 3.226,
+   "microseconds_per_call": 43.76,
+   "part_microseconds_median": [
+    40.62
+   ],
+   "aiclk_mhz": {
+    "0": [
+     1343,
+     1349.1,
+     1350
+    ]
+   }
+  },
+  "run": {
+   "cores": 120,
+   "kernel": [
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "check": {
+   "max_rel": 0.0052967913942715975,
+   "rms_rel": 0.003964679658713562,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 0.635
+  },
+  "tflops": 49.07,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "5.15",
+  "4.95",
+  "4.75"
+ ]
+}

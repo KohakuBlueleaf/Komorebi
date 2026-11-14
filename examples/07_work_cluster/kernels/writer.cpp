@@ -4,12 +4,14 @@
 
 #include "../decide.h"
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 constexpr uint32_t kCbScratch = 16;
+constexpr uint32_t kAskPort = 0;  // pages another island holds count here
 
 void kernel_main() {
-    constexpr auto state_args = TensorAccessorArgs<0>();
+    using State = km::Tensor<0>;
     km::Writer writer;
     const uint32_t scratch = get_write_ptr(kCbScratch);
     volatile uint32_t* word = reinterpret_cast<volatile uint32_t*>(scratch);
@@ -35,7 +37,7 @@ void kernel_main() {
     writer.run([&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
         const uint32_t state_address = command.a0;
-        const auto state = TensorAccessor(state_args, state_address);
+        const State state(state_address);
         if (handler == WC_HANDLER_SUM) {
             const uint32_t cores = command.a1;
             if (writer.me() != km::first(command)) {
@@ -47,7 +49,11 @@ void kernel_main() {
                 state_page < km::first(command) + cores;
                 state_page++
             ) {
-                noc_async_read_page(state_page, state, scratch);
+                if (!km::read_pages(
+                    writer, command, state, state_page, 1, scratch, kAskPort
+                )) {
+                    return false;
+                }
                 if (!reads_done()) {
                     return false;
                 }
@@ -61,12 +67,16 @@ void kernel_main() {
         }
         const uint32_t round = command.a1;
         const uint32_t page = writer.me();
-        noc_async_read_page(page, state, scratch);
+        if (!km::read_pages(writer, command, state, page, 1, scratch, kAskPort)) {
+            return false;
+        }
         if (!reads_done()) {
             return false;
         }
         word[0] = word[0] + round + page;
-        noc_async_write_page(page, state, scratch);
+        if (!km::write_pages(writer, command, state, page, 1, scratch, kAskPort)) {
+            return false;
+        }
         return writes_done();
     });
 }
