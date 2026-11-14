@@ -61,14 +61,14 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     report = {"sizes": args.sizes, "cores": args.cores, "links": args.links}
     with km.Session(cards=cards, links=args.links, log=log) as session:
-        own = [[session.graph.first(i), session.graph.count(i)] for i in range(2)]
-        local = session.tensor(data, "uint32", like=own[0])
-        far = session.tensor(data, "uint32", like=own[1])
+        own = [(session.graph.first(i), session.graph.count(i)) for i in range(2)]
+        local = session.tensor(data, "uint32", group=own[0])
+        far = session.tensor(data, "uint32", group=own[1])
         backs = []
         for size in args.sizes:
             for island in range(2):
                 shape = (size // PAGE, PAGE // 4)
-                backs.append(session.empty(shape, "uint32", like=own[island]))
+                backs.append(session.empty(shape, "uint32", group=own[island]))
         log(
             f"tensors: island 0 {local.placement.parts}, island 1 {far.placement.parts}"
         )

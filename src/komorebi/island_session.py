@@ -3,6 +3,7 @@ runtime over it, a dispatcher and the persistent grid on every island. Ranks are
 and contiguous by island; a command's group is split by island on the host, a tensor
 is placed by island. `Session(cards=[...])` returns this; one card is one island."""
 
+import concurrent.futures
 import copy
 import os
 import secrets
@@ -20,6 +21,7 @@ from komorebi.program import Program
 M32 = 0xFFFFFFFF
 SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
+TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries
 # The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
 LINK_ARGS = 9
@@ -133,54 +135,53 @@ class LinkPlan:
 
 
 class IslandTensor:
-    """A DRAM tensor of an island session: one tensor of the whole shape on every
-    island at one address, page p in the DRAM of the island `placement` gives it (a
-    copy: every island). Kernels take its `address` and `accessor_args()` unchanged."""
+    """A DRAM tensor of an island session, one logical tensor: island i holds its part
+    (`placement`; a copy: every page) in its own buffer `parts[i]` (None: no page).
+    `address` is its reference word, which kernels hand to Komorebi's page calls: one
+    island, the buffer's bank address; several, its entry in the tensor table."""
 
-    def __init__(self, parts, placement):
+    def __init__(self, parts, placement, shape, dtype, layout, word, release=None):
         self.parts = tuple(parts)
+        self._release = release
         self.placement = placement
-        first = self.parts[0]
-        for island, part in enumerate(self.parts):
-            if part.address != first.address:
-                raise KomorebiError(
-                    f"island {island}: the tensor is at {part.address:#x}, island 0 "
-                    f"at {first.address:#x}; make an island session's tensors before "
-                    "anything else is allocated on one island alone"
-                )
-        self.shape, self.dtype, self.layout = first.shape, first.dtype, first.layout
-        self.pages, self.page_bytes = first.pages, first.page_bytes
+        held = [part for part in self.parts if part is not None]
+        first = held[0]
+        self.shape, self.dtype, self.layout = tuple(shape), dtype, layout
+        self.pages = placement.pages
+        self.page_bytes = first.page_bytes
         self.aligned_page_bytes = first.aligned_page_bytes
-        self.address = first.address
+        self.address = word
         self.in_dram = True
 
-    def placement_args(self):
-        """What km::Placement reads (compile arguments, after the accessor's): the
-        islands, copy, then (first page, pages) of each island."""
-        parts = [word for part in self.placement.parts for word in part]
-        return [len(self.placement.parts), int(self.placement.copy), *parts]
+    @property
+    def addresses(self):
+        """Each island's bank address of its part; 0 where it holds none."""
+        return [0 if part is None else part.address for part in self.parts]
+
+    def entry(self):
+        """Its entry of the tensor table (islands.tensor_entry)."""
+        return islands.tensor_entry(
+            self.placement, self.aligned_page_bytes, self.addresses
+        )
 
     def accessor_args(self):
         """The tensor accessor arguments, the same on every island."""
-        args = [part.accessor_args() for part in self.parts]
+        args = [part.accessor_args() for part in self.parts if part is not None]
         if any(other != args[0] for other in args[1:]):
             raise KomorebiError("the islands' accessor arguments differ")
         return args[0]
 
     def holders(self, first, pages):
-        """[(island, first, pages)] of the pages first .. first + pages - 1 by the
-        island that holds each (a copy: island 0)."""
-        if self.placement.copy:
-            return [(0, first, pages)]
-        out = []
-        for island, (start, length) in enumerate(self.placement.parts):
-            low, high = max(first, start), min(first + pages, start + length)
-            if high > low:
-                out.append((island, low, high - low))
-        return out
+        """[(island, first, pages, index)] of the pages first .. first + pages - 1:
+        runs each held by one island at consecutive indices of its part (a copy:
+        island 0's, index the page)."""
+        return self.placement.runs(first, pages)
 
     def free(self):
-        for part in {id(part): part for part in self.parts}.values():  # once each
+        """Frees every island's part (once each) and its entry of the tensor table."""
+        if self._release is not None:
+            self._release(self)
+        for part in {id(part): part for part in self.parts if part}.values():
             part.free()
 
 
@@ -627,8 +628,9 @@ class IslandSession:
         self.run = None
         self.link_cores = ()  # per island: the local cores (core table) of its links
         self._regions = []  # the message service's L1 region on every core, by island
-        self._placed = []  # the island tensors made, in order (the placement table)
         self.channels = ()  # per island: the Ethernet channel of each link it sends on
+        self._entries = [None] * TENSORS_MAX  # the tensor table, by word
+        self._tables = []  # per island: its cores' tensor table (L1), from a load
 
     def __enter__(self):
         self.open()
@@ -765,67 +767,213 @@ class IslandSession:
         """Island `island`'s own Session (local ranks, its own tensors)."""
         return self.sessions[island]
 
-    def tensor(self, data, dtype, layout="row", like=None, copy=False, by="rank"):
-        """A DRAM tensor holding `data` as Session.tensor takes it, placed by
-        islands.place: split along the leading dimension as the ranks partition it
-        (`like`: the group it follows), even parts by island (`by` "island"), or a copy.
-        """
+    def tensor(
+        self, data, dtype, layout="row", split=None, group=None, like=None, copy=False
+    ):
+        """A DRAM tensor holding `data` as Session.tensor takes it, placed by the hint
+        (empty() names them); each island's part written through its own host
+        channel."""
         raw, shape = formats.to_bytes(data, dtype, layout)
-        tensor = self.empty(shape, dtype, layout, like, copy, by)
-        rows = raw.reshape(tensor.pages, tensor.page_bytes)
-        if self.split > 1:  # one tensor in the card's DRAM
-            self.sessions[0].write(tensor.parts[0], rows)
-            return tensor
-        for island, part in enumerate(tensor.parts):
-            if tensor.placement.copy:
-                mine = rows
-            else:
-                start, length = tensor.placement.parts[island]
-                mine = np.zeros_like(rows)
-                mine[start : start + length] = rows[start : start + length]
-            self.sessions[island].write(part, mine)
+        tensor = self.empty(shape, dtype, layout, split, group, like, copy)
+        self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
         return tensor
 
-    def empty(self, shape, dtype, layout="row", like=None, copy=False, by="rank"):
-        """A tensor as tensor() places it, not written."""
-        if self.split > 1:
-            parts = [self.sessions[0].empty(shape, dtype, layout)] * self.split
-        else:
-            parts = [session.empty(shape, dtype, layout) for session in self.sessions]
-        first = parts[0]
-        placement = islands.place(
-            self.graph,
-            first.pages,
-            islands.leading_units(shape, layout),
-            like,
-            copy,
-            by,
-        )
+    def empty(
+        self, shape, dtype, layout="row", split=None, group=None, like=None, copy=False
+    ):
+        """A tensor placed by the hint, not written. `split` d over `group` (first
+        rank, ranks; default every rank): the group's ranks partition dimension d as
+        km::partition does and each rank's part is held by its island; `like`: as
+        tensor `like` is placed; `copy`: on every island. No hint: split 0."""
+        if like is not None:
+            if split is not None or group is not None or copy:
+                raise ValueError("`like` takes the other tensor's hint: no other hint")
+            hint = like.placement
+            split, group, copy = hint.split, hint.group, hint.copy
+        placement = islands.place(self.graph, shape, layout, split, group, copy)
+        if self.split > 1:  # one tensor in the card's DRAM, every page local
+            part = self.sessions[0].empty(shape, dtype, layout)
+            return IslandTensor(
+                [part] * self.split, placement, shape, dtype, layout, part.address
+            )
+        word = None
+        if len(self.sessions) > 1:
+            free = [i for i, held in enumerate(self._entries) if held is None]
+            if not free:
+                raise KomorebiError(
+                    f"{islands.TENSORS_MAX} tensors at once: the tensor table is full "
+                    "(free one first)"
+                )
+            word = free[0]
+        parts = []
         try:
-            made = IslandTensor(parts, placement)
-            self._placed.append(made)
-            return made
-        except KomorebiError:
+            for island, session in enumerate(self.sessions):
+                parts.append(
+                    self._part(session, island, placement, shape, dtype, layout)
+                )
+        except BaseException:
             for part in parts:
-                part.free()
+                if part is not None:
+                    part.free()
             raise
+        tensor = IslandTensor(
+            parts, placement, shape, dtype, layout, word, self._release_entry
+        )
+        if word is None:
+            tensor.address = parts[0].address  # one island: its bank address
+        else:
+            if any(
+                0 < part.address < islands.TENSORS_MAX for part in tensor.parts if part
+            ):
+                raise KomorebiError("a bank address below the tensor table's size")
+            self._entries[word] = tensor
+            self._write_table()
+        return tensor
+
+    def _part(self, session, island, placement, shape, dtype, layout):
+        """Island `island`'s buffer of its part (None: it holds no page): the whole
+        shape when it holds every page, else its pages with the same page bytes. A
+        part that does not fit raises with the most pages that would."""
+        pages = placement.part_pages(island)
+        if pages == 0:
+            return None
+        whole = pages == placement.pages
+        if whole:
+            mine = shape
+        elif layout == "tile":
+            mine = (pages * formats.TILE, formats.TILE)
+        else:
+            mine = (pages, shape[-1])
+        try:
+            return session.empty(mine, dtype, layout)
+        except KomorebiError:
+            raise
+        except RuntimeError as error:  # the allocator's: the DRAM is full
+            fits = self._fits(session, mine, pages, dtype, layout)
+            raise KomorebiError(
+                f"island {island}: its part of {pages} pages of shape {tuple(shape)} "
+                f"does not fit its DRAM ({error}); at most {fits} pages of this kind "
+                "fit there now: split it over more islands' ranks (`group`) or free "
+                "tensors"
+            ) from None
+
+    @staticmethod
+    def _fits(session, shape, pages, dtype, layout):
+        """The most pages of this kind an island's DRAM takes now (found by trying)."""
+        low, high = 0, pages
+        while low < high:
+            middle = (low + high + 1) // 2
+            trial = (
+                (middle * formats.TILE, formats.TILE)
+                if layout == "tile"
+                else (middle, shape[-1])
+            )
+            try:
+                session.empty(trial, dtype, layout).free()
+                low = middle
+            except RuntimeError:
+                high = middle - 1
+        return low
+
+    def _release_entry(self, tensor):
+        """A freed tensor's entry of the tensor table is free again."""
+        if (
+            tensor.address < len(self._entries)
+            and self._entries[tensor.address] is tensor
+        ):
+            self._entries[tensor.address] = None
+
+    def _table_rows(self):
+        """The tensor table every core of an island holds: an entry a word, in word
+        order ([TENSORS_MAX x entry bytes / 4] uint32)."""
+        size = islands.tensor_entry_bytes(len(self.sessions))
+        table = bytearray(islands.TENSORS_MAX * size)
+        for word, tensor in enumerate(self._entries):
+            if tensor is not None:
+                table[word * size : (word + 1) * size] = tensor.entry()
+        return np.frombuffer(bytes(table), np.uint32)
+
+    def _write_table(self):
+        """Writes the tensor table into every core of every island, when a run holds
+        it (a load writes it otherwise)."""
+        if not self._tables:
+            return
+        row = self._table_rows()
+        for session, table in zip(self.sessions, self._tables):
+            rows = np.tile(row, (table.pages, 1)).view(np.uint8)
+            session.write(table, rows)
+
+    def _tables_for_load(self):
+        """Each island's tensor table in the L1 of all its cores, made at the first
+        load and written: its address for Session.load (several islands; else 0)."""
+        if len(self.sessions) == 1:
+            return [0]
+        if abi.headers()["KM_TENSORS_MAX"] != islands.TENSORS_MAX:
+            raise KomorebiError("islands.TENSORS_MAX differs from km_abi.h's")
+        if not self._tables:
+            row = self._table_rows()
+            for session in self.sessions:
+                columns, rows = session.grid
+                self._tables.append(
+                    session.tensor(
+                        np.tile(row, (columns * rows, 1)),
+                        "uint32",
+                        shard_grid=(columns, rows),
+                    )
+                )
+        else:
+            self._write_table()
+        return [table.address for table in self._tables]
 
     def read(self, *tensors, first=0, pages=None):
-        """The raw pages of island tensors as Session.read gives them, each page read
-        from the island that holds it, through that island's host channel."""
+        """The raw pages of island tensors as Session.read gives them: each island's
+        pages through its own host channel (with a run loaded, the islands at once),
+        gathered into one array."""
         if (first or pages is not None) and len(tensors) != 1:
             raise ValueError("a page range is read from one tensor")
+        if self.split > 1:  # one tensor in the card's DRAM
+            parts = [tensor.parts[0] for tensor in tensors]
+            return self.sessions[0].read(*parts, first=first, pages=pages)
         out = []
         for tensor in tensors:
             start, count = dram.page_range(first, pages, tensor.pages)
             rows = np.empty((count, tensor.page_bytes), np.uint8)
-            for island, low, length in tensor.holders(start, count):
+
+            def gather(island, at, low, high, tensor=tensor, rows=rows, start=start):
                 (got,) = self.sessions[island].read(
-                    tensor.parts[island], first=low, pages=length
+                    tensor.parts[island], first=low, pages=high - low
                 )
-                rows[low - start : low - start + length] = got
+                rows[at[low:high] - start] = got
+
+            self._each_island(gather, self._spans(tensor, start, count, reading=True))
             out.append(rows)
         return out
+
+    def _spans(self, tensor, start, count, reading=False):
+        """[(island, its part's pages in order, first index, end index)] of the part
+        indices whose pages lie in start .. start + count - 1 (a copy read: island 0
+        alone)."""
+        spans = []
+        for island, part in enumerate(tensor.parts):
+            if part is None or (reading and tensor.placement.copy and island):
+                continue
+            at = tensor.placement.part(island)
+            low, high = np.searchsorted(at, [start, start + count])
+            if high > low:
+                spans.append((island, at, int(low), int(high)))
+        return spans
+
+    def _each_island(self, work, spans):
+        """work(island, at, low, high) for every span: with a run loaded on every
+        island, one thread an island at once; else in turn."""
+        live = self.run is not None and not self.run.stopped
+        if not live or len(spans) < 2:
+            for span in spans:
+                work(*span)
+            return
+        with concurrent.futures.ThreadPoolExecutor(len(spans)) as pool:
+            for done in [pool.submit(work, *span) for span in spans]:
+                done.result()
 
     def read_bf16(self, *tensors):
         """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
@@ -850,20 +998,23 @@ class IslandSession:
         return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
 
     def write(self, tensor, pages, first=0):
-        """Writes `pages` ([n, page_bytes] uint8) into pages first .. first + n - 1,
-        each into the island that holds it (a copy: into every island)."""
+        """Writes `pages` ([n, page_bytes] uint8) into pages first .. first + n - 1:
+        each island's part through its own host channel (with a run loaded, the
+        islands at once; a copy: every island)."""
         pages = np.ascontiguousarray(pages, np.uint8)
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
             raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
+        if self.split > 1:  # one tensor in the card's DRAM
+            self.sessions[0].write(tensor.parts[0], pages, first)
+            return
         start, count = dram.page_range(first, len(pages), tensor.pages)
-        if tensor.placement.copy:
-            targets = [(island, start, count) for island in range(len(self.sessions))]
-        else:
-            targets = tensor.holders(start, count)
-        for island, low, length in targets:
+
+        def scatter(island, at, low, high):
             self.sessions[island].write(
-                tensor.parts[island], pages[low - start : low - start + length], low
+                tensor.parts[island], pages[at[low:high] - start], low
             )
+
+        self._each_island(scatter, self._spans(tensor, start, count))
 
     def load(self, program, **options):
         """Loads `program` on every island in turn (its grid, then its dispatcher), or
@@ -894,6 +1045,7 @@ class IslandSession:
             for one, own in zip(programs, defines):
                 one.defines = {**own, "KM_PAGE_LINKS": 1, **asks}
         plans = self._links()
+        tables = self._tables_for_load()
         runs = []
         try:
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
@@ -902,7 +1054,11 @@ class IslandSession:
                     island_of = (self.graph, island) if len(programs) > 1 else None
                     runs.append(
                         session.load(
-                            one, island=island_of, link=plans[island], **options
+                            one,
+                            island=island_of,
+                            link=plans[island],
+                            tensors=tables[island],
+                            **options,
                         )
                     )
                 except KomorebiError as error:
@@ -1141,7 +1297,7 @@ class IslandSession:
         holders = source.holders(first, pages)
         if len(holders) != 1:
             raise ValueError(f"pages {first} + {pages}: held by islands {holders}")
-        here = holders[0][0]
+        here, _, _, index = holders[0]
         if there is None:
             if len(self.graph.neighbours(here)) != 1:
                 raise ValueError(f"island {here} has more neighbours: name `there`")
@@ -1152,17 +1308,24 @@ class IslandSession:
             or to.aligned_page_bytes != source.aligned_page_bytes
         ):
             raise ValueError("a tensor target has the source's aligned page bytes")
+        if core is None and to.placement.runs(first, pages, there) != [
+            (there, first, pages, index)
+        ]:
+            raise ValueError(
+                f"pages {first} + {pages}: island {there} does not hold them at the "
+                f"indices island {here} does ({index} on)"
+            )
         counted = counted if counted is not None else core
         counted = counted if counted is not None else self.pair(here, k)[2]
         port = h["KM_PORTS"] - 1 if port is None else port
         buffer, chunk = self.staging(here)
         links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
         words = [0] * 10
-        words[h["KM_PAGES_FROM"]] = source.address
+        words[h["KM_PAGES_FROM"]] = source.addresses[here]
         words[h["KM_PAGES_PAGE"]] = source.aligned_page_bytes
-        words[h["KM_PAGES_FIRST"]] = first
+        words[h["KM_PAGES_FIRST"]] = index
         words[h["KM_PAGES_PAGES"]] = pages
-        words[h["KM_PAGES_TO"]] = to.address if core is None else to
+        words[h["KM_PAGES_TO"]] = to.addresses[there] if core is None else to
         target = h["KM_PAGES_DRAM"] if core is None else self.noc_of(there, core)
         words[h["KM_PAGES_TO_CORE"]] = target | chunk // 64 << 16
         words[h["KM_PAGES_COUNT"]] = self.port_address(there, port)
@@ -1219,15 +1382,15 @@ class IslandSession:
                 f"pages {first} + {pages * ranks}: held by islands {holders}, not by "
                 f"one other than island {island}"
             )
-        holder = holders[0][0]
+        holder, _, _, index = holders[0]
         if not 0 <= port < h["KM_PORTS"] or ranks > 0xFFFF:
             raise ValueError(f"port {port}, ranks {ranks}")
         buffer, chunk = self.staging(holder)
         links = list(self.channels[holder]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
         words = [0] * 10
-        words[h["KM_PAGES_FROM"]] = tensor.address
+        words[h["KM_PAGES_FROM"]] = tensor.addresses[holder]
         words[h["KM_PAGES_PAGE"]] = tensor.aligned_page_bytes
-        words[h["KM_PAGES_FIRST"]] = first
+        words[h["KM_PAGES_FIRST"]] = index
         words[h["KM_PAGES_PAGES"]] = pages
         words[h["KM_PAGES_TO"]] = to
         core = self.graph.rank_cores[island][local]
@@ -1308,14 +1471,21 @@ class IslandSession:
 
     def cross(self, source, target, first=0, pages=None, timeout=10.0):
         """Writes pages first .. of `source` into the same pages of `target` where
-        the two are held by different islands: sent over the links, waited for on the
-        far island. Returns pages, bytes and seconds, the submit to the last count."""
+        another island holds them (a copy target: every other island's copy), sent
+        over the links, waited for on the far island. Returns pages, bytes and
+        seconds, the submit to the last count."""
         start, count = dram.page_range(first, pages, source.pages)
         sends = []
-        for here, low, length in source.holders(start, count):
-            for there, part, part_length in target.holders(low, length):
+        for here, low, length, _ in source.holders(start, count):
+            for there in range(len(self.sessions)):
                 if there != here:
-                    sends.append((there, part, part_length))
+                    sends += [
+                        (holder, part, part_length)
+                        for holder, part, part_length, _ in target.placement.runs(
+                            low, length, there
+                        )
+                        if holder == there
+                    ]
         started = time.perf_counter()
         waits, far = [], []
         for there, low, length in sends:
@@ -1426,9 +1596,6 @@ class IslandSession:
                 area, relay = self._link_areas[:2]
             else:
                 words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
-                table = self._place_table()
-                at = h["KM_PLACE_TABLE"] // 4
-                words[:, at : at + table.size] = table
                 area = session.tensor(words, "uint32", shard_grid=(columns, rows))
                 relay = session.tensor(  # zeros: no ask, no count, no done word
                     np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),
@@ -1462,25 +1629,6 @@ class IslandSession:
         for plan in plans:
             plan.relay[1] = relays[plan.far]
         return plans
-
-    def _place_table(self):
-        """The placement table of the link area (KM_PLACE_TABLE): the island tensors
-        made before the load, newest first, an entry each {address, copy, then first
-        page and pages of each island}; a copy that names a tensor by its address
-        crosses for the pages another island holds. Tensors made after the load are
-        not in it."""
-        h = abi.headers()
-        entries, width = h["KM_PLACE_ENTRIES"], h["KM_PLACE_ENTRY_BYTES"] // 4
-        table = np.zeros(entries * width, np.uint32)
-        newest = [t for t in reversed(self._placed) if len(t.placement.parts) == 2]
-        for e, tensor in enumerate(newest[:entries]):
-            parts = [word for part in tensor.placement.parts for word in part]
-            table[e * width : e * width + 6] = [
-                tensor.address,
-                int(tensor.placement.copy),
-                *parts,
-            ]
-        return table
 
     def _check_links(self, runs, plans):
         """Every island's dispatcher has the tile and LIM base its link line took for

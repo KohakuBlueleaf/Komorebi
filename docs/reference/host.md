@@ -341,6 +341,15 @@ A program's inputs and outputs are tensors the session puts on the card:
 | `session.empty(shape, dtype, layout="row", shard_grid=None)` | the same, not written |
 | `session.grid` | the Tensix grid `(x, y)` of the open device |
 
+A session over several cards (`km.Session(cards=[...])`) takes, in `tensor` and
+`empty`, a hint for where a tensor's pages live, in the kernel's words: `split=d` and
+`group=(first, ranks)` (the group's ranks partition dimension `d` as `km::partition`
+does, each rank's part on its island; default every rank), `like=other` (as `other`
+is placed) or `copy=True` (on every island); no hint is `split=0` over every rank.
+`tensor.address` is then the tensor's reference word, which a kernel hands to
+Komorebi's page calls; on one card it is the bank address
+([islands](islands.md#tensors)).
+
 `session.device.mesh_capsule()` hands the device to a native module that takes it: a
 capsule named `komorebi.mesh_device` holding a `std::shared_ptr<MeshDevice>`.
 
