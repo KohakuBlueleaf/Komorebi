@@ -1,15 +1,17 @@
-"""Draws the README's figure "A thread has a program counter and a place",
-docs/images/breakpoints-{light,dark}.svg: six ways cores talk (a thread moves, values
-go to a fixed slot, one core to a row or a column, a core and its X280 core, commands,
-both data-movement CPUs of a core), each on a piece of the P150A tile grid in NoC0
-coordinates beside the lines of the example that does it.
+"""Draws two figures of the programming model from one description each:
+docs/images/breakpoints-{light,dark}.svg ("A thread has a program counter and a
+place": six ways cores talk, each on a piece of the P150A tile grid with the lines of
+the example that does it) and docs/images/placement-{light,dark}.svg ("Code goes where
+the work is": an overlay loaded and called, a handler loaded where a message arrives,
+and the code another party decides).
 
 usage: python docs/images/patterns.py [output folder]    (needs Pillow; Noto Sans, if
 it is installed, measures the labels)
 
 Every code line is read from the example file it names (path and line number below)
 when the figure is drawn, so a line cannot drift from its example; only its
-indentation, and where a row says so its trailing comment, are left out.
+indentation, and where a row says so its trailing comment, are left out. The numbers
+quoted in a panel are the page's: overlays.md for the costs of load() and call().
 """
 
 import re
@@ -40,6 +42,8 @@ THEMES = {
         "w": ("#0969da", "#a5d4ff", "#ddf4ff"),
         "r": ("#1a7f37", "#a6e3b5", "#dafbe1"),
         "p": ("#bf3989", "#f7c0de", "#ffeff7"),
+        "y": ("#9a6700", "#ffe27a", "#fff8c5"),
+        "ys": ("#9a6700", "#fff8c5", "#fff8c5"),
     },
     "dark": {
         "bg": "#0d1117",
@@ -57,6 +61,8 @@ THEMES = {
         "w": ("#4493f8", "#1d4b99", "#0c2d6b"),
         "r": ("#3fb950", "#1b5e2e", "#0f2d1a"),
         "p": ("#db61a2", "#7a2a57", "#3a1229"),
+        "y": ("#d29922", "#6b4e0a", "#3a2d0a"),
+        "ys": ("#d29922", "#3a2d0a", "#3a2d0a"),
     },
 }
 
@@ -140,9 +146,10 @@ def lines_of(path, spec, drop_comment=(), joint=False):
 
 
 class Svg:
-    def __init__(self, theme, title):
+    def __init__(self, theme, title, markers="abmwrp"):
         self.c = THEMES[theme]
         self.title = title
+        self.markers = markers  # the arrowheads this figure uses
         self.layers = [[], [], []]  # panel boxes, tiles and text, arrows and chips
         self.geom = []  # what the upper layer draws, to keep tile numbers clear of it
 
@@ -155,7 +162,7 @@ class Svg:
             f'<marker id="h{name}" viewBox="0 0 10 10" refX="9" refY="5" '
             f'markerWidth="5" markerHeight="5" orient="auto-start-reverse">'
             f'<path d="M0,0 L10,5 L0,10 z" fill="{c[name][0]}"/></marker>'
-            for name in "abmwrp"
+            for name in self.markers
         )
         head = (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{height}" '
@@ -186,7 +193,9 @@ class Svg:
     def line(self, x1, y1, x2, y2, colour, sw=2.2, dash=None, head=True, tail=False):
         stroke = self.c[colour][0] if colour in self.c else colour
         extra = f' stroke-dasharray="{dash}"' if dash else ""
-        extra += f' marker-end="url(#h{colour})"' if head and colour in "abmwrp" else ""
+        extra += (
+            f' marker-end="url(#h{colour})"' if head and colour in self.markers else ""
+        )
         extra += f' marker-start="url(#h{colour})"' if tail else ""
         self.add(
             f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
@@ -752,7 +761,11 @@ def legend(s, y, items, note):
             s.rect(x, y, 22, 16, c["dram"], rx=3)
         elif kind == "x280":
             s.rect(x, y, 22, 16, c["w"][2], c["w"][0], rx=3, sw=1.5)
-        else:  # a fused-off tile
+        elif kind == "part":
+            s.rect(x, y, 22, 16, c["y"][1], c["y"][0], rx=3)
+        elif kind == "loading":
+            s.rect(x, y, 22, 16, c["y"][2], c["y"][0], rx=3, sw=1.5, dash="4 3")
+        else:  # a fused-off tile, an empty slot
             s.rect(x, y, 22, 16, "none", c["line"], rx=3, dash="3 3")
         s.text(x + 30, y + 13, text, 12)
         x += 30 + width(text) + 22
@@ -795,11 +808,309 @@ def figure_patterns(theme):
     return s.finish(int(end + 10))
 
 
+# ---------------------------------------------------------------------------
+# Figure 2: code goes where the work is.
+# ---------------------------------------------------------------------------
+
+
+def l1_box(s, x, y, w, slots):
+    """A core's L1 as its slots: (text, state), state held, loading or empty."""
+    c = s.c
+    n = len(slots)
+    sw = (w - 12 - (n - 1) * 6) / n
+    s.rect(x, y, w, 46, c["bg"], c["rule"], rx=4)
+    boxes = []
+    for k, (text, state) in enumerate(slots):
+        sx, sy, sh = x + 6 + k * (sw + 6), y + 6, 34
+        if state == "empty":
+            s.rect(sx, sy, sw, sh, "none", c["line"], rx=3, dash="3 3")
+        elif state == "loading":
+            s.rect(sx, sy, sw, sh, c["y"][2], c["y"][0], rx=3, sw=1.5, dash="4 3")
+        else:
+            s.rect(sx, sy, sw, sh, c["y"][1], c["y"][0], rx=3)
+        s.text(sx + sw / 2, sy + sh / 2 + 4, text, 12, c["fg"], anchor="middle")
+        boxes.append((sx, sy, sw, sh))
+    return boxes
+
+
+def overlay_step(s, x, top, heading, held, numbers):
+    """One command of an overlay on core 0: the tiles, its L1, the load, the call."""
+    c = s.c
+    s.text(x, top + 14, heading, 12, c["fg"], True)
+    s.text(x + 372, top + 14, numbers, 12, c["y"][0], True, anchor="end")
+    frag = Frag(s, x + 24, top + 52, [0, 1], [2], pitch=48, tile=44)
+    box = l1_box(s, x + 150, top + 52, 210, [("scale", "held"), ("", "empty")])
+    slot = box[0]
+    d = frag.box(0, 2)
+    if not held:
+        x1, y1 = d[0] + d[2] / 2, d[1] + d[3] + 2
+        x2, y2 = slot[0] + 22, slot[1] + slot[3] + 2
+        s.curve(x1, y1, (x1 + x2) / 2, y1 + 56, x2, y2, "y")
+        s.chip((x1 + x2) / 2 + 2, y1 + 28 + 3, "load", "y")
+    cx = slot[0] + slot[2] - 24
+    s.line(cx, top + 24, cx, slot[1] - 2, "y")
+    s.chip(cx, top + 24, "call", "y")
+    frag.draw({(1, 2): "y"})
+    s.text(x + 360, top + 118, "L1 of core 0", 12, c["mute"], anchor="end")
+
+
+def panel_load_call(s, y):
+    """1. A core loads an overlay from DRAM into a slot of its L1 and calls it."""
+    col = "y"
+    code = lines_of(
+        "12_overlays/kernels/reader.cpp", [14, 17, 25], drop_comment=(14, 17)
+    )
+    rows = [
+        ("head", "12_overlays · reader.cpp 14, 17, 25"),
+        ("code", code[0], False, "names it", "nothing moves"),
+        (
+            "code",
+            code[1],
+            True,
+            "load",
+            "into a slot of this core; nothing moves when it is held",
+        ),
+        ("code", code[2], True, "call", "the part's code, in the slot"),
+    ]
+    x = BOX_X + 22
+    band = 140
+    height = 34 + band + len(plan_rows(rows, x, LIMIT)) * ROW + 12
+    panel_frame(
+        s,
+        y,
+        height,
+        "a core loads an overlay into a slot and calls it",
+        "12_overlays",
+        col,
+    )
+    top = y + 34
+    overlay_step(
+        s,
+        BOX_X + 14,
+        top,
+        "first command: load, then call",
+        False,
+        "load(): 998 cycles",
+    )
+    overlay_step(
+        s,
+        BOX_X + 14 + 392,
+        top,
+        "next command: the slot holds it",
+        True,
+        "load(): 72 cycles",
+    )
+    code_rows(s, x, top + band, col, rows)
+    return height
+
+
+def panel_handler(s, y):
+    """2. A message names a handler; its part is loaded where the message arrives."""
+    c, col = s.c, "y"
+    program = lines_of("20_message_overlays/message_overlays.py", [115])
+    part = lines_of("20_message_overlays/kernels/lookup.cpp", [8, 46])
+    rows = [
+        (
+            "code",
+            program[0],
+            False,
+            "parts",
+            "each handler's body is a part",
+            "message_overlays.py 115",
+        ),
+        ("code", part[0], False, "the part", None, "lookup.cpp 8"),
+        (
+            "code",
+            part[1],
+            True,
+            "forward",
+            "the next handler is named in the message",
+            "lookup.cpp 46",
+        ),
+    ]
+    x = BOX_X + 22
+    band = 150
+    height = 34 + band + len(plan_rows(rows, x, LIMIT)) * ROW + 12
+    panel_frame(
+        s,
+        y,
+        height,
+        "a message names its handler, which is loaded where it arrives",
+        "20_message_overlays",
+        "m",
+    )
+    top = y + 34
+    ox = BOX_X + 14
+    s.text(
+        ox,
+        top + 14,
+        "the message reaches core 36 and its handler is not in a slot",
+        12,
+        c["fg"],
+        True,
+    )
+    frag = Frag(
+        s, ox + 24, top + 56, [0, 1, 2, 3], [5], pitch=48, tile=44, heads="rows"
+    )
+    sender, receiver, d = frag.box(3, 5), frag.box(1, 5), frag.box(0, 5)
+    x1, x2 = sender[0] + sender[2] / 2, receiver[0] + receiver[2] / 2
+    ytop = sender[1] - 2
+    s.curve(x1, ytop, (x1 + x2) / 2, ytop - 52, x2, ytop, "m", dash="5 3")
+    s.chip((x1 + x2) / 2, ytop - 26, "64 B, handler value", "m")
+    box = l1_box(
+        s,
+        ox + 268,
+        top + 62,
+        330,
+        [("lookup", "held"), ("value", "loading"), ("", "empty")],
+    )
+    slot = box[1]
+    xa, ya = d[0] + d[2] / 2, d[1] + d[3] + 2
+    xb, yb = slot[0] + slot[2] / 2, slot[1] + slot[3] + 2
+    s.curve(xa, ya, (xa + xb) / 2, ya + 70, xb, yb, "y")
+    s.chip((xa + xb) / 2, ya + 35 + 3, "load", "y")
+    frag.draw({(1, 5): "y", (3, 5): "m"})
+    s.text(ox + 268, top + 124, "L1 of core 36", 12, c["mute"])
+    code_rows(s, x, top + band, col, rows)
+    return height
+
+
+def panel_decided(s, y):
+    """3. Another party decides the code: a leader, an X280 core, run.load."""
+    c, col = s.c, "y"
+    cast = lines_of(
+        "17_leader_overlay/kernels/reader.cpp", [155, 165, 76, 77], drop_comment=(165,)
+    )
+    pull = lines_of("18_thread_split/kernels/reader.cpp", [47, 64], drop_comment=(47,))
+    load = lines_of("16_two_programs/two_programs.py", [354], drop_comment=(354,))
+    x = BOX_X + 322
+    rows_a = [
+        ("head", "17_leader_overlay · reader.cpp 155, 165, 76, 77"),
+        ("code", cast[0], True, "cast"),
+        ("code", cast[1], False),
+        ("code", cast[2], False),
+        ("code", cast[3], True, "load", "and call it"),
+    ]
+    rows_b = [
+        ("head", "18_thread_split · reader.cpp 47, 64"),
+        ("code", pull[0], True, "pull"),
+        ("code", pull[1], True, "names it"),
+    ]
+    rows_c = [
+        ("head", "16_two_programs · two_programs.py 354"),
+        ("code", load[0], True, "run.load", "another program"),
+    ]
+    heights = [
+        max(len(plan_rows(rows_a, x, LIMIT)) * ROW + 16, 102),
+        112,
+        102,
+    ]
+    height = 34 + sum(heights) + 4
+    panel_frame(
+        s,
+        y,
+        height,
+        "another party decides the code",
+        "17_leader_overlay, 18_thread_split, 16_two_programs",
+        col,
+    )
+    sub = y + 34
+    # a leader casts the overlay's number to its row
+    s.text(
+        BOX_X + 14,
+        sub + 14,
+        "a leader casts the overlay's number to its group",
+        12,
+        c["fg"],
+        True,
+    )
+    frag = Frag(s, BOX_X + 34, sub + 38, [1, 2, 3, 4, 5, 6], [4])
+    leader, last = frag.box(1, 4), frag.box(6, 4)
+    yb = leader[1] + leader[3] - 6
+    s.line(leader[0] + leader[2] - 8, yb, last[0] + 10, yb, "b", 2.4)
+    s.chip(frag.cx(4), frag.cy(4) + 1, "word", "b")
+    frag.draw({(1, 4): "b", **{(k, 4): "y" for k in range(2, 7)}})
+    s.text(frag.x, frag.bottom + 18, "the word is the overlay's number", 12, c["mute"])
+    code_rows(s, x, sub + 8, col, rows_a)
+    # an X280 core's answer names it
+    sub += heights[0]
+    s.line(BOX_X + 12, sub - 2, BOX_X + BOX_W - 12, sub - 2, c["line"], 1, head=False)
+    s.text(BOX_X + 14, sub + 14, "an X280 core's answer names it", 12, c["fg"], True)
+    frag = Frag(s, BOX_X + 34, sub + 38, [5, 6, 7, 8], [4], pitch=48, tile=44)
+    core, x280 = frag.box(6, 4), frag.box(8, 4)
+    xa, xb = core[0] + core[2] + 3, x280[0] - 3
+    ya, yc = core[1] + 14, core[1] + core[3] - 14
+    s.line(xa, ya, xb, ya, "w")
+    s.line(xb, yc, xa, yc, "w")
+    frag.draw({(6, 4): "y", (8, 4): "w"})
+    s.text((xa + xb) / 2, ya - 5, "pull", 12, c["w"][0], True, anchor="middle")
+    s.text((xa + xb) / 2, yc + 16, "answer", 12, c["w"][0], True, anchor="middle")
+    s.text(
+        frag.x,
+        frag.bottom + 18,
+        "a range, and a word: the overlay's number",
+        12,
+        c["mute"],
+    )
+    code_rows(s, x, sub + 8, col, rows_b)
+    # run.load makes a group hold another program
+    sub += heights[1]
+    s.line(BOX_X + 12, sub - 2, BOX_X + BOX_W - 12, sub - 2, c["line"], 1, head=False)
+    s.text(
+        BOX_X + 14,
+        sub + 14,
+        "run.load: a group holds another program",
+        12,
+        c["fg"],
+        True,
+    )
+    frag = Frag(s, BOX_X + 34, sub + 38, [1, 2, 3, 4, 5, 6], [4])
+    frag.draw(
+        {**{(k, 4): "ys" for k in range(1, 4)}, **{(k, 4): "y" for k in range(4, 7)}}
+    )
+    left, right = frag.cx(2), frag.cx(5)
+    s.text(left, frag.bottom + 18, "sum", 12, c["mute"], anchor="middle")
+    s.text(right, frag.bottom + 18, "widen", 12, c["y"][0], True, anchor="middle")
+    s.text(
+        frag.x + 6 * frag.pitch + 8,
+        frag.cy(4) + 4,
+        "2.3 to 2.6 µs",
+        12,
+        c["y"][0],
+        True,
+    )
+    code_rows(s, x, sub + 8, col, rows_c)
+    return height
+
+
+def figure_placement(theme):
+    panels = [panel_load_call, panel_handler, panel_decided]
+    s = Svg(theme, "Code goes where the work is", markers="bmwy")
+    bottom = stack(s, panels)
+    items = [
+        ("tile", "Tensix core"),
+        ("dram", "DRAM bank"),
+        ("x280", "X280 core"),
+        ("part", "a part in a slot"),
+        ("loading", "a part being loaded"),
+        ("empty", "an empty slot"),
+    ]
+    note = [
+        "Column and row numbers are NoC0 coordinates. Cycles: medians for a 128-byte "
+        "reader part on one core,",
+        "AICLK 1,350 MHz. Code is copied from the named file and line, its indentation "
+        "removed.",
+    ]
+    end = legend(s, bottom + 2, items, note)
+    return s.finish(int(end + 10))
+
+
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "docs" / "images"
     out.mkdir(parents=True, exist_ok=True)
     for theme in THEMES:
         (out / f"breakpoints-{theme}.svg").write_text(figure_patterns(theme) + "\n")
+        (out / f"placement-{theme}.svg").write_text(figure_placement(theme) + "\n")
 
 
 if __name__ == "__main__":
