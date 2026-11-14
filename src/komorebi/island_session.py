@@ -853,9 +853,11 @@ class IslandSession:
             raise
         except RuntimeError as error:  # the allocator's: the DRAM is full
             fits = self._fits(session, mine, pages, dtype, layout)
+            lines = str(error).splitlines() or [""]  # its sentence, not its backtrace
+            said = next((line for line in lines if "Out of Memory" in line), lines[0])
             raise KomorebiError(
                 f"island {island}: its part of {pages} pages of shape {tuple(shape)} "
-                f"does not fit its DRAM ({error}); at most {fits} pages of this kind "
+                f"does not fit its DRAM ({said}); at most {fits} pages of this kind "
                 "fit there now: split it over more islands' ranks (`group`) or free "
                 "tensors"
             ) from None
