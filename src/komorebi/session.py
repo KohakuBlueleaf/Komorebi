@@ -1437,8 +1437,15 @@ class _Backend:
             (cores * messages.queue_messages // 32, page // 4), "int32"
         )
         self.io.append(queue)
+        body = 0
+        if messages.body_bytes:  # a page of body_bytes a queue position
+            bodies = self.session.empty(
+                (cores * messages.queue_messages, messages.body_bytes // 4), "int32"
+            )
+            self.io.append(bodies)
+            body = bodies.address
         lines = base + abi_headers["KMD_LIM_MESSAGES"]
-        return messages.args(queue.address, lines), messages.compute_args(cores)
+        return messages.args(queue.address, lines, body), messages.compute_args(cores)
 
     def describe(
         self,

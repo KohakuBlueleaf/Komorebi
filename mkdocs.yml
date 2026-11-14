@@ -134,5 +134,6 @@ nav:
       - examples/20_message_overlays/README.md
       - examples/21_thread_load/README.md
       - examples/22_gate/README.md
+      - examples/23_message_body/README.md
   - Releases:
       - releases/0.1.0.md
