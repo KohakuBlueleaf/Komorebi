@@ -117,6 +117,7 @@ typedef struct {
 typedef struct {
     uint32_t active, kind, request, first, count, next, slot, sequence;
     uint32_t leaving; /* a timeout's: abort words written, its cores checked */
+    uint32_t hung;    /* a link core of its group did not leave (KMD_LINK_HUNG) */
     uint64_t start, until;
 } kmd_inspect_t;
 
@@ -183,6 +184,7 @@ typedef struct {
     uint32_t link_on, thread_first;
     uint64_t link_slots;
     uint32_t reset_offset, reset_bytes; /* the kept reset list (bytes 0: none) */
+    uint8_t slot_lost[KM_RING_SLOTS];   /* 1 + the hung link core it had traffic on */
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */

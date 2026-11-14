@@ -271,8 +271,8 @@ def grid_program(plan, nocs, tensors, fidelity="HiFi2", first_row=0, command=Non
         buffers=[km.Buffer(*buffer) for buffer in plan.buffers()],
         args=args,
         compile_args={
-            "reader": tensors["a"].accessor_args(),
-            "writer": tensors["w"].accessor_args() + tensors["y"].accessor_args(),
+            "reader": tensors["a"].tensor_args(),
+            "writer": tensors["w"].tensor_args() + tensors["y"].tensor_args(),
         },
         compute={
             "math_fidelity": fidelity,
@@ -361,11 +361,11 @@ def split_program(plan, tensors, fidelity="HiFi2"):
         buffers=[km.Buffer(*buffer) for buffer in plan.buffers()],
         args=lambda core: (words, words, words),
         compile_args={
-            "reader": tensors["a"].accessor_args() + tensors["w"].accessor_args(),
+            "reader": tensors["a"].tensor_args() + tensors["w"].tensor_args(),
             "writer": (
-                tensors["y"].accessor_args()
-                + tensors["a"].accessor_args()
-                + tensors["w"].accessor_args()
+                tensors["y"].tensor_args()
+                + tensors["a"].tensor_args()
+                + tensors["w"].tensor_args()
             ),
         },
         compute={

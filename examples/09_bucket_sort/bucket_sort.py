@@ -58,7 +58,7 @@ def program(keys, output, words, x280_cores):
             ),
         ],
         compile_args={
-            "reader": keys.accessor_args(),
+            "reader": keys.tensor_args(),
             "writer": output.accessor_args(),
         },
     )

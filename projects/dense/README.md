@@ -368,6 +368,85 @@ are computed from the crossed B.
 The integer case above (7680 x 64 x 128, 120 row tiles each) is bit for bit on two
 cards and on one (by rank, the first version).
 
+"B read across": with `--b-far` B is held by island 0 alone (split over island 0's
+ranks), and island 1's grid reads its W pages from island 0's DRAM in the kernels
+themselves (the grid writer reads W through `km::read_pages`, which asks island 0 for
+the pages it does not hold); no copy is made before the call. Measured on 2026-11-15
+at 00:22, the integer case above (7680 x 64 x 128, 121 and 119 row tiles), one page
+link (`--m 7680 --k 64 --n 128 --inputs int --b-far --links 1 --kernel-bytes 131072`:
+the grid's kernels take 122,752 bytes of kernel buffer with the page links built in,
+more than the two-card default of 112 KiB): bit for bit on the 256 sampled rows of
+both islands, 36.7 us a call in the loop; island 0 15.2 us, island 1 31.8 us.
+
+## One flat group over two cards (naive)
+
+`flat.py` runs the grid form's kernels, unchanged, on ONE flat group of both cards'
+ranks, every tensor held once. The project's rule makes one plan for the islands' grids
+stood one below the other (each less the column of its link core: 11 x 20 on two
+p150a), so the rule sees one tall grid. "Below", not "beside": rows then stay inside
+an island, so A (read by each row's first core) and Y (written by each core) split along
+their rows never cross, and W is read only by each column's bottom core, all on the
+bottom island; side by side, W and Y would have to be split along their columns and
+every column's sender would read W on its own island. A column that spans the islands
+is a broadcast an island part: its bottom part's first core sends each block through
+the relay to the first core of the part above (`layout.island_broadcast_args`). The
+plan sits so island 0's bands end where its half of A's rows ends. With `--hints` the
+tensors are placed so no page crosses: A and Y split along their rows over the two
+ranks at the islands' edge (half an island), W over the bottom island's ranks; a rect
+on one island holds all three there. On one card the same script makes the card's own
+plan.
+
+```
+python projects/dense/flat.py --m 1024 --k 1024 --n 1024 --cards 0,1 --hints
+python projects/dense/flat.py --m 1024 --k 1024 --n 1024 --cards 0
+```
+
+Cubes, the loop's host time per call (about four seconds of calls back to back), the
+check of `run.py` on 256 sampled rows passed on every row. One card: `bench.py --form
+grid` on card 0 (128 to 2048 cubed measured on 2026-11-14 between 23:48 and 23:56; 4096 to
+16,384 the results table above). Two cards: `flat.py --cards 0,1`, measured on 2026-11-15
+(the 1024 cubed hinted row on 2026-11-14), X280 and card clocks 1,350 MHz, "hints" with
+`--hints`, "none" without (the session's default placement). "Crossed" is what
+`run.crossings()` counted a call: bytes, page asks and pages of the kernels' page calls,
+blocks relayed by broadcasts; "rate" is those bytes over the call. Results:
+`results/sq*-flat-0x1.json` (hints) and `results/sq*-flat-0x1-nohint.json`.
+
+| Cube | One card: layout, us, TFLOP/s | Two cards: placement, layout, us, TFLOP/s | Crossed a call, rate | Two / one |
+|---|---|---|---|---|
+| 128 | cols, 9.3, 0.45 | hints: cols on island 0 (11 x 1), 17.2, 0.24 | nothing | 1.85 |
+| 128 | | none: the same plan, 17.4, 0.24 | nothing (all three held by island 0) | 1.87 |
+| 256 | cols, 13.4, 2.51 | hints: cols on island 0 (11 x 1), 20.4, 1.64 | nothing | 1.52 |
+| 256 | | none: the same plan, 20.4, 1.64 | nothing (all three held by island 0) | 1.53 |
+| 512 | 2d, 17.8, 15.07 | hints: cols on island 0 (11 x 2), 53.5, 5.02 | nothing | 3.01 |
+| 512 | | none: the same plan, 53.5, 5.02 | nothing (all three held by island 0) | 3.00 |
+| 1024 | 2d, 43.0, 49.96 | hints: 2d, 16 x 8 bands of 2 x 4 tiles, 811.3, 2.65 | 2.11 MB: 160 blocks; 2.60 GB/s | 18.9 |
+| 1024 | | none: the same plan, 3,234.8, 0.66 | 7.37 MB: 320 asks, 2,560 pages, 160 blocks; 2.28 GB/s | 75.2 |
+| 2048 | 2d, 172.2, 99.77 | hints: 2d, 16 x 8 bands of 4 x 8 tiles, 3,081.0, 5.58 | 8.43 MB: 576 blocks; 2.73 GB/s | 17.9 |
+| 2048 | | none: the same plan, 10,801.7, 1.59 | 29.4 MB: 768 asks, 10,240 pages, 576 blocks; 2.73 GB/s | 62.7 |
+| 4096 | 2d, 958.3, 143.4 | hints: none keep A's and Y's pages home (bands of 7 tile rows, the islands' edge at row 64) | | |
+| 4096 | | none: 2d, 19 x 11 bands of 7 x 12 tiles, 33,930.6, 4.05 | 104.7 MB: 2,877 asks, 34,048 pages, 2,464 blocks; 3.09 GB/s | 35.4 |
+| 8192 | 2d, 8,608.3, 127.7 | hints: none keep the pages home (bands of 13 tile rows, edge at 128) | | |
+| 8192 | | none: 2d, 20 x 11 bands of 13 x 24 tiles, 115,029.1, 9.56 | 433.0 MB: 3,910 asks, 75,520 pages, 19,711 blocks; 3.76 GB/s | 13.4 |
+| 16,384 | 2d, 87,944.5, 100.0 | hints: none keep the pages home (bands of 26 tile rows, edge at 256) | | |
+| 16,384 | | none: 2d, 20 x 11 bands of 26 x 48 tiles, 1,607,016.8, 5.47 | 5.95 GB: 28,266 asks, 1,003,520 pages, 275,968 blocks; 3.70 GB/s | 18.3 |
+
+From 1024 cubed up every two-card point is bound by the links: what crosses, over the
+call, comes to 2.3 to 3.8 GB/s through one link and its link cores. With hints only W's blocks cross (each once, through the column broadcasts'
+relay); without, A's pages that island 1's rows read from island 0 cross too, three to
+four times the bytes and three to four times the time. 128 to 512 cubed fit on island 0's
+cores: nothing crosses, and the default placement holds the small tensors on island 0 as
+the hints do. Their two-card time is the eleven columns (512 cubed gets a cols plan of
+11 x 2 cores where the twelve-column card takes 2d) and the two-card host loop: one
+island's part takes 8.4, 16.9 and 50.5 us of the 17.2, 20.4 and 53.5. The same script on
+card 0 alone takes 43.9 us a call at 1024 cubed (48.9 TFLOP/s; single calls 41.0 us
+against `bench.py`'s 40.8): the flat plan costs one card nothing but the script's loop.
+The 1024 cubed hinted row ran before the host's placement hints reached the tree, with A
+and Y in even halves by island and W held by island 1: the placement `--hints` now
+gives. From 4096 cubed the rule's bands do not end at the islands' edge, so no split
+hint keeps A's rows home and those cubes have only the unhinted row. Over islands the
+script's command deadline is three times the call at 2 TFLOP/s (the project's 20 TFLOP/s
+gave the 16,384 cubed call 1.37 s, short of its 1.61 s).
+
 ## A linear layer written for islands
 
 `linear.py` and `kernels/linear/` are one set of kernels for Y = X x W that runs
@@ -501,6 +580,7 @@ python projects/dense/linear.py --cube 16384 --cards 0,1 --kernel-bytes 147456
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `islands.py` | the grid form over the islands of a session, A and Y placed by island, W a copy on each |
 | `linear.py`, `kernels/linear/linear.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the linear layer written for islands: W's part, X read where it lives, Y or the partial sums, their sum |
+| `flat.py` | the grid form, kernels unchanged, on one flat group over the islands: one plan for the islands' grids one below the other, every tensor held once |
 | `results/` | the runs behind the results table |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
 | `bench_ttnn.py` | TT-NN's product and SwiGLU on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |

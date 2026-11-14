@@ -583,13 +583,13 @@ def panel_cast(s, y):
     """3. One core to a row or a column: a block, and a word."""
     col = "b"
     send = lines_of("03_broadcast/kernels/broadcast.h", [78])
-    word = lines_of("15_leader/kernels/reader.cpp", [79, 85], drop_comment=(85,))
+    word = lines_of("15_leader/kernels/reader.cpp", [87, 93], drop_comment=(93,))
     rows = [
         ("head", "03_broadcast · broadcast.h 78", "cast", "a block to the row"),
         ("code", send[0], True),
         (
             "head",
-            "15_leader · reader.cpp 79, 85",
+            "15_leader · reader.cpp 87, 93",
             "cast",
             "a word, the same on every core",
         ),
@@ -739,9 +739,9 @@ def panel_commands(s, y):
 def panel_both(s, y):
     """6. Both data-movement CPUs of a core on one stream between DRAM and L1."""
     c, col = s.c, "p"
-    code = lines_of("11_movement/kernels/movement.cpp", [14, 23, 36])
+    code = lines_of("11_movement/kernels/movement.cpp", [16, 25, 39])
     rows = [
-        ("head", "movement.cpp 14, 23, 36"),
+        ("head", "movement.cpp 16, 25, 39"),
         ("code", code[0], True, "movers", "one source runs on both"),
         ("code", code[1], False, "pattern"),
         ("code", code[2], True, "move", "this mover's blocks"),
@@ -1005,13 +1005,13 @@ def panel_decided(s, y):
     """3. Another party decides the code: a leader, an X280 core, run.load."""
     c, col = s.c, "y"
     cast = lines_of(
-        "17_leader_overlay/kernels/reader.cpp", [155, 165, 76, 77], drop_comment=(165,)
+        "17_leader_overlay/kernels/reader.cpp", [157, 167, 77, 78], drop_comment=(167,)
     )
     pull = lines_of("18_thread_split/kernels/reader.cpp", [47, 64], drop_comment=(47,))
     load = lines_of("16_two_programs/two_programs.py", [354], drop_comment=(354,))
     x = BOX_X + 322
     rows_a = [
-        ("head", "17_leader_overlay · reader.cpp 155, 165, 76, 77"),
+        ("head", "17_leader_overlay · reader.cpp 157, 167, 77, 78"),
         ("code", cast[0], True, "cast"),
         ("code", cast[1], False),
         ("code", cast[2], False),
@@ -1648,9 +1648,9 @@ def panel_rounds(s, y):
 def panel_cast_time(s, y):
     """A leader casts the overlay's number; each core loads it when it must."""
     c = s.c
-    code = lines_of("17_leader_overlay/kernels/reader.cpp", [155])
+    code = lines_of("17_leader_overlay/kernels/reader.cpp", [157])
     rows = [
-        ("code", code[0], True, "cast", "the overlay's number", "reader.cpp 155"),
+        ("code", code[0], True, "cast", "the overlay's number", "reader.cpp 157"),
     ]
     names = ["core 24, the leader", "core 25", "core 26", "core 27"]
     lanes = Lanes(s, y + 66, names, BOX_X + 176, pitch=26)

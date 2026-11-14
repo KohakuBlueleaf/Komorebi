@@ -4,10 +4,11 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "graph.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    constexpr auto state_args = TensorAccessorArgs<0>();
+    using State = km::Tensor<0>;
     km::Writer writer;
     const uint32_t scratch = get_write_ptr(kCbScratch);
     volatile uint32_t* word = reinterpret_cast<volatile uint32_t*>(scratch);
@@ -34,7 +35,7 @@ void kernel_main() {
         const uint32_t index = writer.me() - km::first(command);
         const uint32_t page = writer.me();
         const uint32_t state_address = command.a0;
-        const auto state = TensorAccessor(state_args, state_address);
+        const State state(state_address);
         const uint32_t handler = km::handler(command);
         if (handler == kHandlerStall) {
             const uint32_t stalled_rank = command.a0;
@@ -47,7 +48,11 @@ void kernel_main() {
             }
             uint32_t total = 0;
             for (uint32_t state_page = 0; state_page < pages; state_page++) {
-                noc_async_read_page(state_page, state, scratch);
+                if (!km::read_pages(
+                    writer, command, state, state_page, 1, scratch, kAskPort
+                )) {
+                    return false;
+                }
                 if (!reads_done()) {
                     return false;
                 }
@@ -63,7 +68,9 @@ void kernel_main() {
             return true;
         }
         const uint32_t round = command.a1;
-        noc_async_read_page(page, state, scratch);
+        if (!km::read_pages(writer, command, state, page, 1, scratch, kAskPort)) {
+            return false;
+        }
         if (!reads_done()) {
             return false;
         }
@@ -75,7 +82,9 @@ void kernel_main() {
                     ? value >> 1
                     : value * 3u
         );
-        noc_async_write_page(page, state, scratch);
-        return writes_done();
+        return (
+            km::write_pages(writer, command, state, page, 1, scratch, kAskPort) &&
+            writes_done()
+        );
     });
 }

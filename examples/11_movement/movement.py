@@ -42,8 +42,9 @@ def parse():
     return args
 
 
-def program(tensor, block):
-    """Input halves of four blocks, output halves of two."""
+def program(tensors, block):
+    """Input halves of four blocks, output halves of two; the input's and the
+    output's tensor arguments."""
     return km.Program(
         "movement",
         kernels=KERNELS,  # movement.cpp for both movers, compute.cpp
@@ -63,7 +64,9 @@ def program(tensor, block):
                 2 * block,
             ),
         ],
-        compile_args={"movement": tensor.accessor_args()},
+        compile_args={
+            "movement": tensors["input"].tensor_args() + tensors["output"].tensor_args()
+        },
         handlers=HEADER,
     )
 
@@ -133,7 +136,7 @@ def main():
             ),
         }
         log("tensors written")
-        run = session.load(program(tensors["input"], args.block))
+        run = session.load(program(tensors, args.block))
         results = []
         try:
             for pattern in patterns:
