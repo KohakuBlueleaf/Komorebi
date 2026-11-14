@@ -76,25 +76,43 @@ static inline void messages_gave(kmd_t* dispatcher, uint32_t core) {
     messages_run_line(dispatcher, KM_X280_RUN_END);
 }
 
+/* 1 when the run's group spans other islands and this island has link cores: link
+ * core 0 serves the run's messages across and its line counts with the group's. */
+static inline uint32_t messages_link(const kmd_t* dispatcher) {
+    const kmd_messages_t* run = &dispatcher->messages;
+    return (
+        dispatcher->island_count != 0 && (run->part >> 16) < (run->group >> 16) &&
+        dispatcher->cores > dispatcher->island_count
+    );
+}
+
 /* The index of the run's line `index` of `lines`: the group's cores on this island,
- * then the X280 ranks at their core indices. */
-static inline uint32_t messages_line(const kmd_messages_t* run, uint32_t index) {
+ * link core 0 when it serves the run, then the X280 ranks at their core indices. */
+static inline uint32_t messages_line(const kmd_t* dispatcher, uint32_t index) {
+    const kmd_messages_t* run = &dispatcher->messages;
     const uint32_t first = run->part & 0xFFFFu, count = run->part >> 16;
-    return index < count ? first + index : KM_X280_RANK_CORE(index - count);
+    const uint32_t link = messages_link(dispatcher);
+    if (index < count) {
+        return first + index;
+    }
+    return index < count + link ? dispatcher->island_count
+                                : KM_X280_RANK_CORE(index - count - link);
 }
 
 /* The two passes: 1 quiet, 0 not yet (a line busy, of an earlier run or changed).
  * Counter tiles and X280 ranks are read as the group's other cores. */
 static inline int messages_quiet(kmd_t* dispatcher) {
     kmd_messages_t* run = &dispatcher->messages;
-    const uint32_t lines_count = (run->part >> 16) + run->x280_count;
+    const uint32_t lines_count = (
+        (run->part >> 16) + messages_link(dispatcher) + run->x280_count
+    );
     volatile const uint32_t* lines = (
         (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_MESSAGES)
     );
     dispatcher->x280_cores[KMD_H_MESSAGES_CHECKS] = ++run->checks;
     x280_fence_ir();
     for (uint32_t index = 0; index < lines_count; index++) {
-        const uint32_t core = messages_line(run, index);
+        const uint32_t core = messages_line(dispatcher, index);
         volatile const uint32_t* line = lines + 4u * core;
         if (line[KM_MESSAGES_LINE_RUN] != run->sequence) {
             return 0;
@@ -113,7 +131,7 @@ static inline int messages_quiet(kmd_t* dispatcher) {
     x280_fence_ir();
     uint64_t sent = 0, consumed = 0;
     for (uint32_t index = 0; index < lines_count; index++) {
-        const uint32_t core = messages_line(run, index);
+        const uint32_t core = messages_line(dispatcher, index);
         volatile const uint32_t* line = lines + 4u * core;
         if (
             line[KM_MESSAGES_LINE_RUN] != run->sequence ||

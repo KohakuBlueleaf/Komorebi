@@ -406,10 +406,11 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     }
 #endif
     /* A group or thread on another island: its parts cross (link.h). A command from
-     * there runs only its part here. */
+     * there, or the host's part of a dynamic run (its messages cross), runs here. */
     if (
         dispatcher->link_on && source != KMD_SRC_LINK && !queued &&
-        handler != KM_HANDLER_EXIT && link_reaches_out(dispatcher, group)
+        handler != KM_HANDLER_EXIT && link_reaches_out(dispatcher, group) &&
+        !(host && KM_IS_DYNAMIC(dispatcher->messages.handler, handler))
     ) {
         return link_cross(dispatcher, source, now);
     }
