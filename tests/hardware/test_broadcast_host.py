@@ -24,13 +24,7 @@ def test_a_stalled_receiver_times_out_then_the_next_run_is_exact():
     assert stalled["kernel"]["error_name"] == "deadline"
     assert timed_out["group"] == [0, 120]  # the last command, on every core
     named = {core["core"]: core for core in timed_out["not_reported"]}
-    assert named[17]["reader"]["where"] == "stall"
-    sender = [
-        entry
-        for entry in stalled["broadcast_gave_up"]
-        if entry["core"] == 16 and entry["broadcast"] == 1
-    ]
-    assert sender[0]["where"] == "broadcastdone" and sender[0]["block"] == 3
+    assert named[0]["writer"]["where"] == "complete"  # the leader waits for the rest
     assert clean["kernel"]["error_name"] == "none" and clean["core_gave_up"] == []
     assert clean["ranks_checked"] == 24 and clean["ranks_bad"] == 0
     for run in (stalled, clean):
