@@ -128,9 +128,17 @@ A step is tried only when the one before it was not enough.
     On several cards each island's dispatcher holds its own island's lists, and the
     give-up's text starts `island i:`; `run.reset_core(island, core)` and
     `run.recoveries` (with the island) are the calls
-    ([islands](../reference/islands.md#the-run)). Link cores get no list: a reset
-    link core would lose the connection it holds open, so a give-up on one still ends
-    the run.
+    ([islands](../reference/islands.md#the-run)). Link cores get no list, so the
+    dispatcher never resets one at a give-up.
+
+7. **A link core, by the host.** `run.reset_core(island, core)` of a link core
+   closes the core's fabric connections at their routers, resets it and loads it
+   again, then opens its connections again; the far link core needs nothing. On two
+   p150a cards: 101 ms (with two links) or 46 ms (one link) for the reset, 0.16 to
+   0.23 ms to open again, and the next reads across (example 01's islands script with
+   `--reset-link 1`) and the next commands that cross (example 25 with
+   `--reset-link`) are exact. Use it between commands: a line or an ask in flight on
+   that core is lost, and the command waiting for it times out at its deadline.
 
 6. **The dispatcher's own loop.** Core 2 of the dispatcher's cluster watches the loop on
    core 0. A loop that makes no pass for 100 ms is reported to the host (`run.stalls`,

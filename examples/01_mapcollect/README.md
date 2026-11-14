@@ -69,6 +69,7 @@ then.
 | `mapcollect.py` | builds the commands, runs them, checks the outputs, prints one JSON line |
 | `block.py` | DOT commands that each carry a block of weights (below, "More than ten words") |
 | `give_up.py` | HANG commands inspected and given up, MAP commands after them; the cost of an inspect (below, "A command given up") |
+| `islands.py` | the program over cards as islands; `--across 2 --reset-link 1`: island 0's MAP reading an input island 1 holds, island 1's link core 0 reset by the host and its connections opened again, the MAP across again, both outputs exact (two p150a cards: 431 µs a round before, 459 µs after; the reset 101 ms, opening again 0.23 ms) |
 
 ## What it needs
 

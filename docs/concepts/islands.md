@@ -218,6 +218,17 @@ median of 20 commands from submit to the event on the host, every total exact:
 The rows of example 02 asked for a result word (one more pass over the total at the
 root); those of example 26 did not.
 
+## When a core stops
+
+Each island's dispatcher holds its own island's reset lists. A command given up on
+island i resets and loads again that island's cores still in it, or whose kernels
+ended at a wait's own limit; the time-out says `island i:` and names them in the
+island's own core numbers, and the run goes on on both islands
+([recovery](../guides/recovery.md)). A link core is reset by the host
+(`run.reset_core(island, core)`): its connections are closed at their routers, the
+core is loaded again and opens them again, and reads and commands across are exact
+after it. The far link core needs nothing.
+
 ## What is not built
 
 - **Over a link:** a broadcast (`km::Broadcast`) whose group spans islands, a reduce
@@ -232,3 +243,6 @@ root); those of example 26 did not.
 - **A dict of programs, X280 threads and ports, engines and uploads over islands,
   tensors in L1.** A list of programs, one an island, loads.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.
+- **A link core reset by its dispatcher.** A give-up resets only ranks; a link core
+  is reset by the host, between commands. A line or an ask in flight on it is lost,
+  and the command that waits for it times out at its deadline.
