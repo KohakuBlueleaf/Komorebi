@@ -33,8 +33,11 @@ with km.Session(cards=[0, 1]) as session:  # one session, 240 ranks
 ## The session
 
 `km.Session(cards=[a, b, ...], links=0, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)` with two or more cards
-returns an `IslandSession`; with one card it is the card's `Session` as before.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)` returns an `IslandSession`.
+With one card it has the same calls over one island: no mesh and no fabric, the card's
+own `Session` as `session.island(0)`, the graph `islands.one`, every page of every
+tensor on the card, and each load the card's run as it is without islands. A program
+written for islands runs on one card unchanged.
 
 - **Open.** In this order: tt-metal's 1-D fabric is set, the cards open as one 1 x n
   mesh (each card's chip a 1 x 1 submesh with its own command queue), the X280 runtime
@@ -83,12 +86,15 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
 
 ## Tensors
 
-`session.tensor(data, dtype, layout, like=None, copy=False)` makes one tensor of the
-whole shape on every island, at the same address, so a program takes its `address`
-and `accessor_args()` unchanged. Its pages are placed by `islands.place`: split by
-island along the leading dimension in rank order (`like`: the group the split
+`session.tensor(data, dtype, layout, like=None, copy=False, by="rank")` makes one
+tensor of the whole shape on every island, at the same address, so a program takes its
+`address` and `accessor_args()` unchanged. Its pages are placed by `islands.place`:
+split by island along the leading dimension in rank order (`like`: the group the split
 follows; default every rank), so a rank that partitions the tensor by rank finds its
-part in its own island's DRAM; `copy=True` puts every page on every island. A split
+part in its own island's DRAM; `by="island"` splits the leading dimension into even
+parts by island (`partition(units, i, islands)` to island i), for a program that cuts
+its work by island first and over an island's ranks inside; `copy=True` puts every
+page on every island. A split
 tensor's pages that another island holds are zeros on this one.
 
 `session.read` and `session.read_bf16` assemble a tensor from the island that holds

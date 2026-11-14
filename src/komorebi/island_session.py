@@ -1,7 +1,7 @@
 """A session over several cards, each card's chip an island: one fabric mesh, one X280
 runtime over it, a dispatcher and the persistent grid on every island. Ranks are flat
 and contiguous by island; a command's group is split by island on the host, a tensor
-is placed by island. `Session(cards=[...])` with more than one card returns this."""
+is placed by island. `Session(cards=[...])` returns this; one card is one island."""
 
 import os
 import time
@@ -304,8 +304,8 @@ class IslandRun:
 
 class IslandSession:
     """Cards `cards` as islands of one 1 x n fabric mesh in this process: the X280
-    runtime once over the mesh, then per island a Session given its device. `links`
-    0: nothing crosses on the cards, every core is a rank. Use as a context manager."""
+    runtime once over the mesh, then per island a Session given its device (one card:
+    its own Session, no mesh). `links` 0: every core is a rank. A context manager."""
 
     def __init__(
         self,
@@ -319,8 +319,8 @@ class IslandSession:
         channel=channel_module.REGION_DEFAULT,
     ):
         self.cards = tuple(int(card) for card in cards)
-        if len(self.cards) < 2 or len(set(self.cards)) != len(self.cards):
-            raise ValueError(f"cards {cards}: two or more different cards")
+        if not self.cards or len(set(self.cards)) != len(self.cards):
+            raise ValueError(f"cards {cards}: one or more different cards")
         if links != 0:
             raise ValueError(
                 f"links={links}: only 0 (the link service is not built yet)"
@@ -358,7 +358,20 @@ class IslandSession:
 
     def open(self):
         """Opens the mesh (the fabric set first), the X280 runtime over it, then a
-        Session on each island's device; the graph of the islands' ranks."""
+        Session on each island's device; the graph of the islands' ranks. One card:
+        its Session opens the card alone, the graph is one island."""
+        if len(self.cards) == 1:
+            session = session_module.Session(
+                card=self.cards[0],
+                log=self.log,
+                kernel_bytes=self.kernel_bytes,
+                **self._options,
+            )
+            session.open()
+            self.chips, self.sessions = [self.cards[0]], (session,)
+            columns, rows = session.grid
+            self.graph = islands.one(columns * rows, columns)
+            return
         listed = ",".join(str(card) for card in self.cards)
         visible = os.environ.get("TT_VISIBLE_DEVICES")
         if visible is not None and visible != listed:
@@ -422,12 +435,13 @@ class IslandSession:
         """Island `island`'s own Session (local ranks, its own tensors)."""
         return self.sessions[island]
 
-    def tensor(self, data, dtype, layout="row", like=None, copy=False):
+    def tensor(self, data, dtype, layout="row", like=None, copy=False, by="rank"):
         """A DRAM tensor holding `data` as Session.tensor takes it, placed by
-        islands.place: split by island along the leading dimension as its ranks
-        partition it (`like`: the group (first, count) it follows), or a `copy`."""
+        islands.place: split along the leading dimension as the ranks partition it
+        (`like`: the group it follows), even parts by island (`by` "island"), or a copy.
+        """
         raw, shape = formats.to_bytes(data, dtype, layout)
-        tensor = self.empty(shape, dtype, layout, like, copy)
+        tensor = self.empty(shape, dtype, layout, like, copy, by)
         rows = raw.reshape(tensor.pages, tensor.page_bytes)
         for island, part in enumerate(tensor.parts):
             if tensor.placement.copy:
@@ -439,7 +453,7 @@ class IslandSession:
             self.sessions[island].write(part, mine)
         return tensor
 
-    def empty(self, shape, dtype, layout="row", like=None, copy=False):
+    def empty(self, shape, dtype, layout="row", like=None, copy=False, by="rank"):
         """A tensor as tensor() places it, not written."""
         parts = [session.empty(shape, dtype, layout) for session in self.sessions]
         first = parts[0]
@@ -449,6 +463,7 @@ class IslandSession:
             islands.leading_units(shape, layout),
             like,
             copy,
+            by,
         )
         try:
             return IslandTensor(parts, placement)
@@ -537,7 +552,8 @@ class IslandSession:
         try:
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
                 try:
-                    island_of = (self.graph, island)
+                    # one island: the card's run as it is without islands
+                    island_of = (self.graph, island) if len(programs) > 1 else None
                     runs.append(session.load(one, island=island_of, **options))
                 except KomorebiError as error:
                     raise _named(error, island) from None
@@ -561,7 +577,7 @@ class IslandSession:
                 self.mesh.close()
                 self.mesh = None
                 session_module._LIVE.discard(self)
-            elif stuck:
+            elif stuck and self.mesh is not None:
                 self.log(f"mesh not closed: the grid of islands {stuck} did not return")
 
     def _release(self, why, close_device):

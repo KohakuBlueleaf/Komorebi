@@ -380,11 +380,11 @@ def leading_units(shape, layout="row"):
     raise ValueError(f"layout {layout!r}: 'row' or 'tile'")
 
 
-def place(graph, pages, units=None, like=None, copy=False):
+def place(graph, pages, units=None, like=None, copy=False, by="rank"):
     """Where a tensor's pages live: split along `units` leading steps (None: a page a
-    step) as partition gives them to the ranks of `like` (first, count; its producer,
-    consumer or a named group; default all ranks), so each rank's part is on its own
-    island; `copy`: a copy on every island. On one island: every page on island 0."""
+    step) as partition gives them to the ranks of `like` (default all ranks), or by
+    "island": partition over the islands, island i its part i; `copy`: on every
+    island. On one island: every page on island 0."""
     islands = len(graph.islands)
     if copy:
         return Placement(tuple((0, pages) for _ in range(islands)), True)
@@ -392,6 +392,20 @@ def place(graph, pages, units=None, like=None, copy=False):
     if units < 1 or pages % units:
         raise ValueError(f"{pages} pages are not {units} equal steps")
     step = pages // units
+    if by == "island":
+        if like is not None:
+            raise ValueError("a placement by island follows no group (`like`)")
+        return Placement(
+            tuple(
+                (start * step, length * step)
+                for start, length in (
+                    channel.partition(units, island, islands)
+                    for island in range(islands)
+                )
+            )
+        )
+    if by != "rank":
+        raise ValueError(f"by {by!r}: 'rank' or 'island'")
     first, count = like if like is not None else (0, graph.ranks)
     graph.split((first, count))  # the group must be the graph's
     parts = []

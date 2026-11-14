@@ -406,13 +406,13 @@ def _read_uint32(tensor, device=None, module=None):
 
 
 class Session:
-    """One card: `card` selects it, `device` uses an open one (`cards` of two or more:
-    an IslandSession); `grid_timeout` is the timeout of every grid wait. As a context
+    """One card: `card` selects it, `device` uses an open one (`cards`: IslandSession,
+    each card an island); `grid_timeout` is the timeout of every grid wait. As a context
     manager it stops a loaded run at the exit (through the runtime on an exception) and
     closes the device it opened; so do the process's exit and SIGTERM."""
 
     def __new__(cls, *args, cards=None, **options):
-        if cards is not None and len(cards) > 1:
+        if cards is not None:
             if args or "card" in options or "device" in options:
                 raise ValueError("cards= is given alone, without card or device")
             return island_session.IslandSession(cards, **options)
@@ -428,12 +428,7 @@ class Session:
         grid_timeout=10.0,
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
-        cards=None,
     ):
-        if cards is not None:
-            if card is not None and [card] != list(cards):
-                raise ValueError(f"card {card} and cards {cards}")
-            card = next(iter(cards))
         self.card = card
         self.device = device
         self._own_device = device is None
