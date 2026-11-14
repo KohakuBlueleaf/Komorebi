@@ -229,7 +229,7 @@ class Svg:
         self.geom.append(points)
 
     def poly(self, points, colour, sw=2.2, dash=None, tail=False):
-        """Straight pieces through the points, an arrowhead at the end (and the start)."""
+        """Straight pieces through the points, an arrowhead at the end (and start)."""
         d = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in points)
         extra = f' stroke-dasharray="{dash}"' if dash else ""
         extra += f' marker-start="url(#h{colour})"' if tail else ""
@@ -719,7 +719,12 @@ def panel_commands(s, y):
     s.line(xb, d1[1] - 3, xb, d0[1] + d0[3] + 3, "w")
     frag.draw({(5, 3): col, (6, 3): col, (8, 3): col, (8, 9): "w"})
     s.text(
-        x0 + 8 - host_w / 2 - 8, hy + 15, "a command, 64 B", 12, c[col][0], True,
+        x0 + 8 - host_w / 2 - 8,
+        hy + 15,
+        "a command, 64 B",
+        12,
+        c[col][0],
+        True,
         anchor="end",
     )
     ty = d0[1] + d0[3] + 20
@@ -1145,9 +1150,11 @@ def card_tiles(s, frag, hot=None, strong=(), soft=(), compact=False):
             px, py, w, h = frag.box(col, row)
             cx, cy = px + w / 2, py + h / 2
 
-            def label(text, ink, bold=False):
+            def label(text, ink, bold=False, cx=cx, cy=cy):
                 half = width(text, 12, bold) / 2
-                if compact and (text.isdigit() or text in ("Eth", "PCIe", "ARC", "SEC")):
+                if compact and (
+                    text.isdigit() or text in ("Eth", "PCIe", "ARC", "SEC")
+                ):
                     return
                 if s.clear_of_marks((cx - half, cy - 7, 2 * half, 13)):
                     s.text(cx, cy + 4, text, 12, ink, bold, anchor="middle")
@@ -1166,7 +1173,9 @@ def card_tiles(s, frag, hot=None, strong=(), soft=(), compact=False):
                 edge = c[hot.get((col, row), "w")][0]
                 s.rect(px, py, w, h, c[hot.get((col, row), "w")][2], edge, rx=3, sw=1.5)
                 if compact:
-                    s.text(cx, cy + 4, "X" + X280_ROW[row], 12, edge, True, anchor="middle")
+                    s.text(
+                        cx, cy + 4, "X" + X280_ROW[row], 12, edge, True, anchor="middle"
+                    )
                 else:
                     s.text(cx, cy - 2, "X280", 12, edge, True, anchor="middle")
                     s.text(cx, cy + 12, X280_ROW[row], 12, edge, True, anchor="middle")
@@ -1370,9 +1379,19 @@ def panel_ways(s, y):
         ("m", "a thread moves", "a message forwarded to the core it names", "05, 14"),
         ("r", "reduce", "parts into a fixed slot of rank 0, added there", "02"),
         ("b", "broadcast", "a block or a word along a row or a column", "03, 15"),
-        ("w", "X280 ports", "tell, ask and pull between a core and its X280 core", "10, 18"),
+        (
+            "w",
+            "X280 ports",
+            "tell, ask and pull between a core and its X280 core",
+            "10, 18",
+        ),
         ("p", "movement", "both data-movement CPUs on one stream from DRAM", "11"),
-        ("y", "overlays", "code loaded from DRAM into a slot of a core's L1", "12, 16 to 20"),
+        (
+            "y",
+            "overlays",
+            "code loaded from DRAM into a slot of a core's L1",
+            "12, 16 to 20",
+        ),
     ]
     height = 36 + len(ways) * 20 + 10
     panel_frame(s, y, height, "every way cores talk, once", "examples", "a")
@@ -1528,13 +1547,13 @@ def panel_time(s, y):
         ("R2: cores 6 to 11", "slot 1", 5, 7, 60, "cores 6 to 8"),
         ("R3: cores 3 to 8", "slot 2", 8, 10, 83, "cores 3 and 4"),
     ]
-    for name, slot, sent, lands, acked, leader in commands:
+    for _name, slot, _sent, lands, _acked, _leader in commands:
         s.add(  # the command lands on every core
             f'<line x1="{lanes.tx(lands):.1f}" y1="{lanes.top[slot] + 16:.1f}" '
             f'x2="{lanes.tx(lands):.1f}" y2="{lanes.bottom:.1f}" stroke="{c["rule"]}" '
             f'stroke-width="1.2" stroke-dasharray="3 3"/>'
         )
-    for name, slot, sent, lands, acked, leader in commands:
+    for name, slot, sent, _lands, acked, leader in commands:
         third = name.startswith("R3")
         lanes.bar(slot, sent, acked, name, col, "plain" if third else "fill")
         lanes.hop(leader, slot, acked, "g" if third else col)
@@ -1645,7 +1664,11 @@ def panel_cast_time(s, y):
         "17_leader_overlay",
         "b",
     )
-    for begin, name, load in ((3, "scale", True), (37, "scale", False), (65, "turn", True)):
+    for begin, name, load in (
+        (3, "scale", True),
+        (37, "scale", False),
+        (65, "turn", True),
+    ):
         lanes.bar(names[0], begin, begin + 4, "", "g")
         text = f"the word names {name}" if load else f"{name} again: held, no load"
         lanes.note(names[0], begin, text, "b")
@@ -1692,7 +1715,12 @@ def panel_submit(s, y):
     col = "a"
     code = lines_of("01_mapcollect/README.md", [40, 41, 42], joint=True)
     rows = [
-        ("head", "01_mapcollect · README.md 40-42", "submit", "a handler, a group, arguments"),
+        (
+            "head",
+            "01_mapcollect · README.md 40-42",
+            "submit",
+            "a handler, a group, arguments",
+        ),
         ("code", code[0], False),
         ("code", code[1], True),
         ("code", code[2], False),
@@ -1710,11 +1738,18 @@ def panel_submit(s, y):
     )
     height = frag.bottom + 18 - y
     panel_frame(
-        s, y, height, "the simplest program: a command to a core group", "01_mapcollect", col
+        s,
+        y,
+        height,
+        "the simplest program: a command to a core group",
+        "01_mapcollect",
+        col,
     )
     low = frag.box(1, 2)[1] + 40
     first = frag.cx(1)
-    s.poly([(frag.cx(12), low + 11), (first + 8, low + 11), (first + 8, low + 2)], col, 1.8)
+    s.poly(
+        [(frag.cx(12), low + 11), (first + 8, low + 11), (first + 8, low + 2)], col, 1.8
+    )
     s.chip(frag.cx(9), low + 11, "each core reports to core 0", col)
     s.poly(
         [
@@ -1787,7 +1822,15 @@ def panel_split_card(s, y):
         tail=True,
     )
     left, right = box(89), box(90)
-    s.line(left[0] + left[2] + 2, frag.cy(9) + 5, x1[0] - 3, frag.cy(9) + 5, "w", 1.8, tail=True)
+    s.line(
+        left[0] + left[2] + 2,
+        frag.cy(9) + 5,
+        x1[0] - 3,
+        frag.cy(9) + 5,
+        "w",
+        1.8,
+        tail=True,
+    )
     s.line(right[0] - 2, frag.cy(9), x1[0] + x1[2] + 3, frag.cy(9), "w", 1.8, tail=True)
     bank, core = frag.box(9, 11), box(114)
     s.line(bank[0] + bank[2] + 2, frag.cy(11), core[0] - 3, frag.cy(11), "y", 2.2)
@@ -1804,9 +1847,30 @@ def panel_split_card(s, y):
     x = frag.right + 22
     steps = [
         ("a", ["PASS: one command to all 120", "cores, sent by the thread on X280 1"]),
-        ("w", ["each core pulls its ranges from its", "X280 core; an answer is a range", "and a word"]),
-        ("y", ["the word names an overlay; the", "core loads it from DRAM if no slot", "holds it"]),
-        ("w", ["the core tells the kinds its range", "held; the thread picks the next", "word from them"]),
+        (
+            "w",
+            [
+                "each core pulls its ranges from its",
+                "X280 core; an answer is a range",
+                "and a word",
+            ],
+        ),
+        (
+            "y",
+            [
+                "the word names an overlay; the",
+                "core loads it from DRAM if no slot",
+                "holds it",
+            ],
+        ),
+        (
+            "w",
+            [
+                "the core tells the kinds its range",
+                "held; the thread picks the next",
+                "word from them",
+            ],
+        ),
     ]
     yy = y + 64
     for colour, lines in steps:
@@ -1815,19 +1879,28 @@ def panel_split_card(s, y):
             s.text(x + 34, yy + 18 * i, line, 12, c["fg"])
             check(x + 34 + width(line), LIMIT, line)
         yy += 18 * len(lines) + 10
-    for k, (kind, name) in enumerate((("pale", "plain"), ("part", "sparse"), ("full", "dense"))):
+    for k, (kind, name) in enumerate(
+        (("pale", "plain"), ("part", "sparse"), ("full", "dense"))
+    ):
         fill = {"pale": c["y"][2], "part": c["y"][1], "full": c["y"][0]}[kind]
         s.rect(x, yy + 8 + 26 * k, 22, 16, fill, c["y"][0], rx=3)
         s.text(x + 34, yy + 21 + 26 * k, f"a core that holds {name}", 12, c["fg"])
-    s.text(x, yy + 8 + 26 * 3 + 12, "(a drawn case; the reader has two slots)", 12, c["mute"])
+    s.text(
+        x,
+        yy + 8 + 26 * 3 + 12,
+        "(a drawn case; the reader has two slots)",
+        12,
+        c["mute"],
+    )
     return height
 
 
 def panel_split_time(s, y):
     """One core of the thread split in time: pull, load, call, tell."""
-    c = s.c
     code = lines_of(
-        "18_thread_split/kernels/reader.cpp", [47, 64, 66, 72, 79], drop_comment=(47, 66)
+        "18_thread_split/kernels/reader.cpp",
+        [47, 64, 66, 72, 79],
+        drop_comment=(47, 66),
     )
     labels = [
         ("pull", "a range, and a word with it"),
