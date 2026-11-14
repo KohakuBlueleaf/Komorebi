@@ -1055,7 +1055,7 @@ def simulate(
 
 
 class _Sim:
-    """The completion table around one graph: 16 slots, groups, a model of the queue."""
+    """The completion table around one graph: ring slots, groups, a queue model."""
 
     def __init__(self, executor, core_count, delay, result, deadline_passes, req):
         self.executor, self.core_count, self.delay = executor, core_count, delay
@@ -1064,7 +1064,7 @@ class _Sim:
             deadline_passes,
             req,
         )
-        self.table = [None] * stream_module.RING_SLOTS
+        self.table = [None] * stream_module.ring_slots()
         self.commands, self.events = [], []
         self.sequence = self.now = 0
         self.stopped = False

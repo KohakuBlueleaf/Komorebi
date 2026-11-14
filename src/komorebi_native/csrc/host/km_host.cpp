@@ -33,6 +33,7 @@
 #include <tt-metalium/buffer.hpp>
 #include <tt-metalium/buffer_distribution_spec.hpp>
 #include <tt-metalium/distributed.hpp>
+#include <tt-metalium/experimental/fabric/fabric.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
 #include <tt-metalium/mesh_buffer.hpp>
@@ -452,10 +453,22 @@ namespace {
         }
     }
 
+    // The X280 runtime of a mesh of several islands, shared by their Dispatches; empty
+    // until Islands::open_x280.
+    struct IslandRuntime {
+        std::shared_ptr<x280::RuntimeOpenResult> opened;
+    };
+
     // An open card: the 1 x 1 mesh of the first visible device, opened as ttnn's
-    // open_mesh_device opens it, with the program cache off.
+    // open_mesh_device opens it, with the program cache off; or an island of Islands.
     class Device {
     public:
+        Device(
+            std::shared_ptr<MeshDevice> island, std::shared_ptr<IslandRuntime> x280
+        ) :
+            mesh_(std::move(island)), x280_(std::move(x280)) {
+        }
+
         explicit Device(std::optional<size_t> worker_l1_size) {
             namespace distributed = tt::tt_metal::distributed;
             mesh_ = MeshDevice::create(
@@ -531,8 +544,185 @@ namespace {
             tt::tt_metal::distributed::Finish(mesh().mesh_command_queue());
         }
 
+        // The shared X280 runtime of an island; nullptr for a card opened alone.
+        const std::shared_ptr<IslandRuntime>& x280() const {
+            return x280_;
+        }
+
     private:
         std::shared_ptr<MeshDevice> mesh_;
+        std::shared_ptr<IslandRuntime> x280_;
+    };
+
+    // Several chips as one 1 x count mesh with tt-metal's 1-D fabric on (slow
+    // dispatch), each chip an island: a 1 x 1 submesh with its own command queue.
+    class Islands {
+    public:
+        Islands(uint32_t count, std::optional<size_t> worker_l1_size) {
+            namespace distributed = tt::tt_metal::distributed;
+            if (count < 2) {
+                throw std::invalid_argument(
+                    "islands: at least 2 (the fabric's minimum)"
+                );
+            }
+            tt::tt_fabric::SetFabricConfig(tt::tt_fabric::FabricConfig::FABRIC_1D);
+            try {
+                mesh_ = MeshDevice::create(
+                    distributed::MeshDeviceConfig(distributed::MeshShape(1, count)),
+                    DEFAULT_L1_SMALL_SIZE,
+                    DEFAULT_TRACE_REGION_SIZE,
+                    1,
+                    tt::tt_metal::DispatchCoreConfig{},
+                    {},
+                    worker_l1_size.value_or(DEFAULT_WORKER_L1_SIZE)
+                );
+                mesh_->disable_and_clear_program_cache();
+                for (uint32_t island = 0; island < count; island++) {
+                    auto sub = (
+                        mesh_->create_submesh(
+                            distributed::MeshShape(1, 1),
+                            distributed::MeshCoordinate(0, island)
+                        )
+                    );
+                    sub->disable_and_clear_program_cache();
+                    islands_.push_back(std::move(sub));
+                }
+            } catch (...) {
+                close();
+                throw;
+            }
+            x280_ = std::make_shared<IslandRuntime>();
+        }
+
+        ~Islands() {
+            close();
+        }
+
+        uint32_t count() const {
+            return static_cast<uint32_t>(islands_.size());
+        }
+
+        // The chip id of each island, in mesh column order.
+        std::vector<int> chips() const {
+            std::vector<int> out;
+            for (const auto& island : islands_) {
+                out.push_back(chip(*island)->id());
+            }
+            return out;
+        }
+
+        // Island `island` as a Device for a Session given a device.
+        Device device(uint32_t island) const {
+            if (!mesh_ || island >= islands_.size()) {
+                throw std::runtime_error("no such island, or the islands are closed");
+            }
+            return Device(islands_[island], x280_);
+        }
+
+        // Opens the X280 runtime over the whole mesh once; every island's Dispatch
+        // shares it. Raises with the runtime's outcome when it is not ready.
+        void open_x280() {
+            if (!mesh_) {
+                throw std::runtime_error("the islands are closed");
+            }
+            if (x280_->opened) {
+                return;
+            }
+            auto opened = std::make_shared<x280::RuntimeOpenResult>(
+                x280::X280Runtime::open(
+                    mesh_,
+                    x280::RuntimeOpenConfig{
+                        .priming_policy = x280::LimEccPrimingPolicy::RequirePrepared
+                    }
+                )
+            );
+            if (!opened->ready()) {
+                throw std::runtime_error(
+                    std::string("X280 runtime not ready (") +
+                    x280::to_string(opened->outcome) +
+                    (opened->requires_reset() ? ", reset-required" : "") +
+                    "): " + opened->diagnostic
+                );
+            }
+            x280_->opened = std::move(opened);
+        }
+
+        // Drops the runtime (the Dispatches must be closed), the islands, the mesh,
+        // then turns the fabric off.
+        void close() {
+            if (x280_) {
+                x280_->opened.reset();
+            }
+            islands_.clear();
+            if (mesh_) {
+                mesh_->close();
+                mesh_.reset();
+                tt::tt_fabric::SetFabricConfig(tt::tt_fabric::FabricConfig::DISABLED);
+            }
+        }
+
+        bool is_open() const {
+            return mesh_ != nullptr;
+        }
+
+        // Link `link` from island `from` to `to`: (links found, the Ethernet channel a
+        // Tensix core connects through, the Ethernet core's NoC x and y on `from`).
+        std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> link(
+            uint32_t from, uint32_t to, uint32_t link
+        ) const {
+            namespace distributed = tt::tt_metal::distributed;
+            if (
+                !mesh_ || from >= islands_.size() || to >= islands_.size() || from == to
+            ) {
+                throw std::runtime_error("link: two different islands of an open mesh");
+            }
+            const auto source = (
+                mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, from))
+            );
+            const auto target = (
+                mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, to))
+            );
+            const auto links = (
+                tt::tt_fabric::get_forwarding_link_indices(source, target)
+            );
+            if (link >= links.size()) {
+                throw std::runtime_error(
+                    "link " + std::to_string(link) + ": " +
+                    std::to_string(links.size()) + " found"
+                );
+            }
+            // The connection's first argument is the channel; the descriptor is a
+            // scratch.
+            tt::tt_metal::ProgramDescriptor scratch;
+            std::vector<uint32_t> args;
+            tt::tt_fabric::append_fabric_connection_rt_args(
+                source,
+                target,
+                links[link],
+                scratch,
+                tt::tt_metal::CoreCoord{0, 0},
+                args
+            );
+            const auto eth = (
+                tt::tt_fabric::get_forwarding_eth_core(
+                    *mesh_, source, target, links[link]
+                )
+            );
+            const auto core = (
+                chip(*islands_[from])->ethernet_core_from_logical_core(eth)
+            );
+            return {
+                static_cast<uint32_t>(links.size()),
+                args.at(0),
+                static_cast<uint32_t>(core.x),
+                static_cast<uint32_t>(core.y)
+            };
+        }
+
+    private:
+        std::shared_ptr<MeshDevice> mesh_;
+        std::vector<std::shared_ptr<MeshDevice>> islands_;
+        std::shared_ptr<IslandRuntime> x280_;
     };
 
     using MeshBuffer = tt::tt_metal::distributed::MeshBuffer;
@@ -916,7 +1106,7 @@ namespace {
     public:
         Dispatch(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz) :
             mesh_(std::move(mesh_device)) {
-            opened_ = std::make_unique<x280::RuntimeOpenResult>(x280::X280Runtime::open(
+            opened_ = std::make_shared<x280::RuntimeOpenResult>(x280::X280Runtime::open(
                 mesh_,
                 x280::RuntimeOpenConfig{
                     .priming_policy = x280::LimEccPrimingPolicy::RequirePrepared
@@ -927,6 +1117,26 @@ namespace {
                 opened_.reset();
                 throw std::runtime_error("X280 runtime not ready: " + why);
             }
+            try {
+                boot(pll_mhz);
+                locate();
+            } catch (...) {
+                close();
+                throw;
+            }
+        }
+
+        // An island's dispatch: the mesh's shared runtime, this island's chip only.
+        Dispatch(
+            std::shared_ptr<MeshDevice> island,
+            std::shared_ptr<x280::RuntimeOpenResult> shared,
+            uint32_t pll_mhz
+        ) :
+            mesh_(std::move(island)), opened_(std::move(shared)) {
+            if (!opened_ || !opened_->ready()) {
+                throw std::runtime_error("the islands' X280 runtime is not open");
+            }
+            chip_id_ = chip(*mesh_)->id();
             try {
                 boot(pll_mhz);
                 locate();
@@ -1815,12 +2025,26 @@ namespace {
             return const_cast<Work&>(std::as_const(*this).work(cluster, open));
         }
 
+        // The runtime's tiles, or an island's chip's tiles only.
+        std::vector<x280::TileId> tile_ids() const {
+            auto ids = x280_runtime().tile_ids();
+            if (chip_id_ >= 0) {
+                std::erase_if(ids, [&](const x280::TileId& id) {
+                    return id.chip_id != chip_id_;
+                });
+                if (ids.empty()) {
+                    throw std::runtime_error("the island's chip has no X280 tile");
+                }
+            }
+            return ids;
+        }
+
         // Boots the tiles to their idle image if they are not idle, then sets the
         // clock.
         void boot(uint32_t pll_mhz) {
             auto& runtime = x280_runtime();
             bool all_idle = true;
-            for (const auto& id : runtime.tile_ids()) {
+            for (const auto& id : tile_ids()) {
                 all_idle = all_idle && runtime.tile(id).inspect().resident_idle_live;
             }
             if (!all_idle) {
@@ -1830,14 +2054,14 @@ namespace {
                     );
                 }
                 x280::MultiTileBootRequest request;
-                request.tiles = runtime.tile_ids();
+                request.tiles = tile_ids();
                 request.idle_image_path = idle_image_path;
                 request.allow_reset_release = true;
                 if (!runtime.boot_tiles(request).ready()) {
                     throw std::runtime_error("X280 boot_tiles failed");
                 }
             }
-            runtime.set_pll(runtime.tile_ids().front().chip_id, pll_mhz);
+            runtime.set_pll(tile_ids().front().chip_id, pll_mhz);
         }
 
         std::array<uint32_t, 2> translated(uint32_t x, uint32_t y) const {
@@ -1853,7 +2077,7 @@ namespace {
         // Cluster 0, its LIM layout, the grid's panels, the host window and buffer.
         void locate() {
             auto& runtime = x280_runtime();
-            const auto ids = runtime.tile_ids();
+            const auto ids = tile_ids();
             tile_ = &runtime.tile(ids.front());
             work_.resize(ids.size());
             for (
@@ -1953,7 +2177,8 @@ namespace {
         }
 
         std::shared_ptr<MeshDevice> mesh_;
-        std::unique_ptr<x280::RuntimeOpenResult> opened_;
+        std::shared_ptr<x280::RuntimeOpenResult> opened_;  // shared on islands
+        int chip_id_ = -1;  // an island's chip: only its tiles; -1 every tile
         x280::X280Tile* tile_ = nullptr;
         uint64_t run_ = 0;
         std::shared_ptr<tt::umd::IoWindow> win_;         // host -> LIM, write-combining
@@ -2004,6 +2229,30 @@ NB_MODULE(_km_host, m) {
         ).def("finish", [](const Device& device) {
             nb::gil_scoped_release release;
             device.finish();
+        });
+    nb::class_<Islands>(m, "Islands")
+        .def(
+            nb::init<uint32_t, std::optional<size_t>>(),
+            nb::arg("count"),
+            nb::arg("worker_l1_size") = nb::none()
+        ).def_prop_ro("is_open", &Islands::is_open).def("count", &Islands::count)
+        .def("chips", &Islands::chips)
+        .def("device", &Islands::device, nb::arg("island"))
+        .def(
+            "link",
+            &Islands::link,
+            nb::arg("source"),
+            nb::arg("target"),
+            nb::arg("link") = 0
+        ).def(
+            "open_x280",
+            [](Islands& islands) {
+                nb::gil_scoped_release release;
+                islands.open_x280();
+            }
+        ).def("close", [](Islands& islands) {
+            nb::gil_scoped_release release;
+            islands.close();
         });
     nb::class_<DeviceBuffer>(m, "Buffer")
         .def(
@@ -2137,7 +2386,12 @@ NB_MODULE(_km_host, m) {
         .def(
             "__init__",
             [](Dispatch* self, const Device& device, uint32_t pll_mhz) {
-                new (self) Dispatch(device.shared(), pll_mhz);
+                if (device.x280()) {
+                    new (self)
+                        Dispatch(device.shared(), device.x280()->opened, pll_mhz);
+                } else {
+                    new (self) Dispatch(device.shared(), pll_mhz);
+                }
             },
             nb::arg("device"),
             nb::arg("pll_mhz") = 1000

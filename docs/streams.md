@@ -20,7 +20,7 @@ to the grid; a *handler* is the number of the code a command runs (1 to 239 belo
 the program); a *group* is a contiguous range of cores `[first, first + count)` out of
 the grid's cores (119 on the card this is developed on; the simulator's `core_count`); the
 group's *leader* reports its completion with one word. The kernel keeps the program's
-depth of *completion slots* (up to 64; the simulator models 16): a command occupies one
+depth of *completion slots* (up to 64, `KM_RING_SLOTS`; the simulator models all 64): a command occupies one
 from submit until its group's acknowledgement is swept up, so at most that many commands
 are in flight. The kernel loop runs in *passes*, described
 [below](#the-kernel-pass-and-the-job-queue).
@@ -117,7 +117,7 @@ queued job carries the argument values the registers had when `ENQUEUE` ran, not
 values they have when the job is finally submitted.
 
 `SUBMIT` and `ENQUEUE` fill a command from the template and the registers named in its
-patch list, then wait if they cannot go on: `SUBMIT` waits while all 16 completion slots
+patch list, then wait if they cannot go on: `SUBMIT` waits while all 64 completion slots
 are busy, and with `exclusive=True` also while a job queued before it is still waiting
 in the job queue or any busy group overlaps its group. A group
 is outside the grid when `count == 0 || first > core_count || count > core_count - first`

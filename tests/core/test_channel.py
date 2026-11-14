@@ -104,6 +104,7 @@ def routed(pages, page=PAGE, run=None, channel=True):
     """The way a read of `pages` pages takes in a session that is not opened."""
     session = Session(channel=REGION.bytes)
     session.channel = np.zeros(REGION.bytes, np.uint8) if channel else None
+    session.l1 = lambda: (0, 1 << 20)  # what a core has left for buffers
     session.run = run
     tensor = SimpleNamespace(in_dram=True, aligned_page_bytes=page, pages=1000)
     return session._transfer_way([tensor], 0, pages)
@@ -115,13 +116,35 @@ def test_a_read_goes_through_the_run_the_kernel_or_the_device():
     )
     assert routed(1) is None and routed(20) == "launch"  # 80 KiB on: a launch
     assert routed(20, channel=False) is None
-    assert routed(20, page=32 << 10) is None  # larger than a chunk
+    assert routed(20, page=32 << 10) == "launch"  # a page over a chunk: its own chunk
+    assert routed(20, page=600 << 10) is None  # two of them do not fit the L1
     assert routed(20, run=live) is None  # the run has no transfer buffer
     live.backend.transfer = SimpleNamespace(chunk=16 << 10)
     assert routed(1, run=live) == "run"
+    assert routed(1, page=32 << 10, run=live) is None  # larger than the run's chunk
+    live.backend.transfer = SimpleNamespace(chunk=32 << 10)
+    assert routed(1, page=32 << 10, run=live) == "run"
     session = Session(channel=0)
     session._module = object()
     tensor = SimpleNamespace(in_dram=True, aligned_page_bytes=16, page_bytes=16)
     tensor.pages = 4
     with pytest.raises(ChannelError, match="host channel"):
         session.write(tensor, np.zeros((2, 16), np.uint8))
+
+
+def test_a_chunk_is_a_page_when_pages_are_larger_and_two_fit():
+    assert ch.chunk_for(PAGE, 1 << 20) == 16 << 10
+    assert ch.chunk_for(32 << 10, 1 << 20) == 32 << 10
+    assert ch.chunk_for(32 << 10, 64 << 10) is None
+
+
+def test_a_session_given_a_device_maps_the_channel_at_its_first_transfer():
+    messages = []
+    device = SimpleNamespace(host_channel=lambda: 0)  # the driver mapped none
+    session = Session(device=device, log=messages.append)
+    assert session.channel is None and not messages
+    tensor = SimpleNamespace(in_dram=True, aligned_page_bytes=PAGE, pages=1)
+    assert session._transfer_way([tensor], 0, None) is None
+    assert "host channel not used" in messages[0]
+    session._transfer_way([tensor], 0, None)
+    assert len(messages) == 1

@@ -214,6 +214,7 @@ MESSAGES_WHERES = {
     "Counter": "counter",
     "Handler": "handler",
     "Load": "load",
+    "Body": "body",
 }  # kWhereMessages*
 
 

@@ -29,7 +29,8 @@ kernels of a dynamic run are generic and ship with the runtime
 (`src/komorebi_native/kernels/messages_reader.cpp` and `messages_writer.cpp`). In the
 other form, each handler's body is an overlay that a core loads when a message for it
 arrives, and a program has up to 16 handlers
-([Handlers as overlays](#handlers-as-overlays)).
+([Handlers as overlays](#handlers-as-overlays)). A message can carry data of up to
+4 KiB beside its line ([A message with a body](#a-message-with-a-body)).
 
 ## The calls
 
@@ -77,8 +78,9 @@ compute.run([&](const km_command_t& command) {
 | `wait_stop()` | waits for the stop flag (a test of the run's timeout) |
 
 A message is `message_bytes / 4` words. Word 0 belongs to the runtime: it holds the message's
-mark and its handler ([Marks](#how-a-message-travels)). The program's fields go in the
-other words; the forward example uses words 1 to 4.
+mark and its handler ([Marks](#how-a-message-travels)), and in a program with bodies
+word 1 is the runtime's too. The program's fields go in the other words; the forward
+example uses words 1 to 4.
 
 ## The host side
 
@@ -249,6 +251,67 @@ handlers of a packet first (the order above) is what keeps loads few: without it
 with all three handlers and two slots loads three times, and the same runs loaded 20,249
 times (2 slots, grid) and 5,137 times (1 slot, one core: 28.70 ms, 1.3 µs a load).
 
+## A message with a body
+
+A message can carry a body of up to one page (4 KiB) beside its line: the data that
+rides with a thread as it is forwarded, too large for the line's words. The program
+names the most bytes a body has; the writer sends a body with its message, and the reader
+hands the handler a pointer and a length.
+
+```python
+program.dynamic("chain", max_live=128, queue_messages=128, body_bytes=4096)
+```
+
+```c++
+const volatile tt_l1_ptr uint32_t* incoming = packet[index];
+const km::Body body = packet.body(index);  // in L1 until done(packet); 0 bytes: none
+volatile tt_l1_ptr uint32_t* words = body.words();
+... read or change words[0 .. body.bytes / 4) ...
+messages.forward(destination, message, body);  // the message and its body go on
+messages.send(destination, message, km::Body{address, bytes});  // a new one, from L1
+```
+
+| Call | What it does |
+|---|---|
+| `packet.body(index)` | the body of message `index`: `address` (L1, 64-byte aligned), `bytes` (0: the message has none) and `words()` |
+| `forward(destination, message, body)`, `forward(destination, message, handler, body)` | as `forward`, with `body` beside the message; returns on all three compute threads once the body has left, so its L1 can be written again |
+| `send(destination, message, body)`, `send(destination, message, handler, body)` | the same for a new message (false, and nothing is sent, without quota) |
+
+`body_bytes` is 0 (the default: no bodies) or a multiple of 64 up to 4096. In a program
+with bodies, word 1 of a message is the runtime's too: its body's bytes. A forward or a
+send without a body sets it to 0. A body sent is a buffer of the program in L1 (a tensor
+with `shard_grid`, as the example's area) or a body that arrived, 64-byte aligned,
+`bytes` at most `body_bytes`; the compute threads that write it may each write a part,
+since the call waits until every thread has reached it.
+
+**How a body travels.** Every queue position has a DRAM page of `body_bytes` beside its
+line (`cores * queue_messages * body_bytes` more DRAM: 60 MiB for 120 cores, 128
+positions and 4 KiB). The writer takes a message with a body as any other, then sends its
+bin at once: after the reservation it writes the body to the page of the message's
+position and the lines, and the packet's commit waits for both, so a reader that sees the
+mark finds the body landed. The writer then counts the body as written, which is what the
+pack thread waits for before `forward` returns. The reader reads the bodies of a packet's
+messages into the packet's page after its lines; a packet of a program with bodies holds
+at most 4 messages (`kMessagesBodyPacket`), so the incoming buffer's page is 18,496 bytes
+for 64-byte lines and 4 KiB bodies (two pages).
+
+A body whose bytes are above `body_bytes` or whose address is not 64-byte aligned stops
+the run: the core gives up with reason 50 (`body`), as it does when the writer has not
+written a body within the wait limit.
+
+**What it costs.** Card 1, a forward chain of one thread
+([23_message_body](../../examples/23_message_body/README.md#measured)), the time of the
+`RUN` command over its hops:
+
+| | 64-byte message | with a 4 KiB body | with a 4 KiB body changed at every hop |
+|---|---|---|---|
+| 12 cores, 1200 hops | 1.97 µs a hop | 2.39 µs | 5.45 µs |
+| the grid (118 ranks), 1180 hops | 2.09 µs | 2.53 µs | 5.57 µs |
+
+A body adds about 0.4 µs to a hop, in which it goes to DRAM and back and the writer
+sends the bin at once instead of filling it; the times do not split that further.
+Changing the 1024 words on the three compute threads takes the rest.
+
 ## How a message travels
 
 Every core has a queue of `queue_messages` messages in DRAM. A sender never waits for the
@@ -386,6 +449,9 @@ and all are `kWhereMessages*` in `km_core.hpp`.
 - Quota moving between cores; dynamic handlers with different message sizes in one
   program; more than four handlers with the bodies in the program's compute kernel.
 - Dynamic handlers of two programs in one run: the program field of a message is 0.
+- A body larger than one page (4 KiB); a cast of a body to a group; an overlay sent as a
+  body (`overlay.send`) that the target copies into its slot. With handlers as overlay
+  parts, bodies have been neither compiled nor run.
 - Priorities or ordering between messages: a program that needs an order sorts at the
   receiver.
 

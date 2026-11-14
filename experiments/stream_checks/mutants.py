@@ -68,7 +68,7 @@ MUTANTS = {
     "slot_highest_free": [
         (
             "return next((i for i, entry in enumerate(self.table) if entry is None), None)",
-            "return next((i for i in range(15, -1, -1) if self.table[i] is None), None)",
+            "return next((i for i in range(63, -1, -1) if self.table[i] is None), None)",
         )
     ],
     "sweep_highest_slot_first": [
@@ -78,7 +78,7 @@ MUTANTS = {
             "            if busy and busy.done_pass",
         )
     ],
-    "only_15_slots": [("RING_SLOTS = 16", "RING_SLOTS = 15")],
+    "only_63_slots": [("[None] * ring_slots()", "[None] * (ring_slots() - 1)")],
     "alloc_ignores_touching": [
         (
             "first + count <= busy_first or busy_first + busy_count <= first",

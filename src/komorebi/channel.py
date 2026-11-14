@@ -114,6 +114,15 @@ def chunk_bytes(page, chunk):
     return max(chunk // page, 1) * page
 
 
+def chunk_for(page, room):
+    """The chunk of a transfer of pages of `page` bytes where a core can spare `room`
+    bytes for its two chunks and a word slot: CHUNK_DEFAULT, or the page itself when
+    that is larger; None when two of them do not fit."""
+    chunk = chunk_bytes(page, CHUNK_DEFAULT)
+    word = abi.headers()["KM_TRANSFER_WORD_BYTES"]
+    return chunk if 2 * chunk + word <= room else None
+
+
 class Transfer(NamedTuple):
     """The ten argument words of a PUSH or PULL (abi KM_TRANSFER_* order)."""
 

@@ -28,10 +28,14 @@ namespace km {
         uint32_t idle;      // cycles the idle condition holds before a line says so
         uint32_t bins;      // writer bins, 1 to kMessagesBinsMax
         uint32_t counters;  // K: the group's last K cores are counter tiles
+        uint32_t body;  // DRAM address of the bodies: a page of body_bytes a position
+        uint32_t body_bytes;  // the most bytes of a body; 0: the program has none
     };
 
     constexpr uint32_t kMessagesArgs = sizeof(MessagesArgs) / 4;
-    constexpr uint32_t kMessagesCArgMessage = 0;  // compute: message bytes
+    constexpr uint32_t kMessagesCArgMessage = 0;  // compute: message bytes, body bytes
+                                                  // above kMessagesCArgBodyShift
+    constexpr uint32_t kMessagesCArgBodyShift = 16;
     constexpr uint32_t kMessagesCArgQuota = 1;  // compute: sends at the start of a run
     constexpr uint32_t kMessagesCArgCounters = 2;  // compute: K, as MessagesArgs::counters
     constexpr uint32_t kMessagesCArgs = 3;
@@ -64,6 +68,28 @@ namespace km {
     // The word compute hands the writer: the destination core, the handler above it.
     constexpr uint32_t kMessagesOutHandlerShift = 8;
     constexpr uint32_t kMessagesOutDestination = 0xFF;
+
+    // A body beside a message (MessagesArgs::body_bytes > 0): word 1 of the message is
+    // its body's bytes (0: none); a packet holds at most kMessagesBodyPacket messages.
+    constexpr uint32_t kMessagesBodyMax = 4096;
+    constexpr uint32_t kMessagesBodyPacket = 4;
+    constexpr uint32_t kMessagesBodyWord = 1;
+    // Word 1 of an outgoing message: the bytes, the body's L1 address / 64 above.
+    constexpr uint32_t kMessagesOutBodyShift = 16;
+    constexpr uint32_t kMessagesOutBodyBytes = 0xFFFF;
+    constexpr uint32_t kMessagesFlagBodies = 2;  // writer's flag word: bodies written
+
+    // The DRAM page of the body at queue position `position` of core `core`.
+    inline uint32_t messages_body_page(
+        uint32_t core, uint32_t position, uint32_t capacity
+    ) {
+        return core * capacity + (position & (capacity - 1));
+    }
+
+    // A body's bytes as DRAM moves them: whole 64-byte lines.
+    inline uint32_t messages_body_lines(uint32_t bytes) {
+        return (bytes + 63) & ~63u;
+    }
 
     // The mark of `position` in a queue of 2^shift messages: its lap, 1 to 65535 and
     // round again. A slot holds 0, the previous lap's mark or its own: never confused.
@@ -377,6 +403,10 @@ namespace km {
             .bank_base_address = messages_arguments.queue,
             .page_size = kMessagesPageMessages * messages_arguments.message_bytes
         };
+        const InterleavedAddrGen<true> body_addresses = {
+            .bank_base_address = messages_arguments.body,
+            .page_size = messages_arguments.body_bytes
+        };
         const uint32_t in_pages = get_local_cb_interface(kCbMessagesIn).fifo_num_pages;
         const uint64_t line = (
             reader.disp_noc(messages_arguments.lines + 16 * arguments.me)
@@ -624,11 +654,12 @@ namespace km {
             }
             cb_reserve_back(kCbMessagesIn, 1);
             const uint32_t page = get_write_ptr(kCbMessagesIn);
-            uint32_t batch = (
-                tail_value - head < kMessagesPacket
-                    ? tail_value - head
+            const uint32_t packet = (
+                messages_arguments.body_bytes != 0
+                    ? kMessagesBodyPacket
                     : kMessagesPacket
             );
+            uint32_t batch = tail_value - head < packet ? tail_value - head : packet;
             for (uint32_t i = 0; i < batch;) {
                 const uint32_t position = (head + i) & (messages_arguments.cap - 1);
                 const uint32_t in_page = position % kMessagesPageMessages;
@@ -678,6 +709,43 @@ namespace km {
                 continue;
             }
             waiting_from = 0;
+            if (messages_arguments.body_bytes != 0) {
+                // The bodies after the packet's messages, a page each: landed before
+                // the packet's mark (the writer's barrier).
+                const uint32_t bodies = (
+                    page + kMessagesHeader +
+                    kMessagesPacket * messages_arguments.message_bytes
+                );
+                for (uint32_t index = 0; index < valid && where == 0; index++) {
+                    const uint32_t bytes = (
+                        l1(
+                            page + kMessagesHeader +
+                            index * messages_arguments.message_bytes
+                        )[kMessagesBodyWord]
+                    );
+                    if (bytes > messages_arguments.body_bytes) {
+                        where = kWhereMessagesBody;
+                    } else if (bytes != 0) {
+                        noc_async_read(
+                            body_addresses.get_noc_addr(messages_body_page(
+                                arguments.me, head + index, messages_arguments.cap
+                            )),
+                            bodies + index * messages_arguments.body_bytes,
+                            messages_body_lines(bytes)
+                        );
+                    }
+                }
+                if (where != 0) {
+                    break;
+                }
+                if (!noc_timeout(reader, [] {
+                    return ncrisc_noc_reads_flushed(noc_index);
+                })) {
+                    where = kWhereMessagesRead;
+                    break;
+                }
+                invalidate_l1_cache();
+            }
 #if defined(KM_MESSAGE_HANDLERS)
             refused = (
                 message_groups(
@@ -755,14 +823,23 @@ namespace km {
             .bank_base_address = messages_arguments.queue,
             .page_size = kMessagesPageMessages * messages_arguments.message_bytes
         };
+        const InterleavedAddrGen<true> body_addresses = {
+            .bank_base_address = messages_arguments.body,
+            .page_size = messages_arguments.body_bytes
+        };
         const uint32_t store = get_write_ptr(kCbMessagesBins);
         uint32_t bin_destination[kMessagesBinsMax], bin_fill[kMessagesBinsMax];
+        // A bin's body (its last message's; a body is sent at once): L1 address, bytes.
+        uint32_t bin_body[kMessagesBinsMax], bin_body_bytes[kMessagesBinsMax];
         for (uint32_t bin = 0; bin < kMessagesBinsMax; bin++) {
             bin_destination[bin] = kMessagesEnd;
             bin_fill[bin] = 0;
+            bin_body_bytes[bin] = 0;
         }
         uint32_t taken = 0, sent = 0, held = 0, where = 0, flag = 0, lost_to = 0;
+        uint32_t bodies = 0;
         messages[KM_MESSAGES_SENT / 4] = 0;
+        writer_flags[kMessagesFlagBodies] = 0;
         writer_flags[1] = 0;
         writer_flags[0] = run;
         // A core reserves on the counter tiles: it waits until each shows READY.
@@ -828,6 +905,17 @@ namespace km {
                 store + bin * kMessagesPacket * messages_arguments.message_bytes
             );
             const MessageMarks marks(first_position, shift, bin_messages);
+            if (bin_body_bytes[bin] != 0) {  // before the barrier the commit waits for
+                noc_async_write(
+                    bin_body[bin],
+                    body_addresses.get_noc_addr(messages_body_page(
+                        bin_destination[bin],
+                        first_position + bin_messages - 1,
+                        messages_arguments.cap
+                    )),
+                    messages_body_lines(bin_body_bytes[bin])
+                );
+            }
             *message_mark_half(base) = 0;
             for (uint32_t i = 1; i < bin_messages; i++) {
                 *message_mark_half(base + i * messages_arguments.message_bytes) = marks(
@@ -881,6 +969,10 @@ namespace km {
             }
             sent += bin_messages;
             messages[KM_MESSAGES_SENT / 4] = sent;
+            if (bin_body_bytes[bin] != 0) {  // compute may change the body's L1 again
+                bin_body_bytes[bin] = 0;
+                writer_flags[kMessagesFlagBodies] = ++bodies;
+            }
             bin_fill[bin] = 0;
             bin_destination[bin] = kMessagesEnd;
             held--;
@@ -960,12 +1052,25 @@ namespace km {
             for (uint32_t word = 1; word < words; word++) {
                 slot_words[word] = outgoing[word];
             }
+            uint32_t body_word = 0;
+            if (messages_arguments.body_bytes != 0) {  // the line keeps the bytes only
+                body_word = outgoing[kMessagesBodyWord];
+                slot_words[kMessagesBodyWord] = body_word & kMessagesOutBodyBytes;
+                bin_body[bin] = (body_word >> kMessagesOutBodyShift) << 6;
+                bin_body_bytes[bin] = body_word & kMessagesOutBodyBytes;
+            }
             bin_fill[bin]++;
             cb_pop_front(kCbMessagesOut, 1);
             taken++;
             flag = taken;
             writer_flags[1] = taken;
-            if (bin_fill[bin] == kMessagesPacket && !flush(bin)) {
+            if (
+                (
+                    bin_fill[bin] == kMessagesPacket ||
+                    (body_word & kMessagesOutBodyBytes)
+                ) &&
+                !flush(bin)
+            ) {
                 break;
             }
         }
@@ -982,6 +1087,20 @@ namespace km {
 #else
 namespace km {
 
+    // A message's body in L1: its address (64-byte aligned) and bytes; 0 bytes: none.
+    struct Body {
+        uint32_t address = 0;
+        uint32_t bytes = 0;
+
+        volatile tt_l1_ptr uint32_t* words() const {
+            return l1(address);
+        }
+
+        explicit operator bool() const {
+            return bytes != 0;
+        }
+    };
+
     // A packet of messages in L1 (the input buffer's page), valid until done().
     struct Packet {
         uint32_t count;
@@ -992,6 +1111,8 @@ namespace km {
         // A handler's group: its messages' places in the packet (the header's order).
         const volatile tt_l1_ptr uint8_t* order = nullptr;
 #endif
+        uint32_t bodies = 0;  // byte address of message 0's body; a page of body_bytes
+        uint32_t body_bytes = 0;
 
         explicit operator bool() const {
             return count != 0;
@@ -1010,6 +1131,20 @@ namespace km {
             }
             return message;
         }
+
+        // The body of message `index` (empty without one), in L1 until done().
+        Body body(uint32_t index) const {
+#if defined(KM_MESSAGE_PARTS)
+            index = order != nullptr ? order[index] : index;
+#endif
+            if (body_bytes == 0) {
+                return {};
+            }
+            return {
+                bodies + index * body_bytes,
+                l1(base + index * message_bytes)[kMessagesBodyWord]
+            };
+        }
     };
 
     // Compute's side of a dynamic run. The body runs on all three threads alike; pack
@@ -1025,7 +1160,8 @@ namespace km {
             first_(km::first(command)),
             count_(messages_ranks(command, compute.arg(kMessagesCArgCounters))),
             rank_(compute.me() - km::first(command)),
-            message_bytes_(compute.arg(kMessagesCArgMessage)),
+            message_bytes_(compute.arg(kMessagesCArgMessage) & 0xFFFF),
+            body_bytes_(compute.arg(kMessagesCArgMessage) >> kMessagesCArgBodyShift),
             quota_(compute.arg(kMessagesCArgQuota)),
             handler_(km::handler(command)),
 #if defined(KM_MESSAGE_PARTS)
@@ -1175,7 +1311,14 @@ namespace km {
                 PACK((end_marker()));
                 return {0, 0, message_bytes_};
             }
-            return {packet_count, address + kMessagesHeader, message_bytes_, &handler_};
+            Packet packet{
+                packet_count, address + kMessagesHeader, message_bytes_, &handler_
+            };
+            if (body_bytes_ != 0) {
+                packet.bodies = packet.base + kMessagesPacket * message_bytes_;
+                packet.body_bytes = body_bytes_;
+            }
+            return packet;
         }
 
         // The message (message_bytes / 4 words, word 0 the runtime's) goes on at rank
@@ -1186,14 +1329,7 @@ namespace km {
 
         // The same, handled by `handler` there (one of the program's dynamic handlers).
         void forward(uint32_t destination, const uint32_t* message, uint32_t handler) {
-            if (destination >= count_) {
-                failed_ = true;
-                PACK((
-                    messages_gave_up(control_, kWhereMessagesBadDest, destination, run_)
-                ));
-                PACK((command_gave_up(
-                    control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_
-                )));
+            if (!reaches(destination)) {
                 return;
             }
             PACK(({
@@ -1201,10 +1337,67 @@ namespace km {
                     push_out(
                         (first_ + destination) |
                             (handler & 0xFF) << kMessagesOutHandlerShift,
-                        message
+                        message,
+                        0
                     );
                 }
             }));
+        }
+
+        // The same with `body` (L1, 64-byte aligned, at most the program's body bytes)
+        // beside it. Returns on every thread once the body has left: its L1 is free.
+        void forward(
+            uint32_t destination,
+            const uint32_t* message,
+            uint32_t handler,
+            const Body& body
+        ) {
+            if (!reaches(destination)) {
+                return;
+            }
+            if (
+                body.bytes == 0 || body.bytes > body_bytes_ || body.address % 64 != 0 ||
+                (body.address >> 6) >> (32 - kMessagesOutBodyShift) != 0
+            ) {
+                failed_ = true;
+                PACK(
+                    (messages_gave_up(control_, kWhereMessagesBody, body.bytes, run_))
+                );
+                PACK((command_gave_up(
+                    control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_
+                )));
+                return;
+            }
+            // Every thread's writes to the body are in L1 before pack hands it over.
+            UNPACK(({
+                __sync_synchronize();
+                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, 1);
+            }));
+            MATH(({
+                __sync_synchronize();
+                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, 1);
+            }));
+            PACK(({
+                (void)ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
+                (void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId);
+                if (!failed_) {
+                    push_out(
+                        (first_ + destination) |
+                            (handler & 0xFF) << kMessagesOutHandlerShift,
+                        message,
+                        body.bytes | (body.address >> 6) << kMessagesOutBodyShift
+                    );
+                    wait_body();
+                }
+                ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
+                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, 1);
+            }));
+            UNPACK(((void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
+            MATH(((void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
+        }
+
+        void forward(uint32_t destination, const uint32_t* message, const Body& body) {
+            forward(destination, message, handler_, body);
         }
 
         // The message ends here: one send returns to this core's quota.
@@ -1225,6 +1418,25 @@ namespace km {
             quota_--;
             forward(destination, message, handler);
             return true;
+        }
+
+        // The same with `body` beside it (as forward with a body).
+        bool send(
+            uint32_t destination,
+            const uint32_t* message,
+            uint32_t handler,
+            const Body& body
+        ) {
+            if (quota_ == 0) {
+                return false;
+            }
+            quota_--;
+            forward(destination, message, handler, body);
+            return true;
+        }
+
+        bool send(uint32_t destination, const uint32_t* message, const Body& body) {
+            return send(destination, message, handler_, body);
         }
 
         // The packet's page is free; CONSUMED counts its messages.
@@ -1257,8 +1469,24 @@ namespace km {
         }
 
     private:
-        // Pack: one outgoing message, word 0 the destination core and the handler.
-        void push_out(uint32_t destination, const uint32_t* message) {
+        // False, and the run given up, when rank `destination` is outside the group.
+        bool reaches(uint32_t destination) {
+            if (destination < count_) {
+                return true;
+            }
+            failed_ = true;
+            PACK(
+                (messages_gave_up(control_, kWhereMessagesBadDest, destination, run_))
+            );
+            PACK((
+                command_gave_up(control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_)
+            ));
+            return false;
+        }
+
+        // Pack: one outgoing message, word 0 the destination core and the handler; in a
+        // program with bodies word 1 is `body` (bytes, address / 64 above; 0: none).
+        void push_out(uint32_t destination, const uint32_t* message, uint32_t body) {
             if (!reserve()) {
                 return;
             }
@@ -1268,10 +1496,41 @@ namespace km {
             for (uint32_t word = 1; word < message_bytes_ / 4; word++) {
                 outgoing[word] = message[word];
             }
+            if (body_bytes_ != 0) {
+                outgoing[kMessagesBodyWord] = body;
+            }
             outgoing[0] = destination;
             __sync_synchronize();  // the message is in L1 before the push
             cb_push_back(kCbMessagesOut, 1);
             pushed_++;
+        }
+
+        // Pack: waits until the writer has written every body pushed so far.
+        void wait_body() {
+            bodies_++;
+            volatile tt_l1_ptr uint32_t* writer_flags = (
+                l1(
+                    control_ + KM_CONTROL_MESSAGES + KM_MESSAGES_FLAGS + kMessagesFlagWriter
+                )
+            );
+            const uint32_t code = poll_stop(
+                l1(control_ + KM_CONTROL_STOP),
+                [&] {
+                    return (
+                        writer_flags[0] == run_ &&
+                        static_cast<int32_t>(
+                            writer_flags[kMessagesFlagBodies] - bodies_
+                        ) >= 0
+                    );
+                },
+                wait_,
+                0
+            );
+            if (code != kGaveNone) {
+                failed_ = true;
+                messages_gave_up(control_, kWhereMessagesBody, bodies_, run_);
+                command_gave_up(control_, kStCompute, code, kWhereCOutput, 0, run_);
+            }
         }
 
         // Pack: the writer leaves its loop on this message.
@@ -1330,6 +1589,7 @@ namespace km {
         uint32_t count_;
         uint32_t rank_;
         uint32_t message_bytes_;
+        uint32_t body_bytes_;
         uint32_t quota_;
         uint32_t handler_;
 #if defined(KM_MESSAGE_PARTS)
@@ -1338,6 +1598,7 @@ namespace km {
         bool seeded_;
         uint32_t pushed_ = 0;
         uint32_t consumed_ = 0;
+        uint32_t bodies_ = 0;  // pack: bodies pushed in this run
         bool failed_ = false;
     };
 

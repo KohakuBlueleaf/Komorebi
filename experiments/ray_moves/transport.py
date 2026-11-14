@@ -71,6 +71,11 @@ class PageDynamic(Dynamic):
         if not 1 <= self.bins <= constants["kMessagesBinsMax"]:
             raise ValueError(f"bins {self.bins}: not in 1..16")
 
+    def args(self, queue, lines, body=0):
+        """The copy's own km::MessagesArgs: the runtime's words before its bodies."""
+        fields = abi.struct_fields(KERNELS / "page_messages.hpp", "MessagesArgs")
+        return super().args(queue, lines)[: len(fields)]
+
     def buffers(self):
         constants = page_constants()
         packet = constants["kMessagesPacket"]

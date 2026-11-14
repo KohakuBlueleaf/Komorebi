@@ -33,7 +33,7 @@ Komorebi 0.1.0 is on PyPI (`pip install "komorebi-tt[runtime]"`), a first releas
   [broadcast](reference/broadcast.md), [Movement](reference/movement.md),
   [dynamic handlers](reference/dynamic.md), the
   [X280 threads](reference/threads.md) and [overlays](reference/overlays.md).
-- **Examples**: twenty-one programs of the repository, each with its own page, from the
+- **Examples**: twenty-two programs of the repository, each with its own page, from the
   [first one](../examples/01_mapcollect/README.md) on; the
   [list](../examples/README.md) says what each one shows.
 - **Releases**: [0.1.0](releases/0.1.0.md).
