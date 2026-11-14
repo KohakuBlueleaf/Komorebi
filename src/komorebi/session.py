@@ -251,6 +251,8 @@ def _core_args(program, placed, core):
 
 # The defines of an island run that the link cores' own kernels are built with too.
 LINK_DEFINES = ("KM_PAGE_LINKS", "KM_TENSOR_TABLE", "KM_ASKS_BY_HOST")
+# Every define the island load gives a program; a plan's runtime kernels get them.
+ISLAND_DEFINES = (*LINK_DEFINES, "KM_FORWARD", "KM_WIRE")
 
 
 def _link_kernels(island, program, split, cores):
@@ -1047,7 +1049,10 @@ class Session:
         self.link_area = link.area if link is not None else 0
         self.tensor_table = tensors
         placed = None
-        if not isinstance(program, Program) or program.form() == "program":
+        if isinstance(program, programs.Plan):  # an island's part of a flat plan
+            placed = program
+            program = placed.programs[0]
+        elif not isinstance(program, Program) or program.form() == "program":
             grid = self.grid
             placed = programs.plan(program, grid[0] * grid[1])
             program = placed.programs[0]
@@ -1518,7 +1523,9 @@ def _group_recipes(kernels, count):
     """{target: Recipe} of each group's runtime kernels, by group number: the
     runtime lists a program's kernels in no fixed order."""
     out = [{} for _ in range(count)]
-    for _, builds in kernels:
+    for source, builds in kernels:
+        if _is_link_kernel(source):  # the link cores': no program runs there
+            continue
         for row in builds:
             recipe = overlay.Recipe.from_native(row)
             number = _recipe_group(recipe)
@@ -2267,6 +2274,7 @@ class _Backend:
             buffer.index for program in placed.programs for buffer in program.buffers
         }
         align = programs.CB_ALIGN
+        island, ranks, links = self._placed_links(placed, grid)
         if placed.switch:  # the runtime's buffers first, then room for the largest
             reserve = -(-self._switch_layouts(placed) // align) * align
             self.switch_reserve = reserve - self.switch_base
@@ -2297,6 +2305,7 @@ class _Backend:
                     ("KM_PROGRAM_GROUP", str(number)),
                     ("KM_PROGRAM_SWITCH", "1"),
                 ]
+            defines += island
             first = held[0] if held else None
             if placed.switch and first is None:
                 first = placed.programs[0]  # one build for every group's kernels
@@ -2322,6 +2331,52 @@ class _Backend:
                     **build,
                     **config,
                 )
+        if links:  # the island's link cores: the runtime's link kernels, its services
+            self._link_cores(launch, placed.programs[0], args, ranks, links, grid)
+
+    def _placed_links(self, placed, grid):
+        """A plan's island defines (those the island load gave its programs), and its
+        (ranks, link cores) as _link_kernels: the plan covers the ranks only."""
+        first = placed.programs[0]
+        island = [
+            (name, str(value))
+            for name, value in first.defines.items()
+            if name in ISLAND_DEFINES
+        ]
+        cores = grid[0] * grid[1]
+        ranks, links = _link_kernels(self.session.island, first, self.split, cores)
+        if "KM_PAGE_LINKS" in first.defines and not links:
+            island.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
+        if placed.cores != ranks:
+            raise ProgramError(
+                f"a plan over {placed.cores} cores on an island of {ranks} ranks"
+            )
+        return island, ranks, links
+
+    def _link_cores(self, launch, program, args, ranks, links, grid):
+        """The runtime's link kernels on the cores after the `ranks` ranks, with the
+        island's link defines of `program`, and the runtime's buffers (its tokens)."""
+        include = [str(abi.headers().abi.parents[2])]
+        served = programs.rectangles(ranks, links, grid[0])
+        for index, fmt, page, pages in self._runtime_cbs():
+            launch.cb(served, index, fmt, page, page * pages)
+            self.cb_indices.add(index)
+        link_defines = [
+            (name, str(value))
+            for name, value in program.defines.items()
+            if name in LINK_DEFINES
+        ] + [("KM_LINK_SERVICES", "1")]
+        for processor, kernel in enumerate(("reader", "writer", "compute")):
+            launch.kernel(
+                str(_link_kernel_path(kernel)),
+                served,
+                processor,
+                [],
+                includes=include,
+                args=args[processor][ranks:],
+                defines=link_defines,
+                **(compute_config({}) if kernel == "compute" else {}),
+            )
 
     def _slot_buffer(self, descriptor, slot_bytes):
         """Every core's slots as the launch's first circular buffer, at the L1 base,
