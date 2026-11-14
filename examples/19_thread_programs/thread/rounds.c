@@ -87,6 +87,7 @@ static uint32_t rounds(const km_command_t* job) {
     ) {
         return KMX_BAD;
     }
+    kmx_invalidate(0); /* the host's rounds, not lines a cache kept from before */
     uint64_t spin_rate = 1, scale_rate = 1; /* ticks a unit, x 1024 */
     const uint32_t fixed = (
         job->a0 ? 0 : empty_ticks(kProgramSpin, kProgramSpinHandlerSpin)
