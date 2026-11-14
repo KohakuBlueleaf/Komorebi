@@ -1,5 +1,5 @@
-// The link service: on an island's link core 0, the CPU that holds link 0 sends the
-// outbox the island's cores fill over that connection and issues what lands.
+// The link service: the CPU that holds a link (link 0's; two cards: each one's) sends
+// the outbox the island's cores fill over that connection and issues what lands.
 #pragma once
 
 #include <stdint.h>
@@ -34,12 +34,21 @@ namespace km {
         uint32_t far1;        // more than two islands: link core 1's far link core,
         uint32_t far2;        // link core 2's (kLinkNone: none)
         uint32_t root;        // island 0's link core 0, x | y << 16: the reports' end
+        uint32_t services;    // two islands: message services a side, link s's CPU each
+        uint32_t stride;      // the second CPU's region: region + stride (0: none)
     };
 
     constexpr uint32_t kLinkArgs = sizeof(LinkArgs) / 4;
     constexpr uint32_t kLinkNone = 0xFFFFFFFF;
     constexpr uint32_t kLinkOutboxMin = kMessagesPacket * 2;
     constexpr uint32_t kLinkInboxMax = 16;
+    constexpr uint32_t kLinkServicesMax = 4;  // two islands: one a link, four at most
+    // Built with a service a link (KM_MESSAGE_SERVICES, two cards); else link 0's alone.
+#if defined(KM_MESSAGE_SERVICES)
+    constexpr bool kLinkServicesBuilt = true;
+#else
+    constexpr bool kLinkServicesBuilt = false;
+#endif
     // A message packet's bytes: tt-metal's default packet, within every island packet
     // the session allows (island_session.LINK_PACKET_BYTES, its least).
     constexpr uint32_t kLinkPacketBytes = 4352;
@@ -66,6 +75,9 @@ namespace km {
     constexpr uint32_t kLinkPrefix = 16;  // an entry: {sequence, count} of its packet
                                           // (first entry), its flat rank, the message
     constexpr uint32_t kLinkPrefixRank = 2;
+    // Prefix word 3: the bytes of the body after the entry (0: none), in the entries
+    // that follow it in the outbox and the packet (link_body_entries).
+    constexpr uint32_t kLinkPrefixBody = 3;
 
     // After the sending packet: this side's report {run index | quiet << 31, issued,
     // sent across, version}, the far side's, then two passes of the island's lines.
@@ -83,6 +95,7 @@ namespace km {
     constexpr uint32_t kLinkScratch = kLinkState + 16;
     constexpr uint32_t kLinkEmpty = 1;  // state: nothing in its outbox, inbox or credit
     constexpr uint32_t kLinkSpread = 2;  // state: the verdict sent to siblings and across
+    constexpr uint32_t kLinkWhereShift = 8;  // state: a service's give-up where, above
 
     // Words of kLinkStamps (0 until it happens).
     constexpr uint32_t kStampSent = 0;
@@ -119,6 +132,12 @@ namespace km {
 
     inline uint32_t link_packet_max(uint32_t message_bytes) {
         return kLinkPacketBytes / link_entry(message_bytes);
+    }
+
+    // Entries a body of `bytes` takes after its message (whole 64-byte lines).
+    inline uint32_t link_body_entries(uint32_t bytes, uint32_t message_bytes) {
+        const uint32_t entry = link_entry(message_bytes);
+        return (messages_body_lines(bytes) + entry - 1) / entry;
     }
 
     // Offset of the reports in the region: after the words, the outbox, the inbox and
@@ -162,7 +181,10 @@ namespace km {
             link.outbox >= kLinkOutboxMin && (link.outbox & (link.outbox - 1)) == 0 &&
             link.inbox >= 1 && link.inbox <= kLinkInboxMax && link.packet >= 1 &&
             link.packet <= link_packet_max(message_bytes) && message_bytes % 16 == 0 &&
-            link.token != 0
+            link.token != 0 &&
+            (!kLinkServicesBuilt ||
+             (link.services <= kLinkServicesMax && link.stride % 16 == 0 &&
+              (link.services <= 1 || link.stride != 0)))
         );
     }
 
@@ -170,8 +192,10 @@ namespace km {
     // crosses before both islands' connections are held, after their loads).
     inline void link_zero(const LinkArgs& link, uint32_t message_bytes) {
         const uint32_t bytes = link_bytes(message_bytes, link.outbox, link.inbox);
-        for (uint32_t word = 0; word < bytes / 4; word++) {
-            l1(link.region)[word] = 0;
+        for (uint32_t cpu = 0; cpu < (link.stride != 0 ? 2u : 1u); cpu++) {
+            for (uint32_t word = 0; word < bytes / 4; word++) {
+                l1(link.region + cpu * link.stride)[word] = 0;
+            }
         }
         invalidate_l1_cache();
     }
@@ -182,6 +206,18 @@ namespace km {
         const LinkArgs& link, const Islands& view, uint32_t island
     ) {
         return view.count() > 2 ? link.core + view.link(island) : link.core;
+    }
+
+    // Two islands: the service flat rank `source`'s messages take, source % services (a
+    // rank's stay in order on one link); over more, 0.
+    inline uint32_t link_service(
+        const LinkArgs& link, const Islands& view, uint32_t source
+    ) {
+        return (
+            !kLinkServicesBuilt || view.count() > 2 || link.services <= 1
+                ? 0u
+                : source % link.services
+        );
     }
 
     // What a wait for outbox room does between two polls (false: stop waiting).
@@ -205,10 +241,19 @@ namespace km {
         uint32_t base,
         uint32_t stride,
         uint32_t count,
-        Idle idle = Idle()
+        Idle idle = Idle(),
+        uint32_t body = 0,
+        uint32_t body_bytes = 0
     ) {
-        if (!link_valid(link, message_bytes) || count > link.outbox) {
+        // the last message's body after it, in the same packet (one packet at most)
+        const uint32_t extra = (
+            body_bytes != 0 ? link_body_entries(body_bytes, message_bytes) : 0
+        );
+        if (!link_valid(link, message_bytes) || count + extra > link.outbox) {
             return kWhereLinkArgs;
+        }
+        if (extra != 0 && (count == 0 || 1 + extra > link.packet || body % 16 != 0)) {
+            return kWhereMessagesBody;
         }
         const uint32_t entry = link_entry(message_bytes);
         const uint32_t shift = __builtin_ctz(link.outbox);
@@ -224,7 +269,7 @@ namespace km {
             write_at_cmd_buf,
             core.core_noc(to, link.region + kLinkOutTail),
             NOC_UNICAST_WRITE_VC,
-            count,
+            count + extra,
             31,
             false,
             false,
@@ -243,7 +288,7 @@ namespace km {
         }
         const uint32_t first_position = returned[0];
         // Space: the positions are less than an outbox ahead of the link's head.
-        if (first_position + count - head > link.outbox) {
+        if (first_position + count + extra - head > link.outbox) {
             bool stopped = false;
             if (!noc_timeout(core, [&] {
                 noc_async_read(
@@ -259,7 +304,7 @@ namespace km {
                 }
                 invalidate_l1_cache();
                 head = l1(scratch)[0];
-                if (first_position + count - head <= link.outbox) {
+                if (first_position + count + extra - head <= link.outbox) {
                     return true;
                 }
                 stopped = !idle();
@@ -292,8 +337,23 @@ namespace km {
             );
         };
         for (uint32_t i = 0; i < count; i++) {
+            if (extra != 0 && i + 1 == count) {  // the last one's prefix names its body
+                if (!noc_timeout(core, [] {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                })) {
+                    return kWhereMessagesFlush;
+                }
+                l1(scratch)[kLinkPrefixBody] = body_bytes;
+                invalidate_l1_cache();  // a fence: the NoC reads the stored word
+            }
             noc_async_write(scratch, at(i), kLinkPrefix);
             noc_async_write(base + i * stride, at(i) + kLinkPrefix, message_bytes);
+        }
+        // the body: entry after entry (the outbox may wrap between them)
+        const uint32_t lines = messages_body_lines(body_bytes);
+        for (uint32_t k = 0; k < extra; k++) {
+            const uint32_t n = lines - k * entry < entry ? lines - k * entry : entry;
+            noc_async_write(body + k * entry, at(count + k), n);
         }
         if (!noc_timeout(core, [] {
             return ncrisc_noc_nonposted_writes_flushed(noc_index);
@@ -316,7 +376,7 @@ namespace km {
     struct LinkOut {
         LinkArgs link;
         uint32_t message_bytes;
-        uint32_t heads[KM_FORWARD_PARTS] = {};  // each link core's head as last read
+        uint32_t heads[kLinkServicesMax] = {};  // each outbox's head as last read
 
         template <typename WriterType>
         explicit LinkOut(const WriterType& writer) :
@@ -336,7 +396,9 @@ namespace km {
             uint32_t destination,
             uint32_t base,
             uint32_t stride,
-            uint32_t count
+            uint32_t count,
+            uint32_t body = 0,
+            uint32_t body_bytes = 0
         ) {
             const uint32_t flat = (
                 (destination & kMessagesAway) != 0
@@ -344,18 +406,28 @@ namespace km {
                     : kLinkNone
             );
             const Islands view = islands_at(writer.args().control);
-            const uint32_t to = link_toward(link, view, view.island_of(flat));
-            if (to - link.core >= KM_FORWARD_PARTS) {
+            // two islands: this rank's service, CPU s % 2 of link core s / 2
+            const uint32_t service = (
+                link_service(link, view, view.offset() + writer.args().me)
+            );
+            const uint32_t to = (
+                service != 0 ? link.core + service / 2
+                             : link_toward(link, view, view.island_of(flat))
+            );
+            const uint32_t outbox = service != 0 ? service : to - link.core;
+            if (outbox >= kLinkServicesMax || to - link.core >= KM_FORWARD_PARTS) {
                 return kWhereLinkArgs;
             }
+            LinkArgs at = link;
+            at.region += service % 2 * link.stride;
             const uint32_t scratch = (
                 writer.args().control + KM_CONTROL_TAILS + KM_TAILS_WRITER
             );
-            uint32_t& head = heads[to - link.core];
+            uint32_t& head = heads[outbox];
             return (
                 link_out_put(
                     writer,
-                    link,
+                    at,
                     message_bytes,
                     to,
                     head,
@@ -363,7 +435,10 @@ namespace km {
                     flat,
                     base,
                     stride,
-                    count
+                    count,
+                    LinkIdle(),
+                    body,
+                    body_bytes
                 )
             );
         }
@@ -380,7 +455,9 @@ namespace km {
         uint32_t base,
         uint32_t stride,
         uint32_t count,
-        uint32_t returned_address
+        uint32_t returned_address,
+        uint32_t body = 0,
+        uint32_t body_bytes = 0
     ) {
         const Args& arguments = core.args();
         const uint32_t message_bytes = messages_arguments.message_bytes;
@@ -429,6 +506,22 @@ namespace km {
         }
         const uint32_t first_position = returned[0];
         const MessageMarks marks(first_position, shift, count);
+        if (body_bytes != 0) {  // the last message's body first, as a writer's
+            if (body_bytes > messages_arguments.body_bytes) {
+                return kWhereMessagesBody;
+            }
+            const InterleavedAddrGen<true> body_addresses = {
+                .bank_base_address = messages_arguments.body,
+                .page_size = messages_arguments.body_bytes
+            };
+            noc_async_write(
+                body,
+                body_addresses.get_noc_addr(messages_body_page(
+                    destination, first_position + count - 1, messages_arguments.cap
+                )),
+                messages_body_lines(body_bytes)
+            );
+        }
         *message_mark_half(base) = 0;
         for (uint32_t i = 1; i < count; i++) {
             *message_mark_half(base + i * stride) = marks(i);
@@ -509,8 +602,8 @@ namespace km {
 #if !defined(COMPILE_FOR_TRISC) && defined(KM_PAGE_LINKS)
 namespace km {
 
-    // The connection link 0's CPU holds (km_pages.hpp): packets one hop on, from
-    // headers in the region. Never a second sender on it.
+    // The connection a service's CPU holds (km_pages.hpp): packets one hop on, from
+    // headers in its region (CPU `cpu`'s: region + cpu * stride). One sender on it.
     struct LinkWire {
         LinkArgs link;
         uint32_t entry;
@@ -518,8 +611,8 @@ namespace km {
         uint32_t reports;  // the reports' offset in both regions
 
         template <typename Core>
-        explicit LinkWire(const Core& core) :
-            link(link_args(core)),
+        LinkWire(const Core& core, uint32_t cpu) :
+            link(shifted(link_args(core), cpu)),
             entry(link_entry(messages_args(core).message_bytes)),
             staging(
                 link.region + kLinkOutbox + link.outbox * entry +
@@ -530,6 +623,12 @@ namespace km {
             ) {
             const uint32_t k = core.args().me - link.core;  // link core k's far one
             link.far = k == 1 ? link.far1 : (k == 2 ? link.far2 : link.far);
+        }
+
+        static LinkArgs shifted(LinkArgs link, uint32_t cpu) {
+            link.region += cpu * link.stride;
+            link.far_region += cpu * link.stride;
+            return link;
         }
 
         static LinkSender& sender() {
@@ -564,7 +663,7 @@ namespace km {
                     link.region + kLinkHeaders + which * kLinkHeaderBytes
                 )
             );
-            if (!sender().send(made, source, bytes)) {
+            if (!sender().send_one(made, source, bytes)) {
                 return false;
             }
             const bool sent = noc_timeout(core, [] {
@@ -615,8 +714,28 @@ namespace km {
         }
     };
 
-    // One spanning RUN's service on link 0's CPU (a0: the RUN's group word): take()
-    // issues what landed and keeps the line, send() sends the outbox, until its END.
+    // The service this CPU runs: two islands, the link it holds (link s: CPU s % 2 of
+    // link core s / 2); over more, 0 (link 0's CPU of each link core).
+    inline uint32_t link_service_here(const Islands& view) {
+        return !kLinkServicesBuilt || view.count() > 2 ? 0u : pages_held.link;
+    }
+
+    // Whether this CPU (`cpu`: 0 the reader) serves a RUN's messages: link 0's CPU;
+    // two islands with more services, the CPU of each link s below them too.
+    template <typename Core>
+    inline bool link_serves(const Core& core, uint32_t cpu) {
+        const uint32_t services = link_args(core).services;
+        if (
+            !kLinkServicesBuilt || pages_held.open == 0 || services <= 1 ||
+            islands_at(core.args().control).count() > 2
+        ) {
+            return cpu == 0 && pages_held.link == 0;
+        }
+        return pages_held.link < services && pages_held.link % 2 == cpu;
+    }
+
+    // A RUN's service on a link's CPU (a0: its group word) until its END; two islands:
+    // service 0 decides quiet over its counts and services 1..'s state lines.
     template <typename Core>
     class LinkService {
     public:
@@ -624,7 +743,8 @@ namespace km {
             core_(core),
             arguments_(core.args()),
             messages_arguments_(messages_args(core)),
-            wire_(core),
+            service_(link_service_here(islands_at(core.args().control))),
+            wire_(core, service_ % 2),
             link_(wire_.link),
             run_command_(group_of(command)),
             view_(islands_at(arguments_.control)),
@@ -646,11 +766,15 @@ namespace km {
         // counter tiles ready, this side's first report. False: given up.
         bool start() {
             const uint32_t counters = messages_arguments_.counters;
+            const bool held = (
+                view_.count() > 2 ? index_ < links_
+                                  : service_ < services() && index_ == service_ / 2
+            );
             if (
-                !link_valid(link_, messages_arguments_.message_bytes) ||
-                index_ >= links_ || links_ > KM_FORWARD_PARTS || counters == 0 ||
+                !link_valid(link_, messages_arguments_.message_bytes) || !held ||
+                links_ > KM_FORWARD_PARTS || counters == 0 ||
                 counters > KM_COUNTERS_MAX || ranks_.ranks_here() == 0 ||
-                part_.count + links_ > kLinkLinesMax || !pages_held.open
+                part_.count + links_ + services() > kLinkLinesMax || !pages_held.open
             ) {
                 where_ = kWhereLinkArgs;
                 return false;
@@ -678,8 +802,12 @@ namespace km {
             }
             run_ = found[0];
             l1(link_.region + kLinkServed)[0] = run_;
+            // the CPU's own scratch: a link core's two CPUs may both serve
+            const uint32_t tails = (
+                cpu() != 0 ? KM_TAILS_WRITER : KM_TAILS_READER
+            );
             for (uint32_t tile = 0; tile < counters; tile++) {
-                if (!messages_ready(core_, ranks_.tile_core(tile), KM_TAILS_READER, run_)) {
+                if (!messages_ready(core_, ranks_.tile_core(tile), tails, run_)) {
                     where_ = kWhereMessagesCounter;
                     return false;
                 }
@@ -690,7 +818,7 @@ namespace km {
             invalidate_l1_cache();  // a fence: the count is zero before the run names it
             sending()[kLinkRun] = run_;
             run_index_ = ((report()[0] & ~kLinkQuietBit) + 1) & ~kLinkQuietBit;
-            publish(false, 0);
+            publish(false, 0, 0);
             for (uint32_t i = 0; i < KM_ISLANDS_MAX; i++) {  // the reports as found
                 start_[i] = l1(reports_ + kLinkIslands + 16 * i)[3];
             }
@@ -729,6 +857,11 @@ namespace km {
                     return;
                 }
 #endif
+                if (follower()) {  // its state line: service 0 decides
+                    const uint32_t tail = l1(link_.region + kLinkOutTail)[0];
+                    state(tail == head_ && sending()[kLinkFreed] == taken);
+                    return;
+                }
                 quiet_pass(taken);
                 return;
             }
@@ -752,9 +885,13 @@ namespace km {
                 fail(0, kWhereLinkSequence, sequence);
                 return;
             }
+            // the answer word: the second CPU's in its region (both may issue at once)
             const uint32_t returned_address = (
-                arguments_.control + KM_CONTROL_MESSAGES + KM_MESSAGES_RETURNED
+                cpu() != 0
+                    ? reports_ + kLinkScratch
+                    : arguments_.control + KM_CONTROL_MESSAGES + KM_MESSAGES_RETURNED
             );
+            uint32_t messages = 0;  // of the packet's entries, those not a body's
             for (uint32_t index = 0; index < count;) {
                 const uint32_t flat = l1(packet + index * entry_)[kLinkPrefixRank];
                 const uint32_t island = view_.island_of(flat);
@@ -772,12 +909,29 @@ namespace km {
                     fail(0, kWhereLinkIsland, flat);
                     return;
                 }
+                // a row of one rank's messages, ended by one with a body (its last)
                 uint32_t row = 1;
                 while (
+                    l1(packet + (index + row - 1) * entry_)[kLinkPrefixBody] == 0 &&
                     index + row < count &&
                     l1(packet + (index + row) * entry_)[kLinkPrefixRank] == flat
                 ) {
                     row++;
+                }
+                const uint32_t body_bytes = (
+                    l1(packet + (index + row - 1) * entry_)[kLinkPrefixBody]
+                );
+                const uint32_t extra = (
+                    body_bytes != 0
+                        ? link_body_entries(
+                              body_bytes, messages_arguments_.message_bytes
+                          )
+                        : 0
+                );
+                const uint32_t body = packet + (index + row) * entry_;
+                if (index + row + extra > count) {
+                    fail(0, kWhereLinkSequence, extra);
+                    return;
                 }
                 const uint32_t message = packet + index * entry_ + kLinkPrefix;
                 const uint32_t where = (
@@ -796,7 +950,9 @@ namespace km {
                             [this] {
                                 send();  // this outbox drains while the next one is full
                                 return where_ == 0;
-                            }
+                            },
+                            body,
+                            body_bytes
                         )
                         : link_put(
                             core_,
@@ -806,7 +962,9 @@ namespace km {
                             message,
                             entry_,
                             row,
-                            returned_address
+                            returned_address,
+                            body,
+                            body_bytes
                         )
                 );
                 if (where != 0) {
@@ -814,9 +972,10 @@ namespace km {
                     return;
                 }
                 (onward ? forwarded_ : issued_) += row;
-                index += row;
+                messages += row;
+                index += row + extra;
             }
-            mine()[kLinkIssued] += count;
+            mine()[kLinkIssued] += messages;
             mine()[kLinkRunCount] = issued_ + forwarded_;
             mine()[kLinkTaken] = taken + 1;  // the slot is free: credited back
         }
@@ -848,7 +1007,9 @@ namespace km {
             }
             bool moved = false;
             uint32_t blocked = 0;
-            if (report()[3] != reported_ && LinkWire::sender().space()) {
+            if (
+                !follower() && report()[3] != reported_ && LinkWire::sender().space()
+            ) {
                 if (!send_report()) {
                     fail(1, kWhereLinkSent, 0);
                     return;
@@ -871,19 +1032,35 @@ namespace km {
             const uint32_t reserved = *tail - head_;
             if (reserved != 0) {
                 const uint32_t shift = __builtin_ctz(link_.outbox);
-                const uint32_t at = head_ & (link_.outbox - 1);
-                uint32_t most = link_.outbox - at;
-                most = most < reserved ? most : reserved;
-                most = most < link_.packet ? most : link_.packet;
+                const uint32_t most = reserved < link_.packet ? reserved : link_.packet;
                 const MessageMarks marks(head_, shift, most);
-                uint32_t count = 0;
-                const uint32_t base = link_.region + kLinkOutbox + at * entry_;
+                // entry `k` after the head, the outbox wrapping
+                const auto entry_at = [&](uint32_t k) {
+                    return (
+                        link_.region + kLinkOutbox +
+                        ((head_ + k) & (link_.outbox - 1)) * entry_
+                    );
+                };
+                // the ready entries: messages by their marks, a body (after its
+                // message, written before its reservation's first mark) with it whole
+                uint32_t count = 0, messages = 0;
                 while (
                     count < most &&
-                    *message_mark_half(base + count * entry_ + kLinkPrefix) ==
-                        marks(count)
+                    *message_mark_half(entry_at(count) + kLinkPrefix) == marks(count)
                 ) {
-                    count++;
+                    const uint32_t body_bytes = l1(entry_at(count))[kLinkPrefixBody];
+                    const uint32_t take = 1 + (
+                        body_bytes != 0
+                            ? link_body_entries(
+                                  body_bytes, messages_arguments_.message_bytes
+                              )
+                            : 0
+                    );
+                    if (count + take > most) {
+                        break;  // in the next packet, whole
+                    }
+                    count += take;
+                    messages++;
                 }
                 const uint32_t packets = sending()[kLinkSent];
                 if (count == 0) {
@@ -896,11 +1073,17 @@ namespace km {
                     blocked = kWhereLinkRouter;
                     waits[1]++;
                 } else {
-                    l1(base)[0] = packets;
-                    l1(base)[1] = count;
-                    for (uint32_t word = 0; word < count * entry_ / 4; word++) {
-                        l1(wire_.staging)[word] = l1(base)[word];
+                    for (uint32_t k = 0; k < count; k++) {
+                        const uint32_t from = entry_at(k);
+                        const uint32_t to = wire_.staging + k * entry_;
+                        for (uint32_t word = 0; word < entry_ / 4; word++) {
+                            l1(to)[word] = l1(from)[word];
+                        }
+                        // no mark left behind: a body's bytes there are none
+                        *message_mark_half(from + kLinkPrefix) = 0;
                     }
+                    l1(wire_.staging)[0] = packets;
+                    l1(wire_.staging)[1] = count;
                     link_write(
                         wire_.header(0),
                         wire_.far(
@@ -923,11 +1106,11 @@ namespace km {
                     }
                     head_ += count;
                     l1(link_.region + kLinkOutHead)[0] = head_;
-                    sent_ += count;
+                    sent_ += messages;
                     sending()[kLinkSent] = packets + 1;
                     sending()[kLinkRunCount] = sent_;
                     cross_count(
-                        view_.link_area(), KM_CROSS_MESSAGES, count, count * entry_
+                        view_.link_area(), KM_CROSS_MESSAGES, messages, count * entry_
                     );
                     moved = true;
                 }
@@ -946,7 +1129,7 @@ namespace km {
         // line. kGave* code.
         uint32_t finish() {
             if (
-                where_ == 0 && view_.count() <= 2 &&
+                where_ == 0 && view_.count() <= 2 && !follower() &&
                 l1(link_.region + kLinkStamps)[kStampUp] != 0 && !send_report()
             ) {
                 fail(1, kWhereLinkSent, 0);
@@ -954,7 +1137,10 @@ namespace km {
             if (where_ == 0) {
                 return kGaveNone;
             }
-            if (where_ != kWhereLinkArgs && where_ != kWhereLinkRunFound) {
+            if (
+                !follower() && where_ != kWhereLinkArgs &&
+                where_ != kWhereLinkRunFound
+            ) {
                 status(KM_MESSAGES_GAVE_UP, mine()[kLinkTaken], where_);
             }
             return kGaveStop;
@@ -989,7 +1175,83 @@ namespace km {
                 link_gave_up(
                     arguments_.control, link_, side, where, mine()[kLinkTaken], run_, seen
                 );
+                if (follower()) {
+                    state(false);  // service 0 gives up on it (follower_lines)
+                }
             }
+        }
+
+        // Two islands: the services a side (1 or more).
+        uint32_t services() const {
+            return (
+                kLinkServicesBuilt && link_.services > 1 && view_.count() <= 2
+                    ? link_.services
+                    : 1u
+            );
+        }
+
+        // A follower (service 1..), and this CPU's region (0 or 1) of its link core.
+        bool follower() const {
+            return kLinkServicesBuilt && service_ != 0;
+        }
+
+        uint32_t cpu() const {
+            return kLinkServicesBuilt ? service_ % 2 : 0u;
+        }
+
+        // Two islands, service 0: the followers' state lines into `at` (a line each),
+        // read once; false if the reads did not end (given up).
+        bool follower_read(uint32_t at) {
+            const uint32_t region = link_.region - cpu() * link_.stride;
+            for (uint32_t s = 1; s < services(); s++) {
+                noc_async_read(
+                    core_.core_noc(
+                        link_.core + s / 2,
+                        region + s % 2 * link_.stride + wire_.reports + kLinkState
+                    ),
+                    at + (s - 1) * 16,
+                    16
+                );
+            }
+            if (!noc_timeout(core_, [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            })) {
+                fail(0, kWhereMessagesRead, 0);
+                return false;
+            }
+            return true;
+        }
+
+        // The followers' lines at `at`: all of this run, empty, none given up (else this
+        // gives up with its where); their counts summed. False: one busy or given up.
+        bool follower_lines(uint32_t at, uint32_t& issued, uint32_t& across) {
+            invalidate_l1_cache();
+            issued = 0;
+            across = 0;
+            for (uint32_t s = 1; s < services(); s++) {
+                volatile tt_l1_ptr uint32_t* one = l1(at + (s - 1) * 16);
+                if ((one[3] >> kLinkWhereShift) != 0) {
+                    fail(0, one[3] >> kLinkWhereShift, s);
+                    return false;
+                }
+                if (one[0] != run_ || (one[3] & kLinkEmpty) == 0) {
+                    return false;
+                }
+                issued += one[1];
+                across += one[2];
+            }
+            return true;
+        }
+
+        // Service 0, while here quiet: the followers as they were when it was decided
+        // (their counts only grow: equal sums are equal counts).
+        bool followers_same() {
+            const uint32_t at = reports_ + kLinkLines + part_.count * 16;  // pass 0's
+            uint32_t issued = 0, across = 0;
+            return (
+                follower_read(at) && follower_lines(at, issued, across) &&
+                issued == followers_[0] && across == followers_[1]
+            );
         }
 
         // One 16-byte store of {run, state, sent, consumed} at the submitter.
@@ -1015,18 +1277,19 @@ namespace km {
             return sending()[kLinkRun] == run_ ? sending()[kLinkRunCount] : 0u;
         }
 
-        // This side's report for sending: words, then a new version.
-        void publish(bool quiet, uint32_t across) {
+        // This side's report for sending (the island's issued and sent across): words,
+        // then a new version.
+        void publish(bool quiet, uint32_t issued, uint32_t across) {
             volatile tt_l1_ptr uint32_t* words = report();
             const uint32_t first_word = run_index_ | (quiet ? kLinkQuietBit : 0u);
             if (
-                words[0] == first_word && words[1] == issued_ && words[2] == across &&
+                words[0] == first_word && words[1] == issued && words[2] == across &&
                 words[3] != 0
             ) {
                 return;
             }
             words[0] = first_word;
-            words[1] = issued_;
+            words[1] = issued;
             words[2] = across;
             invalidate_l1_cache();  // a fence: the version goes last
             words[3] = words[3] + 1 == 0 ? 1 : words[3] + 1;
@@ -1048,11 +1311,15 @@ namespace km {
             return true;
         }
 
-        // The island quiet, as its dispatcher sees it: every core of the RUN's part
-        // idle in this run over two passes of their lines' sources, and balanced.
+        // The island quiet: the RUN's part's cores idle and the followers empty in this
+        // run over two passes alike, and balanced; the followers' sums kept.
         bool island_quiet(uint32_t across) {
             const uint32_t lines = reports_ + kLinkLines;
             for (uint32_t pass = 0; pass < 2; pass++) {
+                const uint32_t at = lines + (pass * kLinkLinesMax + part_.count) * 16;
+                if (services() > 1 && !follower_read(at)) {
+                    return false;
+                }
                 for (uint32_t core = 0; core < part_.count; core++) {
                     noc_async_read(
                         core_.core_noc(
@@ -1070,8 +1337,21 @@ namespace km {
                     return false;
                 }
             }
+            uint32_t issued[2] = {0, 0}, out[2] = {0, 0};
+            for (uint32_t pass = 0; services() > 1 && pass < 2; pass++) {
+                const uint32_t at = lines + (pass * kLinkLinesMax + part_.count) * 16;
+                if (!follower_lines(at, issued[pass], out[pass])) {
+                    return false;
+                }
+            }
+            if (issued[0] != issued[1] || out[0] != out[1]) {
+                return false;
+            }
+            followers_[0] = issued[0];
+            followers_[1] = out[0];
             invalidate_l1_cache();
-            uint64_t sent = issued_, consumed = across;
+            uint64_t sent = static_cast<uint64_t>(issued_) + issued[0];
+            uint64_t consumed = static_cast<uint64_t>(across) + out[0];
             for (uint32_t core = 0; core < part_.count; core++) {
                 volatile tt_l1_ptr uint32_t* one = l1(lines + core * 16);
                 volatile tt_l1_ptr uint32_t* two = l1(
@@ -1089,9 +1369,9 @@ namespace km {
             return sent == consumed;
         }
 
-        // Both islands quiet: the far report (read twice alike) is quiet in this run
-        // and its counts meet ours, or it is of a later run (the far side ended this).
-        bool far_quiet(uint32_t across) const {
+        // Both islands quiet: the far report (read twice alike) quiet in this run, its
+        // counts meeting the island's, or of a later run (the far side ended this).
+        bool far_quiet(uint32_t issued, uint32_t across) const {
             volatile tt_l1_ptr uint32_t* far = l1(reports_ + kLinkFarReport);
             const uint32_t words[4] = {far[0], far[1], far[2], far[3]};
             invalidate_l1_cache();
@@ -1109,7 +1389,7 @@ namespace km {
             }
             return (
                 (words[0] & kLinkQuietBit) != 0 && words[1] == across &&
-                words[2] == issued_
+                words[2] == issued
             );
         }
 
@@ -1121,15 +1401,20 @@ namespace km {
             const bool empty = tail == head_ && sending()[kLinkFreed] == taken;
             if (!empty) {
                 here_quiet_ = false;
+            } else if (here_quiet_ && services() > 1) {
+                here_quiet_ = followers_same();  // a follower moved: decided anew
             } else if (!here_quiet_ && wall64() - checked_ > kLinkCheckTicks) {
                 checked_ = wall64();
                 here_quiet_ = island_quiet(sent_across);
-                if (where_ != 0) {
-                    return;
-                }
             }
-            publish(here_quiet_, sent_across);
-            const bool quiet = here_quiet_ && far_quiet(sent_across);
+            if (where_ != 0) {
+                return;
+            }
+            // the island's counts: this service's and the followers' as decided
+            const uint32_t issued = issued_ + followers_[0];
+            const uint32_t out = sent_across + followers_[1];
+            publish(here_quiet_, issued, out);
+            const bool quiet = here_quiet_ && far_quiet(issued, out);
             if (!quiet || idle_shown_) {
                 armed_ = armed_ && quiet;
                 if (!quiet && idle_shown_) {
@@ -1151,7 +1436,7 @@ namespace km {
             if (wall64() - since_ < messages_arguments_.idle) {
                 return;
             }
-            if (!status(KM_MESSAGES_IDLE, issued_, sent_across)) {
+            if (!status(KM_MESSAGES_IDLE, issued, out)) {
                 fail(0, kWhereMessagesLine, 0);
                 return;
             }
@@ -1162,10 +1447,17 @@ namespace km {
         // across, kLinkEmpty | kLinkSpread}.
         void state(bool empty) {
             volatile tt_l1_ptr uint32_t* words = l1(reports_ + kLinkState);
-            words[0] = run_index_;
+            // a follower's: the run's sequence, its give-up's where, the flags last
+            words[0] = follower() ? run_ : run_index_;
             words[1] = issued_ + forwarded_;
             words[2] = across();
-            words[3] = (empty ? kLinkEmpty : 0u) | (spread_ ? kLinkSpread : 0u);
+            if (follower()) {
+                invalidate_l1_cache();
+            }
+            words[3] = (
+                (empty ? kLinkEmpty : 0u) | (spread_ ? kLinkSpread : 0u) |
+                (follower() ? where_ << kLinkWhereShift : 0u)
+            );
             invalidate_l1_cache();
         }
 
@@ -1393,6 +1685,7 @@ namespace km {
         const Core& core_;
         const Args& arguments_;
         const MessagesArgs messages_arguments_;
+        const uint32_t service_;  // two islands: the link this CPU holds; else 0
         LinkWire wire_;
         const LinkArgs& link_;
         const km_command_t run_command_;
@@ -1407,6 +1700,7 @@ namespace km {
         uint64_t entered_ = 0, hello_at_ = 0, stalled_from_ = 0, since_ = 0;
         uint64_t checked_ = 0;
         bool idle_shown_ = false, armed_ = false, here_quiet_ = false;
+        uint32_t followers_[2] = {0, 0};  // service 0: the followers' issued, across
         // over more than two islands (many_pass); island 0's link core 0: each
         // report's round and counts at the last round, and whether it was good
         const uint32_t index_;
@@ -1417,8 +1711,8 @@ namespace km {
         bool round_good_ = false, spread_ = false;
     };
 
-    // A PAGES command of mode KM_PAGES_MESSAGES on link 0's CPU of link core 0 (each,
-    // over more than two islands): the link's service of the RUN (a0) until it ends.
+    // A PAGES command of mode KM_PAGES_MESSAGES on each CPU link_serves names: the
+    // link's service of the RUN (a0) until it ends.
     template <typename Core>
     __attribute__((noinline)) uint32_t link_messages(
         const Core& core, const km_command_t& command

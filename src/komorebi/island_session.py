@@ -26,15 +26,17 @@ TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries at most
 TABLE_STEP = 4  # a load's tensor table: the entries its tensors take, in these steps
 # The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
-LINK_ARGS = 12
+LINK_ARGS = 14
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
 LINK_TAIL = 0x20 + 2 * 16 * 256 + 16 * 16 + 3 * 16  # lines, island reports, 3 lines
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
 LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
-# Two cards' kernel buffer: the largest page-link build (the linear layer's 98,592 B)
-# and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
-KERNEL_BYTES = 128 * 1024
+# Two cards' kernel buffer: the largest build, a dynamic program with a message service
+# a link (about 159,400 B), in steps of 16 KiB. kernel_bytes= overrides it.
+KERNEL_BYTES = 160 * 1024
+# Less than this: a dynamic program's messages on link 0's service alone.
+KERNEL_BYTES_SERVICES = 160 * 1024
 # The transfer buffer's chunk a session over two cards asks for: a page CPU passes
 # pages through its chunk, one L1 slot a read in flight (15 slots of 4 KiB and their
 # headers); a run with no room for it keeps the default.
@@ -428,8 +430,9 @@ class IslandRun:
 
     def _serve_links(self, group):
         """Before a dynamic RUN over a link: its group is every rank, and link core 0
-        of each island (each link core, over more than two islands) is given the RUN's
-        group word to serve its messages across."""
+        of each island (each link core, over more than two islands; between two cards
+        the link cores of its message services) is given the RUN's group word to serve
+        its messages across."""
         if group != (0, self.cores):
             raise ValueError(
                 f"group {group}: a dynamic RUN over a link takes every rank "
@@ -440,11 +443,14 @@ class IslandRun:
         words[h["KM_PAGES_FROM"]] = group[0] | group[1] << 16
         words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_MESSAGES"] << 24 | 1 << 16
         many = len(self.runs) > 2
+        # two cards: the link cores of every service (a link each, two a link core)
+        services = self.session.message_services() if self.session else 1
+        cores = (services + 1) // 2
         for island, run in enumerate(self.runs):
             try:
                 run._queue_command(
                     h["KM_HANDLER_PAGES"],
-                    self.graph.link_group(island, 0, None if many else 1),
+                    self.graph.link_group(island, 0, None if many else cores),
                     words,
                 )
             except KomorebiError as error:
@@ -745,8 +751,12 @@ class IslandSession:
         card_dram=False,
         line=False,
         packet=None,
+        message_links=False,
     ):
         self.cards = tuple(int(card) for card in cards)
+        # two cards: a dynamic program's messages over every link, a service each
+        # (opt-in: one run of three of example 05 over four links stalled)
+        self.message_links = bool(message_links)
         if not self.cards or len(set(self.cards)) != len(self.cards):
             raise ValueError(f"cards {cards}: one or more different cards")
         if links and not 1 <= links <= self.LINKS_MAX:
@@ -905,6 +915,8 @@ class IslandSession:
                 most = min(found, self.LINKS_MAX)
                 self.links = min(self._links_asked or most, most)
                 self.log(f"links: {self.links} of {found} found")
+                for session in self.sessions:  # a relay ask's link: its rank's modulo
+                    session.relay_links = self.links
             parts, taken, link_cores = [], (self.links + 1) // 2, []
             for session in self.sessions:
                 columns, rows = session.grid
@@ -1937,6 +1949,16 @@ class IslandSession:
         dynamic = [one.messages for one in programs if one.messages is not None]
         if not dynamic:
             return programs
+        if (
+            self.message_links
+            and self.message_services() == 1
+            and self.links > 1
+            and self.split == 1
+        ):
+            self.log(
+                f"messages on link 0 alone: a service a link takes kernel_bytes >= "
+                f"{KERNEL_BYTES_SERVICES} (this session's: {self.kernel_bytes})"
+            )
         if any(messages.x280_ranks for messages in dynamic):
             raise ValueError("X280 ranks over a link are not done yet")
         islands_count = len(self.graph.islands)
@@ -1948,15 +1970,29 @@ class IslandSession:
                 f"(links={self.links}), {LINK_CORES_MAX} neighbours at most"
             )
         entry = LINK_PREFIX + max(messages.message_bytes for messages in dynamic)
+        for messages in dynamic:  # a message and its body cross in one packet
+            one = LINK_PREFIX + messages.message_bytes
+            most = (LINK_PACKET_BYTES // one - 1) * one // 64 * 64
+            if messages.body_bytes > most:
+                raise ValueError(
+                    f"body_bytes {messages.body_bytes} over a link: at most {most} "
+                    f"bytes, a message of {messages.message_bytes} bytes and its body "
+                    f"cross in one packet of {LINK_PACKET_BYTES} bytes"
+                )
         size = (
             LINK_OUTBOX_AT + LINK_OUTBOX * entry + (LINK_INBOX + 1) * LINK_PACKET_BYTES
         ) + LINK_TAIL
-        # a split card: one region, every island's at one address
+        self._stride = (size + 63) // 64 * 64 if self.message_services() > 1 else 0
+        # a split card: one region, every island's at one address; a second CPU's
+        # services: a second region after the first
         for session in self.sessions[: 1 if self.split > 1 else None]:
             columns, rows = session.grid
             self._regions.append(
                 session.empty(
-                    (columns * rows, (size + 63) // 64 * 16),
+                    (
+                        columns * rows,
+                        (size + 63) // 64 * 16 * (2 if self._stride else 1),
+                    ),
                     "uint32",
                     shard_grid=session.grid,
                 )
@@ -1983,13 +2019,24 @@ class IslandSession:
                 out.append(one)
                 continue
             words = self._link_words(island, one.messages.message_bytes, token)
-            out.append(_with_link(one, words))
+            out.append(_with_link(one, words, self.message_services()))
         return out
+
+    def message_services(self):
+        """The message services an island runs: between two cards with
+        message_links and a kernel buffer of KERNEL_BYTES_SERVICES or more, one a link
+        (a rank's messages take link rank % links); else 1 (link core 0's)."""
+        if self.split > 1 or len(self.sessions) != 2 or not self.message_links:
+            return 1
+        if (self.kernel_bytes or 0) < KERNEL_BYTES_SERVICES:
+            return 1
+        return max(1, self.links)
 
     def _link_words(self, island, message_bytes, token):
         """LinkArgs of island `island`'s cores: its link core 0, the far one's; over
         more than two islands link cores 1 and 2's far ones, and island 0's link core
-        0 (the island reports' end)."""
+        0 (the island reports' end); between two cards with links over two, link core
+        1's far one; the services and the second region's stride."""
 
         def at(there, core):  # x | y << 16
             noc = self.noc_of(there, core)
@@ -2004,6 +2051,9 @@ class IslandSession:
                 there, _, core = self.pair(island, k)
                 fars[k - 1] = at(there, core)
             root = at(0, self.link_cores[0][0])
+        elif self.message_services() > 2:
+            there, _, core = self.pair(island, 1)
+            fars[0] = at(there, core)
         words = [
             self.link_cores[island][0],
             self._regions[island].address,
@@ -2016,6 +2066,8 @@ class IslandSession:
             token,
             *fars,
             root,
+            self.message_services(),
+            getattr(self, "_stride", 0),
         ]
         assert len(words) == LINK_ARGS
         return words
@@ -2254,9 +2306,10 @@ class IslandSession:
                 self.log(f"{why}: close raised {type(error).__name__}: {error}")
 
 
-def _with_link(program, words):
+def _with_link(program, words, services=1):
     """A copy of `program` whose reader and writer take `words` (or a core's
-    `words(core)`) after their own arguments (as many on both), built with KM_LINKS."""
+    `words(core)`) after their own arguments (as many on both), built with KM_LINKS
+    (and KM_MESSAGE_SERVICES for more than one message service a side)."""
     words_of = words if callable(words) else (lambda core: words)
     own = program.core_args(0)
     after = len(own[0])
@@ -2279,6 +2332,8 @@ def _with_link(program, words):
     linked = copy.copy(program)
     linked.args = args
     linked.defines = {**program.defines, "KM_LINKS": 1, "KM_LINK_ARGS_AFTER": after}
+    if services > 1:
+        linked.defines["KM_MESSAGE_SERVICES"] = services
     return linked
 
 

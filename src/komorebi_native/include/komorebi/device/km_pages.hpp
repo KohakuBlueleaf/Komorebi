@@ -734,7 +734,7 @@ namespace km {
             })) {
                 return false;
             }
-            return sender.send(made, from, n);
+            return sender.send_one(made, from, n);
         };
         // counted here when this core's link is the first it crosses, else where it
         // crosses (forward_on)
@@ -2197,14 +2197,13 @@ namespace km {
             code = pages_open(kernel, r, index - r.first, cpu);
         } else if (r.mode == KM_PAGES_COUNTS && links) {
             code = pages_counts(kernel, r, index, cpu);
-#if defined(KM_LINKS) && defined(COMPILE_FOR_BRISC)  // the reader: link 0's CPU
+#if defined(KM_LINKS) && (defined(COMPILE_FOR_BRISC) || defined(KM_MESSAGE_SERVICES))
         } else if (r.mode == KM_PAGES_MESSAGES && links) {
+            // link 0's CPU; with a service a link, each link's below the services
             code = (
-                cpu == 0 && pages_held.link == 0
-                    ? link_messages(kernel, command)
-                    : kGaveNone
+                link_serves(kernel, cpu) ? link_messages(kernel, command) : kGaveNone
             );
-#elif defined(KM_LINKS)
+#elif defined(KM_LINKS)  // the writer, link 0's service alone: none here
         } else if (r.mode == KM_PAGES_MESSAGES && links) {
             code = kGaveNone;
 #endif

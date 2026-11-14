@@ -212,6 +212,9 @@ def main():
         action="store_true",
         help="split hints that keep pages home (else none: pages may cross)",
     )
+    parser.add_argument(
+        "--links", type=int, default=1, help="links between two cards (1 to 4)"
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     dimensions = run.SHAPES[args.shape] if args.shape else (args.m, args.k, args.n)
@@ -225,7 +228,7 @@ def main():
     report |= {"cards": cards, "stack": STACK}
     log("building the inputs")
     a_matrix, w_matrix = ref.inputs(m_rows, k_depth, n_columns, kind=args.inputs)
-    options = {"links": 1} if len(cards) > 1 else {}
+    options = {"links": args.links} if len(cards) > 1 else {}
     with km.Session(cards=cards, log=log, **options) as session:
         graph = session.graph
         nocs = [one.nocs() for one in session.sessions]
@@ -264,6 +267,10 @@ def main():
         calls = 3 + report["loop"]["reps"]
         report["crossed_a_call"] = {
             key: round(value / calls, 1) for key, value in crossed.total().items()
+        }
+        report["parts_by_link"] = {  # the relay's parts a call, link and direction
+            f"{link} {source}->{target}": round(row["parts"] / calls, 1)
+            for (link, source, target), row in sorted(crossed.rows.items())
         }
         report["run"] = product.stop()
         rows = ref.sampled_rows(m_rows)

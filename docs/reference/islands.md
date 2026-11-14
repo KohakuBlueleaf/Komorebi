@@ -43,8 +43,8 @@ with km.Session(cards=[0, 1]) as session:  # every link, 236 ranks
 
 `km.Session(cards=[a, b, ...])` returns an `IslandSession`; nothing else is needed.
 Its other arguments, `links=None, islands=None, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False`, are
-optional limits and choices.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False,
+message_links=False`, are optional limits and choices.
 With one card it has the same calls over one island: no mesh and no fabric, the card's
 own `Session` as `session.island(0)`, the graph `islands.one`, every page of every
 tensor on the card, and each load the card's run as it is without islands. A program
@@ -70,7 +70,12 @@ written for islands runs on one card unchanged.
   link core send, each on its own link (`session.channels`: the Ethernet channel of
   each). Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
   dispatcher's command and DONE lines (commands across), and pages only when it is
-  the one link; links 1 on carry pages. The session checks that a DRAM bank sits at
+  the one link; links 1 on carry pages. A relay ask (a core's bytes into a rank's
+  L1 on the other card, `relay_put`) takes link `rank % links` of its sending rank,
+  always the same link for one rank, so what a rank sends stays in order; that link's
+  CPU serves it between commands (the island header's `KM_ISLAND_LINKS`). Every
+  packet of a line, a message, a relay ask or a forward leaves by the send the pages
+  use (`LinkSender::send_stateful`; a header alone by `send`). The session checks that a DRAM bank sits at
   the same NoC place on both islands, and that both islands' core tables are the
   same. One card is an island of one: no link cores. The ranks an island has, on a
   card of 120 Tensix cores:
@@ -89,13 +94,16 @@ written for islands runs on one card unchanged.
   serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
   holds each CPU's largest text over the two groups. A program with messages, a card
   split into islands and a program placed by overlays keep the services in every
-  kernel. The session opens with a kernel buffer of 128 KiB
-  (`island_session.KERNEL_BYTES`: the largest such build, the dense linear layer's
-  98,592 bytes, and at least 16 KiB more, in steps of 16 KiB); one card keeps the
-  runtime's 70,656 bytes. The
+  kernel. The session opens with a kernel buffer of 160 KiB
+  (`island_session.KERNEL_BYTES`: the largest such build, a dynamic program with a
+  message service on every link, example 23's 159,360 bytes, in steps of 16 KiB); it
+  costs every core 32 KiB of L1 more than 128 KiB did (1,367,936 bytes left for
+  circular buffers and L1 tensors against 1,400,704). One card keeps the runtime's
+  70,656 bytes. A program that sets its own buffer keeps it. The
   load checks each build against the buffer: one that does not fit raises
   `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
-  is launched. `kernel_bytes` sets another size at the open.
+  is launched. `kernel_bytes` sets another size at the open; with less than 160 KiB,
+  `message_links=True` falls back to link 0's service alone (logged).
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
   `session: ...`: the own words (`KM_OWN_ALL_BYTES`, 8,640 bytes: each data-movement
   CPU's scratch for an ask, a put line and a relay ask, the relay's done word, its put
@@ -197,8 +205,25 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   `submit_many` of a dynamic handler and X280 ranks). Before the RUN the session queues
   a PAGES command of mode `KM_PAGES_MESSAGES` (a0: the RUN's group word) to link core 0
   of each island; its link 0 CPU serves the run's messages until the RUN's end, and the
-  dispatcher's quiet test counts that core's line. The service grows the kernels (the
-  forward example's to 97,008 bytes), inside the kernel buffer of two cards.
+  dispatcher's quiet test counts that core's line. That is the default. With
+  `Session(cards=..., message_links=True)` (opt-in: one run of three of example 05's 10^6 forwards over four links stalled at 81 % of its visits, cause not found yet) and a kernel
+  buffer of 160 KiB or more (the default) every link has a service (link k:
+  CPU k % 2 of link core k / 2, its own region, a second region on every core for the
+  second CPUs; built with `KM_MESSAGE_SERVICES`): a rank's messages take link
+  `rank % links`, so one rank's stay in order; with less, link 0's alone (logged).
+  Example 05's 10^6 forwards: four services, 80.1 to 80.4 ms, every link about 62,500
+  messages each way; one service (one link), 302.0 ms. Link 0's service alone decides the island
+  quiet: its own outbox
+  empty, then two passes alike over the RUN's cores and the other services' state lines
+  (each empty in this run), balanced over every service's counts; the two islands'
+  reports carry those sums. The other services write no status line; one that gives up
+  makes link 0's give up. A body crosses in its message's packet (at most 4,224 bytes
+  for 64-byte messages; the load refuses more): example 23, one service, 3.001 µs a hop
+  with the message alone, 6.109 µs with a 4 KiB body; four services 2.990 and 6.056. The services grow the kernels,
+  built off the card (four services; one service: 138,656 and 140,384): the forward
+  example's two-card build 159,568 bytes, example 23's
+  161,296 (on the card 157,632 and 159,360), the forward example on a split card 139,136,
+  each inside the 160 KiB buffer; one card's builds do not change (44,880 and 43,040).
 
 ## What crossed
 
@@ -222,7 +247,7 @@ link core counts what it sends in plain counters of its link area (`KM_LINK_CROS
 `km_abi.h`); no other core counts anything. A read is one `PAGES` command of mode
 `KM_PAGES_COUNTS` to each island's link cores, whose CPUs copy their counters into a
 small DRAM tensor the host reads: it waits behind a command a link core runs, so while
-a dynamic run's messages are served, link 0's counts are read after its RUN. On one
+a dynamic run's messages are served, its links' counts are read after its RUN. On one
 island, `crossings()` has no row.
 
 Measured on two Blackhole p150a cards, every link (4), 2026-11-14:
@@ -734,7 +759,7 @@ pages, took 160.7 µs more from two links away than from island 0's own DRAM, ag
 41.6 µs from one link away in the mesh of three. The end of a dynamic run over islands
 (example 05, island 0's part, which holds the end): 146.6 µs over two islands, 166.1 over
 three in a line, 216.9 over four. The kernels with forwarding built in, beside the 128 KiB
-buffer a session takes by default: example 01's 99,280 B, example 05's 123,216 B (over two
+buffer a session took by default then: example 01's 99,280 B, example 05's 123,216 B (over two
 cards, without forwarding: 92,576 B and 109,360 B, built off the card).
 
 A NOP on one island of the split card costs what it costs on the whole card; a group
@@ -776,7 +801,7 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 ## Not yet
 
 - Links: a dynamic run's messages cross only in a RUN of every rank, and while the
-  run's messages are served link 0 carries nothing else (a core's ask waits too). A
+  run's messages are served the links carry nothing else (a core's ask waits too). A
   kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
   page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
   link, and a put goes one link only. A copy with both sides placed moves a chunk at a

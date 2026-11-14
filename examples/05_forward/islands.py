@@ -27,6 +27,7 @@ import komorebi as km  # noqa: E402
 FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 LINK_WORDS = 52  # the link region's words before its packet headers (km_link.hpp)
+LINK_MESSAGE_BYTES = 64  # the forward example's messages
 STARTED = time.monotonic()
 
 
@@ -44,6 +45,12 @@ def parse():
     parser.add_argument(
         "--line", action="store_true", help="the islands in a line (neighbours only)"
     )
+    parser.add_argument(
+        "--links",
+        type=int,
+        default=1,
+        help="links between the cards (1 to 4)",
+    )
     parser.add_argument("--messages", type=int, default=16)
     parser.add_argument("--forwards", type=int, default=4, help="forwards per message")
     parser.add_argument(
@@ -54,6 +61,17 @@ def parse():
     parser.add_argument("--bins", type=int, default=16)
     parser.add_argument("--idle-cycles", type=int, default=20000)
     parser.add_argument("--counters", type=int, default=2)
+    parser.add_argument(
+        "--message-links",
+        action="store_true",
+        help="a message service on every link (opt-in), else link 0's alone",
+    )
+    parser.add_argument(
+        "--kernel-bytes",
+        type=int,
+        default=None,
+        help="kernel buffer bytes (default 163840)",
+    )
     parser.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
     return parser.parse_args()
@@ -66,12 +84,19 @@ def message_ranks(session, counters):
 
 
 def open_session(args, cards):
-    """Two cards joined by a link, or one card split into `--islands` islands joined
-    by wires (`--line`: neighbours only); the session's default kernel buffer."""
+    """Two cards joined by `--links` links, or one card split into `--islands`
+    islands joined by wires (`--line`: neighbours only); the session's default kernel
+    buffer."""
     if args.islands:
         (card,) = cards
         return km.Session(card=card, islands=args.islands, line=args.line, log=log)
-    return km.Session(cards=cards, links=1, log=log)
+    return km.Session(
+        cards=cards,
+        links=args.links,
+        kernel_bytes=args.kernel_bytes,
+        message_links=args.message_links,
+        log=log,
+    )
 
 
 def results_areas(session):
@@ -167,6 +192,10 @@ def main():
                 for a in range(islands)
                 for b in session.graph.neighbours(a)
             ]
+            report["messages_by_link"] = {  # link, from island, to island
+                f"{link} {source}->{target}": row["messages"]
+                for (link, source, target), row in sorted(moved.rows.items())
+            }
         try:
             results_end = run.stop() if done else None
             if results_end is not None:
@@ -175,7 +204,7 @@ def main():
             report["stop_error"] = str(error)[:400]
         if not done:
             run.abort()
-            report["link"] = [link_words(session, i).tolist() for i in range(islands)]
+            report["link"] = [link_words(session, i) for i in range(islands)]
         report.update(check(args, session, island_rows(session, results)))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["crossings_agree"] = (
@@ -192,18 +221,28 @@ def main():
 
 
 def link_words(session, island):
-    """The link core's region words on `island` (counts, give-ups, stamps)."""
+    """Each message service's region words on `island` (counts, give-ups, stamps), then
+    its state line: one row a service, link core 0's first CPU first."""
     region = session._regions[island]
     one = session.island(island)
     columns, rows = one.grid
-    view = one.empty(
-        (columns * rows, LINK_WORDS),
-        "uint32",
-        shard_grid=one.grid,
-        address=region.address,
-    )
-    got = view.read().astype(np.int64) & 0xFFFFFFFF
-    return got.reshape(columns * rows, LINK_WORDS)[session.link_cores[island][0]]
+    stride = getattr(session, "_stride", 0)
+    entry = 16 + LINK_MESSAGE_BYTES
+    state = 0x190 + 128 * entry + 5 * 4352 + 0x20 + 2 * 16 * 256 + 16 * 16 + 16
+    out = []
+    for cpu in range(2 if stride else 1):
+        for offset, words in ((0, LINK_WORDS), (state, 4)):
+            view = one.empty(
+                (columns * rows, words),
+                "uint32",
+                shard_grid=one.grid,
+                address=region.address + cpu * stride + offset,
+            )
+            got = view.read().astype(np.int64) & 0xFFFFFFFF
+            got = got.reshape(columns * rows, words)
+            for k, core in enumerate(session.link_cores[island]):
+                out.append([k, cpu, offset, *got[core].tolist()])
+    return out
 
 
 def check(args, session, rows):

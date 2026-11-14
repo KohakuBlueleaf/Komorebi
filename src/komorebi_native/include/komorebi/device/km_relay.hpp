@@ -26,6 +26,7 @@ namespace km {
     constexpr uint32_t kAskTo = 4;       // the L1 address there
     constexpr uint32_t kAskPort = 5;     // its port, counted there (kRelayNoPort: none)
     constexpr uint32_t kAskSlot = 6;     // the asking CPU's own block: its done word
+    constexpr uint32_t kAskCpu = 7;      // the link core's CPU that serves it (0, 1)
     constexpr uint32_t kAskValid = 12;   // the token: sequence << 1 | 1
     constexpr uint32_t kRelayServed = 0;  // KM_RELAY_STATE words
     constexpr uint32_t kRelaySent = 1;
@@ -41,7 +42,7 @@ namespace km {
     constexpr uint32_t kRelaySlots = 4;
     constexpr uint32_t kRelaySlotAt = KM_RELAY_STAGE + 512;
     constexpr uint32_t kRelayStageSlot = (
-        (KM_RELAY_BYTES - kRelaySlotAt) / kRelaySlots / 64 * 64
+        (KM_RELAY_SECOND - kRelaySlotAt) / kRelaySlots / 64 * 64
     );
     static_assert(
         kRelaySlots * 64 <= 512 && kRelayStageSlot >= 4096,
@@ -61,6 +62,34 @@ namespace km {
         return (
             island_area()[KM_ISLAND_OWN / 4] + block * KM_OWN_CPU_BYTES + KM_OWN_DONE
         );
+    }
+
+    // What CPU `cpu` of a link core adds to KM_RELAY_ASKED, _STATE and _LINES for its
+    // own relay words (KM_RELAY_SECOND: the second CPU's).
+    constexpr uint32_t relay_words(uint32_t cpu) {
+        return cpu == 0 ? 0 : KM_RELAY_SECOND - KM_RELAY_ASKED;
+    }
+
+    // The rule: flat rank `source`'s asks take link source % KM_ISLAND_LINKS between two
+    // cards (CPU k % 2 of link core k / 2: a rank's stay in order), else the next link.
+    struct RelayLink {
+        uint32_t core;
+        uint32_t cpu;
+    };
+
+    inline RelayLink relay_link(const Islands& view, uint32_t source, uint32_t island) {
+        const uint32_t first = view.base() + view.ranks() + view.link(island);
+#if defined(KM_WIRE)
+        static_cast<void>(source);
+        return {first, 0};
+#else
+        const uint32_t links = island_area()[KM_ISLAND_LINKS];
+        if (view.count() != 2 || links <= 1) {
+            return {first, 0};
+        }
+        const uint32_t link = source % links;
+        return {first + link / 2, link % 2};
+#endif
     }
 
     // `bytes` at L1 `from` into L1 `to` of rank `rank` of another island, then 1 on
@@ -92,10 +121,11 @@ namespace km {
         const uint32_t ask = area + KM_RELAY_ASK + line * 64;
         volatile tt_l1_ptr uint32_t* done = l1(relay_done(block));
         volatile tt_l1_ptr uint32_t* words = l1(own);
-        // the link core toward the rank's island: the table's next link after the ranks
-        const uint32_t link = (
-            view.base() + view.ranks() + view.link(view.island_of(rank))
+        // the link core toward the rank's island and its CPU, by this rank (relay_link)
+        const RelayLink toward = (
+            relay_link(view, view.offset() + writer.args().me, view.island_of(rank))
         );
+        const uint32_t link = toward.core;
 #if defined(KM_WIRE)
         const uint32_t most = KM_RELAY_MAX;  // the far inbox's
 #else
@@ -110,12 +140,16 @@ namespace km {
             words[kAskTo] = to + off;
             words[kAskPort] = off + n == bytes ? port : kRelayNoPort;
             words[kAskSlot] = block;
+            words[kAskCpu] = toward.cpu;
             words[kAskValid] = token;
             noc_async_write(own, writer.core_noc(link, ask), 48);
             noc_async_write_barrier();
             noc_async_write(own + 48, writer.core_noc(link, ask + 48), 16);
             noc_async_write_barrier();
-            noc_semaphore_inc(writer.core_noc(link, area + KM_RELAY_ASKED), 1);
+            noc_semaphore_inc(
+                writer.core_noc(link, area + relay_words(toward.cpu) + KM_RELAY_ASKED),
+                1
+            );
             noc_async_atomic_barrier();
             const uint32_t code = writer.poll_at(
                 kWhereEmit,
@@ -151,17 +185,25 @@ namespace km {
 #if defined(KM_PAGE_LINKS)
 namespace km {
 
-    // Link core 0's link 0 CPU, between commands: serves one ask of its island's
-    // cores, then one landed from the far island. Every wait bounded.
+    // A link CPU between commands: the asks relay_link gives its link (on the wire link
+    // 0's alone: one ask, then one landed from the far island). Every wait bounded.
     class Relay {
     public:
         template <typename Kernel>
         static void turn(const Kernel& kernel) {
             const uint32_t area = relay_area();
-            if (area == 0 || pages_held.open == 0 || pages_held.link != 0) {
-                return;  // the CPU that holds its pair's first link relays
+            if (area == 0 || pages_held.open == 0) {
+                return;
             }
-            Relay relay(area);
+#if defined(KM_WIRE)
+            const uint32_t links = 1;
+#else
+            const uint32_t links = island_area()[KM_ISLAND_LINKS];
+#endif
+            if (pages_held.link != 0 && pages_held.link >= links) {
+                return;  // no source rank's link
+            }
+            Relay relay(area, pages_held.link % 2);
             invalidate_l1_cache();
 #if defined(KM_WIRE)
             if (l1(area + KM_RELAY_ASKED)[0] != relay.state(kRelayServed)) {
@@ -174,7 +216,7 @@ namespace km {
             uint32_t served = 0;
             while (
                 served < kRelayTurnAsks &&
-                l1(area + KM_RELAY_ASKED)[0] != relay.state(kRelayServed) &&
+                l1(relay.words_ + KM_RELAY_ASKED)[0] != relay.state(kRelayServed) &&
                 relay.stream(kernel)
             ) {
                 served++;
@@ -184,11 +226,12 @@ namespace km {
         }
 
     private:
-        explicit Relay(uint32_t area) : area_(area) {
+        Relay(uint32_t area, uint32_t cpu) :
+            area_(area), words_(area + relay_words(cpu)), cpu_(cpu) {
         }
 
         volatile tt_l1_ptr uint32_t& state(uint32_t word) const {
-            return l1(area_ + KM_RELAY_STATE)[word];
+            return l1(words_ + KM_RELAY_STATE)[word];
         }
 
         uint64_t far(uint32_t offset) const {
@@ -243,7 +286,7 @@ namespace km {
             })) {
                 return false;
             }
-            if (!sender.send(header, from, bytes)) {
+            if (!sender.send_one(header, from, bytes)) {
                 return false;
             }
             return wait(kernel, [] {
@@ -265,7 +308,7 @@ namespace km {
             for (uint32_t n = 0; n < lines && ask == 0; n++) {
                 const uint32_t line = (start + n) % lines;
                 const uint32_t at = area_ + KM_RELAY_ASK + line * 64;
-                ask = (l1(at)[kAskValid] & 1u) != 0 ? at : 0;
+                ask = (l1(at)[kAskValid] & 1u) != 0 && l1(at)[kAskCpu] == cpu_ ? at : 0;
                 state(kRelayNext) = line + 1;
             }
             return ask;
@@ -277,10 +320,10 @@ namespace km {
             const uint32_t token = a[kAskValid], source = a[kAskSource];
             const uint32_t at = relay_done(a[kAskSlot] & 1u);
             a[kAskValid] = 0;
-            volatile tt_l1_ptr uint32_t* line = l1(area_ + KM_RELAY_LINES + 16);
+            volatile tt_l1_ptr uint32_t* line = l1(words_ + KM_RELAY_LINES + 16);
             line[0] = token;
             noc_async_write(
-                area_ + KM_RELAY_LINES + 16, kernel.core_noc(source, at), 4
+                words_ + KM_RELAY_LINES + 16, kernel.core_noc(source, at), 4
             );
             noc_async_write_barrier();
         }
@@ -325,6 +368,7 @@ namespace km {
                 room > kPagesSlots && packet != 0 ? (room - kPagesSlots) / packet : 0
             );
             const bool paged = fit >= kRelaySlots;
+            ok = ok && (paged || cpu_ == 0);  // the stage is the first CPU's
             // a packet's bytes: the island's, or the stage's slot where it is less
             const uint32_t size = (
                 paged || packet < kRelayStageSlot ? packet : kRelayStageSlot
@@ -358,6 +402,7 @@ namespace km {
                 read();
             }
             uint32_t s = 0, last = slots - 1;
+            sender.ready();  // pages' send: nothing but reads until the last packet
             for (uint32_t k = 0; ok && k < chunks; k++) {
                 const uint32_t n = k + 1 == chunks ? tail : size;
                 const uint32_t slot = slot_at + s * size;
@@ -401,7 +446,7 @@ namespace km {
                         return sender.space();
                     }
                 ) &&
-                    sender.send(made, slot, n);
+                    sender.send_stateful(made, slot, n);
                 sent_mark[s] = noc_nonposted_writes_num_issued[noc_index];
                 last = s;
                 s = s + 1 == slots ? 0 : s + 1;
@@ -597,6 +642,8 @@ namespace km {
         }
 
         uint32_t area_;
+        uint32_t words_;  // area_, or the second CPU's words less KM_RELAY_ASKED
+        uint32_t cpu_;
     };
 
 }  // namespace km

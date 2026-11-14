@@ -43,7 +43,7 @@ The session takes the cards as a list, and nothing else. Every card is opened in
 one X280 runtime is opened over it, and each card gets a session of its own, a dispatcher
 and its grid. The session uses every link between the two cards (four on two p150a), and
 each card gives the last of its cores to the links: a link core carries what crosses, and
-is not a rank. The kernel buffer is sized for the link services the kernels carry. The
+is not a rank. The kernel buffer (160 KiB) is sized for the link services the kernels carry. The
 number of ranks is the cores of both cards less their link cores:
 
 ```{ .python }

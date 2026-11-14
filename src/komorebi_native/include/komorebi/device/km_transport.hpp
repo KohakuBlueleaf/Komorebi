@@ -388,6 +388,16 @@ namespace km {
             return send_across_stateful(header, from, bytes);
         }
 
+        // One packet among this CPU's other writes: ready(), then send_stateful; a
+        // header alone by send (no stateful payload write of 0 bytes).
+        bool send_one(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+            if (bytes == 0) {
+                return send(header, from, bytes);
+            }
+            ready();
+            return send_stateful(header, from, bytes);
+        }
+
         // The connection's words in the CPU's L1 (its chunk): teardown, cursor.
         static constexpr uint32_t kTeardown = 0;
         static constexpr uint32_t kCursor = 16;
@@ -494,10 +504,20 @@ namespace km {
     // The packet across once the sender has room, then until its writes left L1.
     inline bool forward_across(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
         auto& sender = link_sender();
-        return forward_wait([&] {
+        if (!forward_wait([&] {
             return sender.space();
-        }) &&
-            sender.send_across(header, from, bytes) && forward_wait([] {
+        })) {
+            return false;
+        }
+        if (bytes != 0) {
+            sender.ready();  // pages' send, across: forward_send's route is not taken
+        }
+        return (
+            bytes != 0
+                ? sender.send_across_stateful(header, from, bytes)
+                : sender.send_across(header, from, bytes)
+        ) &&
+            forward_wait([] {
                 return link_sent();
             });
     }
