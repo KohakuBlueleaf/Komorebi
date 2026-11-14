@@ -41,7 +41,7 @@ with km.Session() as session:
             km.Buffer(index=1, format="uint32", page_bytes=totals.page_bytes, pages=1),
         ],
         args=arguments_of,
-        compile_args={"reader": values.accessor_args() + totals.accessor_args()},
+        compile_args={"reader": values.tensor_args() + totals.tensor_args()},
     )
     run = session.load(program)
 

@@ -46,8 +46,8 @@ with km.Session() as session:
         args=arguments_of,
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         compile_args={
-            "reader": source.accessor_args(),
-            "writer": destination.accessor_args(),
+            "reader": source.tensor_args(),
+            "writer": destination.tensor_args(),
         },
     )
     run = session.load(program)

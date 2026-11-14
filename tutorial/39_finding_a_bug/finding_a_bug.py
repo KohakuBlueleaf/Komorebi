@@ -21,8 +21,8 @@ with km.Session() as session:
             km.Buffer(index=0, format="uint32", page_bytes=source.page_bytes, pages=2)
         ],
         compile_args={
-            "reader": source.accessor_args(),
-            "writer": destination.accessor_args(),
+            "reader": source.tensor_args(),
+            "writer": destination.tensor_args(),
         },
     )
     for bug in (1, 2, 0):

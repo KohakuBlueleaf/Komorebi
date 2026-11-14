@@ -31,9 +31,9 @@ G = pl.G
 # 1,555,968), and the runtime's control block, overlay area and reader slot.
 L1_TOP_LINKED = 81_024
 L1_RUNTIME = 16_960 + 16_256
-# The kernel buffer the linear kernels' code takes (all five CPUs): one card 82,288 B;
-# two cards, with the link services in every kernel, 139,376 B.
-KERNEL_BYTES = {"one": 88 * 1024, "two": 144 * 1024}
+# The kernel buffer the linear kernels' code takes (all five CPUs): one card 83,008 B;
+# two cards (a rank's kernels: the page calls' client side) 94,224 B.
+KERNEL_BYTES = {"one": 88 * 1024, "two": 96 * 1024}
 log = run.log
 
 

@@ -16,25 +16,19 @@ void kernel_main() {
         }
         const uint32_t from = command.a0, to = command.a1, step = command.a3;
         const uint32_t buffer = get_write_ptr(kCbMove);
-        const km::Partition share = km::partition(
-            command.a2, reader.me() - km::first(command), km::count(command)
+        const km::Partition share = (
+            km::partition(
+                command.a2, reader.me() - km::first(command), km::count(command)
+            )
         );
         for (uint32_t done = 0; done < share.len;) {
             const uint32_t n = share.len - done < step ? share.len - done : step;
             const uint32_t first = share.start + done;
-            if (
-                !km::read_pages(
-                    reader, command, args, from, first, n, buffer, kAskPort
-                )
-            ) {
+            if (!km::read_pages(reader, command, args, from, first, n, buffer)) {
                 return;
             }
             noc_async_read_barrier();
-            if (
-                !km::write_pages(
-                    reader, command, args, to, first, n, buffer, kPutPort
-                )
-            ) {
+            if (!km::write_pages(reader, command, args, to, first, n, buffer)) {
                 return;
             }
             noc_async_write_barrier();

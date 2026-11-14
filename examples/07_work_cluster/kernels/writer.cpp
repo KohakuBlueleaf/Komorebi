@@ -8,7 +8,6 @@
 #include "komorebi/device/km_worker.hpp"
 
 constexpr uint32_t kCbScratch = 16;
-constexpr uint32_t kAskPort = 0;  // pages another island holds count here
 
 void kernel_main() {
     using State = km::Tensor<0>;
@@ -49,9 +48,7 @@ void kernel_main() {
                 state_page < km::first(command) + cores;
                 state_page++
             ) {
-                if (!km::read_pages(
-                    writer, command, state, state_page, 1, scratch, kAskPort
-                )) {
+                if (!km::read_pages(writer, command, state, state_page, 1, scratch)) {
                     return false;
                 }
                 if (!reads_done()) {
@@ -67,14 +64,14 @@ void kernel_main() {
         }
         const uint32_t round = command.a1;
         const uint32_t page = writer.me();
-        if (!km::read_pages(writer, command, state, page, 1, scratch, kAskPort)) {
+        if (!km::read_pages(writer, command, state, page, 1, scratch)) {
             return false;
         }
         if (!reads_done()) {
             return false;
         }
         word[0] = word[0] + round + page;
-        if (!km::write_pages(writer, command, state, page, 1, scratch, kAskPort)) {
+        if (!km::write_pages(writer, command, state, page, 1, scratch)) {
             return false;
         }
         return writes_done();

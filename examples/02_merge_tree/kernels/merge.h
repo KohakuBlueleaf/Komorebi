@@ -16,7 +16,3 @@ constexpr uint32_t kOutPages = 6;       // a part of P tiles never wraps (P <= 3
 constexpr uint32_t kPartMax = 3;        // P sums and one scratch tile in DST (fp32)
 constexpr uint32_t kBlock = 8;          // input tiles per read barrier
 constexpr uint32_t kTileBytes = 4096;   // float32 tiles everywhere
-// Pages another island holds: the input's asked for at kAskPort, the total's put at
-// kPutPort; rank 0 also counts the reduce's last rounds there (README).
-constexpr uint32_t kAskPort = 6;
-constexpr uint32_t kPutPort = 7;

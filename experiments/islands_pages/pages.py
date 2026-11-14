@@ -14,6 +14,7 @@ import komorebi as km
 from komorebi import islands
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
+NO_READ = 0x10  # KM_PAGES_SHAPE_NO_READ
 STARTED = time.monotonic()
 
 
@@ -48,6 +49,16 @@ def parse():
         help="island 0's ranks write MIB into a tensor island 1 holds (write_pages)",
     )
     parser.add_argument("--step", type=int, default=32, help="pages a call (L1)")
+    parser.add_argument(
+        "--shapes",
+        type=lambda text: int(text, 0),
+        nargs="+",
+        metavar="SHAPE",
+        help="the host's cross of --mib, once a push shape (KM_PAGES_SHAPE_*)",
+    )
+    parser.add_argument(
+        "--chunk", type=int, default=0, help="KiB of a link CPU's L1 (0: the default)"
+    )
     return parser.parse_args()
 
 
@@ -63,6 +74,9 @@ def main():
     )
     data = data.astype(np.uint32)
     with km.Session(cards=cards, links=args.links, log=log) as session:
+        if args.chunk:
+            for one in session.sessions:
+                one.transfer_chunk = args.chunk * 1024
         graph = session.graph
         own = [(graph.first(i), graph.count(i)) for i in range(2)]
         report["link_cores"] = [list(cores) for cores in session.link_cores]
@@ -76,6 +90,13 @@ def main():
             for _ in moving or ()
         ]
         if moving:
+            tensors = (source, *targets)
+        elif args.shapes:  # one target a shape that reads; one for those that do not
+            reading = [shape for shape in args.shapes if not shape & NO_READ]
+            targets = [
+                session.empty(data.shape, "uint32", group=own[1])
+                for _ in [*reading, None]
+            ]
             tensors = (source, *targets)
         else:
             target = session.empty(data.shape, "uint32", group=own[1])
@@ -104,6 +125,20 @@ def main():
             report.update(where(session, program, tensors))
             run.stop()
             report["ok"] = report["wrong_answers"] == 0
+            print(json.dumps(report), flush=True)
+            sys.exit(0 if report["ok"] else 1)
+        if args.shapes:
+            report.update(shapes(session, args, source, targets, data))
+            try:
+                results = run.stop()
+                report["kernel_errors"] = [result["error_name"] for result in results]
+            except km.KomorebiError as error:
+                report["kernel_errors"] = str(error)[:300]
+            log(f"stopped: {report['kernel_errors']}")
+            report["ok"] = bool(
+                report["kernel_errors"] == ["none", "none"]
+                and all(row.get("wrong_pages", 0) == 0 for row in report["rows"])
+            )
             print(json.dumps(report), flush=True)
             sys.exit(0 if report["ok"] else 1)
         if moving:
@@ -181,6 +216,50 @@ def move(session, run, program, args, source, targets, data):
         row["wrong_pages"] = int((got != data[:pages]).any(axis=1).sum())
         log(f"{row['mib']} MiB read back: {row['wrong_pages']} pages wrong")
     return {"mode": name.lower(), "group": list(group), "rows": rows}
+
+
+def shapes(session, args, source, targets, data):
+    """The host's cross of the source into island 1, once a push shape; a shape that
+    reads into a target of its own, read back and compared after all have run."""
+    buffer, chunk = session.staging(0)
+    log(f"link CPUs' L1: {chunk:,} B a CPU at {buffer:#x}")
+    timeout = 5.0 + data.nbytes / 1e9
+    rows, reading = [], iter(targets[:-1])
+    for shape in args.shapes:
+        target = targets[-1] if shape & NO_READ else next(reading)
+        row = {"shape": hex(shape)}
+        try:  # as session.cross, with each command's event: X280 ticks, 50 MHz
+            started = time.perf_counter()
+            far = session.wait_pages(1, session._across(0, 1), source.pages)
+            sent = session.send_pages(
+                source, 0, source.pages, target, there=1, shape=shape
+            )
+            send, landed = session.wait_together([sent, (1, far)], timeout)
+            wall = time.perf_counter() - started
+            row["wall_ms"] = round(wall * 1e3, 3)
+            row["send_ms"] = round(send.ticks / 50e3, 3)
+            row["far_ms"] = round(landed.ticks / 50e3, 3)
+            row["gb_s"] = round(data.nbytes / (send.ticks / 50e6) / 1e9, 2)
+            log(
+                f"shape {shape:#04x}: send {row['send_ms']} ms ({row['gb_s']} GB/s), "
+                f"far count {row['far_ms']} ms, wall {row['wall_ms']} ms"
+            )
+        except km.KomorebiError as error:
+            row["error"] = str(error)[:400]
+            log(f"shape {shape:#04x} failed: {row['error']}")
+            rows.append(row)
+            break
+        if not shape & NO_READ:
+            row["target"] = target
+        rows.append(row)
+    for row in rows:
+        target = row.pop("target", None)
+        if target is not None:
+            (got,) = session.read(target)
+            got = got.view(np.uint32).reshape(data.shape)
+            row["wrong_pages"] = int((got != data).any(axis=1).sum())
+            log(f"shape {row['shape']} read back: {row['wrong_pages']} pages wrong")
+    return {"mode": "shapes", "chunk": chunk, "rows": rows}
 
 
 def where(session, program, tensors):

@@ -24,10 +24,6 @@ constexpr uint32_t kCbCol = 1;  // column broadcast: B_W blocks of kb x bn tiles
 constexpr uint32_t kCbGridOut = 16;  // output subblocks, bf16: two of sh x sw tiles
 constexpr uint32_t kCbPart = 24;     // partial sums of one output block, fp32: bm x bn
 constexpr uint32_t kCbGridProf = 3;
-// The ports operand pages another island holds are counted at: the reader's (A), the
-// writer's (W).
-constexpr uint32_t kAskPortReader = 0;
-constexpr uint32_t kAskPortWriter = 1;
 constexpr uint32_t kPartBytes = 4096;
 constexpr uint32_t kBroadcastRow = 0;  // broadcast ids: rows on NoC0 (reader), columns on NoC1
 constexpr uint32_t kBroadcastCol = 1;

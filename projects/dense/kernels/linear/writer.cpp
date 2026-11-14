@@ -164,7 +164,7 @@ void kernel_main() {
             if (outstanding == 0) {
                 return true;
             }
-            if (!km::put_wait(writer, command, kPortPut, outstanding, holder)) {
+            if (!km::put_wait(writer, command, outstanding, holder)) {
                 return false;
             }
             cb_pop_front(kCbSend, block_tiles);
@@ -242,8 +242,7 @@ void kernel_main() {
                             kBf16Bytes,
                             sent.page(s_set, me, block),
                             block_tiles,
-                            get_read_ptr(kCbSend),
-                            kPortPut
+                            get_read_ptr(kCbSend)
                         )) {
                             return false;
                         }

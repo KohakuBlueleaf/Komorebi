@@ -43,8 +43,7 @@ void kernel_main() {
                 input,
                 first_tile + partition.start + done,
                 block_tiles,
-                destination,
-                kAskPort
+                destination
             )) {
                 return;
             }

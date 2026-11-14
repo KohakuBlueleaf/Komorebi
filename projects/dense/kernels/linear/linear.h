@@ -35,9 +35,8 @@ constexpr uint32_t kStampEnd = 3;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
-// Ports: the writer's puts counted; the island's tree up and down, the leaders'
-// crossing, the writer's go to its own reader.
-constexpr uint32_t kPortPut = 1;
+// Ports: the island's tree up and down, the leaders' crossing, the writer's go to its
+// own reader (the writer's puts count at its page port, km::pages_port).
 constexpr uint32_t kPortUp = 2;
 constexpr uint32_t kPortCross = 3;
 constexpr uint32_t kPortDown = 4;

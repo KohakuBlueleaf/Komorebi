@@ -17,9 +17,7 @@ void kernel_main() {
                 return;
             }
             const uint32_t where = get_write_ptr(kTileBuffer);
-            if (!km::read_pages(
-                reader, command, source, tile_number, 1, where, kPort
-            )) {
+            if (!km::read_pages(reader, command, source, tile_number, 1, where)) {
                 return;
             }
             noc_async_read_barrier();

@@ -33,9 +33,8 @@ The input is read and the total written through Komorebi's page calls
 (`km::read_pages`, `km::write_pages` over a `km::Tensor`), so they hold wherever the
 session placed the tensors. Placed by the command's group (the session's default), each
 rank's tiles are in its own island and nothing is asked for; a page another island holds
-is asked for on port 6 (the input) or put on port 7 (the total), ports that the first
-leader also counts parts on, so a group that reads across at its first leader can mix
-the two counts.
+is asked for (the input) or put (the total) and counted at the reader's or the
+writer's page port, apart from the ports the reduce and the leaders' parts count on.
 
 ## Running it
 

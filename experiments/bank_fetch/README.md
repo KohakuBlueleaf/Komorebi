@@ -72,9 +72,18 @@ the thread, the region and all four stored tensors read back whole. Cards 0 and 
 | `kmx_store` into island 1's tensor | 197 µs | 10.7 ms |
 
 The local rows are the table's `kmx_fetch` above (40.2 µs and 1.08 ms on four cores).
-Across, each copy core asks link core 0 for its chunk's pages (a get line, or a put
-line for a store), and one CPU on one link (island 1's page CPU for a fetch, island
-0's for a store) moves them all: about 6 GB/s. Pages crossing are at most one fabric
+Across, each copy core then asked link core 0 for its chunk's pages (a get line, or a
+put line for a store), and one CPU on one link moved them all: about 6 GB/s. Now each
+copy core asks each run the other island holds as one line straight between the two
+DRAMs (all in flight, waited for once), served by every page CPU: 2026-11-15, one
+run, every word exact:
+
+| Way | 1 MiB | 64 MiB |
+|---|---|---|
+| `kmx_fetch` of island 0's tensor | 51 µs | 1.303 ms |
+| `kmx_fetch` of island 1's tensor | 107 µs | 1.125 ms, 59.7 GB/s |
+| `kmx_store` into island 1's tensor | 102 µs | 1.118 ms |
+ Pages crossing are at most one fabric
 packet (4352 bytes); the tensors are made before the load (the load writes the table
 of where each tensor's pages are). On one island the copy is what it was: the check
 for a placed tensor ends at the island count.

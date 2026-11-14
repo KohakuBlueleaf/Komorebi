@@ -83,8 +83,21 @@
 /* byte k: Ethernet channel of link k; CPU c of link core r sends on link 2r + c.
    Link 0 carries the lines (LINE); pages go on links 1 on, on link 0 when alone. */
 #define KM_PAGES_LINKS 8u
-#define KM_PAGES_BUFFER 9u    /* send: L1 of CPU c at buffer + c * chunk */
+/* send: L1 of CPU c at buffer + c * chunk (bits 0..23), the push's shape << 24 */
+#define KM_PAGES_BUFFER 9u
+/* the shape of a send's push (0: the loop's own; the others measure it): pages a DRAM
+ * read 4 ** (bits 0..1), slots 15 << (bits 2..3) - 1 (0: as many as fit, at most 15),
+ * no read (bit 4: the slots are sent as they are), no wait for a slot's packet to
+ * leave L1 (bit 5, with bit 4); bit 6: link 0's CPU takes a share too, its island's
+ * lines first between its reads (the host's, when no message service holds it) */
+#define KM_PAGES_SHAPE_SHIFT 24u
+#define KM_PAGES_SHAPE_NO_READ 0x10u
+#define KM_PAGES_SHAPE_NO_WAIT 0x20u
+#define KM_PAGES_SHAPE_LINK0 0x40u
+#define KM_PAGES_SHAPE_MEASURE 0x3Fu /* the bits that measure the loop */
 #define KM_PAGES_DRAM 0xFFFFu /* page p into page p of the tensor at KM_PAGES_TO */
+/* a page CPU's DRAM side in bank b's range (page i at address + i * page): b | this */
+#define KM_PAGES_BANK 0xFF00u
 #define KM_PAGES_NO_LINK 0xFFu
 #define KM_PAGES_SEND 0u
 #define KM_PAGES_WAIT 1u
@@ -129,13 +142,14 @@
  * most KM_PAGE_CPUS), the bad ones; on a page CPU's core the far asks it answered
  * (a word a CPU of the core); a core's own line and two answer words; the two headers
  * of link core 0's CPUs (the far ask, the answer's count); the lines, then the far
- * asks. A page CPU is a CPU that holds a page link (links 1 on; link 0 when it is the
- * only one), page CPU j holding link j + 1; each serves its share of every ask and
- * put (partition(pages, j, page CPUs)). */
-#define KM_PAGE_CPUS 3u
+ * asks. A page CPU is a CPU that holds a page link (every link when no message
+ * service holds link 0, else links 1 on, link 0 when it is the only one: KM_PUT_CPUS
+ * of them, the last links); each serves its share of every ask and put
+ * (partition(pages, j, page CPUs)). */
+#define KM_PAGE_CPUS 4u
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
-#define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u) /* + 4 j: page CPU j's */
+#define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */
 #define KM_ASK_ANSWERED (KM_ASK_TAIL + 0x30u) /* + 4 cpu: the core's CPU's */
 #define KM_ASK_BAD (KM_ASK_TAIL + 0x38u)
 #define KM_ASK_OWN (KM_ASK_TAIL + 0x40u)
@@ -148,7 +162,10 @@
 /* An ask line's words (64 bytes; words 0 and 15 its number, the reserved count + 1):
  * the tensor's bank address (the same on every island), its aligned page bytes, the
  * first page, pages, the asker's x | y << 16 (core table), its L1 address, its port
- * count's L1 address, the holder island, the asker's island */
+ * count's L1 address, the holder island, the asker's island; the asker's side in its
+ * island's DRAM instead (KM_ASK_TO a bank address, from its page KM_ASK_DRAM_FIRST: a
+ * get's pages pushed into it, a put's read from it): 1 an interleaved buffer of the
+ * same pages, 2 + b bank b's range; 0: L1 */
 #define KM_ASK_NUMBER 0u
 #define KM_ASK_TENSOR 1u
 #define KM_ASK_PAGE 2u
@@ -159,6 +176,8 @@
 #define KM_ASK_COUNT 7u
 #define KM_ASK_HOLDER 8u
 #define KM_ASK_FROM 9u
+#define KM_ASK_DRAM 10u
+#define KM_ASK_DRAM_FIRST 11u
 #define KM_ASK_END 15u
 /* Then what crossed, a row a CPU of the core, counted only on a link core by that CPU:
  * messages, command lines, asks, pages, relayed parts, bytes (low, high) it sent */
@@ -173,24 +192,24 @@
 #define KM_CROSS_PUTS 7u  /* put lines and their confirmations */
 /* Then a core's puts of pages into DRAM another island holds (km::write_pages), the
  * same way the other direction: on link core 0 the count its cores reserve put lines
- * with, the put lines each page CPU took (a word each) and the island's page CPUs
- * (the session writes it), the far island's count of puts confirmed written, the puts
- * confirmed here, the bad ones; the pages each far page CPU's puts wrote here (their
- * last packets add them once written), and of those the pages confirmed; a core's own
- * put line and two answer words for each of its two data-movement CPUs; page CPU 0's
- * three headers (a put line across, a confirmation's count and its done word); the
- * put lines, then the far island's (an ask line each: KM_ASK_TO the asker's L1,
- * KM_ASK_TENSOR the holder's tensor) */
+ * with, the put lines each page CPU took (a word each), the far island's count of puts
+ * confirmed written, the puts confirmed here, the bad ones, the island's page CPUs
+ * (the session writes it, on every core); the pages each far page CPU's puts wrote
+ * here (their last packets add them once written), and of those the pages confirmed;
+ * a core's own put line and two answer words for each of its two data-movement CPUs;
+ * page CPU 0's three headers (a put line across, a confirmation's count and its done
+ * word); the put lines, then the far island's (an ask line each: KM_ASK_TO the
+ * asker's L1, KM_ASK_TENSOR the holder's tensor) */
 #define KM_PUT_TAIL (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
 #define KM_PUT_TAKEN (KM_PUT_TAIL + 0x10u) /* + 4 j: page CPU j's */
-#define KM_PUT_CPUS (KM_PUT_TAIL + 0x1Cu)
 #define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)
 #define KM_PUT_CONFIRMED (KM_PUT_TAIL + 0x24u)
 #define KM_PUT_BAD (KM_PUT_TAIL + 0x28u)
+#define KM_PUT_CPUS (KM_PUT_TAIL + 0x2Cu)   /* read with the counts taken: 32 bytes */
 #define KM_PUT_LANDED (KM_PUT_TAIL + 0x30u) /* + 4 j: page CPU j's */
 #define KM_PUT_USED (KM_PUT_TAIL + 0x40u)   /* + 4 j */
-#define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x60 the second CPU's */
-#define KM_PUT_OWN_BYTES 0x60u
+#define KM_PUT_OWN (KM_PUT_TAIL + 0x80u)    /* + 0x60 the second CPU's */
+#define KM_PUT_OWN_BYTES 0x80u /* a line, two answer words, 32 bytes read */
 #define KM_PUT_HEADERS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES + 0x40u)
 #define KM_PUT_LINES (KM_PUT_HEADERS + 0xC0u)
 #define KM_PUT_INBOX (KM_PUT_LINES + KM_ASK_SLOTS * 64u)
@@ -271,8 +290,8 @@ KM_STATIC_ASSERT(
 #define KM_CONTROL_OUT (KM_CONTROL_JOB + 0x40u)
 /* core index -> NoC x | y << 16, KM_CORES_MAX words */
 #define KM_CONTROL_CORES (KM_CONTROL_OUT + 0x40u)
-/* KM_PORTS port slots of 16 bytes: count (bumped by senders), then the count a wait
-   wants (nonzero only while waiting, or after the wait gave up) */
+/* KM_PORT_SLOTS port slots of 16 bytes: count (bumped by senders), then the count a
+   wait wants (nonzero only while waiting, or after the wait gave up) */
 #define KM_CONTROL_PORT (KM_CONTROL_CORES + 4u * KM_CORES_MAX)
 
 KM_STATIC_ASSERT(
@@ -291,21 +310,26 @@ KM_STATIC_ASSERT(
     "16-byte slots, the job copy on a line"
 );
 
-/* Ports: the receiving side of a value sent to one core. */
+/* Ports: what one core receives; a kernel names 0 to KM_PORTS - 1, the page calls
+   alone count at the reader's KM_PORT_PAGES and at the writer's, the one after. */
 #define KM_PORTS 8u
+#define KM_PORT_PAGES KM_PORTS
+#define KM_PORT_SLOTS (KM_PORTS + 2u)
 #define KM_PORT_STRIDE 16u
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
-/* KM_BROADCASTS areas, KM_BROADCAST_BYTES each */
-#define KM_CONTROL_BROADCAST (KM_CONTROL_PORT + KM_PORTS * KM_PORT_STRIDE)
+/* KM_BROADCASTS areas, KM_BROADCAST_BYTES each; on a 64-byte line after the ports */
+#define KM_CONTROL_BROADCAST \
+    (KM_CONTROL_PORT + (KM_PORT_SLOTS * KM_PORT_STRIDE + 63u) / 64u * 64u)
 
 KM_STATIC_ASSERT(
     KM_CONTROL_PORT == KM_CONTROL_CORES + 4u * KM_CORES_MAX, "ports after cores"
 );
 KM_STATIC_ASSERT(
-    KM_CONTROL_PORT + KM_PORTS * KM_PORT_STRIDE == KM_CONTROL_BROADCAST, "ports end"
+    KM_CONTROL_PORT + KM_PORT_SLOTS * KM_PORT_STRIDE <= KM_CONTROL_BROADCAST,
+    "ports end"
 );
 KM_STATIC_ASSERT(KM_CONTROL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte slots");
 
@@ -329,7 +353,7 @@ KM_STATIC_ASSERT(KM_CONTROL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte s
 #define KM_BROADCAST_ARRIVED 1u
 
 KM_STATIC_ASSERT(
-    KM_CONTROL_BROADCAST == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0x80u, "ports room"
+    KM_CONTROL_BROADCAST == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0xC0u, "ports room"
 );
 KM_STATIC_ASSERT(
     KM_BROADCAST_DONE + KM_BROADCAST_DONE_STRIDE * KM_BROADCAST_RANKS ==
@@ -431,7 +455,7 @@ KM_STATIC_ASSERT(
 );
 
 KM_STATIC_ASSERT(
-    KM_CONTROL_MESSAGES == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0x300u,
+    KM_CONTROL_MESSAGES == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0x340u,
     "after broadcasts"
 );
 KM_STATIC_ASSERT(

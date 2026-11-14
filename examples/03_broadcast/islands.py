@@ -127,8 +127,8 @@ def program(core_args, row_tensor, column_tensor, output, args):
         ],
         args=core_args,
         compile_args={
-            "reader": row_tensor.accessor_args(),
-            "writer": column_tensor.accessor_args() + output.accessor_args(),
+            "reader": row_tensor.tensor_args(),
+            "writer": column_tensor.tensor_args() + output.tensor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         handlers=KERNELS / "broadcast.h",

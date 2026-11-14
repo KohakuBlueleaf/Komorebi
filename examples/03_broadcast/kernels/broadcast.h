@@ -25,6 +25,8 @@ constexpr uint32_t kArgIndex = km::kBroadcastArgs;
 
 #if !defined(COMPILE_FOR_TRISC)
 
+#include "komorebi/device/km_ask.hpp"
+
 // Timed wait for this kernel's reads; gives up into state word `word`.
 inline bool reads_landed(
     const km::Core& core, uint32_t word, const km_command_t& command
@@ -46,6 +48,8 @@ inline bool reads_landed(
 // on) into its slot and broadcasts it; a receiver waits for it. Stops at block `stall`.
 template <typename Source, typename Stall>
 bool broadcast_blocks(
+    const km::Core& core,
+    const km_command_t& command,
     km::Broadcast& broadcast,
     const Source& source,
     uint32_t first_tile,
@@ -68,12 +72,15 @@ bool broadcast_blocks(
         if (address == 0) {
             return false;
         }
-        for (uint32_t page = 0; page < block_pages; page++) {
-            noc_async_read_page(
-                first_tile + block % data_blocks * block_pages + page,
-                source,
-                address + page * kTileBytes
-            );
+        if (!km::read_pages(
+            core,
+            command,
+            source,
+            first_tile + block % data_blocks * block_pages,
+            block_pages,
+            address
+        )) {
+            return false;
         }
         if (!broadcast.cast(block)) {
             return false;
@@ -118,12 +125,18 @@ bool read_blocks(
         }
         cb_reserve_back(cb, pages);
         const uint32_t destination = get_write_ptr(cb);
-        for (uint32_t page = 0; block < blocks && page < block_pages; page++) {
-            noc_async_read_page(
-                first_tile + block % data_blocks * block_pages + page,
+        if (
+            block < blocks &&
+            !km::read_pages(
+                core,
+                command,
                 source,
-                destination + page * kTileBytes
-            );
+                first_tile + block % data_blocks * block_pages,
+                block_pages,
+                destination
+            )
+        ) {
+            return false;
         }
         if (!reads_landed(core, word, command)) {
             return false;

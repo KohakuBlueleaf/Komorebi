@@ -16,7 +16,6 @@ constexpr uint32_t kBodyWords = 1024;
 constexpr uint32_t kResCasts = 1024;  // bodies received
 constexpr uint32_t kResRun = 1025;    // the command's sequence
 constexpr uint32_t kAreaWords = 1040;
-constexpr uint32_t kAskPort = 0;  // bodies another island holds are counted here
 static_assert(kResCasts == kBodyWords && kResRun < kAreaWords, "the area");
 
 // The fold of body word `word` into `fold`: changes with every word and with the order.

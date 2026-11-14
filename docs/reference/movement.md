@@ -40,8 +40,7 @@ movement.run([&](const km_command_t& command) {
         Input(command.a0),                          // the tensor
         first_page, tiles, tiles_per_block,         // the blocks
         repetitions, kInput,
-        km::Pattern::of(command.a4),                // the host's pattern word
-        kAskPort                                    // pages another island holds
+        km::Pattern::of(command.a4)                 // the host's pattern word
     );
     return movement.move(read);  // this mover's blocks; false: gave up (recorded)
 });
@@ -89,11 +88,16 @@ as a `km::Tensor<offset>` (its accessor arguments from compile argument `offset`
 
 | Name | What it is |
 |---|---|
-| `km::read_pages(core, command, tensor, first, pages, to, port)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages), from a reader or a writer: this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at port `port` |
-| `km::write_pages(core, command, tensor, first, pages, from, port)` | the other way: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at `port` until written; `from` is free on return |
+| `km::read_pages(core, command, tensor, first, pages, to)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages), from a reader or a writer: this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at the CPU's page port |
+| `km::write_pages(core, command, tensor, first, pages, from)` | the other way: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at the CPU's page port until written; `from` is free on return |
+
+The page port is a port of its own for the reader and one for the writer
+(`KM_PORT_PAGES`, `KM_PORT_PAGES + 1`), past the ports 0 to `KM_PORTS - 1` a kernel
+names: a reduce, an arrive or an emit never counts there, so pages across and a
+reduce's rounds never share a count.
 
 The forms by word take the accessor arguments and the word apart:
-`km::read_pages(core, command, args, word, first, pages, to, port)` and the same for
+`km::read_pages(core, command, args, word, first, pages, to)` and the same for
 `write_pages`. `args` are the tensor's `TensorAccessorArgs` (`tensor.accessor_args()`
 on the host), `word` its reference word (`tensor.address`: a bank address on one card,
 an entry of the tensor table over islands), the same on every island. All return false

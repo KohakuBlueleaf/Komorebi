@@ -21,18 +21,15 @@ void kernel_main() {
                     return false;  // nothing to report: the tile is stopping
                 }
                 // a page another island holds is put there, written on return
-                if (
-                    !km::write_pages(
-                        writer,
-                        command,
-                        output_args,
-                        output_tensor,
-                        first_page + index,
-                        1,
-                        get_read_ptr(kCbOut),
-                        kPutPort
-                    )
-                ) {
+                if (!km::write_pages(
+                    writer,
+                    command,
+                    output_args,
+                    output_tensor,
+                    first_page + index,
+                    1,
+                    get_read_ptr(kCbOut)
+                )) {
                     return false;
                 }
                 noc_async_writes_flushed();
