@@ -10,12 +10,20 @@
 #if !defined(COMPILE_FOR_TRISC)
 #include "km_completion.hpp"
 #include "km_trace.hpp"
+#include "km_transfer.hpp"
 
 namespace km {
 
     // Word of each DONE slot: the last sequence whose reader body returned in that
     // slot (a broadcast's finish() included), read by the writer before it reports.
     constexpr uint32_t kDoneReader = 2;
+
+    // A transfer between DRAM and the host channel: the runtime serves it, not a body.
+    inline bool transfer(const km_command_t& command) {
+        return (
+            handler(command) == KM_HANDLER_PUSH || handler(command) == KM_HANDLER_PULL
+        );
+    }
 
     class Reader : public Core {
     public:
@@ -36,7 +44,11 @@ namespace km {
                     put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
-                body(*command);
+                if (transfer(*command)) {
+                    serve_transfer(*command);
+                } else {
+                    body(*command);
+                }
                 control(
                     KM_CONTROL_DONE + slot(*command) * 16
                 )[kDoneReader] = command->sequence;
@@ -79,6 +91,34 @@ namespace km {
         }
 
     private:
+        // This core's slice of a PUSH or PULL (a template: only the reader builds it);
+        // a failed bound or a timed-out wait gives up (kWhereToHost or kWhereFromHost).
+        template <typename Command>
+        void serve_transfer(const Command& command) const {
+            const bool push = handler(command) == KM_HANDLER_PUSH;
+            uint32_t code = kGaveNone;
+            const auto wait = [&](auto ready) {
+                code = poll(ready, args().wait_limit);
+                return code == kGaveNone;
+            };
+            const Transfer t = transfer_of(command);
+            const uint32_t rank = me() - first(command);
+            const uint32_t status = (
+                push
+                    ? push_to_host(t, rank, count(command), wait)
+                    : pull_from_host(t, rank, count(command), wait)
+            );
+            if (status != kTransferDone) {
+                gave_up(
+                    kStReader,
+                    code != kGaveNone ? code : kGaveBadTransfer,
+                    push ? kWhereToHost : kWhereFromHost,
+                    slot(command),
+                    command.sequence
+                );
+            }
+        }
+
         // Clears ring, counters, state and stop flags, loads the core table, checks in
         // (leaders report READY, one core sends the hello). False: a leader gave up.
         bool start() {
@@ -326,7 +366,7 @@ namespace km {
                     break;
                 }
                 result_ = 0;
-                const bool report = body(command);
+                const bool report = transfer(command) || body(command);
                 noc_async_write_barrier();
                 trace_.timestamp(command.sequence, kTraceDone);
                 if (
@@ -553,7 +593,12 @@ namespace km {
                     end = command.sequence == 0 ? kEndAbort : kEndExit;
                     break;
                 }
-                body(command);
+                if (
+                    handler(command) != KM_HANDLER_PUSH &&
+                    handler(command) != KM_HANDLER_PULL
+                ) {
+                    body(command);
+                }
                 // Math and pack tell unpack they left the body; unpack marks it.
                 MATH((
                     ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, sequence)

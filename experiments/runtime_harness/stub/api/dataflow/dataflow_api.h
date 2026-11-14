@@ -209,3 +209,47 @@ inline bool ncrisc_noc_reads_flushed(uint32_t) {
     kmsim::point("ncrisc_noc_reads_flushed");
     return true;
 }
+
+// The host channel behind the PCIe tile is not modelled: no scenario sends a transfer,
+// so these calls only compile the runtime's transfer code (they do nothing).
+#ifndef MEM_L1_SIZE
+#define MEM_L1_SIZE (1536 * 1024)
+#endif
+#ifndef NOC_INDEX
+#define NOC_INDEX 0
+#endif
+#define PCIE_NOC_X 0
+#define PCIE_NOC_Y 0
+#define NOC_XY_PCIE_ENCODING(x, y) (uint64_t{1} << 60)
+
+inline void noc_async_write_set_pcie_state(uint64_t) {
+    kmsim::point("noc_async_write_set_pcie_state");
+}
+
+inline void noc_async_write_with_state(uint32_t, uint32_t, uint32_t) {
+    kmsim::point("noc_async_write_with_state");
+}
+
+inline void noc_async_write_clear_pcie_state() {
+    kmsim::point("noc_async_write_clear_pcie_state");
+}
+
+inline void noc_async_write_pcie(uint32_t, uint64_t, uint32_t) {
+    kmsim::point("noc_async_write_pcie");
+}
+
+inline void noc_async_read_set_pcie_state(uint64_t) {
+    kmsim::point("noc_async_read_set_pcie_state");
+}
+
+inline void noc_async_read_with_state(uint32_t, uint32_t, uint32_t) {
+    kmsim::point("noc_async_read_with_state");
+}
+
+inline void noc_async_read_clear_pcie_state() {
+    kmsim::point("noc_async_read_clear_pcie_state");
+}
+
+inline bool noc_cmd_bufs_mid_clear() {
+    return true;
+}

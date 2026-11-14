@@ -27,6 +27,27 @@
 /* host only: the group's cores hold the program in header bits 24 to 31 from now on;
  * a0 = the DRAM address of its record (its table entries and buffers) */
 #define KM_HANDLER_LOAD 240u
+/* host only, served by the runtime's kernels: the group's cores push their slices of
+ * DRAM pages into the session's region of the host channel, or pull them into DRAM */
+#define KM_HANDLER_PUSH 241u
+#define KM_HANDLER_PULL 242u
+/* A transfer's words a0 to a9: the tensor (bank address, aligned page bytes, first
+ * page, pages), the channel (offsets of the data and of the word slots, the region): */
+#define KM_TRANSFER_ADDRESS 0u
+#define KM_TRANSFER_PAGE 1u
+#define KM_TRANSFER_FIRST 2u
+#define KM_TRANSFER_PAGES 3u
+#define KM_TRANSFER_OFFSET 4u
+#define KM_TRANSFER_WORDS 5u
+#define KM_TRANSFER_REGION 6u
+#define KM_TRANSFER_NONCE 7u
+#define KM_TRANSFER_BUFFER 8u /* L1: two chunks, then the word slot */
+#define KM_TRANSFER_CHUNK 9u  /* bytes, whole pages */
+/* a rank's slot: its sequence word (nonce, bytes, rank, the mark ^ nonce), then the
+ * wall clock at its start and after its data, written once its data is done */
+#define KM_TRANSFER_WORD_BYTES 64u
+#define KM_TRANSFER_MARK 0x50555348u
+#define KM_CHANNEL_BYTES 0x40000000u /* the host channel: no offset reaches past it */
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u

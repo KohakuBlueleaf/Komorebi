@@ -71,7 +71,7 @@
 
 /* Reasons of a KM_EVENT_REJECTED event (its auxiliary): the command was consumed, not
  * run. */
-#define KMD_REJECT_HANDLER 1u /* handler 240 to 249 (240 from host, threads taken) */
+#define KMD_REJECT_HANDLER 1u /* handler 240 to 249 (240 to 242: see take()) */
 #define KMD_REJECT_FLAGS 2u   /* reserved flag bit 0 set */
 #define KMD_REJECT_GROUP 3u   /* count 0, or the group does not lie inside the cores */
 #define KMD_REJECT_EXITED 4u  /* a command after EXIT */

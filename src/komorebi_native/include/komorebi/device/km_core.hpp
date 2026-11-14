@@ -53,6 +53,7 @@ namespace km {
     constexpr uint32_t kGaveLimit = 2;    // the wait timed out
     constexpr uint32_t kGaveBadItem = 3;  // a multi-page item would pass the buffer end
     constexpr uint32_t kGaveBadBroadcast = 4;  // a broadcast's arguments do not fit the command
+    constexpr uint32_t kGaveBadTransfer = 6;               // a transfer's bounds, or PCIe routing left
     constexpr uint32_t kWhereCheckin = 1;   // leader collecting start-up check-ins
     constexpr uint32_t kWhereToken = 2;     // reader waiting for free token pages
     constexpr uint32_t kWhereNext = 3;      // reader waiting for a command
@@ -117,6 +118,9 @@ namespace km {
     constexpr uint32_t kWhereMessagesHandler = 40;
     constexpr uint32_t kWhereMessagesLoad = 41;
     constexpr uint32_t kWhereProgramStart = 42;  // compute: no start-up for the program
+    // A transfer to or from the host channel (km_transfer.hpp), on the reader.
+    constexpr uint32_t kWhereToHost = 43;
+    constexpr uint32_t kWhereFromHost = 44;
     static_assert(
         kWhereMessagesGap == kWhereEmit + 1 &&
             kWhereMessagesCounter == kWhereMessagesGap + 16 &&

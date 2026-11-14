@@ -299,6 +299,32 @@ host), and `kmx_load` returns 6.1 to 6.2 µs after it is called, where the host'
 `run.load` and its wait take 134 µs
 ([21_thread_load](../../examples/21_thread_load/README.md#numbers)).
 
+## Transfers to and from the host
+
+Two more reserved handlers move pages between a DRAM tensor and the session's region of
+the host channel while a run is loaded ([host](host.md#the-host-channel)): 241
+(`KM_HANDLER_PUSH`, card to host) and 242 (`KM_HANDLER_PULL`, host to card). They are
+not overlays. Their code is compiled into the runtime's loop of every program
+(`komorebi/device/km_transfer.hpp`), as EXIT's is, so a program declares nothing and
+holds no slot for them. The cost is a larger reader kernel.
+
+- **Who may issue one.** The host only: the session itself, for a read or a write. The
+  dispatcher rejects them from a thread, a stream or a graph (reason 1), as `submit`
+  does from the host.
+- **The command.** Its group is cores `[first, first + count)` that all hold one
+  program, and its program field is that program, so no switch is needed. Its words
+  name the tensor (address, page bytes, first page, pages), the region (offset, the
+  word slots, its size), a nonce, and the core's L1 buffer (two chunks and a word slot)
+  that the session reserves at the load: the row "host transfer buffer" of the L1
+  budget.
+- **On each core.** The reader checks the bounds first: the data and the word slots
+  inside the region and apart, offsets in multiples of 16, the chunks inside L1. A
+  failed bound gives up with where `tohost` or `fromhost` and gave `bad_transfer`,
+  having written nothing. Then the reader moves its share (`km::partition` of the
+  pages) through the two chunks: set the PCIe state, the writes or reads, wait for
+  them, clear. Then it writes its sequence word. Each wait is bounded by the run's wait
+  limit. The writer only completes the command, and compute skips it.
+
 The experiments these numbers stand beside are
 [overlay_costs](../../experiments/overlay_costs/README.md),
 [overlay_probe](../../experiments/overlay_probe/README.md) and

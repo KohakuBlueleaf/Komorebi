@@ -12,6 +12,7 @@ GAVES = {
     "BadItem": "bad_item",
     "BadBroadcast": "bad_broadcast",
     "Overlay": "overlay",
+    "BadTransfer": "bad_transfer",
 }  # kGave*
 WHERES = (
     "Checkin",
@@ -36,6 +37,8 @@ WHERES = (
     "OverlayMeet",
     "ProgramSwitch",
     "ProgramStart",
+    "ToHost",
+    "FromHost",
 )
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 
