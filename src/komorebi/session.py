@@ -1562,7 +1562,9 @@ class _Backend:
         _, start = programs.buffer_layout(self._runtime_cbs(), l1_bytes - kernel_free)
         self.switch_layouts, end = {}, start
         for program in placed.programs:
-            layout, last = programs.buffer_layout(_program_cbs(program.buffers), start)
+            # a group's buffers are launched in index order (joint_buffers)
+            ordered = sorted(program.buffers, key=lambda buffer: buffer.index)
+            layout, last = programs.buffer_layout(_program_cbs(ordered), start)
             self.switch_layouts[program.program_field] = layout
             end = max(end, last)
         self.switch_base = l1_bytes - kernel_free
