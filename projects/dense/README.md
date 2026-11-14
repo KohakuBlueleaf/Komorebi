@@ -4,34 +4,27 @@
 HiFi2 (the fidelity Kohaku-TT uses by default for bf16 operands), on the persistent kernels of one Blackhole p150a. Commands reach the grid through the dispatcher on
 X280 cluster 0 (`komorebi.Session`, `Run.submit`).
 
-## The thread program
+## What each core does
 
-```
-thread product(i):                             # one thread per core of the group
-    rows = partition(M tiles, group, i)             # space: the output rows this core owns
-    for m in rows:                             # time: row tiles
-        a = read_dram(A[m, :])                 # the whole row of A, one item
-        for j in blocks(N tiles, block_width): # time: column blocks of block_width tiles
-            acc = 0                            # fp32, in DST
-            for k in chunks(K tiles, chunk_tiles): # time: K chunks
-                w = W_resident[k, j]           # resident form: W read once by LOAD
-                  or read_dram(W[k, j])        # streamed form: every chunk from DRAM
-                acc += a[k] @ w
-            write Y[m, j] = acc
-```
+Every core of the group works on its own rows of A: `km::partition` of the M row tiles
+over the cores the command names. Its three kernels, per row tile it owns:
+
+1. `kernels/reader.cpp` (NoC0): reads A's row of K tiles from DRAM into `kCbA`, as one
+   item when the row is one K chunk or W is streamed, otherwise one K chunk at a time.
+   In the streamed form it also reads, for every column block and K chunk, that chunk
+   of W (`chunk_tiles` rows of `block_width` tiles) from DRAM into `kCbWs`. `LOAD` reads
+   all of W from DRAM into the W buffer (`kCbW`) once.
+2. `kernels/compute.cpp`: for each column block of `block_width` tiles, waits for A
+   (and for the streamed W chunk), runs `matmul_block` over the K tiles of each chunk
+   into the same fp32 tiles of DST (the resident form takes W from the buffer `LOAD`
+   filled), and packs the finished block into `kCbOut`.
+3. `kernels/writer.cpp` (NoC1): waits for the packed column block in `kCbOut`, writes
+   its tiles to Y's pages in DRAM and frees the buffer.
 
 There are no breakpoints: no thread waits for another. The resident form keeps W in
 every core's L1 from one `LOAD` command on; it is chosen when W and the other buffers
 fit L1. Otherwise W is streamed: every core reads every chunk of W it needs from DRAM,
 once per row tile it owns, which costs DRAM bandwidth whenever W is large.
-
-## How it maps onto the runtime
-
-| Thread program | Kernel | What it does |
-|---|---|---|
-| `read_dram(A[m, :])`, `read_dram(W[k, j])` | `kernels/reader.cpp` (NoC0) | A's row (or K chunk) into `kCbA`, streamed W chunks into `kCbWs`; `LOAD` reads all of W into `kCbW` |
-| `acc += a[k] @ w` | `kernels/compute.cpp` | `matmul_block` over the chunk's K tiles, block_width output tiles in DST |
-| `write Y[m, j]` | `kernels/writer.cpp` (NoC1) | the packed column block to Y's pages |
 
 | Handler | Arguments |
 |---|---|
@@ -52,22 +45,24 @@ tests).
 ## The broadcast form
 
 When neither W nor A fits one core, the product runs on a rectangle of cores, and
-the operands travel between cores instead of each core reading them from DRAM:
+the operands travel between cores instead of each core reading them from DRAM. Each core of the rectangle owns a band of output tiles (the rows of its row band, the
+columns of its column band) and walks it in output blocks of `block_height` x
+`block_width` tiles, each over K blocks of `k_block_tiles` tiles:
 
-```
-thread product(y, x):                          # one thread per core of the rectangle
-    band = output tiles [rows of band y, columns of band x]
-    for (r, c) in blocks(band, block_height x block_width): # time: output blocks
-        acc = 0                                # fp32 partial sums in L1 (kCbPart)
-        for k in blocks(K tiles, k_block_tiles): # time: K blocks
-            a = broadcast_row(y).take(A[r, k])      # the row's first core reads it from
-                                               #   DRAM and hands it along the row
-            w = broadcast_col(x).take(W[k, c])      # the column's bottom core reads it and
-                                               #   hands it up the column
-            acc += a @ w                       # breakpoint: a block waits until every
-                                               #   taker freed the slot it reuses
-        write Y[r, c] = acc
-```
+1. `kernels/grid/reader.cpp` (NoC0, the row broadcast): the row's first core reserves
+   the slot, reads the A block of that K block from DRAM into it and sends it along
+   the row with `km::Broadcast` (`cast`); the other cores of the row `arrive`.
+2. `kernels/grid/writer.cpp` (NoC1, the column broadcast): the column's bottom core
+   reads the W block of that K block from DRAM and hands it up the column the same
+   way; the others `arrive`.
+3. `kernels/grid/compute.cpp`: takes the A block and the W block, runs `matmul_block`
+   over the block's subblocks, and sums the K blocks into fp32 partial sums in L1
+   (`kCbPart`) by packer accumulation; the last K block is reloaded from `kCbPart` and
+   packed in bf16 into `kCbGridOut`, and each block is handed back to the broadcast
+   (`km::broadcast_done`) so its slot can be reused.
+4. `kernels/grid/writer.cpp`: writes a finished output block to Y's pages once the
+   first W block of the next output block has been delivered (the last block when
+   the loop ends).
 
 The breakpoints are the broadcasts' (`km::Broadcast`, `komorebi/device/km_broadcast.hpp`): the
 sender of block k waits until every receiver's compute has freed block k minus the window
@@ -98,17 +93,24 @@ When the output has few tiles (M of one or a few row tiles), the broadcast form 
 most cores idle or each reading a long column of W. The K split puts a group of S
 cores on each output block and gives each core 1/S of K:
 
-```
-thread part(g, d):                             # core d of group g, S cores to a group
-    block = output tiles of group g (block_height x block_width)
-    acc = 0                                    # fp32 in L1 (kCbSum)
-    for k in chunks(partition(K tiles, d, S), chunk_tiles): # time: K chunks of this partition
-        acc += read_dram(A[block rows, k]) @ read_dram(W[k, block columns])
-    acc = reduce(acc, group g)                 # owner: every core sends its part to
-                                               #   core 0; tree: halves in log2 S rounds
-    if d == 0: write Y[block] = acc            # breakpoint: a part is sent when its
-                                               #   receiver has a free arrival slot
-```
+Each group of S cores owns one output block of `block_height` x `block_width` tiles;
+core d of the group takes the d-th share of K (`km::partition` of the K tiles over the
+group) in chunks of `chunk_tiles`:
+
+1. `kernels/split/reader.cpp` and `kernels/split/writer.cpp`: each reads its half of
+   the core's K chunks from DRAM, A's `block_height` x `chunk_tiles` tiles and W's
+   `chunk_tiles` x `block_width` tiles per chunk (`move_chunks`, below).
+2. `kernels/split/compute.cpp`: per chunk, runs `matmul_block` and packs the result
+   into `kCbSum` (fp32 in L1) with packer accumulation, so `kCbSum` ends as this
+   core's part of the sum over its share of K.
+3. The parts are summed over the cores' ports. With `owner`, every core but core 0 of
+   the group sends its part to core 0, each into its own arrival slot; with `tree`,
+   the cores halve in log2 S rounds. A sender's writer writes the part into the
+   receiver's slot and adds one to the receiver's port (`km::reduce_emit`); the
+   receiver's reader waits for the arrivals (`km::reduce_arrive`) and its compute adds
+   them into `kCbSum` (`km::reduce`).
+4. Core 0 of the group packs the sum in bf16 into `kCbSplitOut`, and its writer
+   (`kernels/split/writer.cpp`) writes the block to Y's pages.
 
 A core's K chunks are read by both of its movers in turn (`km::move`, pattern `AB`,
 `kernels/split/chunks.hpp`): the reader on NoC0 the even chunks, the writer on NoC1 the
@@ -297,14 +299,11 @@ follow a long loop run at a throttled clock.
 ## On two islands
 
 `islands.py` runs the grid form over the islands of a session (two p150a cards with
-`--cards 0,1`, see [Islands](../../docs/reference/islands.md)):
-
-```
-thread product(island, y, x):                  # the grid form's threads, on each island
-    rows = partition(M tiles, island, islands) # space: the row tiles this island holds
-    plan = grid_plan(rows, K tiles, N tiles)   # the project's rule, on these rows alone
-    run the broadcast form of plan on rows     # W: a copy on every island
-```
+`--cards 0,1`, see [Islands](../../docs/reference/islands.md)). Each island takes its part
+of A's row tiles (`island_rows` in `islands.py`), makes the grid plan of the broadcast
+form for those rows alone (`plan.grid_plan`, the project's rule) and loads the grid
+program of that plan (`card.grid_program`) on its own rectangle. The kernels are those
+of `kernels/grid/`.
 
 A and Y are placed by island (`by="island"`: even parts of the row tiles, island i
 its part i); W is a copy on every island. Each island's program is the grid form of
