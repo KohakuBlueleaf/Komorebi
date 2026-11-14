@@ -68,8 +68,8 @@ def program(source, output, threads):
             regions={"scratch": 64},
             handlers=THREAD_HANDLERS,
             defines={
-                "kMap": f"{made.handler('map')}u",
-                "kHang": f"{made.handler('hang')}u",
+                "kMap": f"{int(made.handler('map'))}u",
+                "kHang": f"{int(made.handler('hang'))}u",
             },
         )
     return made
