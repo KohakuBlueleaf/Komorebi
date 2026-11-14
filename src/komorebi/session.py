@@ -484,6 +484,9 @@ class Session:
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
         self.transfer_chunk = None  # a larger transfer chunk asked for, where it fits
         self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
+        # the owner's L1 on every core of this session's card, kept at the top (an
+        # island session's link areas, relay, tensor table): () -> [(name, bytes)]
+        self.l1_held = lambda: []
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
         self._starting = None  # the Dispatch of a load before its Run exists
@@ -2202,6 +2205,15 @@ class _Backend:
             return []
         return [("host transfer buffer", self.transfer.bytes)]
 
+    def _held_rows(self):
+        """The L1 budget table's rows of what the session's owner keeps at the top of
+        every core (two cards: the link area, the relay, the tensor table)."""
+        return list(self.session.l1_held())
+
+    def _held_bytes(self):
+        """The bytes of _held_rows."""
+        return sum(size for _, size in self._held_rows())
+
     def _cbs(self, buffers):
         """(index, format, page bytes, pages) of `buffers` and the runtime's own."""
         return _program_cbs(buffers) + self._runtime_cbs()
@@ -2347,11 +2359,11 @@ class _Backend:
             (f"slots: {part}, {count} x {size:,} B", count * size)
             for part, (count, size) in built.slots.items()
         ]
-        rows += self._transfer_rows()
+        rows += self._transfer_rows() + self._held_rows()
         table, fits = overlay.budget(session.l1()[1], rows)
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
-            raise L1BudgetError(program.name, table)
+            raise L1BudgetError(program.name, table, self._held_bytes())
         image_rows, placed = overlay.dram_rows(built)
         image = _words(session, image_rows)
         slot_base = self._slot_buffer(descriptor, built.slot_bytes)
@@ -2480,12 +2492,12 @@ class _Backend:
                 (f"slots: {part}, {count} x {size:,} B", count * size)
                 for part, (count, size) in made.slots.items()
             ]
-            rows += self._transfer_rows()
+            rows += self._transfer_rows() + self._held_rows()
             table, fits = overlay.budget(session.l1()[1], rows)
             names = ", ".join(program.name for program in held)
             session.log(f"L1 budget of a core of {names}:\n{table}")
             if not fits:
-                raise L1BudgetError(names, table)
+                raise L1BudgetError(names, table, self._held_bytes())
         images, stored = {}, []
         service = overlay.constants()["kOverlayService"]
         for made in built:
@@ -2510,11 +2522,15 @@ class _Backend:
                 (f"slots: {part}, {count} x {size:,} B", count * size)
                 for part, (count, size) in common.slots.items()
             ]
-            rows += self._transfer_rows()
+            rows += self._transfer_rows() + self._held_rows()
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
             if not fits:
-                raise L1BudgetError(", ".join(p.name for p in placed.programs), table)
+                raise L1BudgetError(
+                    ", ".join(p.name for p in placed.programs),
+                    table,
+                    self._held_bytes(),
+                )
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
         image = _words(session, image_rows)
         slot_base = self._slot_buffer(

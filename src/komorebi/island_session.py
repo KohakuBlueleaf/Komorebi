@@ -775,8 +775,9 @@ class IslandSession:
                 )
                 for island, chip in enumerate(self.chips)
             )
-            for session in self.sessions:
+            for island, session in enumerate(self.sessions):
                 session.transfer_chunk = LINK_CHUNK
+                session.l1_held = lambda island=island: self._held_l1(island)
             if len(self.chips) == 2:
                 found = int(self.mesh.link(0, 1, 0)[0])
                 most = min(found, self.LINKS_MAX)
@@ -1819,6 +1820,24 @@ class IslandSession:
         ]
         assert len(words) == LINK_ARGS
         return words
+
+    def _held_l1(self, island):
+        """What island `island`'s session keeps in the L1 of every core, at the top
+        (the load's L1 budget counts it): [(row name, bytes)] of the tensors it holds
+        now: its link area and relay, its tensor table, its message service's region."""
+        areas = getattr(self, "_link_areas", [])  # made by _links, at a load
+        held = {
+            "link area": areas[2 * island : 2 * island + 1],
+            "relay": areas[2 * island + 1 : 2 * island + 2],
+            "tensor table": self._tables[island : island + 1],
+            "message region": self._regions[island : island + 1],
+        }
+        rows = []
+        for name, tensors in held.items():
+            size = sum(t.aligned_page_bytes for t in tensors if not t.freed)
+            if size:
+                rows.append((f"session: {name}", size))
+        return rows
 
     def _links(self):
         """Each island's LinkPlan (two islands, or a split card), else None each: its

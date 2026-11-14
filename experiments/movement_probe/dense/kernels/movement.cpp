@@ -23,6 +23,8 @@ namespace {
     constexpr uint32_t kProfileTiles = kPrWrTiles;
 #endif
     constexpr bool kReaderRole = km::kMover == km::kMoverA;
+    constexpr km::BufferPair kInputPair = {kCbA, kCbA};
+    constexpr km::BufferPair kOutputPair = {kOutputMoverA, kCbOut};
 
     // LOAD: the reader role reads all of W into the W buffer and tells the writer role,
     // which completes the command once W has landed.
@@ -108,7 +110,7 @@ namespace {
             rows.len * inner_tiles,
             inner_tiles,
             1,
-            {kCbA, kCbA},
+            kInputPair,
             km::kPatternA
         );
         const km::Stream blocks_of_y(
@@ -118,7 +120,7 @@ namespace {
             rows.len * column_tiles,
             block_tiles,
             1,
-            {kOutputMoverA, kCbOut},
+            kOutputPair,
             km::Pattern::of(Y_PATTERN)
         );
         km::Moved busy = {0, 0};
