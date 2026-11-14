@@ -88,7 +88,8 @@ python -m reference.public materials sponza     # <scene>_materials.npz (all thr
 
 The command needs the scene converted (`fetch`) and the texture files of the table
 (`texture_files`: the Bistro textures are three archives of their own, kept in
-`downloads/textures/`); it downloads only what is missing, checked by SHA-256 like the
+`downloads/textures/`, saved as the `file` their entry names: the archive serves them
+without an extension); it downloads only what is missing, checked by SHA-256 like the
 meshes. Pillow is the `scenes` extra of `pyproject.toml` and is imported by this
 command only; without it the command stops with an error that names it.
 `load_materials(name, data)` gives the arrays (a view's name works too).

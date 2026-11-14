@@ -107,13 +107,16 @@ def download(url, path, expected):
 
 def fetch(name, data, key="files"):
     """Downloads the files of a scene (checked) and returns their local paths; key
-    "texture_files" gives its texture archives, kept in downloads/textures/."""
+    "texture_files" gives its texture archives, kept in downloads/textures/. A file is
+    saved under its URL's last part, or its entry's `file` when it has one."""
     folder = public_dir(data) / "downloads"
     if key == "texture_files":
         folder = folder / "textures"
         folder.mkdir(exist_ok=True)
     return [
-        download(f["url"], folder / f["url"].rsplit("/", 1)[1], f["sha256"])
+        download(
+            f["url"], folder / f.get("file", f["url"].rsplit("/", 1)[1]), f["sha256"]
+        )
         for f in table()[name].get(key, [])
     ]
 

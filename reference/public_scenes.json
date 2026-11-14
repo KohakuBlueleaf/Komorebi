@@ -156,17 +156,20 @@
   ],
   "texture_files": [
    {
-    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/BuildingTextures.zip",
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/BuildingTextures",
+    "file": "BuildingTextures.zip",
     "sha256": "16538a37f34cadec5665d97e5b77ef3581d67ab674b33b9caeef1d277cbde6bf",
     "bytes": 507671451
    },
    {
-    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/OtherTextures.zip",
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/OtherTextures",
+    "file": "OtherTextures.zip",
     "sha256": "0806fee3eeb0e14cd501582edbd2d5caf33c5416a62a871e0f126391096f5c58",
     "bytes": 431016313
    },
    {
-    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/PropTextures.zip",
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/PropTextures",
+    "file": "PropTextures.zip",
     "sha256": "a179e4ee6367d2b518c4978d7e2e690c59503861634d67d0da8bacfa7196571a",
     "bytes": 415421476
    }
@@ -329,17 +332,20 @@
   ],
   "texture_files": [
    {
-    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/BuildingTextures.zip",
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/BuildingTextures",
+    "file": "BuildingTextures.zip",
     "sha256": "16538a37f34cadec5665d97e5b77ef3581d67ab674b33b9caeef1d277cbde6bf",
     "bytes": 507671451
    },
    {
-    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/OtherTextures.zip",
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/OtherTextures",
+    "file": "OtherTextures.zip",
     "sha256": "0806fee3eeb0e14cd501582edbd2d5caf33c5416a62a871e0f126391096f5c58",
     "bytes": 431016313
    },
    {
-    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/PropTextures.zip",
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/PropTextures",
+    "file": "PropTextures.zip",
     "sha256": "a179e4ee6367d2b518c4978d7e2e690c59503861634d67d0da8bacfa7196571a",
     "bytes": 415421476
    }
