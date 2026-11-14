@@ -142,12 +142,16 @@ namespace km {
         return link_noc(r.to_core & 0xFFu, r.to_core >> 8, r.to + k * r.page);
     }
 
+    template <typename Kernel>
+    uint32_t pages_forward(const Kernel& kernel, uint32_t area);  // below
+
     // CPU `cpu` sends `share` over its held connection, reads run ahead in the slots;
     // each batch's last packet adds its pages to the count. A range: `share` is ranks,
     // each rank's pages into its core's L1, each rank's last packet adding to its
     // count. A send's shape (KM_PAGES_SHAPE_*) may read several pages a transaction:
     // pages of one DRAM bank (p, p + banks, ..), or pages one after another in L1,
-    // a group of slots a read. kGave* code.
+    // a group of slots a read. The lines link's CPU (link 0) sends its island's next
+    // ask line, if one waits, after each read's packets. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_push(
         const Kernel& kernel, const PagesRequest& r, uint32_t cpu, Partition share
@@ -158,7 +162,13 @@ namespace km {
         const uint32_t area = r.buffer + cpu * r.chunk;
         const bool range = r.mode == KM_PAGES_RANGE;
         const bool dram = r.from_core == KM_PAGES_DRAM;
-        const uint32_t shape = range ? 0 : r.shape;
+        const uint32_t shape = range ? 0 : r.shape & KM_PAGES_SHAPE_MEASURE;
+        // the lines link's CPU: its island's lines first, between two reads
+        const uint32_t lines = (
+            pages_held.link == 0 && pages_held.links > 1
+                ? islands_at(kernel.args().control).link_area()
+                : 0
+        );
         const bool no_read = (shape & KM_PAGES_SHAPE_NO_READ) != 0;
         const bool no_wait = no_read && (shape & KM_PAGES_SHAPE_NO_WAIT) != 0;
         const uint32_t slots_fit = (
@@ -362,6 +372,9 @@ namespace km {
                 read(ahead++);
             }
             before = mark;
+            if (lines != 0) {
+                code = pages_forward(kernel, lines);
+            }
         }
         const uint32_t sending = code;
         noc_async_read_set_trid(0);
@@ -383,14 +396,16 @@ namespace km {
     }
 
     // CPU `cpu` of link core `rank` sends its share on link 2 rank + cpu (pages_push):
-    // link 0 carries the lines; with more links, pages go on links 1 on. kGave* code.
+    // link 0 carries the lines; with more links, pages go on links 1 on, and on link 0
+    // too when the request says so (KM_PAGES_SHAPE_LINK0). kGave* code.
     template <typename Kernel>
     inline uint32_t pages_send(
         const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
     ) {
         const uint32_t cpus = pages_links(r);
         const uint32_t link = 2 * rank + cpu;
-        const uint32_t first_link = cpus > 1 ? 1 : 0;
+        const bool all = (r.shape & KM_PAGES_SHAPE_LINK0) != 0;
+        const uint32_t first_link = cpus > 1 && !all ? 1 : 0;
         if (link >= cpus || link < first_link) {
             return kGaveNone;  // no link of this CPU, or the lines link: no share
         }

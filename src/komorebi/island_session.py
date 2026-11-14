@@ -1468,6 +1468,8 @@ class IslandSession:
             self.noc_of(there, counted) | 1 << 16 | h["KM_PAGES_SEND"] << 24
         )
         words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
+        if not self._regions:  # no message service holds link 0: it carries pages too
+            shape |= h["KM_PAGES_SHAPE_LINK0"]
         words[h["KM_PAGES_BUFFER"]] = buffer | shape << h["KM_PAGES_SHAPE_SHIFT"]
         handle = self.run.island(here)._queue_command(
             h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, cores), words

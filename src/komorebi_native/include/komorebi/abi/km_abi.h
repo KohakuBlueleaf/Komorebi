@@ -88,10 +88,13 @@
 /* the shape of a send's push (0: the loop's own; the others measure it): pages a DRAM
  * read 4 ** (bits 0..1), slots 15 << (bits 2..3) - 1 (0: as many as fit, at most 15),
  * no read (bit 4: the slots are sent as they are), no wait for a slot's packet to
- * leave L1 (bit 5, with bit 4) */
+ * leave L1 (bit 5, with bit 4); bit 6: link 0's CPU takes a share too, its island's
+ * lines first between its reads (the host's, when no message service holds it) */
 #define KM_PAGES_SHAPE_SHIFT 24u
 #define KM_PAGES_SHAPE_NO_READ 0x10u
 #define KM_PAGES_SHAPE_NO_WAIT 0x20u
+#define KM_PAGES_SHAPE_LINK0 0x40u
+#define KM_PAGES_SHAPE_MEASURE 0x3Fu /* the bits that measure the loop */
 #define KM_PAGES_DRAM 0xFFFFu /* page p into page p of the tensor at KM_PAGES_TO */
 #define KM_PAGES_NO_LINK 0xFFu
 #define KM_PAGES_SEND 0u
