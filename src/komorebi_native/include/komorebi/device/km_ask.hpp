@@ -146,7 +146,8 @@ namespace km {
         uint32_t at,
         uint32_t port,
         uint32_t dram = 0,
-        uint32_t dram_first = 0
+        uint32_t dram_first = 0,
+        PutRun* run = nullptr
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
@@ -257,6 +258,9 @@ namespace km {
             }
             ring = rings.slots != 0;
         }
+        if (run != nullptr && !ring) {
+            return give_up(kGaveBadItem);  // a run's bytes follow only into rings
+        }
         volatile tt_l1_ptr uint32_t* line = l1(area + queue.own);
         for (uint32_t w = 0; w < 16; w++) {
             line[w] = 0;
@@ -291,8 +295,10 @@ namespace km {
             limit
         );
         if (code == kGaveNone && ring) {
-            code = pages_into_rings(
-                core,
+            PutRun one = {
+                rings,
+                holder,
+                0,
                 area,
                 build,
                 area + queue.returned,
@@ -302,9 +308,14 @@ namespace km {
                 bytes,
                 first,
                 pages,
-                at,
-                rings
-            );
+                0,
+                0
+            };
+            if (run != nullptr) {
+                *run = one;  // the bytes follow (put_piece)
+            } else {
+                code = put_ring_pieces(core, one, at, pages);
+            }
         }
         return code == kGaveNone || give_up(code);
     }
@@ -426,6 +437,152 @@ namespace km {
                 pages,
                 from,
                 pages_port(core)
+            )
+        );
+    }
+
+    // Reader or writer: names a run of puts, pages first .. first + pages - 1 at bank
+    // address `address` of island `holder` (`bytes` aligned page bytes), with one put
+    // line, and returns; its bytes follow by put_piece, a piece at a time, as they are
+    // made; put_wait(run) counts it. Where the page CPUs have rings (the link cores'
+    // chunk large enough), the line names the whole run and each piece goes into the
+    // rings; else nothing is sent here and each piece is a put line of its own,
+    // waited for. False: gave up (recorded).
+    template <typename Kernel>
+    inline bool put_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t holder,
+        uint32_t address,
+        uint32_t bytes,
+        uint32_t first,
+        uint32_t pages,
+        PutRun& run
+    ) {
+        const Islands view = islands_at(core.args().control);
+        const uint32_t area = view.link_area();
+        run = {};
+        run.holder = holder;
+        run.address = address;
+        run.bytes = bytes;
+        run.first = first;
+        run.pages = pages;
+        if (area == 0 || view.hops(holder) != 1) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                kGaveBadItem,
+                kWhereAsk,
+                slot(command) | holder << 8,
+                command.sequence
+            );
+            return false;
+        }
+        const AskQueue& queue = ask_puts(core.role());
+        const uint32_t build = (
+            area + KM_PUT_BUILD + (core.role() == kRoleWriter ? KM_PUT_BUILD_BYTES : 0)
+        );
+        const uint32_t link = view.base() + view.ranks() + view.link(holder);
+        const uint32_t code = put_rings_read(core, link, area, build, run.rings);
+        if (code != kGaveNone) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                code,
+                kWhereAsk,
+                slot(command) | holder << 8,
+                command.sequence
+            );
+            return false;
+        }
+        if (run.rings.slots == 0) {
+            return true;  // a line a piece
+        }
+        PutRun* named = &run;
+        return (
+            ask_line_at(
+                core,
+                slot(command),
+                command.sequence,
+                queue,
+                holder,
+                address,
+                bytes,
+                first,
+                pages,
+                0,
+                pages_port(core),
+                0,
+                0,
+                named
+            )
+        );
+    }
+
+    // Reader or writer: the next `count` pages of `run` (put_pages) from L1 `from`,
+    // one after another; `from` free on return. False: gave up (recorded).
+    template <typename Kernel>
+    inline bool put_piece(
+        const Kernel& core,
+        const km_command_t& command,
+        PutRun& run,
+        uint32_t from,
+        uint32_t count
+    ) {
+        if (run.rings.slots == 0) {  // no rings: its own line, waited for
+            const uint32_t first = run.first + run.done;
+            if (
+                !ask_line(
+                    core,
+                    command,
+                    ask_puts(core.role()),
+                    run.holder,
+                    run.address,
+                    run.bytes,
+                    first,
+                    count,
+                    from,
+                    pages_port(core)
+                ) ||
+                !ask_wait(
+                    core,
+                    slot(command),
+                    command.sequence,
+                    pages_port(core),
+                    count,
+                    run.holder
+                )
+            ) {
+                return false;
+            }
+            run.done += count;
+            run.waited += count;
+            return true;
+        }
+        const uint32_t code = put_ring_pieces(core, run, from, count);
+        if (code != kGaveNone) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                code,
+                kWhereAsk,
+                slot(command) | run.holder << 8,
+                command.sequence
+            );
+            return false;
+        }
+        return true;
+    }
+
+    // Reader or writer: waits until its page port has counted the pages of `run` not
+    // yet waited for (put_piece), clears it.
+    template <typename Kernel>
+    inline bool put_wait(const Kernel& core, const km_command_t& command, PutRun& run) {
+        return (
+            ask_wait(
+                core,
+                slot(command),
+                command.sequence,
+                pages_port(core),
+                run.pages - run.waited,
+                run.holder
             )
         );
     }

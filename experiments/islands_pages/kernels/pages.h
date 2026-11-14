@@ -32,5 +32,10 @@ constexpr uint32_t kSoakMissing = 4;
 constexpr uint32_t kSoakFailed = 5;
 constexpr uint32_t kSoakRank = 6;
 constexpr uint32_t kSoakWords = 8;
+// RUNS (reader): the rank's share of pages 0 .. a2 - 1 of tensor a0 (this island's)
+// put into the same pages of tensor a1 (another island's) in runs of a3 pages, each
+// named by km::put_pages and its bytes following by km::put_piece, a4 pages a piece
+// (read from a0 into L1 just before), then one km::put_wait for all its runs.
+constexpr uint32_t kHandlerRuns = 4;
 // The L1 buffer (a circular buffer index; only its address is used).
 constexpr uint32_t kCbMove = 0;

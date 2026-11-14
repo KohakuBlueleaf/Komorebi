@@ -76,10 +76,54 @@ void soak(km::Reader& reader, const km_command_t& command, const Args& args) {
     noc_async_write_barrier();
 }
 
+// RUNS (pages.h): runs of puts, their bytes a piece at a time.
+template <typename Args>
+void runs(km::Reader& reader, const km_command_t& command, const Args& args) {
+    const uint32_t from = command.a0, to = command.a1;
+    const uint32_t length = command.a3, piece = command.a4;
+    const uint32_t buffer = get_write_ptr(kCbMove);
+    const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+    const km::Partition share = (
+        km::partition(command.a2, reader.me() - km::first(command), km::count(command))
+    );
+    km::PutRun run;
+    uint32_t put = 0, holder = 0;
+    for (uint32_t done = 0; done < share.len;) {
+        const uint32_t first = share.start + done;
+        const km::PageAt at = km::page_at(to, first);
+        uint32_t n = share.len - done < length ? share.len - done : length;
+        n = km::page_run(to, first, n, at);
+        if (!km::put_pages(
+                reader, command, at.island, at.address, bytes, at.index, n, run
+            )) {
+            return;
+        }
+        for (uint32_t k = 0; k < n;) {
+            const uint32_t m = n - k < piece ? n - k : piece;
+            if (!km::read_pages(reader, command, args, from, first + k, m, buffer)) {
+                return;
+            }
+            noc_async_read_barrier();
+            if (!km::put_piece(reader, command, run, buffer, m)) {
+                return;
+            }
+            k += m;
+        }
+        put += n;
+        holder = at.island;
+        done += n;
+    }
+    km::put_wait(reader, command, put, holder);  // one wait for every run
+}
+
 void kernel_main() {
     constexpr auto args = TensorAccessorArgs<0>();  // both tensors' (one shape)
     km::Reader reader;
     reader.run([&](const km_command_t& command) {
+        if (km::handler(command) == kHandlerRuns) {
+            runs(reader, command, args);
+            return;
+        }
         if (km::handler(command) == kHandlerSoak) {
             soak(reader, command, args);
             return;

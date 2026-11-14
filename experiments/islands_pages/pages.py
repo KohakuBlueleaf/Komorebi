@@ -68,6 +68,14 @@ def parse():
         help="island 0's ranks ask (or put) --step pages a call over --mib, in rounds,"
         " until --calls calls or --seconds; every asked page checked on the core",
     )
+    parser.add_argument(
+        "--runs",
+        choices=("one", "both"),
+        help="every rank of island 0 (both: of both islands at once) puts its share "
+        "of --mib to the other island in runs of --run-pages, --piece pages a piece",
+    )
+    parser.add_argument("--run-pages", type=int, default=64, help="pages a run")
+    parser.add_argument("--piece", type=int, default=4, help="pages a piece")
     parser.add_argument("--calls", type=int, default=3_000_000, help="the soak's")
     parser.add_argument("--seconds", type=float, default=100.0, help="the soak's most")
     return parser.parse_args()
@@ -98,6 +106,11 @@ def main():
         own = [(graph.first(i), graph.count(i)) for i in range(2)]
         report["link_cores"] = [list(cores) for cores in session.link_cores]
         report["channels"] = [list(channels) for channels in session.channels]
+        if args.runs:
+            report.update(runs(session, args, data, own, log))
+            report["wall_s"] = round(time.monotonic() - STARTED, 1)
+            print(json.dumps(report), flush=True)
+            sys.exit(0 if report["ok"] else 1)
         if args.soak:
             report.update(soak(session, args, data, own, log))
             report["wall_s"] = round(time.monotonic() - STARTED, 1)
@@ -240,6 +253,71 @@ def move(session, run, program, args, source, targets, data):
         row["wrong_pages"] = int((got != data[:pages]).any(axis=1).sum())
         log(f"{row['mib']} MiB read back: {row['wrong_pages']} pages wrong")
     return {"mode": name.lower(), "group": list(group), "chunk": chunk, "rows": rows}
+
+
+def runs(session, args, data, own, log):
+    """RUNS by island 0's ranks (both: by both islands' at once, each into the
+    other), one command an island (its event's ticks); the targets read back."""
+    islands_putting = (0, 1) if args.runs == "both" else (0,)
+    sources = [session.tensor(data, "uint32", group=own[i]) for i in islands_putting]
+    targets = [
+        session.empty(data.shape, "uint32", group=own[1 - i]) for i in islands_putting
+    ]
+    program = km.Program(
+        "pages",
+        kernels=KERNELS,
+        handlers=KERNELS / "pages.h",
+        buffers=[
+            km.Buffer(
+                index=0, format="bfloat16", page_bytes=args.piece * args.page, pages=1
+            )
+        ],
+        compile_args={"reader": sources[0].accessor_args()},
+    )
+    run = session.load(program, deadline=2.0)
+    handler = program.handler("runs")
+    _, chunk = session.staging(0)
+    log(f"link CPUs' L1: {chunk:,} B a CPU")
+    pages = data.shape[0]
+    out = {"mode": f"runs-{args.runs}", "chunk": chunk, "rows": [], "error": None}
+    submitted = []
+    for i, source, target in zip(islands_putting, sources, targets):
+        words = [source.address, target.address, pages, args.run_pages, args.piece]
+        submitted.append(
+            (i, run.island(i), run.island(i).submit(handler, own[i], words))
+        )
+    for i, island, event in submitted:
+        try:
+            done = island.wait(event, timeout=30.0)
+        except km.KomorebiError as error:
+            out["error"] = str(error)[:600]
+            log(f"RUNS island {i} failed: {out['error']}")
+            continue
+        seconds = done.ticks / 50e6
+        row = {
+            "from": i,
+            "ms": round(seconds * 1e3, 3),
+            "gb_s": round(pages * args.page / seconds / 1e9, 2),
+        }
+        log(f"RUNS {args.mib} MiB from island {i}: {row['ms']} ms, {row['gb_s']} GB/s")
+        out["rows"].append(row)
+    wrong = 0
+    for target in targets:
+        (got,) = session.read(target)
+        wrong += int(
+            (got.view(np.uint32).reshape(data.shape) != data).any(axis=1).sum()
+        )
+    out["wrong_pages"] = wrong
+    log(f"targets read back: {wrong} pages wrong")
+    try:
+        results = run.stop()
+        out["kernel_errors"] = [result["error_name"] for result in results]
+    except km.KomorebiError as error:
+        out["kernel_errors"] = str(error)[:300]
+    out["ok"] = bool(
+        out["error"] is None and wrong == 0 and out["kernel_errors"] == ["none", "none"]
+    )
+    return out
 
 
 def soak(session, args, data, own, log):
