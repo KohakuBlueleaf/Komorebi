@@ -62,6 +62,44 @@ For code that is placed at run time this means: keep an overlay's slot below 0x1
 (the runtime does), and expect about 4 cycles for every taken branch and call in a
 body that has to run above it.
 
+## Where the runtime puts code
+
+A Tensix core's L1 (1,536 KiB) as a run lays it out, before and after the change that
+made the overlay slots the run's first circular buffer:
+
+| Region | Placed by | Where |
+|---|---|---|
+| firmware, mailboxes | tt-metal | below 0xA080 |
+| kernels (the text of all five threads) | tt-metal's kernel config buffer, sized by `Session(kernel_bytes=...)` | 0xA080 up to 0x1B480 (default 70,656 B), 0x1F640 for the ray tracer's 87,488 B |
+| overlay slots (a program's overlays, the service overlay, programs held as overlays) | the runtime | before: just under 0x100000 when the circular buffers ended below that, else the allocator's top-down choice; now: at the bottom of the L1 left, 0x1B480 by default |
+| circular buffers | tt-metal, from the bottom of the L1 left, in the order the run declares them | before: from 0x1B480; now: above the slots |
+| control block, overlay area, transfer buffer, L1 tensors | tt-metal's allocator, top-down | the top of L1 (data only) |
+
+The kernels never reach 1 MB unless `kernel_bytes` is near it. The slots did: every run
+holds the service overlay (the reader that serves the host's reads and writes of a live
+run), and a run whose buffers take more than about 900 KiB had it placed above 1 MB:
+the dense product at 8192 x 8192 on two cards logged its 7,424-byte slot at 0x16a000
+and 0x172000. The programs under `projects/` declare no overlays of their own, so the
+service overlay was the only code of theirs above 1 MB. Now a load whose slots would
+end above 0x100000 raises `km.SlowCodeError`, unless the session was opened with
+`slow_code=True`.
+
+`placement.py` runs example 01's program with one more buffer of 960 KiB (1,020,032
+bytes of circular buffers a core), checks 200 DOT commands, then reads a 1 MiB DRAM
+tensor five times while the run is live, each read a PUSH served by the service overlay
+from the slots. Card 0, 2026-11-14, one run each:
+
+| | slots | DOT checked, wrong | PUSH cycles, 5 reads | reads wrong |
+|---|---|---|---|---|
+| before (a4f7d6c2) | 0x166000 | 200, 0 | 97,432 97,736 97,640 97,562 97,732 | 0 |
+| after | 0x1b480 | 200, 0 | 97,434 97,459 97,478 97,638 97,599 | 0 |
+
+The slots move below 1 MB; the PUSH does not get measurably faster (mean 97,620 against
+97,522 cycles, 0.1 %): moving 1 MiB from DRAM to the host's memory is bound by the
+transfer, not by the service loop's branches. Example 01 (`mapcollect.py --jobs 20
+--count 8`) after the change: slots at 0x1b480, every job right, the ten integer jobs
+bit-exact.
+
 ## Not found, not tried
 
 - The first two jobs with the 60- and 600-instruction loops (a first version of the
@@ -90,6 +128,9 @@ A run is `blob@code`, `blob@code:data` or `blob@code:data/fill` (code 0 runs the
 in place); the blobs are listed in `loops.py`. It prints one JSON line with the cycles
 and the cycles an iteration of each repeat.
 
+`placement.py` the same way: `TT_VISIBLE_DEVICES=0 python placement.py --card 0`
+(`--buffer` KiB, `--reads`, `--pages` of 4 KiB a read).
+
 ## Files
 
 - `kernels/loops.cpp`: the loops as assembly in one section, the copy, the invalidation
@@ -97,3 +138,5 @@ and the cycles an iteration of each repeat.
   with nops (or the fill word) from 4 KiB below it.
 - `loops.py`: reserves the regions in every core's L1 through the session (`empty` with
   an address), launches the kernel, prints the cycles an iteration.
+- `placement.py`: example 01's program with a large buffer, where its slots land, its
+  DOT check and the PUSH cycles of reads while it runs.
