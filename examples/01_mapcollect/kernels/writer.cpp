@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/km_ask.hpp"
 #include "mapcollect.h"
 
 void kernel_main() {
@@ -15,13 +15,26 @@ void kernel_main() {
         const uint32_t index = writer.me() - km::first(command);
         switch (km::handler(command)) {
             case kHandlerMap: {
-                const uint32_t output_address = command.a2;
+                const uint32_t output_tensor = command.a2;
                 const uint32_t first_page = command.a3;
                 if (!writer.wait_front(kCbOut, 1)) {
                     return false;  // nothing to report: the tile is stopping
                 }
-                const auto output = TensorAccessor(output_args, output_address);
-                noc_async_write_page(first_page + index, output, get_read_ptr(kCbOut));
+                // a page another island holds is put there, written on return
+                if (
+                    !km::write_pages(
+                        writer,
+                        command,
+                        output_args,
+                        output_tensor,
+                        first_page + index,
+                        1,
+                        get_read_ptr(kCbOut),
+                        kPutPort
+                    )
+                ) {
+                    return false;
+                }
                 noc_async_writes_flushed();
                 cb_pop_front(kCbOut, 1);
                 return true;

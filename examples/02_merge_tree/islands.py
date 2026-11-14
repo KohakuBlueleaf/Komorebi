@@ -1,7 +1,7 @@
 """The merge tree over two cards (`Session(cards=..., links=1)`), its kernels unchanged:
 MERGE on one flat group over both islands folds inside each island, then crosses once;
-every command done and the total against numpy, beside the same on one island's
-ranks. Prints one JSON line. See README.md."""
+every command done, its result word (the total's checksum) and the total against numpy,
+beside the same on one island's ranks. Prints one JSON line. See README.md."""
 
 import argparse
 import json
@@ -9,7 +9,7 @@ import sys
 import time
 
 import numpy as np
-from merge import CONSTANTS, TILE, program
+from merge import CONSTANTS, TILE, checksum, program
 
 import komorebi as km
 
@@ -36,18 +36,19 @@ def parse():
 
 
 def cases(session):
-    """(name, group, form): the whole of both islands by tree; a group across the
-    boundary by owner (it fits the arrival buffer); island 0's ranks alone, both forms.
-    """
+    """(name, group, form, host): the whole of both islands by tree, from island 0's
+    dispatcher and split by the host; a group across the boundary by owner (it fits
+    the arrival buffer); island 0's ranks alone, both forms."""
     ranks, first1 = session.ranks, session.graph.first(len(session.sessions) - 1)
     span = min(CONSTANTS["kArrivePages"] // 2, first1)
     out = [
-        ("all_tree", (0, ranks), 1),
-        ("across_owner", (first1 - span, 2 * span), 0),
-        ("island0_tree", (0, session.graph.count(0)), 1),
-        ("island0_owner", (0, session.graph.count(0)), 0),
+        ("all_tree", (0, ranks), 1, False),
+        ("all_tree_host", (0, ranks), 1, True),
+        ("across_owner", (first1 - span, 2 * span), 0, False),
+        ("island0_tree", (0, session.graph.count(0)), 1, False),
+        ("island0_owner", (0, session.graph.count(0)), 0, False),
     ]
-    return out if len(session.sessions) > 1 else out[2:]
+    return out if len(session.sessions) > 1 else out[3:]
 
 
 def main():
@@ -56,10 +57,7 @@ def main():
     generator = np.random.default_rng(1)
     report = {"cards": cards, "tiles": args.tiles, "part": args.part}
     links = 1 if len(cards) > 1 else 0
-    # the link cores' services (two cards) make the kernels 76.5 KB: past the default
-    with km.Session(
-        cards=cards, links=links, kernel_bytes=76 * 1024, log=log
-    ) as session:
+    with km.Session(cards=cards, links=links, log=log) as session:
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)]
             for i in range(len(session.sessions))
@@ -85,7 +83,7 @@ def main():
         want = np.stack([tiles[s :: args.part].sum(0) for s in range(args.part)])
         island0 = run.island(0)  # a spanning group crosses from island 0's dispatcher
         results = {}
-        for index, (name, group, form) in enumerate(cases(session)):
+        for index, (name, group, form, host) in enumerate(cases(session)):
             words = [
                 inputs.address,
                 args.tiles,
@@ -100,10 +98,14 @@ def main():
             try:
                 for _ in range(args.rounds):
                     start = time.perf_counter()
-                    handle = island0.submit("merge", group, words)
-                    event = island0.wait(handle, timeout=5.0)
+                    if host:  # one part an island; the first part's word is the result
+                        ticket = run.submit("merge", group, words, result=True)
+                        event = run.wait(ticket, timeout=5.0)[0]
+                    else:  # a group that crosses goes from island 0's dispatcher
+                        handle = island0.submit("merge", group, words, result=True)
+                        event = island0.wait(handle, timeout=5.0)
                     times.append((time.perf_counter() - start) * 1e6)
-                    bad += event.kind != "done"
+                    bad += event.kind != "done" or event.result != checksum(want)
                 error = None
             except km.KomorebiError as caught:
                 error = str(caught)
@@ -112,7 +114,7 @@ def main():
                 "group": list(group),
                 "rounds": len(times),
                 "us_a_round": round(float(np.median(times)), 2) if times else None,
-                "not_done": bad,
+                "not_done_or_result_wrong": bad,
                 "error": error,
             }
             log(f"{name}: {results[name]}")
@@ -128,7 +130,7 @@ def main():
             results[name]["exact"] = bool(np.array_equal(mine, want.astype(np.float32)))
             results[name]["max_error"] = float(np.abs(mine - want).max())
     report["ok"] = all(
-        case["exact"] and not case["not_done"] and case["error"] is None
+        case["exact"] and not case["not_done_or_result_wrong"] and case["error"] is None
         for case in report["cases"].values()
     ) and set(report.get("kernel_errors", ["?"])) == {"none"}
     report["wall_s"] = round(time.monotonic() - STARTED, 1)

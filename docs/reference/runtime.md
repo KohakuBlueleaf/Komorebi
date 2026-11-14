@@ -293,7 +293,6 @@ of each kernel is kept, because it names the cause. The host decodes the words w
 | 3 (`kGaveBadItem`) | `bad_item` | an item of several pages would pass the buffer's end, or a buffer is too small for its schedule; nothing was accessed |
 | 4 (`kGaveBadBroadcast`) | `bad_broadcast` | a broadcast's arguments do not fit the command |
 | 7 (`kGaveDeadline`) | `deadline` | the dispatcher gave the command up at its deadline: the run goes on |
-| 8 (`kGaveNotAcross`) | `not_across` | a write of a page another island holds (`km::write_pages`): nothing was written; the top byte names that island |
 
 | Where | Name | Kernel: waiting for |
 |---|---|---|
@@ -370,7 +369,7 @@ at small offsets.
 | 0x1640 | `KM_CONTROL_BLOCK` | 2 block areas of 1,088 bytes (`KM_BLOCK_AREA_BYTES`), the reader's then the writer's: a line whose word 0 is the sequence of the command read in, then up to 1,024 bytes of its block ([the block](#the-block)) |
 | 0x1EC0 | `KM_CONTROL_ABORT` | 64 abort words, one per slot: the sequence of the slot's command the dispatcher gave up |
 | 0x1FC0 | `KM_CONTROL_LIVE` | live words (`km::kLv*`, 512 bytes): per kernel its wait's where code, its command's sequence and slot, the commands it has left; the trace's address and capacity, the commands given up; then what a give-up clears ([live words](#live-words)) |
-| 0x21C0 | `KM_CONTROL_ISLANDS` | the island area, 192 bytes: a header line (this island, the islands, its first rank, its ranks), then the island table ([islands](#islands)) |
+| 0x21C0 | `KM_CONTROL_ISLANDS` | the island area, 192 bytes: a 32-byte header (this island, the islands, its first rank, its ranks, its first core of the card), then the island table ([islands](#islands)) |
 | 0x2280 | `KM_CONTROL_RING` | 64 ring slots of one command each (64 bytes) |
 | 0x3280 | `KM_CONTROL_BYTES` | size of the control block |
 
@@ -400,13 +399,16 @@ is on.
 An island is a set of cores that reach the others only through links; its table entry
 names its ranks. Ranks are flat and contiguous by island, so a group word `first |
 count << 16` names flat ranks, and a core's rank is its island's first rank plus its
-local core (the core table's index). `me()` of `km::Core` (reader, writer, movement)
+local core, its index in the core table less the island's base (`KM_ISLAND_BASE`: the
+island's first core of the card, 0 unless the card is split into islands; `Islands::offset()`
+is the rank of core 0). `me()` of `km::Core` (reader, writer, movement)
 and of `km::Compute` is that flat rank, so `me() - km::first(command)` is the rank in
-the group on every island; the core table and every NoC lookup take the local core
+the group on every island; the core table and every NoC lookup take the core
 (`core_of(rank)` turns a rank of this island into it). The dispatcher holds its island's
-first rank and count (`kmd_args.island`, 0 on one island) and cuts each group by them:
-it takes a group with a part on its island, places the line unchanged, and keeps the
-part (in local cores) for its overlap, program and completion checks; a group with no
+first rank, count and base (`kmd_args.island`: first | count << 16 | base << 32, 0 on one
+island) and cuts each group by them: it takes a group with a part on its island, places
+the line unchanged over its island's rows, and keeps the part (in cores, from the base)
+for its overlap, program and completion checks; a group with no
 part there is rejected as outside (reason 3). A command reaches every core of the
 island; the cores of the group's part there run it, and the part completes through the
 first of its cores in the group (`km::local_part`), so an event's first core is a local
@@ -443,20 +445,40 @@ The calls that act by island (`km_group.hpp`, `km_port.hpp`):
 | `group.leader(j)` | the first rank of island part `j` of the group | `group.leader(0)`: its first rank |
 | `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | `km::emit` to `rank` after a check that island `i` holds it (else a give-up, bad item) | a local emit |
 | `km::emit` to a rank of another island | through the relay: the pages reach the rank's arrival slot and its port counts 1, so its `arrive` waits as for a local sender | never crosses |
+| `km::Broadcast` on a group over islands (`km_broadcast.hpp`) | a broadcast an island part: the sender casts in its part and sends each block once through the relay to the next part's first core, whose `arrive` takes it and casts in its part as the sender does (its kernel sees a receiver); that core's popped blocks and taken words go back through the relay as its row in the sender's DONE-BY table; the calls do not change | a broadcast of its own |
+| `km::Broadcast(reader_or_writer, command, arg0, km::local)` | each island part is a broadcast of its own: a part's first core is its sender and fills the blocks itself | the same broadcast |
 
 The relay (`km_relay.hpp`): the sender writes an ask (its core, the pages' L1 address,
-bytes, the rank, the arrival slot's address, the port) into the relay area of its
-island's link core 0, one ask a ring slot, and adds 1 to that core's ask count. Link core
-0's link 0 CPU serves asks between commands, from its loop: it reads the pages, sends them
-and the ask over link 0 into the far link core 0's inbox with one count, and writes a done
-word back to the sender, which then frees its pages; the far link core 0 writes the pages
-into the rank's L1, adds 1 to its port, and returns a credit. One ask crosses at a time,
-of at most `KM_RELAY_MAX` (16 KiB) bytes. The session gives every core of two islands a
+bytes, the rank, the L1 address there, the port or `kRelayNoPort`) into the relay area of
+its island's link core 0, one ask line a core and NoC (`KM_RELAY_ASKS`, so every core's
+reader and writer can ask at once), and adds 1 to that core's ask count. Link core 0's
+link 0 CPU serves asks between commands, from its loop, taking the lines in turn: it reads
+the pages, sends them and the ask over link 0 into the far link core 0's inbox with one
+count, and writes a done word back to the sender, which then frees its pages; the far link
+core 0 writes the pages into the rank's L1, adds 1 to its port (none for `kRelayNoPort`),
+and returns a credit. One ask crosses a way at a time; while a link core waits for the
+credit of its last ask it places what lands from the far side, so asks can go both ways.
+An ask carries at most `KM_RELAY_MAX` (16 KiB); `relay_put` sends more as several asks in
+turn, the port counted after the last. The session gives every core of two islands a
 relay area of `KM_RELAY_BYTES` and writes its address, the far island's and the far link
 core 0's place into the island area (`KM_ISLAND_RELAY`, `KM_ISLAND_RELAY_FAR`,
 `KM_ISLAND_RELAY_TILE`). While link 0's CPU serves a command (a dynamic run's messages, a
 command line, pages), asks wait; a sender's wait is bounded and gives its command up
 (`emit`).
+
+A broadcast over islands takes three more `BroadcastArgs` words, which
+`komorebi.layout.island_broadcast_args` computes (`broadcast_args` gives none of them a
+part): `next`, the flat rank of the next part's first core (`kBroadcastNoNext`: none);
+`fed`, that core's row in its feeder's DONE-BY table (0: not fed); `from`, the feeder's
+flat rank. The layout stands the islands' grids one below the other or side by side; a
+column, or a row across an island's edge (a row still splits at each panel inside an
+island), that spans islands is a part an island. Its markers that cross carry sequence 0,
+since each island numbers its commands. A plan respects three things: a part followed by
+another holds at most 15 cores (its DONE-BY table keeps a row for the next part); a
+broadcast enters each island once; every island has the same grid shape, and the session
+checks that the control blocks sit at one address (a block lands at its sender's slot and
+area addresses). It is built with the link cores serving (`KM_PAGE_LINKS`); without them
+a core given a `next` or `fed` word gives up (`kGaveBadBroadcast`).
 
 ## Trace
 

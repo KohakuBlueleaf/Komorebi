@@ -1,7 +1,7 @@
-"""The movement example's streams over two cards as the islands of one session: island
-0's cores copy and read an input that island 1 holds alone, the same kernels as on one
-card (pages another island holds go through km::read_pages). Checks every word of
-the copy, then times READ across. One JSON line."""
+"""The movement example's streams over two cards as islands, the same kernels as on one
+card: island 0's cores copy an input island 1 holds (every word checked), then READ it
+timed; --write-across: the input island 0's, the output island 1's, COPY only. One
+JSON line."""
 
 import argparse
 import json
@@ -31,6 +31,9 @@ def parse():
     parser.add_argument("--rounds", type=int, default=3, help="timed READ rounds")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--kernel-bytes", type=int, default=None, help="kernel buffer")
+    parser.add_argument(
+        "--write-across", action="store_true", help="the output on island 1: COPY only"
+    )
     return parser.parse_args()
 
 
@@ -49,6 +52,8 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     pattern = km.Pattern(args.pattern)
     report = {"cards": cards, "cores": args.cores, "tiles": args.tiles}
+    report["across"] = "write" if args.write_across else "read"
+    held = (0, 1) if args.write_across else (1, 0)  # the input's island, the output's
     with km.Session(
         cards=cards, links=1, kernel_bytes=args.kernel_bytes, log=log
     ) as session:
@@ -59,8 +64,10 @@ def main():
         log(f"open: islands {islands}")
         data = pages_of(np.random.default_rng(args.seed), args.cores * args.tiles)
         tensors = {
-            "input": session.tensor(data, "uint16", like=islands[1]),
-            "output": session.tensor(np.zeros_like(data), "uint16", like=islands[0]),
+            "input": session.tensor(data, "uint16", group=islands[held[0]]),
+            "output": session.tensor(
+                np.zeros_like(data), "uint16", group=islands[held[1]]
+            ),
         }
         report["input_parts"] = list(tensors["input"].placement.parts)
         report["output_parts"] = list(tensors["output"].placement.parts)
@@ -78,14 +85,16 @@ def main():
             ]
             report["copy_us"] = round(one(session, run, "copy", args.cores, words), 1)
             log(f"COPY across: {report['copy_us']} us")
-            words[1] = 0
-            spent = [
-                one(session, run, "read", args.cores, words) for _ in range(args.rounds)
-            ]
-            report["read_us"] = round(float(np.median(spent)), 1)
-            moved = args.cores * args.tiles * data.shape[1] * 2
-            report["read_gb_s"] = round(moved / report["read_us"] / 1e3, 3)
-            log(f"READ across: {report['read_us']} us, {report['read_gb_s']} GB/s")
+            if not args.write_across:
+                words[1] = 0
+                spent = [
+                    one(session, run, "read", args.cores, words)
+                    for _ in range(args.rounds)
+                ]
+                report["read_us"] = round(float(np.median(spent)), 1)
+                moved = args.cores * args.tiles * data.shape[1] * 2
+                report["read_gb_s"] = round(moved / report["read_us"] / 1e3, 3)
+                log(f"READ across: {report['read_us']} us, {report['read_gb_s']} GB/s")
         finally:
             results = run.stop()
             report["kernel_errors"] = [result["error_name"] for result in results]

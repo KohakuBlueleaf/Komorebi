@@ -56,12 +56,13 @@ the connections were held: each command then opened and closed its own.)
 ## Which island holds a page, asked on a core
 
 `pages.py --where` makes four tensors before the load (every page on island 0, every
-page on island 1, split by rank, a copy), gives the writer their placements as
-compile arguments (`placement_args()`), and asks the first and the last rank core of
-each island, with the handler `WHERE`, `km::island_of(placement, page)` for the first
-and last page of every part. 2026-11-14, links 4, 1 MiB tensors (256 pages; the split
-one 138 and 118): 40 answers, 0 differ from `islands.island_of` on the host; the copy
-answers 0 on island 0 and 1 on island 1.
+page on island 1, split by rank, a copy) and asks the first and the last rank core of
+each island, with the handler `WHERE`, `km::island_of(tensor, page)` (the tensor by
+its reference word, which the session's tensor table resolves) for the first and last
+page of every part. 2026-11-14, links 4, 1 MiB tensors (256 pages; the split one 138
+and 118), when the placements were the writer's compile arguments: 40 answers, 0
+differ from `islands.island_of` on the host; the copy answers 0 on island 0 and 1 on
+island 1. Not run since the tensor table.
 
 ## Running it
 

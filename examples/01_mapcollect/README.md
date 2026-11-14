@@ -7,7 +7,7 @@ has finished, the group's first core tells the dispatcher, which tells the host.
 
 | Handler | Arguments | What a core does |
 |---|---|---|
-| `MAP` | a0 `input_address`, a1 `tiles` (T), a2 `output_address`, a3 `first_page` (output page of rank 0), a4 `slow_cycles`, a5 `slow_rank`, a6 `first_tile`, a7 the input's placement (0 the first of the reader's two, 1 the second) | reads its partition of input tiles `first_tile` to `first_tile` + T - 1 with `km::read_pages` (tiles another island holds are asked for), adds them into one tile (fp32), stores it at page `first_page` + rank, reports (the rank `slow_rank` first holds its tile `slow_cycles` cycles: a test of slow compute) |
+| `MAP` | a0 the input (its reference word, `tensor.address`), a1 `tiles` (T), a2 the output (its reference word), a3 `first_page` (output page of rank 0), a4 `slow_cycles`, a5 `slow_rank`, a6 `first_tile` | reads its partition of input tiles `first_tile` to `first_tile` + T - 1 with `km::read_pages` (tiles another island holds are asked for), adds them into one tile (fp32), stores it at page `first_page` + rank with `km::write_pages` (a page another island holds is put across), reports (the rank `slow_rank` first holds its tile `slow_cycles` cycles: a test of slow compute) |
 | `STALL` | a0 `stalled_rank` | rank a0 waits for the stop flag and does not report; the others report |
 | `ALIGN` (a test) | a9 `report_time` (low word of the wall clock; the test feeder sets it) | every core of the group reports at time a9 |
 | `LATE` (a test) | a0 `late_rank`, a1 `delay` (cycles) | rank a0 reports a1 cycles after it took the command; the others report at once |
@@ -69,6 +69,7 @@ then.
 | `mapcollect.py` | builds the commands, runs them, checks the outputs, prints one JSON line |
 | `block.py` | DOT commands that each carry a block of weights (below, "More than ten words") |
 | `give_up.py` | HANG commands inspected and given up, MAP commands after them; the cost of an inspect (below, "A command given up") |
+| `islands.py` | the program over cards as islands; `--across --reset-link 1`: island 0's MAP reading an input island 1 holds, island 1's link core 0 reset by the host and its connections opened again, the MAP across again, both outputs exact (two p150a cards: 441 µs a round before, 455 µs after; the reset 98 ms, opening again 0.24 ms) |
 
 ## What it needs
 

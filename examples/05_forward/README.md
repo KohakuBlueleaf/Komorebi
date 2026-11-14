@@ -96,15 +96,17 @@ and the position.
 
 ## Over two cards
 
-`islands.py` runs the same program and kernels on two cards joined by a link
-(`Session(cards=[0, 1], links=1)`): one RUN over every rank of both islands, so a forward
-to a rank of the other island crosses. Each island keeps its last core as its link core
-(no rank), so the run has 238 ranks; each island's last two ranks are its counter tiles,
-so `messages.count()` is 234, numbered on from island 0 to island 1. Beside the RUN, the
-session starts the message service on each island's link core 0, on the CPU that holds
-link 0. The run ends once both islands are quiet and the messages each link sent across
-meet the other's issued count. The service makes the kernels larger than the default
-buffer, so the script opens the session with `kernel_bytes=84 * 1024`.
+`islands.py` runs the same program and kernels on two cards (`Session(cards=[0, 1])`,
+nothing else): one RUN over every rank of both islands, so a forward to a rank of the
+other island crosses. The session uses every link found (four), and each island keeps its
+last two cores as link cores (no rank), so the run has 236 ranks; each island's last two
+ranks are its counter tiles, so `messages.count()` is 232, numbered on from island 0 to
+island 1. Beside the RUN, the session starts the message service on each island's link
+core 0, on the CPU that holds link 0. The run ends once both islands are quiet and the
+messages each link sent across meet the other's issued count. The service makes the
+kernels 97,008 bytes, inside the kernel buffer a session over two cards opens with. The
+script reads `run.crossings()` before and after the RUN and checks that the messages that
+crossed are the replay's forwards across.
 
 ```
 python islands.py --messages 16 --forwards 4
@@ -113,6 +115,10 @@ python islands.py --messages 16 --forwards 4
 Cards 0 and 1 (Blackhole p150a, one Ethernet link used), 16 messages of 4 forwards: both
 parts done (174.5 and 134.1 µs, each from its own island's submit), exact against the
 replay over the 234 message ranks; 27 of the 64 forwards crossed.
+
+The same with every link (four, 236 ranks, 232 message ranks), 2026-11-14: both parts done
+(178.8 and 134.1 µs), exact against the replay; `run.crossings()` counted 15 messages from
+island 0 and 7 from island 1 on link 0, the replay's 22 forwards across.
 
 ## Files
 

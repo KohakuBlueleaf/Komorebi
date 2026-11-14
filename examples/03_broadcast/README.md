@@ -106,6 +106,40 @@ DRAM (an inference; not separated here). A window of 4 gains 9 to 15% over 1 in 
 So a program broadcasts when blocks are large and shared by many cores; with blocks of
 one tile, reading DRAM directly costs no more.
 
+## Over two cards
+
+`islands.py` runs the same kernels on one flat group of both islands
+(`Session(cards=[0, 1], links=1)`, 238 ranks: each island's last core is its link core).
+The host lays the rectangle over the two grids (`komorebi.layout.island_broadcast_args`):
+"below" stands island 1's grid under island 0's, so the rectangle's columns span the
+islands; "beside" puts it to the right, so its rows do. A broadcast that spans islands is
+a broadcast an island part: the sender casts in its part and sends each block once
+through the relay to the first core of the other part, whose `arrive` takes it and casts
+it in that part as the sender would; the markers of that core go back the same way. The
+kernels call the same `reserve`, `cast`, `arrive` and `finish`. The tensors are a copy
+on each island; each island writes its cores' checksums into its own copy of the output.
+On one card the script runs the same 6 x 4 rectangle at the bottom of the grid.
+
+```
+python islands.py              # cards 0 and 1: "below" and "beside"
+python islands.py --cards 0    # card 0 alone
+```
+
+Blackhole p150a cards, one link, a 6 x 4 rectangle, 8 blocks of 2 tiles (4 KiB) a
+broadcast, window 2, 8 `CAST` commands a case on the whole group, each submitted by the
+host (a part to each island's dispatcher) and waited; the median from submit to the last
+event, every core's checksum exact:
+
+| Case | Spanning broadcasts | µs a round |
+|---|---|---|
+| cards 0 and 1, "below" (rows 8 and 9 of island 0, 0 and 1 of island 1) | the 6 columns | 705.7 |
+| cards 0 and 1, "beside" (columns 9 to 11 of island 0, 0 to 2 of island 1) | the 4 rows | 535.5 |
+| card 0 alone (120 ranks) | none | 186.1 |
+
+Each crossing block costs two relay asks (the block, then its VALID line) and a marker
+back, and link core 0 sends one ask a way at a time, so a broadcast across islands is
+paced by the relay, not by the multicast (an inference; not separated here).
+
 ## Files
 
 | File | What it is |
@@ -113,3 +147,4 @@ one tile, reading DRAM directly costs no more.
 | `kernels/reader.cpp`, `writer.cpp`, `compute.cpp` | the three kernels: the row broadcast, the column broadcast and the output, the checksum |
 | `kernels/broadcast.h` | handlers, buffers, arguments, and the two block loops (multicast, read) shared by reader and writer |
 | `broadcast.py` | builds the broadcasts and commands, runs them through a session (or the feeder), checks every core of the group |
+| `islands.py` | the same kernels on one flat group over two cards (and on one), checked against numpy |

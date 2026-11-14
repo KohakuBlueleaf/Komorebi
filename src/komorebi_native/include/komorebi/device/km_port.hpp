@@ -118,32 +118,34 @@ namespace km {
         return true;
     }
 
-    // Reader: waits until the port has counted `wanted` (pages another island sent
-    // count there), then clears it; a give-up at `where`, `named` its top half. False:
-    // gave up; the port keeps the count wanted.
+    // Reader or writer: waits until the port has counted `wanted` (pages another
+    // island sent count there), then clears it; a give-up at `where`, `named` its top
+    // half. False: gave up; the port keeps the count wanted.
+    template <typename Kernel>
     inline bool port_wait_at(
-        const Reader& reader,
+        const Kernel& core,
         const km_command_t& command,
         uint32_t port,
         uint32_t wanted,
         uint32_t where,
         uint32_t named
     ) {
+        const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
         if (port >= KM_PORTS) {
-            reader.gave_up(kStReader, kGaveBadItem, where, named, command.sequence);
+            core.gave_up(word, kGaveBadItem, where, named, command.sequence);
             return false;
         }
-        volatile tt_l1_ptr uint32_t* words = port_words(reader, port);
+        volatile tt_l1_ptr uint32_t* words = port_words(core, port);
         words[KM_PORT_WANT] = wanted;
-        const uint32_t code = reader.poll_at(
+        const uint32_t code = core.poll_at(
             where,
             [&] {
                 return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
             },
-            reader.args().wait_limit
+            core.args().wait_limit
         );
         if (code != kGaveNone) {
-            reader.gave_up(kStReader, code, where, named, command.sequence);
+            core.gave_up(word, code, where, named, command.sequence);
             return false;
         }
         words[KM_PORT_COUNT] = 0;

@@ -17,7 +17,6 @@ GAVES = {
     "Overlay": "overlay",
     "BadTransfer": "bad_transfer",
     "Deadline": "deadline",
-    "NotAcross": "not_across",
 }  # kGave*
 WHERES = (
     "Checkin",
@@ -369,6 +368,7 @@ def inspect(block, abi_headers=None):
         },
         "ticks": header[abi_headers["KMD_I_TICKS"]],
         "reset": header[abi_headers["KMD_I_RESET"]],
+        "reset_failed": header[abi_headers["KMD_I_RESET_FAILED"]],
     }
     record, head = abi_headers["KMD_INSPECT_RECORD"] // 4, len(header)
     state_at, live_at, trace_at = (
@@ -430,7 +430,8 @@ def not_reported(state, group, slot, sequence, abi_headers=None):
     out = []
     for core in range(first, first + count):
         report = core_state(state, core, abi_headers)
-        if report["reported"][slot] != sequence:
+        reported = report["reported"]
+        if slot >= len(reported) or reported[slot] != sequence:
             out.append(
                 {
                     "core": core,

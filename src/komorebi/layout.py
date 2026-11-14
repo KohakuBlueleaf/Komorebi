@@ -212,6 +212,7 @@ BROADCAST_NONE = (
 )
 BROADCAST_CORES_MAX = 16  # a sender and up to 15 receivers (KM_BROADCAST_RANKS)
 BROADCAST_WINDOW_MAX = 8  # km::kBroadcastWindowMax
+BROADCAST_NO_NEXT = 0xFFFFFFFF  # no part on another island after this one
 
 
 @dataclass(frozen=True)
@@ -299,6 +300,7 @@ def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buf
         "window": window,
         "pages": pages,
     }
+    common |= {"next": BROADCAST_NO_NEXT, "fed": 0, "from": 0}
     none = common | {"rank": BROADCAST_NONE, "receivers": 0, "sender": 0}
     out = {i: none | {"mc_start": 0, "mc_end": 0} for i in workers}
     for broadcast in broadcasts(grid, grid_panels, rect, along, noc):
@@ -314,4 +316,116 @@ def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buf
                 "mc_start": corners[0],
                 "mc_end": corners[1],
             }
+    return out
+
+
+def island_broadcast_args(islands, group, rect, along, noc, buffer, stack="below"):
+    """broadcast_args per island (nocs, first rank, ranks; core = local rank), the grids
+    one `stack` "below" or "beside" the other, `rect` and `group` in that whole. A
+    broadcast that spans islands is a part an island, whose first core the previous
+    part's first core feeds through the relay; a row joins across an island's edge."""
+    broadcast_id, cb, window, pages = buffer
+    if (window, pages) != (0, 0) and (
+        not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1
+    ):
+        raise ValueError(f"window {window} or pages {pages} out of range")
+    grid = islands[0][0].grid
+    if any(nocs.grid != grid for nocs, _, _ in islands):
+        raise ValueError("island broadcasts need one grid shape on every island")
+    if stack not in ("below", "beside") or along not in ("column", "row"):
+        raise ValueError(f"islands {stack!r}, broadcasts along {along!r}")
+    columns, rows = grid
+    below = stack == "below"
+    whole = (columns, rows * len(islands)) if below else (columns * len(islands), rows)
+    x0, y0, width, height = rect
+    if width < 1 or height < 1 or x0 < 0 or y0 < 0:
+        raise ValueError(f"rectangle {rect}")
+    if x0 + width > whole[0] or y0 + height > whole[1]:
+        raise ValueError(f"rectangle {rect} does not fit {whole[0]} by {whole[1]}")
+
+    def place(x, y):  # (island, x, y) of a cell of the whole
+        island = y // rows if below else x // columns
+        return island, x % columns, y % rows
+
+    def panel(cell):
+        island, x, _ = cell
+        index = [first <= x <= last for first, last in islands[island][0].panels]
+        return island, index.index(True)
+
+    xs, ys = range(x0, x0 + width), range(y0, y0 + height)
+    if along == "column":
+        runs = [[place(x, y) for y in ys] for x in xs]
+    else:
+        runs = []
+        for y in ys:
+            run = []
+            for x in xs:
+                cell = place(x, y)
+                if run and run[-1][0] == cell[0] and panel(run[-1]) != panel(cell):
+                    runs.append(run)
+                    run = []
+                run.append(cell)
+            runs.append(run)
+    workers = set(group.indices)
+    common = {
+        "broadcast": broadcast_id,
+        "group": group.first | group.count << 16,
+        "noc": noc,
+        "cb": cb,
+        "window": window,
+        "pages": pages,
+    }
+    none = common | {
+        "rank": BROADCAST_NONE,
+        "receivers": 0,
+        "sender": 0,
+        "mc_start": 0,
+        "mc_end": 0,
+        "next": BROADCAST_NO_NEXT,
+        "fed": 0,
+        "from": 0,
+    }
+    out = []
+    for _, first, count in islands:
+        mine = range(
+            max(first, group.first), min(first + count, group.first + group.count)
+        )
+        out.append({rank - first: none for rank in mine})
+    for run in runs:
+        ordered = run if noc == 0 else run[::-1]
+        parts = []
+        for cell in ordered:
+            if parts and parts[-1][0][0] == cell[0]:
+                parts[-1].append(cell)
+            else:
+                parts.append([cell])
+        if len({part[0][0] for part in parts}) != len(parts):
+            raise ValueError(f"a broadcast of {rect} enters an island twice")
+        heads = []
+        for part in parts:
+            island = part[0][0]
+            nocs, first, count = islands[island]
+            local = Broadcast(tuple((x, y) for _, x, y in part))
+            index = [y * columns + x for x, y in local.cores]
+            flat = [first + i for i in index]
+            if max(index) >= count or not workers.issuperset(flat):
+                raise ValueError(f"rectangle {rect} is not inside {group}")
+            if len(index) > BROADCAST_CORES_MAX - (part is not parts[-1]):
+                raise ValueError(f"a part of a broadcast of {rect} has too many cores")
+            corners = broadcast_rect(local, nocs.noc0, nocs.noc_xy, noc) or (0, 0)
+            heads.append((island, index, flat[0], corners))
+        for k, (island, index, _, corners) in enumerate(heads):
+            feeder = heads[k - 1] if k else None
+            after = heads[k + 1][2] if k + 1 < len(heads) else BROADCAST_NO_NEXT
+            for rank, i in enumerate(index):
+                out[island][i] = common | {
+                    "rank": rank,
+                    "receivers": len(index) - 1,
+                    "sender": index[0],
+                    "mc_start": corners[0],
+                    "mc_end": corners[1],
+                    "next": after if rank == 0 else BROADCAST_NO_NEXT,
+                    "fed": len(feeder[1]) if feeder and rank == 0 else 0,
+                    "from": feeder[2] if feeder and rank == 0 else 0,
+                }
     return out

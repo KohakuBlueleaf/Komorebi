@@ -1,6 +1,6 @@
-"""The matrix product over the islands of a session: A and Y split by row tiles into
-even parts by island, W a copy on every island; each island runs the grid plan of its
-own rows, one GRID command an island a call on its rect (one card: every row).
+"""The matrix product over the islands of a session: A and Y split along their row
+tiles (`split=0`), W a copy on every island; each island runs the grid plan of its own
+rows, one GRID command an island a call on its rect (one card: every row).
 Prints one JSON line; exits 1 when the check fails. Usage in README.md."""
 
 import argparse
@@ -25,18 +25,15 @@ G = pl.G
 log = run.log
 
 
-def w_placement(session, moved):
-    """B's placement: a copy on every island, or (`moved`) all on island 0 (its pages
-    follow the group of island 0's ranks)."""
-    return {"like": (0, session.graph.count(0))} if moved else {"copy": True}
+def w_placement(session, far):
+    """B's placement: a copy on every island, or (`far`) held by island 0 alone (split
+    over its ranks), its pages read across by island 1's cores."""
+    return {"split": 0, "group": (0, session.graph.count(0))} if far else {"copy": True}
 
 
-def island_rows(a_tensor, k_tiles):
-    """[(first row tile, row tiles)] of each island: its part of A's pages."""
-    return [
-        (first // k_tiles, pages // k_tiles)
-        for first, pages in a_tensor.placement.parts
-    ]
+def island_rows(a_tensor):
+    """[(first row tile, row tiles)] of each island: its part of A's row tiles."""
+    return list(a_tensor.placement.parts)
 
 
 class Rows:
@@ -48,7 +45,7 @@ class Rows:
         graph, sessions = session.graph, session.sessions
         m_tiles, k_tiles, n_tiles = (value // pl.TILE for value in dimensions)
         self.tensors = tensors
-        self.rows = island_rows(tensors["a"], k_tiles)
+        self.rows = island_rows(tensors["a"])
         if any(rows == 0 for _, rows in self.rows):
             raise SystemExit(f"{m_tiles} row tiles leave an island without rows")
         nocs = [one.nocs() for one in sessions]
@@ -112,8 +109,8 @@ class Rows:
         )
 
     def cross(self, session, timeout=10.0):
-        """B's pages, held by island 0, sent by its link cores into the same pages of
-        island 1's DRAM and waited for there (two islands): host seconds."""
+        """B's pages, island 0's copy, sent by its link cores into the same pages of
+        island 1's copy and waited for there (two islands): host seconds."""
         w = self.tensors["w"]
         started = time.perf_counter()
         far = (1, session.wait_pages(1, session.link_cores[1][0], w.pages))
@@ -200,8 +197,8 @@ def measure(product, cards, seconds, report):
 
 
 def measure_moved(product, session, cards, seconds, report):
-    """B held by island 0 only: each call B crosses into island 1's DRAM, then one
-    GRID command, waited for; for about `seconds`, every card's AICLK sampled."""
+    """Each call B crosses from island 0's copy into island 1's, then one GRID
+    command, waited for; for about `seconds`, every card's AICLK sampled."""
     first_cross = product.cross(session)
     single = product.single(3)
     one_microseconds = float(np.median(single)) + first_cross * 1e6
@@ -249,7 +246,7 @@ def main():
     parser.add_argument("--links", type=int, default=0, help="page links, two cards")
     parser.add_argument("--kernel-bytes", type=int, default=None, help="kernel buffer")
     parser.add_argument(
-        "--b-moved", action="store_true", help="B on island 0 only, moved each call"
+        "--b-moved", action="store_true", help="B moved into island 1 each call"
     )
     parser.add_argument(
         "--b-far",
@@ -277,9 +274,9 @@ def main():
         y_matrix = np.zeros((m_rows, n_columns), np.float32)
         tensors = {}
         for name, value, placement in (
-            ("a", a_matrix, {"by": "island"}),
-            ("w", w_matrix, w_placement(session, args.b_moved or args.b_far)),
-            ("y", y_matrix, {"by": "island"}),
+            ("a", a_matrix, {"split": 0}),
+            ("w", w_matrix, w_placement(session, args.b_far)),
+            ("y", y_matrix, {"split": 0}),
         ):
             tensors[name] = session.tensor(value, "bfloat16", "tile", **placement)
             log(f"{name.upper()} uploaded")

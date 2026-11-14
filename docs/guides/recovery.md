@@ -59,8 +59,9 @@ A step is tried only when the one before it was not enough.
     "read": False, "reset": False}`. The inspect does not stop anything: the dispatcher
     reads one core a pass of its loop beside the commands in flight. Only one inspect runs
     at a time; one that finds its block overwritten by the deadline's raises
-    `km.KomorebiError`, and can be made again. Over several cards it is
-    `run.inspect(island, cores)`, in the island's own core numbers.
+    `km.KomorebiError`, and can be made again. Over several cards the group is in flat
+    ranks, `run.inspect((128, 1))`, and each core's dict also has its `rank` and
+    `island`.
 
 2. **Read the time-out.** `run.wait(handle)` raises:
 
@@ -87,7 +88,9 @@ A step is tried only when the one before it was not enough.
     recorded`. The `recovered` part is there only when the dispatcher reset cores. A time-out
     that was not given up says `timed out; not reported` and lists the cores that did not
     report: the run is stopped and read back, and cannot be used again. On islands, the text
-    starts `island i:` and `error.island` is i; the cores are that island's own.
+    starts `island i:`, `error.island` is i, `<handle>` is the ticket, and the cores are
+    named by flat rank (`ranks: rank 128 (island 1, core 10) reader waits in port`;
+    `recovered (reset and loaded again): ranks [128]`).
 
     A `km.WaitTimeout` is another thing: the host stopped waiting, the run is loaded, and
     the message ends with what the dispatcher was doing, including whether core 0 still runs
@@ -113,15 +116,23 @@ A step is tried only when the one before it was not enough.
     flight, or one stuck in a command.
 
 5. **Let the dispatcher do it.** `session.load` hands the dispatcher one write list for
-   every core (`run.keep_resets()`; the firmware, its tables, the kernels and each core's
-   arguments), held at the start of the upload region for the run: 68,864 bytes and
-   about 4 ms of the load for the map/collect example. At the end of the wait of any
-   give-up the dispatcher resets each core of the group still in the command and loads
-   it again, and the run goes on; `run.recoveries` keeps each such give-up's text. The
-   list is refused for a program with semaphores, for cores that differ in kernels, and
-   is not made for islands, several programs or program switches: `run.recovery` is
+   each group of cores with the same kernels (`run.keep_resets()`; the firmware, its
+   tables, the kernels and each core's arguments) and which list each core takes, held
+   at the start of the upload region for the run: 68,864 bytes and about 4 ms of the
+   load for the map/collect example. At the end of the wait of any give-up the
+   dispatcher resets each core of the group still in the command, or whose kernels
+   ended at a wait's own limit, and loads it again, and the run goes on;
+   `run.recoveries` keeps each such give-up's text. With a list of
+   programs, each core gets the list of the program it holds. The lists are refused
+   for a program with semaphores and not made for program switches: `run.recovery` is
    then None and `run.recovery_refused` says why. `session.load(..., recover=False)`
-   leaves it out.
+   leaves them out.
+
+    On several cards each island's dispatcher holds its own island's lists, and the
+    give-up's text starts `island i:` and names flat ranks, `rank 128 (island 1, core
+    10)`; `run.reset_core(rank)` and `run.recoveries` (with each give-up's ranks) are
+    the calls ([islands](../reference/islands.md#the-run)). Link cores get no list, so
+    the dispatcher never resets one at a give-up.
 
 6. **The dispatcher's own loop.** Core 2 of the dispatcher's cluster watches the loop on
    core 0. A loop that makes no pass for 100 ms is reported to the host (`run.stalls`,
@@ -129,6 +140,14 @@ A step is tried only when the one before it was not enough.
    state kept ("back", about 1.2 microseconds later in the experiment); the commands after
    it run as before. If core 0 is not back 50 ms later, the host gets "lost" and stops the
    run with `km.KernelFailed`. Nothing has to be called for this to work.
+
+7. **A link core, by the host.** `run.reset_link(island, k)` closes link core k's
+   fabric connections at their routers, resets the core and loads it again, then
+   opens its connections again; the far link core needs nothing. On two p150a cards
+   with two links on the core: 95 to 98 ms for the reset, 0.24 ms to open again, and the next reads across (example 01's islands script with `--reset-link
+   1`) and the next commands that cross (example 25 with `--reset-link`) are exact.
+   Use it between commands: a line or an ask in flight on that core is lost, and the
+   command waiting for it times out at its deadline.
 
 ## When a card reset is still the only way
 

@@ -80,29 +80,44 @@ A `km::Reader` handler and a `km::Writer` handler of a three-kernel program can 
 stream: each calls `km::move` with the same stream description, and each moves its own
 blocks.
 
+### A tensor's pages on any island
+
+Two calls read and write a tensor's pages wherever they live (`km_ask.hpp`; on one
+island each is exactly the tt-metal page call it stands for). A kernel takes the tensor
+as a `km::Tensor<offset>` (its accessor arguments from compile argument `offset` on,
+`tensor.tensor_args()` on the host, and its reference word):
+
+| Name | What it is |
+|---|---|
+| `km::read_pages(core, command, tensor, first, pages, to, port)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages), from a reader or a writer: this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at port `port` |
+| `km::write_pages(core, command, tensor, first, pages, from, port)` | the other way: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at `port` until written; `from` is free on return |
+
+The forms by word take the accessor arguments and the word apart:
+`km::read_pages(core, command, args, word, first, pages, to, port)` and the same for
+`write_pages`. `args` are the tensor's `TensorAccessorArgs` (`tensor.accessor_args()`
+on the host), `word` its reference word (`tensor.address`: a bank address on one card,
+an entry of the tensor table over islands), the same on every island. All return false
+when they gave up (recorded, the island named). How the pages cross:
+[islands](islands.md#pages-across-a-link).
+
 ### A stream over islands
 
-A stream's tensor given as a `km::Tensor` reads and writes its pages through the page
-calls of [Islands](islands.md#a-kernels-page-reads-and-writes) (`km::read_pages`,
-`km::write_pages`), so a stream over a tensor whose pages are on several islands works
-with the same kernel: the pages this island holds are read as on one card; a row of a
-block whose pages another island holds is asked for (one ask a row of consecutive pages)
-and waited for before the block is handed on, counted at port `port` on mover A and
-`port + 1` on mover B. A crossing block is slower than a local one by the link's rate
-and the ask's round trip; the movers still share the blocks by the pattern. A write of a
-page another island holds ends the command (`not_across`): writes do not cross yet.
+A stream's tensor given as a `km::Tensor` reads and writes its pages through these
+calls, so a stream over a tensor whose pages are on several islands works with the same
+kernel: the pages this island holds are read or written as on one card; a row of a
+block whose pages another island holds is asked for or put (one line a row of
+consecutive pages) and waited for before the block is handed on, counted at port
+`port` on mover A and `port + 1` on mover B. A crossing block is slower than a local
+one by the link's rate and the line's round trip; the movers still share the blocks by
+the pattern.
 
-When the tensor's placement says this island holds every page (one island, or a copy),
-the stream keeps the tensor's accessor and its build is the one-card stream's: the
-movement example's two kernels have the same code size within 0.6% (mover A 15,248
-bytes against 15,340, mover B 11,044 against 11,024) and read at the same rate (the
-whole grid of a p150a, patterns `A`, `AB`, `AAAB`, `B`: 427.9, 486.4, 502.7 and 247.2 GB/s
-against the example's 427.8, 485.9, 502.6 and 247.4).
+A program loaded on one island is built without the tensor table: the stream keeps the
+tensor's accessor and its build is the one-card stream's: the movement example's two
+kernels have the same code size within 0.6% (MEASURED_SIZE) and read at the same rate
+(the whole grid of a p150a, patterns `A`, `AB`, `AAAB`, `B`: MEASURED_RATE GB/s against
+the example's 427.8, 485.9, 502.6 and 247.4).
 
-Over two cards, island 0's first four cores copy 192 pages that island 1 holds alone,
-exact, with the movement example's kernels unchanged (`examples/11_movement/islands.py`):
-a READ of 48 pages a core takes 292.5 us, 1.34 GB/s in all. Each row of a block crosses as one ask and
-its answer; the cores wait for it before the block is handed on.
+MEASURED_STREAM
 
 ### The blocks of a stream
 

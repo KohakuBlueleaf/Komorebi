@@ -173,6 +173,10 @@
 /* `bytes` to `address` from the part of core i of `value` parts (each padded to 16) */
 #define KMD_RESET_EACH 5u
 #define KMD_RESET_ENTRY 16u
+/* A kept directory instead of one list: {DIRECTORY, lists}, a list number a core
+ * (KM_CORES_MAX bytes, 0xFF none), then a {offset, bytes} entry a list. */
+#define KMD_RESET_DIRECTORY 6u
+#define KMD_RESET_DIRECTORY_ENTRIES (KMD_RESET_ENTRY + KM_CORES_MAX)
 /* The Tensix soft-reset register and its RISC bits (blackhole tensix.h:
  * RISCV_DEBUG_REG_SOFT_RESET_0; RISCV_SOFT_RESET_0_BRISC, _TRISCS, _NCRISC). */
 #define KMD_SOFT_RESET_ADDR 0xFFB121B0u
@@ -186,6 +190,9 @@
 #define KMD_RESET_BAD_LIST 1u    /* an entry outside the region, L1 or alignment */
 #define KMD_RESET_NO_WINDOW 2u   /* a window did not read back as programmed */
 #define KMD_RESET_NO_FIRMWARE 3u /* a WAIT ran out */
+#define KMD_RESET_NO_LIST 4u     /* a give-up's core with no kept list (a link core) */
+/* A core's state word of its kernels' end bytes (km::kStEnds): not 0 once one ended */
+#define KMD_STATE_ENDS (2u * KM_RING_SLOTS + 12u)
 
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */
@@ -298,10 +305,11 @@ enum {
     KMD_I_DONE = 5, /* records written */
     KMD_I_SLOT = 6, /* a timeout's slot and sequence; a host's: the last sequence */
     KMD_I_SEQUENCE = 7,
-    KMD_I_START = 8,  /* mtime, low word, at the start */
-    KMD_I_TICKS = 9,  /* mtime ticks from the start to the last record */
-    KMD_I_RESET = 10, /* a timeout's cores reset because they did not leave */
-    KMD_IR_CORE = 0,  /* a record's first line: the core, its coordinates, flags */
+    KMD_I_START = 8,         /* mtime, low word, at the start */
+    KMD_I_TICKS = 9,         /* mtime ticks from the start to the last record */
+    KMD_I_RESET = 10,        /* a timeout's cores reset because they did not leave */
+    KMD_I_RESET_FAILED = 11, /* a reset that failed: core + 1 | KMD_RESET_* << 16 */
+    KMD_IR_CORE = 0, /* a record's first line: the core, its coordinates, flags */
     KMD_IR_COORDINATES = 1,
     KMD_IR_FLAGS = 2,
     KMD_IR_MTIME = 3,     /* mtime, low word, as it was read */

@@ -50,8 +50,8 @@ def main():
         own = [(graph.first(i), graph.count(i)) for i in range(2)]
         report["link_cores"] = [list(cores) for cores in session.link_cores]
         report["channels"] = [list(channels) for channels in session.channels]
-        source = session.tensor(data, "uint32", like=own[0])
-        target = session.empty(data.shape, "uint32", like=own[1])
+        source = session.tensor(data, "uint32", group=own[0])
+        target = session.empty(data.shape, "uint32", group=own[1])
         split = session.empty(data.shape, "uint32")
         copy = session.empty(data.shape, "uint32", copy=True)
         tensors = (source, target, split, copy)
@@ -61,9 +61,6 @@ def main():
             "pages",
             kernels=KERNELS,
             handlers=KERNELS / "pages.h",
-            compile_args={
-                "writer": [w for tensor in tensors for w in tensor.placement_args()]
-            },
         )
         run = session.load(program, deadline=2.0)
         log("loaded on both islands")
@@ -110,7 +107,7 @@ def where(session, program, tensors):
     for island in range(2):
         run = session.run.island(island)
         cores = (0, session.graph.count(island) - 1)
-        for index, tensor in enumerate(tensors):
+        for tensor in tensors:
             pages = {0, tensor.pages - 1}
             for start, length in tensor.placement.parts:
                 pages |= {start, start + length - 1} if length else set()
@@ -118,10 +115,14 @@ def where(session, program, tensors):
                 for page in sorted(pages):
                     rank = session.graph.first(island) + core  # groups are flat
                     event = run.wait(
-                        run.submit(handler, (rank, 1), [index, page], result=True)
+                        run.submit(
+                            handler, (rank, 1), [tensor.address, page], result=True
+                        )
                     )
                     want = islands.island_of(tensor.placement, page, island)
-                    asked.append([island, core, index, page, event.result, want])
+                    asked.append(
+                        [island, core, tensor.address, page, event.result, want]
+                    )
                     wrong += int(event.result != want)
     log(f"{len(asked)} answers of km::island_of, {wrong} wrong")
     return {"answers": asked, "wrong_answers": wrong}

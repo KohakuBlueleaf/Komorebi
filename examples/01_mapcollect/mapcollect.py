@@ -196,7 +196,7 @@ def run(session, args, generator):
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),  # kCbOut
         ],
         compile_args={
-            "reader": inputs[0].accessor_args() + 2 * inputs[0].placement_args(),
+            "reader": inputs[0].accessor_args(),
             "writer": outputs[0].accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},

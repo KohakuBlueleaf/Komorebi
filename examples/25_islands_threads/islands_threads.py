@@ -24,6 +24,7 @@ TICKS_PER_US = 50  # the X280 timer, 50 MHz
 THREAD_HANDLERS = {"maps": 1, "ask": 2, "fold": 3, "hang": 4, "counts": 5}  # across.c
 EVENT_TIMEOUT, EVENT_ISLAND = 1, 0x80  # KM_EVENT_TIMEOUT, KM_EVENT_ISLAND
 BAD = 0xFFFFFFFF
+NO_RANK = 0xFFFFFFFF  # MAP's slow_rank: none
 STARTED = time.monotonic()
 
 
@@ -49,6 +50,11 @@ def parse():
     parser.add_argument("--asks", type=int, default=500, help="FOLDs a thread asks")
     parser.add_argument(
         "--counts", type=int, default=1000, help="COUNTs from the host, then a thread"
+    )
+    parser.add_argument(
+        "--reset-link",
+        action="store_true",
+        help="count: reset island 0's link core 0, then the thread's COUNTs again",
     )
     return parser.parse_args()
 
@@ -125,7 +131,7 @@ def counted(run, own):
     return np.asarray(counts, np.int64)
 
 
-def count_check(run, own, ranks, group, rounds):
+def count_check(run, own, ranks, group, rounds, reset_link=False):
     """COUNT `rounds` times on one flat `group` over both islands from the host (its
     split, every line a part), one EXCLUSIVE COUNT on it from the host, then `rounds`
     from island 0's thread (crossed): every rank of the group counts each once."""
@@ -159,6 +165,25 @@ def count_check(run, own, ranks, group, rounds):
         f"thread: {rounds} COUNTs on {group}, {report['thread_count_us']} us a"
         f" command; counts {sorted(set(after_thread))}"
     )
+    if reset_link:  # the lines link's core, between two rounds that cross on it
+        core = run.graph.link_cores[0][0]
+        reset = run.reset_link(0, 0)
+        report["link_reset"] = {
+            key: round(value, 6) if isinstance(value, float) else value
+            for key, value in reset.items()
+        }
+        ticks = ask_thread(run.island(0), "counts", [*group, rounds], timeout=60.0)
+        report["thread_count_after_reset_us"] = per_command_us(ticks, rounds)
+        after_reset = counted(run, own)
+        want = np.where(inside, 3 * rounds + 1, 0)
+        report["thread_counts_exact"] = report["thread_counts_exact"] and bool(
+            (after_reset == want).all()
+        )
+        log(
+            f"after the reset of link core 0 (core {core}): {rounds} COUNTs,"
+            f" {report['thread_count_after_reset_us']} us a command; counts"
+            f" {sorted(set(after_reset))}"
+        )
     return report
 
 
@@ -194,6 +219,32 @@ def host_hang(run, group, hung, before):
     }
 
 
+def healthy_after(run, own, hung, words):
+    """After the HANGs (their cores reset at the give-ups), commands
+    on the other ranks: a NOP on each island's own ring, example 01's MAP from the host
+    on each island's healthy ranks (its split), and a MAP from island 0's thread on
+    island 1's healthy ranks (it crosses). Each answered: the dispatchers go on taking
+    lines for every rank but the hung one."""
+    source, output = words
+    low1, cores1 = own[1]
+    after = hung + 10  # island 1's ranks past the hung one's HANG group
+    groups = [own[0], (after, low1 + cores1 - after)]
+    answered = {}
+    for island, rank in ((0, own[0][0] + 10), (1, low1 + cores1 - 1)):
+        part = run.island(island)
+        event = part.wait(part.submit(0, (rank, 1)), timeout=10.0)
+        answered[f"nop_island_{island}"] = event.kind == "done"
+    for first, count in groups:
+        args = [source, 2 * count, output, first, 0, NO_RANK, 2 * first]
+        events = run.wait(run.submit("map", (first, count), args), timeout=10.0)
+        answered[f"map_{first}_{count}"] = all(e.kind == "done" for e in events)
+    first, count = groups[1]
+    ticks = ask_thread(run.island(0), "maps", [first, count, 1, source, output])
+    answered[f"thread_map_{first}_{count}"] = ticks != BAD
+    log(f"after the HANGs, other ranks: {answered}")
+    return {"healthy_after": answered, "healthy_answered": all(answered.values())}
+
+
 def per_command_us(ticks, count):
     return None if ticks == BAD else round(ticks / TICKS_PER_US / count, 3)
 
@@ -207,7 +258,9 @@ def main():
     )
     report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
-    with km.Session(cards=cards, links=args.links, log=log) as session:
+    with km.Session(
+        cards=cards, links=args.links, log=log, kernel_bytes=84 * 1024
+    ) as session:
         ranks = session.ranks
         graph = session.graph
         own = [(graph.first(i), graph.count(i)) for i in range(2)]
@@ -265,12 +318,18 @@ def main():
             log(f"a MAP on all ranks after it: {report['map_after_hang']}")
             wrong = "map"
         if "count" in steps:
-            report.update(count_check(run, own, ranks, (60, 120), args.counts))
+            report.update(
+                count_check(
+                    run, own, ranks, (60, 120), args.counts, reset_link=args.reset_link
+                )
+            )
         if "host-hang" in steps:
             before = gave_up(run)
             word = ask_thread(first, "hang", [100, 40, 30, 300000, 2000000])
             log(f"thread HANG on (100, 40): word {word:#x}")
             report.update(host_hang(run, (100, 40), 30, before))
+            words = (source.address, output.address)
+            report.update(healthy_after(run, own, 130, words))
         log("stopping")
         results = run.stop()
         report["kernel_errors"] = [result["error_name"] for result in results]
@@ -289,6 +348,7 @@ def main():
         and report.get("map_after_hang", True)
         and report.get("host_hang_given_up", True)
         and report.get("gave_up_counts_agree", True)
+        and report.get("healthy_answered", True)
         and report.get("exclusive_done", True)
         and report.get("host_counts_exact", True)
         and report.get("thread_counts_exact", True)

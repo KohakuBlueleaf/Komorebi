@@ -56,15 +56,10 @@ class Tensor:
         """The compile-time arguments of a TensorAccessor over this buffer."""
         return list(self.buffer.accessor_args())
 
-    def placement_args(self):
-        """What km::Placement reads (compile arguments, after the accessor's): one
-        island holding every page, as an island session's tensor on one island."""
-        return [1, 0, 0, self.pages]
-
     def tensor_args(self):
-        """What km::Tensor reads (compile arguments): the accessor's, then the
-        placement's; what a kernel's page calls (km::read_pages) take."""
-        return self.accessor_args() + self.placement_args()
+        """What km::Tensor reads (compile arguments): the accessor's; with the
+        tensor's reference word (`address`), what a kernel's page calls take."""
+        return self.accessor_args()
 
     def write(self, data):
         """Writes `data` (this shape) over the whole buffer, once the cores of a

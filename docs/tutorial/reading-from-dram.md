@@ -56,10 +56,10 @@ cb_push_back(INDEX, PAGES);
   The `cb_` in the C++ names below belongs to the kind of buffer that
   [[circular-buffers]] explains. For now a buffer is a numbered room in L1.
 - `compile_args` hands the kernel what it needs to find the tensor's pages: their layout
-  in DRAM and which card holds which of them. In the kernel, `km::Tensor<0>` receives it
-  (from compile argument 0 on), and `Tensor(ADDRESS)` is the tensor the page calls take.
-  `ADDRESS` is where the tensor starts. Python has it as `tensor.address`; it travels in
-  a command argument.
+  in DRAM. In the kernel, `km::Tensor<0>` receives it (from compile argument 0 on), and
+  `Tensor(ADDRESS)` is the tensor the page calls take. `ADDRESS` names the tensor: on
+  one card, where it starts. Python has it as `tensor.address`; it travels in a command
+  argument.
 - `reader.reserve(INDEX, PAGES)` waits until the buffer has room for `PAGES` tiles.
 - `km::read_pages(reader, command, tensor, TILE, PAGES, where, PORT)` starts a copy of
   `PAGES` tiles from tile number `TILE` of the tensor to the L1 address `where`.

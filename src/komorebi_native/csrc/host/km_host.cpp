@@ -34,6 +34,9 @@
 #include <tt-metalium/buffer_distribution_spec.hpp>
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/experimental/fabric/fabric.hpp>
+#include <tt-metalium/experimental/fabric/fabric_edm_types.hpp>
+
+#include <hostdevcommon/fabric_common.h>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
 #include <tt-metalium/mesh_buffer.hpp>
@@ -130,6 +133,98 @@ namespace {
         tt::tt_metal::detail::WriteToDeviceL1(
             chip(mesh), tt::tt_metal::CoreCoord{x, y}, address, words
         );
+    }
+
+    // `count` words of core (x, y)'s L1 at `address`, read through the driver: no
+    // command queue, so it does not wait for a launched program.
+    std::vector<uint32_t> read_l1(
+        const MeshDevice& mesh, uint32_t x, uint32_t y, uint32_t address, uint32_t count
+    ) {
+        std::vector<uint32_t> words;
+        tt::tt_metal::detail::ReadFromDeviceL1(
+            chip(mesh), tt::tt_metal::CoreCoord{x, y}, address, count * 4, words
+        );
+        return words;
+    }
+
+    // The router's connection words (the fabric's connection_interface): unused, close.
+    constexpr uint32_t kConnectionUnused = 0;
+    constexpr uint32_t kConnectionClose = 2;
+
+    // Closes core `where`'s (in reset) fabric connection on each of `channels` as its
+    // close would, the cursor at the router's read counter. False: no teardown in time.
+    bool close_connections(
+        tt::tt_metal::IDevice* dev,
+        const tt_cxy_pair& where,
+        const std::vector<uint32_t>& channels,
+        double timeout_s
+    ) {
+        namespace tf = tt::tt_fabric;
+        if (channels.empty()) {
+            return true;
+        }
+        auto& context = tt::tt_metal::MetalContext::instance();
+        const auto& cluster = context.get_cluster();
+        tf::tensix_fabric_connections_l1_info_t table{};
+        cluster.read_core(
+            &table,
+            sizeof(table),
+            where,
+            context.hal().get_dev_addr(
+                tt::tt_metal::HalProgrammableCoreType::TENSIX,
+                tt::tt_metal::HalL1MemAddrType::TENSIX_FABRIC_CONNECTIONS
+            )
+        );
+        for (const uint32_t channel : channels) {
+            if (
+                channel >=
+                    tf::tensix_fabric_connections_l1_info_t::MAX_FABRIC_ENDPOINTS ||
+                !(table.valid_connections_mask >> channel & 1u)
+            ) {
+                throw std::invalid_argument("reset_core: no fabric connection there");
+            }
+            const auto& connection = table.read_only[channel];
+            const tt_cxy_pair router(
+                dev->id(),
+                tt::tt_metal::CoreCoord{connection.edm_noc_x, connection.edm_noc_y}
+            );
+            const uint32_t close = kConnectionClose;
+            cluster.write_core_immediate(
+                &close, sizeof(close), router, connection.edm_connection_handshake_addr
+            );
+            const auto until = Clock::now() + std::chrono::duration<double>(timeout_s);
+            uint32_t state = close;
+            while (state != kConnectionUnused) {
+                if (Clock::now() > until) {
+                    return false;
+                }
+                cluster.read_core(
+                    &state,
+                    sizeof(state),
+                    router,
+                    connection.edm_connection_handshake_addr
+                );
+            }
+            uint32_t counter = 0;
+            cluster.read_core(
+                &counter,
+                sizeof(counter),
+                router,
+                connection.edm_worker_location_info_addr +
+                    offsetof(tf::EDMChannelWorkerLocationInfo, edm_read_counter)
+            );
+            const std::array<uint32_t, 4> cursor{
+                counter, counter % connection.num_buffers_per_channel, 0u, 0u
+            };
+            cluster.write_core(
+                cursor.data(),
+                sizeof(cursor),
+                router,
+                connection.buffer_index_semaphore_id
+            );
+        }
+        cluster.l1_barrier(dev->id());
+        return true;
     }
 
     // The grid (x, y), then per core in core order its translated NoC address (the
@@ -408,14 +503,18 @@ namespace {
         tt::tt_metal::MetalContext::instance().get_cluster().dram_barrier(dev->id());
     }
 
-    // Waits up to timeout_s for the kernels of the worker grid to return, in slices of
-    // at most a second, signals checked between them. True: returned.
+    // Waits up to timeout_s for the kernels of grid_y rows from first_row to return, in
+    // slices of at most a second, signals checked between them. True: returned.
     bool wait_grid(
-        const MeshDevice& mesh, uint32_t grid_x, uint32_t grid_y, double timeout_s
+        const MeshDevice& mesh,
+        uint32_t grid_x,
+        uint32_t grid_y,
+        double timeout_s,
+        uint32_t first_row = 0
     ) {
         auto* dev = chip(mesh);
         std::unordered_set<tt::tt_metal::CoreCoord> left;
-        for (uint32_t y = 0; y < grid_y; y++) {
+        for (uint32_t y = first_row; y < first_row + grid_y; y++) {
             for (uint32_t x = 0; x < grid_x; x++) {
                 left.insert(dev->virtual_core_from_logical_core(
                     tt::tt_metal::CoreCoord{x, y}, tt::CoreType::WORKER
@@ -1191,9 +1290,14 @@ namespace {
             );
         }
 
-        // Resets core (x, y) alone, restarts its firmware, reloads its kernels as the
-        // launch did. Seconds of reset, firmware, load; firmware -1: never ready.
-        std::array<double, 3> reset_core(uint32_t x, uint32_t y, double timeout_s) {
+        // Resets core (x, y), its connections on `channels` closed; restarts, reloads.
+        // Seconds of reset, firmware (-1: not ready, -2: not closed), load.
+        std::array<double, 3> reset_core(
+            uint32_t x,
+            uint32_t y,
+            double timeout_s,
+            const std::vector<uint32_t>& channels = {}
+        ) {
             namespace tm = tt::tt_metal;
             if (!workload_) {
                 throw std::runtime_error("reset_core: the program was not launched");
@@ -1226,6 +1330,10 @@ namespace {
             // The open's firmware start, for this core: firmware images, initial launch
             // messages, go INIT, read pointers 0, BRISC's boot jump, BRISC released.
             cluster.assert_risc_reset_at_core(where, tt::umd::RiscType::ALL);
+            if (!close_connections(dev, where, channels, timeout_s)) {
+                lap(0);
+                return {took[0], -2.0, 0.0};
+            }
             lap(0);
             auto& builds = (
                 tm::BuildEnvManager::get_instance(tm::extract_context_id(dev))
@@ -1408,6 +1516,39 @@ namespace {
             return took;
         }
 
+        // Per core (x + y * grid x), the number of its kernels' group among the cores'
+        // groups in core order, -1 for none: one reset list (every) serves a group.
+        std::vector<int32_t> reset_groups() {
+            namespace tm = tt::tt_metal;
+            if (!workload_) {
+                throw std::runtime_error("reset_groups: the program was not launched");
+            }
+            const auto& hal = tm::MetalContext::instance().hal();
+            const uint32_t index = (
+                hal.get_programmable_core_type_index(
+                    tm::HalProgrammableCoreType::TENSIX
+                )
+            );
+            auto& program = workload_->get_programs().begin()->second;
+            const auto grid = mesh_->compute_with_storage_grid_size();
+            std::vector<const void*> seen;
+            std::vector<int32_t> out;
+            for (uint32_t core = 0; core < grid.x * grid.y; core++) {
+                const tm::CoreCoord logical{core % grid.x, core / grid.x};
+                const void* group = program.impl().kernels_on_core(logical, index);
+                const auto found = std::find(seen.begin(), seen.end(), group);
+                if (group == nullptr) {
+                    out.push_back(-1);
+                } else if (found == seen.end()) {
+                    out.push_back(static_cast<int32_t>(seen.size()));
+                    seen.push_back(group);
+                } else {
+                    out.push_back(static_cast<int32_t>(found - seen.begin()));
+                }
+            }
+            return out;
+        }
+
         // The dispatcher's reset of core (x, y) (KMD_HANDLER_RESET): reset_core's
         // writes as a write list of km_dispatch.h, in whole 64-byte lines.
         nb::bytes reset_list(uint32_t x, uint32_t y, bool every) {
@@ -1583,25 +1724,30 @@ namespace {
                 hal.get_l1_noc_offset(tensix)
             );
             // every: each core's runtime arguments, core i (x + y * grid x) the i-th
-            // part; every core must hold this core's kernels, so the rest is common.
+            // part, zero for a core with other kernels (reset_groups: not this list's).
             const auto grid = mesh_->compute_with_storage_grid_size();
             const uint32_t cores = static_cast<uint32_t>(grid.x * grid.y);
+            std::vector<bool> mine(cores);
+            for (uint32_t core = 0; core < cores; core++) {
+                const tm::CoreCoord other{core % grid.x, core / grid.x};
+                mine[core] = program.impl().kernels_on_core(other, index) == group;
+            }
             const auto each = [&](uint64_t at, tm::Kernel& kernel) {
                 size_t size = 0;
                 for (uint32_t core = 0; core < cores; core++) {
-                    const tm::CoreCoord other{core % grid.x, core / grid.x};
-                    if (program.impl().kernels_on_core(other, index) != group) {
-                        throw std::invalid_argument(
-                            "reset_list: cores differ in kernels"
-                        );
+                    if (mine[core]) {
+                        const tm::CoreCoord other{core % grid.x, core / grid.x};
+                        size = std::max(size, kernel.runtime_args(other).size() * 4);
                     }
-                    size = std::max(size, kernel.runtime_args(other).size() * 4);
                 }
                 const size_t padded = (size + 15) / 16 * 16;
                 entry(KMD_RESET_EACH, at, static_cast<uint32_t>(size), cores);
                 const size_t start = list.size();
                 list.resize(start + padded / 4 * cores, 0);
                 for (uint32_t core = 0; core < cores; core++) {
+                    if (!mine[core]) {
+                        continue;
+                    }
                     const auto& args = kernel.runtime_args(
                         tm::CoreCoord{core % grid.x, core / grid.x}
                     );
@@ -1720,6 +1866,25 @@ namespace {
             }
         }
 
+        // A dispatch on X280 cluster `cluster` of `first`'s chip, beside it: its
+        // runtime, its tiles booted and clocked by `first` (a card split into islands).
+        Dispatch(const Dispatch& first, uint32_t cluster) :
+            mesh_(first.mesh_),
+            opened_(first.opened_),
+            chip_id_(first.chip_id_),
+            cluster_(cluster) {
+            require_open();
+            if (cluster_ == 0 || cluster_ >= tile_ids().size()) {
+                throw std::runtime_error("a dispatch beside another: clusters 1 to 3");
+            }
+            try {
+                locate();
+            } catch (...) {
+                close();
+                throw;
+            }
+        }
+
         ~Dispatch() {
             close();
         }
@@ -1732,7 +1897,7 @@ namespace {
             return session_.has_value();
         }
 
-        // Whether cluster 0 runs its idle image and no session: an image can start.
+        // Whether its cluster runs its idle image and no session: an image can start.
         bool idle() const {
             return (
                 opened_ && !session_ && tile_ != nullptr &&
@@ -1788,9 +1953,15 @@ namespace {
             uint64_t messages_handler,
             const std::vector<uint8_t>& programs,
             uint64_t island,
-            const std::vector<uint8_t>& link
+            const std::vector<uint8_t>& link,
+            uint32_t first_row,
+            uint32_t rows
         ) {
             require_open();
+            rows = rows == 0 ? grid_y_ - std::min(first_row, grid_y_) : rows;
+            if (rows == 0 || first_row + rows > grid_y_) {
+                throw std::runtime_error("rows: a range of the grid's rows");
+            }
             if (link.size() > KMD_LINK_COUNT || link.size() % 4 != 0) {
                 throw std::runtime_error(
                     "link: the link line and the island table, at most KMD_LINK_COUNT "
@@ -1893,8 +2064,10 @@ namespace {
             arguments.cores = grid_x_ * grid_y_;
             arguments.panels = panels_.size();
             for (size_t panel = 0; panel < panels_.size(); panel++) {
-                const auto first_corner = translated(panels_[panel][0], 0);
-                const auto last_corner = translated(panels_[panel][1], grid_y_ - 1);
+                const auto first_corner = translated(panels_[panel][0], first_row);
+                const auto last_corner = (
+                    translated(panels_[panel][1], first_row + rows - 1)
+                );
                 arguments.rect[panel][0] = first_corner[0];
                 arguments.rect[panel][1] = first_corner[1];
                 arguments.rect[panel][2] = last_corner[0];
@@ -2281,7 +2454,7 @@ namespace {
                 return out;
             }
             std::vector<uint32_t> before, after, words;
-            std::string x280_cores, failed;
+            std::string x280_states, failed;
             {
                 nb::gil_scoped_release release;
                 try {
@@ -2295,11 +2468,11 @@ namespace {
                     failed = std::string("LIM not readable: ") + error.what();
                 }
                 try {
-                    x280_cores = (
+                    x280_states = (
                         x280::describe(x280_runtime().session(*session_).inspect())
                     );
                 } catch (const std::exception& error) {
-                    x280_cores = (
+                    x280_states = (
                         std::string("core states not readable: ") + error.what()
                     );
                 }
@@ -2308,9 +2481,10 @@ namespace {
                 out["marker_before"] = before[KMD_H_MARKER0];
                 out["marker_after"] = after[KMD_H_MARKER0];
                 out["words"] = words;
+                out["x280_cores"] = after;  // the core block (KMD_H_*)
             }
             out["failed"] = failed;
-            out["x280_cores"] = x280_cores;
+            out["x280_states"] = x280_states;  // the runtime's view of each core
             return out;
         }
 
@@ -2664,7 +2838,7 @@ namespace {
         void locate() {
             auto& runtime = x280_runtime();
             const auto ids = tile_ids();
-            tile_ = &runtime.tile(ids.front());
+            tile_ = &runtime.tile(ids.at(cluster_));
             work_.resize(ids.size());
             for (
                 size_t cluster_index = 0; cluster_index < ids.size(); cluster_index++
@@ -2679,11 +2853,15 @@ namespace {
                 );
             }
             const auto l2 = (
-                runtime.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_0)
+                runtime.virtual_core_from_tile(
+                    ids.at(cluster_), tt::tt_metal::NOC::NOC_0
+                )
             );
             // The writers push completions on NoC1: the same coordinate must reach it.
             const auto l2_noc1 = (
-                runtime.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_1)
+                runtime.virtual_core_from_tile(
+                    ids.at(cluster_), tt::tt_metal::NOC::NOC_1
+                )
             );
             if (l2.x() != l2_noc1.x() || l2.y() != l2_noc1.y()) {
                 throw std::runtime_error(
@@ -2764,7 +2942,8 @@ namespace {
 
         std::shared_ptr<MeshDevice> mesh_;
         std::shared_ptr<x280::RuntimeOpenResult> opened_;  // shared on islands
-        int chip_id_ = -1;  // an island's chip: only its tiles; -1 every tile
+        int chip_id_ = -1;      // an island's chip: only its tiles; -1 every tile
+        uint32_t cluster_ = 0;  // the X280 cluster it runs on (tile_ids() order)
         x280::X280Tile* tile_ = nullptr;
         uint64_t run_ = 0;
         std::shared_ptr<tt::umd::IoWindow> win_;         // host -> LIM, write-combining
@@ -2895,8 +3074,9 @@ NB_MODULE(_km_host, m) {
             &Launch::reset_core,
             nb::arg("x"),
             nb::arg("y"),
-            nb::arg("timeout_s")
-        ).def(
+            nb::arg("timeout_s"),
+            nb::arg("channels") = std::vector<uint32_t>{}
+        ).def("reset_groups", &Launch::reset_groups).def(
             "reset_list",
             &Launch::reset_list,
             nb::arg("x"),
@@ -2973,13 +3153,37 @@ NB_MODULE(_km_host, m) {
     );
     m.def(
         "wait_grid",
-        [](const Device& device, uint32_t grid_x, uint32_t grid_y, double timeout_s) {
-            return wait_grid(device.mesh(), grid_x, grid_y, timeout_s);
+        [](
+            const Device& device,
+            uint32_t grid_x,
+            uint32_t grid_y,
+            double timeout_s,
+            uint32_t first_row
+        ) {
+            return wait_grid(device.mesh(), grid_x, grid_y, timeout_s, first_row);
         },
         nb::arg("device"),
         nb::arg("grid_x"),
         nb::arg("grid_y"),
-        nb::arg("timeout_s")
+        nb::arg("timeout_s"),
+        nb::arg("first_row") = 0
+    );
+    m.def(
+        "read_l1",
+        [](
+            const Device& device,
+            uint32_t x,
+            uint32_t y,
+            uint32_t address,
+            uint32_t count
+        ) {
+            return read_l1(device.mesh(), x, y, address, count);
+        },
+        nb::arg("device"),
+        nb::arg("x"),
+        nb::arg("y"),
+        nb::arg("address"),
+        nb::arg("count")
     );
 
     nb::class_<Dispatch>(m, "Dispatch")
@@ -2995,6 +3199,13 @@ NB_MODULE(_km_host, m) {
             },
             nb::arg("device"),
             nb::arg("pll_mhz") = 1000
+        ).def(
+            "__init__",
+            [](Dispatch* self, const Dispatch& first, uint32_t cluster) {
+                new (self) Dispatch(first, cluster);
+            },
+            nb::arg("first"),
+            nb::arg("cluster")
         ).def_ro("grid_x", &Dispatch::grid_x_).def_ro("grid_y", &Dispatch::grid_y_)
         .def_ro("panels", &Dispatch::panels_)
         .def_ro("l2_x", &Dispatch::l2x_)
@@ -3032,7 +3243,9 @@ NB_MODULE(_km_host, m) {
             nb::arg("messages_handler") = 0,
             nb::arg("programs") = std::vector<uint8_t>{},
             nb::arg("island") = 0,
-            nb::arg("link") = std::vector<uint8_t>{}
+            nb::arg("link") = std::vector<uint8_t>{},
+            nb::arg("first_row") = 0,
+            nb::arg("rows") = 0
         ).def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
         .def_ro("upload_bytes", &Dispatch::upload_bytes_)

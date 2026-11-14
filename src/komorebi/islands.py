@@ -3,10 +3,13 @@ entry in the island table (one card can be described as several). Pure host valu
 graph, ranks flat and contiguous by island, the table a core holds, placement and trees.
 On one island every answer is today's."""
 
+import math
 import struct
 from bisect import bisect_right
 from collections import deque
 from typing import NamedTuple
+
+import numpy as np
 
 from komorebi import channel
 
@@ -45,11 +48,65 @@ class Link(NamedTuple):
 
 
 class Placement(NamedTuple):
-    """Where a tensor's pages live: `parts[island]` (first page, pages) for a split,
-    or `copy` True and every island holds every page."""
+    """Where a tensor's pages live. The pages are `outer` blocks of `steps` steps of the
+    split dimension, `inner` pages a step; island i holds steps `parts[i]` (first step,
+    steps) of every block, in that order (its part). `copy`: every island holds every
+    page. `split` and `group` are the hint it came from (None: a copy)."""
 
     parts: tuple
     copy: bool = False
+    steps: int = 1
+    inner: int = 1
+    outer: int = 1
+    split: int | None = 0
+    group: tuple | None = None
+
+    @property
+    def pages(self):
+        return self.outer * self.steps * self.inner
+
+    def part_pages(self, island):
+        """The pages island `island` holds: its part's length."""
+        return (
+            self.pages if self.copy else self.outer * self.parts[island][1] * self.inner
+        )
+
+    def where(self, page, island=0):
+        """(island that holds `page`, its index in that island's part); a copy's
+        page: the asker's own `island`, index `page`. One island: (0, page)."""
+        if not 0 <= page < self.pages:
+            raise ValueError(f"page {page} is outside the tensor's {self.pages}")
+        if self.copy:
+            return island, page
+        block, rest = divmod(page, self.steps * self.inner)
+        step, offset = divmod(rest, self.inner)
+        for holder, (first, steps) in enumerate(self.parts):
+            if first <= step < first + steps:
+                return holder, (block * steps + step - first) * self.inner + offset
+        raise ValueError(f"page {page}: step {step} is in no island's part")
+
+    def runs(self, first, pages, island=0):
+        """[(holder, first page, pages, index in the holder's part)] of pages first ..
+        first + pages - 1: each run held by one island at consecutive indices."""
+        out = []
+        for page in range(first, first + pages):
+            holder, index = self.where(page, island)
+            if out and out[-1][0] == holder and out[-1][3] + out[-1][2] == index:
+                out[-1] = (holder, out[-1][1], out[-1][2] + 1, out[-1][3])
+            else:
+                out.append((holder, page, 1, index))
+        return out
+
+    def part(self, island):
+        """The pages of island `island`'s part in its order (an int64 array): what
+        its page k is in the whole tensor."""
+        if self.copy:
+            return np.arange(self.pages, dtype=np.int64)
+        first, steps = self.parts[island]
+        blocks = np.arange(self.outer, dtype=np.int64)[:, None, None]
+        held = np.arange(first, first + steps, dtype=np.int64)[None, :, None]
+        inner = np.arange(self.inner, dtype=np.int64)[None, None, :]
+        return ((blocks * self.steps + held) * self.inner + inner).reshape(-1)
 
 
 class Tree(NamedTuple):
@@ -347,32 +404,49 @@ def one(cores, columns, threads=0):
     return Graph([Island(tuple(range(cores)), columns, threads)])
 
 
-def line(islands, links=1, rate=None, packet=None):
+def line(islands, links=1, rate=None, packet=None, reserve=True):
     """`islands` (Island values) in a line, `links` links each neighbouring pair."""
     return Graph(
-        islands, [Link(i, i + 1, links, rate, packet) for i in range(len(islands) - 1)]
+        islands,
+        [Link(i, i + 1, links, rate, packet) for i in range(len(islands) - 1)],
+        reserve,
     )
 
 
-def ring(islands, links=1, rate=None, packet=None):
+def ring(islands, links=1, rate=None, packet=None, reserve=True):
     """`islands` in a ring (a line for fewer than three: a pair is joined once)."""
     count = len(islands)
     if count < 3:
-        return line(islands, links, rate, packet)
+        return line(islands, links, rate, packet, reserve)
     return Graph(
-        islands, [Link(i, (i + 1) % count, links, rate, packet) for i in range(count)]
+        islands,
+        [Link(i, (i + 1) % count, links, rate, packet) for i in range(count)],
+        reserve,
     )
 
 
 def split_card(
-    cores, columns, parts, shape="line", links=1, rate=None, packet=None, threads=0
+    cores,
+    columns,
+    parts,
+    shape="line",
+    links=1,
+    rate=None,
+    packet=None,
+    threads=0,
+    rows=False,
+    reserve=True,
 ):
     """One card of cores 0 to cores - 1 described as `parts` islands of contiguous
-    cores (sizes by partition), joined as a "line" or a "ring"; `threads` on island 0.
-    parts 1: the card as today."""
+    cores (sizes by partition; `rows`: of whole rows), joined as a "line" or a "ring";
+    `threads` on island 0; `reserve` False: no link cores. parts 1: the card as today.
+    """
+    unit = columns if rows else 1
+    if cores % unit:
+        raise ValueError(f"{cores} cores are not whole rows of {columns}")
     islands = []
     for part in range(parts):
-        start, length = partition(cores, part, parts)
+        start, length = (unit * size for size in partition(cores // unit, part, parts))
         islands.append(
             Island(
                 tuple(range(start, start + length)),
@@ -381,55 +455,53 @@ def split_card(
             )
         )
     if shape == "line":
-        return line(islands, links, rate, packet)
+        return line(islands, links, rate, packet, reserve)
     if shape == "ring":
-        return ring(islands, links, rate, packet)
+        return ring(islands, links, rate, packet, reserve)
     raise ValueError(f"shape {shape!r}: 'line' or 'ring'")
 
 
 # Data
 
 
-def leading_units(shape, layout="row"):
-    """How many steps of the leading dimension a tensor's pages make (each step the
-    same number of pages): rows of a "row" tensor's first dimension; tile rows of a
-    2-D "tile" tensor, else its first dimension."""
-    shape = tuple(shape)
+def page_dims(shape, layout="row"):
+    """The dimensions a tensor's pages make, leading first: a "row" tensor's every
+    dimension but the last (a page is one row of it); a "tile" tensor's leading
+    dimensions, then its tile rows and tile columns."""
+    shape = tuple(int(size) for size in shape)
     if layout == "row":
-        return shape[0] if len(shape) >= 2 else 1
+        return shape[:-1]
     if layout == "tile":
-        return shape[0] // 32 if len(shape) == 2 else shape[0] if len(shape) > 2 else 1
+        if len(shape) < 2:
+            raise ValueError(f"shape {shape}: a tile layout needs two dimensions")
+        return (*shape[:-2], -(-shape[-2] // 32), -(-shape[-1] // 32))
     raise ValueError(f"layout {layout!r}: 'row' or 'tile'")
 
 
-def place(graph, pages, units=None, like=None, copy=False, by="rank"):
-    """Where a tensor's pages live: split along `units` leading steps (None: a page a
-    step) as partition gives them to the ranks of `like` (default all ranks), or by
-    "island": partition over the islands, island i its part i; `copy`: on every
-    island. On one island: every page on island 0."""
+def place(graph, shape, layout="row", split=None, group=None, copy=False):
+    """Where a tensor's pages live, by the hint in the kernel's words: `split` d and
+    `group` (first rank, ranks; default every rank): the ranks of the group partition
+    dimension d (in its page steps) as km::partition does, and rank r's steps are held
+    by r's island; `copy`: on every island. No hint: split 0 over every rank."""
     islands = len(graph.islands)
+    dims = page_dims(shape, layout)
     if copy:
-        return Placement(tuple((0, pages) for _ in range(islands)), True)
-    units = pages if units is None else units
-    if units < 1 or pages % units:
-        raise ValueError(f"{pages} pages are not {units} equal steps")
-    step = pages // units
-    if by == "island":
-        if like is not None:
-            raise ValueError("a placement by island follows no group (`like`)")
-        return Placement(
-            tuple(
-                (start * step, length * step)
-                for start, length in (
-                    channel.partition(units, island, islands)
-                    for island in range(islands)
-                )
-            )
+        if split is not None or group is not None:
+            raise ValueError("a copy is not split: no `split` or `group` with it")
+        pages = math.prod(dims)
+        return Placement(((0, 1),) * islands, True, 1, pages, 1, None, None)
+    split = 0 if split is None else split
+    if not dims and split == 0:
+        dims = (1,)  # one page: one step
+    if not -len(dims) <= split < len(dims):
+        raise ValueError(
+            f"split={split}: a {layout} tensor of shape {tuple(shape)} has pages along "
+            f"dimensions 0 to {len(dims) - 1} (the rest is inside a page)"
         )
-    if by != "rank":
-        raise ValueError(f"by {by!r}: 'rank' or 'island'")
-    first, count = like if like is not None else (0, graph.ranks)
+    split %= len(dims)
+    first, count = group if group is not None else (0, graph.ranks)
     graph.split((first, count))  # the group must be the graph's
+    steps = dims[split]
     parts = []
     for island in range(islands):
         low = min(max(graph.first(island), first), first + count) - first
@@ -437,21 +509,48 @@ def place(graph, pages, units=None, like=None, copy=False, by="rank"):
             min(max(graph.first(island) + graph.count(island), first), first + count)
             - first
         )
-        start = channel.partition(units, low, count)[0] * step
-        end = channel.partition(units, high, count)[0] * step
+        start = channel.partition(steps, low, count)[0] if low < count else steps
+        end = channel.partition(steps, high, count)[0] if high < count else steps
         parts.append((start, end - start))
-    return Placement(tuple(parts))
+    return Placement(
+        tuple(parts),
+        False,
+        steps,
+        math.prod(dims[split + 1 :]),
+        math.prod(dims[:split]),
+        split,
+        (first, count),
+    )
 
 
 def island_of(placement, page, island=0):
     """The island that holds `page`; for a copy, the asker's own `island`. On one
     island: 0."""
-    if placement.copy:
-        return island
-    for holder, (start, length) in enumerate(placement.parts):
-        if start <= page < start + length:
-            return holder
-    raise ValueError(f"page {page} is outside the tensor")
+    return placement.where(page, island)[0]
+
+
+# The tensor table at word KM_ISLAND_TENSORS of a core's island area (km_abi.h mirrors):
+# a reference word below TENSORS_MAX is its entry's index, any other a bank address.
+TENSORS_MAX = 32
+TENSOR_HEADER = struct.Struct("<4I")  # aligned page bytes, steps, pages a step, copy
+TENSOR_PART = struct.Struct("<4I")  # part's bank address, first step, steps, zero
+
+
+def tensor_entry_bytes(islands):
+    """An entry's bytes in a table of `islands` islands."""
+    return TENSOR_HEADER.size + islands * TENSOR_PART.size
+
+
+def tensor_entry(placement, aligned_page_bytes, addresses):
+    """A tensor's entry: its header, then each island's part (its bank address in
+    `addresses`, 0 where the island holds none)."""
+    head = TENSOR_HEADER.pack(
+        aligned_page_bytes, placement.steps, placement.inner, int(placement.copy)
+    )
+    return head + b"".join(
+        TENSOR_PART.pack(address, first, steps, 0)
+        for address, (first, steps) in zip(addresses, placement.parts)
+    )
 
 
 # Trees

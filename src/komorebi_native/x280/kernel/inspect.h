@@ -36,6 +36,7 @@ static inline void inspect_begin(
     header[KMD_I_START] = (uint32_t)now;
     header[KMD_I_TICKS] = 0;
     header[KMD_I_RESET] = 0;
+    header[KMD_I_RESET_FAILED] = 0;
     kmd_inspect_t* inspect = &dispatcher->inspect;
     inspect->active = 1;
     inspect->kind = kind;
@@ -185,6 +186,21 @@ static int inspect_left(kmd_t* dispatcher, uint32_t core, uint32_t sequence) {
     return 1;
 }
 
+/* Whether a kernel of core `core` ended (its own wait gave up): the core runs no
+ * command until it is reset. 0 if unreachable. */
+static int inspect_ended(kmd_t* dispatcher, uint32_t core) {
+    volatile const uint8_t* window = inspect_aim(dispatcher, core);
+    if (window == 0) {
+        return 0;
+    }
+    return (
+        *(volatile const uint32_t*)(
+            window + dispatcher->control_address + KM_CONTROL_STATE +
+            4u * KMD_STATE_ENDS
+        ) != 0
+    );
+}
+
 /* A timeout's abort: the slot's abort word on every core (each gives up the command
  * it runs only if it is this one); its cores are then checked (inspect_leave). */
 static void inspect_abort(kmd_t* dispatcher, uint32_t slot) {
@@ -233,8 +249,8 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     }
 }
 
-/* At the end of a give-up's wait, with a kept list: each core of the group still in
- * the command reset and loaded again (record flag KMD_INSPECT_RESET). 1: all were. */
+/* End of a give-up's wait, a kept list: each core of the group still in the command
+ * or ended, reset and loaded again (record flag KMD_INSPECT_RESET). 1: all were. */
 static int inspect_reset(kmd_t* dispatcher) {
     kmd_inspect_t* inspect = &dispatcher->inspect;
     if (dispatcher->reset_bytes == 0) {
@@ -244,12 +260,21 @@ static int inspect_reset(kmd_t* dispatcher) {
     for (; inspect->next < inspect->count; inspect->next++) {
         const uint32_t core = inspect->first + inspect->next;
         dispatcher->beat++;
-        if (inspect_left(dispatcher, core, inspect->sequence)) {
+        if (
+            inspect_left(dispatcher, core, inspect->sequence) &&
+            !inspect_ended(dispatcher, core)
+        ) {
             continue;
         }
-        if (reset_run(
-            dispatcher, core, dispatcher->reset_offset, dispatcher->reset_bytes
-        ) != KMD_RESET_OK) {
+        uint32_t offset = 0, bytes = 0;
+        const uint32_t status = (
+            reset_pick(dispatcher, core, &offset, &bytes)
+                ? reset_run(dispatcher, core, offset, bytes)
+                : KMD_RESET_NO_LIST
+        );
+        if (status != KMD_RESET_OK) {
+            header[KMD_I_RESET_FAILED] = (core + 1u) | status << 16;
+            x280_fence_ow();
             return 0;
         }
         volatile uint32_t* line = (
@@ -265,8 +290,8 @@ static int inspect_reset(kmd_t* dispatcher) {
     return 1;
 }
 
-/* A timeout's cores after the abort, one a pass: the give-up once none runs the
- * command; at KMD_GIVE_UP_TICKS, those reset (a kept list) or the slot kept (fatal). */
+/* A timeout's cores after the abort, one a pass. With a kept list, once none runs it
+ * or at KMD_GIVE_UP_TICKS: those in it or ended reset, else the slot kept (fatal). */
 static void inspect_leave(kmd_t* dispatcher) {
     kmd_inspect_t* inspect = &dispatcher->inspect;
     const uint64_t now = x280_mtime();
@@ -276,11 +301,12 @@ static void inspect_leave(kmd_t* dispatcher) {
     ) {
         inspect->next++;
     }
-    if (inspect->next == inspect->count) {
+    if (inspect->next == inspect->count && dispatcher->reset_bytes == 0) {
         inspect->active = 0;
         inspect_give_up(dispatcher, inspect->slot, now);
-    } else if (now > inspect->until) {
+    } else if (inspect->next == inspect->count || now > inspect->until) {
         inspect->active = 0;
+        inspect->next = 0; /* every core again: those still in it or ended */
         if (inspect_reset(dispatcher)) {
             inspect_give_up(dispatcher, inspect->slot, x280_mtime());
             return;
