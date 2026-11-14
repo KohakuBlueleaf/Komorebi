@@ -1506,6 +1506,12 @@ namespace km {
         return code;
     }
 
+    // The lead page CPU's time of a put line's step `step` (KM_STAMP_*), in its link
+    // area at `area` (link core 0's): what a collective's latency is made of.
+    inline void put_stamp(uint32_t area, uint32_t step) {
+        l1(area + KM_PUT_STAMPS)[step] = wall();
+    }
+
     // Page CPU j: its island's next put line: share j of its pages into the holder's
     // DRAM (pages_push); the lead CPU sends the line across. kGave* code.
     template <typename Kernel>
@@ -1562,6 +1568,7 @@ namespace km {
             r.page <= pages_packet() && r.from % 16 == 0
         );
         if (lead) {  // on link core 0: the line is its own
+            put_stamp(area, KM_STAMP_TAKEN);
             if (!good) {
                 line[KM_ASK_PAGES] = 0;
                 words[KM_PUT_BAD / 4] += 1;
@@ -1575,12 +1582,16 @@ namespace km {
             code = pages_packet(kernel, header, at, 64);
             if (code == kGaveNone) {
                 cross_count(area, KM_CROSS_PUTS, 1, 64);
+                put_stamp(area, KM_STAMP_ACROSS);
             }
         }
         const Partition share = page_share(area, r.pages, j);
         const bool ring = line[KM_ASK_RING] != 0;
         if (code == kGaveNone && good && !ring && share.len != 0) {
             code = pages_push(kernel, r, cpu, share);
+        }
+        if (lead && code == kGaveNone) {
+            put_stamp(area, KM_STAMP_PUSHED);
         }
         if (code != kGaveNone) {
             return code;
@@ -1678,6 +1689,40 @@ namespace km {
         );
     }
 
+    // The lead page CPU: a gather's `pages`, all written here, onto its keeper's port
+    // (`keeper`: KM_ASK_KEEPER, a rank of this island), one local NoC atomic; a keeper
+    // that names no rank or port is counted bad. kGave* code.
+    template <typename Kernel>
+    inline uint32_t pages_keeper(
+        const Kernel& kernel, uint32_t area, uint32_t keeper, uint32_t pages
+    ) {
+        if (keeper == 0 || pages == 0) {
+            return kGaveNone;
+        }
+        const Islands view = islands_at(kernel.args().control);
+        const uint32_t rank = (keeper & ((1u << KM_KEEPER_PORT_SHIFT) - 1)) - 1;
+        const uint32_t port = keeper >> KM_KEEPER_PORT_SHIFT;
+        if (rank >= view.ranks() || port >= KM_PORTS) {
+            l1(area)[KM_PUT_BAD / 4] += 1;
+            return kGaveNone;
+        }
+        noc_semaphore_inc(
+            kernel.core_noc(
+                view.base() + rank,
+                kernel.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
+                    KM_PORT_COUNT * 4
+            ),
+            pages
+        );
+        return kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+    }
+
     // The lead page CPU: far put lines arrive as pending; each once its pages landed
     // (KM_QUEUE_ARRIVED) is confirmed to the asker's port and parity word. kGave* code.
     template <typename Kernel>
@@ -1709,6 +1754,9 @@ namespace km {
             entry[KM_QUEUE_E_CORE] = line[KM_ASK_CORE];
             entry[KM_QUEUE_E_COUNT] = line[KM_ASK_COUNT];
             entry[KM_QUEUE_E_NUMBER] = line[KM_ASK_NUMBER];
+            // a gather's keeper (a line from the asker's DRAM; word 14 is a get's span)
+            entry[KM_QUEUE_E_KEEPER] = line[KM_ASK_DRAM] != 0 ? line[KM_ASK_KEEPER] : 0;
+            put_stamp(area, KM_STAMP_ARRIVED);
             if (line[KM_ASK_RING] == KM_ASK_RING_BATCH && line[KM_ASK_PAGES] != 0) {
                 entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES] | kPutBatchMark;
             }
@@ -1789,13 +1837,18 @@ namespace km {
             if (code != kGaveNone) {
                 return code;
             }
+            code = pages_keeper(kernel, area, entry[KM_QUEUE_E_KEEPER], pages);
+            if (code != kGaveNone) {
+                return code;
+            }
+            put_stamp(area, KM_STAMP_CONFIRMED);
             cross_count(area, KM_CROSS_PUTS, 1, pages != 0 ? 8 : 4);
             count[0] = count[0] - 1;
             if (i != count[0]) {
                 volatile tt_l1_ptr uint32_t* last = (
                     l1(queue + KM_QUEUE_PENDING + count[0] * KM_QUEUE_ENTRY)
                 );
-                for (uint32_t w = 0; w <= KM_QUEUE_E_NUMBER; w++) {
+                for (uint32_t w = 0; w <= KM_QUEUE_E_KEEPER; w++) {
                     entry[w] = last[w];
                 }
             }
@@ -2193,6 +2246,7 @@ namespace km {
                 code = pages_put(kernel, cpu, area);
             }
             if (code == kGaveNone && page_index(area) == page_lead(area)) {
+                l1(area + KM_PUT_STAMPS)[KM_STAMP_PASSES] += 1;
                 code = pages_confirm(kernel, area);
             }
             if (code == kGaveNone) {

@@ -153,6 +153,7 @@
 #define KM_QUEUE_E_CORE 2u   /* the asker, x | y << 16 */
 #define KM_QUEUE_E_COUNT 3u  /* its port count's L1 address */
 #define KM_QUEUE_E_NUMBER 4u /* the line's number word */
+#define KM_QUEUE_E_KEEPER 5u /* a gather's keeper (KM_ASK_KEEPER), 0: none */
 #define KM_QUEUE_BYTES (KM_QUEUE_PENDING + KM_QUEUE_LINES * KM_QUEUE_ENTRY)
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
@@ -201,6 +202,12 @@
  * (it counts 1), KM_ASK_GET_SPAN offset | bytes << 16, the bytes into KM_ASK_TO. */
 #define KM_ASK_GET_BYTES 2u
 #define KM_ASK_GET_SPAN 14u
+/* Collectives across islands (km::gather_pages): a put line from the asker's DRAM may
+ * name a keeper on the holder island, its rank there + 1 | its port << 16 (0: none),
+ * whose port the holder's lead page CPU adds the line's pages to once all are written.
+ * Word 14 of a put line (a get line of bytes keeps it for its span). */
+#define KM_ASK_KEEPER 14u
+#define KM_KEEPER_PORT_SHIFT 16u
 /* Then a core's puts into another island's DRAM (km::write_pages), as the asks: link
  * core 0's counts and each ring's address, each CPU's ring words, the put lines */
 #define KM_PUT_TAIL (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
@@ -229,6 +236,18 @@
 #define KM_PUT_RING_READ 0x50u /* what a putting core reads, from KM_PUT_TAKEN */
 #define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x80 the second CPU's */
 #define KM_PUT_OWN_BYTES 0x80u           /* unused (a core's own words, KM_OWN_*) */
+/* The lead page CPU's times of the last put line it served (wall clock, link core 0's
+ * KM_PUT_OWN, unused otherwise): this island's line taken, sent across, its share
+ * pushed; the far island's line taken from the arrivals, its pages all written and
+ * confirmed; then its loop's passes */
+#define KM_PUT_STAMPS KM_PUT_OWN
+#define KM_STAMP_TAKEN 0u
+#define KM_STAMP_ACROSS 1u
+#define KM_STAMP_PUSHED 2u
+#define KM_STAMP_ARRIVED 3u
+#define KM_STAMP_CONFIRMED 4u
+#define KM_STAMP_PASSES 5u
+#define KM_STAMP_WORDS 8u
 #define KM_PUT_RING_WORDS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES) /* + 16 a CPU */
 #define KM_PUT_RING_TAIL 0u
 #define KM_PUT_RING_SENT 4u

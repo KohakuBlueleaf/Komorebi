@@ -130,7 +130,8 @@ namespace km {
     }
 
     // One line into `queue` for pages first .. first + pages - 1 at bank `address` of
-    // island `holder`, into L1 `at` (or `dram`), counted at `port`. False: gave up.
+    // island `holder`, into L1 `at` (or `dram`), counted at `port`; a put from DRAM may
+    // name a keeper on the holder (KM_ASK_KEEPER, km::keeper). False: gave up.
     template <typename Kernel>
     inline bool ask_line_at(
         const Kernel& core,
@@ -146,7 +147,8 @@ namespace km {
         uint32_t port,
         uint32_t dram = 0,
         uint32_t dram_first = 0,
-        PutRun* run = nullptr
+        PutRun* run = nullptr,
+        uint32_t keeper = 0
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
@@ -292,6 +294,9 @@ namespace km {
         line[KM_ASK_DRAM_FIRST] = dram_first;
         line[KM_ASK_RING] = ring ? 1 : 0;
         line[KM_ASK_OWNER] = owner;
+        if (queue.cursors && dram != 0) {
+            line[KM_ASK_KEEPER] = keeper;
+        }
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
@@ -2163,6 +2168,170 @@ namespace km {
             put_bytes(core, command, form, page, offset, bytes, source) &&
             put_wait(core, command)
         );
+    }
+
+    // Collectives across islands: pages a rank names in its island's DRAM become pages
+    // of a neighbour island's tensor, DRAM to DRAM by the link cores' page CPUs; the
+    // rank posts a line a run and goes on (km::gather_pages), waits once at the end
+    // (km::gather_wait); a keeper on the far island waits for them (km::gathered).
+
+    // Pages posted by km::gather_pages and not yet waited for, the last island posted to.
+    struct Gather {
+        uint32_t pages;
+        uint32_t island;
+    };
+
+    // A keeper: rank `rank` of the far island (its index there) and its port `port`
+    // (0 .. KM_PORTS - 1), which counts a gather's pages once all are written there.
+    constexpr uint32_t keeper(uint32_t rank, uint32_t port) {
+        return (rank + 1) | port << KM_KEEPER_PORT_SHIFT;
+    }
+
+    // Where page `page` of tensor `tensor` (its reference word) is on island `island`:
+    // a copy's there, a split tensor's where page_at says (another island's: address 0).
+    inline PageAt gather_place(uint32_t tensor, uint32_t page, uint32_t island) {
+        const Islands view(island_area());
+        const volatile uint32_t* entry = tensor_entry(view, tensor);
+        if (entry == nullptr || island >= view.count()) {
+            return {island, 0, page};
+        }
+        if (entry[3] & 1u) {
+            const volatile uint32_t* parts = entry + KM_TENSOR_HEADER_BYTES / 4;
+            return {island, parts[island * kPartWords], page};
+        }
+        const PageAt at = page_at(tensor, page);
+        return at.island == island ? at : PageAt{island, 0, page};
+    }
+
+    // Reader or writer: pages first .. first + pages - 1 of tensor `tensor` (its
+    // reference word; pages this island holds, its part or its copy) become the same
+    // pages of tensor `into` (0: `tensor`, a copy) on island `to`, a neighbour (hops 1):
+    // a put line a run from this island's DRAM (KM_ASK_DRAM), which the page CPUs read
+    // and send; returns once the lines are written (a CPU's third line in flight waits
+    // for its first's confirmation). `keeper` (km::keeper, 0: none) counts them at its
+    // port once written there. False: gave up (recorded).
+    template <typename Kernel>
+    inline bool gather_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t to,
+        Gather& gather,
+        uint32_t keeper = 0,
+        uint32_t into = 0
+    ) {
+        if (pages == 0) {
+            return true;
+        }
+        const uint32_t target = into != 0 ? into : tensor;
+        const Islands view = islands_at(core.args().control);
+        const uint32_t here = view.here();
+        const volatile uint32_t* entry = tensor_entry(view, tensor);
+        const volatile uint32_t* other = tensor_entry(view, target);
+        const auto give_up = [&](uint32_t code) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                code,
+                kWhereAsk,
+                slot(command) | to << 8,
+                command.sequence
+            );
+            return false;
+        };
+        // tensors of the table, pages of one size, to a neighbour
+        if (
+            entry == nullptr || other == nullptr || other[0] != entry[0] ||
+            to == here || view.hops(to) != 1
+        ) {
+            return give_up(kGaveBadItem);
+        }
+        const uint32_t bytes = entry[0];
+        for (uint32_t k = 0; k < pages;) {
+            const uint32_t p = first + k;
+            const PageAt from = gather_place(tensor, p, here);
+            const PageAt at = gather_place(target, p, to);
+            if (from.address == 0 || at.address == 0) {
+                return give_up(kGaveBadItem);  // not here, or not there
+            }
+            uint32_t run = page_run(tensor, p, pages - k, from);
+            run = page_run(target, p, run, at);
+            if (!ask_line_at(
+                core,
+                slot(command),
+                command.sequence,
+                ask_puts(core.role()),
+                to,
+                at.address,
+                bytes,
+                at.index,
+                run,
+                from.address,
+                pages_port(core),
+                1,
+                from.index,
+                nullptr,
+                keeper
+            )) {
+                return false;
+            }
+            gather.pages += run;
+            gather.island = to;
+            k += run;
+        }
+        return true;
+    }
+
+    // Reader or writer: waits until every page `gather` posted was written on its
+    // island (counted at its page port), then `gather` is empty. False: gave up.
+    template <typename Kernel>
+    inline bool gather_wait(
+        const Kernel& core, const km_command_t& command, Gather& gather
+    ) {
+        if (gather.pages == 0) {
+            return true;
+        }
+        const uint32_t pages = gather.pages;
+        gather.pages = 0;
+        return (
+            ask_wait(
+                core,
+                slot(command),
+                command.sequence,
+                pages_port(core),
+                pages,
+                gather.island
+            )
+        );
+    }
+
+    // Reader or writer, a keeper: waits until its port `port` has counted `pages` pages
+    // gathered into this island (km::keeper), then takes them off it. False: gave up.
+    template <typename Kernel>
+    inline bool gathered(
+        const Kernel& core, const km_command_t& command, uint32_t port, uint32_t pages
+    ) {
+        const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+        if (port >= KM_PORTS) {
+            core.gave_up(word, kGaveBadItem, kWhereAsk, slot(command), command.sequence);
+            return false;
+        }
+        volatile tt_l1_ptr uint32_t* words = port_words(core, port);
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                return static_cast<int32_t>(words[KM_PORT_COUNT] - pages) >= 0;
+            },
+            core.args().wait_limit
+        );
+        if (code != kGaveNone) {
+            core.gave_up(word, code, kWhereAsk, slot(command), command.sequence);
+            return false;
+        }
+        words[KM_PORT_COUNT] -= pages;
+        return true;
     }
 
 }  // namespace km
