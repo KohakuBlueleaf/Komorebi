@@ -1,8 +1,7 @@
 """When each core of a row starts after one host launch: a kernel that only stamps the
-card's wall clock at its start, `--reps` launches in one process, one JSON line each
-with the start offsets (cycles from the first core's start) and the host's seconds.
-Optionally each core then spins, or writes 16 bytes or a block into the host channel.
-Example: python spread.py --cores 12 --reps 12 --card 0 --what write --bytes 4096"""
+card's wall clock at its start, `--reps` launches, one JSON line each with the start
+offsets (cycles from the first core's start) and the host's seconds. Each core may then
+spin or write 16 bytes or a block. Example: spread.py --cores 12 --reps 12"""
 
 import argparse
 import json

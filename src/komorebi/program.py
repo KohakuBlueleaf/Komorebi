@@ -125,8 +125,8 @@ def source_form(path):
 class Program:
     """What the persistent kernel runs on every core: `kernels` a directory with
     reader.cpp, compute.cpp and writer.cpp, or movement.cpp and compute.cpp (or a dict),
-    `args(core)` the (reader, writer, compute) arguments after the start-up arguments,
-    `handlers` a dict or a header path, `opt` a level per kernel, `noc` a NoC per mover."""
+    `args(core)` the (reader, writer, compute) arguments after the start-up ones,
+    `handlers` a dict or header path, `opt` per-kernel levels, `noc` a NoC per mover."""
 
     name: str
     kernels: object
