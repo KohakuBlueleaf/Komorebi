@@ -213,6 +213,14 @@ program declares, as any resident data: a tensor with `shard_grid` whose address
 compute argument (`messages.arg(0)` above). The body runs on all three compute cores
 alike, as before: one of them writes the state (`UNPACK((...))`).
 
+**An overlay sent by name.** A message names its handler, so a handler's part travels
+with a thread by name: where the thread lands, the reader loads the part from DRAM if the
+tile does not hold it, then compute calls it. A handler that only `send` or `forward`
+names (not the `RUN` command's) is loaded nowhere until a message for it arrives.
+Example 23's `--send` run: each of 12 ranks loaded the chain handler once, at the
+thread's first arrival, 8.32 µs against 6.51 µs for a later arrival
+([23_message_body](../../examples/23_message_body/README.md#an-overlay-sent-by-name)).
+
 **The limits.**
 
 - Up to 16 handlers (`kMessagesHandlersMax`): the packet's 64-byte header holds a
@@ -455,10 +463,9 @@ and all are `kWhereMessages*` in `km_core.hpp`.
 - A body larger than one page (4 KiB). A cast of a body to a group is a broadcast whose
   block is one 4 KiB page
   ([23_message_body](../../examples/23_message_body/README.md#a-cast-of-a-body)).
-- An overlay sent as a body (`overlay.send`) that the target copies into its slot: a
-  handler that forwards its own code with its thread does not fit one page (example
-  23's chain handler is 7,104 bytes of parts, 4,608 of them pack's), and the loader
-  reads parts from DRAM only.
+- An overlay's bytes as a body: a handler that forwards its own code with its thread
+  does not fit one page (example 23's chain handler is 7,232 bytes of parts). A message
+  sends the overlay by name instead (below).
 - Priorities or ordering between messages: a program that needs an order sorts at the
   receiver.
 

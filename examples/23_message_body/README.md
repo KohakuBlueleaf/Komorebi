@@ -64,6 +64,25 @@ With `--parts` the handler is an overlay part under Komorebi's own kernels
 (`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
 in one run, 6.39 µs a hop against 5.45 compiled in.
 
+## An overlay sent by name
+
+`--parts --send` gives the program two handlers as parts: `start`, the `RUN` command's,
+which every core loads at the start and which seeds the thread on rank 0, and `chain`,
+which `start` names in its send (`messages.send(0, message, kHandlerChain, body)`). No
+core holds `chain` until the thread first arrives there; the reader then loads it from
+DRAM before compute calls it. Rank 0 records the wall clock each time the thread comes
+round; the first lap holds the 11 other ranks' loads.
+
+```
+python message_body.py --count 14 --hops 1200 --bodies 4096 --parts --send
+```
+
+Card 1, 2026-11-14, one run, host load 3.7: exact; every rank loaded two handlers
+(`start`, then `chain` once), the counter tiles none. Laps of 12 hops: the first 131,822
+cycles, the later ones 104,620 to 106,168. At the clock the run gives (1,345 MHz) a later
+arrival is 8,759 cycles, 6.51 µs; a first arrival, with the load of `chain`'s three
+parts (1,408 + 1,216 + 4,608 bytes), 11,188 cycles, 8.32 µs.
+
 Moving a 4 KiB body costs a hop about 0.42 µs more on 12 cores and 0.45 µs more on the
 grid than the line alone. Changing all 1024 words on the three compute threads costs
 about 3.06 µs (a third of the body each).
