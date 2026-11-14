@@ -107,6 +107,7 @@ class Run:
         holds=None,
         thread_program=None,
         switch=None,
+        ranks=None,
     ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
@@ -115,6 +116,8 @@ class Run:
         self._keep = bool(getattr(backend, "trace_cap", 0))  # the trace needs groups
         self.grid = grid
         self.cores = grid[0] * grid[1]
+        # groups are in flat ranks, of all islands (one island: rank = core)
+        self.ranks = ranks or self.cores
         self.program = program
         # the run's programs by program field; holds[field]: the cores holding it
         self.programs = list(programs or ([program] if program is not None else []))
@@ -445,12 +448,12 @@ class Run:
                 f"handler {int(handlers[bad][0])}: not NOP and not in"
                 " 1..KM_HANDLER_USER_MAX"
             )
-        bad = (count < 1) | (first < 0) | (first + count > self.cores)
+        bad = (count < 1) | (first < 0) | (first + count > self.ranks)
         if bad.any():
             i = int(np.argmax(bad))
             raise ValueError(
-                f"group ({int(first[i])}, {int(count[i])}) is not inside {self.cores} "
-                "cores"
+                f"group ({int(first[i])}, {int(count[i])}) is not inside {self.ranks} "
+                "ranks"
             )
         if self._holds is not None and self.check_programs:
             missing = np.concatenate([[0], np.cumsum(~self._holds[program_field])])
@@ -501,9 +504,9 @@ class Run:
         if group is None:
             return (0, self.cores)
         first, count = int(group[0]), int(group[1])
-        if count < 1 or first < 0 or first + count > self.cores:
+        if count < 1 or first < 0 or first + count > self.ranks:
             raise ValueError(
-                f"group ({first}, {count}) is not inside {self.cores} cores"
+                f"group ({first}, {count}) is not inside {self.ranks} ranks"
             )
         return (first, count)
 

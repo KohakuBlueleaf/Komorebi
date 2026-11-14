@@ -144,6 +144,7 @@ typedef struct {
     kmd_queue_t* queue;      /* the job queue, in the state area */
     /* completion table */
     uint32_t depth, busy_count, cores;
+    uint32_t island_first, island_count;   /* this island's flat ranks; count 0: none */
     uint64_t full, busy;                   /* bit k: slot k */
     uint32_t sequence;                     /* last sequence number submitted */
     uint32_t exited;                       /* an EXIT command was submitted */

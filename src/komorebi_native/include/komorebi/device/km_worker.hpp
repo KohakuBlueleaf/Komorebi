@@ -255,7 +255,8 @@ namespace km {
                     : started + (static_cast<uint64_t>(arguments.idle_limit) << 10)
             );
             uint32_t passes = 0, gave = kGaveNone, sequence = 0;
-            const uint32_t rank = islands_at(arguments.control).first() + arguments.me;
+            const uint32_t island_first = islands_at(arguments.control).first();
+            const uint32_t rank = island_first + arguments.me;
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
             for (;;) {
                 invalidate_l1_cache();
@@ -277,7 +278,7 @@ namespace km {
                         }
                         // EXIT completes as a group of every worker, whatever it names.
                         if (handler(got) == KM_HANDLER_EXIT) {
-                            job->group = make_group(0, arguments.workers);
+                            job->group = make_group(island_first, arguments.workers);
                         }
                         sequence = found.pick_sequence;
                         break;
@@ -487,7 +488,7 @@ namespace km {
     public:
         Compute() :
             control_(get_arg_val<uint32_t>(kCArgControl)),
-            me_(get_arg_val<uint32_t>(kCArgMe)),
+            me_(islands_at(control_).first() + get_arg_val<uint32_t>(kCArgMe)),
             wait_(get_arg_val<uint32_t>(kCArgWait)),
             idle_(get_arg_val<uint32_t>(kCArgIdle)) {
             UNPACK((role_ = kRoleUnpack));
