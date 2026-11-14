@@ -539,7 +539,10 @@ rasterizer, a ray tracer) fits.
   loads when it is first needed.
 - **A core's L1 holds its kernels, its buffers and its overlay slots.** A program that
   does not fit is refused at load with the budget table; the answer is smaller buffers,
-  or code moved into overlays.
+  or code moved into overlays. Code runs from below 1 MB of L1 (a taken branch to code
+  above it costs about 4 cycles more): the kernels and slots sit at the bottom, the
+  buffers above them, and a load whose code would reach past 1 MB raises
+  `SlowCodeError` unless the session allows it (`slow_code=True`).
 - **One card's grid.** Up to 128 cores in at most two multicast panels; one harvesting
   pattern has been run. Two cards run as two such grids (240 ranks on the two P150A).
 

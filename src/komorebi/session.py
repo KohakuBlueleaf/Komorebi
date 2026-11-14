@@ -43,6 +43,7 @@ from komorebi.errors import (
     KernelSizeError,
     L1BudgetError,
     ProgramError,
+    SlowCodeError,
     StartError,
 )
 from komorebi.program import KernelSizes, Program, messages_header
@@ -84,10 +85,9 @@ GROUP_LINE = re.compile(r"^#define KM_PROGRAM_GROUP (\d+)$", re.M)
 # build's hash, which no part refers to
 UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
 KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
-# A loop runs from L1 at or above this address about 4 cycles slower an iteration than
-# from below it: an overlay's slots are placed just under it when they fit.
+# A taken branch to code at or above this L1 address costs about 4 cycles more: the
+# kernels and the slots go below it, the circular buffers above them.
 L1_FAST_CODE = 1 << 20
-SLOT_MARGIN = 1024  # kept free above the runtime's circular buffers
 TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 # A transfer without a run launches its kernel from this many bytes on: a launch costs
 # about 30 ms, as the device API's read of some 76 KiB does (measured on a p150a).
@@ -256,11 +256,18 @@ def kernel_build(program, kernel, defines):
     return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
 
 
-def slot_address(size, floor):
-    """Where `size` bytes of slots go in L1: just under the line above which code
-    runs slower, or None (the allocator's choice) when that is not above `floor`."""
-    address = (L1_FAST_CODE - size) // overlay.ALIGN * overlay.ALIGN
-    return address if address >= floor else None
+def slot_area(base, size, used, slow_code):
+    """The slots' (address, bytes, buffer index): `size` bytes as the first circular
+    buffer, at the L1 base `base`, on an index not in `used`; refused (SlowCodeError)
+    when they end above L1_FAST_CODE, unless `slow_code`."""
+    size = -(-size // overlay.ALIGN) * overlay.ALIGN
+    if base + size > L1_FAST_CODE and not slow_code:
+        raise SlowCodeError(base, size, L1_FAST_CODE)
+    # below the highest index in use: the kernel config keeps its size
+    free = set(range(max(used))) - set(used)
+    if not free:
+        raise ProgramError(f"no circular buffer index below {max(used)} for the slots")
+    return base, size, max(free)
 
 
 def visible_card():
@@ -428,6 +435,7 @@ class Session:
         grid_timeout=10.0,
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
+        slow_code=False,
     ):
         self.card = card
         self.device = device
@@ -438,6 +446,7 @@ class Session:
         self.log = log or (lambda message: None)
         self.grid_timeout = grid_timeout
         self.kernel_bytes = kernel_bytes  # None: the runtime's default buffer
+        self.slow_code = slow_code  # slots may end above L1_FAST_CODE
         self._worker_l1 = worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
             raise ValueError("kernel_bytes is set when the session opens the device")
@@ -1807,8 +1816,10 @@ class _Backend:
         defines = [(name, str(value)) for name, value in program.defines.items()]
         if program.messages is not None:
             defines += program.messages.defines()
+        self.cb_indices = set()  # every buffer index of the launch, the slots' apart
         for index, fmt, page, pages in self._cbs(program.buffers):
             launch.cb(all_cores, index, fmt, page, page * pages)
+            self.cb_indices.add(index)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
         kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
         for kernel, args, processor, config in kernels:
@@ -1899,6 +1910,9 @@ class _Backend:
         include = [str(abi.headers().abi.parents[2])]
         free = self.session.l1()[1]
         self.group_buffers = []
+        self.cb_indices = {  # a switch may give any core any program's buffers
+            buffer.index for program in placed.programs for buffer in program.buffers
+        }
         align = programs.CB_ALIGN
         if placed.switch:  # the runtime's buffers first, then room for the largest
             reserve = -(-self._switch_layouts(placed) // align) * align
@@ -1918,6 +1932,7 @@ class _Backend:
                     cbs.append((index, "uint32", pad, 1))
             for index, fmt, page, pages in cbs:
                 launch.cb(cores, index, fmt, page, page * pages)
+                self.cb_indices.add(index)
             cb_in, cb_out = programs.start_buffers(buffers)
             defines = [
                 ("KM_PROGRAM_GROUP", str(number)),
@@ -1954,6 +1969,24 @@ class _Backend:
                     **build,
                     **config,
                 )
+
+    def _slot_buffer(self, descriptor, slot_bytes):
+        """Every core's slots as the launch's first circular buffer, at the L1 base,
+        so they lie below 1 MB and the buffers above them; returns their address."""
+        base = L1_BYTES - self.session.l1()[1]
+        address, size, index = slot_area(
+            base, slot_bytes, self.cb_indices, self.session.slow_code
+        )
+        grid = (self.port.grid_x, self.port.grid_y)
+        cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
+        descriptor.cb(cores, index, "uint32", size, size, first=True)
+        # a switch's buffers of every program field move up with the rest
+        if getattr(self, "switch_layouts", None):
+            for layout in self.switch_layouts.values():
+                for key, (at, *rest) in layout.items():
+                    layout[key] = (at + size, *rest)
+        self.session.log(f"slots: {size:,} B from {address:#x} (buffer {index})")
+        return address
 
     def load_overlays(self, program, descriptor):
         """Builds the program's overlays and the service overlay against the kernels
@@ -1993,17 +2026,8 @@ class _Backend:
             raise L1BudgetError(program.name, table)
         image_rows, placed = overlay.dram_rows(built)
         image = _words(session, image_rows)
-        words = (built.slot_bytes + overlay.ALIGN) // 4
-        floor = L1_BYTES - session.l1()[1] + buffers + SLOT_MARGIN
-        at = slot_address(4 * words, floor)
-        try:
-            slots = session.empty((cores, words), "uint32", shard_grid=grid, address=at)
-        except RuntimeError:  # the place is taken: where the allocator puts them
-            slots = session.empty((cores, words), "uint32", shard_grid=grid)
-        if slots.address + built.slot_bytes > L1_FAST_CODE:
-            session.log("slots above 1 MB of L1: their code runs slower")
-        self.io += [image, slots]
-        slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
+        slot_base = self._slot_buffer(descriptor, built.slot_bytes)
+        self.io.append(image)
         area = overlay.area_words(
             built, placed, image.address, image.aligned_page_bytes, slot_base
         )
@@ -2082,7 +2106,7 @@ class _Backend:
         grid = (self.port.grid_x, self.port.grid_y)
         cores = grid[0] * grid[1]
         declared = placed.programs[0].overlay_slots
-        built, symbols, largest = [], [], 0
+        built, symbols = [], []
         for number, group in enumerate(placed.groups):
             recipes = by_group[number]
             if placed.switch:  # a part runs on any group's kernels: the same globals
@@ -2120,7 +2144,6 @@ class _Backend:
                 for buffer in self.group_buffers[number]
             )
             buffers += 2 * abi_headers["kTokenBytes"] + self.trace_cap * 16
-            largest = max(largest, buffers)
             rows = [
                 ("circular buffers", buffers),
                 ("control block and overlay area", self.control.nbytes // cores),
@@ -2150,7 +2173,7 @@ class _Backend:
         if placed.switch:  # one set of slots, every program's parts fit any core's
             common = _common_slots(placed, declared, built)
             built = [overlay.Built(made.images, common.slots) for made in built]
-            buffers = largest = self.switch_reserve  # the runtime's buffers included
+            buffers = self.switch_reserve  # the runtime's buffers included
             rows = [
                 ("circular buffers (the largest program)", buffers),
                 ("control block and overlay area", self.control.nbytes // cores),
@@ -2166,18 +2189,10 @@ class _Backend:
                 raise L1BudgetError(", ".join(p.name for p in placed.programs), table)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
         image = _words(session, image_rows)
-        slot_bytes = max(made.slot_bytes for made in built)
-        words = (slot_bytes + overlay.ALIGN) // 4
-        floor = L1_BYTES - session.l1()[1] + largest + SLOT_MARGIN
-        at = slot_address(4 * words, floor)
-        try:
-            slots = session.empty((cores, words), "uint32", shard_grid=grid, address=at)
-        except RuntimeError:  # the place is taken: where the allocator puts them
-            slots = session.empty((cores, words), "uint32", shard_grid=grid)
-        if slots.address + slot_bytes > L1_FAST_CODE:
-            session.log("slots above 1 MB of L1: their code runs slower")
-        self.io += [image, slots]
-        slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
+        slot_base = self._slot_buffer(
+            descriptor, max(made.slot_bytes for made in built)
+        )
+        self.io.append(image)
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}

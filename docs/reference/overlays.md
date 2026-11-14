@@ -149,7 +149,7 @@ math core resets it again after each call.
 | Where | What |
 |---|---|
 | beside each core's control block, 3,328 bytes | the overlay area: header (table size, each part's first slot, slots and slot bytes), a record per (part, slot) (overlay held, the part's check at an epoch, calls running, the slot's address), the clock and the epoch, the reader's meet lines with each follower, the last use of each overlay, and the table (DRAM address and bytes of every part of every overlay) |
-| a sharded L1 tensor, 64-byte aligned, just under 1 MB of L1 when it fits above the circular buffers | the slots, by part: reader, writer, unpack, math, pack. A loop runs from L1 at or above 1 MB about 4 cycles an iteration slower; the load logs a line when the slots end up there |
+| the run's first circular buffer, at the bottom of the L1 left after the kernel buffer (0x1B480 with the default one), so below 1 MB, with the other circular buffers above it | the slots, by part: reader, writer, unpack, math, pack. A taken branch to code at or above 1 MB of L1 costs about 4 cycles more: slots that would end there raise `km.SlowCodeError` unless the session was opened with `slow_code=True` |
 | one interleaved DRAM tensor | every part, a copy in each of the 8 banks |
 
 The area is part of the control L1 tensor only when the program has overlays or the run

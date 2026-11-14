@@ -365,6 +365,7 @@ class IslandSession:
         grid_timeout=10.0,
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
+        slow_code=False,
     ):
         self.cards = tuple(int(card) for card in cards)
         if not self.cards or len(set(self.cards)) != len(self.cards):
@@ -381,6 +382,7 @@ class IslandSession:
             "tree": tree,
             "grid_timeout": grid_timeout,
             "channel": channel,
+            "slow_code": slow_code,
         }
         self.kernel_bytes = kernel_bytes
         self._worker_l1 = session_module.worker_l1_size(kernel_bytes)
