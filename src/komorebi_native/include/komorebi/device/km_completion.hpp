@@ -9,7 +9,7 @@
 namespace km {
 
     // Writer, outputs landed: timed wait for `want` reports in DONE[slot], clears it,
-    // then the parent's DONE[slot] (NoC1) or, first core, the ack; none if given up.
+    // then the parent's DONE[slot] or, first core, the ack; none if given up.
     inline bool complete(
         const Core& core, const km_command_t& command, uint32_t result = 0
     ) {

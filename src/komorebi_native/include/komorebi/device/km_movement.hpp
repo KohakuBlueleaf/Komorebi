@@ -11,8 +11,8 @@
 
 namespace km {
 
-    // Mover A is RISCV_0 on NoC 0 (the reader kernel's CPU), mover B is RISCV_1 on
-    // NoC 1 (the writer kernel's).
+    // Mover A is RISCV_0 (the reader kernel's CPU), mover B is RISCV_1 (the writer
+    // kernel's); each on the NoC its program gives it (NoC 0 and NoC 1 by default).
     constexpr uint32_t kMoverA = 0;
     constexpr uint32_t kMoverB = 1;
     constexpr uint32_t kPatternLengthMax = 24;

@@ -292,13 +292,17 @@ def _is_link_kernel(source):
 
 
 def kernel_build(program, kernel, defines):
-    """A kernel's defines, and its optimisation level when the program sets one. A set
-    level also adds a define naming it: the runtime's build cache key leaves the level
-    out, and two levels must not share a cached ELF."""
+    """A kernel's defines, its optimisation level when the program sets one, and its
+    NoC when the program sets them. A set level also adds a define naming it: the
+    runtime's build cache key leaves the level out, and two levels must not share a
+    cached ELF."""
+    build = {"defines": defines}
+    if program.noc and kernel != "compute":
+        build["noc"] = program.kernel_noc(kernel)
     level = program.kernel_opt(kernel)
-    if level is None:
-        return {"defines": defines}
-    return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
+    if level is not None:
+        build |= {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
+    return build
 
 
 def slot_area(base, size, used, slow_code):

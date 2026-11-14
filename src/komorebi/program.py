@@ -25,6 +25,9 @@ MOVEMENT_KERNELS = ("movement", "compute")
 # The runtime's KernelBuildOptLevel names; a kernel without one keeps the runtime's
 # default (O2 for the reader and writer, O3 for the compute kernel).
 OPT_LEVELS = ("O0", "O1", "O2", "O3", "Os", "Ofast", "Oz")
+# Each data-movement kernel's NoC by default: the reader (RISCV_0, mover A) on NoC 0,
+# the writer (RISCV_1, mover B) on NoC 1. A program may swap them, not share one.
+NOCS = {"reader": 0, "writer": 1}
 # The two forms of a kernel source: the kernel form (it defines kernel_main) or a
 # program's function in the runtime's form (it defines km_program).
 KERNEL_MAIN = re.compile(r"\bkernel_main\s*\(")
@@ -121,9 +124,9 @@ def source_form(path):
 @dataclass(eq=False)  # one program is one object: a key of session.load's dict
 class Program:
     """What the persistent kernel runs on every core: `kernels` a directory with
-    reader.cpp, compute.cpp and writer.cpp, or movement.cpp and compute.cpp (or a dict
-    of them), `args(core)` the (reader, writer, compute) arguments after the start-up
-    arguments, `handlers` a dict or a header path, `opt` a level per kernel."""
+    reader.cpp, compute.cpp and writer.cpp, or movement.cpp and compute.cpp (or a dict),
+    `args(core)` the (reader, writer, compute) arguments after the start-up arguments,
+    `handlers` a dict or a header path, `opt` a level per kernel, `noc` a NoC per mover."""
 
     name: str
     kernels: object
@@ -138,6 +141,7 @@ class Program:
     shared: dict = field(default_factory=dict)  # shared region name -> size or array
     messages: "Dynamic | None" = None
     opt: dict = field(default_factory=dict)  # kernel -> optimisation level
+    noc: dict = field(default_factory=dict)  # "reader" / "writer" -> 0 or 1
     x280_ports: dict | None = None  # Program.ports(): {"serve": ..., "noc": ...}
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
     pairs: list = field(default_factory=list, init=False)  # the BufferPairs given
@@ -182,6 +186,16 @@ class Program:
                 raise ProgramError(f"opt for unknown kernel {kernel!r}: not in {names}")
             if level not in OPT_LEVELS:
                 raise ProgramError(f"opt {kernel}={level!r}: not one of {OPT_LEVELS}")
+        unknown = set(self.noc) - set(NOCS)
+        if unknown or any(value not in (0, 1) for value in self.noc.values()):
+            raise ProgramError(
+                f"{self.name}: noc {self.noc!r}: 0 or 1 for 'reader' and 'writer'"
+            )
+        if self.kernel_noc("reader") == self.kernel_noc("writer"):
+            raise ProgramError(
+                f"{self.name}: noc {self.noc!r} puts both data-movement kernels on NoC "
+                f"{self.kernel_noc('reader')}; each takes its own NoC"
+            )
         for given in (self.compile_args, self.opt):
             if "movement" in given and {"reader", "writer"} & set(given):
                 raise ProgramError(
@@ -353,6 +367,11 @@ class Program:
         if kernel in self.opt or kernel == "compute":
             return self.opt.get(kernel)
         return self.opt.get("movement")
+
+    def kernel_noc(self, kernel):
+        """The NoC of "reader" or "writer" (in the movement form: mover A's CPU and
+        mover B's): the program's `noc`, else NoC 0 and NoC 1."""
+        return self.noc.get(kernel, NOCS[kernel])
 
     def handler(self, handler):
         """The Handler of this program given by name or number: its number, and this

@@ -13,10 +13,11 @@ Status: implemented in the Tensix runtime and run on one Blackhole card through 
 --pattern AB AAAB`).
 
 A Tensix core has two data-movement CPUs. Komorebi loads the reader kernel on RISCV_0,
-which issues on NoC 0, and the writer kernel on RISCV_1, on NoC 1; reader and writer
-are roles, and a program written with `km::Reader` and `km::Writer` keeps them. Movement
-is an addition beneath those roles for a stream that both CPUs, the **movers**, should
-carry: mover A is RISCV_0 on NoC 0, mover B is RISCV_1 on NoC 1.
+which issues on NoC 0, and the writer kernel on RISCV_1, on NoC 1, unless the program
+gives them the other NoCs ([below](#the-noc-of-each-cpu)); reader and writer are roles,
+and a program written with `km::Reader` and `km::Writer` keeps them. Movement is an
+addition beneath those roles for a stream that both CPUs, the **movers**, should carry:
+mover A is RISCV_0, mover B is RISCV_1, each on its kernel's NoC.
 
 A stream is cut into blocks. A **pattern** of 1 to 24 letters says which mover moves
 block k: letter k mod the length, `A` or `B` (`AAAB`: mover B takes every fourth). Each
@@ -184,6 +185,29 @@ reads the kernel sources: a source that names a half, by a number or a
 (`cb_wait_front`, `cb_pop_front`, `wait_front`), or two sources that both fill or both
 drain one half, are refused (`ProgramError`). Halves named through a variable or moved
 by `km::move` are not seen; the rules below hold for them all the same.
+
+### The NoC of each CPU
+
+```python
+program = km.Program("swapped", kernels="kernels/", noc={"reader": 1, "writer": 0})
+program.kernel_noc("reader")  # 1
+```
+
+`noc` gives the NoC of the reader kernel (RISCV_0, mover A) and of the writer kernel
+(RISCV_1, mover B); without it they are on NoC 0 and NoC 1. Each CPU has a NoC of its
+own: a `noc` that puts both on one NoC, names another kernel or another NoC than 0 and 1
+is refused (`ProgramError`). The device calls read the kernel's NoC; nothing in a source
+changes. What does: a broadcast's arguments name the NoC of the kernel that runs it
+(`komorebi.layout.broadcast_args(..., noc, ...)`; a broadcast run on the other NoC gives
+up at its start), and the direction of its multicast follows. Programs that share cores,
+and every program of a load whose groups switch, give the same `noc`.
+
+Measured on one p150a: example 11 with every program swapped is exact, pattern `A` at
+246.8 GB/s (mover A now reads at NoC 1's rate, as `B` does above) and `AB` at 484.7.
+The dense linear kernel with the reader on NoC 1 and the writer on NoC 0 (its X stream
+on NoC 1 and its W stream on NoC 0, as in Kohaku-TT's kernel) is exact and slower:
+4,978.6 us a call at 8192 cubed against 4,488.1, 36,489.1 at 16384 cubed against
+34,544.8 (`projects/dense/README.md`).
 
 ## Rules for a program
 
