@@ -548,7 +548,9 @@ def island_of(placement, page, island=0):
 # a reference word below TENSORS_MAX is its entry's index, any other a bank address.
 TENSORS_MAX = 32
 TENSOR_HEADER = struct.Struct("<4I")  # aligned page bytes, steps, pages a step, copy
-TENSOR_PART = struct.Struct("<4I")  # part's bank address, first step, steps, zero
+TENSOR_PART = struct.Struct("<4I")  # part's bank address, first step, steps, bytes
+TENSOR_BANK = 2  # header word 3 of a range of one DRAM bank (km::BankRange)
+DRAM_BANKS = 8  # an interleaved part's pages over its island's banks
 
 
 def tensor_entry_bytes(islands):
@@ -558,13 +560,39 @@ def tensor_entry_bytes(islands):
 
 def tensor_entry(placement, aligned_page_bytes, addresses):
     """A tensor's entry: its header, then each island's part (its bank address in
-    `addresses`, 0 where the island holds none)."""
+    `addresses`, 0 where the island holds none; its bytes in each bank)."""
     head = TENSOR_HEADER.pack(
         aligned_page_bytes, placement.steps, placement.inner, int(placement.copy)
     )
     return head + b"".join(
-        TENSOR_PART.pack(address, first, steps, 0)
-        for address, (first, steps) in zip(addresses, placement.parts)
+        TENSOR_PART.pack(
+            address,
+            first,
+            steps,
+            (
+                bank_bytes(placement.part_pages(island), aligned_page_bytes)
+                if address
+                else 0
+            ),
+        )
+        for island, (address, (first, steps)) in enumerate(
+            zip(addresses, placement.parts)
+        )
+    )
+
+
+def bank_bytes(pages, aligned_page_bytes):
+    """The bytes an interleaved buffer of `pages` pages holds in each bank."""
+    return -(-pages // DRAM_BANKS) * aligned_page_bytes
+
+
+def bank_entry(islands, holder, bank, address, size):
+    """The entry of `size` bytes of DRAM bank `bank` from bank address `address`, held
+    by island `holder` of `islands`: no page bytes (the kernel gives them)."""
+    head = TENSOR_HEADER.pack(holder, bank, size, TENSOR_BANK)
+    return head + b"".join(
+        TENSOR_PART.pack(address if island == holder else 0, 0, 0, 0)
+        for island in range(islands)
     )
 
 

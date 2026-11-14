@@ -267,6 +267,29 @@ class IslandTensor:
             part.free()
 
 
+class BankRange:
+    """`bytes` of DRAM bank `bank` of island `island` from bank address `base` (an X280
+    thread's region, say), as km::BankRange names it: `address` is its word, its entry
+    of the tensor table (one island: the bank address itself)."""
+
+    def __init__(self, island, bank, base, size, word, count=1, release=None):
+        self.island, self.bank, self.base, self.bytes = island, bank, base, size
+        self.address = word
+        self._count = count  # the session's islands
+        self._release = release
+
+    def entry(self):
+        """Its entry of the tensor table (islands.bank_entry)."""
+        return islands.bank_entry(
+            self._count, self.island, self.bank, self.base, self.bytes
+        )
+
+    def free(self):
+        """Its entry of the tensor table is free again; the bank's bytes stay."""
+        if self._release is not None:
+            self._release(self)
+
+
 class IslandRun:
     """The runs of one program on every island, as one run over flat ranks. A ticket
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
@@ -1053,6 +1076,48 @@ class IslandSession:
             self._entries[word] = tensor
             self._write_table()
         return tensor
+
+    def bank_range(self, island, bank, address, size):
+        """A range of one DRAM bank as kernels on any island name it (km::BankRange):
+        `size` bytes of bank `bank` of island `island` from bank address `address`.
+        Takes an entry of the tensor table as a tensor does; free() frees it."""
+        if not 0 <= island < len(self.sessions):
+            raise ValueError(f"island {island} of {len(self.sessions)}")
+        if not 0 <= bank < islands.DRAM_BANKS:
+            raise ValueError(
+                f"bank {bank}: the banks are 0 to {islands.DRAM_BANKS - 1}"
+            )
+        if (
+            address % 64
+            or address < TENSORS_MAX
+            or size <= 0
+            or address + size > 1 << 32
+        ):
+            raise ValueError(
+                f"{size} bytes at bank address {address:#x}: whole 64-byte lines from "
+                f"{TENSORS_MAX} on, inside the bank's 4 GiB"
+            )
+        if len(self.sessions) == 1 or self.card_dram:  # every page here: no entry
+            return BankRange(island, bank, address, size, address)
+        free = [i for i, held in enumerate(self._entries) if held is None]
+        live = self.run is not None and not self.run.stopped
+        if not free or (live and self._tables and free[0] >= self._table_size):
+            raise KomorebiError(
+                "the tensor table has no free entry for a bank range (free a tensor "
+                "first, or make it before the load)"
+            )
+        held = BankRange(
+            island,
+            bank,
+            address,
+            size,
+            free[0],
+            len(self.sessions),
+            self._release_entry,
+        )
+        self._entries[held.address] = held
+        self._write_table()
+        return held
 
     def _part(self, session, island, placement, shape, dtype, layout):
         """Island `island`'s buffer of its part (None: it holds no page): the whole

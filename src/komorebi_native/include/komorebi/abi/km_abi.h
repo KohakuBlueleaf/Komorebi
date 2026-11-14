@@ -697,6 +697,11 @@ KM_STATIC_ASSERT(
 #define KM_TENSOR_HEADER_BYTES 16u
 /* then each island's part: {its bank address, first step, steps, 0} */
 #define KM_TENSOR_PART_BYTES 16u
+/* a part's word 3 (the 0 above): its bytes in each bank, km::SizedTensor's bound */
+#define KM_TENSOR_PART_BANK_BYTES 3u
+/* header word 3 of a range of one bank (km::BankRange): {holder, bank, bytes, 2}, the
+ * holder's part {its bank address, 0, 0, 0}, the other parts 0 */
+#define KM_TENSOR_BANK 2u
 /* KM_RING_SLOTS commands, the last part of the block */
 #define KM_CONTROL_RING (KM_CONTROL_ISLANDS + KM_ISLANDS_BYTES)
 #define KM_CONTROL_BYTES (KM_CONTROL_RING + KM_RING_SLOTS * 64u)
