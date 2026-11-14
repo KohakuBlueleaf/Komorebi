@@ -52,6 +52,7 @@ namespace kmsim {
         uint32_t fifo_limit;  // byte address of the end
         uint32_t fifo_wr_ptr;
         uint32_t fifo_rd_ptr;
+        uint32_t fifo_size;  // bytes
     };
 
     CbView cb_view(uint32_t cb);

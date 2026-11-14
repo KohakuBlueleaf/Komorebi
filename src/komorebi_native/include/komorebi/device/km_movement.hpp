@@ -362,7 +362,8 @@ namespace km {
     inline bool move_settle(
         const Core& core, bool reads, bool writes, bool acknowledged = false
     ) {
-        const uint32_t code = core.poll(
+        const uint32_t code = core.poll_at(
+            kWhereData,
             [&] {
                 const bool read_done = !reads || ncrisc_noc_reads_flushed(noc_index);
                 if (!writes) {

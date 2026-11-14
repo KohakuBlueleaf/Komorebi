@@ -14,7 +14,7 @@
 #endif
 
 /* LIM layout, in bytes from the argument block (64-byte aligned, written by the host).
- * The host zeroes the whole layout before every run. */
+ * The host zeroes the layout up to KMD_LIM_ZEROED before every run. */
 #define KMD_LIM_ARGS 0x000u /* kmd_args_t */
 /* hello from core 0: word 0 = 1, word 1 = control block */
 #define KMD_LIM_MAILBOX 0x100u
@@ -28,7 +28,18 @@
 #define KMD_LIM_MESSAGES 0x1800u
 /* program field each core holds, a byte per core (0xFF: none), if args programs */
 #define KMD_LIM_PROGRAMS 0x2000u
-#define KMD_LIM_BYTES 0x2080u
+/* core index -> NoC x | y << 16 (the host's core table) */
+#define KMD_LIM_COORDS 0x2080u
+/* the inspect block: a header line, then a record per core of the group, in order */
+#define KMD_LIM_INSPECT 0x2280u
+#define KMD_INSPECT_HEAD 64u
+#define KMD_INSPECT_RECORD 0x340u /* a line, the state words, live words, trace */
+#define KMD_INSPECT_STATE 0x40u   /* in a record: KM_STATE_WORDS words */
+#define KMD_INSPECT_LIVE 0x280u   /* KM_LIVE_READ bytes of live words */
+#define KMD_INSPECT_TRACE 0x300u  /* KMD_INSPECT_ENTRIES trace entries */
+#define KMD_INSPECT_ENTRIES 4u
+#define KMD_LIM_ZEROED (KMD_LIM_INSPECT + KMD_INSPECT_HEAD)
+#define KMD_LIM_BYTES (KMD_LIM_ZEROED + KM_CORES_MAX * KMD_INSPECT_RECORD)
 /* upload region: args upload_bytes, not zeroed */
 #define KMD_LIM_UPLOAD KMD_LIM_BYTES
 #define KMD_READY_MAX 16u
@@ -99,6 +110,20 @@
 /* Work cluster to kernel: its thread's answer to command line a0, a1 the word that
  * kmx_program returned; no event. */
 #define KMD_HANDLER_ANSWER 243u
+/* Host to kernel: read cores [first, first + count) into the inspect block, then PONG
+ * {ticks: the mtime ticks it took} (the same number as ANSWER, from another source). */
+#define KMD_HANDLER_INSPECT 243u
+/* The inspect block's header words, its kinds, and a record's first line's words. */
+#define KMD_INSPECT_MARK 0x50534E49u /* "INSP": the block is complete */
+#define KMD_INSPECT_HOST 1u          /* a host's inspect */
+#define KMD_INSPECT_TIMEOUT 2u       /* a command's deadline: read before its abort */
+#define KMD_INSPECT_READ 1u          /* record flag: the core's words were read */
+#define KMD_INSPECT_TRACED 2u        /* record flag: its trace's entries were read */
+/* After a timeout's abort, the X280 timer ticks (20 ms) its group's cores have to leave
+ * the command; then the run ends as at any other deadline. */
+#define KMD_GIVE_UP_TICKS 1000000u
+/* slot_handler of a command that may not be given up */
+#define KMD_HANDLER_KEPT 0xFFu
 #define KMD_EVENT_RUN 0x10u
 #define KMD_EVENT_CANCEL 0x11u
 /* Kernel to engine, once after a KMD_REJECT_BUSY: a slot or the queue has room. */
@@ -189,7 +214,27 @@ enum {
     KMD_H_TRAP_CAUSE = 14,      /* core 1, after a trap: mcause */
     KMD_H_TRAP_PC = 15,         /* core 1, after a trap: mepc, low word */
     KMD_H_BUSY_HIGH = 16,       /* core 0: busy slots 32 to 63 at the finish */
-    KMD_H_WORDS = 17
+    KMD_H_GIVEN_UP = 17,        /* core 0: commands given up at their deadline */
+    KMD_H_WORDS = 18
+};
+
+/* The inspect block's header (KMD_LIM_INSPECT), words; `mark` is stored last. */
+enum {
+    KMD_I_MARK = 0,
+    KMD_I_KIND = 1,    /* KMD_INSPECT_HOST or KMD_INSPECT_TIMEOUT */
+    KMD_I_REQUEST = 2, /* the host command number it answers or gave up */
+    KMD_I_FIRST = 3,   /* the group */
+    KMD_I_COUNT = 4,
+    KMD_I_DONE = 5, /* records written */
+    KMD_I_SLOT = 6, /* a timeout's slot and sequence; a host's: the last sequence */
+    KMD_I_SEQUENCE = 7,
+    KMD_I_START = 8, /* mtime, low word, at the start */
+    KMD_I_TICKS = 9, /* mtime ticks from the start to the last record */
+    KMD_IR_CORE = 0, /* a record's first line: the core, its coordinates, flags */
+    KMD_IR_COORDINATES = 1,
+    KMD_IR_FLAGS = 2,
+    KMD_IR_MTIME = 3,     /* mtime, low word, as it was read */
+    KMD_IR_SEQUENCES = 4, /* the sequences of its KMD_INSPECT_ENTRIES trace entries */
 };
 
 /* The engine's state (KMD_H_ENGINE). */
@@ -203,6 +248,8 @@ enum {
 #define KMD_WIN_PANEL0 16u /* panel r uses KMD_WIN_PANEL0 + r */
 #define KMD_WIN_HOST 18u
 #define KMD_WIN_WORK 19u /* work cluster c's ring area: KMD_WIN_WORK + c - 1 */
+/* one core's L1, re-aimed for each core an inspect reads */
+#define KMD_WIN_INSPECT 22u
 
 /* The argument block's layout; the kernel rejects a block of another version. */
 #define KMD_ARGS_VERSION 3u
@@ -335,5 +382,22 @@ KMD_STATIC_ASSERT(
 KMD_STATIC_ASSERT(
     KMD_LIM_HRING + KMD_HOST_DEPTH_MAX * 64u <= KMD_LIM_MESSAGES, "LIM: host ring"
 );
-KMD_STATIC_ASSERT(KMD_LIM_MESSAGES + 16u * KM_CORES_MAX <= KMD_LIM_BYTES, "LIM: lines");
+KMD_STATIC_ASSERT(
+    KMD_LIM_MESSAGES + 16u * KM_CORES_MAX <= KMD_LIM_PROGRAMS, "LIM: lines"
+);
+KMD_STATIC_ASSERT(
+    KMD_LIM_PROGRAMS + KM_CORES_MAX <= KMD_LIM_COORDS &&
+        KMD_LIM_COORDS + 4u * KM_CORES_MAX <= KMD_LIM_INSPECT &&
+        KMD_LIM_INSPECT % 64u == 0 && KMD_INSPECT_RECORD % 64u == 0,
+    "LIM: programs, coordinates, the inspect block"
+);
+KMD_STATIC_ASSERT(
+    KMD_INSPECT_STATE + 4u * KM_STATE_WORDS <= KMD_INSPECT_LIVE &&
+        KMD_INSPECT_LIVE + KM_LIVE_READ <= KMD_INSPECT_TRACE &&
+        KMD_INSPECT_TRACE + KMD_INSPECT_ENTRIES * KM_TRACE_ENTRY <= KMD_INSPECT_RECORD,
+    "an inspect record's parts"
+);
 KMD_STATIC_ASSERT((KMD_HOST_DEPTH_MAX & (KMD_HOST_DEPTH_MAX - 1u)) == 0, "power of 2");
+KMD_STATIC_ASSERT(
+    KMD_HANDLER_KEPT > KM_HANDLER_USER_MAX, "a kept slot is no handler's"
+);

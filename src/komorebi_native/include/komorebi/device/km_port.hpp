@@ -66,7 +66,8 @@ namespace km {
             writer.core_noc(destination, slot_addr(arrival, arrival_slot)),
             bytes
         );
-        uint32_t code = writer.poll(
+        uint32_t code = writer.poll_at(
+            kWhereEmit,
             [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
@@ -77,7 +78,8 @@ namespace km {
                 writer.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE
             );
             noc_semaphore_inc(writer.core_noc(destination, port_address), 1);
-            code = writer.poll(
+            code = writer.poll_at(
+                kWhereEmit,
                 [] {
                     return ncrisc_noc_nonposted_atomics_flushed(noc_index);
                 },
@@ -110,7 +112,8 @@ namespace km {
         }
         volatile tt_l1_ptr uint32_t* words = port_words(reader, port);
         words[KM_PORT_WANT] = wanted;
-        const uint32_t code = reader.poll(
+        const uint32_t code = reader.poll_at(
+            kWherePort,
             [&] {
                 return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
             },

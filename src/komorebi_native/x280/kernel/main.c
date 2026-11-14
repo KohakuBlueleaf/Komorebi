@@ -9,6 +9,7 @@
 #include "event_ring.h"
 #include "graph_port.h"
 #include "grid_port.h"
+#include "inspect.h"
 #include "kernel.h"
 #include "queue.h"
 #include "result.h"
@@ -118,6 +119,7 @@ static uint32_t boot(kmd_t* dispatcher) {
         result_error(dispatcher, KMD_ERROR_ALIGN, 0, 0, 0, control);
         return dispatcher->error;
     }
+    dispatcher->control_address = control;
     if (grid_open(dispatcher, control) != KMD_ERROR_NONE) {
         result_error(dispatcher, KMD_ERROR_WINDOW, 0, 0, 0, 0);
         return dispatcher->error;
@@ -278,6 +280,27 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         ring_consumed(ring);
         ring_push(ring, request, KM_EVENT_PONG, 0);
         dispatcher->last_event_mtime = now;
+        return KMD_TAKEN;
+    }
+    if (
+        host && handler == KMD_HANDLER_INSPECT &&
+        !group_outside(dispatcher, first, count)
+    ) {
+        if (dispatcher->inspect.active) {
+            return KMD_HELD; /* one inspect at a time */
+        }
+        ring_consumed(ring);
+        ring->owed++; /* its PONG, once the last core is read */
+        inspect_begin(
+            dispatcher,
+            KMD_INSPECT_HOST,
+            request,
+            first,
+            count,
+            0,
+            dispatcher->sequence,
+            now
+        );
         return KMD_TAKEN;
     }
     if (host && (handler == KM_HANDLER_RUN || handler == KM_HANDLER_CANCEL)) {
@@ -526,6 +549,9 @@ static void loop(kmd_t* dispatcher) {
         if (dispatcher->busy) {
             slots_sweep(dispatcher);
         }
+        if (dispatcher->inspect.active) {
+            inspect_turn(dispatcher);
+        }
         if (dispatcher->messages.active) {
             messages_turn(dispatcher);
         }
@@ -572,7 +598,13 @@ static void loop(kmd_t* dispatcher) {
             work_late(dispatcher, now);
         }
         const uint32_t late = slots_late(dispatcher, now);
-        if (late != KM_RING_SLOTS) {
+        if (late != KM_RING_SLOTS && inspect_may_give_up(dispatcher, late)) {
+            /* The run goes on: an inspect of the group, then the abort (inspect.h);
+             * while another inspect is read, the next poll looks again. */
+            if (!dispatcher->inspect.active) {
+                inspect_timeout(dispatcher, late, now);
+            }
+        } else if (late != KM_RING_SLOTS) {
             /* The command's source gets the timeout event; the engine turns it into its
              * stream's error, which engine_stop forwards. */
             const uint32_t took = (uint32_t)(now - dispatcher->slot_submitted[late]);
@@ -601,7 +633,8 @@ static void loop(kmd_t* dispatcher) {
         }
         if (
             activity != seen_activity || dispatcher->busy || dispatcher->stream_count ||
-            dispatcher->queued || dispatcher->thread_busy || graph_running(dispatcher)
+            dispatcher->queued || dispatcher->thread_busy ||
+            graph_running(dispatcher) || dispatcher->inspect.active
         ) {
             seen_activity = activity;
             active_since = now;
@@ -628,6 +661,7 @@ static void finish(kmd_t* dispatcher) {
     }
     engine_stop(dispatcher);
     work_close(dispatcher);
+    inspect_close(dispatcher);
     const uint64_t now = x280_mtime();
     result_finish(dispatcher, now);
 #ifdef KMD_TRACE
@@ -736,6 +770,7 @@ __attribute__((used, noinline)) void kmd_trapped(
     for (uint32_t cluster = 0; cluster < KMD_WORK_CLUSTERS; cluster++) {
         noc_clear_tlb_2m(KMD_WIN_WORK + cluster);
     }
+    noc_clear_tlb_2m(KMD_WIN_INSPECT);
     kmd_flush_lines(state, KMD_STATE_BYTES);
     x280_fence_ow();
     result_word(dispatcher, KMD_R_STATE, KMD_STATE_FAILED);

@@ -45,8 +45,14 @@ namespace km {
             put(sequence, field, wall());
         }
 
-        // Writes this core's commands to page `page` of the trace (writer, at exit).
-        void flush(uint32_t page) const {
+        uint32_t base() const {
+            return base_;
+        }
+
+        // Writes this core's commands to page `page` of the trace (writer, at exit),
+        // then waits through `core`'s timed write barrier.
+        template <typename Writer>
+        void flush(uint32_t page, const Writer& core) const {
             if (!on()) {
                 return;
             }
@@ -56,7 +62,7 @@ namespace km {
                 .bank_base_address = dram_, .page_size = bytes
             };
             noc_async_write(base_, destination.get_noc_addr(page), bytes);
-            noc_async_write_barrier();
+            core.flushed(kFlushWrites, kStWriter);
         }
 
     private:

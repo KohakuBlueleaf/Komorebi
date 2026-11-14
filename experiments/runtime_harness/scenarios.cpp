@@ -415,6 +415,99 @@ namespace {
         finish(s, o);
     }
 
+    // ---- a command given up at its deadline; the run goes on ----
+
+    // Rank 1 of a 2-core HANG waits (`mode`) for what never comes: given up at the
+    // deadline after an inspect, then right MAPs on its cores, no ack of the HANG.
+    void give_up_case(Outcome& o, uint32_t mode, uint32_t role, uint32_t where) {
+        Config cfg = fault_config(2);
+        cfg.give_up = true;
+        cfg.wait_limit = 128;  // the waits' own limit is past the deadline
+        cfg.idle_limit = 1024;
+        cfg.deadline = 40000;
+        Job hang;
+        hang.handler = kHandlerHang;
+        hang.count = 2;
+        hang.a[0] = 1;
+        hang.a[1] = mode;
+        cfg.jobs = {hang, map_job(0, 2, 20), map_job(0, 2, 7), map_job(1, 1, 3)};
+        cfg.jobs[1].gap = 50000;  // after the timeout, as a host would send it
+        Sim s(cfg);
+        s.run();
+        common(s, o.check);
+        const JobResult& r = s.jobs[0];
+        o.check.expect(r.status == kGivenUp, "the HANG was given up at its deadline");
+        o.check.expect(
+            r.live.size() == 2 && r.live[1][km::kLvWhere + role] == where,
+            fmt("the inspect names where %u on rank 1", where)
+        );
+        o.check.expect(
+            r.live.size() == 2 &&
+                r.live[0][km::kLvWhere + km::kRoleWriter] == km::kWhereComplete,
+            "the inspect shows rank 0, the leader, waiting for rank 1's report"
+        );
+        for (size_t k = 1; k < s.jobs.size(); k++) {
+            o.check.expect(
+                s.jobs[k].status == kDone, fmt("job %u after it acknowledged", k)
+            );
+        }
+        o.check.expect(
+            s.exit_job.status == kDone, "the EXIT acknowledged: the run went on"
+        );
+        o.check.expect(s.late_acks == 0, "no ack for the given-up command");
+        const uint32_t word = (
+            role == km::kRoleReader
+                ? km::kStReader
+                : role == km::kRoleWriter
+                    ? km::kStWriter
+                    : km::kStCompute
+        );
+        o.check.expect(
+            s.state(1, word) == (km::kGaveDeadline | where << 8 | r.slot << 16) &&
+                s.state(1, word + 1) == r.sequence,
+            fmt("rank 1 recorded the deadline give-up in where %u", where)
+        );
+        o.check.expect(
+            s.word(1, KM_CONTROL_LIVE + 4 * km::kLvGivenUp) == 1,
+            "rank 1's writer counts one command given up"
+        );
+        finish(s, o);
+    }
+
+    // Rank 1 of a 2-core STALL waits for the stop flag alone: after the abort it does
+    // not leave the command, and past the grace the deadline ends the run.
+    void give_up_stall_ends_the_run(Outcome& o) {
+        Config cfg = fault_config(2);
+        cfg.give_up = true;
+        cfg.idle_limit = 1000000;  // the stall outlasts the deadline and the grace
+        cfg.deadline = 40000;
+        Job stall;
+        stall.handler = kHandlerStall;
+        stall.count = 2;
+        stall.a[0] = 1;
+        cfg.jobs = {stall, map_job(0, 2, 20)};
+        cfg.jobs[1].gap = 60000;
+        Sim s(cfg);
+        s.run();
+        common(s, o.check);
+        o.check.expect(s.timed_out, "the deadline ended the run");
+        o.check.expect(s.jobs[0].status == kTimedOut, "the STALL was not given up");
+        o.check.expect(s.jobs[1].status != kDone, "the MAP behind it never ran");
+        finish(s, o);
+    }
+
+    void give_up_reader_port(Outcome& o) {
+        give_up_case(o, 1, km::kRoleReader, km::kWherePort);
+    }
+
+    void give_up_compute_input(Outcome& o) {
+        give_up_case(o, 2, km::kRoleUnpack, km::kWhereCInput);
+    }
+
+    void give_up_writer_output(Outcome& o) {
+        give_up_case(o, 3, km::kRoleWriter, km::kWhereData);
+    }
+
     // ---- the compute mailboxes (unpack -> math, pack: ok, then the sequence) ----
 
     bool is(const Probe& p, uint32_t core, Role role, const char* name) {
@@ -516,10 +609,11 @@ namespace {
             auto held = std::make_shared<bool>(false);
             auto barriers = std::make_shared<uint32_t>(0);
             cfg.triggers.push_back([&, reads, held, barriers](const Probe& p) {
-                // The reader's first read barrier is start-up's; the second is input.
+                // The reader's first read barrier is input (start-up's is the timed
+                // flush of the runtime).
                 if (
                     !*held && is(p, 1, kReader, "noc_async_read_barrier") &&
-                    ++*barriers == 2
+                    ++*barriers == 1
                 ) {
                     *held = true;
                     sp->freeze(1, kReader, 3 * 8 * 1024);
@@ -550,7 +644,7 @@ namespace {
             cfg.triggers.push_back([&, held, barriers](const Probe& p) {
                 if (
                     !*held && is(p, 1, kReader, "noc_async_read_barrier") &&
-                    ++*barriers == 2
+                    ++*barriers == 1
                 ) {
                     *held = fired = true;
                     sp->freeze(1, kReader, 12 * 1024);
@@ -705,6 +799,10 @@ int main(int argc, char** argv) {
             {"mb_abort_then_good_token", mb_abort_then_good_token},
             {"mb_exit_during_input_wait", mb_exit_during_input_wait},
             {"items_straddle_the_end", items_straddle_the_end},
+            {"give_up_stall_ends_the_run", give_up_stall_ends_the_run},
+            {"give_up_reader_port", give_up_reader_port},
+            {"give_up_compute_input", give_up_compute_input},
+            {"give_up_writer_output", give_up_writer_output},
             {"completion_every_group", completion_every_group},
             {"random_jobs", random_jobs},
         }

@@ -222,7 +222,8 @@ namespace kmsim {
             b.acked,
             b.base + b.pages * b.page,
             b.base + b.wr * b.page,
-            b.base + b.rd * b.page
+            b.base + b.rd * b.page,
+            b.pages * b.page
         };
     }
 

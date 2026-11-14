@@ -57,7 +57,7 @@ static inline void trace(
 #define trace(dispatcher, kind, slot, request) ((void)0)
 #endif
 
-/* Marks `slot` busy with command `sequence` of `request` of source `source` for
+/* Marks `slot` busy with command `sequence` (`handler`) of `request` of `source` for
  * `group`, submitted at `now` (trace entry `how`); `result`: it has KM_FLAG_RESULT. */
 static inline void slot_take(
     kmd_t* dispatcher,
@@ -65,6 +65,7 @@ static inline void slot_take(
     uint32_t sequence,
     uint32_t request,
     uint32_t source,
+    uint32_t handler,
     uint32_t group,
     uint64_t now,
     uint64_t ticks,
@@ -75,6 +76,7 @@ static inline void slot_take(
     dispatcher->slot_request[slot] = request;
     dispatcher->slot_group[slot] = group;
     dispatcher->slot_source[slot] = (uint8_t)source;
+    dispatcher->slot_handler[slot] = (uint8_t)handler;
     dispatcher->ring[source].busy_count++;
     dispatcher->slot_submitted[slot] = now;
     dispatcher->slot_deadline[slot] = now + ticks;
@@ -280,6 +282,7 @@ KMD_HOT void command_submit(
         sequence,
         request,
         source,
+        header & 0xFFu,
         (uint32_t)line[1],
         now,
         ticks,

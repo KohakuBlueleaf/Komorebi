@@ -146,14 +146,23 @@ class KernelFailed(KomorebiError):
 
 class CommandTimeout(KernelFailed):
     """A command's group missed its deadline: the command, slot, sequence and group, and
-    after the stop the cores that did not report and where each was waiting."""
+    the cores: after the stop, those that did not report and where each was waiting;
+    `given_up`: the dispatcher gave the command up and the run goes on, the cores are
+    the group as the inspect at the deadline read it (empty if it was overwritten)."""
 
-    def __init__(self, handle, slot, sequence, group, cores, result=None):
+    def __init__(
+        self, handle, slot, sequence, group, cores, result=None, given_up=False
+    ):
         named = "; ".join(describe_core(core) for core in cores) or "none named"
         first, count = group if group else (None, None)
+        what = (
+            "was given up, the run goes on; at the deadline"
+            if given_up
+            else "timed out; not reported"
+        )
         super().__init__(
-            f"command {handle} timed out: slot {slot}, sequence {sequence}, "
-            f"group first {first} count {count}; not reported: {named}",
+            f"command {handle} {what}: slot {slot}, sequence {sequence}, "
+            f"group first {first} count {count}; cores: {named}",
             result=result,
             cores=cores,
         )
@@ -161,15 +170,23 @@ class CommandTimeout(KernelFailed):
         self.slot = slot
         self.sequence = sequence
         self.group = group
+        self.given_up = given_up
 
 
 def describe_core(core):
-    """One core of a not-reported list as text: its index and its waits."""
+    """One core of a not-reported list, or of an inspect, as text: its index, its
+    give-ups, the runtime waits of its reader and writer, and of compute's threads
+    while they run a command."""
     parts = [f"core {core['core']}"]
     for kernel in ("reader", "writer"):
         gave = core.get(kernel)
         if gave:
             parts.append(f"{kernel} gave up ({gave['code']}) in {gave['where']}")
+    for kernel, words in (core.get("live") or {}).items():
+        if not isinstance(words, dict) or not words["where"]:
+            continue
+        if kernel in ("reader", "writer") or words["sequence"]:
+            parts.append(f"{kernel} waits in {words['where']}")
     if len(parts) == 1:
         parts.append("no give-up recorded")
     return " ".join(parts)

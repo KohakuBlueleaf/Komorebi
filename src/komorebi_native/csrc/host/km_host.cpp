@@ -1085,7 +1085,7 @@ namespace {
             queue_.clear();
             head_ = 0;
             std::memset(const_cast<uint32_t*>(host_), 0, kHostBufferBytes);
-            tile_->write_available_lim(base_, std::vector<uint8_t>(KMD_LIM_BYTES, 0));
+            tile_->write_available_lim(base_, std::vector<uint8_t>(KMD_LIM_ZEROED, 0));
             if (work_cmds) {
                 tile_->write_available_lim(
                     base_ + work_cmds, std::vector<uint8_t>(work_bytes, 0)
@@ -1133,6 +1133,10 @@ namespace {
                 std::copy(programs.begin(), programs.end(), held.begin());
                 tile_->write_available_lim(base_ + KMD_LIM_PROGRAMS, held);
             }
+            const std::vector<uint32_t> table = core_table();  // the inspect's windows
+            std::vector<uint8_t> coordinates(4 * table.size());
+            std::memcpy(coordinates.data(), table.data(), coordinates.size());
+            tile_->write_available_lim(base_ + KMD_LIM_COORDS, coordinates);
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &arguments, sizeof(arguments));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
@@ -1511,6 +1515,29 @@ namespace {
             }
             out["failed"] = failed;
             out["x280_cores"] = x280_cores;
+            return out;
+        }
+
+        // While the kernel runs: the inspect block's header and its first `count`
+        // records, and the commands given up so far (the core block's word).
+        nb::dict inspect(uint32_t count) {
+            require_open();
+            if (!session_ || count > KM_CORES_MAX) {
+                throw std::runtime_error(
+                    "no kernel is running, or more records than KM_CORES_MAX"
+                );
+            }
+            std::vector<uint32_t> block;
+            uint32_t given_up = 0;
+            const uint32_t words = (KMD_INSPECT_HEAD + count * KMD_INSPECT_RECORD) / 4;
+            {
+                nb::gil_scoped_release release;
+                block = lim_words(KMD_LIM_INSPECT, words);
+                given_up = lim_words(KMD_LIM_CORES, KMD_H_WORDS)[KMD_H_GIVEN_UP];
+            }
+            nb::dict out;
+            out["block"] = as_array(std::move(block));
+            out["given_up"] = given_up;
             return out;
         }
 
@@ -2218,6 +2245,7 @@ NB_MODULE(_km_host, m) {
         .def_prop_ro("close_failed", &Dispatch::close_failed)
         .def("aborted", &Dispatch::aborted)
         .def("probe", &Dispatch::probe, nb::arg("gap_s"))
+        .def("inspect", &Dispatch::inspect, nb::arg("count"))
         .def("clusters", &Dispatch::clusters)
         .def("work_info", &Dispatch::work_info, nb::arg("cluster"))
         .def(

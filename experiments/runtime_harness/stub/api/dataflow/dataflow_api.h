@@ -129,6 +129,15 @@ inline void invalidate_l1_cache() {
     kmsim::yield();
 }
 
+// Counter registers of buffer cb (pages pushed, pages popped), kept by the stub.
+inline volatile uint32_t* get_cb_tiles_received_ptr(uint32_t cb) {
+    return kmsim::cb_received_word(cb);
+}
+
+inline volatile uint32_t* get_cb_tiles_acked_ptr(uint32_t cb) {
+    return kmsim::cb_acked_word(cb);
+}
+
 // Free pages at the back; no other effect.
 inline bool cb_pages_reservable_at_back(uint32_t cb, uint32_t pages) {
     kmsim::point("cb_pages_reservable_at_back", cb);
@@ -177,7 +186,9 @@ inline uint32_t get_read_ptr(uint32_t cb) {
 
 // The NoC and command buffer of the calling kernel: one NoC per kernel in the model.
 constexpr uint8_t noc_index = 0;
-constexpr uint8_t noc_mode = 0;
+constexpr uint8_t DM_DEDICATED_NOC = 0;
+constexpr uint8_t DM_DYNAMIC_NOC = 1;
+constexpr uint8_t noc_mode = DM_DEDICATED_NOC;
 constexpr uint32_t write_at_cmd_buf = 0;
 constexpr uint32_t NOC_UNICAST_WRITE_VC = 0;
 
@@ -214,6 +225,28 @@ inline bool ncrisc_noc_nonposted_writes_flushed(uint32_t) {
 inline bool ncrisc_noc_reads_flushed(uint32_t) {
     kmsim::point("ncrisc_noc_reads_flushed");
     return true;
+}
+
+// Sources are read when a write is submitted; the dynamic NoC is not modelled.
+inline bool ncrisc_noc_nonposted_writes_sent(uint32_t) {
+    kmsim::point("ncrisc_noc_nonposted_writes_sent");
+    return true;
+}
+
+inline bool ncrisc_dynamic_noc_nonposted_writes_sent(uint32_t noc) {
+    return ncrisc_noc_nonposted_writes_sent(noc);
+}
+
+inline bool ncrisc_dynamic_noc_nonposted_writes_flushed(uint32_t noc) {
+    return ncrisc_noc_nonposted_writes_flushed(noc);
+}
+
+inline bool ncrisc_dynamic_noc_nonposted_atomics_flushed(uint32_t noc) {
+    return ncrisc_noc_nonposted_atomics_flushed(noc);
+}
+
+inline bool ncrisc_dynamic_noc_reads_flushed(uint32_t noc) {
+    return ncrisc_noc_reads_flushed(noc);
 }
 
 // The host channel behind the PCIe tile is not modelled: no scenario sends a transfer,

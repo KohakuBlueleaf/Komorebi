@@ -27,7 +27,7 @@ void kmsim_pack_main();
 namespace kmsim {
 
     constexpr uint32_t kL1Bytes = 0x14000;    // one core's L1 image
-    constexpr uint32_t kControlOff = 0x1000;  // the control block in every image
+    constexpr uint32_t kControlOff = 0x0C00;  // the control block in every image
     constexpr uint32_t kDram = 0xFFFFu;       // Chunk::dst of a DRAM write
     constexpr int64_t kDrop = -1;             // a delay that drops the chunk
     constexpr uint32_t kTileBytes = 2048;     // a page of the example's buffers
@@ -102,7 +102,13 @@ namespace kmsim {
         uint64_t gap = 0;  // cycles after the previous submit before this one
     };
 
-    enum JobStatus : uint32_t { kNotSubmitted, kSubmitted, kDone, kTimedOut };
+    enum JobStatus : uint32_t {
+        kNotSubmitted,
+        kSubmitted,
+        kDone,
+        kTimedOut,
+        kGivenUp  // the deadline passed with give_up set: the run went on
+    };
 
     struct JobResult {
         uint32_t sequence = 0;
@@ -112,6 +118,9 @@ namespace kmsim {
         uint32_t status = kNotSubmitted;
         uint32_t data_bad = 0;  // output elements that differ from the expectation
         uint32_t result = 0;    // word 1 of its ack line when it was acknowledged
+        // At a give-up: the live words 0 to 31 of every core of the group, read before
+        // the abort word was set (what the dispatcher's inspect of a timeout reads).
+        std::vector<std::vector<uint32_t>> live;
     };
 
     // A circular buffer of every core: id, offset in the L1 image, page size, pages.
@@ -142,8 +151,10 @@ namespace kmsim {
             kmsim_math_main,
             kmsim_pack_main
         };
-        bool exit = true;         // EXIT after the last job
-        uint32_t exit_group = 0;  // its group field; 0: every core
+        bool give_up = false;           // a deadline gives the command up, not the run
+        uint64_t give_up_grace = 4000;  // after the abort, for the group to leave it
+        bool exit = true;               // EXIT after the last job
+        uint32_t exit_group = 0;        // its group field; 0: every core
         uint32_t first_sequence = 1;
         std::function<uint32_t(uint32_t)> next_sequence;  // default: + 1
         std::function<int64_t(const Chunk&)> delay;       // default: 32 to 95 cycles
@@ -193,6 +204,7 @@ namespace kmsim {
         MessagesResult messages;
         bool booted = false;
         bool timed_out = false;
+        uint32_t late_acks = 0;  // acks that came for a command after it was given up
         uint64_t end_cycles = 0;
         double host_ms = 0;
 

@@ -9,7 +9,7 @@
 namespace km {
 
     // Writer, outputs landed: timed wait for `want` reports in DONE[slot], clears it,
-    // then increments the parent's DONE[slot] (NoC1) or, as first core, acks.
+    // then the parent's DONE[slot] (NoC1) or, first core, the ack; none if given up.
     inline bool complete(
         const Core& core, const km_command_t& command, uint32_t result = 0
     ) {
@@ -24,7 +24,8 @@ namespace km {
         const Report report = report_to(command, arguments.me, arguments.row);
         if (report.want != 0) {
             volatile tt_l1_ptr uint32_t* done = core.control(counter);
-            const uint32_t code = core.poll(
+            const uint32_t code = core.poll_at(
+                kWhereComplete,
                 [&] {
                     return *done == report.want;
                 },
@@ -45,11 +46,16 @@ namespace km {
             );
             return false;
         }
+        if (core.given_up(command)) {
+            return false;
+        }
         if (arguments.me != first(command)) {
             noc_semaphore_inc(
                 core.core_noc(report.parent, arguments.control + counter), 1
             );
-            noc_async_atomic_barrier();  // a write barrier does not cover atomics
+            if (!core.flushed(kFlushAtomics, kStWriter)) {  // writes do not cover these
+                return false;
+            }
         } else {
             volatile tt_l1_ptr uint32_t* ack = out_slot(arguments.control, kOutAck);
             ack[0] = KM_ACK(command.sequence);
@@ -64,7 +70,9 @@ namespace km {
                     arguments.control, core.disp_noc(arguments.ack_base), slot_index
                 );
             }
-            noc_async_writes_flushed();
+            if (!core.flushed(kFlushSent, kStWriter)) {
+                return false;
+            }
         }
         core.state()[kStReported + slot_index] = command.sequence;
         return true;

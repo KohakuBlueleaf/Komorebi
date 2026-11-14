@@ -366,7 +366,12 @@ namespace kmsim {
             if (q.src == n) {
                 return (
                     at + q.bytes <= KM_CONTROL_RESERVED ||
-                    (at == KM_CONTROL_STOP && q.bytes == 4)
+                    (at == KM_CONTROL_STOP && q.bytes == 4) ||
+                    (
+                        at >= KM_CONTROL_ABORT &&
+                        at < KM_CONTROL_ABORT + 4 * KM_RING_SLOTS && at % 4 == 0 &&
+                        q.bytes == 4
+                    )
                 );
             }
             return (
@@ -474,6 +479,8 @@ namespace kmsim {
         uint32_t submit(const Job& job, int32_t k, uint32_t j);
 
         bool booting();
+        void give_up(const Job& job, JobResult& r, uint32_t j);
+        bool left(const Job& job, uint32_t sequence) const;
 
         // True when a KM_FLAG_EXCLUSIVE command's group overlaps a group in flight, as
         // the dispatcher holds it.

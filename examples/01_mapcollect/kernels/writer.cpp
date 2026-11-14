@@ -1,5 +1,5 @@
-// Map/collect writer: MAP stores the core's tile at output page a3 first_page +
-// rank; STALL reports for every core of the group but a0 stalled_rank.
+// Map/collect writer: MAP stores the core's tile at output page a3 first_page + rank;
+// STALL reports for every core but a0 stalled_rank; HANG waits on purpose.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -63,6 +63,18 @@ void kernel_main() {
                     index != faulty_rank || faulty_role != 0 ||
                     writer.wait_front(kCbOut, 2)
                 );
+            }
+            case kHandlerHang: {
+                const uint32_t hung_rank = command.a0;
+                const uint32_t hang_mode = command.a1;
+                if (index != hung_rank || hang_mode != kHangOutput) {
+                    return true;
+                }
+                if (!writer.wait_front(kCbOut, 2)) {
+                    return false;
+                }
+                cb_pop_front(kCbOut, 2);
+                return true;
             }
             case kHandlerDot: {
                 const uint32_t x0 = command.a0;

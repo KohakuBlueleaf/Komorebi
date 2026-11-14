@@ -1361,6 +1361,16 @@ class _Backend:
         """Returns once every block written so far is in DRAM."""
         self.session._module.dram_barrier(self.device)
 
+    def inspect(self, count):
+        """While the kernel runs: the inspect block with its first `count` records, and
+        the dispatcher's count of commands it gave up (LIM words, read by the runtime).
+        """
+        read = self.port.inspect(count)
+        return {
+            "block": np.asarray(read["block"]).ravel(),
+            "given_up": int(read["given_up"]),
+        }
+
     def _control_blocks(self, cores, grid, port_lines=None, area_bytes=0):
         """Zeroed control blocks, one shard per core, padded so that the block can
         start on a 64-byte line: the same L1 address on every core. `port_lines`: the

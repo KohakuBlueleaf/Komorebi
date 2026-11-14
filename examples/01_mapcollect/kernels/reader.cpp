@@ -1,8 +1,9 @@
 // Map/collect reader: MAP reads the core's partition of the T input tiles in blocks;
-// STALL makes rank a0 stalled_rank wait for the stop flag.
+// STALL makes rank a0 stalled_rank wait for the stop flag; HANG waits on purpose.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_port.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "mapcollect.h"
 
@@ -81,6 +82,20 @@ void kernel_main() {
                 const uint32_t stalled_rank = command.a0;
                 if (index == stalled_rank) {
                     reader.wait_stop(command);
+                }
+                break;
+            }
+            case kHandlerHang: {
+                const uint32_t hung_rank = command.a0;
+                const uint32_t hang_mode = command.a1;
+                if (index == hung_rank && hang_mode == kHangPort) {
+                    km::arrive(reader, command, km::Arrival{kCbIn, 1}, 0, 1);
+                } else if (index == hung_rank && hang_mode == kHangInput) {
+                    if (!reader.reserve(kCbIn, 1)) {
+                        return;
+                    }
+                    cb_push_back(kCbIn, 1);  // one of the two tiles compute waits for
+                    write_page = (write_page + 1) % kInPages;
                 }
                 break;
             }

@@ -1,5 +1,5 @@
 // Map/collect compute: MAP adds the core's input tiles into one tile (a zero tile
-// when its partition is empty).
+// when its partition is empty); HANG waits on purpose, or sends one zero tile.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -17,6 +17,27 @@ void kernel_main() {
     km::Compute compute;
     compute_kernel_hw_startup(kCbIn, kCbOut);
     compute.run([&](const km_command_t& command) {
+        if (km::handler(command) == kHandlerHang) {
+            const uint32_t hung_rank = command.a0;
+            const uint32_t hang_mode = command.a1;
+            const bool hung = compute.me() - km::first(command) == hung_rank;
+            if (hung && hang_mode == kHangInput && compute.wait_front(kCbIn, 2)) {
+                cb_pop_front(kCbIn, 2);
+            } else if (hung && hang_mode == kHangOutput) {
+                tile_regs_acquire();
+                fill_tile_init();
+                fill_tile(0, 0.0f);
+                tile_regs_commit();
+                tile_regs_wait();
+                // one of the two the writer wants
+                if (compute.reserve_back(kCbOut, 1)) {
+                    pack_tile(0, kCbOut);
+                    cb_push_back(kCbOut, 1);
+                }
+                tile_regs_release();
+            }
+            return;
+        }
         if (km::handler(command) != kHandlerMap) {
             return;
         }

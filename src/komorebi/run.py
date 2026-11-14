@@ -163,6 +163,9 @@ class Run:
         self._kept = {}  # handle -> the DRAM tensor of its block, until its event
         self._unfenced = False  # a block written since the last fence
         self._rejected = {}
+        self._given_up = {}  # handle -> (its timeout event, the cores at the deadline)
+        self._given_up_seen = 0  # the dispatcher's count of give-ups, as last read
+        self.inspect_ticks = None  # mtime ticks the last inspect() took on core 0
         self._failure = None
         self._stopped = False
         self._result = None
@@ -375,6 +378,28 @@ class Run:
         )
         return self.wait(handle, timeout)
 
+    def inspect(self, group=None, timeout=10.0):
+        """While the run goes on: the dispatcher reads each core of `group` (default
+        every core): core_state's dict, `live` (each kernel's runtime wait and command)
+        and `trace` (the latest commands' entries); `read` False for a core it could
+        not reach. inspect_ticks: the X280 timer ticks the read took on core 0."""
+        first, count = self._group(group) if group is not None else (0, self.cores)
+        handle = self._queue_command(self.h["KMD_HANDLER_INSPECT"], (first, count))
+        self._counts[-1] = 0  # the kernel's own command: no sequence number
+        self.wait(handle, timeout)
+        block = device_state.inspect(self.backend.inspect(count)["block"], self.h)
+        if not (
+            block["complete"]
+            and block["kind"] == "host"
+            and block["request"] == handle & M32
+        ):
+            raise KomorebiError(
+                f"the inspect block does not answer command {handle}: another inspect"
+                " (a deadline's) was read meanwhile; inspect again"
+            )
+        self.inspect_ticks = block["ticks"]
+        return block["cores"]
+
     def holds(self):
         """[field] -> the cores that hold each program (bool arrays), or None when every
         core holds the run's one program."""
@@ -583,12 +608,46 @@ class Run:
                 self._rejected[handle] = event.auxiliary
                 if self.group(handle) is not None:
                     self._unsequence(handle)
-            elif event.kind == "timeout" and self._first[handle - self._base] < (
-                self._cluster_base
+            elif (
+                event.kind == "timeout"
+                and self._first[handle - self._base] < self._cluster_base
+                and not self._gave_up(event)
             ):
                 timeout = event  # a thread's late command does not end the run
         if timeout is not None:
             self._fail_timeout(timeout)
+
+    def _gave_up(self, event):
+        """Whether the dispatcher gave the timed-out command up, the run going on (its
+        count of give-ups passed the one seen); keeps the inspect of the deadline."""
+        if not hasattr(self.backend, "inspect"):
+            return False
+        group = self.group(event.handle)
+        count = group[1] if group and group[0] is not None else 0
+        read = self.backend.inspect(count)
+        if read["given_up"] == self._given_up_seen:
+            return False
+        self._given_up_seen += 1
+        block = device_state.inspect(read["block"], self.h)
+        ours = (
+            block["complete"]
+            and block["kind"] == "timeout"
+            and block["request"] == event.handle & M32
+        )
+        self._given_up[event.handle] = (event, block["cores"] if ours else [])
+        return True
+
+    def _given_up_error(self, handle):
+        """The CommandTimeout of a command the dispatcher gave up."""
+        event, cores = self._given_up[handle]
+        return CommandTimeout(
+            handle,
+            event.auxiliary,
+            self.sequence(handle),
+            self.group(handle),
+            cores,
+            given_up=True,
+        )
 
     def _unsequence(self, handle):
         """A rejected command took no sequence number: later commands move down one."""
@@ -653,9 +712,12 @@ class Run:
             self.wait_s += time.perf_counter() - started
         handle = int(wanted[self._arrived(wanted)][0])
         event = self.event(handle)
+        error = self._given_up_error(handle) if handle in self._given_up else None
         self.forget([handle])
         if event.kind == "rejected":
             raise CommandRejected(handle, event.auxiliary, self._rejections)
+        if error is not None:
+            raise error
         return event
 
     def forget(self, handles):
@@ -670,6 +732,7 @@ class Run:
         self._gone[rows] = True
         for handle in (rows + self._base).tolist():
             self._rejected.pop(handle, None)
+            self._given_up.pop(handle, None)
         self._compact()
 
     def _compact(self):
@@ -712,8 +775,9 @@ class Run:
             return None
         return (ref[0] + int((np.diff(host) + gap).sum()), int(host[-1]))
 
-    def _wait(self, wanted, timeout):
-        """Waits for the events of `wanted` (sorted handles)."""
+    def _wait(self, wanted, timeout, given_up=True):
+        """Waits for the events of `wanted` (sorted handles); raises for a rejected
+        command, and (`given_up`) for one the dispatcher gave up."""
         started = time.perf_counter()
         try:
             self._hand()
@@ -737,6 +801,9 @@ class Run:
                         raise CommandRejected(
                             handle, self._rejected[handle], self._rejections
                         )
+            for handle in sorted(self._given_up) if given_up else ():
+                if np.isin(handle, wanted):
+                    raise self._given_up_error(handle)
         finally:
             self.wait_s += time.perf_counter() - started
 
@@ -774,15 +841,15 @@ class Run:
             self._fail_kernel("the dispatcher finished on its own")
 
     def drain(self, timeout=10.0):
-        """Sends everything queued and waits for every command's event (rejections do
-        not raise here); returns how many events it waited for."""
+        """Sends everything queued and waits for every command's event (rejections and
+        commands given up do not raise here); returns how many events it waited for."""
         self._hand()
         oldest_row, end = self._oldest - self._base, self._handed - self._base
         open_ = (self._count[oldest_row:end] > 0) & ~self._has[oldest_row:end]
         wanted = np.flatnonzero(open_) + self._oldest
         if wanted.size:
             with contextlib.suppress(CommandRejected):
-                self._wait(wanted, timeout)
+                self._wait(wanted, timeout, given_up=False)
         return int(wanted.size)
 
     def thread_result(self, timeout=10.0):

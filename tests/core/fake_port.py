@@ -50,6 +50,16 @@ class FakePort:
         self.results = {}  # command number -> the leader's result word (KM_FLAG_RESULT)
         self.handlers = {}  # handler -> handler(req, words): commands a test serves
         self.programs = None  # the dispatcher's table: the program field per core
+        self.give_up_req = (
+            None  # this command is given up at its deadline, run going on
+        )
+        self.given_up = 0  # the dispatcher's count of commands it gave up
+        self.wheres = {}  # core -> (role, where): a kernel's live wait in an inspect
+        self.inspect_block = np.zeros(
+            (CONSTANTS["KMD_INSPECT_HEAD"] + 128 * CONSTANTS["KMD_INSPECT_RECORD"])
+            // 4,
+            dtype=np.uint32,
+        )
 
     # The native port's interface ---------------------------------------------
 
@@ -171,6 +181,11 @@ class FakePort:
                 self.consumed = req
                 self._event(req, CONSTANTS["KM_EVENT_PONG"])
                 continue
+            if handler == CONSTANTS["KMD_HANDLER_INSPECT"]:
+                self.consumed = req
+                self._inspect(CONSTANTS["KMD_INSPECT_HOST"], req, first, count)
+                self._event(req, CONSTANTS["KM_EVENT_PONG"])
+                continue
             if handler in self.handlers:
                 self.consumed = req
                 self.handlers[handler](req, words)
@@ -282,12 +297,46 @@ class FakePort:
             return CONSTANTS["KMD_REJECT_PROGRAM"]
         return 0
 
+    def _inspect(self, kind, req, first, count, slot=0, sequence=0):
+        """Writes the inspect block: each core of the group read, its state magic and
+        the live wait `wheres` gives it, its last trace entry at `sequence`."""
+        block, record = self.inspect_block, CONSTANTS["KMD_INSPECT_RECORD"] // 4
+        block[:] = 0
+        header = {"KIND": kind, "REQUEST": req, "FIRST": first, "COUNT": count}
+        header |= {"DONE": count, "SLOT": slot, "SEQUENCE": sequence, "TICKS": 1350}
+        for name, value in header.items():
+            block[CONSTANTS[f"KMD_I_{name}"]] = value
+        block[CONSTANTS["KMD_I_MARK"]] = CONSTANTS["KMD_INSPECT_MARK"]
+        for index in range(count):
+            line = block[CONSTANTS["KMD_INSPECT_HEAD"] // 4 + index * record :][:record]
+            core = first + index
+            line[CONSTANTS["KMD_IR_CORE"]] = core
+            line[CONSTANTS["KMD_IR_FLAGS"]] = CONSTANTS["KMD_INSPECT_READ"]
+            line[CONSTANTS["KMD_IR_SEQUENCES"]] = sequence
+            state = CONSTANTS["KMD_INSPECT_STATE"] // 4
+            line[state + CONSTANTS["kStMagic"]] = CONSTANTS["kStateMagic"] | core
+            if core in self.wheres:
+                role, where = self.wheres[core]
+                live = CONSTANTS["KMD_INSPECT_LIVE"] // 4
+                line[live + CONSTANTS["kLvWhere"] + role] = where
+                line[live + CONSTANTS["kLvSequence"] + role] = sequence
+
     def _complete(self):
         for slot in sorted(self.busy):
             sequence, req, (first, _) = self.busy[slot]
             low = (sequence & CONSTANTS["KM_EVENT_SEQUENCE_MASK"]) << CONSTANTS[
                 "KM_EVENT_SEQUENCE_SHIFT"
             ]
+            if req == self.give_up_req:  # the inspect of the deadline, then the event
+                del self.busy[slot]
+                first, count = self.ring[req][2] & 0xFFFF, self.ring[req][2] >> 16
+                timeout = CONSTANTS["KMD_INSPECT_TIMEOUT"]
+                self._inspect(timeout, req, first, count, slot, sequence)
+                self.given_up += 1
+                self._event(
+                    req, CONSTANTS["KM_EVENT_TIMEOUT"], auxiliary=slot | low, ticks=1
+                )
+                continue
             if req == self.stall_req:
                 del self.busy[slot]
                 self._event(
@@ -355,6 +404,12 @@ class FakeBackend:
 
     def log_state(self):
         pass
+
+    def inspect(self, count):
+        """The inspect block's header and first `count` records, the give-up count."""
+        words = CONSTANTS["KMD_INSPECT_HEAD"] + count * CONSTANTS["KMD_INSPECT_RECORD"]
+        block = self.port.inspect_block[: words // 4].copy()
+        return {"block": block, "given_up": self.port.given_up}
 
     def read_back(self, stop_grid=False):
         """Control blocks whose state words say every core of the group reported its

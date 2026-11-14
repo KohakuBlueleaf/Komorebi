@@ -612,7 +612,8 @@ namespace km {
                 reader_flags[1] = 0;
                 idle_shown = false;
             }
-            if (reader.poll(
+            if (reader.poll_at(
+                kWhereMessagesInPage,
                 [&] {
                     return cb_pages_reservable_at_back(kCbMessagesIn, 1);
                 },

@@ -382,7 +382,8 @@ namespace km {
         );
         const uint32_t field = program(command);
         // the followers first: the last load's record is theirs until they arrive
-        uint32_t code = reader.poll(
+        uint32_t code = reader.poll_at(
+            kWhereProgramSwitch,
             [&] {
                 for (uint32_t f = 0; f < kOverlayFollowers; f++) {
                     if (line[kSwitchArrived + f] != command.sequence) {
@@ -398,8 +399,9 @@ namespace km {
             control + kOverlayArea + kOverlayRecord,
             kRecordBytes
         );
-        noc_async_read_barrier();
-        invalidate_l1_cache();
+        if (!reader.flushed(kFlushReads, kStReader) && code == kGaveNone) {
+            code = kGaveStop;  // recorded by flushed: the tile stops
+        }
         const uint32_t mask = record[kRecordMask], both = mask | line[kSwitchMask];
         if (code == kGaveNone && record[kRecordField] != field) {
             code = kGaveOverlay;
@@ -411,7 +413,8 @@ namespace km {
             code = kGaveOverlay;
         }
         if (code == kGaveNone) {
-            code = reader.poll(
+            code = reader.poll_at(
+                kWhereProgramSwitch,
                 [&] {
                     for (uint32_t cb = 0; cb < 32; cb++) {
                         if (
@@ -600,7 +603,8 @@ namespace km {
 
         // Timed wait until every read this core started has landed.
         bool landed() const {
-            const uint32_t code = kernel_.poll(
+            const uint32_t code = kernel_.poll_at(
+                kWhereOverlayLoad,
                 [] {
                     return ncrisc_noc_reads_flushed(noc_index);
                 },
@@ -620,7 +624,8 @@ namespace km {
             );
             volatile tt_l1_ptr uint32_t* met = l1(control + kOverlayArea + kOverlayMet);
             bool mismatch = false;
-            const uint32_t code = kernel_.poll(
+            const uint32_t code = kernel_.poll_at(
+                kWhereOverlayMeet,
                 [&] {
                     mismatch = false;
                     for (

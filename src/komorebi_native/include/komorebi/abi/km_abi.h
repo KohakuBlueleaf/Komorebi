@@ -292,7 +292,20 @@ KM_STATIC_ASSERT(
 #define KM_CONTROL_X280 ((KM_CONTROL_TAILS + KM_TAILS_BYTES + 63u) / 64u * 64u)
 /* a command's block: the reader's copy, then the writer's (KM_BLOCK_AREA_BYTES each) */
 #define KM_CONTROL_BLOCK (KM_CONTROL_X280 + KM_X280_BYTES)
-#define KM_CONTROL_BYTES (KM_CONTROL_BLOCK + 2u * KM_BLOCK_AREA_BYTES)
+/* abort word of slot j at + 4 j: the sequence of the slot's command its cores give up
+   (the dispatcher writes it at the deadline; a command's waits poll it) */
+#define KM_CONTROL_ABORT (KM_CONTROL_BLOCK + 2u * KM_BLOCK_AREA_BYTES)
+/* the kernels' live words (where each waits, on which command) and what a give-up
+   clears (km::kLv*); the dispatcher's inspect reads its first KM_LIVE_READ bytes */
+#define KM_CONTROL_LIVE (KM_CONTROL_ABORT + 4u * KM_RING_SLOTS)
+#define KM_LIVE_BYTES 0x200u
+#define KM_LIVE_READ 0x80u
+#define KM_LIVE_SEQUENCE 5u   /* live words 5 to 9: the command each kernel runs */
+#define KM_LIVE_ROLES 5u      /* kernels with live words: reader, writer, compute's 3 */
+#define KM_LIVE_TRACE 20u     /* live word: the trace's L1 address (0: none) */
+#define KM_LIVE_TRACE_CAP 21u /* live word: the sequences it holds */
+#define KM_TRACE_ENTRY 16u /* bytes of one sequence's trace entry (km::kTraceWords) */
+#define KM_CONTROL_BYTES (KM_CONTROL_LIVE + KM_LIVE_BYTES)
 #define KM_X280_TO_TILE 0u /* word offsets of the KM_X280_TO line */
 #define KM_X280_TO_BOX 1u  /* LIM address of this core's mailbox line; 0: not served */
 /* A core's mailbox line in its X280 core's LIM (64 bytes, the core writes it). */
@@ -310,8 +323,14 @@ KM_STATIC_ASSERT(
 KM_STATIC_ASSERT(
     KM_CONTROL_BLOCK % 64u == 0 && KM_BLOCK_BYTES % 64u == 0 &&
         KM_BLOCK_BYTES <= KM_BLOCK_BYTES_MASK &&
-        KM_CONTROL_BLOCK + 2u * KM_BLOCK_AREA_BYTES == KM_CONTROL_BYTES,
-    "block areas: whole lines, the last part of the block"
+        KM_CONTROL_BLOCK + 2u * KM_BLOCK_AREA_BYTES == KM_CONTROL_ABORT,
+    "block areas: whole lines, after the X280 lines"
+);
+KM_STATIC_ASSERT(
+    KM_CONTROL_ABORT % 64u == 0 && KM_CONTROL_LIVE % 64u == 0 &&
+        KM_CONTROL_LIVE + KM_LIVE_BYTES == KM_CONTROL_BYTES &&
+        KM_LIVE_READ <= KM_LIVE_BYTES,
+    "abort words and live words: whole lines, the last part of the block"
 );
 
 /* Words the Tensix grid pushes into the X280's local memory. */

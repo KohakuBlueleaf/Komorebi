@@ -13,9 +13,6 @@ namespace km {
     constexpr uint32_t kBroadcastNone = 0xFF;  // rank of a core that is not in the broadcast
     constexpr uint32_t kBroadcastWindowMax = 8;
     constexpr uint32_t kBroadcastBlocksMax = 32767;
-    constexpr uint32_t kFlushReads = 0;   // Broadcast::flushed: reads have landed
-    constexpr uint32_t kFlushSent = 1;    // writes have left L1
-    constexpr uint32_t kFlushWrites = 2;  // writes are acknowledged
 
     // A broadcast's start-up arguments: kBroadcastArgs program words from the index the
     // program gives. The host computes and checks them (komorebi.layout).
@@ -123,6 +120,7 @@ namespace km {
                 return 0;
             }
             cb_reserve_back(args_.cb, args_.pages);
+            core_.produce(args_.cb);
             reserved_ = true;
             return slot(block);
         }
@@ -150,7 +148,8 @@ namespace km {
             uint32_t word = 0;
             uint32_t carries = 0;
             const uint64_t started = wall64();
-            const uint32_t code = core_.poll(
+            const uint32_t code = core_.poll_at(
+                kWhereBroadcastValid,
                 [&] {
                     marker_freed();
                     marker = valid[0];
@@ -191,6 +190,7 @@ namespace km {
                 return false;
             }
             cb_reserve_back(args_.cb, args_.pages);
+            core_.produce(args_.cb);
             cb_push_back(args_.cb, args_.pages);
             block_count_++;
             return true;
@@ -324,7 +324,8 @@ namespace km {
 
         // finish() with a buffer: compute popped every block, then the padding.
         bool drain() {
-            const uint32_t code = core_.poll(
+            const uint32_t code = core_.poll_at(
+                kWhereBroadcastFree,
                 [&] {
                     marker_freed();
                     return popped() == block_count_;
@@ -484,7 +485,8 @@ namespace km {
         bool wait_done(uint32_t blocks, uint32_t block, uint32_t word = 0) {
             uint32_t receiver = 1;
             const uint64_t started = wall64();
-            const uint32_t code = core_.poll(
+            const uint32_t code = core_.poll_at(
+                kWhereBroadcastDone,
                 [&] {
                     while (
                         receiver <= args_.receivers &&
@@ -511,7 +513,8 @@ namespace km {
         // Timed NoC barrier of this kernel: reads landed, writes sent from L1, or
         // writes acknowledged. A stop flag set meanwhile gives it one more timeout.
         bool flushed(uint32_t what, uint32_t where, uint32_t block) {
-            const uint32_t code = core_.poll(
+            const uint32_t code = core_.poll_at(
+                where,
                 [&] {
                     if constexpr (noc_mode == DM_DYNAMIC_NOC) {
                         return (
@@ -547,7 +550,8 @@ namespace km {
 
         // Waits (with a timeout) until `pages` pages of the broadcast buffer are free.
         bool wait_free(uint32_t pages, uint32_t block) {
-            const uint32_t code = core_.poll(
+            const uint32_t code = core_.poll_at(
+                kWhereBroadcastFree,
                 [&] {
                     marker_freed();
                     return cb_pages_reservable_at_back(args_.cb, pages);

@@ -54,7 +54,10 @@ namespace km {
     constexpr uint32_t kGaveLimit = 2;    // the wait timed out
     constexpr uint32_t kGaveBadItem = 3;  // a multi-page item would pass the buffer end
     constexpr uint32_t kGaveBadBroadcast = 4;  // a broadcast's arguments do not fit the command
-    constexpr uint32_t kGaveBadTransfer = 6;               // a transfer's bounds, or PCIe routing left
+    constexpr uint32_t kGaveBadTransfer = 6;  // a transfer's bounds, or PCIe routing left
+    // The dispatcher gave the command up at its deadline (its abort word): the kernels
+    // leave its body, clear what it left and take the next command.
+    constexpr uint32_t kGaveDeadline = 7;
     constexpr uint32_t kWhereCheckin = 1;   // leader collecting start-up check-ins
     constexpr uint32_t kWhereToken = 2;     // reader waiting for free token pages
     constexpr uint32_t kWhereNext = 3;      // reader waiting for a command
@@ -123,6 +126,50 @@ namespace km {
     constexpr uint32_t kWhereToHost = 43;
     constexpr uint32_t kWhereFromHost = 44;
     constexpr uint32_t kWhereCopy = 45;  // a copy between DRAM pages
+    // The runtime's own NoC barriers, the compute threads' words to each other, and the
+    // clear after a command was given up (a consumer waits for the buffer's producer).
+    constexpr uint32_t kWhereNocFlush = 46;
+    constexpr uint32_t kWhereCMailbox = 47;  // math or pack waiting for unpack's word
+    constexpr uint32_t kWhereCConfirm = 48;  // unpack waiting for math's and pack's
+    constexpr uint32_t kWhereClear = 49;
+
+    // What Core::flushed waits for: reads landed, writes sent from L1, writes or
+    // atomics acknowledged.
+    constexpr uint32_t kFlushReads = 0;
+    constexpr uint32_t kFlushSent = 1;
+    constexpr uint32_t kFlushWrites = 2;
+    constexpr uint32_t kFlushAtomics = 3;
+
+    // Live words (from KM_CONTROL_LIVE), each with one writer: kernel r (a role) writes
+    // word kLv* + r. The dispatcher's inspect reads words 0 to 31 during the run.
+    constexpr uint32_t kRoleReader = 0;
+    constexpr uint32_t kRoleWriter = 1;
+    constexpr uint32_t kRoleUnpack = 2;
+    constexpr uint32_t kRoleMath = 3;
+    constexpr uint32_t kRolePack = 4;
+    constexpr uint32_t kRoles = 5;
+    constexpr uint32_t kLvWhere = 0;      // + r: the runtime wait it is in; 0: none
+    constexpr uint32_t kLvSequence = 5;   // + r: the command it runs; 0: none
+    constexpr uint32_t kLvSlot = 10;      // + r: that command's slot
+    constexpr uint32_t kLvFinished = 15;  // + r: commands it has left, a count
+    constexpr uint32_t kLvTrace = 20;     // the trace's L1 address (reader); 0: none
+    constexpr uint32_t kLvTraceCap = 21;  // sequences the trace holds
+    constexpr uint32_t kLvGivenUp = 22;   // commands given up, writer's count
+    constexpr uint32_t kLvProduces = 24;  // + p: buffers producer p fills, a bit each
+    constexpr uint32_t kLvEnds = 32;      // pages pushed at a command's end (ends())
+    constexpr uint32_t kLvWords = 128;
+    constexpr uint32_t kProducerReader = 0;  // producers p: the reader, pack, writer
+    constexpr uint32_t kProducerPack = 1;
+    constexpr uint32_t kProducerWriter = 2;
+    constexpr uint32_t kProducers = 3;
+    constexpr uint32_t kClearBuffers = 29;  // buffers 0 to 28: the runtime's are above
+    static_assert(
+        kLvWords * 4 == KM_LIVE_BYTES && kLvEnds * 4 == KM_LIVE_READ &&
+            kLvEnds + kProducers * 2 * 16 <= kLvWords && kLvTrace == KM_LIVE_TRACE &&
+            kLvSequence == KM_LIVE_SEQUENCE && kRoles == KM_LIVE_ROLES &&
+            kLvTraceCap == KM_LIVE_TRACE_CAP,
+        "live words"
+    );
     static_assert(
         kWhereMessagesGap == kWhereEmit + 1 &&
             kWhereMessagesCounter == kWhereMessagesGap + 16 &&
@@ -181,6 +228,7 @@ namespace km {
     constexpr uint32_t kTraceExtra = 3;  // reader: ring passes it took; with a timestamp
                           // in a9: cycles from the timestamp to taking it
     constexpr uint32_t kTraceWords = 4;
+    static_assert(kTraceWords * 4 == KM_TRACE_ENTRY, "a trace entry");
 
     // A 64-bit count from a live high word read before and after the low word; a carry
     // between them retries, and a second one returns the carry's own instant.
@@ -252,11 +300,16 @@ namespace km {
         );
     }
 
-    // Polls ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle
-    // units (0: no limit); kGaveStop `grace` units after *stop is set (0: at once).
+    // ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle units;
+    // kGaveStop `grace` units after *stop; kGaveDeadline once *abort is `sequence`.
     template <typename Ready>
     inline uint32_t poll_stop(
-        volatile tt_l1_ptr uint32_t* stop, Ready ready, uint32_t limit, uint32_t grace
+        volatile tt_l1_ptr uint32_t* stop,
+        Ready ready,
+        uint32_t limit,
+        uint32_t grace,
+        volatile tt_l1_ptr uint32_t* abort = nullptr,
+        uint32_t sequence = 0
     ) {
         uint64_t end = (
             limit == 0 ? ~0ull : wall64() + (static_cast<uint64_t>(limit) << 10)
@@ -266,6 +319,9 @@ namespace km {
             invalidate_l1_cache();
             if (ready()) {
                 return kGaveNone;
+            }
+            if (abort != nullptr && *abort == sequence) {
+                return kGaveDeadline;
             }
             if (!stopped && *stop != 0) {
                 if (grace == 0) {
@@ -283,8 +339,42 @@ namespace km {
         }
     }
 
-    // Commands a give-up in state word pair `word` (the first one is kept: it names the
-    // cause) and sets the tile's own stop flag, so all three kernels leave.
+    // poll_stop for kernel `role` in the runtime wait `where` (0: not shown live), on
+    // its command's abort word when `abortable`; its live where word shows the wait.
+    template <typename Ready>
+    inline uint32_t poll_live(
+        uint32_t control,
+        uint32_t role,
+        uint32_t where,
+        bool abortable,
+        Ready ready,
+        uint32_t limit,
+        uint32_t grace
+    ) {
+        volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
+        const uint32_t sequence = live[kLvSequence + role];
+        volatile tt_l1_ptr uint32_t* abort = (
+            abortable && sequence != 0
+                ? l1(control + KM_CONTROL_ABORT) + live[kLvSlot + role] % KM_RING_SLOTS
+                : nullptr
+        );
+        const uint32_t before = live[kLvWhere + role];
+        if (where != 0) {
+            live[kLvWhere + role] = where;
+        }
+        const uint32_t code = (
+            poll_stop(
+                l1(control + KM_CONTROL_STOP), ready, limit, grace, abort, sequence
+            )
+        );
+        if (where != 0) {
+            live[kLvWhere + role] = before;
+        }
+        return code;
+    }
+
+    // A give-up into state word pair `word`: a deadline's per command, the run goes on;
+    // any other unless one came first, setting the tile's stop flag (all kernels end).
     inline void command_gave_up(
         uint32_t control,
         uint32_t word,
@@ -294,11 +384,140 @@ namespace km {
         uint32_t sequence
     ) {
         volatile tt_l1_ptr uint32_t* state = l1(control + KM_CONTROL_STATE);
-        if (state[word] == 0) {
+        const bool after_deadline = (state[word] & 0xFF) == kGaveDeadline;
+        if (code == kGaveDeadline) {
+            if (state[word] == 0 || (after_deadline && state[word + 1] != sequence)) {
+                state[word] = code | where << 8 | slot << 16;
+                state[word + 1] = sequence;
+            }
+            return;
+        }
+        if (state[word] == 0 || after_deadline) {
             state[word] = code | where << 8 | slot << 16;
             state[word + 1] = sequence;
         }
         *l1(control + KM_CONTROL_STOP) = 1;
+    }
+
+    // Kernel `role`'s own live words, at its start: no wait, no command, none left.
+    inline void clear_live(uint32_t control, uint32_t role) {
+        volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
+        live[kLvWhere + role] = 0;
+        live[kLvSequence + role] = 0;
+        live[kLvSlot + role] = 0;
+        live[kLvFinished + role] = 0;
+    }
+
+    // Whether the dispatcher gave up `sequence` in `slot` (its abort word holds it).
+    inline bool given_up(uint32_t control, uint32_t slot, uint32_t sequence) {
+        return (
+            sequence != 0 &&
+            l1(control + KM_CONTROL_ABORT)[slot % KM_RING_SLOTS] == sequence
+        );
+    }
+
+    // Producer p's page counts (16 bits a buffer) at the end of its command number
+    // `index`: two tables, by the count's parity (a producer runs one command ahead).
+    inline volatile tt_l1_ptr uint16_t* ends(
+        uint32_t control, uint32_t producer, uint32_t index
+    ) {
+        return (
+            reinterpret_cast<volatile tt_l1_ptr uint16_t*>(
+                l1(control + KM_CONTROL_LIVE) + kLvEnds +
+                (producer * 2 + (index & 1)) * 16
+            )
+        );
+    }
+
+    // The role that fills buffer cb (published by the producers' timed waits), or
+    // kRoles if none of them does.
+    inline uint32_t producer_of(uint32_t control, uint32_t cb, uint32_t& producer) {
+        volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
+        for (producer = 0; producer < kProducers; producer++) {
+            if ((live[kLvProduces + producer] >> cb) & 1) {
+                return (
+                    producer == kProducerReader
+                        ? kRoleReader
+                        : producer == kProducerPack
+                            ? kRolePack
+                            : kRoleWriter
+                );
+            }
+        }
+        return kRoles;
+    }
+
+    // A command's end on kernel `role`, command number `index`: a producer's counts,
+    // then the number of commands it has left; the command is no longer its own.
+    template <typename Count>
+    inline void end_command(
+        uint32_t control,
+        uint32_t role,
+        uint32_t index,
+        uint32_t produces,
+        uint32_t producer,
+        Count count
+    ) {
+        if (produces != 0) {
+            volatile tt_l1_ptr uint16_t* table = ends(control, producer, index);
+            for (uint32_t cb = 0; cb < kClearBuffers; cb++) {
+                if ((produces >> cb) & 1) {
+                    table[cb] = static_cast<uint16_t>(count(cb));
+                }
+            }
+        }
+        volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
+        live[kLvFinished + role] = index;
+        live[kLvSequence + role] = 0;
+    }
+
+    // After command `index` was given up, per buffer this consumer drains: the producer
+    // ends it, then its pages are popped. kGaveNone, or why it gave up.
+    template <typename Acked, typename Pop>
+    inline uint32_t clear_buffers(
+        uint32_t control,
+        uint32_t role,
+        uint32_t index,
+        uint32_t consumes,
+        uint32_t limit,
+        Acked acked,
+        Pop pop
+    ) {
+        volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
+        for (uint32_t cb = 0; cb < kClearBuffers; cb++) {
+            uint32_t producer = 0;
+            const uint32_t from = (
+                (consumes >> cb) & 1 ? producer_of(control, cb, producer) : kRoles
+            );
+            if (from == kRoles) {
+                continue;
+            }
+            const uint32_t code = poll_live(
+                control,
+                role,
+                kWhereClear,
+                false,
+                [&] {
+                    return static_cast<int32_t>(live[kLvFinished + from] - index) >= 0;
+                },
+                limit,
+                0
+            );
+            if (code != kGaveNone) {
+                return code;
+            }
+            const uint16_t left = (
+                static_cast<uint16_t>(ends(control, producer, index)[cb] - acked(cb))
+            );
+            const LocalCBInterface& buffer = get_local_cb_interface(cb);
+            if (left > buffer.fifo_size / buffer.fifo_page_size) {
+                return kGaveBadItem;
+            }
+            for (uint32_t page = 0; page < left; page++) {
+                pop(cb);
+            }
+        }
+        return kGaveNone;
     }
 
 }  // namespace km
@@ -327,10 +546,11 @@ namespace km {
         uint32_t bytes;
     };
 
-    // A data-movement kernel's view of the control block and of its start-up arguments.
+    // A data-movement kernel's view of the control block and of its start-up arguments,
+    // and of the command it runs (its role's live words, its buffers for a clear).
     class Core {
     public:
-        Core() {
+        explicit Core(uint32_t role) : role_(role) {
             uint32_t* words = &args_.control;
             for (uint32_t index = 0; index < kArgs; index++) {
                 words[index] = get_arg_val<uint32_t>(index);
@@ -383,10 +603,151 @@ namespace km {
             );
         }
 
-        // poll_stop on this tile's stop flag.
+        uint32_t role() const {
+            return role_;
+        }
+
+        // poll_stop on this tile's stop flag and on the abort word of the command this
+        // kernel runs; poll_at also shows the runtime wait `where` in the live words.
         template <typename Ready>
         uint32_t poll(Ready ready, uint32_t limit, uint32_t grace = 0) const {
-            return poll_stop(control(KM_CONTROL_STOP), ready, limit, grace);
+            return poll_live(args_.control, role_, 0, true, ready, limit, grace);
+        }
+
+        template <typename Ready>
+        uint32_t poll_at(
+            uint32_t where, Ready ready, uint32_t limit, uint32_t grace = 0
+        ) const {
+            return poll_live(args_.control, role_, where, true, ready, limit, grace);
+        }
+
+        // poll_at on the stop flag alone: a wait the dispatcher's abort does not end.
+        template <typename Ready>
+        uint32_t poll_stop_at(uint32_t where, Ready ready, uint32_t limit) const {
+            return poll_live(args_.control, role_, where, false, ready, limit, 0);
+        }
+
+        // The command this kernel runs (its slot and sequence in the live words).
+        void begin(const km_command_t& command) const {
+            control(KM_CONTROL_LIVE)[kLvSlot + role_] = slot(command);
+            control(KM_CONTROL_LIVE)[kLvSequence + role_] = command.sequence;
+        }
+
+        uint32_t running_slot() const {
+            return control(KM_CONTROL_LIVE)[kLvSlot + role_];
+        }
+
+        uint32_t running_sequence() const {
+            return control(KM_CONTROL_LIVE)[kLvSequence + role_];
+        }
+
+        // Whether the dispatcher gave the command up (its deadline passed).
+        bool given_up(const km_command_t& command) const {
+            invalidate_l1_cache();
+            return km::given_up(args_.control, slot(command), command.sequence);
+        }
+
+        // Timed NoC barrier of this kernel (kFlush*), polled with the stop flag; a stop
+        // gives it one more wait limit. False: gave up in kWhereNocFlush (recorded).
+        bool flushed(uint32_t what, uint32_t word) const {
+            const uint32_t code = poll_live(
+                args_.control,
+                role_,
+                kWhereNocFlush,
+                false,
+                [&] {
+                    if constexpr (noc_mode == DM_DYNAMIC_NOC) {
+                        return (
+                            what == kFlushReads
+                                ? ncrisc_dynamic_noc_reads_flushed(noc_index)
+                                : what == kFlushSent
+                                    ? ncrisc_dynamic_noc_nonposted_writes_sent(
+                                        noc_index
+                                    )
+                                    : what == kFlushAtomics
+                                        ? ncrisc_dynamic_noc_nonposted_atomics_flushed(
+                                            noc_index
+                                        )
+                                        : ncrisc_dynamic_noc_nonposted_writes_flushed(
+                                            noc_index
+                                        )
+                        );
+                    } else {
+                        return (
+                            what == kFlushReads
+                                ? ncrisc_noc_reads_flushed(noc_index)
+                                : what == kFlushSent
+                                    ? ncrisc_noc_nonposted_writes_sent(noc_index)
+                                    : what == kFlushAtomics
+                                        ? ncrisc_noc_nonposted_atomics_flushed(
+                                            noc_index
+                                        )
+                                        : ncrisc_noc_nonposted_writes_flushed(noc_index)
+                        );
+                    }
+                },
+                args_.wait_limit,
+                args_.wait_limit
+            );
+            if (code != kGaveNone) {
+                gave_up(word, code, kWhereNocFlush, running_slot(), running_sequence());
+                return false;
+            }
+            invalidate_l1_cache();
+            return true;
+        }
+
+        // A buffer this kernel fills (a producer: the reader) or drains (a consumer)
+        // through the timed waits: what a clear after a give-up looks at.
+        void produce(uint32_t cb) const {
+            if (cb < kClearBuffers && !((produces_ >> cb) & 1)) {
+                produces_ |= 1u << cb;
+                control(KM_CONTROL_LIVE)[kLvProduces + producer()] = produces_;
+            }
+        }
+
+        // This kernel's producer number: the reader's, or the writer's (a broadcast).
+        uint32_t producer() const {
+            return role_ == kRoleWriter ? kProducerWriter : kProducerReader;
+        }
+
+        void consume(uint32_t cb) const {
+            consumes_ |= cb < kClearBuffers ? 1u << cb : 0;
+        }
+
+        // The command's end: the producer's counts, the commands left; after a give-up,
+        // the buffers cleared and rewound. False: the clear gave up (the tile stops).
+        bool finish(const km_command_t& command, uint32_t word) {
+            index_++;
+            end_command(
+                args_.control, role_, index_, produces_, producer(), [](uint32_t cb) {
+                    return *get_cb_tiles_received_ptr(cb);
+                }
+            );
+            if (!given_up(command)) {
+                return true;
+            }
+            if (consumes_ == 0) {
+                return true;
+            }
+            const uint32_t code = clear_buffers(
+                args_.control,
+                role_,
+                index_,
+                consumes_,
+                args_.wait_limit,
+                [](uint32_t cb) {
+                    return static_cast<uint16_t>(*get_cb_tiles_acked_ptr(cb));
+                },
+                [](uint32_t cb) {
+                    cb_pop_front(cb, 1);
+                }
+            );
+            if (code != kGaveNone) {
+                gave_up(word, code, kWhereClear, slot(command), command.sequence);
+                return false;
+            }
+            return true;
         }
 
         // The command's block in copy area `area` (0 reader, 1 writer), read once per
@@ -413,8 +774,9 @@ namespace km {
                     at + 64,
                     (bytes + 63) / 64 * 64
                 );
-                noc_async_read_barrier();
-                invalidate_l1_cache();
+                if (!flushed(kFlushReads, area == 0 ? kStReader : kStWriter)) {
+                    return {nullptr, 0};
+                }
                 line[0] = command.sequence;
             }
             return {line + 16, bytes};
@@ -433,6 +795,10 @@ namespace km {
 
     private:
         Args args_;
+        uint32_t role_;
+        uint32_t index_ = 0;             // commands this kernel took (EXIT aside)
+        mutable uint32_t produces_ = 0;  // bit cb: filled through a timed wait
+        mutable uint32_t consumes_ = 0;  // bit cb: drained through a timed wait
     };
 
 }  // namespace km

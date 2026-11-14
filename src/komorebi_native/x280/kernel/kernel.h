@@ -102,6 +102,14 @@ typedef struct {
     uint64_t line[KMD_WORK_IN_DEPTH][8]; /* each line as the thread is to see it */
 } kmd_thread_t;
 
+/* An inspect being read, a core a loop pass: the group, the next record, what it
+ * answers (a host's request, or a timeout's slot and sequence). */
+typedef struct {
+    uint32_t active, kind, request, first, count, next, slot, sequence;
+    uint32_t leaving; /* a timeout's: abort words written, its cores checked */
+    uint64_t start, until;
+} kmd_inspect_t;
+
 /* A stream the kernel admitted and the engine runs: its range and request. */
 typedef struct {
     uint32_t active, request, offset, bytes;
@@ -119,7 +127,8 @@ typedef struct {
     uint32_t error, where; /* KMD_ERROR_*, KMD_WHERE_* */
     uint64_t start_mtime;  /* mtime at the start */
     /* grid port */
-    uint32_t panels, opened; /* windows programmed: bits 0, 1 panels, 2 host, 3+ work */
+    /* windows programmed: bits 0, 1 panels, 2 host, 3 to 5 work, 6 inspect */
+    uint32_t panels, opened;
     volatile uint8_t* control[2]; /* every core's control block, through each panel */
     /* sources and the host buffer */
     volatile uint32_t* host; /* the host buffer, through the host window */
@@ -134,7 +143,8 @@ typedef struct {
     uint32_t slot_sequence[KM_RING_SLOTS]; /* last sequence: the ack word once free */
     uint32_t slot_request[KM_RING_SLOTS];
     uint32_t slot_group[KM_RING_SLOTS];
-    uint8_t slot_source[KM_RING_SLOTS]; /* the source the command came from */
+    uint8_t slot_source[KM_RING_SLOTS];  /* the source the command came from */
+    uint8_t slot_handler[KM_RING_SLOTS]; /* its handler */
     uint64_t result_busy; /* busy slots whose command has KM_FLAG_RESULT */
     uint32_t last_result; /* the latest KM_FLAG_RESULT command's result (0: none yet) */
     uint32_t results;     /* KM_FLAG_RESULT commands completed */
@@ -152,6 +162,10 @@ typedef struct {
     /* programs (args programs): the cores holding each program field, a bit per core */
     uint32_t programs;
     uint64_t holds[KMD_PROGRAMS_MAX][2];
+    /* inspect: the control block's address on every core, the inspect being read */
+    uint32_t control_address;
+    kmd_inspect_t inspect;
+    uint32_t given_up; /* commands given up at their deadline, the run going on */
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */

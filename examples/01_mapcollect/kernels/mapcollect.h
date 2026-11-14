@@ -24,6 +24,12 @@ constexpr uint32_t kHandlerResult = 6;
 // DOT: the block is words w; the writer gives sum w[i] * (a0 x0 + i) mod 2^32 as the
 // result, the reader gives up (bad_item) unless the words sum to a1 word_sum.
 constexpr uint32_t kHandlerDot = 7;
+// HANG (a test): rank a0 hung_rank waits, by a1 hang_mode, for what never comes; the
+// dispatcher gives it up at its deadline and the core takes the next command.
+constexpr uint32_t kHandlerHang = 8;
+constexpr uint32_t kHangPort = 1;    // the reader, for an arrival at port 0
+constexpr uint32_t kHangInput = 2;   // compute, for 2 input tiles (the reader sends 1)
+constexpr uint32_t kHangOutput = 3;  // the writer, for 2 output tiles (compute sends 1)
 
 constexpr uint32_t kCbIn = 0;
 constexpr uint32_t kCbOut = 16;

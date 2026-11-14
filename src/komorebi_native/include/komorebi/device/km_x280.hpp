@@ -55,7 +55,8 @@ namespace km {
         // A tell newer than the last one looked at, waiting at most the wait limit.
         // False: gave up (recorded).
         bool wait_told(X280Msg& message) {
-            const uint32_t code = core_.poll(
+            const uint32_t code = core_.poll_at(
+                kWhereX280Tell,
                 [&] {
                     return read(KM_X280_TELL, message) && message.sequence != told_;
                 },
@@ -93,7 +94,8 @@ namespace km {
         // Waits (with a timeout) for the answer to ask `sequence`. False: gave up
         // (recorded).
         bool wait_answer(uint32_t sequence, X280Msg& message) const {
-            const uint32_t code = core_.poll(
+            const uint32_t code = core_.poll_at(
+                kWhereX280Answer,
                 [&] {
                     return (
                         read(KM_X280_ANSWER, message) && message.sequence == sequence
@@ -184,7 +186,8 @@ namespace km {
                 core_.gave_up(word_, kGaveBadItem, kWhereX280None, 0, sequence);
                 return false;
             }
-            const uint32_t code = core_.poll(
+            const uint32_t code = core_.poll_at(
+                kWhereX280Send,
                 [] {
                     return ncrisc_noc_nonposted_writes_flushed(noc_index);
                 },

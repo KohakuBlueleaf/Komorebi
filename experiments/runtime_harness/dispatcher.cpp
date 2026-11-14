@@ -75,6 +75,51 @@ namespace kmsim {
         return s;
     }
 
+    // The dispatcher's give-up at a deadline: an inspect of the group (each core's live
+    // words), then the abort word of the slot set to the sequence on every core of it.
+    void Sim::Impl::give_up(const Job& job, JobResult& r, uint32_t j) {
+        r.live.clear();
+        for (uint32_t c = job.first; c < job.first + job.count && c < n; c++) {
+            std::vector<uint32_t> words(KM_LIVE_READ / 4);
+            std::memcpy(
+                words.data(), cores[c].mem + kControlOff + KM_CONTROL_LIVE, KM_LIVE_READ
+            );
+            r.live.push_back(std::move(words));
+        }
+        for (uint32_t c = job.first; c < job.first + job.count && c < n; c++) {
+            send(
+                n,
+                self,
+                c,
+                kControlOff + KM_CONTROL_ABORT + 4 * j,
+                reinterpret_cast<const uint8_t*>(&r.sequence),
+                4,
+                -1,
+                3,
+                0
+            );
+        }
+    }
+
+    // Whether no kernel of the group still runs `sequence` (its live sequence words).
+    bool Sim::Impl::left(const Job& job, uint32_t sequence) const {
+        for (uint32_t c = job.first; c < job.first + job.count && c < n; c++) {
+            for (uint32_t role = 0; role < km::kRoles; role++) {
+                uint32_t word = 0;
+                std::memcpy(
+                    &word,
+                    cores[c].mem + kControlOff + KM_CONTROL_LIVE +
+                        4 * (km::kLvSequence + role),
+                    4
+                );
+                if (word == sequence) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     bool Sim::Impl::booting() {
         const uint64_t t0 = clock;
         const uint32_t groups = (n + cfg.row - 1) / cfg.row;
@@ -130,6 +175,8 @@ namespace kmsim {
             b = -1;
         }
         const uint32_t depth = cfg.depth == 0 || cfg.depth > 16 ? 16 : cfg.depth;
+        uint32_t given[KM_RING_SLOTS] = {};    // the sequence given up in a slot, or 0
+        uint64_t leaving[KM_RING_SLOTS] = {};  // after an abort: the end of its grace
         size_t next = 0, done = 0;
         while (done < jobs.size()) {
             if (abort) {
@@ -140,6 +187,10 @@ namespace kmsim {
                     continue;
                 }
                 JobResult& r = sim.jobs[busy[j]];
+                if (given[j] != 0 && disp_word(kDispAck + j * 16) == KM_ACK(given[j])) {
+                    sim.late_acks++;
+                    given[j] = 0;
+                }
                 if (disp_word(kDispAck + j * 16) == KM_ACK(r.sequence)) {
                     r.acked = clock;
                     r.result = disp_word(kDispAck + j * 16 + 4);
@@ -149,11 +200,36 @@ namespace kmsim {
                     }
                     busy[j] = -1;
                     done++;
+                } else if (leaving[j] != 0 && left(jobs[busy[j]], r.sequence)) {
+                    r.status = kGivenUp;  // every core left it: the slot is free
+                    given[j] = r.sequence;
+                    leaving[j] = 0;
+                    busy[j] = -1;
+                    done++;
+                } else if (leaving[j] != 0 && clock > leaving[j]) {
+                    r.status = kTimedOut;  // a core still runs it: the run ends
+                    sim.timed_out = true;
+                    stop_all();
+                    return;
+                } else if (leaving[j] != 0) {
+                    continue;
+                } else if (clock - r.submitted > cfg.deadline && cfg.give_up) {
+                    give_up(jobs[busy[j]], r, j);
+                    leaving[j] = clock + cfg.give_up_grace;
                 } else if (clock - r.submitted > cfg.deadline) {
                     r.status = kTimedOut;
                     sim.timed_out = true;
                     stop_all();
                     return;
+                }
+            }
+            for (uint32_t j = 0; j < depth; j++) {
+                if (
+                    busy[j] < 0 && given[j] != 0 &&
+                    disp_word(kDispAck + j * 16) == KM_ACK(given[j])
+                ) {
+                    sim.late_acks++;
+                    given[j] = 0;
                 }
             }
             messages_watch(jobs);

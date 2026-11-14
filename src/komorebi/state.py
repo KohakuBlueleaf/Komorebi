@@ -1,6 +1,9 @@
 """Decoding what a run leaves: the dispatcher's result block, the cores' state
-words and the per-command trace. Pure functions over arrays read back after the stop.
+words and the per-command trace, and an inspect's block while the run goes on. Pure
+functions over arrays read back.
 """
+
+import re
 
 import numpy as np
 
@@ -13,6 +16,7 @@ GAVES = {
     "BadBroadcast": "bad_broadcast",
     "Overlay": "overlay",
     "BadTransfer": "bad_transfer",
+    "Deadline": "deadline",
 }  # kGave*
 WHERES = (
     "Checkin",
@@ -40,7 +44,12 @@ WHERES = (
     "ToHost",
     "FromHost",
     "Copy",
+    "NocFlush",
+    "CMailbox",
+    "CConfirm",
+    "Clear",
 )
+ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 
 
@@ -297,6 +306,110 @@ def core_state(state, core, abi_headers=None):
         "last": words[last : last + slots],
         "reported": words[reported : reported + slots],
     }
+
+
+def where_names(abi_headers=None):
+    """Every kWhere* value by name, lower case with underscores (the runtime's own
+    names first, then a dynamic run's)."""
+    abi_headers = abi_headers or abi.headers()
+    names = {}
+    for name, value in abi_headers.constants.items():
+        if name.startswith("kWhere") and value not in names:
+            words = re.findall(r"[A-Z0-9][a-z0-9]*", name[len("kWhere") :])
+            names[value] = "_".join(words).lower()
+    names.update({abi_headers[f"kWhere{where}"]: where.lower() for where in WHERES})
+    return names
+
+
+def live(words, abi_headers=None):
+    """A core's live words (KM_LIVE_READ bytes) as a dict: by kernel, the runtime wait
+    it is in (None: none), the command it runs (sequence 0: none) and the commands it
+    has left; the writer's count of commands given up."""
+    abi_headers = abi_headers or abi.headers()
+    words = [int(word) for word in words]
+    names = where_names(abi_headers)
+    out = {}
+    for role, name in enumerate(ROLES):
+        where = words[abi_headers["kLvWhere"] + role]
+        out[name] = {
+            "where": names.get(where, where) if where else None,
+            "sequence": words[abi_headers["kLvSequence"] + role],
+            "slot": words[abi_headers["kLvSlot"] + role],
+            "finished": words[abi_headers["kLvFinished"] + role],
+        }
+    out["given_up"] = words[abi_headers["kLvGivenUp"]]
+    return out
+
+
+def inspect(block, abi_headers=None):
+    """An inspect block (uint32 words: the header, then a record per core) as a dict:
+    its kind, whether it is complete, what it answers, and per core what core_state
+    gives, its live words and its trace entries (None for a core it could not read)."""
+    abi_headers = abi_headers or abi.headers()
+    words = np.asarray(block, dtype=np.int64).ravel() & abi.M32
+    header = [int(word) for word in words[: abi_headers["KMD_INSPECT_HEAD"] // 4]]
+    kinds = {
+        abi_headers["KMD_INSPECT_HOST"]: "host",
+        abi_headers["KMD_INSPECT_TIMEOUT"]: "timeout",
+    }
+    out = {
+        "complete": header[abi_headers["KMD_I_MARK"]]
+        == abi_headers["KMD_INSPECT_MARK"],
+        "kind": kinds.get(header[abi_headers["KMD_I_KIND"]]),
+        **{
+            key: header[abi_headers[f"KMD_I_{key.upper()}"]]
+            for key in ("request", "first", "count", "done", "slot", "sequence")
+        },
+        "ticks": header[abi_headers["KMD_I_TICKS"]],
+    }
+    record, head = abi_headers["KMD_INSPECT_RECORD"] // 4, len(header)
+    state_at, live_at, trace_at = (
+        abi_headers[name] // 4
+        for name in ("KMD_INSPECT_STATE", "KMD_INSPECT_LIVE", "KMD_INSPECT_TRACE")
+    )
+    entries, entry = abi_headers["KMD_INSPECT_ENTRIES"], abi_headers["kTraceWords"]
+    cores = []
+    for index in range(min(out["done"], (len(words) - head) // record)):
+        line = words[head + index * record :][:record]
+        core, flags = int(line[abi_headers["KMD_IR_CORE"]]), int(
+            line[abi_headers["KMD_IR_FLAGS"]]
+        )
+        if not flags & abi_headers["KMD_INSPECT_READ"]:
+            cores.append({"core": core, "read": False})
+            continue
+        state = {core: line[state_at : state_at + abi_headers["kStateWords"]]}
+        sequences = line[abi_headers["KMD_IR_SEQUENCES"] :][:entries]
+        trace = [
+            {
+                "sequence": int(sequence),
+                **dict(
+                    zip(
+                        ("seen", "done", "sent", "extra"),
+                        (int(word) for word in line[at : at + entry]),
+                        strict=True,
+                    )
+                ),
+            }
+            for sequence, at in zip(
+                sequences,
+                range(trace_at, trace_at + entries * entry, entry),
+                strict=True,
+            )
+            if flags & abi_headers["KMD_INSPECT_TRACED"] and line[at : at + entry].any()
+        ]
+        cores.append(
+            core_state(state, core, abi_headers)
+            | {
+                "read": True,
+                "live": live(
+                    line[live_at : live_at + abi_headers["KM_LIVE_READ"] // 4],
+                    abi_headers,
+                ),
+                "trace": trace,
+            }
+        )
+    out["cores"] = cores
+    return out
 
 
 def not_reported(state, group, slot, sequence, abi_headers=None):

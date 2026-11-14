@@ -84,8 +84,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
 - **Rejected commands.** A bad command is consumed and answered with `KM_EVENT_REJECTED`, its
   reason (`KMD_REJECT_*`) in the status's auxiliary; the session goes on. Reasons: 1 a handler
   from 240 to 249, which this kernel does not serve (`KM_HANDLER_LOAD`, 240, and
-  `KM_HANDLER_COPY`, 245, from the host or a work cluster excepted, below; 241 and 242
-  from the host); 2 flag bit 0 set; 3 a group outside
+  `KM_HANDLER_COPY`, 245, from the host or a work cluster, and `KMD_HANDLER_INSPECT`,
+  243, from the host excepted, below; 241 and 242 from the host); 2 flag bit 0 set; 3 a
+  group outside
   the grid (`count == 0 || first > cores || count > cores - first`, with no sum that
   could wrap; with `KM_FLAG_QUEUE` only the count is checked); 4 any command after EXIT; 5 a
   range of the upload region that is not whole lines inside it; 6 `KM_HANDLER_RUN` while
@@ -99,7 +100,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   rejected command's event has ticks 0.
 - **The program table.** With `programs` 1 in the argument block (`KMD_ARGS_VERSION` 3),
   LIM at `KMD_LIM_PROGRAMS` holds a byte per core: the program field it holds (0xFF none;
-  the layout grew by these 128 bytes: `KMD_LIM_BYTES` is 0x2080). At the start the kernel
+  the layout grew by these 128 bytes). At the start the kernel
   makes it a pair of 64-bit masks per program field (`holds`); `take()` checks every
   command but NOP and EXIT against it (`program_held`: the group's bits, at most a few
   instructions; a run without the table, `programs` 0, skips the check). A
@@ -268,6 +269,36 @@ These rules are part of the protocol; a host that relies on anything else is wro
   hold the outcome. `KMD_H_ABANDONED` counts the commands in flight (busy slots 0 to 31 in
   `KMD_R_BUSY`, 32 to 63 in the core block's `KMD_H_BUSY_HIGH`) and
   the jobs still queued at the finish: none of them gets its `KM_EVENT_DONE`.
+- **Inspect.** `KMD_HANDLER_INSPECT` (243) from the host, group `[first, first +
+  count)`, reads each core's state words, the first `KM_LIVE_READ` bytes of its live
+  words and, when the live words name a trace in L1, the trace entries of the four
+  latest sequences, all from the control block, by aligned 64-bit loads through window
+  `KMD_WIN_INSPECT` (22, aimed at each core in turn at the coordinates of the host's
+  core table, `KMD_LIM_COORDS`). Every address is checked to lie in L1 above the
+  firmware's part, and nothing else is read. One core is read per pass of the loop, so
+  commands in flight go on meanwhile. The records (`KMD_INSPECT_RECORD`, 832 bytes
+  each: a line `KMD_IR_*`, then the words) follow the block's header at
+  `KMD_LIM_INSPECT` (`KMD_I_*`). After the last record the kernel writes the read's
+  ticks, then the mark `KMD_INSPECT_MARK` last, and answers `KM_EVENT_PONG`. The
+  command takes no slot and no sequence number. A second inspect waits in the ring
+  while one runs. The host zeroes the layout up to the block's header
+  (`KMD_LIM_ZEROED`) and writes the core table before the run. `KMD_LIM_BYTES` is
+  0x1C2C0.
+- **Giving up one command.** At its deadline, a host command of a program's handler
+  (not a dynamic run's) is not fatal. The kernel first reads its group into the same
+  block (kind `KMD_INSPECT_TIMEOUT`, with the slot and sequence). Then it writes the
+  command's sequence into the slot's abort word (`KM_CONTROL_ABORT` + 4 x slot) on
+  every core through the panel windows. Then, one core a pass, it reads the live
+  sequence words (`KM_LIVE_SEQUENCE`, one per kernel) until no kernel of the group runs
+  the command; then it frees the slot, counts the give-up in the core block's
+  `KMD_H_GIVEN_UP` and sends `KM_EVENT_TIMEOUT`, in that order. The host tells this
+  timeout from a fatal one by the count. The cores leave the command, clear its pages
+  and take the next one (the runtime reference, "Giving up one command"). A core still
+  in the command after `KMD_GIVE_UP_TICKS` (20 ms) marks the slot kept
+  (`KMD_HANDLER_KEPT`), and the next deadline check ends the run with
+  `KMD_ERROR_DEADLINE`. A command that completes while it is read or checked ends the
+  inspect instead. A late acknowledgement of the slot's old sequence matches no
+  command. Any other command that misses its deadline ends the run as before.
 - **Abort.** The runtime's stop is the abort: core 0 looks for it every 1,024 passes
   (tens of microseconds), the poll that also checks deadlines, and finishes as
   above whatever is in flight. Only a core that has stopped running its loop (an
