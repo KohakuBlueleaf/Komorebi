@@ -34,13 +34,15 @@ namespace km {
     constexpr uint32_t kRelayNext = 4;  // the ask line the next scan starts at
     constexpr uint32_t kRelayNoPort = 0xFFFFFFFFu;
 #if !defined(KM_WIRE)
-    // Two cards: link core 0 writes an ask's bytes straight into the far rank's L1, its
-    // stage holding kRelaySlots chunks in flight and a header each (no far inbox).
+    // Two cards: link core 0 writes an ask's bytes straight into the far rank's L1, a
+    // packet a slot (its stage: kRelaySlots and a header each; no far inbox).
+    constexpr uint32_t kRelayPacket = KM_PAGES_PACKET_MAX;
     constexpr uint32_t kRelaySlots = 4;
     constexpr uint32_t kRelaySlotAt = KM_RELAY_STAGE + 512;
     static_assert(
         kRelaySlots * 64 <= 512 &&
-            kRelaySlotAt + kRelaySlots * KM_RELAY_CHUNK <= KM_RELAY_BYTES,
+            kRelaySlotAt + kRelaySlots * kRelayPacket <= KM_RELAY_BYTES &&
+            kRelayPacket % 16 == 0,
         "the relay's slots fit its stage and inbox"
     );
     constexpr uint32_t kRelayTurnAsks = 16;  // asks served a turn at most
@@ -299,7 +301,7 @@ namespace km {
             // the relay's stage
             const uint32_t fit = (
                 pages_held.chunk > kPagesSlots
-                    ? (pages_held.chunk - kPagesSlots) / KM_RELAY_CHUNK
+                    ? (pages_held.chunk - kPagesSlots) / kRelayPacket
                     : 0
             );
             const bool paged = fit >= kRelaySlots;
@@ -313,28 +315,27 @@ namespace km {
                 paged ? pages_held.area + kPagesHeaders : area_ + KM_RELAY_STAGE
             );
             uint32_t sent_mark[kPagesSlotsMax] = {};
-            const uint32_t chunks = (bytes + KM_RELAY_CHUNK - 1) / KM_RELAY_CHUNK;
-            // Slot s's read carries transaction id 1 + s: reads run ahead in the slots.
-            const auto read = [&](uint32_t k) {
-                const uint32_t off = k * KM_RELAY_CHUNK;
-                noc_async_read_set_trid(1 + k % slots);
+            const uint32_t chunks = (bytes + kRelayPacket - 1) / kRelayPacket;
+            const uint32_t tail = bytes - (chunks - 1) * kRelayPacket;
+            // Slot r's read carries transaction id 1 + r: reads run ahead in the slots.
+            uint32_t ahead = 0, r = 0;
+            const auto read = [&] {
+                noc_async_read_set_trid(1 + r);
                 noc_async_read(
-                    kernel.core_noc(source, from + off),
-                    slot_at + (k % slots) * KM_RELAY_CHUNK,
-                    bytes - off < KM_RELAY_CHUNK ? bytes - off : KM_RELAY_CHUNK
+                    kernel.core_noc(source, from + ahead * kRelayPacket),
+                    slot_at + r * kRelayPacket,
+                    ahead + 1 == chunks ? tail : kRelayPacket
                 );
+                ahead++;
+                r = r + 1 == slots ? 0 : r + 1;
             };
-            uint32_t ahead = ok ? (chunks < slots ? chunks : slots) : 0;
-            for (uint32_t k = 0; k < ahead; k++) {
-                read(k);
+            while (ok && ahead < chunks && ahead < slots) {
+                read();
             }
+            uint32_t s = 0, last = slots - 1;
             for (uint32_t k = 0; ok && k < chunks; k++) {
-                const uint32_t s = k % slots, off = k * KM_RELAY_CHUNK;
-                const uint32_t n = (
-                    bytes - off < KM_RELAY_CHUNK ? bytes - off : KM_RELAY_CHUNK
-                );
-                const uint32_t slot = slot_at + s * KM_RELAY_CHUNK;
-                const uint32_t last = (k + slots - 1) % slots;
+                const uint32_t n = k + 1 == chunks ? tail : kRelayPacket;
+                const uint32_t slot = slot_at + s * kRelayPacket;
                 if (k != 0 && ahead < chunks) {  // the last packet's slot, once it left
                     ok = soon(kernel, [&] {
                         return (
@@ -342,7 +343,7 @@ namespace km {
                         );
                     });
                     if (ok) {
-                        read(ahead++);
+                        read();
                     }
                 }
                 ok = ok && soon(kernel, [&] {
@@ -353,10 +354,17 @@ namespace km {
                 if (!ok) {
                     break;
                 }
+                // a slot's header made once an ask; then its command alone
                 const LinkHeaderAt made = (
-                    link_header(header_at + s * kPagesHeaderStride, 1)
+                    k < slots
+                        ? link_header(header_at + s * kPagesHeaderStride, 1)
+                        : reinterpret_cast<LinkHeaderAt>(
+                            header_at + s * kPagesHeaderStride
+                        )
                 );
-                const uint64_t at = link_noc(xy & 0xFFFFu, xy >> 16, to + off);
+                const uint64_t at = (
+                    link_noc(xy & 0xFFFFu, xy >> 16, to + k * kRelayPacket)
+                );
                 if (k + 1 == chunks) {
                     link_counted_write(made, at, counter, 1, n);
                 } else {
@@ -370,6 +378,8 @@ namespace km {
                 ) &&
                     sender.send(made, slot, n);
                 sent_mark[s] = noc_nonposted_writes_num_issued[noc_index];
+                last = s;
+                s = s + 1 == slots ? 0 : s + 1;
             }
             noc_async_read_set_trid(0);
             ok = ok && wait(kernel, [] {
