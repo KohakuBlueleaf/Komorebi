@@ -47,7 +47,7 @@ rounds, the median from submit to the event on the host:
 
 | Cards | Ranks | µs a round | Total |
 |---|---|---|---|
-| 0 and 1 (one link) | 238 | 169.8 (the result word asked: one more pass at the root) | exact |
+| 0 and 1 (one link) | 238 | 165.9 | exact |
 | 0 | 120 | 158.0 | exact |
 
 A command that crosses completes with the result word of the first part back, not the

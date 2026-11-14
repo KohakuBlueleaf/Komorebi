@@ -199,10 +199,10 @@ median of 20 commands from submit to the event on the host, every total exact:
 | Program | Two cards (238 ranks) | One island |
 |---|---|---|
 | [02_merge_tree](../../examples/02_merge_tree/README.md), kernels unchanged, by tree | 172.6 µs | 162.8 µs (island 0's 119 ranks) |
-| [26_islands_sum](../../examples/26_islands_sum/README.md), written for islands | 169.8 µs | 158.0 µs (card 0 alone, 120 ranks) |
+| [26_islands_sum](../../examples/26_islands_sum/README.md), written for islands | 165.9 µs | 158.0 µs (card 0 alone, 120 ranks) |
 
-The two-card rows asked for a result word (one more pass over the total at the root); the
-one-island row of example 26 did not.
+The rows of example 02 asked for a result word (one more pass over the total at the
+root); those of example 26 did not.
 
 ## What is not built
 
