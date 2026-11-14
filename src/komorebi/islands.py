@@ -87,14 +87,29 @@ class Placement(NamedTuple):
 
     def runs(self, first, pages, island=0):
         """[(holder, first page, pages, index in the holder's part)] of pages first ..
-        first + pages - 1: each run held by one island at consecutive indices."""
+        first + pages - 1: each run held by one island at consecutive indices. A step
+        of the walk is a holder's whole stretch of a block (its steps there), not a
+        page: the host's cost is its runs', not its pages'."""
         out = []
-        for page in range(first, first + pages):
+        end = first + pages
+        if pages > 0:
+            self.where(end - 1, island)  # the last page is in the tensor
+        block_pages = self.steps * self.inner
+        page = first
+        while page < end:
             holder, index = self.where(page, island)
-            if out and out[-1][0] == holder and out[-1][3] + out[-1][2] == index:
-                out[-1] = (holder, out[-1][1], out[-1][2] + 1, out[-1][3])
+            if self.copy:
+                stop = end
             else:
-                out.append((holder, page, 1, index))
+                start, steps = self.parts[holder]
+                block = page // block_pages
+                stop = min(end, block * block_pages + (start + steps) * self.inner)
+            length = stop - page
+            if out and out[-1][0] == holder and out[-1][3] + out[-1][2] == index:
+                out[-1] = (holder, out[-1][1], out[-1][2] + length, out[-1][3])
+            else:
+                out.append((holder, page, length, index))
+            page = stop
         return out
 
     def part(self, island):
