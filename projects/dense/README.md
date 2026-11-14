@@ -308,8 +308,10 @@ thread product(island, y, x):                  # the grid form's threads, on eac
 
 A and Y are placed by island (`by="island"`: even parts of the row tiles, island i
 its part i); W is a copy on every island. Each island's program is the grid form of
-its own plan, with its rows' first tile and end in its words, and one GRID command a
-call goes to a flat group over every island's rectangle. `--cards 0` is the same
+its own plan, with its rows' first tile and end in its words, and each call is one
+GRID command an island on its rectangle's flat ranks (the rows below were measured
+with one command over a flat group of both rectangles; a group that reaches another
+island now crosses the link, and a crossing command is never exclusive). `--cards 0` is the same
 session over one island: it holds every row, and its program is the one `bench.py`
 runs. The script has no branch for one card.
 
@@ -334,6 +336,7 @@ one card through the card's own session. The runs' JSON lines are in `results/`
 |---|---|---|---|---|---|---|---|---|
 | `sq8192` | 0 | 256 | 13,562.5 | 81.1 | 5,788 | 1039 | 2.94 | 0.51 |
 | `sq8192` | 0, 1 | 128 / 128 | 4,269.2 | 257.5 | 2,931 | 925 / 980 | 1.23 | 0.27 |
+| `sq8192`, B moved once a call | 0, 1 | 128 / 128 | 27,196.9 | 40.4 | 2,942 | 1350 / 1350 | 1.12 | 0.27 |
 | `sq8192`, by rank | 0 | 256 | 13,192.0 | 83.3 | 5,717 | 1034 | 0.85 | 0.28 |
 | `sq8192`, by rank | 0, 1 | 136 / 120 | 5,242.3 | 209.7 | 4,686 | 970 / 1208 | 1.12 | 0.27 |
 | `sq16384`, by rank | 0 | 512 | 91,763.8 | 95.9 | 77,693 | 1138 | 10.78 | 0.29 |
@@ -349,6 +352,17 @@ plan and kernels as `bench.py`, which runs 21 single calls, then waits 1 s and r
 its loop under the power sampler, where this script runs 3 single calls and its loop
 at once; `bench.py` itself ran in that mode in two of its three runs. `sq16384` on two
 cards takes 0.53 of one card's time per call.
+
+"B moved once a call": B (the weight, 128 MiB) is held by island 0 alone (`like` its
+ranks) and before each call island 0's link cores send it into the same pages of
+island 1's DRAM (`send_pages`, waited for on island 1's link core), then one GRID
+command an island runs as above, waited for
+(`--links 2 --kernel-bytes 90112 --b-moved`; the page links' code needs the larger
+kernel buffer). Of the 27,196.9 us a call the crossing takes 23,709.5 us, 5.66 GB/s:
+with two links, link 0 carries the commands across and link 1 alone the pages (the
+32 GB/s of [Islands](../../docs/reference/islands.md) is four page links), and the
+product 3,460.8 us, waited for each call (2,927 us an island). Island 1's sampled rows
+are computed from the crossed B.
 
 The integer case above (7680 x 64 x 128, 120 row tiles each) is bit for bit on two
 cards and on one (by rank, the first version).

@@ -769,6 +769,13 @@ namespace km {
             code = cpu == 0 && index == 0 ? pages_line(kernel, command) : kGaveNone;
         } else if (r.mode == KM_PAGES_OPEN && links) {
             code = pages_open(kernel, r, index, cpu);
+#if defined(KM_LINKS) && defined(COMPILE_FOR_BRISC)  // the reader: link 0's CPU
+        } else if (r.mode == KM_PAGES_MESSAGES && links) {
+            code = index == 0 && cpu == 0 ? link_messages(kernel, command) : kGaveNone;
+#elif defined(KM_LINKS)
+        } else if (r.mode == KM_PAGES_MESSAGES && links) {
+            code = kGaveNone;
+#endif
         } else {
             code = kGaveBadTransfer;
         }
