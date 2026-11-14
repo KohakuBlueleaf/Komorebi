@@ -191,8 +191,9 @@ best of 3, host load 5.0 to 5.8, 2026-11-14; every output exact against numpy in
 | the same input read by the X280 itself from bank 7 (loads over the NoC, 0.024 GB/s) | - | 44.1 ms |
 
 The fetch's 0.49 ms was mostly the two sweeps of the region's cache lines around the
-copy; the call now sweeps once, before it (0.19 ms on card 0, every output exact), and
-the cores' copy of the MiB takes 0.02 ms ([bank_fetch](../../experiments/bank_fetch/README.md)).
+copy; the call then swept once, before it (0.19 ms on card 0, every output exact), and
+now empties the cluster's cache instead (`kmx_evict`): 0.04 ms for the MiB, of which
+the cores' copy takes 0.02 ms ([bank_fetch](../../experiments/bank_fetch/README.md)).
 
 ## The thread
 

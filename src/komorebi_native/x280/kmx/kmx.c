@@ -17,6 +17,9 @@
  * cached Zero Device from its second 128 KiB, past the runtime's pinned input. */
 #define KMX_CACHE_WAY_BYTES 0x20000ull
 #define KMX_EVICT_PAD 0x0A020000ull
+/* A fetch of 160 KiB or more evicts instead of sweeping: a sweep of its 2,560 lines
+ * costs 26.6 µs, an eviction of a cache full of dirty lines 26.4 µs. */
+#define KMX_EVICT_FROM 0x28000ull
 #define KMX_POLL_EVERY 256u
 /* kmx_port_open looks for the event every KMX_PORT_LOOK calls on the lead's X280 core
  * 0, for a stop or the deadline every KMX_PORT_CHECK calls. */
@@ -1413,8 +1416,8 @@ static int copy_command(
     return KMX_OK;
 }
 
-/* Core 0: the copy's command, the range's lines dropped first unless `clean` (a
- * store's written back), then submitted and waited for or only submitted (`handle`). */
+/* Core 0: the copy's command, the range's lines dropped first unless `clean` (a store's
+ * written back, a large fetch's evicted), then submitted and waited for or not. */
 static int copy_run(
     int id,
     uint64_t offset,
@@ -1436,7 +1439,9 @@ static int copy_run(
     if (status != KMX_OK) {
         return status;
     }
-    if (!clean) {
+    if (!clean && fetch && bytes >= KMX_EVICT_FROM) {
+        kmx_evict();
+    } else if (!clean) {
         kmx_flush_at(id, offset, bytes);
     }
     if (handle != 0) {
