@@ -51,7 +51,9 @@ typedef struct {
 #define KMD_SRC_ENGINE 1u
 /* work cluster c's thread: KMD_SRC_WORK + c - 1 (work_port.h) */
 #define KMD_SRC_WORK 2u
-#define KMD_SOURCES (KMD_SRC_WORK + KMD_WORK_CLUSTERS)
+/* commands from the other island (link.h): rings in the dispatcher's state */
+#define KMD_SRC_LINK (KMD_SRC_WORK + KMD_WORK_CLUSTERS)
+#define KMD_SOURCES (KMD_SRC_LINK + 1u)
 
 /* A job waiting in the queue: its command, with its source's deadline at the time. */
 typedef struct {
@@ -175,6 +177,10 @@ typedef struct {
     uint32_t control_address;
     kmd_inspect_t inspect;
     uint32_t given_up; /* commands given up at their deadline, the run going on */
+    /* commands across islands (link.h): the host's link line had its mark; bit k:
+     * slot k is a crossing's local part or a LINK command; the island's first thread */
+    uint32_t link_on, thread_first;
+    uint64_t link_slots;
     uint32_t reset_offset, reset_bytes; /* the kept reset list (bytes 0: none) */
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;

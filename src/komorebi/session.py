@@ -879,6 +879,7 @@ class Session:
         image=None,
         thread="card",
         island=None,
+        link=None,
     ):
         """Launches `program` (or programs in the runtime's form: a list, every core
         holding each, or {program: (first, count)}) on every core, then the dispatcher,
@@ -887,6 +888,8 @@ class Session:
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         self.island = _island(island, self.grid)
+        if link is not None and self.island is None:
+            raise ValueError("link= is an island's (island= too)")
         placed = None
         if not isinstance(program, Program) or program.form() == "program":
             grid = self.grid
@@ -963,11 +966,13 @@ class Session:
                 ),
                 programs=_held_fields(placed) if placed and placed.switch else [],
                 island=_island_word(self.island),
+                link=list(link.line(dispatch)) if link is not None else [],
             )
             check_bases(lim_bases(dispatch.lim_base))
             plan, port_lines = _port_lines(owner, dispatch, rings)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
+            backend.link = link
             if ranks is not None:
                 ranks = _x280_words(self, program, dispatch, rings, regions, plan)
             descriptor = backend.describe(
@@ -1066,6 +1071,9 @@ class Session:
                     thread_run.ring = rings[cluster][0] if on_card else None
                     thread_run.peers = peers.get(cluster)
                     thread_run.records = records
+                    if self.island is not None:
+                        graph, here = self.island
+                        thread_run.island = here | len(graph.islands) << 16
                     if backend.transfer is not None:
                         thread_run.buffer = backend.transfer.address
                     if plan is not None:
@@ -1500,6 +1508,7 @@ class _Backend:
             ""  # the runtime's error message when an abort did not restore
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
+        self.link = None  # an island_session.LinkPlan: this island's link core
         self.transfer = None  # a _TransferBuffer: with the host channel, or threads
 
     def block(self, data):
@@ -1673,6 +1682,9 @@ class _Backend:
                 }
             )
             reader, writer, compute = _core_args(program, placed, core)
+            if self.link is not None and core == self.link.core:
+                link_arg = len(start) + len(messages_reader_writer_args) + len(writer)
+                writer = [*writer, *self.link.connection()]
             reader_args.append(
                 (x, y, start + messages_reader_writer_args + list(reader))
             )
@@ -1684,6 +1696,10 @@ class _Backend:
                 (x, y, [control, core, *limits, *messages_compute_args, *compute])
             )
         launch = self.session._module.Launch(self.device)
+        if placed is not None and self.link is not None:
+            raise ValueError(
+                "a link over islands takes one program, not the runtime's form"
+            )
         if placed is not None:
             args = (reader_args, writer_args, compute_args)
             self._describe_groups(launch, placed, sources, args, grid)
@@ -1693,6 +1709,8 @@ class _Backend:
         defines = [(name, str(value)) for name, value in program.defines.items()]
         if program.messages is not None:
             defines += program.messages.defines()
+        if self.link is not None:
+            defines += self.link.defines(link_arg)
         for index, fmt, page, pages in self._cbs(program.buffers):
             launch.cb(all_cores, index, fmt, page, page * pages)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
