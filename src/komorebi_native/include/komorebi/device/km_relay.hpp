@@ -25,7 +25,7 @@ namespace km {
     constexpr uint32_t kAskRank = 3;     // the flat rank they go to
     constexpr uint32_t kAskTo = 4;       // the L1 address there
     constexpr uint32_t kAskPort = 5;     // its port, counted there (kRelayNoPort: none)
-    constexpr uint32_t kAskSlot = 6;     // the asking kernel's NoC: its done word
+    constexpr uint32_t kAskSlot = 6;     // the asking CPU's own block: its done word
     constexpr uint32_t kAskValid = 12;   // the token: sequence << 1 | 1
     constexpr uint32_t kRelayServed = 0;  // KM_RELAY_STATE words
     constexpr uint32_t kRelaySent = 1;
@@ -54,6 +54,14 @@ namespace km {
         return island_area()[KM_ISLAND_RELAY];
     }
 
+    // An asking core's done word of its CPU block `block` (0 the reader's, 1 the
+    // writer's), in its own words (the same address on every core of the island).
+    inline uint32_t relay_done(uint32_t block) {
+        return (
+            island_area()[KM_ISLAND_OWN / 4] + block * KM_OWN_CPU_BYTES + KM_OWN_DONE
+        );
+    }
+
     // `bytes` at L1 `from` into L1 `to` of rank `rank` of another island, then 1 on
     // its port (kRelayNoPort: none), in asks of KM_RELAY_MAX at most; kGave*.
     template <typename Writer>
@@ -68,14 +76,21 @@ namespace km {
     ) {
         const Islands view(island_area());
         const uint32_t area = relay_area();
+        const uint32_t mine = view.own_words();
         const uint32_t line = writer.args().me * 2 + noc_index;
-        if (area == 0 || bytes == 0 || view.ranks() == 0 || line >= KM_RELAY_ASKS) {
+        if (
+            area == 0 || mine == 0 || bytes == 0 || view.ranks() == 0 ||
+            line >= KM_RELAY_ASKS
+        ) {
             return kGaveBadItem;
         }
         const uint32_t token = sequence << 1 | 1;
+        // staged in its CPU's own block, written to its line at the link core
+        const uint32_t block = writer.role() == kRoleWriter ? 1 : 0;
+        const uint32_t own = mine + block * KM_OWN_CPU_BYTES + KM_OWN_LINE;
         const uint32_t ask = area + KM_RELAY_ASK + line * 64;
-        volatile tt_l1_ptr uint32_t* done = l1(area + KM_RELAY_DONE + noc_index * 16);
-        volatile tt_l1_ptr uint32_t* words = l1(ask);
+        volatile tt_l1_ptr uint32_t* done = l1(relay_done(block));
+        volatile tt_l1_ptr uint32_t* words = l1(own);
         // the link core toward the rank's island: the table's next link after the ranks
         const uint32_t link = (
             view.base() + view.ranks() + view.link(view.island_of(rank))
@@ -93,11 +108,11 @@ namespace km {
             words[kAskRank] = rank;
             words[kAskTo] = to + off;
             words[kAskPort] = off + n == bytes ? port : kRelayNoPort;
-            words[kAskSlot] = noc_index;
+            words[kAskSlot] = block;
             words[kAskValid] = token;
-            noc_async_write(ask, writer.core_noc(link, ask), 48);
+            noc_async_write(own, writer.core_noc(link, ask), 48);
             noc_async_write_barrier();
-            noc_async_write(ask + 48, writer.core_noc(link, ask + 48), 16);
+            noc_async_write(own + 48, writer.core_noc(link, ask + 48), 16);
             noc_async_write_barrier();
             noc_semaphore_inc(writer.core_noc(link, area + KM_RELAY_ASKED), 1);
             noc_async_atomic_barrier();
@@ -259,7 +274,7 @@ namespace km {
         template <typename Kernel>
         void done(const Kernel& kernel, volatile tt_l1_ptr uint32_t* a) {
             const uint32_t token = a[kAskValid], source = a[kAskSource];
-            const uint32_t at = area_ + KM_RELAY_DONE + (a[kAskSlot] & 1u) * 16;
+            const uint32_t at = relay_done(a[kAskSlot] & 1u);
             a[kAskValid] = 0;
             volatile tt_l1_ptr uint32_t* line = l1(area_ + KM_RELAY_LINES + 16);
             line[0] = token;
@@ -467,7 +482,7 @@ namespace km {
             );
             volatile tt_l1_ptr uint32_t* line = l1(area_ + KM_RELAY_LINES + 16);
             line[0] = token;
-            const uint32_t done = area_ + KM_RELAY_DONE + (a[kAskSlot] & 1u) * 16;
+            const uint32_t done = relay_done(a[kAskSlot] & 1u);
             noc_async_write(
                 area_ + KM_RELAY_LINES + 16, kernel.core_noc(source, done), 4
             );
@@ -502,7 +517,7 @@ namespace km {
             d[kAskPort] = a[kAskPort];
             d[kAskSlot] = 0;
             d[kAskValid] = token;
-            l1(area_ + KM_RELAY_DONE)[0] = 0;
+            l1(relay_done(0))[0] = 0;
             const uint32_t ask = area_ + KM_RELAY_ASK + line * 64;
             noc_async_write(area_ + KM_RELAY_DESC, kernel.core_noc(core, ask), 48);
             noc_async_write_barrier();
@@ -533,7 +548,7 @@ namespace km {
             bool sent_on = false;  // a rank further on: sent on and taken there
 #if defined(KM_FORWARD)
             if (state(kRelayOnward) != 0) {
-                if (l1(area_ + KM_RELAY_DONE)[0] != state(kRelayOnward)) {
+                if (l1(relay_done(0))[0] != state(kRelayOnward)) {
                     return;  // not taken there yet
                 }
                 state(kRelayOnward) = 0;

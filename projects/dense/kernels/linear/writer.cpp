@@ -168,7 +168,7 @@ void kernel_main() {
         invalidate_l1_cache();  // the tensor table
         const Span mine = k_part(w, here, k_whole, n_whole);
         const uint32_t x = command.a0;
-        bool sync = exchanging(x, w, y, m_tiles, k_whole, n_whole);
+        bool sync = LINEAR_EXCHANGES && exchanging(x, w, y, m_tiles, k_whole, n_whole);
         // the rows this island makes: the plan's rows start at its first
         const Span made = made_rows(x, here, m_tiles, k_whole);
         const auto window_of = [&](uint32_t to) {
@@ -217,10 +217,10 @@ void kernel_main() {
             for (uint32_t turn = 1; turn <= islands; ++turn) {
                 const uint32_t to = island_at(here, turn);
                 const Span window = window_of(to);
-                if (window.count == 0) {
+                if (window.count == 0 || (!LINEAR_EXCHANGES && to != here)) {
                     continue;
                 }
-                const bool own = to == here;
+                const bool own = !LINEAR_EXCHANGES || to == here;
                 if (own && sync) {  // every put counted, then every island's
                     stamps[kStampPut] = km::wall();
                     if (!settle()) {

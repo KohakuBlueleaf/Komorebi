@@ -62,6 +62,11 @@ namespace km {
             return area_[KM_ISLAND_LINK_AREA / 4];
         }
 
+        // The own words' L1 address on this island's cores; 0: none (no links).
+        uint32_t own_words() const {
+            return area_[KM_ISLAND_OWN / 4];
+        }
+
         // The tensor table's L1 address on this island's cores; 0: none (one island).
         uint32_t tensors() const {
             return area_[KM_ISLAND_TENSORS / 4];
