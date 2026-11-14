@@ -260,10 +260,12 @@ namespace km {
                 ->to_chip_unicast(static_cast<uint8_t>(r.hops));
         }
         auto& sender = pages_sender();
-        uint32_t read_mark[kPagesSlotsMax];
         uint32_t sent_mark[kPagesSlotsMax];
+        // Slot s's read carries transaction id 1 + s: reads from several banks land out
+        // of order, so a count of responses does not say which slot is full.
         const auto read = [&](uint32_t k) {
             const uint32_t s = k % slots;
+            noc_async_read_set_trid(1 + s);
             noc_async_read(
                 r.from_core == KM_PAGES_DRAM
                     ? from.get_noc_addr(r.first + base + k)
@@ -275,7 +277,6 @@ namespace km {
                 area + kPagesSlots + s * r.page,
                 r.page
             );
-            read_mark[s] = noc_reads_num_issued[noc_index];
         };
         uint32_t ahead = total < slots ? total : slots;
         for (uint32_t k = 0; k < ahead; k++) {
@@ -286,7 +287,7 @@ namespace km {
             const uint32_t s = k % slots;
             const uint32_t slot = area + kPagesSlots + s * r.page;
             if (!wait([&] {
-                return noc_reached(NIU_MST_RD_RESP_RECEIVED, read_mark[s]);
+                return ncrisc_noc_read_with_transaction_id_flushed(noc_index, 1 + s);
             })) {
                 break;
             }
@@ -342,6 +343,7 @@ namespace km {
             }
         }
         const uint32_t sending = code;
+        noc_async_read_set_trid(0);
         // The slots and headers are free for the next command once sent and read.
         if (!wait([] {
             return ncrisc_noc_nonposted_writes_sent(noc_index);

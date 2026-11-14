@@ -12,6 +12,7 @@
 #include "api/dataflow/dataflow_api.h"
 #include "km_placement.hpp"
 #include "km_port.hpp"
+#include "km_transfer.hpp"
 
 namespace km {
 
@@ -305,6 +306,222 @@ namespace km {
                 core, command, port, put, kWhereAsk, slot(command) | holder << 8
             )
         );
+    }
+
+    // A copy's port for the pages it asks for or puts (the last port).
+    constexpr uint32_t kCopyPort = KM_PORTS - 1;
+
+    // The placement table entry of the island tensor at bank address `address` (the
+    // session's, at the load, in the link area), or nullptr: none, or one island.
+    inline const volatile tt_l1_ptr uint32_t* placed_at(uint32_t address) {
+        const Islands view(island_area());
+        const uint32_t area = view.link_area();
+        if (view.count() < 2 || area == 0 || address == 0) {
+            return nullptr;
+        }
+        for (uint32_t e = 0; e < KM_PLACE_ENTRIES; e++) {
+            const volatile tt_l1_ptr uint32_t* entry = (
+                l1(area + KM_PLACE_TABLE + e * KM_PLACE_ENTRY_BYTES)
+            );
+            if (entry[0] == 0) {
+                return nullptr;
+            }
+            if (entry[0] == address) {
+                return entry;
+            }
+        }
+        return nullptr;
+    }
+
+    // The island that holds page `page` of a placed tensor (`entry`): its part's; a
+    // copy's or a page in no part: this island.
+    inline uint32_t entry_holder(
+        const volatile tt_l1_ptr uint32_t* entry, uint32_t page
+    ) {
+        if (entry[1] == 0) {
+            for (uint32_t i = 0; i < 2; i++) {
+                if (page - entry[2 + 2 * i] < entry[3 + 2 * i]) {
+                    return i;
+                }
+            }
+        }
+        return island();
+    }
+
+    // A copy's side (`pages` pages) that names a tensor another island holds some of
+    // those pages of: its table entry, or nullptr (a bank range, a tensor the table
+    // does not list, or all its pages here).
+    inline const volatile tt_l1_ptr uint32_t* copy_placed(
+        const km_copy_side_t& side, uint32_t pages
+    ) {
+        const volatile tt_l1_ptr uint32_t* entry = (
+            side.bank == KM_COPY_INTERLEAVED ? placed_at(side.address) : nullptr
+        );
+        if (entry == nullptr || entry[1] != 0) {
+            return nullptr;
+        }
+        const uint32_t here = island();
+        for (uint32_t i = 0; i < 2; i++) {
+            const uint32_t first = entry[2 + 2 * i], end = first + entry[3 + 2 * i];
+            if (i != here && first < side.first + pages && side.first < end) {
+                return entry;
+            }
+        }
+        return nullptr;
+    }
+
+    // Whether a copy has a side with pages another island holds (two islands).
+    inline bool copy_crosses(const km_copy_t& c) {
+        return (
+            copy_placed(c.from, c.pages) != nullptr ||
+            copy_placed(c.to, c.pages) != nullptr
+        );
+    }
+
+    // Reader: rank `rank` of `count` copies its pages a chunk at a time, a side whose
+    // tensor is placed over islands page by page by its holder: this island's pages
+    // read or written as copy_pages does, each run another island holds one get
+    // (into the chunk) or put (from it) line, counted at kCopyPort and waited for
+    // before the chunk goes on. False: gave up (recorded).
+    inline bool copy_across(
+        const Reader& reader,
+        const km_command_t& command,
+        const km_copy_t& c,
+        uint32_t rank,
+        uint32_t count
+    ) {
+        uint32_t code = kGaveNone;
+        const auto give_up = [&](uint32_t why) {
+            reader.gave_up(kStReader, why, kWhereCopy, slot(command), command.sequence);
+            return false;
+        };
+        if (rank >= count || !km_copy_fits(&c, count, MEM_L1_SIZE, NUM_DRAM_BANKS)) {
+            return give_up(kGaveBadTransfer);
+        }
+        const auto wait = [&](bool (*ready)()) {
+            code = reader.poll_at(kWhereCopy, ready, reader.args().wait_limit);
+            return code == kGaveNone;
+        };
+        const auto read_done = [] {
+            return ncrisc_noc_reads_flushed(noc_index);
+        };
+        const auto write_done = [] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        };
+        // the lines' pages on the port; a miss names the island
+        const auto copy_wait = [&](uint32_t holder, uint32_t pages) {
+            const uint32_t named = slot(command) | holder << 8;
+            return port_wait_at(
+                reader, command, kCopyPort, pages, kWhereAsk, named
+            );
+        };
+        const uint32_t here = island();
+        const auto* from = copy_placed(c.from, c.pages);
+        const auto* to = copy_placed(c.to, c.pages);
+        const Partition share = partition(c.pages, rank, count);
+        const uint32_t chunk_pages = c.chunk / c.page;
+        // One side of `n` pages from index `start` of the share: local pages by
+        // `local(index, k)`, runs held elsewhere by one line each from L1 `at`. The
+        // pages asked for or put, and the island of the last run.
+        const auto side = [&](
+            const km_copy_side_t& s,
+            const volatile tt_l1_ptr uint32_t* entry,
+            const AskQueue& queue,
+            uint32_t start,
+            uint32_t n,
+            uint32_t at,
+            auto local,
+            uint32_t& holder
+        ) -> uint32_t {
+            uint32_t lined = 0;
+            for (uint32_t k = 0; k < n;) {
+                const uint32_t page = s.first + start + k;
+                const uint32_t h = entry != nullptr ? entry_holder(entry, page) : here;
+                if (h == here) {
+                    local(page, k);
+                    k++;
+                    continue;
+                }
+                uint32_t run = 1;
+                while (k + run < n && entry_holder(entry, page + run) == h) {
+                    run++;
+                }
+                if (
+                    !ask_line(
+                        reader,
+                        command,
+                        queue,
+                        h,
+                        s.address,
+                        c.page,
+                        page,
+                        run,
+                        at + k * c.page,
+                        kCopyPort
+                    )
+                ) {
+                    return 0xFFFFFFFFu;
+                }
+                lined += run;
+                holder = h;
+                k += run;
+            }
+            return lined;
+        };
+        for (uint32_t done = 0; done < share.len; done += chunk_pages) {
+            const uint32_t n = (
+                share.len - done < chunk_pages ? share.len - done : chunk_pages
+            );
+            const uint32_t start = share.start + done;
+            uint32_t holder = here;
+            const uint32_t got = side(
+                c.from,
+                from,
+                kAskGets,
+                start,
+                n,
+                c.buffer,
+                [&](uint32_t page, uint32_t k) {
+                    noc_async_read(
+                        copy_noc(c.from, c.page, page), c.buffer + k * c.page, c.page
+                    );
+                },
+                holder
+            );
+            if (got == 0xFFFFFFFFu) {
+                return false;
+            }
+            if (!wait(read_done)) {
+                return give_up(code);
+            }
+            if (got != 0 && !copy_wait(holder, got)) {
+                return false;
+            }
+            const uint32_t put = side(
+                c.to,
+                to,
+                ask_puts(kRoleReader),
+                start,
+                n,
+                c.buffer,
+                [&](uint32_t page, uint32_t k) {
+                    noc_async_write(
+                        c.buffer + k * c.page, copy_noc(c.to, c.page, page), c.page
+                    );
+                },
+                holder
+            );
+            if (put == 0xFFFFFFFFu) {
+                return false;
+            }
+            if (!wait(write_done)) {
+                return give_up(code);
+            }
+            if (put != 0 && !copy_wait(holder, put)) {
+                return false;
+            }
+        }
+        return true;
     }
 
 }  // namespace km

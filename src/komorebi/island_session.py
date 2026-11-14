@@ -479,6 +479,7 @@ class IslandSession:
         self.run = None
         self.link_cores = ()  # per island: the local cores (core table) of its links
         self._regions = []  # the message service's L1 region on every core, by island
+        self._placed = []  # the island tensors made, in order (the placement table)
         self.channels = ()  # per island: the Ethernet channel of each link it sends on
 
     def __enter__(self):
@@ -648,7 +649,9 @@ class IslandSession:
             by,
         )
         try:
-            return IslandTensor(parts, placement)
+            made = IslandTensor(parts, placement)
+            self._placed.append(made)
+            return made
         except KomorebiError:
             for part in parts:
                 part.free()
@@ -1083,11 +1086,11 @@ class IslandSession:
         for island, session in enumerate(self.sessions):
             far = 1 - island
             columns, rows = session.grid
-            area = session.tensor(
-                np.zeros((columns * rows, bytes_ // 4), np.uint32),
-                "uint32",
-                shard_grid=(columns, rows),
-            )
+            words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
+            table = self._place_table()
+            at = h["KM_PLACE_TABLE"] // 4
+            words[:, at : at + table.size] = table
+            area = session.tensor(words, "uint32", shard_grid=(columns, rows))
             self._link_areas.append(area)
             if area.address != self._link_areas[0].address:
                 raise KomorebiError(
@@ -1116,6 +1119,25 @@ class IslandSession:
         for plan in plans:
             plan.relay[1] = relays[plan.far]
         return plans
+
+    def _place_table(self):
+        """The placement table of the link area (KM_PLACE_TABLE): the island tensors
+        made before the load, newest first, an entry each {address, copy, then first
+        page and pages of each island}; a copy that names a tensor by its address
+        crosses for the pages another island holds. Tensors made after the load are
+        not in it."""
+        h = abi.headers()
+        entries, width = h["KM_PLACE_ENTRIES"], h["KM_PLACE_ENTRY_BYTES"] // 4
+        table = np.zeros(entries * width, np.uint32)
+        newest = [t for t in reversed(self._placed) if len(t.placement.parts) == 2]
+        for e, tensor in enumerate(newest[:entries]):
+            parts = [word for part in tensor.placement.parts for word in part]
+            table[e * width : e * width + 6] = [
+                tensor.address,
+                int(tensor.placement.copy),
+                *parts,
+            ]
+        return table
 
     def _check_links(self, runs, plans):
         """Every island's dispatcher has the tile and LIM base its link line took for

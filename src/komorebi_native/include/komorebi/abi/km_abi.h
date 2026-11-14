@@ -173,7 +173,15 @@
 #define KM_PUT_HEADERS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES + 0x40u)
 #define KM_PUT_LINES (KM_PUT_HEADERS + 0xC0u)
 #define KM_PUT_INBOX (KM_PUT_LINES + KM_ASK_SLOTS * 64u)
-#define KM_LINK_AREA_BYTES (KM_PUT_INBOX + KM_ASK_SLOTS * 64u)
+/* Then the island tensors the session knew at the load, newest first, for a copy
+ * (KM_HANDLER_COPY) that names a tensor by its bank address alone: an entry each,
+ * {bank address (0: the end), copy, then first page and pages of island 0 and of
+ * island 1} (km_ask.hpp) */
+#define KM_PLACE_TABLE (KM_PUT_INBOX + KM_ASK_SLOTS * 64u)
+#define KM_PLACE_ENTRIES 16u
+#define KM_PLACE_ENTRY_BYTES 32u
+#define KM_LINK_AREA_BYTES \
+    (KM_PLACE_TABLE + KM_PLACE_ENTRIES * KM_PLACE_ENTRY_BYTES)
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u
