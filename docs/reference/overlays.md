@@ -168,6 +168,16 @@ one card, from the leader's cast to the last call done, an overlay every core lo
 to 1.13 µs, on a row, a column of 10 and the whole grid
 ([17_leader_overlay](../../examples/17_leader_overlay/README.md)).
 
+## A message's handler as an overlay
+
+A dynamic handler's body can be an overlay's compute part with the entry `km_message`
+([Dynamic handlers](dynamic.md#handlers-as-overlays)). The messages reader is the tile's
+loader there too: it sees each message's handler before compute does, groups a packet's
+messages by handler and runs `load()` of each group's overlay after it hands compute the
+packet; compute meets it only for a handler the tile does not hold. On 120 cores, three
+handlers as parts move 10^6 messages as fast as the same handlers compiled into the
+compute kernel ([20_message_overlays](../../examples/20_message_overlays/README.md)).
+
 ## Costs
 
 On one Blackhole card, AICLK 1,350 MHz, medians over cores and commands

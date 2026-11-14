@@ -26,7 +26,10 @@ A program has up to four dynamic handlers, and each message names the one that h
 it where it lands ([A message names its handler](#a-message-names-its-handler)). The
 program writes the handlers' bodies in its compute kernel. The reader and writer
 kernels of a dynamic run are generic and ship with the runtime
-(`src/komorebi_native/kernels/messages_reader.cpp` and `messages_writer.cpp`).
+(`src/komorebi_native/kernels/messages_reader.cpp` and `messages_writer.cpp`). In the
+other form, each handler's body is an overlay that a core loads when a message for it
+arrives, and a program has up to 16 handlers
+([Handlers as overlays](#handlers-as-overlays)).
 
 ## The calls
 
@@ -86,8 +89,9 @@ program.dynamic(
 ```
 
 `Program.dynamic` makes one handler dynamic, or several (`program.dynamic("lookup",
-"value", "report", ...)`, up to four, by name or number), and adds the runtime's three
-buffers to the program (circular buffers 26 to 28: incoming packets, outgoing messages,
+"value", "report", ...)`, up to four, by name or number; up to 16 with `parts=`, see
+[Handlers as overlays](#handlers-as-overlays)), and adds the runtime's three buffers to
+the program (circular buffers 26 to 28: incoming packets, outgoing messages,
 open bins). All of a program's dynamic handlers share the options and the queues. The
 options are those of `komorebi.program.Dynamic`:
 
@@ -143,6 +147,105 @@ The kernels' and the dispatcher's test of "a dynamic run" is `KM_IS_DYNAMIC(hand
 handler)` in `km_abi.h`: the program's dynamic handlers are one word, one a byte, the
 first word of `km::MessagesArgs` and the dispatcher's `messages_handler`; a program with
 one dynamic handler has its number there, as before.
+
+## Handlers as overlays
+
+A handler's body can be an [overlay](overlays.md): a compute part that a core loads into
+a slot when a message for that handler arrives and the core does not hold it. The runtime
+then owns all three kernels, the message loop among them
+(`src/komorebi_native/kernels/messages_compute.cpp`), and the program supplies one source
+per handler:
+
+```c++
+// lookup.cpp: the body of handler lookup
+#include "komorebi/device/km_messages.hpp"
+#include "handlers.h"
+
+void km_message(km::Messages& messages, km::Packet& packet) {
+    for (uint32_t index = 0; index < packet.count; index++) {
+        const volatile tt_l1_ptr uint32_t* incoming = packet[index];  // a lookup message
+        ... forward, send, consume, as in the calls above
+    }
+}
+```
+
+```python
+program = km.Program(
+    "message_overlays",
+    kernels=None,  # the runtime's reader, compute and writer
+    args=lambda core: ([], [], [results.address]),  # compute argument 0, in L1
+    handlers=folder / "handlers.h",
+).dynamic("lookup", "value", "report", parts=folder)
+program.slots(count=2)  # optional: compute slots, by default one per handler (up to 4)
+run.submit("lookup", (0, count), [threads, steps], exclusive=True)
+```
+
+`km_program` is called for a command of a program; `km_message` is called for the
+messages of a handler. `parts` is a folder holding `<name>.cpp` for each handler
+(`lookup.cpp`, `value.cpp`, `report.cpp` here), or a dict `{name: source}`. Handler `i` of the list is overlay `i + 1`; a program whose
+handlers are parts has no overlays of its own (refused either way round).
+
+| Call | What it does |
+|---|---|
+| `km_message(messages, packet)` | the handler's body, once per packet for the packet's messages of this handler: `packet.count` of them, `packet[index]` as above. `messages.handler()` is this handler |
+| `messages.seeding()` | true in the one call that seeds: the `RUN` command's handler is called once with an empty packet before the first packet (not on a counter tile) |
+| `messages.command()` | the `RUN` command (its argument words are the program's) |
+| `messages.arg(index)` | the program's compute argument `index` |
+
+A part does not call `next()` or `done()`: the runtime takes the packet, calls each of
+its handlers and frees it.
+
+**Per packet.** When the reader has read a packet, it groups the packet's messages by
+handler in the packet's header: the handlers the tile holds first, then the others, each
+in the order of the program's list. It hands compute the packet, then runs `load()` of each
+group's overlay in that order. Compute takes the groups in the same order: `load()`, then
+`call()` with a packet that holds that group's messages. The reader and compute decide
+from the same records whether the tile holds a handler, so they meet only for a handler it
+does not hold; a held handler costs one look at the records per packet, nothing per
+message. Messages of one packet are handled by handler, not in queue order (Komorebi
+never promised an order).
+
+**State.** A part holds nothing from one call to the next (its `.bss` is zeroed on every
+call). What a handler keeps across messages (counters, sums, a table) lives in L1 that the
+program declares, as any resident data: a tensor with `shard_grid` whose address is a
+compute argument (`messages.arg(0)` above). The body runs on all three compute cores
+alike, as before: one of them writes the state (`UNPACK((...))`).
+
+**The limits.**
+
+- Up to 16 handlers (`kMessagesHandlersMax`): the packet's 64-byte header holds a
+  group's end for each. A `RUN` command names one of the first four, the handlers the
+  dispatcher knows (`KM_DYNAMIC_MAX`, one a byte in one word); the others are reached
+  only by `send` and `forward`. Every other overlay number (17 to 63) is free.
+- Slots: 1 to 4 on each compute core (`program.slots`), as for any overlay; with fewer
+  slots than handlers, a load replaces the handler the tile used least recently. The
+  slots go just under 1 MB of L1, and the session's L1 budget table lists them.
+- A message whose handler is not one of the program's dynamic handlers, or whose program
+  field is not 0, stops the run before compute sees it: the core gives up with reason 40
+  (`handler`), and `seen` is the message's word 0. A part that does not load gives up
+  with reason 41 (`load`); the core's gave-up record names the overlay and why.
+- The compute kernel does no hardware start-up (as the forward and handler examples):
+  a part that uses the matrix or vector unit calls the compute API's own `*_init` calls.
+
+**What it costs.** Card 0, AICLK 1,350 MHz, the three handlers of the
+[message handlers example](../../examples/14_message_handlers/README.md) in its form and
+as parts ([20_message_overlays](../../examples/20_message_overlays/README.md#measured)):
+
+| | 120 cores, 1,013,360 messages | 1 core, 82,938 messages |
+|---|---|---|
+| bodies in the compute kernel (example 14) | 10.83 ms, 93.6 M messages a second | 21.92 ms, 357 cycles a message |
+| as parts, 3 slots | 10.76 ms, 94.2 M a second; 3 loads a core (the first messages) | 21.92 ms, 357 cycles; 3 loads |
+| as parts, 2 slots | 10.77 ms, 94.1 M a second; 13,230 loads, 112 a core, one per 77 messages | 21.92 ms; 3 loads |
+| as parts, 1 slot | 11.40 ms, 88.9 M a second; 97,394 loads | 22.21 ms, 362 cycles; 601 loads, 0.49 µs each |
+
+Medians of 10 runs (3 for one slot); the run time is the `RUN` command's, submit to
+completion. A load stops the core's message loop while compute finishes the packet before
+it and the parts are read: about 0.5 µs of the run's time on one core, 0.8 µs on the grid,
+where the loads of 118 cores share the DRAM banks. The grid's run is bound by its queues in
+DRAM, not by compute, so 112 loads a core cost it nothing measurable. Serving the held
+handlers of a packet first (the order above) is what keeps loads few: without it, a packet
+with all three handlers and two slots loads three times, and the same runs loaded 20,249
+times (2 slots, grid) and 5,137 times (1 slot, one core: 28.70 ms, 1.3 µs a load).
 
 ## How a message travels
 
@@ -267,8 +370,11 @@ the same loaded program.
 | 33 | fill | the start-up zero fill of the queue did not finish |
 | 34 | full | this core's queue positions reached 2^30 in this load |
 | 35 | counter | a counter tile did not show READY within the wait limit, or the group has no core beside them |
+| 40 | handler | handlers as parts: a message names a handler that is not one of the program's dynamic handlers, or a program other than 0; word 3 is its word 0 |
+| 41 | load | handlers as parts: a handler's part did not load (the core's gave-up record names the overlay) |
 
-The codes follow the runtime's where codes (0 to 18) and are `kWhereMessages*` in `km_core.hpp`.
+The codes follow the runtime's where codes (0 to 18), 40 and 41 follow the overlays',
+and all are `kWhereMessages*` in `km_core.hpp`.
 
 ## Not in this version
 
@@ -276,9 +382,8 @@ The codes follow the runtime's where codes (0 to 18) and are `kWhereMessages*` i
 - A body that asks for a DRAM fetch decided by a message: a dynamic program keeps what its
   body reads in L1.
 - Quota moving between cores; dynamic handlers with different message sizes in one
-  program, or more than four.
-- A handler whose code is loaded when its first message arrives: every dynamic
-  handler's body is in the compute kernel.
+  program; more than four handlers with the bodies in the program's compute kernel.
+- Dynamic handlers of two programs in one run: the program field of a message is 0.
 - Priorities or ordering between messages: a program that needs an order sorts at the
   receiver.
 

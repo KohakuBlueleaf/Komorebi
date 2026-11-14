@@ -131,5 +131,6 @@ nav:
       - examples/17_leader_overlay/README.md
       - examples/18_thread_split/README.md
       - examples/19_thread_programs/README.md
+      - examples/20_message_overlays/README.md
   - Releases:
       - releases/0.1.0.md
