@@ -24,11 +24,11 @@ write the tile out somewhere else.
 In `writer.cpp`:
 
 ```cpp
-constexpr auto ARGUMENTS = TensorAccessorArgs<0>();
+using Tensor = km::Tensor<0>;
 ...
-const auto tensor = TensorAccessor(ARGUMENTS, ADDRESS);
+const Tensor tensor(ADDRESS);
 writer.wait_front(INDEX, 1);
-noc_async_write_page(TILE, tensor, get_read_ptr(INDEX));
+km::write_pages(writer, command, tensor, TILE, 1, get_read_ptr(INDEX));
 noc_async_write_barrier();
 cb_pop_front(INDEX, 1);
 ```
@@ -36,15 +36,18 @@ cb_pop_front(INDEX, 1);
 In Python, one more entry of `compile_args`:
 
 ```python
-compile_args = {"reader": SOURCE.accessor_args(), "writer": DESTINATION.accessor_args()}
+compile_args = {"reader": SOURCE.tensor_args(), "writer": DESTINATION.tensor_args()}
 ```
 
-- `ARGUMENTS` and `TensorAccessor(...)` are as in [[reading-from-dram]], here for the
+- `km::Tensor<0>` and `Tensor(ADDRESS)` are as in [[reading-from-dram]], here for the
   destination. `ADDRESS` is `destination.address`, passed as a command argument.
 - `writer.wait_front(INDEX, 1)` waits until a tile is in the buffer.
-- `noc_async_write_page(TILE, tensor, where)` starts a copy of the L1 data at `where` into
-  tile number `TILE` of the tensor. `get_read_ptr(INDEX)` is the address of the tile in the
-  buffer.
+- `km::write_pages(writer, command, tensor, TILE, PAGES, where)` starts a copy of the L1
+  data at `where` into `PAGES` tiles from tile number `TILE` of the tensor.
+  `get_read_ptr(INDEX)` is the address of the tile in the buffer. On one card it is
+  tt-metal's `noc_async_write_page`, once a tile; a tile another card holds is sent to
+  that card, and the call returns once it is written there. It returns false if it gave
+  up.
 - `noc_async_write_barrier()` waits until every write that was started is finished.
 - `cb_pop_front(INDEX, 1)` says "I am done with the tile", and frees the room for the
   reader.

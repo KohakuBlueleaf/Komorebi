@@ -37,7 +37,22 @@ def parse():
     parser.add_argument(
         "--deadline", type=float, default=1.0, help="a command, seconds"
     )
+    parser.add_argument(
+        "--far",
+        action="store_true",
+        help="the input held by the last island's ranks: the others, rank 0 among "
+        "them, ask for their tiles",
+    )
     return parser.parse_args()
+
+
+def placed(session, far):
+    """The input's hint: a copy on every island, or (far) split over the last
+    island's ranks, so every other island's ranks read theirs across."""
+    if not far:
+        return {"copy": True}
+    last = len(session.sessions) - 1
+    return {"split": 0, "group": (session.graph.first(last), session.graph.count(last))}
 
 
 def program(input_tensor, output_tensor):
@@ -69,7 +84,7 @@ def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     generator = np.random.default_rng(1)
-    report = {"cards": cards, "tiles": args.tiles, "part": args.part}
+    report = {"cards": cards, "tiles": args.tiles, "part": args.part, "far": args.far}
     links = 1 if len(cards) > 1 else 0
     opened = {"cards": cards, "links": links}
     if args.islands:  # one card split: a wire between each pair of islands
@@ -81,7 +96,7 @@ def main():
             for i in range(len(session.sessions))
         ]
         exact = generator.integers(-2, 3, (args.tiles * TILE, TILE)).astype(np.float32)
-        inputs = session.tensor(exact, "float32", "tile", copy=True)
+        inputs = session.tensor(exact, "float32", "tile", **placed(session, args.far))
         output = session.tensor(
             np.zeros((args.part * TILE, TILE), np.float32), "float32", "tile", copy=True
         )

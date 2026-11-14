@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_program.hpp"
 #include "../two_programs.h"
 #include "../../thread_load.h"
@@ -31,12 +32,10 @@ bool km_program(km::Writer& writer, const km_command_t& command) {
     line[TL_LINE_TAG] = command.a4;
     line[TL_LINE_PROGRAM] = TL_PROGRAM_SUM;
     line[TL_LINE_FIRST] = command.a6 + partition.start;
-    const InterleavedAddrGen<true> outs = {
-        .bank_base_address = command.a2, .page_size = TL_LINE_BYTES
-    };
-    noc_async_write(
-        buffer, get_noc_addr(command.a3 + writer.me(), outs), TL_LINE_BYTES
-    );
+    const km::Tensor<0> outs(command.a2);  // its reference word
+    if (!km::write_pages(writer, command, outs, command.a3 + writer.me(), 1, buffer)) {
+        return false;
+    }
     noc_async_writes_flushed();
     return true;
 }

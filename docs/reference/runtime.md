@@ -361,17 +361,17 @@ at small offsets.
 | 0x780 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
 | 0x7C0 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
 | 0x800 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
-| 0xA00 | `KM_CONTROL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
-| 0xA80 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
-| 0xD00 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
-| 0xDC0 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
-| 0x1600 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
-| 0x1640 | `KM_CONTROL_BLOCK` | 2 block areas of 1,088 bytes (`KM_BLOCK_AREA_BYTES`), the reader's then the writer's: a line whose word 0 is the sequence of the command read in, then up to 1,024 bytes of its block ([the block](#the-block)) |
-| 0x1EC0 | `KM_CONTROL_ABORT` | 64 abort words, one per slot: the sequence of the slot's command the dispatcher gave up |
-| 0x1FC0 | `KM_CONTROL_LIVE` | live words (`km::kLv*`, 512 bytes): per kernel its wait's where code, its command's sequence and slot, the commands it has left; the trace's address and capacity, the commands given up; then what a give-up clears ([live words](#live-words)) |
-| 0x21C0 | `KM_CONTROL_ISLANDS` | the island area, 192 bytes: a 32-byte header (this island, the islands, its first rank, its ranks, its first core of the card), then the island table ([islands](#islands)) |
-| 0x2280 | `KM_CONTROL_RING` | 64 ring slots of one command each (64 bytes) |
-| 0x3280 | `KM_CONTROL_BYTES` | size of the control block |
+| 0xA00 | `KM_CONTROL_PORT` | 10 ports of 16 bytes: count, wanted count; ports 0 to 7 a kernel names ([ports](ports.md)), 8 and 9 (`KM_PORT_PAGES`) the reader's and the writer's page calls' ([islands](islands.md)) |
+| 0xAC0 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
+| 0xD40 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
+| 0xE00 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
+| 0x1640 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
+| 0x1680 | `KM_CONTROL_BLOCK` | 2 block areas of 1,088 bytes (`KM_BLOCK_AREA_BYTES`), the reader's then the writer's: a line whose word 0 is the sequence of the command read in, then up to 1,024 bytes of its block ([the block](#the-block)) |
+| 0x1F00 | `KM_CONTROL_ABORT` | 64 abort words, one per slot: the sequence of the slot's command the dispatcher gave up |
+| 0x2000 | `KM_CONTROL_LIVE` | live words (`km::kLv*`, 512 bytes): per kernel its wait's where code, its command's sequence and slot, the commands it has left; the trace's address and capacity, the commands given up; then what a give-up clears ([live words](#live-words)) |
+| 0x2200 | `KM_CONTROL_ISLANDS` | the island area, 192 bytes: a 32-byte header (this island, the islands, its first rank, its ranks, its first core of the card), then the island table ([islands](#islands)) |
+| 0x22C0 | `KM_CONTROL_RING` | 64 ring slots of one command each (64 bytes) |
+| 0x32C0 | `KM_CONTROL_BYTES` | size of the control block |
 
 ### Live words
 

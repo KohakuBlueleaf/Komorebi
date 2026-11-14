@@ -11,7 +11,5 @@ constexpr uint32_t kHandlerWhere = 1;
 // into the same pages of tensor a1. A tensor another island holds is asked for
 // (read) or put (written) across; this island's pages move as tt-metal's page calls.
 constexpr uint32_t kHandlerMove = 2;
-// The L1 buffer (a circular buffer index; only its address is used) and the ports.
+// The L1 buffer (a circular buffer index; only its address is used).
 constexpr uint32_t kCbMove = 0;
-constexpr uint32_t kAskPort = 2;
-constexpr uint32_t kPutPort = 3;

@@ -32,7 +32,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `tensor.read()` | reads a tensor back as an array, after `stop` | [[tiles-and-tensors]] |
 | `session.read(tensor)` | the raw pages of a tensor | [[writing-to-dram]] |
 | `tensor.write(array)` | writes a tensor, before `load` | [[a-whole-map]] |
-| `tensor.accessor_args()`, `compile_args=` | lets a kernel address a tensor | [[reading-from-dram]] |
+| `tensor.tensor_args()`, `compile_args=`, `km::Tensor` | lets a kernel address a tensor | [[reading-from-dram]] |
 | `km.Buffer(index, format, page_bytes, pages)` | a circular buffer in the L1 of every core | [[circular-buffers]] |
 | `compute={...}` | arithmetic settings of the compute kernel | [[the-matrix-unit]] |
 | `exclusive=True` | a command waits for earlier ones that share cores | [[port]] |
@@ -54,7 +54,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `km::partition(n, rank, count)` | a core's share of `n` items | [[partitions]] |
 | `km::group_of(command, me)` | `.rank` and `.size` of a core in the group | [[the-leader]] |
 | `reader.reserve`, `writer.wait_front`, `cb_push_back`, `cb_pop_front` | pass tiles through a circular buffer | [[circular-buffers]] |
-| `noc_async_read_page`, `noc_async_write_page` and their barriers | copy a tile from or to DRAM | [[reading-from-dram]], [[writing-to-dram]] |
+| `km::read_pages`, `km::write_pages` and the barriers | copy tiles from or to DRAM, on whichever card holds them | [[reading-from-dram]], [[writing-to-dram]] |
 | `add_tiles`, `tile_regs_acquire` to `tile_regs_release`, `pack_tile` | add tiles in the matrix unit's registers | [[computing-on-a-tile]] |
 | `matmul_init`, `matmul_tiles` | multiply tiles | [[the-matrix-unit]] |
 | `km::l1(address)` | a core's L1 as a tensor Python can read | [[why-cores-talk]] |

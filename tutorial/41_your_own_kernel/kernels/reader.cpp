@@ -1,11 +1,12 @@
 // The reader kernel: reads the tiles of the core's share of the source, one after the
 // other, then takes part in the reduction.
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "handlers.h"
 
 void kernel_main() {
-    constexpr auto source_arguments = TensorAccessorArgs<0>();
+    using Source = km::Tensor<0>;
     km::Reader reader;
     const km::Arrival arrival = {kArrival, kArrivalPages, 1};
     // --8<-- [start:run]
@@ -16,14 +17,21 @@ void kernel_main() {
             const km::Partition share = (
                 km::partition(tile_count, group.rank, group.size)
             );
-            const auto source = TensorAccessor(source_arguments, command.a0);
+            const Source source(command.a0);
             for (uint32_t index = 0; index < share.len; index++) {
                 if (!reader.reserve(kOwnTiles, 1)) {
                     return;
                 }
-                noc_async_read_page(
-                    command.a1 + share.start + index, source, get_write_ptr(kOwnTiles)
-                );
+                if (!km::read_pages(
+                    reader,
+                    command,
+                    source,
+                    command.a1 + share.start + index,
+                    1,
+                    get_write_ptr(kOwnTiles)
+                )) {
+                    return;
+                }
                 noc_async_read_barrier();
                 cb_push_back(kOwnTiles, 1);
             }

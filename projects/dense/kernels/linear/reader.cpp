@@ -80,8 +80,7 @@ void kernel_main() {
                             x,
                             page,
                             k_length,
-                            base + tile_row * k_block_tiles * kBf16Bytes,
-                            kPortX
+                            base + tile_row * k_block_tiles * kBf16Bytes
                         )) {
                             return;
                         }
@@ -123,7 +122,7 @@ void kernel_main() {
             }
             // each holder's partial sums of the chunk, in island order: here read,
             // elsewhere asked a run of consecutive pages at a time
-            uint32_t to = get_write_ptr(kCbSums), asked = 0;
+            uint32_t to = get_write_ptr(kCbSums), asked = 0, holder = here;
             for (uint32_t island = 0; island < islands; ++island) {
                 if (!((held_by.holders >> island) & 1)) {
                     continue;
@@ -152,12 +151,12 @@ void kernel_main() {
                         bytes,
                         page,
                         run,
-                        to + tile * bytes,
-                        kPortP
+                        to + tile * bytes
                     )) {
                         return;
                     } else {
                         asked += run;
+                        holder = island;
                     }
                     tile += run;
                 }
@@ -166,7 +165,17 @@ void kernel_main() {
             if (!flushed(reader, km::kStReader, km::kFlushReads)) {
                 return;
             }
-            if (asked != 0 && !km::port_wait(reader, command, kPortP, asked)) {
+            if (
+                asked != 0 &&
+                !km::ask_wait(
+                    reader,
+                    km::slot(command),
+                    command.sequence,
+                    km::pages_port(reader),
+                    asked,
+                    holder
+                )
+            ) {
                 return;
             }
             cb_push_back(kCbSums, kChunk * sums);

@@ -1,3 +1,3 @@
-with bug 1: command 1 timed out: slot 0, sequence 1, group first 0 count 1; not reported: core 0 reader gave up (stop) in next writer gave up (stop) in data
-with bug 2: command 1 timed out: slot 0, sequence 1, group first 0 count 1; not reported: core 0 reader gave up (stop) in data writer gave up (stop) in cdone
+with bug 1: command 2 was given up, the run goes on; at the deadline: slot 0, sequence 1, group first 0 count 1; cores: core 0 reader waits in next writer waits in data
+with bug 2: command 2 was given up, the run goes on; at the deadline: slot 0, sequence 1, group first 0 count 1; cores: core 0 reader waits in data writer waits in cdone
 with bug 0: the command is done

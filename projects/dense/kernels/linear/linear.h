@@ -28,15 +28,12 @@ constexpr uint32_t kChunk = 4;  // tiles of a share read (and asked) at once
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
-// Ports: X's and P's asked pages; the island's tree up and down, the leaders' crossing,
-// the writer's go to its own reader; Y's pages put across.
-constexpr uint32_t kPortX = 0;
-constexpr uint32_t kPortP = 1;
+// Ports: the island's tree up and down, the leaders' crossing, the writer's go to its
+// own reader (pages asked or put across count at the page calls' own ports).
 constexpr uint32_t kPortUp = 2;
 constexpr uint32_t kPortCross = 3;
 constexpr uint32_t kPortDown = 4;
 constexpr uint32_t kPortGo = 5;
-constexpr uint32_t kPortY = 6;
 
 // Arguments as the grid form's: reader, writer: broadcast words, then core words;
 // compute: core words, then the two broadcast windows.

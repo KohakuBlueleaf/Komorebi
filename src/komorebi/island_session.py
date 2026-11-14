@@ -28,9 +28,9 @@ LINK_ARGS = 9
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
 LINK_TAIL = 0x20 + 2 * 16 * 256
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
-# The kernel buffer of a session over two cards: the largest build with page links
-# (90,112 B) and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
-KERNEL_BYTES = 112 * 1024
+# Two cards' kernel buffer: the largest page-link build (the linear layer's 98,592 B)
+# and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
+KERNEL_BYTES = 128 * 1024
 # The transfer buffer's chunk a session over two cards asks for: a page CPU passes
 # pages through its chunk, one L1 slot a read in flight (15 slots of 4 KiB and their
 # headers); a run with no room for it keeps the default.
@@ -662,7 +662,7 @@ class IslandSession:
             "slow_code": slow_code,
         }
         if kernel_bytes is None and (len(self.cards) == 2 or self.split > 1):
-            kernel_bytes = KERNEL_BYTES  # the link services' code in every kernel
+            kernel_bytes = KERNEL_BYTES  # the page links' code
         self.kernel_bytes = kernel_bytes
         self._worker_l1 = session_module.worker_l1_size(kernel_bytes)
         self.tree = tree
@@ -1402,10 +1402,11 @@ class IslandSession:
         return int(x) | int(y) << 8
 
     def port_address(self, island, port):
-        """The L1 address of port `port`'s count, the same on every core of `island`."""
+        """The L1 address of port `port`'s count, the same on every core of `island`
+        (KM_PORT_PAGES and the one after it: the page calls' own)."""
         h = abi.headers()
-        if not 0 <= port < h["KM_PORTS"]:
-            raise ValueError(f"port {port} of {h['KM_PORTS']}")
+        if not 0 <= port < h["KM_PORT_SLOTS"]:
+            raise ValueError(f"port {port} of {h['KM_PORT_SLOTS']}")
         control = self.run.island(island).backend.control_addr
         return control + h["KM_CONTROL_PORT"] + port * h["KM_PORT_STRIDE"]
 
@@ -1566,7 +1567,7 @@ class IslandSession:
                 f"one other than island {island}"
             )
         holder, _, _, index = holders[0]
-        if not 0 <= port < h["KM_PORTS"] or ranks > 0xFFFF:
+        if not 0 <= port < h["KM_PORT_SLOTS"] or ranks > 0xFFFF:
             raise ValueError(f"port {port}, ranks {ranks}")
         buffer, chunk = self.staging(holder)
         links = list(self.channels[holder]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX

@@ -20,7 +20,7 @@ bool km_program(km::Writer& writer, const km_command_t& command) {
         }
         const uint32_t page = command.a3 + partition.start + tile;
         if (!km::write_pages(
-            writer, command, output, page, 1, get_read_ptr(TP_CB_OUT), TP_PUT_PORT
+            writer, command, output, page, 1, get_read_ptr(TP_CB_OUT)
         )) {
             return false;
         }

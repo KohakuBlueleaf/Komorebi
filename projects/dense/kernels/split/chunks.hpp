@@ -74,10 +74,10 @@ bool move_chunks(
         columns
     };
     const km::Stream a_chunks(
-        km::kMoveRead, a_matrix, a_walk, 1, kChunksA, kChunkPattern, kAskPort
+        km::kMoveRead, a_matrix, a_walk, 1, kChunksA, kChunkPattern
     );
     const km::Stream w_chunks(
-        km::kMoveRead, w_matrix, w_walk, 1, kChunksW, kChunkPattern, kAskPort
+        km::kMoveRead, w_matrix, w_walk, 1, kChunksW, kChunkPattern
     );
     return km::move(core, a_chunks, w_chunks);
 }

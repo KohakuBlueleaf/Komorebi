@@ -1,11 +1,12 @@
 // The reader kernel: the sender of the row reads each block from DRAM and multicasts
 // it to the row; every other core waits for each block.
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_broadcast.hpp"
 #include "handlers.h"
 
 void kernel_main() {
-    constexpr auto source_arguments = TensorAccessorArgs<0>();
+    using Source = km::Tensor<0>;
     km::Reader reader;
     // --8<-- [start:run]
     reader.run([&](const km_command_t& command) {
@@ -16,7 +17,7 @@ void kernel_main() {
         if (!row.ok() || !row.included()) {
             return;
         }
-        const auto source = TensorAccessor(source_arguments, command.a0);
+        const Source source(command.a0);
         const uint32_t block_count = command.a1;
         for (uint32_t block = 0; block < block_count; block++) {
             if (!row.sender()) {
@@ -29,7 +30,9 @@ void kernel_main() {
             if (address == 0) {
                 return;
             }
-            noc_async_read_page(block, source, address);
+            if (!km::read_pages(reader, command, source, block, 1, address)) {
+                return;
+            }
             if (!row.cast(block)) {
                 return;
             }

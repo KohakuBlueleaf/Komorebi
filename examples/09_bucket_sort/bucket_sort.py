@@ -59,7 +59,7 @@ def program(keys, output, words, x280_cores):
         ],
         compile_args={
             "reader": keys.tensor_args(),
-            "writer": output.accessor_args(),
+            "writer": output.tensor_args(),
         },
     )
     table = words[2] * 4 << words[1]  # cores x buckets counters of 4 bytes

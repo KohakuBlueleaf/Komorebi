@@ -24,15 +24,12 @@ void kernel_main() {
         const uint32_t first = (movement.me() - km::first(command)) * tiles;
         // which mover moves which block
         const km::Pattern pattern = km::Pattern::of(command.a4);
-        // pages another island holds: asked for, counted at kAskPort (mover A)
-        // and kAskPort + 1 (mover B)
+        // pages another island holds: asked for (km::read_pages)
         const auto stream = [&](
             uint32_t direction, const auto& tensor, km::BufferPair pair
         ) {
             return (
-                km::Stream(
-                    direction, tensor, first, tiles, kBlock, 1, pair, pattern, kAskPort
-                )
+                km::Stream(direction, tensor, first, tiles, kBlock, 1, pair, pattern)
             );
         };
         return (

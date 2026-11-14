@@ -1,11 +1,12 @@
 // The reader kernel: for each tile of this core's share, copies tile i of the first
 // half of the source and tile i of the second half into the two input buffers.
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 
 void kernel_main() {
-    constexpr auto source_arguments = TensorAccessorArgs<0>();
+    using Source = km::Tensor<0>;
     km::Reader reader;
     // --8<-- [start:run]
     reader.run([&](const km_command_t& command) {
@@ -16,7 +17,7 @@ void kernel_main() {
             const km::Partition share = (
                 km::partition(tile_count, rank, km::count(command))
             );
-            const auto source = TensorAccessor(source_arguments, source_address);
+            const Source source(source_address);
             for (uint32_t index = 0; index < share.len; index++) {
                 const uint32_t tile = share.start + index;
                 if (
@@ -24,10 +25,21 @@ void kernel_main() {
                 ) {
                     return;
                 }
-                noc_async_read_page(tile, source, get_write_ptr(kFirstInput));
-                noc_async_read_page(
-                    tile_count + tile, source, get_write_ptr(kSecondInput)
-                );
+                if (!km::read_pages(
+                    reader, command, source, tile, 1, get_write_ptr(kFirstInput)
+                )) {
+                    return;
+                }
+                if (!km::read_pages(
+                    reader,
+                    command,
+                    source,
+                    tile_count + tile,
+                    1,
+                    get_write_ptr(kSecondInput)
+                )) {
+                    return;
+                }
                 noc_async_read_barrier();
                 cb_push_back(kFirstInput, 1);
                 cb_push_back(kSecondInput, 1);

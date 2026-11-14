@@ -28,8 +28,8 @@ with km.Session() as session:
         ],
         compute={"math_fidelity": "HiFi4"},
         compile_args={
-            "reader": source.accessor_args(),
-            "writer": destination.accessor_args(),
+            "reader": source.tensor_args(),
+            "writer": destination.tensor_args(),
         },
     )
     # --8<-- [end:program]

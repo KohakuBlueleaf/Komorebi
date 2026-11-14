@@ -225,8 +225,7 @@ void kernel_main() {
                                         y,
                                         page,
                                         1,
-                                        source,
-                                        kPortY
+                                        source
                                     )) {
                                         return false;
                                     }

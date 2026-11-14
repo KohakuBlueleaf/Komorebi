@@ -22,7 +22,7 @@ with km.Session() as session:
         kernels=HERE / "kernels",  # movement.cpp and compute.cpp
         handlers=HERE / "kernels" / "handlers.h",
         buffers=[km.BufferPair(0, 1, "uint32", page_bytes=source.page_bytes, pages=16)],
-        compile_args={"movement": source.accessor_args()},
+        compile_args={"movement": source.tensor_args()},
     )
     # --8<-- [end:program]
     run = session.load(program)
