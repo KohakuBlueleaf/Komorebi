@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: A session over several cards, each card's chip an island with its own grid and dispatcher, or one card split into islands; ranks flat and contiguous by island, commands split by island on the host, tensors placed by island. What it does today and what it does not yet.
+summary: A session over several cards, each card's chip an island with its own grid and dispatcher, or one card split into islands (each joined to each, or a line forwarding through the islands between); ranks flat and contiguous by island, commands split by island on the host, tensors placed by island. What it does today and what it does not yet.
 tags:
   - reference
   - host
@@ -557,10 +557,12 @@ reader's BRISC text is the larger of the two groups' for example 11 and the grid
 
 ## A card split into islands
 
-`km.Session(card=a, islands=n)`, n 2 to 4, returns the same `IslandSession` over one
-card described as n islands: the same calls, the same `IslandRun`, so a program for
-islands is developed and checked with one card. One device and one open; the graph is
-`islands.split_card(cores, columns, n, rows=True, reserve=False)`.
+`km.Session(card=a, islands=n, line=False, card_dram=False)`, n 2 to 4, returns the
+same `IslandSession` over one card described as n islands: the same calls, the same
+`IslandRun`, so a program for islands is developed and checked with one card. One card
+as one island stays the way to run; a split card is the way to check a program written
+for islands, and to exercise more than two islands, with the cards at hand. One device
+and one open.
 
 - **Cores.** An island's ranks run on a contiguous range of the card's cores from its
   base: core = base + (rank - the island's first rank). The base is in the island
@@ -582,10 +584,12 @@ islands is developed and checked with one card. One device and one open; the gra
   on two cards; a give-up names its ranks and island and the run goes on.
 - **Stop.** Each island stops alone: the host waits for its rows and reads its cores'
   control blocks from L1, since a buffer read would wait for the whole launch.
-- **Tensors.** One tensor in the card's DRAM, every page local to every island: its
-  word is the bank address; its placement by the hint is kept on the host. So a
-  kernel's page read or write does not cross on a split card (example 01's reads of
-  island 1's tiles below were asks across, measured before this rule).
+- **Tensors.** Held by island, as over two cards: each island's part of a tensor (by
+  its hint) in its own copy, its word naming its table entry, so a page another island
+  holds is asked for across, exactly as between two cards. `card_dram=True` keeps one
+  tensor in the card's DRAM instead, every page local to every island, its word the
+  bank address: for kernels that read a tensor by its bank address (example 03's
+  islands script opens so).
 - **Wires.** Every pair of islands is joined by `links` wires (default 1; with more
   than two islands, one): link cores taken from the end of each island's rows, a
   neighbour's links ceil(links / 2) cores in neighbour order, named and served as
@@ -594,8 +598,39 @@ islands is developed and checked with one card. One device and one open; the gra
   (`km_transport.hpp`) writes the far tile over the NoC instead of handing the packet
   to a router, each count or word after the writes before it; `KM_WIRE_DELAY` (ticks
   of the wall clock, default 0) holds each packet back to imitate a slow link. Every
-  link core is found by the island table's next link, so each island reaches every
-  other in one link.
+  link core is found by the island table's next link.
+- **A line.** `line=True` joins only neighbouring islands (0-1, 1-2, 2-3; the islands'
+  rows are in that order), as three or more cards in a row would be: island 0 reaches
+  island 2 through island 1. The table's hops are the islands apart; an end island has
+  one link core, an island between two (one toward each neighbour).
+- **Forwarding.** Over more than two islands the build also defines `KM_FORWARD` (the
+  session's; two islands build without it and their kernels stay smaller). A link core
+  that receives what is not for its island sends it on by its island's next link
+  toward the target: to the island's link core toward it over the card's NoC, which
+  sends it across. No other core of the island between does anything. Forwarded: a
+  command's line and its DONE, an ask and the pages that answer it (an ask is queued
+  again in the line queue of the link core toward the holder; the pages go back to the
+  asker), a relay part (a reduce's fold, a broadcast's blocks) and an island's report
+  at the end of a run (below). Each link core holds a forward area (3 parts of 2
+  slots of 4,480 bytes, `KM_FORWARD_*` in `km_abi.h`, its address in the island area
+  at `KM_ISLAND_FORWARD`): part 0 written by the far link core across, one part by each
+  other link core of its island, each with credits back. A message is not forwarded
+  packet by packet: the link core that takes it in queues it in the outbox of the link
+  core toward its rank, as a writer does. `crossings()` counts every link a crossing
+  uses. A put (`km::write_pages`) still goes one link only; a put to an island two
+  links away is refused (the kernel gives up).
+- **Messages over more than two islands.** Every link core serves its link in a
+  dynamic run (a PAGES command of mode MESSAGES each). The run's end is decided once
+  for the whole run: each island's link core 0 checks its island quiet (every core of
+  the run idle in this run and every link core of the island empty, alike over two
+  passes, and the island's counts balanced) and sends {quiet, received across, sent
+  across, round} to island 0's link core 0, forwarded like any line. The run ends when
+  two successive rounds show every island quiet, the sum sent across equal to the sum
+  received across, and the counts unchanged: island 0's link core 0 then sends the
+  verdict to every link core (its island's others, and across), and each island's link
+  core 0 shows its line idle with the island's totals, which ends that island's part.
+  Every wait is bounded. One link between two islands, at most three link cores an
+  island.
 - **Commands across.** A dispatcher sends a command to every island its group
   reaches; each island writes its own part of a far dispatcher's inbox (the 16 slots
   cut in islands - 1 parts), so with three islands a dispatcher keeps 3 commands
@@ -603,8 +638,7 @@ islands is developed and checked with one card. One device and one open; the gra
 - **Not on a split card.** A dict of programs, X280 threads and ports, a reset list
   for a core (a given-up command is not recovered by a reset), queued commands (the
   dispatcher places them over the whole card), and engine streams and graphs (not
-  checked on a split card). With more than two islands: messages (a link's quiet
-  test reads one far island; the session refuses them).
+  checked on a split card).
 
 Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,
 then with `--islands 2`), 2026-11-14, X280 at 1350 MHz, host load about 3, the median
@@ -629,6 +663,30 @@ event; the two-card numbers from the examples' READMEs beside them):
 
 Every output exact, every kernel ended with no error. These are to check a program,
 not to compare speeds: a split card's islands share one card's DRAM and NoC.
+
+The same on card 0 split as a line (`line=True`), 2026-11-15, the far island at the
+line's other end (two links from island 0 on three islands, three on four), every
+output exact, every kernel ended with no error:
+
+| What | 3 in a line | 4 in a line |
+|---|---|---|
+| Example 01, MAP on island 0's ranks reading its own DRAM / reading the far island's tiles by each core's ask (µs a round) | 215.96 / 376.63 (47 ranks) | 225.45 / 339.29 (35) |
+| Example 01, what crossed each link of the way, one round each core | asks 141 out, pages 282 back (577,536 B), on both links | asks 105, pages 210 (430,080 B), on all three |
+| Example 26, the sum over every rank (µs a round) | 183.22 | 194.17 |
+| Example 25, NOP from island 0's ring to its ranks / to the far island's (µs) | 3.021 / 7.376 | 3.088 / 11.300 |
+| Example 03, 8 broadcasts of 8 blocks over a 6 x 10 rectangle (µs a round, 480 checksums) | 820.62 | 931.09 |
+| Example 05, 16 messages of 4 forwards, the parts, island 0 first (µs) | 166.1, 134.3, 110.2 | 216.9, 184.3, 147.1, 115.6 |
+| Example 05, messages on the links, against the replay's link crossings | 56 of 56 | 75 of 75 |
+
+What a hop costs: a NOP's command and its DONE to an island one link away take 3.9 to
+5.1 µs (the mesh rows above), two links 7.4 µs and three 11.3 µs, so each island
+between adds 2.3 to 3.9 µs. Example 01's 141 asks of a round, each answered by two
+pages, took 160.7 µs more from two links away than from island 0's own DRAM, against
+41.6 µs from one link away in the mesh of three. The end of a dynamic run over islands
+(example 05, island 0's part, which holds the end): 146.6 µs over two islands, 166.1 over
+three in a line, 216.9 over four. The kernels with forwarding built in, beside the 128 KiB
+buffer a session takes by default: example 01's 99,280 B, example 05's 123,216 B (over two
+cards, without forwarding: 92,576 B and 109,360 B, built off the card).
 
 A NOP on one island of the split card costs what it costs on the whole card; a group
 over both islands costs two commands of host work, as on two cards. MAP on (0, 120):
@@ -671,9 +729,9 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 - Links: a dynamic run's messages cross only in a RUN of every rank;
   `collect` and `broadcast` over islands are not built, and while the run's messages
   are served link 0 carries nothing else (a core's ask waits too). A kernel's own ask
-  (`km::read_pages`) and put (`km::write_pages`) are carried by every page CPU; asks
-  and puts of more than two islands are not built. A copy across asks 16 KiB a line,
-  one line a core in flight.
+  (`km::read_pages`) and put (`km::write_pages`) are carried by every page CPU; over
+  more than two islands an ask is forwarded but carried by one page CPU a link, and a
+  put goes one link only. A copy across asks 16 KiB a line, one line a core in flight.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
 - A write of part of a page another island holds (example 09's writer gives up), a
@@ -682,6 +740,6 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   12 and 18), and an overlay's part (examples 12 and 18: an overlay takes no compile
   arguments, so no `km::Tensor`) do not cross.
 - More than two cards: the mesh opens 1 x n; tried with two.
-- A split card: messages and a copy across over more than two islands; more than one
-  wire a pair with more than two islands; two cards each split (fabric links and wires
-  in one graph).
+- A split card: a copy across and a put over more than one link; more than one wire a
+  pair with more than two islands; two cards each split (fabric links and wires in one
+  graph), so forwarding has run over wires only.

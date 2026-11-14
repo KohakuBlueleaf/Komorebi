@@ -268,8 +268,6 @@ def main():
     opened = {"cards": cards, "links": links}
     if args.islands:  # one card split into islands of rows
         opened = {"card": cards[0], "islands": args.islands, "line": args.line}
-        # its kernels with the page links' services, forwarding among them
-        opened["kernel_bytes"] = 128 * 1024
         # its kernels read a tensor by its bank address: one copy in the card's DRAM
         opened["card_dram"] = True
     with km.Session(**opened, log=log) as session:
