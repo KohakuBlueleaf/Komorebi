@@ -410,11 +410,15 @@ def pieces_args(pieces, nocs, ranks, m_tiles, group_word):
             )
             first += plan.nbh * plan.nbw * plan.bm * plan.bn
     windows = (pieces[0].plan.wa, pieces[0].plan.ww)
-    idle = [0] * (len(card.BROADCAST_FIELDS) + L["kCoreWords"])
+    # a core of no piece: no broadcast, its rank word 0, and M, so that it finds the
+    # exchange its island's pieces find and joins the sync's tree with them
+    idle_core = [0] * L["kCoreWords"]
+    idle_core[L["kCorePlan"] + L["kPlMt"]] = m_tiles
+    idle = [0] * len(card.BROADCAST_FIELDS) + idle_core
 
     def args(core):
         if core not in words:
-            return idle, idle, idle[: L["kCoreWords"]] + list(windows)
+            return idle, idle, idle_core + list(windows)
         (row, column), mine, window = words[core]
         return row + mine, column + mine, mine + list(window)
 
@@ -801,6 +805,28 @@ def sizes(program):
     return None if found is None else {"text": found.text, "total": found.total}
 
 
+def at_error(product):
+    """After a call gave up, while the run goes on: what crossed the links, and every
+    core of each island as its dispatcher reads it (link cores too)."""
+    out = {}
+    runs = getattr(product.run, "runs", [product.run])
+    try:
+        out["crossings"] = {
+            str(key): row for key, row in product.run.crossings().rows.items()
+        }
+    except (km.KomorebiError, AttributeError) as error:
+        out["crossings"] = f"{type(error).__name__}: {error}"
+    for island, one in enumerate(runs):
+        try:
+            out[f"island {island}"] = one.inspect()
+        except km.KomorebiError as error:
+            out[f"island {island}"] = f"{type(error).__name__}: {error}"
+    plain = json.dumps(
+        out, default=lambda v: v.tolist() if hasattr(v, "tolist") else str(v)
+    )
+    return json.loads(plain)
+
+
 def attempt(product_class, session, dimensions, tensors, cards, args, matrices):
     """Loads, measures, stops and checks one product; its report."""
     flops = 2 * math.prod(dimensions)
@@ -822,6 +848,7 @@ def attempt(product_class, session, dimensions, tensors, cards, args, matrices):
         report["loop"] = measure(product, cards, args.seconds)
     except km.KomorebiError as error:
         report["error"] = f"{type(error).__name__}: {error}"
+        report["at_error"] = at_error(product)
         with contextlib.suppress(km.KomorebiError):
             product.run.stop()
         report["ok"] = False
