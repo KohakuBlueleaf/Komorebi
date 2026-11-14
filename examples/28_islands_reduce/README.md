@@ -48,12 +48,18 @@ python reduce.py --dtype bfloat16     # or int32
 python reduce.py --cards 0            # one card: one island
 ```
 
-Blackhole p150a cards, AICLK 1350 MHz, 256 tiles, the median of 10 rounds:
+Blackhole p150a cards, AICLK 1350 MHz, the median of 10 rounds (5 on the split card);
+on the card: the command from submit to done on its slowest island; on the host: from
+the call to its return:
 
-| Cards | Format | Bytes | From a kernel | From the host | Every copy |
-|---|---|---|---|---|---|
-| 0 and 1 | float32 | 1 MiB | 546.5 µs | 535.9 µs | exact |
-| 0 and 1 | bfloat16 | 512 KiB | 567.0 µs | 548.7 µs | exact |
+| Cards | Format | Pages | From a kernel, on the card | From the host, on the card | On the host | Every copy |
+|---|---|---|---|---|---|---|
+| 0 and 1 | float32 | 256 (1 MiB) | 222.1 µs | 220.8 µs | 491.8 µs | exact |
+| 0 and 1 | float32 | 2 | 134.6 µs | 134.5 µs | 400.1 µs | exact |
+| 0 and 1 | bfloat16 | 256 (512 KiB) | | | 548.7 µs | exact |
+| 0 split in 3 (`--islands 3`) | float32 | 256 | 978.2 µs | 978.6 µs | 1339.7 µs | exact |
+
+The bfloat16 row is from a run before the card's time was recorded.
 
 ## Files
 

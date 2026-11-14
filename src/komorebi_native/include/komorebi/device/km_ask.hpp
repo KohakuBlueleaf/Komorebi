@@ -2422,10 +2422,13 @@ namespace km {
     }
 
     // One more meeting on flat rank `rank` of this island (word KM_PORT_MET of its
-    // KM_PORT_LEFT slot), then this CPU's atomics flushed (bounded). False: gave up.
+    // KM_PORT_LEFT slot); `flush`: then this CPU's atomics flushed. False: gave up.
     template <typename Kernel>
     inline bool team_add(
-        const Kernel& core, const km_command_t& command, uint32_t rank
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t rank,
+        bool flush = true
     ) {
         noc_semaphore_inc(
             core.core_noc(
@@ -2435,7 +2438,7 @@ namespace km {
             ),
             1
         );
-        return coll_flushed(core, command);
+        return !flush || coll_flushed(core, command);
     }
 
     // Waits (bounded) for `meetings` more on this core's meeting word, then takes them
@@ -2464,8 +2467,8 @@ namespace km {
         return team_met(core, command, t.size - 1);
     }
 
-    // The leader lets the team go: one meeting on each other rank, which waits for it.
-    // False: gave up.
+    // The leader lets the team go: one meeting on each other rank, which waits for it;
+    // the atomics flushed once, after all. False: gave up.
     template <typename Kernel>
     inline bool team_go(
         const Kernel& core, const km_command_t& command, const Team& t
@@ -2474,11 +2477,9 @@ namespace km {
             return team_met(core, command, 1);
         }
         for (uint32_t k = 1; k < t.size; k++) {
-            if (!team_add(core, command, t.leader + k)) {
-                return false;
-            }
+            team_add(core, command, t.leader + k, false);
         }
-        return true;
+        return coll_flushed(core, command);
     }
 
     // What km::all_reduce adds: 32-bit integers (modulo 2^32), float32, or two

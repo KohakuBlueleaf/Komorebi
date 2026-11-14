@@ -818,6 +818,66 @@ HANG on ranks 40 to 119 named its reader waiting for a port arrival; the deadlin
 the command up, `CommandTimeout` named island 1, and the run went on; 16 pages of
 island 1 read inside the run were exact.
 
+## Collectives across islands
+
+Two blocking calls over the islands of a line, each on pages of a copy tensor
+(`copy=True`), called by every rank of a command (a reader or a writer, one of them):
+
+| Call | Before | After |
+|---|---|---|
+| `km::all_gather(core, command, tensor, first, pages)` | island c wrote its share, `partition(pages, c, islands)` | every island's copy holds every share |
+| `km::all_reduce(core, command, tensor, first, pages, scratch, kind, buffer, room)` | each island's copy is its partial | every island's copy holds the sum |
+
+`kind` is `km::Sum::Int32` (modulo 2^32), `Float32` or `Bfloat16` (each pair added in
+float32 and rounded to nearest even); `scratch` is a copy tensor of twice the pages
+of the same page size, `buffer` and `room` an L1 buffer of two pages or more. From the
+host, `run.all_gather(tensor)` and `run.all_reduce(tensor, scratch)` (the kind from the
+tensor's format) send GATHER and REDUCE to every rank, served by the runtime's service
+overlay with the same calls. On one island both return at once.
+
+Inside a call the first of each island's ranks of the command leads; the others meet it
+and wait. All-gather: the leader puts its island's share into both neighbours' copies,
+a put line from DRAM each, and passes on each share that arrives from one side to the
+other, counted at its ports `KM_PORT_LEFT` and `KM_PORT_RIGHT`. All-reduce: a reduce-
+scatter along the line (the sums of the shares after island c travel right, those
+before it left, each island adding its partial on the way, the adds shared by its
+ranks), each island adds both sums into its own share, then the all-gather of the
+shares. An island puts each share across once a way: on n islands in a line a call
+moves (n - 1) / n of the tensor over each link each way for a gather, twice that for a
+reduce, in n - 1 steps from end to end.
+
+Measured on two p150a cards joined by four links, 2026-11-15, AICLK 1350 MHz, the
+median of 10 calls, every copy exact, the call's time on the card (submit to done, its
+slowest island) and on the host (from the call to its return):
+
+| Call | Pages (float32 tiles) | On the card | On the host |
+|---|---|---|---|
+| all-gather | 2 | 53.7 µs | 322.9 µs |
+| all-gather | 256 (1 MiB) | 62.9 µs | 326.6 µs |
+| all-reduce | 2 | 134.6 µs | 400.1 µs |
+| all-reduce | 256 (1 MiB) | 222.1 µs | 491.8 µs |
+
+Where the time goes, all-gather of 1 MiB (62.9 µs on the card):
+
+| Term | µs | Kind |
+|---|---|---|
+| the command over two islands (a NOP on 240 ranks, below) | 2.4 | ours |
+| one put line across and its confirmation, 4 KiB (a separate measurement) | 7.7 | hardware: line latency; ours: the line's steps |
+| 508 KiB more each way, both ways at once | 9.2 | at least the links' rate; part overlaps the fixed terms |
+| the meeting of 117 ranks, the leader's waits, its release | not measured | ours |
+| unaccounted | 43.6 | |
+
+The bytes add 9.2 µs: the fixed part dominates and is ours (the meetings, the waits
+between steps). All-reduce of 1 MiB (222.1 µs) adds to the gather's terms a second
+crossing and the adds: 87.5 µs over 2 pages, of which the adds on the movers in
+integer arithmetic (about 1,100 words a rank, two reads and a write of DRAM a page) are
+the likely larger part (ours: the vector unit adds a tile in far fewer cycles); not
+separated by a measurement. On the host every call costs about 270 µs more than on the
+card: the host's submit and wait (ours). On one card split into three islands in a
+line, 1 MiB: all-gather from a kernel 158.7 µs on the card, exact; all-reduce 978 µs,
+exact from a kernel and from the host. The all-gather from the host was not exact
+there (2454 µs on the card): open. Four islands and one card were not run.
+
 ## Measured
 
 Two Blackhole p150a cards joined by four Ethernet links, one process, example 01's
