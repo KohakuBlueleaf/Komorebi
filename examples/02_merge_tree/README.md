@@ -142,15 +142,17 @@ python islands.py --rounds 20
 
 Cards 0 and 1 (Blackhole p150a, one link), T = 512 integer tiles, P = 1, 20 commands a
 case, waited one at a time, each asking for rank 0's result word (one more pass over the
-total there; the script now leaves it out); the median from submit to the event on the
-host:
+total there) and checking it: a command over both islands completes with the result word
+of the part that holds the group's first rank, as on one island. The median from submit
+to the event on the host:
 
-| Group | Form | µs a round | Total |
-|---|---|---|---|
-| all 238 ranks | tree | 172.6 | exact |
-| 59 ranks of each island (60 to 177) | owner | 195.1 | exact |
-| island 0's 119 ranks | tree | 162.8 | exact |
-| island 0's 119 ranks | owner | 188.1 | exact |
+| Group | Form | Sent by | µs a round | Total, result word |
+|---|---|---|---|---|
+| all 238 ranks | tree | island 0's dispatcher (it sends island 1's part across) | 175.0 | exact, right |
+| all 238 ranks | tree | the host (a part to each island's dispatcher) | 323.5 | exact, right |
+| 59 ranks of each island (60 to 177) | owner | island 0's dispatcher | 194.0 | exact, right |
+| island 0's 119 ranks | tree | island 0's dispatcher | 162.6 | exact, right |
+| island 0's 119 ranks | owner | island 0's dispatcher | 189.4 | exact, right |
 
 A group over both islands by owner needs an arrival slot for every other rank of rank 0's
 island and one for each other island: at most 118 slots (`kArrivePages`), so the whole of

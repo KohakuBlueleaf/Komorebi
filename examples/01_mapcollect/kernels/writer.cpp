@@ -4,11 +4,13 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/km_ask.hpp"
 #include "mapcollect.h"
 
 void kernel_main() {
     constexpr auto output_args = TensorAccessorArgs<0>();
+    using First = km::Placement<output_args.next_compile_time_args_offset()>;
+    using Second = km::Placement<First::next_compile_time_args_offset()>;
     km::Writer writer;
     uint32_t counted = 0;  // COUNTs with a0 0 this core took
     writer.run([&](const km_command_t& command) {
@@ -20,8 +22,25 @@ void kernel_main() {
                 if (!writer.wait_front(kCbOut, 1)) {
                     return false;  // nothing to report: the tile is stopping
                 }
+                const uint32_t placed = command.a8;
                 const auto output = TensorAccessor(output_args, output_address);
-                noc_async_write_page(first_page + index, output, get_read_ptr(kCbOut));
+                // a page another island holds is put there, written on return
+                const auto write = [&](const auto& placement) {
+                    return km::write_pages(
+                        writer,
+                        command,
+                        placement,
+                        output,
+                        output_address,
+                        first_page + index,
+                        1,
+                        get_read_ptr(kCbOut),
+                        kPutPort
+                    );
+                };
+                if (!(placed == kInputSecond ? write(Second()) : write(First()))) {
+                    return false;
+                }
                 noc_async_writes_flushed();
                 cb_pop_front(kCbOut, 1);
                 return true;

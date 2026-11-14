@@ -79,7 +79,7 @@ def main():
             ],
             compile_args={
                 "reader": tiles.accessor_args() + 2 * tiles.placement_args(),
-                "writer": tiles.accessor_args(),
+                "writer": tiles.accessor_args() + 2 * tiles.placement_args(),
             },
             compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
             handlers=KERNELS / "mapcollect.h",
