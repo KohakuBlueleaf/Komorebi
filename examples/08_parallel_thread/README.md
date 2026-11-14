@@ -190,8 +190,9 @@ best of 3, host load 5.0 to 5.8, 2026-11-14; every output exact against numpy in
 | prefix sum with its input's way in | 2.49 ms | 2.97 ms |
 | the same input read by the X280 itself from bank 7 (loads over the NoC, 0.024 GB/s) | - | 44.1 ms |
 
-The fetch's 0.49 ms is mostly the two sweeps of the region's cache lines around the
-copy; the cores' copy of the MiB takes 0.02 ms ([bank_fetch](../../experiments/bank_fetch/README.md)).
+The fetch's 0.49 ms was mostly the two sweeps of the region's cache lines around the
+copy; the call now sweeps once, before it (0.19 ms on card 0, every output exact), and
+the cores' copy of the MiB takes 0.02 ms ([bank_fetch](../../experiments/bank_fetch/README.md)).
 
 ## The thread
 

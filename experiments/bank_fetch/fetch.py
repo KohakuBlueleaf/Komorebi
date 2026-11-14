@@ -1,6 +1,6 @@
-"""The copy's rate: work cluster 1's thread fetches a range of another DRAM bank into
-its own region with kmx_fetch on 1, 4 and 12 Tensix cores, then stores part of it back
-with kmx_store; every byte checked (a hash, the bytes themselves up to 1 MiB). One JSON
+"""The call's time: work cluster 1's thread fetches another bank's range into its region
+on 1, 4 and 12 Tensix cores three ways, stores part back, times a sweep on four X280
+cores and one; every byte checked (a hash per way, the bytes up to 1 MiB). One JSON
 line. Example: python fetch.py --bytes 4096 --cores 1"""
 
 import argparse
@@ -19,6 +19,7 @@ ROW = 16384  # bytes of a source page: bank b holds rows b, b + 8, ... one after
 BANKS = 8
 TICKS = 50  # kmx_time() ticks a microsecond
 WHOLE = 1 << 20  # read the region back whole up to this many bytes
+WAYS = ("call", "clean", "before")  # copy.c's ways: kmx_fetch, the clean call, a sweep
 T0 = time.monotonic()
 
 
@@ -109,31 +110,33 @@ def main():
             )
             stored = pages[0][args.bank :: BANKS].reshape(-1)[: args.store]
             log("stored range read")
-    words = list(result.words) + [0] * 34
+    words = list(result.words) + [0] * 40
     want_hash = hashed(want)
     report = {"bytes": args.bytes, "bank": args.bank, "repeats": args.repeats}
     report["aiclk_min_mean"] = clock.stats()
     report["thread"] = [result.state, result.code, result.error]
     report["cores"] = {}
     for i, count in enumerate(args.cores):
-        out = words[8 * i : 8 * i + 8]
-        call_us, event_us = out[0] / TICKS, out[1] / TICKS
-        report["cores"][count] = {
-            "status": out[4],
-            "call_us": round(call_us, 2),
-            "event_us": round(event_us, 2),
-            "worst_us": round(out[5] / TICKS, 2),
-            "gb_s": round(args.bytes / call_us / 1e3, 3) if out[0] else None,
-            "exact": (out[2] | out[3] << 32) == want_hash,
-        }
+        out = words[12 * i : 12 * i + 12]
+        row = {"status": out[1], "event_us": round(out[0] / TICKS, 2)}
+        row["worst_us"] = round(out[2] / TICKS, 2)
+        for way, name in enumerate(WAYS):
+            ticks, low, high = out[3 + 3 * way : 6 + 3 * way]
+            row[f"{name}_us"] = round(ticks / TICKS, 2)
+            rate = args.bytes * TICKS / ticks / 1e3 if 0 < ticks < 0xFFFFFFFF else 0
+            row[f"{name}_gb_s"] = round(rate, 3)
+            row[f"{name}_exact"] = (low | high << 32) == want_hash
+        row["exact"] = all(row[f"{name}_exact"] for name in WAYS)
+        report["cores"][count] = row
     if region is not None:
         report["region_exact"] = bool((region == want).all())
     if stored is not None:
         report["store"] = {
-            "status": words[32],
-            "call_us": round(words[33] / TICKS, 2),
+            "status": words[36],
+            "call_us": round(words[37] / TICKS, 2),
             "exact": bool((stored == want[: args.store]).all()),
         }
+    report["sweep_us"] = {"four": words[38] / TICKS, "one": words[39] / TICKS}
     report["ok"] = (
         result.ran
         and result.code == 0
