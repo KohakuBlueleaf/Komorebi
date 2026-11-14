@@ -986,6 +986,7 @@ class Session:
         self.island = _island(island, self.grid)
         if link is not None and self.island is None:
             raise ValueError("link= is an island's (island= too)")
+        self.link_plan = link
         placed = None
         if not isinstance(program, Program) or program.form() == "program":
             grid = self.grid
@@ -1689,6 +1690,10 @@ class _Backend:
         line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
         self.control_rows[:, at : at + line] = header
         self.control_rows[:, at + line : at + line + len(table)] = table
+        plan = getattr(self.session, "link_plan", None)
+        if plan is not None:  # the relay's words after the table (km_relay.hpp)
+            relay = at + abi_headers["KM_ISLAND_RELAY"]
+            self.control_rows[:, relay : relay + 3] = plan.relay
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its

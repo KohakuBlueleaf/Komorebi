@@ -25,6 +25,7 @@ namespace km {
 #include "km_trace.hpp"
 #if defined(KM_PAGE_LINKS)
 #include "km_pages.hpp"
+#include "km_relay.hpp"
 #endif
 
 namespace km {
@@ -289,12 +290,23 @@ namespace km {
                 link_core(view, arguments.me) ? link : island_first + arguments.me
             );
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
+            // link core 0 relays between commands (km_relay.hpp)
+            const bool relays = (
+                link_core(view, arguments.me) && link == KM_GROUP_LINK_BASE
+            );
             for (;;) {
                 invalidate_l1_cache();
                 if (stop()) {
                     gave = kGaveStop;
                     break;
                 }
+#if defined(KM_PAGE_LINKS)
+                if (relays) {
+                    Relay::turn(*this);
+                }
+#else
+                static_cast<void>(relays);
+#endif
                 const Pass found = scan(ring, last, arguments.depth, rank, link);
                 passes++;
                 if (found.pick >= 0 && !found.partial) {

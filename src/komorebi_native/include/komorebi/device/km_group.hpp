@@ -108,7 +108,7 @@ namespace km {
         uint32_t slot;
     };
 
-    inline ReduceStep reduce_send(const Group& group, uint32_t form) {
+    inline ReduceStep reduce_send_flat(const Group& group, uint32_t form) {
         if (group.rank == 0) {
             return {true, 0, 0, 0};
         }
@@ -121,7 +121,7 @@ namespace km {
 
     // Arrival slots a reduce needs in each core's buffer (owner: size - 1 at the
     // root; tree: one per round).
-    inline uint32_t reduce_slots(const Group& group, uint32_t form) {
+    inline uint32_t reduce_slots_flat(const Group& group, uint32_t form) {
         if (form == kReduceOwner) {
             return group.size > 1 ? group.size - 1 : 0;
         }
@@ -152,13 +152,101 @@ namespace km {
 
     // Arrivals this rank waits for on port `port` (by owner: port 0, size - 1 at the
     // root; by tree: 1 in each round it receives before it sends).
-    inline uint32_t reduce_wants(const Group& group, uint32_t form, uint32_t port) {
+    inline uint32_t reduce_wants_flat(
+        const Group& group, uint32_t form, uint32_t port
+    ) {
         if (form == kReduceOwner) {
             return group.rank == 0 && port == 0 && group.size > 1 ? group.size - 1 : 0;
         }
         return (
             port < kTreeRounds && tree_receives(group.rank, group.size, port) ? 1 : 0
         );
+    }
+
+    // A reduce over islands (naive hop): each island's part reduces as a group of its
+    // own, then each part's first rank sends once to the group's rank 0.
+    struct ReduceParts {
+        Group part;      // this core's island part (one island: the group)
+        uint32_t parts;  // islands the group touches
+        uint32_t index;  // this part's, in island order
+        uint32_t root;   // the size of the part of rank 0's island
+    };
+
+    inline ReduceParts reduce_parts(const Group& group) {
+        const Group part = group.local();
+        if (part.size == group.size || group.stride == 0) {
+            return {group, 1, 0, group.size};
+        }
+        const Islands view(island_area());
+        const uint32_t low = view.island_of(group.base);
+        const uint32_t high = view.island_of(core_of(group, group.size - 1));
+        const uint32_t end = view.entry_first(low) + view.entry_count(low);
+        const uint32_t root = (end - group.base + group.stride - 1) / group.stride;
+        return {part, high - low + 1, view.here() - low, root};
+    }
+
+    // The port and slot at rank 0 of the part of index j > 0: after the root part's.
+    inline uint32_t reduce_cross(const ReduceParts& p, uint32_t form, uint32_t j) {
+        if (form == kReduceOwner) {
+            return p.root - 1 + j - 1;  // slot; port 0
+        }
+        const Group root = {0, 1, p.root, 0};
+        return reduce_slots_flat(root, form) + j - 1;  // port and slot
+    }
+
+    // A core's send in the reduce of `group` over its islands (one island: the flat
+    // schedule); `to` is a flat rank.
+    inline ReduceStep reduce_send(const Group& group, uint32_t form) {
+        const ReduceParts p = reduce_parts(group);
+        if (p.parts == 1 || p.part.rank != 0) {
+            return reduce_send_flat(p.part, form);
+        }
+        if (p.index == 0) {
+            return {true, 0, 0, 0};
+        }
+        const uint32_t cross = reduce_cross(p, form, p.index);
+        return {false, group.base, form == kReduceOwner ? 0 : cross, cross};
+    }
+
+    inline uint32_t reduce_slots(const Group& group, uint32_t form) {
+        const ReduceParts p = reduce_parts(group);
+        return (
+            p.parts == 1
+                ? reduce_slots_flat(group, form)
+                : reduce_cross(p, form, p.parts - 1) + 1
+        );
+    }
+
+    inline uint32_t reduce_wants(const Group& group, uint32_t form, uint32_t port) {
+        const ReduceParts p = reduce_parts(group);
+        uint32_t wants = reduce_wants_flat(p.part, form, port);
+        if (p.parts > 1 && p.index == 0 && p.part.rank == 0) {
+            for (uint32_t j = 1; j < p.parts; j++) {
+                const uint32_t cross = reduce_cross(p, form, j);
+                wants += form == kReduceOwner ? (port == 0 ? 1 : 0) : (port == cross);
+            }
+        }
+        return wants;
+    }
+
+    // Scope km::local: a reduce, collect or broadcast stays inside this core's island
+    // (one island: the whole group).
+    struct Local {};
+
+    inline const Local local{};
+
+    inline ReduceStep reduce_send(const Group& group, uint32_t form, Local) {
+        return reduce_send_flat(group.local(), form);
+    }
+
+    inline uint32_t reduce_slots(const Group& group, uint32_t form, Local) {
+        return reduce_slots_flat(group.local(), form);
+    }
+
+    inline uint32_t reduce_wants(
+        const Group& group, uint32_t form, uint32_t port, Local
+    ) {
+        return reduce_wants_flat(group.local(), form, port);
     }
 
 }  // namespace km
