@@ -462,8 +462,16 @@ thread takes its messages and sends to core ranks with the calls of
 handlers:
 
 ```python
-program.dynamic("grid", "x280", message_bytes=64, max_live=8192, queue_messages=8192,
-                counters=1, x280_ranks=4, x280_cluster=1)
+program.dynamic(
+    "grid",
+    "x280",
+    message_bytes=64,
+    max_live=8192,
+    queue_messages=8192,
+    counters=1,
+    x280_ranks=4,
+    x280_cluster=1,
+)
 program.thread(cluster=1, sources=["rank.c"])
 ```
 
