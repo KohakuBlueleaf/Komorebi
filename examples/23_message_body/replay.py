@@ -14,9 +14,9 @@ def xorshift(state, key):
     return state ^ ((state << 5) & MASK)
 
 
-def replay(threads, hops, ranks, body_words, change=True):
+def replay(threads, hops, ranks, body_words, change=True, first=1):
     """Per rank: arrivals; per thread: its last rank, its state word and its body
-    (threads x body_words) after `hops` arrivals, thread t starting at rank t."""
+    (threads x body_words) after `hops` arrivals, thread t first at rank t + first."""
     thread = np.arange(threads, dtype=np.uint64)
     word = np.arange(body_words, dtype=np.uint64)
     body = ((thread[:, None] + 1) * 0x9E3779B1 & MASK) ^ (
@@ -24,7 +24,7 @@ def replay(threads, hops, ranks, body_words, change=True):
     )
     state = thread + 1
     arrivals = np.zeros(ranks, dtype=np.int64)
-    rank = thread.astype(np.int64)
+    rank = (thread.astype(np.int64) + first - 1) % ranks
     for hop in range(hops):
         rank = (rank + 1) % ranks
         arrivals += np.bincount(rank, minlength=ranks)

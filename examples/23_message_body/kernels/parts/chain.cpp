@@ -47,6 +47,12 @@ void km_message(km::Messages& messages, km::Packet& packet) {
         const uint32_t from = body.bytes / 4 * part / 3;
         const uint32_t to = body.bytes / 4 * (part + 1) / 3;
         const uint32_t hop = message[kMsgHop];
+        if (rank == 0) {  // the clock of the thread's laps through rank 0
+            const uint32_t lap = hop / count;
+            UNPACK(
+                (area[kResStamps + (lap < kStamps ? lap : kStamps - 1)] = km::wall())
+            );
+        }
         const uint32_t key = chain_key(hop, rank);
         message[kMsgState] = chain_state(message[kMsgState], key);
         message[kMsgHop] = hop + 1;
