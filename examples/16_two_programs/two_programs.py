@@ -1,8 +1,7 @@
-"""Two programs in one run: sum (each core adds its tiles into one) and scale (each
-core doubles its tiles), loaded on disjoint groups and combined on every core, commands
-to both interleaved, every result checked; then the price of the runtime's form. One
-JSON line. Example: python two_programs.py
-"""
+"""Two programs in one run, sum and scale, on disjoint groups and combined, every result
+checked; the price of the runtime's form; a group that switches program on the live run
+(with widen, a third program of other buffers and formats). One JSON line. Example:
+python two_programs.py"""
 
 import argparse
 import json
@@ -17,10 +16,11 @@ from komorebi.session import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
-TODAY = HERE.parent / "01_mapcollect" / "kernels"  # the same sum in today's form
+KERNEL_FORM = HERE.parent / "01_mapcollect" / "kernels"  # the sum, kernel form
 TILE = 32
 INPUT_TILES = 512
 TILES = 16  # tiles a command reads
+REJECT_PROGRAM = 13  # the dispatcher: a core of the group does not hold it
 STARTED = time.monotonic()
 
 
@@ -35,15 +35,18 @@ def parse():
     parser.add_argument("--rounds", type=int, default=40, help="commands a phase")
     parser.add_argument(
         "--phase",
-        choices=["disjoint", "combined", "price", "switch", "all"],
+        choices=["disjoint", "combined", "price", "switch", "live", "load", "all"],
         default="all",
+    )
+    parser.add_argument(
+        "--switches", type=int, default=200, help="live: loads into the part"
     )
     parser.add_argument("--seed", type=int, default=1)
     return parser.parse_args()
 
 
 # --8<-- [start:programs]
-def programs(inputs, sums, doubled, slots=None):
+def programs(inputs, sums, doubled, slots=None, wide=None):
     """sum and scale in the runtime's form: buffers 0 and 16 declared identically,
     so combined they are one shared buffer each; handler 1 in each."""
     buffers = [
@@ -72,24 +75,38 @@ def programs(inputs, sums, doubled, slots=None):
     )
     if slots is not None:
         sum_program.slots(count=slots)
-    return sum_program, scale_program
+    if wide is None:
+        return sum_program, scale_program
+    widen_program = km.Program(
+        "widen",  # three buffers, bfloat16 in at index 1, float32 out at index 16
+        kernels=KERNELS / "widen",
+        buffers=[
+            km.Buffer(index=1, format="bfloat16", page_bytes=2048, pages=4),
+            km.Buffer(index=16, format="float32", page_bytes=4096, pages=2),
+            km.Buffer(index=24, format="uint32", page_bytes=64, pages=1),
+        ],
+        compile_args={"reader": inputs.accessor_args(), "writer": wide.accessor_args()},
+        compute=compute,
+        handlers={"widen": 1},
+    )
+    return sum_program, scale_program, widen_program
 
 
 # --8<-- [end:programs]
 
 
-def today(inputs, sums):
-    """The sum of 01_mapcollect in today's form (its MAP takes the same words)."""
+def kernel_form(inputs, sums):
+    """The sum of 01_mapcollect in the kernel form (its MAP takes the same words)."""
     return km.Program(
         "mapcollect",
-        kernels=TODAY,
+        kernels=KERNEL_FORM,
         buffers=[
             km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16),
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
         ],
         compile_args={"reader": inputs.accessor_args(), "writer": sums.accessor_args()},
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
-        handlers=TODAY / "mapcollect.h",
+        handlers=KERNEL_FORM / "mapcollect.h",
     )
 
 
@@ -105,10 +122,12 @@ class Checked:
         self.sums = session.tensor(np.zeros((pages * TILE, TILE)), "bfloat16", "tile")
         zeros = np.zeros((INPUT_TILES * TILE, TILE))
         self.doubled = session.tensor(zeros, "bfloat16", "tile")
+        self.wide = session.tensor(zeros.astype(np.float32), "float32", "tile")
         self.tiles = self.input.reshape(INPUT_TILES, TILE, TILE)
         self.prefix = np.concatenate([np.zeros((1, TILE, TILE)), self.tiles.cumsum(0)])
         self.want_sums = {}  # output page -> tile
         self.scaled = np.zeros(INPUT_TILES, bool)  # input tiles some SCALE doubled
+        self.widened = np.zeros(INPUT_TILES, bool)  # input tiles some WIDEN wrote
         self.page = 0
 
     def sum_words(self, group):
@@ -125,7 +144,18 @@ class Checked:
     def scale_words(self, group):
         first_tile = int(self.generator.integers(0, INPUT_TILES - TILES + 1))
         self.scaled[first_tile : first_tile + TILES] = True
-        return [self.inputs.address, TILES, self.doubled.address, 0, 0, 0, first_tile]
+        words = [self.inputs.address, TILES, self.doubled.address, first_tile, 0, 0]
+        return [*words, first_tile]
+
+    def widen_words(self, group):
+        first_tile = int(self.generator.integers(0, INPUT_TILES - TILES + 1))
+        self.widened[first_tile : first_tile + TILES] = True
+        words = [self.inputs.address, TILES, self.wide.address, first_tile, 0, 0]
+        return [*words, first_tile]
+
+    def words(self, name, group):
+        """The words of a command of program `name` on `group`."""
+        return getattr(self, f"{name}_words")(group)
 
     def wrong(self):
         """Values that differ from what the commands must have written."""
@@ -135,7 +165,18 @@ class Checked:
             int((sums[page] != tile).sum()) for page, tile in self.want_sums.items()
         )
         want = np.where(self.scaled[:, None, None], 2 * self.tiles, 0)
-        return wrong + int((doubled.reshape(-1, TILE, TILE) != want).sum())
+        wrong += int((doubled.reshape(-1, TILE, TILE) != want).sum())
+        if self.widened.any():
+            (pages,) = self.session.read(self.wide)  # float32 tiles, four faces each
+            faces = pages.reshape(-1).view(np.float32).reshape(-1, 2, 2, 16, 16)
+            wide = faces.transpose(0, 1, 3, 2, 4).reshape(-1, TILE, TILE)
+            want = np.where(self.widened[:, None, None], self.tiles, 0)
+            wrong += int((wide != want).sum())
+        return wrong
+
+    def next_block(self):
+        """Output pages of SUM are used again: what was checked is forgotten."""
+        self.want_sums, self.page = {}, 0
 
 
 def group_in(generator, first, count):
@@ -233,13 +274,16 @@ def one_at_a_time(run, commands, count):
 
 
 def price(session, args, cores):
-    """The same sum in today's form (01_mapcollect) and in the runtime's form: cycles
+    """The same sum in the kernel form (01_mapcollect) and in the runtime's form: cycles
     per command, an empty one and a sum of 16 tiles, on one core and on `cores`."""
     generator = np.random.default_rng(args.seed)
     checked = Checked(session, cores, args.rounds, generator)
     sum_program, _ = programs(checked.inputs, checked.sums, checked.doubled)
     forms = {
-        "today": (today(checked.inputs, checked.sums), 7),  # 7: MAP's default branch
+        "kernel": (
+            kernel_form(checked.inputs, checked.sums),
+            7,
+        ),  # 7: MAP's default branch
         "program": (sum_program, sum_program.handler("empty")),
     }
     out = {}
@@ -280,6 +324,113 @@ def switch(session, args, cores):
     return out, parts
 
 
+def live_groups(cores):
+    """{name: group} of the live phase on `cores` (at least 2), and the part of sum's
+    group that switches: half of sum's cores; scale and widen share the rest."""
+    held = max(1, cores // 2)
+    others = cores - held
+    wide = max(1, others // 5)
+    groups = {"sum": (0, held)}
+    if others - wide > 0:
+        groups["scale"] = (held, others - wide)
+    groups["widen"] = (cores - wide, wide)
+    part = max(1, held // 2)
+    return groups, (held - part, part)
+
+
+def live(session, args, cores):
+    """A part of sum's group switches to scale or widen and back while commands for
+    every program run; one SUM to the part while it holds another program is sent
+    unchecked by the host and must be refused by the dispatcher (reason 13)."""
+    cores = max(2, cores)
+    generator = np.random.default_rng(args.seed)
+    block = 50  # rounds between two checks of every result
+    checked = Checked(session, cores, block, generator)
+    made = programs(checked.inputs, checked.sums, checked.doubled, wide=checked.wide)
+    by_name = {program.name: program for program in made}
+    groups, part = live_groups(cores)
+    # --8<-- [start:live]
+    run = session.load({by_name[name]: group for name, group in groups.items()})
+    run.load(by_name["widen"], group=part)  # part's cores now hold widen
+    # --8<-- [end:live]
+    run.wait(run.load(by_name["sum"], group=part), 10.0)
+    others = [name for name in groups if name != "sum"]
+    rest = (0, part[0])  # the sum cores that never switch
+    out = {"switches": 0, "commands": 0, "refused": 0, "refused_other": 0, "wrong": 0}
+    refused = []
+
+    def send(name, group):
+        handler = by_name[name].handler(name)
+        out["commands"] += 1
+        return run.submit(handler, group, checked.words(name, group))
+
+    try:
+        for start in range(0, args.switches // 2, block):
+            handles = []
+            for turn in range(start, min(start + block, args.switches // 2)):
+                other = others[turn % len(others)]
+                handles.append(run.load(by_name[other], group=part))
+                handles.append(send(other, part))
+                if rest[1]:
+                    handles.append(send("sum", rest))
+                handles.append(send(other, groups[other]))
+                run.check_programs = False  # the dispatcher's own refusal
+                refused.append(run.submit(by_name["sum"].handler("sum"), part))
+                run.check_programs = True
+                handles.append(run.load(by_name["sum"], group=part))
+                handles.append(send("sum", groups["sum"]))
+                out["switches"] += 2
+            run.drain(timeout=60.0)
+            for handle in refused:
+                event = run.event(handle)
+                right = event.kind == "rejected" and event.auxiliary == REJECT_PROGRAM
+                out["refused" if right else "refused_other"] += 1
+            kinds = {run.event(handle).kind for handle in handles}
+            out["wrong"] += checked.wrong() + (kinds != {"done"})
+            run.forget([*handles, *refused])
+            refused.clear()
+            checked.next_block()
+            log(f"live: {out['switches']} switches, {out['wrong']} wrong")
+    finally:
+        run.stop()
+    out["commands"] += out["switches"]  # a load is a command too
+    return out
+
+
+def load_time(session, args, cores):
+    """Cycles of a load command (the reader taking it to its completion, median
+    core): to another program and to the program held, on one core and on `cores`."""
+    cores = max(2, cores)
+    generator = np.random.default_rng(args.seed)
+    checked = Checked(session, cores, 1, generator)
+    sum_program, _, widen_program = programs(
+        checked.inputs, checked.sums, checked.doubled, wide=checked.wide
+    )
+    run = session.load(
+        {sum_program: (0, cores - 1), widen_program: (cores - 1, 1)},
+        trace=8 * args.rounds + 4,
+    )
+    handles = {}
+    for group in ((0, 1), (0, cores)):
+        for key, program in (("other", widen_program), ("other", sum_program)) * (
+            args.rounds // 2
+        ) + (("held", sum_program),) * args.rounds:
+            handle = run.load(program, group=group)
+            run.wait(handle, 10.0)
+            handles.setdefault(f"load {key} {group[1]}", []).append(handle)
+    run.stop()
+    trace = run.trace()
+    out = {}
+    for key, made in handles.items():
+        cycles = []
+        for handle in made[2:]:
+            times = trace.command(handle).astype(np.int64)
+            cycles.append(np.median((times[:, 2] - times[:, 0]) % (1 << 32)))
+        out[key] = float(np.median(cycles))
+        log(f"{key}: {out[key]:.0f} cycles a load")
+    return out
+
+
 def main():
     args = parse()
     report = {"phase": args.phase}
@@ -297,11 +448,18 @@ def main():
             report["price_cycles"] = price(session, args, cores)
         if args.phase in ("switch", "all"):
             report["switch_cycles"], report["part_bytes"] = switch(session, args, cores)
+        if args.phase in ("live", "all"):
+            report["live"] = live(session, args, cores)
+        if args.phase in ("load", "all"):
+            report["load_cycles"] = load_time(session, args, cores)
         report["aiclk_mhz"].append(aiclk_mhz(session.card))
     wrong = sum(
-        report[key]["wrong"] for key in ("disjoint", "combined") if key in report
+        report[key]["wrong"]
+        for key in ("disjoint", "combined", "live")
+        if key in report
     )
     refused = report.get("disjoint", {}).get("refused", True)
+    refused &= report.get("live", {}).get("refused_other", 0) == 0
     report["ok"] = wrong == 0 and refused
     print(json.dumps(report, default=float), flush=True)
     if not report["ok"]:

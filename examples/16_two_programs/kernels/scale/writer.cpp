@@ -1,5 +1,5 @@
-// The scale program's writer: SCALE writes the core's tiles to the output tiles of the
-// same numbers.
+// The scale program's writer: SCALE writes the core's tiles to output pages a3 + their
+// places.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -20,7 +20,7 @@ bool km_program(km::Writer& writer, const km_command_t& command) {
             return false;  // nothing to report: the tile is stopping
         }
         noc_async_write_page(
-            command.a6 + partition.start + tile, output, get_read_ptr(kCbOut)
+            command.a3 + partition.start + tile, output, get_read_ptr(kCbOut)
         );
         noc_async_writes_flushed();
         cb_pop_front(kCbOut, 1);

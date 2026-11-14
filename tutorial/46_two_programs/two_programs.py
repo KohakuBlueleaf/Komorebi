@@ -1,5 +1,6 @@
 """Two programs in one run: add and multiply, each a handler 1 of its own, loaded on
-every core together; then each on its own group of cores."""
+every core together; then each on its own group of cores, and part of a group
+switches."""
 
 from pathlib import Path
 
@@ -37,5 +38,10 @@ with km.Session() as session:
         ask(run, multiply, (0, 60))
     except ValueError as error:
         print(f"refused:  {error}")
-    run.stop()
     # --8<-- [end:groups]
+    # --8<-- [start:switch]
+    run.wait(run.load(multiply, group=(0, 30)), timeout=10.0)  # 0 to 29 switch
+    print(f"switched: multiply 6 and 7 = {ask(run, multiply, (0, 30))}")
+    print(f"kept:     add      6 and 7 = {ask(run, add, (30, 30))}")
+    run.stop()
+    # --8<-- [end:switch]

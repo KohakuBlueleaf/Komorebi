@@ -1,7 +1,7 @@
 ---
 title: "Two programs"
 part: 6
-summary: "several programs in one run, on the same cores or on groups of their own"
+summary: "several programs in one run, on the same cores or on groups of their own, and a group that switches"
 ---
 
 # Two programs
@@ -56,6 +56,18 @@ way.
 
 `session.load({add: (0, 60), multiply: (60, 60)})` gives each program its own cores. The
 host refuses a command to cores that do not hold its program before sending it.
+
+## A group changes program
+
+```{ .python }
+--8<-- "tutorial/46_two_programs/two_programs.py:switch"
+```
+
+`run.load(multiply, group=(0, 30))` is a command like any other: cores 0 to 29 take it
+after their earlier commands, and from then on they hold `multiply`. Its code was built
+and placed in DRAM with the run, so nothing moves from the host. The cores' buffers are
+set up again for `multiply`, and whatever `add` kept in them is gone. Commands of `add`
+to those cores are now refused, and cores 30 to 59 still hold `add`.
 
 ## Run it
 
