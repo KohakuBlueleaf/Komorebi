@@ -33,8 +33,11 @@ with km.Session(cards=[0, 1]) as session:  # one session, 240 ranks
 ## The session
 
 `km.Session(cards=[a, b, ...], links=0, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)` with two or more cards
-returns an `IslandSession`; with one card it is the card's `Session` as before.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)` returns an `IslandSession`.
+With one card it has the same calls over one island: no mesh and no fabric, the card's
+own `Session` as `session.island(0)`, the graph `islands.one`, every page of every
+tensor on the card, and each load the card's run as it is without islands. A program
+written for islands runs on one card unchanged.
 
 - **Open.** In this order: tt-metal's 1-D fabric is set, the cards open as one 1 x n
   mesh (each card's chip a 1 x 1 submesh with its own command queue), the X280 runtime
@@ -43,13 +46,22 @@ returns an `IslandSession`; with one card it is the card's `Session` as before.
   set to them) and must not be held by another process.
 - **Ranks.** Flat and contiguous by island, in island order: island i holds ranks
   `session.graph.first(i)` to `first(i) + count(i) - 1`, its cores in core order.
-  `session.ranks` is the total (240 on two cards).
+  `session.ranks` is the total (240 on two cards), at most 65,024: a group's first
+  below `KM_GROUP_LINK_BASE` (0xFE00), where link cores' names start (0xFF00 on: X280
+  threads).
 - **Close.** Every island's run is stopped through the X280 runtime, the islands'
   sessions are closed, then the mesh, and the fabric is set off. A grid that did not
   return keeps the mesh open, as a card's session keeps its device.
-- `links` is 0: no core is taken for a link, every core is a rank. The graph already
-  takes a link core out of the ranks on each island a used link joins; a session will
-  take them there once the link service exists.
+- `links` 0: no core is taken for a link, every core is a rank. `links` 1 to 4 (two
+  islands): pages cross on that many links. Each island's last `(links + 1) // 2`
+  cores are its link cores (`session.link_cores`, `graph.link_cores`), not ranks; both
+  data-movement CPUs of a link core send, each on its own link (`session.channels`:
+  the Ethernet channel of each). The session checks that a DRAM bank sits at the same
+  NoC place on both islands.
+- A link core is named outside the ranks: a command's group with first
+  `KM_GROUP_LINK_BASE + k` and count n names link cores k to k + n - 1 of the island
+  that takes it (`graph.link_group(island, k, n)`). Such a group is never cut by
+  island and never crosses; on a core, its rank is its link-core index less k.
 
 ## The run
 
@@ -83,17 +95,71 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
 
 ## Tensors
 
-`session.tensor(data, dtype, layout, like=None, copy=False)` makes one tensor of the
-whole shape on every island, at the same address, so a program takes its `address`
-and `accessor_args()` unchanged. Its pages are placed by `islands.place`: split by
-island along the leading dimension in rank order (`like`: the group the split
+`session.tensor(data, dtype, layout, like=None, copy=False, by="rank")` makes one
+tensor of the whole shape on every island, at the same address, so a program takes its
+`address` and `accessor_args()` unchanged. Its pages are placed by `islands.place`:
+split by island along the leading dimension in rank order (`like`: the group the split
 follows; default every rank), so a rank that partitions the tensor by rank finds its
-part in its own island's DRAM; `copy=True` puts every page on every island. A split
+part in its own island's DRAM; `by="island"` splits the leading dimension into even
+parts by island (`partition(units, i, islands)` to island i), for a program that cuts
+its work by island first and over an island's ranks inside; `copy=True` puts every
+page on every island. A split
 tensor's pages that another island holds are zeros on this one.
+
+A kernel asks where a page lives with `km::island_of(placement, page)`
+(`km_placement.hpp`): the session writes a tensor's placement as compile arguments
+after its accessor's (`tensor.placement_args()`: the islands, copy, then each
+island's first page and pages), which `km::Placement<offset>()` reads; a copy's page
+answers the core's own island (`km::island()`, from the island table). On both islands' cores, for four tensors
+(all on island 0, all on island 1, split, a copy): 40 answers, all as
+`islands.island_of` gives them (`experiments/islands_pages/pages.py --where`).
 
 `session.read` and `session.read_bf16` assemble a tensor from the island that holds
 each page, through that island's host channel; `session.write` writes each page into
 the island that holds it (a copy: into every island).
+
+## Pages across a link
+
+With `links`, the run's kernels are built with `KM_PAGE_LINKS` and the link cores
+serve the runtime's `PAGES` command (`KM_HANDLER_PAGES`, 248, `km_pages.hpp`): each
+CPU reads its share of the pages from its island's DRAM and sends a page a packet with
+plain writes, straight into the other island's DRAM or a core's L1; the last packet of
+every 64 also adds that batch's pages to a count in a core's port.
+
+- At the load, each link CPU of both islands opens the connection to its link and
+  holds it until its kernel ends; a send never opens or closes one. It then says
+  hello to the same CPU of the far link core, one word into that core's port 5 or 6,
+  and the load returns once both sides have heard each other (bounded), so no page is
+  sent before the far side runs.
+
+- `session.cross(source, target, first=0, pages=None, timeout=10.0)` writes the pages
+  of `source` into the same pages of `target` where another island holds them, and
+  waits until the far island's count says they all landed. It returns the pages, the
+  bytes and the seconds from the submit to the last count.
+- `session.send_pages(source, first, pages, to, core=None, counted=None, port=None)`
+  queues the send alone: into tensor `to`, or into L1 address `to` of local core
+  `core` of the other island, counted at port `port` (default 7) of core `counted`.
+  `session.wait_pages(island, core, pages, port=None)` queues a bounded wait for a
+  count. Both return handles of the islands' own runs.
+- 64 MiB from island 0 into a tensor of island 1 over four links: 2.09 ms, 32.1 GB/s,
+  every page exact (`experiments/islands_pages`).
+- A core reads pages another island holds by asking: `session.ask(tensor, first,
+  pages, island, core, to, port)` has the holder's link cores send them into L1
+  address `to` of the asking core, counted at its port; the core waits on that count,
+  bounded, with `km::port_wait(reader, command, port, pages)` and reads them from its
+  L1. The ask travels as a command from the host (`IslandSession.ASKS_BY = "host"`);
+  a core's own message to the holder is the other setting, not built yet.
+- `session.wait_together([(island, handle), ...], timeout)` waits for handles of
+  several islands' own runs at once. A host's commands reach an island's ring only
+  while the host waits on that island, so two sides that wait on each other are
+  waited together.
+- Example 01's MAP on island 0's 118 ranks reading an input island 1 holds alone
+  (`islands.py --across 4`, each rank's two tiles asked into its transfer buffer):
+  every tile exact, 3,009 µs a round of 118 asks against 171 µs reading its own DRAM
+  (2026-11-14, connections held). With a connection opened and closed by each command
+  it was 3,132 µs: holding them saves 4 %. The cost is the 118 `PAGES` commands a
+  round, one a rank, each a whole command on the holder's two link cores, not the
+  link.
 
 ## Measured
 
@@ -126,9 +192,11 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
 ## Not yet
 
-- Links: no message, page or command crosses between islands inside a run; `forward`
-  to another island's rank, `collect` and `broadcast` over islands, and a read of a
-  page another island holds need the link service.
+- Links: no message crosses between islands inside a run; `forward` to another
+  island's rank, `collect` and `broadcast` over islands need the link service. Pages
+  cross on the host's command (`send_pages`, `ask`), not yet on a kernel's own
+  request. A session with `links` has no commands across: their link core would share
+  link 0's connection with a page link's CPU.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.

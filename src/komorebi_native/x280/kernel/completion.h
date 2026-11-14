@@ -98,12 +98,17 @@ static inline int group_outside(
 }
 
 /* A group word in flat ranks as this island's part in its cores (first | count << 16),
- * 0 when it has none there; without islands, the word itself. */
+ * 0 when it has none there; without islands, the word itself. Link cores k on
+ * (KM_GROUP_LINK_BASE + k) are the island's cores after its ranks, never cut. */
 static inline uint32_t island_part(const kmd_t* dispatcher, uint32_t group) {
     if (dispatcher->island_count == 0) {
         return group;
     }
     const uint32_t first = group & 0xFFFFu, end = first + (group >> 16);
+    if (KM_GROUP_IS_LINK(first)) {
+        const uint32_t core = dispatcher->island_count + first - KM_GROUP_LINK_BASE;
+        return core | (group >> 16) << 16;
+    }
     const uint32_t low = dispatcher->island_first;
     const uint32_t high = low + dispatcher->island_count;
     const uint32_t start = first > low ? first : low, stop = end < high ? end : high;
@@ -195,6 +200,11 @@ static inline void sources_wake(kmd_t* dispatcher) {
     dispatcher->waits = 0;
 }
 
+/* link.h: a freed slot of the link's (a crossing's local part, a LINK command). */
+static int link_freed(
+    kmd_t* dispatcher, uint32_t slot, uint32_t status, uint32_t ticks, uint64_t now
+);
+
 /* Sweeps busy slots' ack lines (8-byte loads); a slot showing its sequence is freed:
  * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */
 KMD_HOT void slots_sweep(kmd_t* dispatcher) {
@@ -226,7 +236,10 @@ KMD_HOT void slots_sweep(kmd_t* dispatcher) {
         if (dispatcher->messages.end ==
             slot + 1u) { /* a dynamic run's end command: no event */
             dispatcher->messages.end = 0;
-        } else {
+        } else if (
+            !(dispatcher->link_slots & (1ull << slot)) ||
+            !link_freed(dispatcher, slot, KM_EVENT_DONE, ticks, now)
+        ) {
             const uint32_t auxiliary = (
                 (dispatcher->slot_group[slot] & KM_EVENT_AUXILIARY_LOW) |
                 (dispatcher->slot_sequence[slot] & KM_EVENT_SEQUENCE_MASK)

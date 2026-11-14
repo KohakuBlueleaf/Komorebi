@@ -59,6 +59,52 @@
 /* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
+/* host only, served on link cores (km_pages.hpp): each data-movement CPU of the group
+ * sends its share of DRAM pages over its own link, or the reader waits for a count */
+#define KM_HANDLER_PAGES 248u
+#define KM_PAGES_FROM 0u  /* send: the source's bank address (interleaved DRAM) */
+#define KM_PAGES_PAGE 1u  /* send: aligned page bytes, at most KM_PAGES_PACKET_MAX */
+#define KM_PAGES_FIRST 2u /* send: first page */
+#define KM_PAGES_PAGES 3u /* send: pages of all CPUs; wait: the count waited for */
+#define KM_PAGES_TO 4u    /* send: the target's bank address, or L1 of its first page */
+/* send: x | y << 8 of the target core (KM_PAGES_DRAM: DRAM), chunk / 64 << 16: the
+   L1 bytes of a CPU */
+#define KM_PAGES_TO_CORE 5u
+#define KM_PAGES_COUNT 6u /* L1 address of the count (wait: here; open: far hello) */
+/* x | y << 8 of the counted core (open: the far link core), hops << 16, mode << 24 */
+#define KM_PAGES_COUNTER 7u
+/* byte k: Ethernet channel of link k; CPU c of link core r sends on link 2r + c */
+#define KM_PAGES_LINKS 8u
+#define KM_PAGES_BUFFER 9u    /* send: L1 of CPU c at buffer + c * chunk */
+#define KM_PAGES_DRAM 0xFFFFu /* page p into page p of the tensor at KM_PAGES_TO */
+#define KM_PAGES_NO_LINK 0xFFu
+#define KM_PAGES_SEND 0u
+#define KM_PAGES_WAIT 1u
+/* each CPU opens its connection, held until its kernel ends, and says hello to the far
+ * link core's same CPU: port KM_PAGES_HELLO_PORT + c of both, 1 up, 2 both up */
+#define KM_PAGES_OPEN 2u
+/* link 0's CPU of link core 0 serves the messages of the RUN whose group word is a0
+ * across its link until that RUN ends (km_link.hpp) */
+#define KM_PAGES_MESSAGES 3u
+#define KM_PAGES_HELLO_PORT 5u
+#define KM_PAGES_PACKET_MAX 4352u /* a fabric packet's largest payload */
+/* dispatcher -> its island's link core only: the writer sends the packet staged in its
+ * link area over the fabric into the other island's dispatcher (the reader skips it) */
+#define KM_HANDLER_LINK 246u
+/* The link area, in the link core's L1 (a run over islands; its offsets): the
+ * connection's teardown and cursor words, two packet headers, then the stages, each a
+ * packet (the command line and its crossing line) and the count line written after */
+#define KM_LINK_TEARDOWN 0x00u
+#define KM_LINK_CURSOR 0x10u
+#define KM_LINK_HEADERS 0x40u /* 64 bytes each: the packet's, the count line's */
+#define KM_LINK_STAGE 0x100u
+#define KM_LINK_STAGES 4u
+#define KM_LINK_PACKET_BYTES 128u
+#define KM_LINK_STAGE_BYTES 192u
+#define KM_LINK_AREA_BYTES (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
+/* LINK's words: a0 the stage, a1 the packet's number (each line of the stage holds it
+ * in word 0, the count line in word 1), a2 the far tile x | y << 16, a3 the far address
+ * of the packet, a4 that of the count line */
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u
@@ -71,6 +117,13 @@
    KM_GROUP_CLUSTER_BASE + c, count 1. No core has such a first. */
 #define KM_GROUP_CLUSTER_BASE 0xFF00u
 #define KM_GROUP_CLUSTER(c) ((KM_GROUP_CLUSTER_BASE + (uint32_t)(c)) | 1u << 16)
+/* A command to link cores k to k + n - 1 of the island that takes it: first is
+   KM_GROUP_LINK_BASE + k, count n; never cut by island, never crossing. A rank is
+   below KM_GROUP_LINK_BASE; a link core's rank in it is its link-core index - k. */
+#define KM_GROUP_LINK_BASE 0xFE00u
+#define KM_GROUP_IS_LINK(first) \
+    ((uint32_t)(first) - KM_GROUP_LINK_BASE < \
+     KM_GROUP_CLUSTER_BASE - KM_GROUP_LINK_BASE)
 /* Whether a group (first, count) names a work cluster's thread, cluster 1 to 3. */
 #define KM_GROUP_IS_CLUSTER(first, count) \
     ((count) == 1u && (uint32_t)(first) - (KM_GROUP_CLUSTER_BASE + 1u) < 3u)
@@ -252,7 +305,8 @@ KM_STATIC_ASSERT(
 /* KM_X280_RANK_CORE(r), the last indices: no core of a grid of at most 124 cores */
 #define KM_X280_RANK_CORE(r) (KM_CORES_MAX - KM_X280_RANKS_MAX + (uint32_t)(r))
 /* The run line: one 16-byte store of the dispatcher into the X280 ranks' thread at a
- * dynamic run's RUN and at its end command, {run, KM_X280_RUN_*, group, its handler}. */
+ * dynamic run's RUN and at its end command, {run, KM_X280_RUN_*, group, its handler}.
+ */
 #define KM_X280_RUN_SEQUENCE 0u /* word offsets */
 #define KM_X280_RUN_STATE 1u
 #define KM_X280_RUN_GROUP 2u
@@ -423,6 +477,13 @@ KM_STATIC_ASSERT(sizeof(km_event_t) == 16, "an event is one 16-byte chunk");
 #define KM_EVENT_SEQUENCE_MASK 0xFFFFu
 KM_STATIC_ASSERT(
     KM_CORES_MAX <= KM_EVENT_AUXILIARY_LOW + 1u, "a first core fits in 8 bits"
+);
+/* A TIMEOUT of a command whose part on another island did not come back by its
+   deadline: its low 8 bits are KM_EVENT_ISLAND + that island (no slot reaches it) */
+#define KM_EVENT_ISLAND 0x80u
+KM_STATIC_ASSERT(
+    KM_RING_SLOTS <= KM_EVENT_ISLAND && KM_EVENT_ISLAND + KM_ISLANDS_MAX <= 0x100u,
+    "an island's timeout is no slot's"
 );
 
 #endif /* KOMOREBI_ABI_KM_ABI_H */

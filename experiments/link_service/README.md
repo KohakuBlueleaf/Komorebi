@@ -1,50 +1,16 @@
 # The link service
 
-Two islands (the chips of a 1 x 2 fabric mesh, one card each) are joined by a link:
-on each island one core of the run's group, the link core, is a rank no handler
-addresses; it runs the link's reader and writer (`km_link.hpp`).
+The first measure of messages between islands: two islands (the chips of a 1 x 2
+fabric mesh, one card each) joined by one link, a core on each island running a link
+reader and writer of its own as a rank of the run's group, its own connection opened
+at start-up, a hello both ways.
 
-- The other cores' writers send a message for the far island to the link core as to a
-  queue: an atomic add on its outbox tail reserves entries, the message goes into its
-  entry, the first mark is set last.
-- The link writer sends the outbox's ready entries over the fabric, many to a packet
-  (at most 4,352 bytes): a plain write into a free slot of the far link core's inbox,
-  then a count packet (an atomic add on the far landed word). Credits come back as a
-  16-byte write of the far reader's freed count.
-- The link reader takes each landed packet in sequence and issues its entries again
-  inside its island, as an ordinary forward to the rank each route word names.
-- A link is up only after a hello both ways: each link writer opens its connection at
-  start-up, zeroes its region and writes this load's token into the far region; it
-  holds its outbox and repeats the token until it has read the far one, then sends it
-  once more. No hello within the wait limit ends the run (where 60, "link not up").
-- Every wait is bounded; a give-up ends the run with its reason and the link's words.
-
-The link core is a member of the run's group, so its status line counts: sent, the
-messages it issued again locally; consumed, the messages it sent across. Each island
-then balances by itself. In this experiment each island runs its own RUN, and the link's
-line goes idle once the run's expected crossings (from the command words) are reached.
-A RUN whose group spans both islands (`Session(cards=..., links=1)`, see
-`examples/05_forward/islands.py`) ends instead once both islands are quiet: each link
-reader reads its island's status lines and sends a report across, and its line goes
-idle when both reports are quiet and each side's sent-across count meets the other's
-issued count.
-
-A run over two islands needs both RUN commands on the cards at once: `Run.submit`
-only queues a command, which reaches the card in a wait or in `Run.store()`.
-`cross.py` stores both before it drains either; an island session's waits store
-every island's part first.
-
-## Running
-
-```
-python cross.py --case across:1:1:1:54
-```
-
-A case is `mode:origins:messages:trips:packet`: `origins` cores of island 0 seed
-`messages` each; each message goes to its partner (the same rank of island 1 through
-both link cores in mode `across`, rank + ranks / 2 of the same island in mode `local`)
-and back, `trips` round trips, then ends at its origin. `packet` is the most entries a
-packet. The script prints one JSON line.
+The service now runs on the island's link core 0 (`Session(cards=..., links=...)`), on
+the CPU that holds link 0, and the run's ranks are only the flat ranks (see
+`docs/concepts/islands.md` and `examples/05_forward/islands.py`). The script and kernels
+that measured the table below are in the repository's history, at the commit
+"Experiments: link_service, the cost of a crossing and messages a second"
+(`git log -- experiments/link_service`).
 
 ## Results
 

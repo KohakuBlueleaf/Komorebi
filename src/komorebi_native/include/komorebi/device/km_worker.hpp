@@ -22,9 +22,32 @@ namespace km {
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "km_completion.hpp"
+#include "km_link_send.hpp"
 #include "km_trace.hpp"
+#if defined(KM_PAGE_LINKS)
+#include "km_pages.hpp"
+#endif
 
 namespace km {
+
+    // A PAGES command, served on the link cores of a run built with KM_PAGE_LINKS.
+    inline bool pages(const km_command_t& command) {
+#if defined(KM_PAGE_LINKS)
+        return handler(command) == KM_HANDLER_PAGES;
+#else
+        return static_cast<void>(command), false;
+#endif
+    }
+#if !defined(KM_PAGE_LINKS)
+    template <typename Kernel>
+    inline bool pages_serve(const Kernel&, const km_command_t&, uint32_t, uint32_t) {
+        return true;
+    }
+
+    template <typename Kernel>
+    inline void pages_end(const Kernel&) {
+    }
+#endif
 
     // A command the runtime serves (served()): the reader loads the runtime's service
     // overlay on first use and calls it (km_overlay.hpp).
@@ -51,12 +74,17 @@ namespace km {
             }
             while (const km_command_t* command = next()) {
                 if (handler(*command) == KM_HANDLER_EXIT) {
+                    pages_end(*this);
                     put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
                 begin(*command);
-                if (served(*command)) {
-                    serve(*this, *command);
+                if (pages(*command)) {
+                    pages_serve(*this, *command, 0, kStReader);
+                } else if (served(*command)) {
+                    if (handler(*command) != KM_HANDLER_LINK) {  // the writer's
+                        serve(*this, *command);
+                    }
                 } else {
                     body(*command);
                 }
@@ -65,6 +93,7 @@ namespace km {
                 )[kDoneReader] = command->sequence;
                 finish(*command, kStReader);  // a failed clear stops the tile
             }
+            pages_end(*this);
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
@@ -255,8 +284,15 @@ namespace km {
                     : started + (static_cast<uint64_t>(arguments.idle_limit) << 10)
             );
             uint32_t passes = 0, gave = kGaveNone, sequence = 0;
-            const uint32_t island_first = islands_at(arguments.control).first();
-            const uint32_t rank = island_first + arguments.me;
+            const Islands view = islands_at(arguments.control);
+            const uint32_t island_first = view.first();
+            // a link core (after the ranks) has no rank: it takes link groups only
+            const uint32_t rank = (
+                view.ranks() == 0 || arguments.me < view.ranks()
+                    ? island_first + arguments.me
+                    : 0xFFFFFFFFu
+            );
+            const uint32_t link = KM_GROUP_LINK_BASE + (arguments.me - view.ranks());
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
             for (;;) {
                 invalidate_l1_cache();
@@ -264,7 +300,7 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
-                const Pass found = scan(ring, last, arguments.depth, rank);
+                const Pass found = scan(ring, last, arguments.depth, rank, link);
                 passes++;
                 if (found.pick >= 0 && !found.partial) {
                     copy_command(&ring[found.pick], job);
@@ -389,9 +425,21 @@ namespace km {
                 }
                 begin(command);
                 result_ = 0;
+#if defined(KM_LINK_CORE)
                 const bool report = (
-                    __builtin_expect(served(command), 0) || body(command)
+                    pages(command) ? pages_serve(*this, command, 1, kStWriter)
+                    : __builtin_expect(served(command), 0)
+                        ? handler(command) != KM_HANDLER_LINK ||
+                            link_.send(*this, command)
+                        : body(command)
                 );
+#else
+                const bool report = (
+                    pages(command)
+                        ? pages_serve(*this, command, 1, kStWriter)
+                        : __builtin_expect(served(command), 0) || body(command)
+                );
+#endif
                 const bool written = flushed(kFlushWrites, kStWriter);
                 trace_.timestamp(command.sequence, kTraceDone);
                 if (
@@ -406,7 +454,11 @@ namespace km {
                 add_sat(state() + kStCompleted, 1);
                 finish(command, kStWriter);
             }
+            pages_end(*this);
             flushed(kFlushWrites, kStWriter);  // the last acknowledgement has landed
+#if defined(KM_LINK_CORE)
+            link_.close(*this);
+#endif
             trace_.flush(arguments.me, *this);
             put_byte(state(), kStEnds, kEndWriter, end);
         }
@@ -475,6 +527,9 @@ namespace km {
 
         Trace trace_;
         uint32_t result_ = 0;
+#if defined(KM_LINK_CORE)
+        LinkSender link_;
+#endif
     };
 
 }  // namespace km

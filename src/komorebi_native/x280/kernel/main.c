@@ -11,6 +11,7 @@
 #include "grid_port.h"
 #include "inspect.h"
 #include "kernel.h"
+#include "link.h"
 #include "queue.h"
 #include "reset.h"
 #include "result.h"
@@ -289,7 +290,9 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         queue_drop(dispatcher, argument);
         return KMD_TAKEN;
     }
-    if (handler == KMD_HANDLER_ANSWER && source >= KMD_SRC_WORK) {
+    if (
+        handler == KMD_HANDLER_ANSWER && source >= KMD_SRC_WORK && source < KMD_SRC_LINK
+    ) {
         ring_consumed(ring);
         work_answer(
             dispatcher, source - KMD_SRC_WORK, argument, (uint32_t)(line[2] >> 32), now
@@ -402,6 +405,14 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
 #endif
+    /* A group or thread on another island: its parts cross (link.h). A command from
+     * there runs only its part here. */
+    if (
+        dispatcher->link_on && source != KMD_SRC_LINK && !queued &&
+        handler != KM_HANDLER_EXIT && link_reaches_out(dispatcher, group)
+    ) {
+        return link_cross(dispatcher, source, now);
+    }
     /* An engine's queued job carries its stream's tag in `first`: never a cluster. */
     if (
         first >= KM_GROUP_CLUSTER_BASE && handler <= KM_HANDLER_USER_MAX &&
@@ -421,10 +432,16 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         (
             handler > KM_HANDLER_USER_MAX && handler != KM_HANDLER_EXIT &&
             !(
-                (host || source >= KMD_SRC_WORK) &&
+                (host || (source >= KMD_SRC_WORK && source < KMD_SRC_LINK)) &&
                 (handler == KM_HANDLER_LOAD || handler == KM_HANDLER_COPY)
             ) &&
-            !(host && (handler == KM_HANDLER_PUSH || handler == KM_HANDLER_PULL))
+            !(
+                host &&
+                (
+                    handler == KM_HANDLER_PUSH || handler == KM_HANDLER_PULL ||
+                    handler == KM_HANDLER_PAGES
+                )
+            )
         ) ||
         (!host && handler == KM_HANDLER_EXIT)
     ) {
@@ -587,8 +604,11 @@ KMD_HOT int source_turn(kmd_t* dispatcher, uint32_t source, uint32_t* activity) 
     }
     if (outcome == KMD_TAKEN) {
         ring->line_state = 0;
-    } else if (outcome == KMD_HELD && !host && source_busy(dispatcher, source, now)) {
-        ring->line_state = 0; /* only the host's commands wait */
+    } else if (
+        outcome == KMD_HELD && !host && source != KMD_SRC_LINK &&
+        source_busy(dispatcher, source, now)
+    ) {
+        ring->line_state = 0; /* only the host's and the other island's wait */
     } else if (ring->line_state == 1) {
         ring->line_state = 2;
         if (outcome == KMD_HELD) {
@@ -641,6 +661,10 @@ static void loop(kmd_t* dispatcher) {
             source_turn(dispatcher, KMD_SRC_WORK + work_ring, &activity);
             ring_flush(&dispatcher->ring[KMD_SRC_WORK + work_ring]);
         }
+        if (dispatcher->link_on) {
+            link_turn(dispatcher, x280_mtime());
+            source_turn(dispatcher, KMD_SRC_LINK, &activity);
+        }
         ring_flush(host);
         if (++spins != KMD_POLL_EVERY) {
             continue;
@@ -661,6 +685,10 @@ static void loop(kmd_t* dispatcher) {
         const uint64_t now = x280_mtime();
         if (dispatcher->thread_busy) {
             work_late(dispatcher, now);
+        }
+        if (dispatcher->link_on) {
+            link_late(dispatcher, now);
+            link_count(dispatcher);
         }
         const uint32_t late = slots_late(dispatcher, now);
         if (late != KM_RING_SLOTS && inspect_may_give_up(dispatcher, late)) {
@@ -699,7 +727,8 @@ static void loop(kmd_t* dispatcher) {
         if (
             activity != seen_activity || dispatcher->busy || dispatcher->stream_count ||
             dispatcher->queued || dispatcher->thread_busy ||
-            graph_running(dispatcher) || dispatcher->inspect.active
+            graph_running(dispatcher) || dispatcher->inspect.active ||
+            (dispatcher->link_on && link_active(dispatcher))
         ) {
             seen_activity = activity;
             active_since = now;
@@ -728,6 +757,10 @@ static void finish(kmd_t* dispatcher) {
     engine_stop(dispatcher);
     work_close(dispatcher);
     inspect_close(dispatcher);
+    if (dispatcher->link_on) {
+        link_count(dispatcher);
+    }
+    link_close(dispatcher);
     const uint64_t now = x280_mtime();
     result_finish(dispatcher, now);
 #ifdef KMD_TRACE
@@ -840,6 +873,7 @@ __attribute__((used, noinline)) void kmd_trapped(
         noc_clear_tlb_2m(KMD_WIN_WORK + cluster);
     }
     noc_clear_tlb_2m(KMD_WIN_INSPECT);
+    noc_clear_tlb_2m(KMD_WIN_LINK);
     kmd_flush_lines(state, KMD_STATE_BYTES);
     x280_fence_ow();
     result_word(dispatcher, KMD_R_STATE, KMD_STATE_FAILED);
@@ -941,6 +975,12 @@ static __attribute__((noinline)) void run(uint64_t core) {
         work_open(dispatcher, aligned_work_lines) != KMD_ERROR_NONE
     ) {
         result_error(dispatcher, KMD_ERROR_WINDOW, 0, 0, 0, 0);
+    }
+    if (dispatcher->error == KMD_ERROR_NONE) {
+        const uint32_t linked = link_open(dispatcher);
+        if (linked != KMD_ERROR_NONE) {
+            result_error(dispatcher, linked, 0, 0, 0, 0);
+        }
     }
     if (dispatcher->error == KMD_ERROR_NONE) {
         engine_open(

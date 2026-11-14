@@ -301,17 +301,17 @@ follow a long loop run at a throttled clock.
 
 ```
 thread product(island, y, x):                  # the grid form's threads, on each island
-    rows = place(A)[island]                    # space: the row tiles this island holds
+    rows = partition(M tiles, island, islands) # space: the row tiles this island holds
     plan = grid_plan(rows, K tiles, N tiles)   # the project's rule, on these rows alone
     run the broadcast form of plan on rows     # W: a copy on every island
 ```
 
-A and Y are split by row tiles as the session places a tensor by default
-(`islands.place`, partition over the ranks in island order); W is a copy on every
-island. Each island's program is the grid form of its own plan, with its rows' first
-tile and end in its words, and one GRID command a call goes to a flat group over every
-island's rectangle. On one card (`--cards 0`) the one island holds every row and the
-program is the one `bench.py` runs: the same script, unchanged.
+A and Y are placed by island (`by="island"`: even parts of the row tiles, island i
+its part i); W is a copy on every island. Each island's program is the grid form of
+its own plan, with its rows' first tile and end in its words, and one GRID command a
+call goes to a flat group over every island's rectangle. `--cards 0` is the same
+session over one island: it holds every row, and its program is the one `bench.py`
+runs. The script has no branch for one card.
 
 ```
 python projects/dense/islands.py --shape sq8192 --cards 0,1
@@ -319,33 +319,39 @@ python projects/dense/islands.py --shape sq8192 --cards 0
 python projects/dense/islands.py --m 7680 --k 64 --n 128 --inputs int --cards 0,1
 ```
 
-Measured on 2026-11-14 between 21:39 and 21:44 at this directory's commit, X280 at
-the session default of 1,350 MHz, host load average 3.5 to 7.5, one run each (three
-single calls, then calls back to back for about four seconds); the check is that of
-`run.py` on 256 sampled rows, which fall on both islands. Time per call is the loop's
-host time per call; uploads and the read-back are host transfers, not part of a call.
-The runs' JSON lines are `results/<preset>-islands-0x1.json` and `-islands-0.json`.
+Measured on 2026-11-14 between 21:39 and 21:48, X280 at the session default of 1,350
+MHz, host load average 2.7 to 8.2, one run each (three single calls, then calls back
+to back for about four seconds or more); the check is that of `run.py` on 256 sampled
+rows, which fall on both islands. Time per call is the loop's host time per call;
+uploads and the read-back are host transfers, not part of a call. The first two rows
+are this script; the rows marked "by rank" are its first version, which placed A and
+Y as the session does by default (partition over the ranks in island order) and ran
+one card through the card's own session. The runs' JSON lines are in `results/`
+(`<preset>-islands-0x1-even.json`, `sq8192-islands-0-one.json`; by rank:
+`-islands-0x1.json`, `-islands-0.json`).
 
 | Preset | Cards | Row tiles per island | Loop, us per call | TFLOP/s | Single call, us | AICLK mean, MHz | Upload, s | Read-back, s |
 |---|---|---|---|---|---|---|---|---|
-| `sq8192` | 0 | 256 | 13,192.0 | 83.3 | 5,717 | 1034 | 0.85 | 0.28 |
-| `sq8192` | 0, 1 | 136 / 120 | 5,242.3 | 209.7 | 4,686 | 970 / 1208 | 1.12 | 0.27 |
-| `sq16384` | 0 | 512 | 91,763.8 | 95.9 | 77,693 | 1138 | 10.78 | 0.29 |
-| `sq16384` | 0, 1 | 272 / 240 | 48,306.7 | 182.1 | 42,259 | 1170 / 1173 | 3.99 | 0.28 |
+| `sq8192` | 0 | 256 | 13,562.5 | 81.1 | 5,788 | 1039 | 2.94 | 0.51 |
+| `sq8192` | 0, 1 | 128 / 128 | 4,269.2 | 257.5 | 2,931 | 925 / 980 | 1.23 | 0.27 |
+| `sq8192`, by rank | 0 | 256 | 13,192.0 | 83.3 | 5,717 | 1034 | 0.85 | 0.28 |
+| `sq8192`, by rank | 0, 1 | 136 / 120 | 5,242.3 | 209.7 | 4,686 | 970 / 1208 | 1.12 | 0.27 |
+| `sq16384`, by rank | 0 | 512 | 91,763.8 | 95.9 | 77,693 | 1138 | 10.78 | 0.29 |
+| `sq16384`, by rank | 0, 1 | 272 / 240 | 48,306.7 | 182.1 | 42,259 | 1170 / 1173 | 3.99 | 0.28 |
 
 Every check passed (relative RMS 3.96e-3 to 3.97e-3, largest 5.6e-3 to 6.5e-3).
-`sq16384` on two cards takes 0.53 of one card's time per call. The one-card `sq8192`
-loop ran in the slower of the two modes described above (13,192 us; 8,608.3 in the
-fastest run), so its ratio, 0.40, is not the cards' ratio; against 8,608.3 it is 0.61.
-
-The default placement partitions the row tiles over the ranks, not over the islands:
-256 row tiles over 240 ranks give island 0 sixteen more (136 against 120), and 128 or
-fewer leave island 1 at most 8. Each island also gets its own plan from the rule: on
-`sq8192` island 1's 120 rows take blocks of 12 x 24 with K blocks of 1 tile and are
-the slower part (5,404 us against 4,401 us in the loop) although they are fewer.
+Placed by island, both islands of `sq8192` get 128 row tiles and the same plan (bands
+of 13 x 24, blocks of 7 x 24, K blocks of 4): 4,269.2 us per call, 0.50 of the best
+one-card run (8,608.3 above) and 0.81 of the by-rank split, whose island 1 got blocks
+of 12 x 24 with K blocks of 1 tile and was the slower part. Both one-card `sq8192` loops
+ran in the slower of the two modes described above (13,192 and 13,562 us): the same
+plan and kernels as `bench.py`, which runs 21 single calls, then waits 1 s and runs
+its loop under the power sampler, where this script runs 3 single calls and its loop
+at once; `bench.py` itself ran in that mode in two of its three runs. `sq16384` on two
+cards takes 0.53 of one card's time per call.
 
 The integer case above (7680 x 64 x 128, 120 row tiles each) is bit for bit on two
-cards and on one.
+cards and on one (by rank, the first version).
 
 ## Files
 
@@ -358,7 +364,7 @@ cards and on one.
 | `kernels/grid/grid.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the broadcast form: arguments, row broadcast and A, the product, column broadcast and Y |
 | `kernels/split/split.h`, `chunks.hpp`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the K split: arguments, the K chunks as two streams on both movers, chunks and arrivals, the part and the sum, chunks and sending and Y |
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
-| `islands.py` | the grid form over the islands of a session, A and Y split by rows, W a copy on each |
+| `islands.py` | the grid form over the islands of a session, A and Y placed by island, W a copy on each |
 | `results/` | the runs behind the results table |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
 | `bench_ttnn.py` | TT-NN's product and SwiGLU on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |

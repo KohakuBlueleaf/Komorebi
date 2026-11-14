@@ -178,11 +178,21 @@ place to ask a question and to be wrong.
   to 10.6 GB/s. Packets for a DRAM bank or a core's L1 with no kernel running there
   land exact at the same rate. Two CPUs of one core each run a link. The sender's own
   per-packet work, not the link, sets the rate.
+- [islands_pages](islands_pages/README.md): a tensor held by one island written into
+  a tensor held by the other by the session's link cores, a page a packet straight
+  into the other island's DRAM: 64 MiB over four links (two cores, both CPUs of each)
+  in 2.09 ms, 32.1 GB/s, every page exact. Three L1 slots a CPU leave the DRAM reads'
+  latency in charge.
 - [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
   bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and
   1.05 on twelve (63.8 GB/s, the bank's rate); the whole call 30.4 ms, bound by the two sweeps
   of the region's cache lines; the X280's own loads 0.024 GB/s, `kmx_push` 2.20 GB/s.
+- [core_reset](core_reset/README.md): whether one Tensix core of a run comes back
+  without a card reset. A core whose handler never returns is reset and loaded again by
+  the dispatcher at the command's give-up (1.6 to 1.7 ms of its loop), from a list the
+  session hands it at load, and the commands after it are exact; by the host the same
+  reset takes about 65 ms. A compute unit left running is not tried yet.
 - [dispatcher_watch](dispatcher_watch/README.md): whether the dispatcher comes back by
   itself when its loop on X280 core 0 stalls. Core 2 sees no pass for 100 ms, reports
   the stall to the host and interrupts core 0, which re-enters its loop 1.2

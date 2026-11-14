@@ -183,8 +183,9 @@ The session sends each group a load of its own program before `session.load` ret
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
 
-- `cards=[a, b, ...]` with two or more cards gives one session over them, each card's chip
-  an island with flat ranks ([Islands](islands.md)); with one card it is `card`.
+- `cards=[a, b, ...]` gives one session over them, each card's chip an island with flat
+  ranks ([Islands](islands.md)); `cards=[a]` is that session over one island, `card=a`
+  the card's own session.
 - `pll_mhz` is the X280 clock. The runtime's table is 15, 200, 800, 1000, 1250, 1350, 1500
   and 1750 MHz; a runtime built before 1250, 1350 and 1500 were added has 15, 200, 800,
   1000 and 1750. One PLL clocks all four X280 clusters, so the work
@@ -255,7 +256,7 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
-image=None, thread="card", island=None)` returns a `Run`:
+image=None, thread="card", island=None, recover=True)` returns a `Run`:
 
 1. finds or builds the dispatcher image and the native module (see below), and
    checks that the image is there and X280 cluster 0 is idle (else `km.StartError`);
@@ -265,7 +266,9 @@ image=None, thread="card", island=None)` returns a `Run`:
    running;
 4. starts the dispatcher and waits (with `start` seconds as its timeout) for every column of
    the grid to report READY; otherwise `km.StartError`, which carries the kernel's
-   result block.
+   result block;
+5. with `recover`, hands the dispatcher every core's reset list (`run.keep_resets()`,
+   below).
 
 From the launch on, every failure path reads the grid back. When the dispatcher
 is not there to stop the grid (it never started, or it ended before it could reach the
@@ -282,6 +285,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `batch` | commands stored per batch: every line, then one fence |
 | `settle_microseconds` | the host's pause between a fence and its next store into the card |
 | `thread` | for a program with an X280 thread: `"card"` builds and starts it after READY, `"host"` runs its `host_fallback` instead |
+| `recover` | hand the dispatcher every core's reset list at load, so that a give-up resets and loads again each core that did not leave the command (default True). It costs the load about 4 ms and 68,864 bytes of the upload region for the map/collect example (the list grows with the kernels and their arguments). Not done for islands, several programs or program switches, nor for a program with semaphores: `run.recovery_refused` says why |
 | `island` | `(graph, i)`: this card is island `i` of a `komorebi.islands.Graph` whose island `i` has every core a rank in core order. Every core's island area holds island `i`'s header and table, the dispatcher gets `i`'s first rank and count (`kmd_args.island`), and the run's groups are flat ranks of the whole graph (`Run.ranks`); a group's part on this card runs ([islands](runtime.md#islands)) |
 
 Event room. The dispatcher takes a command that ends in an event only while the
@@ -445,6 +449,10 @@ the regions' whole tensor, 8 MB per MB of regions.
 | `event(handle)` | `Event(handle, kind, auxiliary, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `rejected`; `auxiliary` is the first core of the group that ran the command (done; for a queued command, the one the kernel chose), the slot (timeout) or the reason (rejected): the low 8 bits of the event's auxiliary, whose next 16 bits, the low bits of the command's sequence number, `sequence(handle)` reads (layout: the kernel README, "Sources"); `ticks` is submit to completion in the X280's 50 MHz timer, `microseconds` the same in microseconds; for a command submitted with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `microseconds` then hold it too), else None |
 | `sequence(handle)`, `group(handle)` | the sequence number the kernel gave the command (the trace's index), from its done or timeout event (None before it, and for a rejected command); its group, whose first core for a queued command comes from its done event (None before it) |
 | `inspect(group=None, timeout=10.0)` | while the run goes on: the dispatcher reads each core of `group` (default every core), one core per pass of its loop, and the call returns a list with a dict per core ([inspecting a run](#inspecting-a-run)). It is the kernel's own command: it takes no slot and no sequence number |
+| `keep_resets(timeout=10.0)` | hands the dispatcher every core's reset list (what `load(recover=True)` does): firmware, its tables and the cores' kernels and arguments, held at the start of the upload region for the run. Returns True and sets `recovery` (`offset`, `bytes`, `seconds`), or False and sets `recovery_refused` (semaphores, cores that differ in kernels, no room) |
+| `reset_core(core, timeout=10.0)` | resets core `core` and loads its kernels again while the other cores run theirs: by the dispatcher from the kept list (1.6 ms on the X280), else by the host (about 65 ms). Returns `{core, by, seconds, x280_seconds}`; `KomorebiError` if the core did not come back. Commands in the core's ring are lost: use it on a core with no command in flight, or one stuck in one |
+| `recoveries`, `given_up(handle)` | every give-up whose cores the dispatcher reset, as `{handle, cores, text}`, `text` being the `CommandTimeout`'s (it ends `recovered (reset and loaded again): cores [...]`); `given_up(handle)` is the `CommandTimeout` of a given-up command whose event is still held (read with `event()` after `drain()`) |
+| `stalls` | the watch's events on the dispatcher's own loop: `{stage, req, ticks}`, stage `stalled`, `back` or `lost` ([the watch](../concepts/dispatch.md#the-watch)) |
 | `forget(handles)` | releases what the run keeps for handles whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps groups and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
@@ -484,9 +492,10 @@ it up and keep the run ([runtime](runtime.md#giving-up-one-command)). It reads t
 group, tells its cores to leave the command, and sends `timeout` once none runs it.
 `wait` then raises `CommandTimeout` with `given_up` True, and its `cores` are the group
 as that read found them. The run goes on: the next command on those cores runs as
-usual. A command whose core is still in it 20 ms later (a loop that polls nothing), and
-a command the dispatcher does not give up (a thread's own, a dynamic run's), end the
-run as before.
+usual. A core still in the command 20 ms later (a loop that polls nothing) is reset and
+loaded again by the dispatcher when the run holds the reset list (`recover`), and
+`CommandTimeout.recovered` names it; without the list it ends the run, as does a
+command the dispatcher does not give up (a thread's own, a dynamic run's).
 
 ### A command's block
 

@@ -54,20 +54,23 @@ def parse():
 
 
 def message_ranks(session, counters):
-    """Per island, its cores that are message ranks: all but the last counters + 1
-    (its counter tiles, then its link core), numbered on from the island before."""
-    out = []
-    for island in range(len(session.sessions)):
-        cores = session.graph.count(island)
-        out.append(cores - counters - 1)
-    return out
+    """Per island, its ranks that are message ranks: all but its last `counters` (its
+    counter tiles), numbered on from the island before; link cores are no ranks."""
+    return [session.graph.count(i) - counters for i in range(len(session.sessions))]
+
+
+def cores(session, island):
+    """Island `island`'s cores: its ranks, then its link cores."""
+    columns, rows = session.island(island).grid
+    return columns * rows
 
 
 def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     report = {"cards": cards, "messages": args.messages, "forwards": args.forwards}
-    with km.Session(cards=cards, links=1, log=log) as session:
+    # The message service on the link core makes the kernels 78.6 KB: past the default.
+    with km.Session(cards=cards, links=1, kernel_bytes=80 * 1024, log=log) as session:
         islands = len(session.sessions)
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)] for i in range(islands)
@@ -75,7 +78,7 @@ def main():
         # The results area on every core of every island, at one address.
         results = [
             session.island(i).tensor(
-                np.zeros((session.graph.count(i), FORWARD["kResWords"]), np.int32),
+                np.zeros((cores(session, i), FORWARD["kResWords"]), np.int32),
                 "int32",
                 shard_grid=session.island(i).grid,
             )
@@ -102,7 +105,7 @@ def main():
             counters=args.counters,
         )
         run = session.load(program, deadline=args.deadline, wait=args.wait)
-        report["link_cores"] = [session.link_core(i) for i in range(islands)]
+        report["link_cores"] = [session.link_cores[i][0] for i in range(islands)]
         log(f"loaded on {islands} islands, link cores {report['link_cores']}")
         words = [
             args.messages,
@@ -140,7 +143,7 @@ def main():
             report["link"] = [link_words(session, i).tolist() for i in range(islands)]
         rows = [
             (tensor.read().astype(np.int64) & 0xFFFFFFFF).reshape(
-                session.graph.count(i), FORWARD["kResWords"]
+                cores(session, i), FORWARD["kResWords"]
             )
             for i, tensor in enumerate(results)
         ]
@@ -167,7 +170,7 @@ def link_words(session, island):
         address=region.address,
     )
     got = view.read().astype(np.int64) & 0xFFFFFFFF
-    return got.reshape(columns * rows, LINK_WORDS)[session.link_core(island)]
+    return got.reshape(columns * rows, LINK_WORDS)[session.link_cores[island][0]]
 
 
 def check(args, session, rows):

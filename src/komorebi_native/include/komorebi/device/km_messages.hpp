@@ -211,7 +211,7 @@ namespace km {
     }
 
     // A run's message ranks over the islands its group spans: each island's part gives
-    // its cores but its last K (counter tiles) and, spanning, its last one (link core).
+    // its cores but its last K, its counter tiles. One island: messages_ranks above.
     class MessageRanks {
     public:
         static constexpr uint32_t kNone = 0xFFFFFFFF;
@@ -228,7 +228,7 @@ namespace km {
                 part(island, low, high);
                 parts_ += high > low;
             }
-            reserved_ = counters_ + (parts_ > 1 ? 1 : 0);
+            reserved_ = counters_;
             for (uint32_t island = 0; island < tables(); island++) {
                 uint32_t low = 0, high = 0;
                 part(island, low, high);
@@ -296,12 +296,6 @@ namespace km {
         // Counter tile index of this island's flat rank `flat` (counter tiles: < K).
         uint32_t tile_of(uint32_t flat) const {
             return flat - low_ - ranks_here();
-        }
-
-        // The link core of this island's part as its core (kNone: the run spans no
-        // islands). The one place a link core is named.
-        uint32_t link_core() const {
-            return spans() ? low_ + ranks_here() + counters_ - view_.first() : kNone;
         }
 
     private:
@@ -614,7 +608,7 @@ namespace km {
         } else if (where == 0 && counter) {
             *tail = head;  // nobody sends here: the loop sees an empty queue
             uint32_t served = 0;
-            for (  // a link core run here is no counter tile: it serves none
+            for (  // this tile's ranks: every counter_tiles-th of the run
                 uint32_t rank = message_ranks.tile_of(me);
                 rank < ranks && message_ranks.tile_of(me) < counter_tiles;
                 rank += counter_tiles

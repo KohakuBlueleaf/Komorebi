@@ -10,7 +10,8 @@ from typing import NamedTuple
 
 from komorebi import channel
 
-RANKS_MAX = 65280  # a group's first below 0xFF00, where thread numbers start
+RANKS_MAX = 65024  # a group's first below 0xFE00, where link cores' names start
+LINK_BASE = 0xFE00  # KM_GROUP_LINK_BASE: first = this + k names link cores k on
 ISLANDS_MAX = 256  # an island's number is 8 bits
 CORES_MAX = 128  # KM_CORES_MAX: an island's core table
 THREAD_NUMBERS = 256  # 0xFF00 + number in 16 bits; numbers 1 to 255, 0 names none
@@ -103,11 +104,12 @@ def spread(cores, columns, count):
 
 class Graph:
     """Islands and their links (any connected graph). A used link takes a core on each
-    island it joins (`reserve` False: none); ranks and thread numbers (from 1) are flat
-    and contiguous by island, ranks = cores less link cores in core order. Routes by
-    hops, ties to the lowest island. On one island: no link cores, rank = core."""
+    island it joins (`reserve` False: none; `link_cores`: per island, these cores);
+    ranks and thread numbers (from 1) are flat and contiguous by island, ranks = cores
+    less link cores in core order. Routes by hops, ties to the lowest island. On one
+    island: no link cores, rank = core."""
 
-    def __init__(self, islands, links=(), reserve=True):
+    def __init__(self, islands, links=(), reserve=True, link_cores=None):
         self.islands = tuple(
             Island(tuple(i.cores), i.columns, i.threads) for i in islands
         )
@@ -123,10 +125,20 @@ class Graph:
                 self.ports[link.a].append((link.b, k))
                 self.ports[link.b].append((link.a, k))
         self.ports = tuple(tuple(sorted(ports)) for ports in self.ports)
-        self.link_cores = tuple(
-            spread(island.cores, island.columns, len(self.ports[i]) if reserve else 0)
-            for i, island in enumerate(self.islands)
-        )
+        if link_cores is None:
+            self.link_cores = tuple(
+                spread(
+                    island.cores, island.columns, len(self.ports[i]) if reserve else 0
+                )
+                for i, island in enumerate(self.islands)
+            )
+        else:
+            self.link_cores = tuple(tuple(cores) for cores in link_cores)
+            if len(self.link_cores) != len(self.islands):
+                raise ValueError(f"link cores of {len(self.link_cores)} islands")
+            for i, (island, taken) in enumerate(zip(self.islands, self.link_cores)):
+                if len(set(taken)) != len(taken) or not set(taken) <= set(island.cores):
+                    raise ValueError(f"island {i}: link cores {taken} not its cores")
         self.rank_cores = tuple(
             tuple(core for core in island.cores if core not in taken)
             for island, taken in zip(self.islands, self.link_cores)
@@ -250,6 +262,16 @@ class Graph:
         """The island's ranks: its cores less its link cores; every core on one
         island."""
         return len(self.rank_cores[island])
+
+    def link_group(self, island, k=0, count=None):
+        """The group (first, count) that names link cores k to k + count - 1 of
+        `island` (default: k on) in a command to that island: KM_GROUP_LINK_BASE + k,
+        never cut by island; a link core's rank in it is its index less k."""
+        cores = len(self.link_cores[island])
+        count = cores - k if count is None else count
+        if count < 1 or k < 0 or k + count > cores:
+            raise ValueError(f"link cores {k} + {count} of island {island}'s {cores}")
+        return LINK_BASE + k, count
 
     def resolve(self, rank):
         """(island, local rank) of `rank`; (0, rank) on one island."""
@@ -380,11 +402,11 @@ def leading_units(shape, layout="row"):
     raise ValueError(f"layout {layout!r}: 'row' or 'tile'")
 
 
-def place(graph, pages, units=None, like=None, copy=False):
+def place(graph, pages, units=None, like=None, copy=False, by="rank"):
     """Where a tensor's pages live: split along `units` leading steps (None: a page a
-    step) as partition gives them to the ranks of `like` (first, count; its producer,
-    consumer or a named group; default all ranks), so each rank's part is on its own
-    island; `copy`: a copy on every island. On one island: every page on island 0."""
+    step) as partition gives them to the ranks of `like` (default all ranks), or by
+    "island": partition over the islands, island i its part i; `copy`: on every
+    island. On one island: every page on island 0."""
     islands = len(graph.islands)
     if copy:
         return Placement(tuple((0, pages) for _ in range(islands)), True)
@@ -392,6 +414,20 @@ def place(graph, pages, units=None, like=None, copy=False):
     if units < 1 or pages % units:
         raise ValueError(f"{pages} pages are not {units} equal steps")
     step = pages // units
+    if by == "island":
+        if like is not None:
+            raise ValueError("a placement by island follows no group (`like`)")
+        return Placement(
+            tuple(
+                (start * step, length * step)
+                for start, length in (
+                    channel.partition(units, island, islands)
+                    for island in range(islands)
+                )
+            )
+        )
+    if by != "rank":
+        raise ValueError(f"by {by!r}: 'rank' or 'island'")
     first, count = like if like is not None else (0, graph.ranks)
     graph.split((first, count))  # the group must be the graph's
     parts = []

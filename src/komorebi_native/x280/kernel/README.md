@@ -121,8 +121,10 @@ These rules are part of the protocol; a host that relies on anything else is wro
   `take()` cuts a command's group by the island's range (`island_part`) and checks,
   places and completes that part in local cores (`slot_group`, the done event's first
   core), while the line keeps the flat group the cores test. A group with no part here
-  is rejected as outside (3). EXIT goes to `island_first | cores << 16`; a queued job's
-  first core is placed as `island_first` plus the core it gets. A dynamic run reads the
+  is rejected as outside (3). A group of link cores, first `KM_GROUP_LINK_BASE` + k, is
+  never cut: it is link cores k on, the island's cores after its ranks. EXIT goes to
+  `island_first | cores << 16`; a queued job's first core is placed as `island_first`
+  plus the core it gets. A dynamic run reads the
   status lines of its group's part (`part`); the engine and the graph engine check a
   group against [island_first, island_first + cores).
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
@@ -209,7 +211,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   kept. EXIT waits until no graph runs.
 - **Commands from the engine.** The engine may send commands, `KM_HANDLER_DEADLINE`,
   `KMD_HANDLER_POST` (248) and `KMD_HANDLER_DROP` (247); STOP, EXIT, RUN and CANCEL from it are
-  rejected with reason 1, and so are `KMD_HANDLER_POST` and `KMD_HANDLER_DROP` from the host.
+  rejected with reason 1, and so is `KMD_HANDLER_DROP` from the host; from the host, 248
+  is `KM_HANDLER_PAGES`, which goes to its group's link cores.
   Core 0 never holds an engine command: a command that cannot be submitted now (no free
   slot, a busy overlapping group under `KM_FLAG_EXCLUSIVE`, a full queue) is consumed and
   answered `KM_EVENT_REJECTED` reason 11 (`KMD_REJECT_BUSY`) at once, the rejection stored

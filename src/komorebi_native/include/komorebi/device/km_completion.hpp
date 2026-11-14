@@ -16,7 +16,7 @@ namespace km {
         const Args& arguments = core.args();
         const Islands view = islands_at(arguments.control);
         if (!in_group(
-            command, view.first() + arguments.me
+            command, name_in(view, arguments.me, command)
         )) {  // the reader never hands one to a core outside the group
             return false;
         }

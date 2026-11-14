@@ -30,8 +30,18 @@
 #define KMD_LIM_PROGRAMS 0x2000u
 /* core index -> NoC x | y << 16 (the host's core table) */
 #define KMD_LIM_COORDS 0x2080u
+/* the link block (link.h): the host's link line and island table, then the inbox that
+ * the other island's link core writes: its count line, then KMD_LINK_SLOTS packets */
+#define KMD_LIM_LINK 0x2280u
+/* per island: its ranks, its threads (first | count << 16) */
+#define KMD_LINK_TABLE 0x40u
+#define KMD_LINK_COUNT 0xC0u     /* word 0: packets landed, written after each packet */
+#define KMD_LINK_SLOTS_AT 0x100u /* packet n at + (n % KMD_LINK_SLOTS) * 128 */
+#define KMD_LINK_SLOTS 16u
+#define KMD_LINK_BYTES (KMD_LINK_SLOTS_AT + KMD_LINK_SLOTS * KM_LINK_PACKET_BYTES)
+#define KMD_LINK_MARK 0x4B4E494Cu /* "LINK": the host's line says commands cross */
 /* the inspect block: a header line, then a record per core of the group, in order */
-#define KMD_LIM_INSPECT 0x2280u
+#define KMD_LIM_INSPECT (KMD_LIM_LINK + KMD_LINK_BYTES)
 #define KMD_INSPECT_HEAD 64u
 #define KMD_INSPECT_RECORD 0x340u /* a line, the state words, live words, trace */
 #define KMD_INSPECT_STATE 0x40u   /* in a record: KM_STATE_WORDS words */
@@ -82,7 +92,7 @@
 
 /* Reasons of a KM_EVENT_REJECTED event (its auxiliary): the command was consumed, not
  * run. */
-#define KMD_REJECT_HANDLER 1u /* handler 240 to 249 (240 to 242, 245: see take()) */
+#define KMD_REJECT_HANDLER 1u /* handler 240 to 249 (240 to 242, 245, 248: take()) */
 #define KMD_REJECT_FLAGS 2u   /* reserved flag bit 0 set */
 #define KMD_REJECT_GROUP 3u   /* count 0, or the group does not lie inside the cores */
 #define KMD_REJECT_EXITED 4u  /* a command after EXIT */
@@ -271,7 +281,11 @@ enum {
     KMD_H_WATCH_GAP = 21,       /* core 2: the longest time without a pass, ticks */
     KMD_H_STALL_PC = 22,        /* core 0: mepc, low word, of its latest stall */
     KMD_H_STALL_PASSES = 23,    /* core 2: core 0's passes, low word, at the stall */
-    KMD_H_WORDS = 24
+    KMD_H_LINK_SENT = 24,       /* core 0: packets handed to the link core */
+    KMD_H_LINK_TAKEN = 25,      /* core 0: packets read from its link inbox */
+    KMD_H_LINK_CROSSED = 26,    /* core 0: commands with a part across */
+    KMD_H_LINK_GAVE_UP = 27,    /* core 0: of those, timed out naming the far island */
+    KMD_H_WORDS = 28
 };
 
 /* The inspect block's header (KMD_LIM_INSPECT), words; `mark` is stored last. */
@@ -310,6 +324,7 @@ enum {
 /* a reset's core: its L1, then its soft-reset register (cleared after each reset) */
 #define KMD_WIN_RESET 23u
 #define KMD_WIN_RESET_REGISTER 24u
+#define KMD_WIN_LINK 25u /* the link core's link area */
 
 /* The X280 ranks of a dynamic program in messages_handler's bits 32 to 39: work cluster
  * c's X280 cores 0 to count - 1 (count 1 to KM_X280_RANKS_MAX; 0: none). */
@@ -385,12 +400,13 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 
 /* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory
  * Port: the host gives it KMD_STATE_BYTES there, 64-byte aligned (LIM is uncached). */
-#define KMD_STATE_BYTES 0x8000u
+#define KMD_STATE_BYTES 0xA000u
 /* Its parts: core 0's state, core 1's state, then the engine's ring (both cores). */
 #define KMD_STATE_KERNEL 0x0000u
 #define KMD_STATE_ENGINE 0x2000u
 #define KMD_STATE_RING 0x4000u
 #define KMD_STATE_QUEUE 0x6000u
+#define KMD_STATE_LINK 0x8000u /* the link's state (link.h) */
 /* The engine's ring, from KMD_STATE_RING: commands, events, then one word per line. */
 #define KMD_ENGINE_DEPTH 64u   /* command lines */
 #define KMD_ENGINE_EVENTS 128u /* events */
@@ -421,6 +437,31 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
  * 16-byte store on its own 64-byte line after the command lines. */
 #define KMD_WORK_RUN(event_depth) (KMD_WORK_IN(event_depth) + KMD_WORK_IN_DEPTH * 64u)
 #define KMD_WORK_RUN_BYTES 64u
+
+/* The link line's words (KMD_LIM_LINK), the host's; with no mark nothing crosses. */
+enum {
+    KMD_L_MARK = 0,      /* KMD_LINK_MARK */
+    KMD_L_ISLAND = 1,    /* this island */
+    KMD_L_ISLANDS = 2,   /* islands in the table, 2 to KM_ISLANDS_MAX */
+    KMD_L_CORE = 3,      /* the link core: its index in this island's cores */
+    KMD_L_AREA = 4,      /* its link area's L1 address (KM_LINK_*) */
+    KMD_L_FAR = 5,       /* the island at the link's other end */
+    KMD_L_FAR_TILE = 6,  /* that island's dispatcher tile: x | y << 16 */
+    KMD_L_FAR_BLOCK = 7, /* the NoC address there of its link block */
+    KMD_L_WORDS = 8
+};
+
+/* A packet's crossing line (its second line), words. */
+enum {
+    KMD_X_NUMBER = 0, /* the packet's number on its link, from 1 */
+    KMD_X_KIND = 1,   /* KMD_CROSS_* | the sending island << 8 */
+    KMD_X_TICKET = 2, /* the origin's crossing: index | generation << 8 */
+    KMD_X_LEFT = 3, /* a command: ticks left of its deadline; DONE: the event status */
+    KMD_X_TICKS = 4 /* DONE: the event's ticks (the result word with KM_FLAG_RESULT) */
+};
+
+#define KMD_CROSS_COMMAND 1u
+#define KMD_CROSS_DONE 2u
 
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u
@@ -464,7 +505,10 @@ KMD_STATIC_ASSERT(
 );
 KMD_STATIC_ASSERT(
     KMD_LIM_PROGRAMS + KM_CORES_MAX <= KMD_LIM_COORDS &&
-        KMD_LIM_COORDS + 4u * KM_CORES_MAX <= KMD_LIM_INSPECT &&
+        KMD_LIM_COORDS + 4u * KM_CORES_MAX <= KMD_LIM_LINK &&
+        KMD_LINK_TABLE >= 4u * KMD_L_WORDS &&
+        KMD_LINK_TABLE + 8u * KM_ISLANDS_MAX <= KMD_LINK_COUNT &&
+        KMD_LINK_COUNT + 64u <= KMD_LINK_SLOTS_AT && KMD_LIM_LINK % 64u == 0 &&
         KMD_LIM_INSPECT % 64u == 0 && KMD_INSPECT_RECORD % 64u == 0,
     "LIM: programs, coordinates, the inspect block"
 );
