@@ -259,10 +259,10 @@ after it. The far link core needs nothing.
 - **Over a link:** a reduce or a broadcast over more than two islands (a part crosses
   one link, to the far island, not the next link of the table), a dynamic run on part of
   the ranks of two islands, X280 ranks over a link. A kernel's own ask and put of pages,
-  and a thread's copy across, are built for two islands, their pages on one link; a copy
-  across knows only the tensors made before the load. More than 16 KiB in one relay call
-  goes as several asks; no run has sent that much in one call yet. Blocks cross at the
-  relay's pace, one ask a way at a time from link core 0 alone.
+  and a thread's copy across, are built for two islands, their pages split over every
+  page link; a copy across knows only the tensors made before the load. More than 16 KiB
+  in one relay call goes as several asks; no run has sent that much in one call yet.
+  Blocks cross at the relay's pace, one ask a way at a time from link core 0 alone.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **A link between the islands of one card.** A split card runs, but nothing crosses
   between its islands inside a run.
