@@ -6,6 +6,7 @@ Prints one JSON line; exit 1: a failed check."""
 import argparse
 import contextlib
 import dataclasses
+import gc
 import json
 import math
 import sys
@@ -1301,14 +1302,25 @@ def product_report(session, dimensions, place, cards, args):
     if args.beside and report["linear"]["ok"]:
         log(f"cool-down {args.seconds} s")
         time.sleep(args.seconds)
+        release_runs(session)
         report["grid"] = attempt(
             Grid, session, dimensions, tensors, cards, args, matrices
         )
     report["ok"] = report["linear"]["ok"] and report.get("grid", {}).get("ok", True)
     for tensor in tensors.values():  # the next product's room (the tensor table)
         tensor.free()
+    release_runs(session)
     return report
 
+
+def release_runs(session):
+    """Drops the session's stopped runs, so that their L1 (each core's control block
+    and transfer buffer) is free before the next product's load: a session keeps its
+    last run until a load replaces it, and the load places its own L1 first."""
+    session.run = None
+    for one in session.sessions:
+        one.run = None
+    gc.collect()
 
 
 if __name__ == "__main__":
