@@ -62,10 +62,15 @@ def parse():
     parser.add_argument("--idle-cycles", type=int, default=20000)
     parser.add_argument("--counters", type=int, default=2)
     parser.add_argument(
+        "--message-links",
+        action="store_true",
+        help="a message service on every link (opt-in), else link 0's alone",
+    )
+    parser.add_argument(
         "--kernel-bytes",
         type=int,
         default=None,
-        help="kernel buffer bytes (default 163840; less: link 0's service alone)",
+        help="kernel buffer bytes (default 163840)",
     )
     parser.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
@@ -86,7 +91,11 @@ def open_session(args, cards):
         (card,) = cards
         return km.Session(card=card, islands=args.islands, line=args.line, log=log)
     return km.Session(
-        cards=cards, links=args.links, kernel_bytes=args.kernel_bytes, log=log
+        cards=cards,
+        links=args.links,
+        kernel_bytes=args.kernel_bytes,
+        message_links=args.message_links,
+        log=log,
     )
 
 

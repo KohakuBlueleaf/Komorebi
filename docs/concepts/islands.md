@@ -213,14 +213,15 @@ the other way (1,000 pipelined to one core).
 A dynamic run whose group is every rank of two islands (`Session(cards=...)`)
 forwards to a rank of the other island as to any rank: the kernels do not change. The
 writer flush puts a message for another island into the outbox of its link; beside the
-RUN the session starts a message service on the CPU that holds each link, over the
-connection it opened at load. A rank's messages take link `rank % links`, so one rank's
-stay in order. A service sends its outbox across, many messages to a packet (at most
+RUN the session starts the message service on the CPU that holds link 0, over the
+connection it opened at load. With `message_links=True` (opt-in: one run of three of example 05's 10^6 forwards over four links stalled at 81 % of its visits, cause not found yet) every
+link has a service, and a rank's messages take link `rank % links`, so one rank's stay
+in order. A service sends its outbox across, many messages to a packet (at most
 4352 bytes) and one count a packet, and issues what landed from the far island to its
 ranks. A message's body crosses in its message's packet, right after it (at most 4,224
 bytes for 64-byte messages), and is written into the rank's body page before the
-message: example 23 takes 2.990 µs a hop over four links with the message alone, 6.056
-µs with a 4 KiB body. Every wait is bounded and the link has credits, so a full far
+message: example 23 takes 3.001 µs a hop with the message alone, 6.109 µs with a 4 KiB
+body (one service; four: 2.990 and 6.056). Every wait is bounded and the link has credits, so a full far
 inbox holds the sender. The run ends when both islands are quiet: link 0's service decides for its
 island over the run's cores and the other services' state lines, sends its island's
 quiet report across, and the dispatcher's quiet test counts link core 0's line (sent:
@@ -232,9 +233,9 @@ flight on any link.
 
 [05_forward](../../examples/05_forward/README.md) runs this on two Blackhole p150a cards,
 one link: 16 messages of 4 forwards over 234 message ranks of 238, exact against its
-replay, 27 of the 64 forwards across. Over four links, 10^6 forwards: 80.1 ms against
-302.0 ms on link 0 alone (one card: 11.77 ms), every link about 62,500 messages each
-way. Measured before the service moved onto the link
+replay, 27 of the 64 forwards across. 10^6 forwards: 302.0 ms with one service (one
+link), 80.1 to 80.4 ms with four (`message_links=True`, every link about 62,500
+messages each way); one card: 11.77 ms. Measured before the service moved onto the link
 cores (a link core of its own as a rank, one link,
 [link_service](../../experiments/link_service/README.md)): 6.5 µs a crossing for a single
 message, 4.7 µs in a run of 1000 round trips; about 4.7 million 64-byte messages a second

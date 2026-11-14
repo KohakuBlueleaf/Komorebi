@@ -751,8 +751,12 @@ class IslandSession:
         card_dram=False,
         line=False,
         packet=None,
+        message_links=False,
     ):
         self.cards = tuple(int(card) for card in cards)
+        # two cards: a dynamic program's messages over every link, a service each
+        # (opt-in: one run of three of example 05 over four links stalled)
+        self.message_links = bool(message_links)
         if not self.cards or len(set(self.cards)) != len(self.cards):
             raise ValueError(f"cards {cards}: one or more different cards")
         if links and not 1 <= links <= self.LINKS_MAX:
@@ -1945,7 +1949,12 @@ class IslandSession:
         dynamic = [one.messages for one in programs if one.messages is not None]
         if not dynamic:
             return programs
-        if self.message_services() == 1 and self.links > 1 and self.split == 1:
+        if (
+            self.message_links
+            and self.message_services() == 1
+            and self.links > 1
+            and self.split == 1
+        ):
             self.log(
                 f"messages on link 0 alone: a service a link takes kernel_bytes >= "
                 f"{KERNEL_BYTES_SERVICES} (this session's: {self.kernel_bytes})"
@@ -2014,10 +2023,10 @@ class IslandSession:
         return out
 
     def message_services(self):
-        """The message services an island runs: between two cards with a kernel
-        buffer of KERNEL_BYTES_SERVICES or more, one a link (a rank's messages take
-        link rank % links); else 1 (link core 0's, or a link core's a neighbour)."""
-        if self.split > 1 or len(self.sessions) != 2:
+        """The message services an island runs: between two cards with
+        message_links and a kernel buffer of KERNEL_BYTES_SERVICES or more, one a link
+        (a rank's messages take link rank % links); else 1 (link core 0's)."""
+        if self.split > 1 or len(self.sessions) != 2 or not self.message_links:
             return 1
         if (self.kernel_bytes or 0) < KERNEL_BYTES_SERVICES:
             return 1
