@@ -80,4 +80,4 @@ The example [`16_two_programs`](../../examples/16_two_programs/README.md) runs t
 that read and write tiles, checks every result and measures the price of the runtime's form.
 The [overlay reference](../reference/overlays.md#a-program-as-an-overlay) has every rule.
 
-Next: [[every-primitive]] lists every call that this tutorial used, with its lesson.
+Next: [[a-thread-and-two-programs]] lets an X280 thread command both programs.

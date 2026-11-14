@@ -62,4 +62,5 @@ a-whole-program
 your-own-kernel
 overlays
 two-programs
+a-thread-and-two-programs
 every-primitive

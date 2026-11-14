@@ -62,6 +62,7 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("43_overlays/overlays.py", "6 multiply 7 = 42 (overlay 2)"),
         ("46_two_programs/two_programs.py", "groups:   multiply 6 and 7 = 42"),
         ("47_a_word_with_each_range/a_word_with_each_range.py", "core 3 added up"),
+        ("48_a_thread_and_two_programs/a_thread_and_two_programs.py", "answers: 55"),
     ],
 )
 def test_a_tutorial_program_runs_and_prints_its_line(script, line):
