@@ -97,8 +97,9 @@ written for islands runs on one card unchanged.
   `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
   is launched. `kernel_bytes` sets another size at the open.
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
-  `session: ...`: the own words (`KM_OWN_BYTES`, 256 bytes: each data-movement CPU's
-  scratch for an ask, a put line and a relay ask, and the relay's done word), the
+  `session: ...`: the own words (`KM_OWN_BYTES`, 4,480 bytes: each data-movement
+  CPU's scratch for an ask, a put line and a relay ask, the relay's done word, its put
+  lines' words, and the headers it builds for a piece of a put into the rings), the
   tensor table (48 bytes an entry on two islands, as many entries as the tensors held
   at the load, in steps of 4; a tensor made while a run lives takes a free entry) and
   a dynamic run's message region. When the link cores run the link kernels, the link
@@ -375,11 +376,11 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   (`KM_PAGES_SHAPE_LINK0`), and its CPU sends its island's next ask line, if one
   waits, after each read's packets; the session then counts four page CPUs
   (`KM_PUT_CPUS`).
-- 512 MiB from island 0 into a tensor of island 1 (`session.cross`, four links, the
-  default chunk): 8.93 ms by the command's own ticks, 60.1 GB/s, every page exact
-  (`experiments/islands_pages`, 2026-11-15). With a 256 KiB chunk (16 pages a read)
-  128 MiB took 1.68 ms, 80.0 GB/s. The host's own wait for a cross takes far longer
-  than the cross (62 ms at 128 MiB, 246 ms at 512): `pages.py --shapes` reports both.
+- 512 MiB from island 0 into a tensor of island 1 (`session.cross`, four links,
+  packets of 8,192 bytes, the link cores' own chunks): 5.35 ms by the command's own
+  ticks, 100.4 GB/s, every page exact (`experiments/islands_pages`, 2026-11-15). The
+  host's own wait adds about 0.45 ms whatever the size (64 MiB in 1.05 ms by the
+  host's clock, 512 MiB in 5.85 ms): `pages.py --shapes` reports both.
 - A kernel reads a tensor's pages wherever they live with one call (`km_ask.hpp`):
   `km::read_pages(reader, command, args, tensor, first, pages, to)`, with the
   tensor's accessor arguments, its reference word, and L1 address `to` of the core,
@@ -408,19 +409,21 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   pages its island holds are written as `noc_async_write_page` writes them, at their
   index in its part (the caller's write barrier waits for them); on one island that is
   all the call does. Each run another island holds at consecutive indices of its part
-  is one put line (the same 64 bytes, `KM_PUT_*` in `km_abi.h`) into its own island's
-  link core 0, reserved and written as an ask line is. The CPU of link 1 sends
-  the line to the far link core 0; every page CPU reads its share of the pages from the
-  asking core's L1 and sends them straight into the holder's DRAM; each batch's last
-  packet adds its pages, once all the batch carried are written (the router flushes
-  its writes before the add), to the far link core 0's count of pages landed from that
-  page CPU (`KM_PUT_LANDED` + 4 j). Once every page CPU's share of the line has landed,
-  the far CPU of link 1 adds them to the asker's port and sends back the count of puts
-  confirmed. A put line is free again once every page CPU took it (a count each,
-  `KM_PUT_TAKEN` + 4 j; the island's page CPUs in `KM_PUT_CPUS`). The call waits on
-  its port, bounded, so `from` is free when it
-  returns; a miss gives the command up at `ask` with the island in the word's top
-  byte. 32 put lines are in flight an island.
+  is one put line (the same 64 bytes, `KM_PUT_*` in `km_abi.h`): each data-movement
+  CPU of a core owns its put lines, two of them (a parity each), and writes the next
+  once the far island confirmed the last one on that parity (its own words,
+  `KM_OWN_PUT_*`); a local atomic gives the line its place in link core 0's put queue
+  (`KM_QUEUE_*`, 512 lines, on the link cores alone). Where the page CPUs have rings
+  (the link cores' own chunks), the putting core writes the pages and their headers
+  into the page CPUs' ring slots itself, a piece of up to 16 pages at a time, each
+  piece's last packet adding its pages to the far link core 0's count for that line
+  once written; a page CPU's ring loop sends the ready slots and nothing else. Without
+  rings every page CPU reads its share of the line's pages from the asking core's L1
+  and sends them. The far island's lead page CPU confirms each line on its own, in
+  whatever order its pages landed: the pages to the asker's port, then the line's
+  number into the asker's own words. The call waits on its port, bounded, so `from` is
+  free when it returns; a miss gives the command up at `ask` with the island in the
+  word's top byte.
 - An ask or put line may name the asker's DRAM instead of its L1 (`KM_ASK_DRAM`: an
   interleaved buffer, or one bank's range, from page `KM_ASK_DRAM_FIRST`): the far
   page CPUs push a get's pages straight into it, or read a put's from it.
@@ -432,7 +435,8 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   two DRAMs, all in flight, and waits once on the core's port; this island's pages go
   through the chunk as the copy does. A copy with both sides placed moves a chunk at a
   time, a line a run of the chunk. A thread's source names the tensor and the range
-  only. Pages that cross are at most one packet (4,352 bytes). On one island, or for a
+  only. Pages that cross are at most one packet (the session's, 8,192 bytes by
+  default). On one island, or for a
   tensor named by a bank address, the copy is what it was.
 - `IslandSession.ASKS_BY` is `"core"` (the call asks itself) by default; with
   `"host"` (the define `KM_ASKS_BY_HOST`) the call only waits on its page port, and
@@ -466,34 +470,36 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   islands (each rank's page in its own island's DRAM). With every page CPU serving
   (2026-11-15, `--across --put`, every tile exact, what crossed as counted): the far
   read 530.6 µs a round (its own DRAM 214.4), the put 561.2 µs (split 314.3); with
-  four page CPUs and grouped reads 572.2 µs (220.2) and 597.2 µs (327.4). Two tiles a
-  rank are one or no page a page CPU: these rounds are the lines' round trip, not the
+  four page CPUs and grouped reads 572.2 µs (220.2) and 597.2 µs (327.4); with put
+  lines a CPU's own and packets of 8,192 bytes (every tile exact, what crossed as
+  counted) the far read 606.5 µs (214.1) and the put 401.1 µs (split 342.6). Two
+  tiles a rank are one or no page a page CPU: these are the lines' latency, not the
   links' rate.
-- Asked and put pages at the links' rate (`experiments/islands_pages/pages.py --ask`
-  / `--put`, island 0's 118 ranks, each a share of the tensor in calls of `--step`
-  pages of 4 KiB, island 1 holding the source or the target; one command, its event's
-  span; every page read back exact; 2026-11-15, four links):
+- Pages at the links' rate (`experiments/islands_pages/pages.py`, island 0's 118 ranks,
+  or both islands' at once, four links, packets of 8,192 bytes, pages of 4 KiB, every
+  page read back exact, 2026-11-15). The put is the linear kernel's: a core's run of
+  pages from its own L1 (`km::put_pages` and `put_piece`, pieces of 4 pages into the
+  rings). One link's ceiling, a plain sender from L1 slots at the same packet size
+  (`experiments/link_rate`): 40.2 GB/s (204 ns a packet, the router's pace), 155.6 on
+  four links with a sender a core, 144.6 with two senders a core.
 
-  | Move | Pages a call | 64 MiB | 512 MiB |
-  |---|---|---|---|
-  | `km::read_pages`, four page CPUs, 4 pages a read | 128 | 1.75 ms, 38.4 GB/s | 11.3 ms, 47.3 GB/s |
-  | `km::write_pages`, the same | 128 | 1.75 ms, 38.3 GB/s | 11.1 ms, 48.4 GB/s |
-  | `session.cross` (host, by its ticks) | | | 8.93 ms, 60.1 GB/s |
-  | `km::read_pages`, links 1 to 3, a page a read | 128 | 2.37 ms, 28.3 GB/s | 16.7 ms, 32.1 GB/s |
-  | `km::write_pages`, the same | 128 | 2.36 ms, 28.4 GB/s | 16.6 ms, 32.3 GB/s |
-  | `km::read_pages`, the same | 32 | 3.04 ms, 22.1 GB/s | 22.7 ms, 23.7 GB/s |
-  | One page CPU on link 1, three slots (2026-11-14, `kmx_fetch`) | | 11.0 ms, 6.1 GB/s | |
+  | Move | 64 MiB | 512 MiB |
+  |---|---|---|
+  | Puts from L1 into the other island's DRAM, both islands at once, each way | 1.00 ms, 66.9 GB/s | 7.41 ms, 72.5 GB/s |
+  | `session.cross`, DRAM to DRAM (host, by its ticks) | | 5.35 ms, 100.4 GB/s |
+  | the same, by the host's clock | 1.05 ms, 64.1 GB/s | 5.85 ms, 91.7 GB/s |
+  | `km::read_pages`, 128 pages a call | 1.95 ms, 34.5 GB/s | 13.2 ms, 40.6 GB/s |
+  | `km::read_pages`, 256 pages a call | | 11.1 ms, 48.3 GB/s |
 
-  What bounds a page CPU, measured by the host's cross of 128 MiB over links 1 to 3
-  by shape (`pages.py --shapes`): a page a read 27.7 GB/s with 15, 30 or 60 slots
-  alike (15 transaction ids); no read at all 42.9 (55.2 without waiting for a slot's
-  packets to leave L1); 4 pages a read 48.1 with 12, 28 or 60 slots alike; 16 pages a
-  read 44.2 with one group, 62.2 with three (20.7 a CPU). So neither the DRAM read's
-  latency nor the slots bound it: the loop's own work a read and a packet does (a
-  read's wait, the slot's wait, a header and two NoC commands a packet). A plain
-  sender from L1 does 27.8 a link (`experiments/link_rate`). Asked and put pages stay
-  under the cross: each line of 128 pages gives a CPU 32, so a line's round trip
-  weighs on each share.
+  Where a put's time goes (512 MiB both ways, counters on the cores): a putting core
+  spends 0.87 of its cycles waiting for its turn at a ring (its slots reserved, room
+  shown), 0.07 writing its pages and headers into the slots, 0.04 reading its own
+  pages, under 0.01 waiting for a put line or the run's last confirmation. A link CPU
+  sends 0.33 to 0.48 of the time (about 180 ns of its own work a packet) and waits
+  for the router's slots 0.22 to 0.32; between its turns, 0.15 its ring's next slot is
+  reserved but not yet written and 0.08 to 0.15 it serves its other services (lines,
+  answers, confirmations). The host's send through the same page CPUs reads DRAM:
+  without the reads its loop does 117.7 GB/s (29 a CPU), with them 99.3.
 - `kmx_fetch` and `kmx_store` of island 0's work cluster 1 thread on 16 cores, of a
   tensor of 4 KiB pages each island holds (`experiments/bank_fetch/islands.py`, four
   links, 2026-11-14, every word checked, best of 3 for a fetch):
@@ -510,7 +516,9 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   16 KiB chunk (4 pages) a line, one line a core in flight. With a line a whole run
   between the DRAMs (2026-11-15, every word exact): `kmx_fetch` of island 1's 1 MiB
   107 µs, 64 MiB 1.125 ms (59.7 GB/s); `kmx_store` into it 102 µs and 1.118 ms; the
-  local ones 51 µs and 1.30 ms.
+  local ones 51 µs and 1.30 ms. With packets of 8,192 bytes and the link cores' own
+  chunks (every word exact): `kmx_fetch` of island 1's 64 MiB 1.128 ms (59.5 GB/s),
+  1 MiB 115 µs; `kmx_store` 1.14 ms and 112 µs.
 
 ## A kernel's page reads and writes
 
