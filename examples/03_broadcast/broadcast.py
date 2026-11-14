@@ -350,12 +350,11 @@ def run_host(session, args, generator, stall_job):
     elif not args.no_check:
         report.update(check(args, sets, output, group, cells, stall_job))
     stalled = 0 <= stall_job < args.jobs
-    # A stall: the timeout without the reset lists, else the stalled core recovered.
-    end = ("none", False)
-    if stalled and run.recovery is None:
-        end = ("deadline", True)
+    # A stall: the stalled core recovered, or the timeout (no reset lists, or other
+    # commands in flight held a core).
+    end = ("deadline", True) if stalled and timed_out is not None else ("none", False)
     end_ok = (result["error_name"], timed_out is not None) == end
-    if stalled and run.recovery is not None:
+    if stalled and timed_out is None:
         end_ok &= any(
             group.first + args.stall_rank in recovery["cores"]
             for recovery in run.recoveries

@@ -311,6 +311,7 @@ def run(session, args, generator):
             "sequence": timed_out.sequence,
             "group": list(timed_out.group),
             "not_reported": timed_out.cores,
+            "message": str(timed_out),
         }
     trace = run.trace()
     if trace is not None:
@@ -337,8 +338,8 @@ def run(session, args, generator):
 def verdict(report, cores, stalled=None):
     """Every core ended, no compute check failed, no job wrong; without a stall, no
     kernel error, no core gave up and every core's counts right; with one, the
-    stalled core (`stalled`) recovered, or without the reset lists named by the
-    deadline among those that did not report."""
+    stalled core (`stalled`) recovered, or named by the deadline among those that did
+    not report (no reset lists, or other commands in flight held it)."""
     ended = set(report["cores_ended"].values()) == {cores}
     ok = ended and report["cores_magic_ok"] == cores and report["compute_wrong"] == 0
     ok &= report.get("jobs_bad", 0) == 0
@@ -347,7 +348,7 @@ def verdict(report, cores, stalled=None):
         return bool(
             ok and report["gave_up_cores"] == 0 and report["core_counts_bad"] == 0
         )
-    if report["recovery_refused"] is None:
+    if "timed_out" not in report:
         recovered = [core for entry in report["recoveries"] for core in entry["cores"]]
         ok &= "timed_out" not in report and report["kernel"]["error_name"] == "none"
         return bool(ok and stalled in recovered)

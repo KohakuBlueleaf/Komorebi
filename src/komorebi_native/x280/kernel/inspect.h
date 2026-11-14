@@ -358,11 +358,44 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     }
 }
 
+/* Whether a busy slot other than `slot` has core `core` in its group: its command is
+ * in the core's ring, which a reset clears. */
+static int inspect_held(const kmd_t* dispatcher, uint32_t core, uint32_t slot) {
+    for (uint32_t other = 0; other < dispatcher->depth; other++) {
+        const uint32_t group = dispatcher->slot_group[other];
+        const uint32_t first = group & 0xFFFFu, count = group >> 16;
+        if (
+            other != slot && (dispatcher->busy & (1ull << other)) && core >= first &&
+            core - first < count
+        ) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* End of a give-up's wait: each core in the command or ended reset by its kept list
  * (KMD_INSPECT_RESET), a link core left to the host (KMD_LINK_HUNG). 1: all were. */
 static int inspect_reset(kmd_t* dispatcher) {
     kmd_inspect_t* inspect = &dispatcher->inspect;
     volatile uint32_t* header = inspect_header(dispatcher);
+    /* None is reset if one that would be is held by another command (KMD_RESET_HELD) */
+    for (uint32_t index = inspect->next; index < inspect->count; index++) {
+        const uint32_t core = inspect->first + index;
+        dispatcher->beat++;
+        if (
+            dispatcher->reset_bytes != 0 && inspect_link(dispatcher, core) == 0 &&
+            (
+                !inspect_left(dispatcher, core, inspect->sequence) ||
+                inspect_ended(dispatcher, core)
+            ) &&
+            inspect_held(dispatcher, core, inspect->slot)
+        ) {
+            header[KMD_I_RESET_FAILED] = (core + 1u) | KMD_RESET_HELD << 16;
+            x280_fence_ow();
+            return 0;
+        }
+    }
     for (; inspect->next < inspect->count; inspect->next++) {
         const uint32_t core = inspect->first + inspect->next;
         dispatcher->beat++;
