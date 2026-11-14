@@ -23,6 +23,7 @@ example on 120 cores (`deadline=2.0`, `wait=4.0`), core 15 reset.
 | The host's reset and reload of one core (`run.reset_core` without the list) | 65.4 ms: assert 0.4, firmware start 31.2, kernels 33.8 (32.6 ms in an earlier run of the same writes) | a healthy core, the runtime's device calls from the host |
 | The dispatcher's reset of one core | 1.69 to 1.70 ms on the X280; 1.8 to 1.9 ms from the host's command to its answer | a write list of 51,008 to 68,864 bytes from the upload region, the core healthy or stuck in a loop |
 | Handing the list over at load (`recover=True`) | 3.8 ms; 68,864 bytes of the upload region | every core's arguments in one list |
+| The same on two cards as islands, each island its own | 3.4 to 4.0 ms an island; 104,192 bytes an island | two p150a cards, 119 ranks and one link core an island (the link core gets no list), `kernel_bytes=84 * 1024` |
 | A stuck command to its recovery | the command's deadline (2 s) plus the give-up's wait (20 ms) plus the reset | no host action |
 | The watch on the dispatcher's own loop: a stall to the loop running again | 100.01 ms: the watch's bound (100 ms) plus 1.2 microseconds | [dispatcher_watch](../dispatcher_watch/README.md), a stall made on purpose |
 
@@ -40,6 +41,8 @@ p150a, the map/collect example on all 120 cores; MAP commands on the group and o
 | 3. Handler that never returns, in the math thread | yes | 1.70 ms | the same |
 | The give-up resets (no host action), reader then math thread | yes, both | the command's deadline plus the give-up's wait | the timeout names core 15 as recovered; every MAP after exact |
 | The same through the session's public calls (`recover.py`): the give-up's reset, then `run.reset_core(15)` | yes | 1.59 ms on the X280 for `reset_core` | `recoveries` names core 15; every MAP after exact |
+| Two cards as islands (`islands.py --step 1`): handler that never returns in island 1's core 15, group of island 1's 119 ranks | yes, by island 1's dispatcher | the command's deadline plus the give-up's wait | the timeout starts `island 1:` and names core 15 as recovered; the MAP after exact; `run.stop()` clean |
+| The same in one group over both islands' 238 ranks (`islands.py --step 2`) | yes, by island 1's dispatcher | the same | island 0's part done; the timeout names island 1 and its core 15 (rank 134); the MAP after on 238 ranks exact; `run.stop()` clean |
 | 4. A compute unit left running | not run yet: it may need a card reset | | |
 
 ## What a reset has to write
@@ -71,7 +74,7 @@ for the firmware, then the go.
 ## What the dispatcher's reset command needs
 
 1. The write list held in the upload region for the run (67.6 to 68.9 KB with every core's arguments), handed over at load.
-2. Every core holding the same kernels, so one list serves any of them; no semaphores.
+2. One list for each group of cores holding the same kernels, and which list each core takes (several programs: a list a program); no semaphores.
 3. The soft-reset register of the core, one strict NoC window, the only register written.
 4. The firmware images, its tables and the boot jump written again: the first launch overwrote them.
 5. A bounded wait for the firmware's DONE (1 s), counted as the watchdog's heartbeat.
@@ -91,6 +94,8 @@ On card 0 with tt-metal's environment set, one step a run:
     python experiments/core_reset/ladder.py --step 5   # the give-up resets, no host action
     python experiments/core_reset/ladder.py --step 4   # a unit left running
     python experiments/core_reset/recover.py   # the session's own recovery, public calls
+    python experiments/core_reset/islands.py --step 1   # two cards: island 1's ranks
+    python experiments/core_reset/islands.py --step 2   # two cards: one group over both
 
 It prints progress lines and one JSON line: the reset's times, the MAP commands before
 and after (on the core's group (14, 2) and on all 120 cores), whether each is exact,

@@ -140,6 +140,33 @@ static inline uint32_t reset_keep(kmd_t* dispatcher, uint32_t offset, uint32_t b
     return KMD_RESET_OK;
 }
 
+/* The kept list of core `core` (a directory's entry, or the one list): 1, or 0 for
+ * none. */
+static int reset_pick(
+    const kmd_t* dispatcher, uint32_t core, uint32_t* offset, uint32_t* bytes
+) {
+    const uint32_t at = dispatcher->reset_offset, kept = dispatcher->reset_bytes;
+    volatile const uint8_t* region = dispatcher->lim + KMD_LIM_UPLOAD + at;
+    volatile const uint32_t* head = (volatile const uint32_t*)region;
+    if (kept == 0 || core >= KM_CORES_MAX) {
+        return 0;
+    }
+    if (kept < KMD_RESET_ENTRY || head[0] != KMD_RESET_DIRECTORY) {
+        *offset = at;
+        *bytes = kept;
+        return 1;
+    }
+    const uint32_t list = region[KMD_RESET_ENTRY + core];
+    const uint32_t entry = KMD_RESET_DIRECTORY_ENTRIES + 16u * list;
+    if (list >= head[1] || entry + 16u > kept) {
+        return 0;
+    }
+    volatile const uint32_t* words = (volatile const uint32_t*)(region + entry);
+    *offset = words[0];
+    *bytes = words[1];
+    return 1;
+}
+
 /* The host's reset command: runs the list, then PONG {status, the ticks it took}. */
 static inline void reset_command(
     kmd_t* dispatcher, uint32_t request, uint32_t core, uint32_t offset, uint32_t bytes
