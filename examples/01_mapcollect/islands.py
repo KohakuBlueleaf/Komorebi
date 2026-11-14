@@ -55,23 +55,31 @@ def parse():
         action="store_true",
         help="MAP on island 0 reading an input island 1 holds",
     )
+    parser.add_argument(
+        "--per-rank", type=int, default=2, help="--across: input tiles a rank, 1 to 4"
+    )
+    parser.add_argument(
+        "--check-rounds",
+        action="store_true",
+        help="--across: check every round's tiles, not only the last's",
+    )
     return parser.parse_args()
 
 
-def map_words(source, output, groups):
+def map_words(source, output, groups, per=2):
     """MAP arguments of each group (first, count): rank r of the group adds input
-    tiles 2r and 2r + 1 of the group's own window and stores page first + r."""
+    tiles per r .. per r + per - 1 of the group's own window, stores page first + r."""
     groups = np.asarray(groups, np.int64)
     jobs = len(groups)
     return np.stack(
         [
             np.full(jobs, source.address),
-            2 * groups[:, 1],  # tiles: two a rank
+            per * groups[:, 1],  # tiles: `per` a rank
             np.full(jobs, output.address),
             groups[:, 0],  # first_page: the group's first rank
             np.zeros(jobs, np.int64),  # slow_cycles
             np.full(jobs, NO_RANK),  # slow_rank: none
-            2 * groups[:, 0],  # first_tile
+            per * groups[:, 0],  # first_tile
         ]
     ).T
 
@@ -100,7 +108,7 @@ def open_session(args, cards):
 def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
-    report = {"cards": cards, "split": args.islands}
+    report = {"cards": cards, "split": args.islands, "per_rank": 2}
     generator = np.random.default_rng(1)
     with open_session(args, cards) as session:
         ranks = session.ranks
@@ -144,7 +152,8 @@ def main():
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
         if args.across:
-            report.update(across(session, run, args, source, far, output))
+            report["per_rank"] = args.per_rank
+            report.update(across(session, run, args, source, far, output, exact))
         else:
             report.update(commands(session, run, args, source, output, ranks))
         if args.hang:
@@ -159,11 +168,12 @@ def main():
         log(f"stopped: {report.get('kernel_errors', report.get('stop_error'))}")
         (got,) = session.read_bf16(output)
         log("output read back from every island")
-        report.update(check(exact, got, report["map_groups"]))
+        report.update(check(exact, got, report["map_groups"], report["per_rank"]))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["ok"] = bool(
         report["source_read_exact"]
         and report["wrong_tiles"] == 0
+        and not report.get("rounds_wrong")
         and report.get("kernel_errors", ["stop"]) == ["none"] * len(report["islands"])
         and report.get("hang_named_island", True)
         and report.get("read_island1_in_run_exact", True)
@@ -255,7 +265,7 @@ def hang(session, run, source, ranks, exact):
     return out
 
 
-def across(session, run, args, local, far, output):
+def across(session, run, args, local, far, output, exact):
     """Rounds of one MAP on island 0's ranks (its own run: island 0 starts at rank 0)
     reading `local` (their own DRAM), then `far` (island 1 holds it): the same reader,
     whose read call asks island 1 for the tiles itself (no ask from the host). What
@@ -264,19 +274,30 @@ def across(session, run, args, local, far, output):
     graph = session.graph
     group = (graph.first(0), graph.count(0))
     handler = run.program.handler("map")
-    count = group[1]
+    count, per = group[1], args.per_rank
+    if not 1 <= per <= 4:
+        raise ValueError(f"--per-rank {per}: 1 to 4 (the input holds 2 tiles a rank)")
+    out = {"map_groups": [list(group)], "links": session.links, "rounds_wrong": []}
 
-    def one_round(source, placed):
-        words = map_words(source, output, [group])[0].tolist() + [placed]
+    def one_round(name, source, placed, number):
+        words = map_words(source, output, [group], per)[0].tolist() + [placed]
         started = time.perf_counter()
         run.wait(run.submit(handler, group, words), timeout=10.0)
-        return (time.perf_counter() - started) * 1e6
+        spent = (time.perf_counter() - started) * 1e6
+        if args.check_rounds:  # this round's tiles, each wrong one named
+            (got,) = session.read_bf16(output)
+            wrong = check(exact, got, [group], per)
+            if wrong["wrong_tiles"]:
+                out["rounds_wrong"].append({"phase": name, "round": number, **wrong})
+                log(f"{name} round {number}: {wrong}")
+        return spent
 
-    out = {"map_groups": [list(group)], "links": session.links}
-    tile_bytes = 2 * count * 2048
+    tile_bytes = per * count * 2048
     for name, source, placed in (("local", local, 0), ("across", far, 1)):
         before = run.crossings()
-        spent = median([one_round(source, placed) for _ in range(args.map_rounds)])
+        spent = median(
+            [one_round(name, source, placed, n) for n in range(args.map_rounds)]
+        )
         moved = run.crossings() - before
         out[f"map_{name}_us"] = spent
         out[f"map_{name}_gb_s"] = round(tile_bytes / spent / 1e3, 3)
@@ -285,8 +306,8 @@ def across(session, run, args, local, far, output):
         out[f"crossed_{name}"] = {
             f"{a}->{b}": moved.total(a, b) for a, b in ((0, 1), (1, 0))
         }
-    # each rank asks once a round for its two tiles; island 1 sends them
-    asks, pages = args.map_rounds * count, args.map_rounds * 2 * count
+    # each rank asks once a round for its tiles; island 1 sends them
+    asks, pages = args.map_rounds * count, args.map_rounds * per * count
     went, came = out["crossed_across"]["0->1"], out["crossed_across"]["1->0"]
     out["crossings_agree"] = (
         went["asks"] == asks
@@ -298,28 +319,39 @@ def across(session, run, args, local, far, output):
     return out
 
 
-def check(exact, got, groups):
+def check(exact, got, groups, per=2):
     """Every rank's tile of the last MAP round against mapcollect.py's float64 sums,
-    bit-exact (integer inputs)."""
-    sums = np.cumsum(exact.reshape(-1, TILE, TILE).astype(np.float64), 0)
-    prefix = np.concatenate([np.zeros((1, TILE, TILE)), sums])
-    got = got.reshape(-1, TILE, TILE)
-    wrong, checked, ranks = 0, 0, []
+    bit-exact (integer inputs); the first 8 wrong ones named (named_wrong)."""
+    tiles = exact.reshape(-1, TILE, TILE).astype(np.float64)
+    prefix = np.concatenate([np.zeros((1, TILE, TILE)), np.cumsum(tiles, 0)])
+    got = got.reshape(-1, TILE, TILE).astype(np.float64)
+    wrong, checked, named = 0, 0, []
     for first, count in groups:
-        want = rank_sums(prefix, 2 * first, 2 * count, count)
+        want = rank_sums(prefix, per * first, per * count, count)
         bad = (got[first : first + count] != want).any(axis=(1, 2))
         wrong += int(bad.sum())
-        ranks += (first + np.flatnonzero(bad)).tolist()
+        for index in np.flatnonzero(bad)[: 8 - len(named)].tolist():
+            rank = first + index
+            named.append(named_wrong(tiles, got[rank], want[index], rank, per))
         checked += count
-    out = {"tiles_checked": checked, "wrong_tiles": wrong, "wrong_ranks": ranks[:8]}
-    if ranks:  # the first wrong tile: how far off, and whether it is zeros
-        first = ranks[0]
-        want = rank_sums(prefix, 2 * first, 2, 1)[0]
-        out["first_wrong"] = {
-            "max_error": float(np.abs(got[first] - want).max()),
-            "zeros": bool(not got[first].any()),
-            "rows_wrong": int((got[first] != want).any(axis=1).sum()),
-        }
+    return {"tiles_checked": checked, "wrong_tiles": wrong, "wrong": named}
+
+
+def named_wrong(tiles, got, want, rank, per):
+    """Rank `rank`'s wrong sum of input tiles per rank ..: for each of its pages, what
+    a wrong page alone would have been (another input tile, zeros); else the rows."""
+    out = {"rank": rank, "rows_wrong": int((got != want).any(axis=1).sum())}
+    for page in range(per):
+        tile = per * rank + page
+        instead = tiles[tile] + got - want  # that page as the core summed it
+        if not instead.any():
+            out[f"page {tile}"] = "zeros"
+            continue
+        same = np.flatnonzero((tiles == instead).all(axis=(1, 2))).tolist()
+        if same:
+            out[f"page {tile}"] = f"input tile {same[0]}" + (
+                f" (and {len(same) - 1} more)" if len(same) > 1 else ""
+            )
     return out
 
 
