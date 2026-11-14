@@ -55,11 +55,11 @@ core holds every program; a load issued by a cast or a pull (the host issues
 `run.load`, an X280 thread `kmx_load`); a switch of a dynamic program; and what the old
 program kept in its buffers, which a switch loses.
 
-**Status: early development; 0.1.0 is a first release, for one card model.** Everything
+**Status: early development; 0.2.0 is the second release, for one card model.** Everything
 below runs on one P150A, from the two wheels on PyPI or from a clone against a tt-metal
 source tree; two P150As as two islands run from a clone. It has run on no other hardware.
 
-On main since 0.1.0:
+New in 0.2.0:
 
 - **Code goes where the work is.** Overlays loaded into slots of a core's L1 and called;
   a handler, a message, a leader's cast or an X280 core's answer names the code; a group
@@ -104,8 +104,6 @@ calls, from the [dense page](projects/dense/README.md#one-card-and-two-128-to-16
 |---|---|---|---|---|---|
 | W gathered on both cards | 8192 | 4,488.1 µs | 2,357.6 µs | 1.90 | 2,482.8 µs (1.83) |
 | W gathered on both cards | 16,384 | 34,544.8 µs | 17,731.5 µs | 1.95 | 17,067.8 µs (1.90) |
-| W sharded along K (row-parallel) | 8192 | 4,488.1 µs | 4,992.6 µs | 0.90 | 3,930.1 µs (1.16) |
-| W sharded along K (row-parallel) | 16,384 | 34,544.8 µs | 27,151.6 µs | 1.27 | 32,970.6 µs (0.99) |
 
 Above 1, Komorebi takes less time. The neural workloads are on parallel with or ahead of
 Kohaku-TT on most shapes; the rasterizer and the ray tracer run whole frames on the
@@ -513,22 +511,22 @@ the same script and kernels on one card and on two
 ([dense](projects/dense/README.md#one-card-and-two-128-to-16384-cubed)); median single
 call in microseconds, "x" one card's time over two cards':
 
-| Cube | One card | Two cards, W sharded along K (row-parallel) | x | Two cards, W gathered | x | Kohaku-TT: one card / two cards (W gathered) / two cards (K split) |
-|---|---|---|---|---|---|---|
-| 128 | 7.2 | 72.7 | 0.10 | 7.6 | 0.95 | |
-| 256 | 11.6 | 79.0 | 0.15 | 10.0 | 1.16 | |
-| 512 | 15.9 | 179.8 | 0.09 | 19.8 | 0.80 | |
-| 1024 | 43.8 | 154.8 | 0.28 | 40.6 | 1.08 | |
-| 2048 | 167.1 | 356.0 | 0.47 | 125.4 | 1.33 | |
-| 4096 | 655.0 | 1,312.9 | 0.50 | 420.7 | 1.56 | 819.8 / 487.3 / 868.8 |
-| 8192 | 4,488.1 | 4,992.6 | 0.90 | 2,357.6 | 1.90 | 4,549.5 / 2,482.8 / 3,930.1 |
-| 16,384 | 34,544.8 | 27,151.6 | 1.27 | 17,731.5 | 1.95 | 32,489.3 / 17,067.8 / 32,970.6 |
+| Cube | One card | Two cards, W gathered | x | Kohaku-TT: one card / two cards (W gathered) |
+|---|---|---|---|---|
+| 128 | 7.2 | 7.6 | 0.95 |  |
+| 256 | 11.6 | 10.0 | 1.16 |  |
+| 512 | 15.9 | 19.8 | 0.80 |  |
+| 1024 | 43.8 | 40.6 | 1.08 |  |
+| 2048 | 167.1 | 125.4 | 1.33 |  |
+| 4096 | 655.0 | 420.7 | 1.56 | 819.8 / 487.3 |
+| 8192 | 4,488.1 | 2,357.6 | 1.90 | 4,549.5 / 2,482.8 |
+| 16,384 | 34,544.8 | 17,731.5 | 1.95 | 32,489.3 / 17,067.8 |
 
 With the weight gathered on both cards nothing crosses in a call, and two cards take
-half of one card's time from 8192 up, as Kohaku-TT's default two-card form does. With
-the weight sharded along K (the row-parallel form) each card's partial product is
-all-reduced, and that all-reduce is slow today: two cards pass one only at 16,384, and
-below 2048 a call is mostly the sync (TODO item 2).
+half of one card's time from 8192 up, as Kohaku-TT's default two-card form does. The
+two forms that keep one copy of the weight (the input dimension sharded, with one
+addition across the cards; the output dimension sharded, with the activation on both)
+need the gather and the reduce as calls (TODO item 2) and are not measured here.
 
 What crosses a link, and what it costs ([islands](docs/reference/islands.md)):
 
@@ -565,9 +563,9 @@ threads) are in each [example's README](examples/README.md).
 
 ## Install
 
-Komorebi 0.1.0 is on PyPI as two distributions, `komorebi-tt` (the framework) and
-`komorebi-runtime` (the pinned tt-metal build), with the GitHub release `v0.1.0`. It is a
-first release, for one card model, the Blackhole P150A. Komorebi is used from those
+Komorebi 0.2.0 is on PyPI as two distributions, `komorebi-tt` (the framework) and
+`komorebi-runtime` (the pinned tt-metal build), with the GitHub release `v0.2.0`. It is
+for one card model, the Blackhole P150A. Komorebi is used from those
 wheels ([the two wheels](docs/install.md#from-010-the-two-wheels)) or from a clone
 ([packaging](packaging/README.md), [from a wheel](docs/install.md#from-a-wheel)), on
 Linux x86-64 with Python 3.13:
