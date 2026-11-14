@@ -54,9 +54,11 @@ class LinkPlan:
         # area, the far island's, the far link core 0's NoC tile x | y << 16
         self.relay = [0, 0, 0]
 
-    def line(self, dispatch):
-        """The dispatcher's link line and island table (KMD_LIM_LINK). The far island's
-        dispatcher tile and link block are taken as this one's (checked after load)."""
+    def line(self, dispatch, far=None):
+        """The dispatcher's link line and island table (KMD_LIM_LINK): the far island's
+        dispatcher `far` (its tile and link block), else taken as this one's (two cards:
+        checked after load)."""
+        far = far or dispatch
         headers = abi.headers()
         words = [0] * (headers["KMD_LINK_COUNT"] // 4)
         words[headers["KMD_L_MARK"]] = headers["KMD_LINK_MARK"]
@@ -65,8 +67,8 @@ class LinkPlan:
         words[headers["KMD_L_CORE"]] = self.core
         words[headers["KMD_L_AREA"]] = self.area
         words[headers["KMD_L_FAR"]] = self.far
-        words[headers["KMD_L_FAR_TILE"]] = dispatch.l2_x | dispatch.l2_y << 16
-        words[headers["KMD_L_FAR_BLOCK"]] = dispatch.lim_base + headers["KMD_LIM_LINK"]
+        words[headers["KMD_L_FAR_TILE"]] = far.l2_x | far.l2_y << 16
+        words[headers["KMD_L_FAR_BLOCK"]] = far.lim_base + headers["KMD_LIM_LINK"]
         table = headers["KMD_LINK_TABLE"] // 4
         for island in range(len(self.graph.islands)):
             threads = self.graph.thread_numbers(island)
@@ -452,15 +454,18 @@ class IslandSession:
         self.cards = tuple(int(card) for card in cards)
         if not self.cards or len(set(self.cards)) != len(self.cards):
             raise ValueError(f"cards {cards}: one or more different cards")
-        if not 0 <= links <= self.LINKS_MAX or (links and len(self.cards) != 2):
+        self.split = islands or 1  # the islands one card is split into
+        if not 0 <= links <= self.LINKS_MAX or (
+            links and len(self.cards) != 2 and self.split == 1
+        ):
             raise ValueError(
                 f"links={links}: 0, or 1 to {self.LINKS_MAX} between two islands"
             )
-        # two islands always have link 0 (commands across ride it): links 0 is 1
-        self.links = links or (1 if len(self.cards) == 2 else 0)
-        self.split = islands or 1  # the islands one card is split into
-        if self.split > 1 and (len(self.cards) != 1 or links):
-            raise ValueError(f"islands={islands}: one card, without links")
+        if self.split > 1 and len(self.cards) != 1:
+            raise ValueError(f"islands={islands}: one card")
+        # two islands always have link 0 (commands across ride it): links 0 is 1; a
+        # split card's islands a wire each pair
+        self.links = links or (1 if len(self.cards) == 2 or self.split > 1 else 0)
         self.log = log or (lambda message: None)
         self._options = {
             "pll_mhz": pll_mhz,
@@ -510,10 +515,10 @@ class IslandSession:
             self.chips, self.sessions = [self.cards[0]], (session,) * self.split
             columns, rows = session.grid
             self.graph = islands.one(columns * rows, columns)
-            if self.split > 1:  # one device, a dispatcher an island
-                self.graph = islands.split_card(
-                    columns * rows, columns, self.split, rows=True, reserve=False
-                )
+            if self.split > 1:  # one device, a dispatcher an island, wires between
+                self.graph = _split_graph(columns, rows, self.split, self.links)
+                self.link_cores = self.graph.link_cores
+                self.channels = ((0,) * self.links,) * self.split  # no router: a wire
                 session_module._LIVE.add(self)
                 self.log(f"card {self.cards[0]} as {self.split} islands")
             return
@@ -717,9 +722,7 @@ class IslandSession:
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if self.split > 1:  # one launch on the card, a dispatcher an island
-            runs = self.sessions[0].load_islands(program, self.graph, **options)
-            self.run = IslandRun(self.graph, runs)
-            return self.run
+            return self._load_split(program, options)
         programs = list(program) if isinstance(program, list | tuple) else [program]
         if len(programs) == 1:
             programs *= len(self.sessions)
@@ -761,6 +764,38 @@ class IslandSession:
         finally:
             for one, own in zip(programs, defines):
                 one.defines = own
+        self.run = IslandRun(self.graph, runs, linked=bool(self._regions))
+        if self.links:
+            try:
+                self._hold_links()
+            except BaseException:
+                self.run.abort()
+                raise
+        return self.run
+
+    def _load_split(self, program, options):
+        """load() on a card split into islands: one launch, the links wires (NoC
+        writes to the far island's tiles), the services as on two cards."""
+        if not isinstance(program, Program):
+            raise ValueError("a card split into islands loads one Program")
+        own = program.defines
+        try:
+            plans = None
+            if self.links:
+                (program,) = self._linked([program])
+                asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
+                program.defines = {
+                    **program.defines,
+                    "KM_PAGE_LINKS": 1,
+                    "KM_WIRE": 1,
+                    **asks,
+                }
+                plans = self._links()
+            runs = self.sessions[0].load_islands(
+                program, self.graph, links=plans, **options
+            )
+        finally:
+            program.defines = own
         self.run = IslandRun(self.graph, runs, linked=bool(self._regions))
         if self.links:
             try:
@@ -1020,7 +1055,7 @@ class IslandSession:
         """The dynamic programs with the message service's arguments after their own
         reader and writer arguments and KM_LINKS defined: a region on every core of
         each island, link core 0's NoC place across, one token for both hellos."""
-        for region in self._regions:
+        for region in {id(region): region for region in self._regions}.values():
             region.free()
         self._regions = []
         dynamic = [one.messages for one in programs if one.messages is not None]
@@ -1032,7 +1067,8 @@ class IslandSession:
         size = (
             LINK_OUTBOX_AT + LINK_OUTBOX * entry + (LINK_INBOX + 1) * LINK_PACKET_BYTES
         ) + LINK_TAIL
-        for session in self.sessions:
+        # a split card: one region, every island's at one address
+        for session in self.sessions[: 1 if self.split > 1 else None]:
             columns, rows = session.grid
             self._regions.append(
                 session.empty(
@@ -1042,6 +1078,21 @@ class IslandSession:
                 )
             )
         token = secrets.randbits(31) | 1
+        if self.split > 1:
+            self._regions *= self.split
+            (one,) = programs
+            if one.messages is None:
+                return programs
+            words = [
+                self._link_words(island, one.messages.message_bytes, token)
+                for island in range(self.split)
+            ]
+            island_of = {
+                core: island
+                for island, part in enumerate(self.graph.islands)
+                for core in part.cores
+            }
+            return [_with_link(one, lambda core: words[island_of[core]])]
         out = []
         for island, one in enumerate(programs):
             if one.messages is None:
@@ -1083,23 +1134,25 @@ class IslandSession:
         for island, session in enumerate(self.sessions):
             far = 1 - island
             columns, rows = session.grid
-            area = session.tensor(
-                np.zeros((columns * rows, bytes_ // 4), np.uint32),
-                "uint32",
-                shard_grid=(columns, rows),
-            )
-            self._link_areas.append(area)
-            if area.address != self._link_areas[0].address:
+            if self.split > 1 and island:  # one card: island 0's areas
+                area, relay = self._link_areas[:2]
+            else:
+                area = session.tensor(
+                    np.zeros((columns * rows, bytes_ // 4), np.uint32),
+                    "uint32",
+                    shard_grid=(columns, rows),
+                )
+                relay = session.tensor(  # zeros: no ask, no count, no done word
+                    np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),
+                    "uint32",
+                    shard_grid=(columns, rows),
+                )
+            if area.address != (self._link_areas or [area])[0].address:
                 raise KomorebiError(
                     f"island {island}: the link area is at {area.address:#x}, "
                     f"island 0's at {self._link_areas[0].address:#x}"
                 )
-            relay = session.tensor(  # zeros: no ask, no count, no done word
-                np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),
-                "uint32",
-                shard_grid=(columns, rows),
-            )
-            self._link_areas.append(relay)
+            self._link_areas += [area, relay]
             relays.append(relay.address)
             core = self.link_cores[island][0]
             plans.append(LinkPlan(self.graph, island, far, core, area.address))
@@ -1120,7 +1173,7 @@ class IslandSession:
     def _check_links(self, runs, plans):
         """Every island's dispatcher has the tile and LIM base its link line took for
         the far one's (its own)."""
-        if plans[0] is None:
+        if plans[0] is None or self.split > 1:  # one card: a dispatcher a cluster
             return
         ports = [run.backend.port for run in runs]
         seen = {(port.l2_x, port.l2_y, port.lim_base) for port in ports}
@@ -1166,8 +1219,9 @@ class IslandSession:
 
 
 def _with_link(program, words):
-    """A copy of `program` whose reader and writer take `words` after their own
-    arguments (as many on both), built with KM_LINKS."""
+    """A copy of `program` whose reader and writer take `words` (or a core's
+    `words(core)`) after their own arguments (as many on both), built with KM_LINKS."""
+    words_of = words if callable(words) else (lambda core: words)
     own = program.core_args(0)
     after = len(own[0])
     if len(own[1]) != after:
@@ -1183,9 +1237,29 @@ def _with_link(program, words):
                 f"{program.name}: core {core}'s reader and writer arguments are not "
                 f"{after} each"
             )
-        return [*reader, *words], [*writer, *words], compute
+        mine = words_of(core)
+        return [*reader, *mine], [*writer, *mine], compute
 
     linked = copy.copy(program)
     linked.args = args
     linked.defines = {**program.defines, "KM_LINKS": 1, "KM_LINK_ARGS_AFTER": after}
     return linked
+
+
+def _split_graph(columns, rows, parts, links):
+    """One card of `columns` x `rows` cores as `parts` islands of whole rows, every
+    pair joined by `links` wires; an island's link cores its last cores (two CPUs a
+    core, a link each), its ranks the cores before them."""
+    pairs = [
+        islands.Link(a, b, links) for a in range(parts) for b in range(a + 1, parts)
+    ]
+    taken = ((parts - 1) * links + 1) // 2
+    parts_, link_cores = [], []
+    for part in range(parts):
+        start, length = (
+            columns * size for size in islands.partition(rows, part, parts)
+        )
+        cores = tuple(range(start, start + length))
+        parts_.append(islands.Island(cores, columns))
+        link_cores.append(cores[length - taken :])
+    return islands.Graph(parts_, pairs, link_cores=link_cores)

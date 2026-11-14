@@ -67,7 +67,8 @@ namespace km {
         words[kAskPort] = port;
         words[kAskSlot] = s;
         words[kAskValid] = token;
-        const uint32_t link = view.ranks();  // link core 0: the first after the ranks
+        // link core 0: the first core after the ranks
+        const uint32_t link = view.base() + view.ranks();
         noc_async_write(ask, writer.core_noc(link, ask), 48);
         noc_async_write_barrier();
         noc_async_write(ask + 48, writer.core_noc(link, ask + 48), 16);
@@ -122,11 +123,8 @@ namespace km {
         uint64_t far(uint32_t offset) const {
             const uint32_t tile = island_area()[KM_ISLAND_RELAY_TILE];
             return (
-                safe_get_noc_addr(
-                    tile & 0xFFFFu,
-                    tile >> 16,
-                    island_area()[KM_ISLAND_RELAY_FAR] + offset,
-                    tt::tt_fabric::edm_to_local_chip_noc
+                link_noc(
+                    tile & 0xFFFFu, tile >> 16, island_area()[KM_ISLAND_RELAY_FAR] + offset
                 )
             );
         }
@@ -145,51 +143,34 @@ namespace km {
 
         // Header `which`, routed one chip on: a write of `bytes` to `to`, or (bytes 0)
         // an increment of the word at `to`.
-        uint32_t header(uint32_t which, uint64_t to, uint32_t bytes) const {
-            const uint32_t at = area_ + KM_RELAY_HEADERS + which * 64;
-            for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
-                l1(at)[w] = 0;
-            }
-            auto* made = reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(at);
-            made->to_chip_unicast(1);
+        LinkHeaderAt header(uint32_t which, uint64_t to, uint32_t bytes) const {
+            const LinkHeaderAt made = (
+                link_header(area_ + KM_RELAY_HEADERS + which * 64, 1)
+            );
             if (bytes != 0) {
-                made->to_noc_unicast_write(
-                    tt::tt_fabric::NocUnicastCommandHeader{to}, bytes
-                );
+                link_write(made, to, bytes);
             } else {
-                made->to_noc_unicast_atomic_inc(
-                    tt::tt_fabric::NocUnicastAtomicIncCommandHeader(to, 1, true)
-                );
+                link_increment(made, to, 1);
             }
-            return at;
+            return made;
         }
 
         // One packet over the held connection: space, payload, header, sent.
         template <typename Kernel>
         static bool packet(
-            const Kernel& kernel, uint32_t header, uint32_t from, uint32_t bytes
+            const Kernel& kernel, LinkHeaderAt header, uint32_t from, uint32_t bytes
         ) {
-            auto& sender = pages_sender();
+            auto& sender = link_sender();
             if (!wait(kernel, [&] {
-                return sender.edm_has_space_for_packet<1>();
+                return sender.space();
             })) {
                 return false;
             }
-            if (bytes != 0) {
-                sender.send_payload_without_header_non_blocking_from_address(
-                    from, bytes
-                );
+            if (!sender.send(header, from, bytes)) {
+                return false;
             }
-            sender.send_payload_flush_non_blocking_from_address(
-                header, sizeof(PACKET_HEADER_TYPE)
-            );
             return wait(kernel, [] {
-                return (
-                    ncrisc_noc_nonposted_writes_sent(noc_index) &&
-                    ncrisc_noc_nonposted_writes_sent(
-                        tt::tt_fabric::get_fabric_worker_noc()
-                    )
-                );
+                return link_sent();
             });
         }
 
@@ -263,7 +244,7 @@ namespace km {
         void place(const Kernel& kernel) {
             const Islands view(island_area());
             volatile tt_l1_ptr uint32_t* a = l1(area_ + KM_RELAY_INBOX);
-            const uint32_t core = a[kAskRank] - view.first();
+            const uint32_t core = a[kAskRank] - view.offset();  // its core of the card
             const uint32_t bytes = a[kAskBytes];
             const bool fits = (
                 a[kAskRank] - view.first() < view.ranks() && bytes <= KM_RELAY_MAX &&

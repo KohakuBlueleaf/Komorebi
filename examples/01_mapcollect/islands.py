@@ -95,7 +95,7 @@ def open_session(args, cards):
     """Two or more cards as islands, or one card split into `--islands` islands."""
     if args.islands:
         (card,) = cards
-        return km.Session(card=card, islands=args.islands, log=log)
+        return km.Session(card=card, islands=args.islands, links=args.across, log=log)
     return km.Session(cards=cards, links=args.across, log=log)
 
 

@@ -94,7 +94,7 @@ static inline kmd_link_t* link_state(kmd_t* dispatcher) {
 }
 
 /* Reads the host's link line; with its mark, the window onto the link core's area and
- * the link ring (the link core: link core 0, the core after the island's ranks).
+ * the link ring (the link core: link core 0, the card's core after the island's ranks).
  * KMD_ERROR_NONE also with no link; KMD_ERROR_WINDOW. */
 static inline uint32_t link_open(kmd_t* dispatcher) {
     volatile const uint32_t* words = (
@@ -117,9 +117,9 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
         link->islands < 2u || link->islands > KM_ISLANDS_MAX ||
         link->island >= link->islands || link->far >= link->islands ||
         link->far == link->island || link->core >= dispatcher->cores ||
-        link->core != dispatcher->island_count || (area & 63u) ||
-        area < KMD_CONTROL_FLOOR || area > KMD_L1_BYTES - KM_LINK_AREA_BYTES ||
-        (link->far_block & 63u)
+        link->core != dispatcher->island_base + dispatcher->island_count ||
+        (area & 63u) || area < KMD_CONTROL_FLOOR ||
+        area > KMD_L1_BYTES - KM_LINK_AREA_BYTES || (link->far_block & 63u)
     ) {
         return KMD_ERROR_ARGS;
     }

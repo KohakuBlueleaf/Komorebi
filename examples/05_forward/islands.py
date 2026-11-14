@@ -38,6 +38,9 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
+    parser.add_argument(
+        "--islands", type=int, default=0, help="one card split into this many islands"
+    )
     parser.add_argument("--messages", type=int, default=16)
     parser.add_argument("--forwards", type=int, default=4, help="forwards per message")
     parser.add_argument(
@@ -59,33 +62,56 @@ def message_ranks(session, counters):
     return [session.graph.count(i) - counters for i in range(len(session.sessions))]
 
 
-def cores(session, island):
-    """Island `island`'s cores: its ranks, then its link cores."""
-    columns, rows = session.island(island).grid
-    return columns * rows
+def open_session(args, cards):
+    """Two cards joined by a link, or one card split into `--islands` islands joined
+    by wires. The message service on the link core makes the kernels 83.8 KB: past
+    the default."""
+    if args.islands:
+        (card,) = cards
+        return km.Session(
+            card=card, islands=args.islands, kernel_bytes=84 * 1024, log=log
+        )
+    return km.Session(cards=cards, links=1, kernel_bytes=84 * 1024, log=log)
+
+
+def results_areas(session):
+    """The results area on every core of every island, at one address (a split
+    card's: one area of the card)."""
+    count = 1 if session.split > 1 else len(session.sessions)
+    areas = [
+        session.island(i).tensor(
+            np.zeros((np.prod(session.island(i).grid), FORWARD["kResWords"]), np.int32),
+            "int32",
+            shard_grid=session.island(i).grid,
+        )
+        for i in range(count)
+    ]
+    if len({tensor.address for tensor in areas}) != 1:
+        raise km.KomorebiError("the results areas are not at one address")
+    return areas
+
+
+def island_rows(session, areas):
+    """Each island's results rows, its cores in order."""
+    rows = [
+        (tensor.read().astype(np.int64) & 0xFFFFFFFF).reshape(-1, FORWARD["kResWords"])
+        for tensor in areas
+    ]
+    if session.split > 1:  # one card: the island's own cores of it
+        return [rows[0][list(island.cores)] for island in session.graph.islands]
+    return rows
 
 
 def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     report = {"cards": cards, "messages": args.messages, "forwards": args.forwards}
-    # The message service on the link core makes the kernels 83.8 KB: past the default.
-    with km.Session(cards=cards, links=1, kernel_bytes=84 * 1024, log=log) as session:
+    with open_session(args, cards) as session:
         islands = len(session.sessions)
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)] for i in range(islands)
         ]
-        # The results area on every core of every island, at one address.
-        results = [
-            session.island(i).tensor(
-                np.zeros((cores(session, i), FORWARD["kResWords"]), np.int32),
-                "int32",
-                shard_grid=session.island(i).grid,
-            )
-            for i in range(islands)
-        ]
-        if len({tensor.address for tensor in results}) != 1:
-            raise km.KomorebiError("the results areas are not at one address")
+        results = results_areas(session)
         address = results[0].address
         program = km.Program(
             "forward",
@@ -141,18 +167,12 @@ def main():
         if not done:
             run.abort()
             report["link"] = [link_words(session, i).tolist() for i in range(islands)]
-        rows = [
-            (tensor.read().astype(np.int64) & 0xFFFFFFFF).reshape(
-                cores(session, i), FORWARD["kResWords"]
-            )
-            for i, tensor in enumerate(results)
-        ]
-        report.update(check(args, session, rows))
+        report.update(check(args, session, island_rows(session, results)))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["ok"] = bool(
         report["exact"]
-        and report["events"] == ["done"] * len(cards)
-        and report.get("kernel_errors") == ["none"] * len(cards)
+        and report["events"] == ["done"] * len(report["islands"])
+        and report.get("kernel_errors") == ["none"] * len(report["islands"])
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)

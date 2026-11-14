@@ -463,35 +463,21 @@ namespace km {
             ) {
         }
 
-        static tt::tt_fabric::WorkerToFabricEdmSender& sender() {
-            return pages_sender();
+        static LinkSender& sender() {
+            return link_sender();
         }
 
         // Header `which` zeroed, routed one chip on; the caller sets its NoC command.
-        volatile tt_l1_ptr PACKET_HEADER_TYPE* header(uint32_t which) {
-            const uint32_t address = (
-                link.region + kLinkHeaders + which * kLinkHeaderBytes
+        LinkHeaderAt header(uint32_t which) {
+            return (
+                link_header(link.region + kLinkHeaders + which * kLinkHeaderBytes, 1)
             );
-            for (uint32_t word = 0; word < sizeof(PACKET_HEADER_TYPE) / 4; word++) {
-                l1(address)[word] = 0;
-            }
-            volatile tt_l1_ptr PACKET_HEADER_TYPE*
-                result = (
-                    reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(address)
-                );
-            result->to_chip_unicast(1);
-            return result;
         }
 
         // A NoC address `offset` bytes into the far region.
         uint64_t far(uint32_t offset) const {
             return (
-                safe_get_noc_addr(
-                    link.far & 0xFFFF,
-                    link.far >> 16,
-                    link.far_region + offset,
-                    tt::tt_fabric::edm_to_local_chip_noc
-                )
+                link_noc(link.far & 0xFFFF, link.far >> 16, link.far_region + offset)
             );
         }
 
@@ -500,34 +486,23 @@ namespace km {
         template <typename Core>
         bool send(const Core& core, uint32_t which, uint32_t source, uint32_t bytes) {
             if (!noc_timeout(core, [&] {
-                return sender().edm_has_space_for_packet<1>();
+                return sender().space();
             })) {
                 return false;
             }
-            if (bytes != 0) {
-                sender().send_payload_without_header_non_blocking_from_address(
-                    source, bytes
-                );
-            }
-            sender().send_payload_flush_non_blocking_from_address(
-                link.region + kLinkHeaders + which * kLinkHeaderBytes,
-                sizeof(PACKET_HEADER_TYPE)
+            const LinkHeaderAt made = (
+                reinterpret_cast<LinkHeaderAt>(
+                    link.region + kLinkHeaders + which * kLinkHeaderBytes
+                )
             );
+            if (!sender().send(made, source, bytes)) {
+                return false;
+            }
             const bool sent = noc_timeout(core, [] {
-                return (
-                    ncrisc_noc_nonposted_writes_sent(noc_index) &&
-                    ncrisc_noc_nonposted_writes_sent(
-                        tt::tt_fabric::get_fabric_worker_noc()
-                    )
-                );
+                return link_sent();
             });
             return sent && noc_timeout(core, [] {
-                return (
-                    ncrisc_noc_nonposted_writes_flushed(noc_index) &&
-                    ncrisc_noc_nonposted_writes_flushed(
-                        tt::tt_fabric::get_fabric_worker_noc()
-                    )
-                );
+                return link_flushed();
             });
         }
 
@@ -539,9 +514,7 @@ namespace km {
             for (uint32_t index = 0; index < 4; index++) {
                 l1(staging)[index] = words[index];
             }
-            header(which)->to_noc_unicast_write(
-                tt::tt_fabric::NocUnicastCommandHeader{far(offset)}, 16
-            );
+            link_write(header(which), far(offset), 16);
             invalidate_l1_cache();  // a fence: the NoC reads the stored words
             return send(core, which, staging, 16);
         }
@@ -699,7 +672,7 @@ namespace km {
                         core_,
                         messages_arguments_,
                         ranks_.counter_core(flat),
-                        flat - view_.first(),
+                        flat - view_.offset(),
                         packet + index * entry_ + kLinkPrefix,
                         entry_,
                         row,
@@ -721,7 +694,6 @@ namespace km {
         // One pass of sending: the hello until the link is up, then this side's report,
         // the freed count back, and the outbox's ready entries as one packet.
         void send() {
-            using namespace tt::tt_fabric;
             volatile tt_l1_ptr uint32_t* stamps = l1(link_.region + kLinkStamps);
             volatile tt_l1_ptr uint32_t* tail = l1(link_.region + kLinkOutTail);
             volatile tt_l1_ptr uint32_t* credit = l1(link_.region + kLinkCredit);
@@ -746,7 +718,7 @@ namespace km {
             }
             bool moved = false;
             uint32_t blocked = 0;
-            if (report()[3] != reported_ && LinkWire::sender().edm_has_space_for_packet<1>()) {
+            if (report()[3] != reported_ && LinkWire::sender().space()) {
                 if (!send_report()) {
                     fail(1, kWhereLinkSent, 0);
                     return;
@@ -754,7 +726,7 @@ namespace km {
             }
             const uint32_t freed = mine()[kLinkTaken];
             if (freed != sending()[kLinkFreed]) {
-                if (LinkWire::sender().edm_has_space_for_packet<1>()) {
+                if (LinkWire::sender().space()) {
                     if (!wire_.put_word(core_, 1, kLinkCredit, freed)) {
                         fail(1, kWhereLinkSent, 0);
                         return;
@@ -790,7 +762,7 @@ namespace km {
                 } else if (packets - *credit >= link_.inbox) {
                     blocked = kWhereLinkCredit;
                     waits[0]++;
-                } else if (!LinkWire::sender().edm_has_space_for_packet<1>()) {
+                } else if (!LinkWire::sender().space()) {
                     blocked = kWhereLinkRouter;
                     waits[1]++;
                 } else {
@@ -799,16 +771,15 @@ namespace km {
                     for (uint32_t word = 0; word < count * entry_ / 4; word++) {
                         l1(wire_.staging)[word] = l1(base)[word];
                     }
-                    wire_.header(0)->to_noc_unicast_write(
-                        NocUnicastCommandHeader{wire_.far(
+                    link_write(
+                        wire_.header(0),
+                        wire_.far(
                             kLinkOutbox + link_.outbox * entry_ +
                             (packets % link_.inbox) * kLinkPacketBytes
-                        )},
+                        ),
                         count * entry_
                     );
-                    wire_.header(2)->to_noc_unicast_atomic_inc(
-                        NocUnicastAtomicIncCommandHeader(wire_.far(kLinkLanded), 1, true)
-                    );
+                    link_increment(wire_.header(2), wire_.far(kLinkLanded), 1);
                     invalidate_l1_cache();  // a fence: the NoC reads the stored copy
                     if (stamps[kStampSent] == 0) {
                         stamps[kStampSent] = wall() | 1;

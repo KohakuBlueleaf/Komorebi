@@ -8,19 +8,14 @@
 #include <new>
 
 #include "api/dataflow/dataflow_api.h"
-#include "hostdev/fabric_edm_packet_header.hpp"
 #include "km_command.hpp"
 #include "km_core.hpp"
-#include "tt_metal/fabric/hw/inc/edm_fabric/edm_fabric_utils.hpp"
-#include "tt_metal/fabric/hw/inc/edm_fabric/edm_fabric_worker_adapters.hpp"
-#include "tt_metal/fabric/hw/inc/noc_addr.h"
+#include "km_transport.hpp"
 
 namespace km {
 
-    // A CPU's L1 (its chunk): the connection's two words, a packet header a slot,
-    // then the slots the pages pass through.
-    constexpr uint32_t kPagesTeardown = 0;
-    constexpr uint32_t kPagesCursor = 16;
+    // A CPU's L1 (its chunk): the connection's two words (LinkSender), a packet header
+    // a slot, then the slots the pages pass through.
     constexpr uint32_t kPagesHeaders = 64;
     constexpr uint32_t kPagesHeaderStride = 64;
     constexpr uint32_t kPagesSlotsMax = 15;
@@ -78,41 +73,6 @@ namespace km {
         };
     }
 
-    // The connection of this core to the router of Ethernet channel `channel`: the
-    // router's words from the table the fabric's start-up wrote, ours at `area`.
-    inline tt::tt_fabric::WorkerToFabricEdmSender pages_connection(
-        uint32_t channel, uint32_t area
-    ) {
-        auto* table = (
-            reinterpret_cast<
-                tt_l1_ptr tt::tt_fabric::tensix_fabric_connections_l1_info_t*>(
-                    FABRIC_CONNECTIONS_BASE
-                )
-        );
-        const auto* conn = &table->read_only[channel];
-        auto* flow = &table->read_write[channel];
-        return tt::tt_fabric::WorkerToFabricEdmSender(
-            true,
-            conn->edm_noc_x,
-            conn->edm_noc_y,
-            conn->edm_buffer_base_addr,
-            conn->num_buffers_per_channel,
-            conn->edm_connection_handshake_addr,
-            conn->edm_worker_location_info_addr,
-            conn->buffer_size_bytes,
-            conn->buffer_index_semaphore_id,
-            reinterpret_cast<volatile uint32_t*>(
-                reinterpret_cast<uintptr_t>(&flow->worker_flow_control_semaphore)
-            ),
-            reinterpret_cast<volatile uint32_t* const>(area + kPagesTeardown),
-            area + kPagesCursor,
-            static_cast<uint32_t>(conn->worker_free_slots_stream_id),
-            StreamId{0xFFFFFFFFu},
-            write_reg_cmd_buf,
-            write_at_cmd_buf
-        );
-    }
-
     // This CPU's held connection: open from its PAGES open to its kernel's end (a
     // kernel's .bss starts zero), its L1 at `area` (`chunk` bytes), `hops` to the far
     // island, its link of the `links` its open named. One sender a connection.
@@ -124,15 +84,8 @@ namespace km {
         uint32_t link;
         uint32_t links;
     };
-    inline PagesHeld pages_held;
-    alignas(8) inline uint8_t
-        pages_sender_bytes[sizeof(tt::tt_fabric::WorkerToFabricEdmSender)];
 
-    inline tt::tt_fabric::WorkerToFabricEdmSender& pages_sender() {
-        return *reinterpret_cast<tt::tt_fabric::WorkerToFabricEdmSender*>(
-            pages_sender_bytes
-        );
-    }
+    inline PagesHeld pages_held;
 
     // The links a request names (bytes before the first KM_PAGES_NO_LINK, at most 4).
     inline uint32_t pages_links(const PagesRequest& r) {
@@ -158,22 +111,14 @@ namespace km {
         if (r.to_core == KM_PAGES_DRAM) {
             const uint64_t at = to.get_noc_addr(p);
             return (
-                safe_get_noc_addr(
+                link_noc(
                     NOC_UNICAST_ADDR_X(at),
                     NOC_UNICAST_ADDR_Y(at),
-                    static_cast<uint32_t>(at),
-                    tt::tt_fabric::edm_to_local_chip_noc
+                    static_cast<uint32_t>(at)
                 )
             );
         }
-        return (
-            safe_get_noc_addr(
-                r.to_core & 0xFFu,
-                r.to_core >> 8,
-                r.to + k * r.page,
-                tt::tt_fabric::edm_to_local_chip_noc
-            )
-        );
+        return link_noc(r.to_core & 0xFFu, r.to_core >> 8, r.to + k * r.page);
     }
 
     // CPU `cpu` sends `share` over its held connection, reads run ahead in the slots;
@@ -214,11 +159,7 @@ namespace km {
         // are the same, checked by the session) and address `at` there
         const auto far = [&](uint32_t q, uint32_t at) {
             const uint32_t xy = cores[r.to_core + q];
-            return (
-                safe_get_noc_addr(
-                    xy & 0xFFFFu, xy >> 16, at, tt::tt_fabric::edm_to_local_chip_noc
-                )
-            );
+            return link_noc(xy & 0xFFFFu, xy >> 16, at);
         };
         const uint32_t limit = kernel.args().wait_limit;
         uint32_t code = kGaveNone;
@@ -239,25 +180,11 @@ namespace km {
         const InterleavedAddrGen<true> to = {
             .bank_base_address = r.to, .page_size = r.page
         };
-        uint64_t counter = (
-            safe_get_noc_addr(
-                r.counter & 0xFFu,
-                r.counter >> 8,
-                r.count,
-                tt::tt_fabric::edm_to_local_chip_noc
-            )
-        );
+        uint64_t counter = link_noc(r.counter & 0xFFu, r.counter >> 8, r.count);
         for (uint32_t s = 0; s < slots; s++) {
-            volatile tt_l1_ptr uint32_t* words = (
-                l1(area + kPagesHeaders + s * kPagesHeaderStride)
-            );
-            for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
-                words[w] = 0;
-            }
-            reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(words)
-                ->to_chip_unicast(static_cast<uint8_t>(r.hops));
+            link_header(area + kPagesHeaders + s * kPagesHeaderStride, r.hops);
         }
-        auto& sender = pages_sender();
+        auto& sender = link_sender();
         uint32_t read_mark[kPagesSlotsMax];
         uint32_t sent_mark[kPagesSlotsMax];
         const auto read = [&](uint32_t k) {
@@ -283,8 +210,8 @@ namespace km {
                 break;
             }
             const uint32_t p = r.first + base + k;
-            auto* header = (
-                reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(
+            const LinkHeaderAt header = (
+                reinterpret_cast<LinkHeaderAt>(
                     area + kPagesHeaders + s * kPagesHeaderStride
                 )
             );
@@ -302,27 +229,22 @@ namespace km {
                 batch == kPagesBatch || k + 1 == total ||
                 (range && j + 1 == r.pages)
             ) {
-                header->to_noc_fused_unicast_write_atomic_inc(
-                    tt::tt_fabric::NocUnicastAtomicIncFusedCommandHeader(
-                        at, counter, static_cast<uint16_t>(batch), true
-                    ),
-                    r.page
+                link_counted_write(
+                    header, at, counter, static_cast<uint16_t>(batch), r.page
                 );
                 batch = 0;
             } else {
-                header->to_noc_unicast_write(
-                    tt::tt_fabric::NocUnicastCommandHeader{at}, r.page
-                );
+                link_write(header, at, r.page);
             }
-            if (!sender.edm_has_space_for_packet<1>() && !wait([&] {
-                return sender.edm_has_space_for_packet<1>();
+            if (!sender.space() && !wait([&] {
+                return sender.space();
             })) {
                 break;
             }
-            sender.send_payload_without_header_non_blocking_from_address(slot, r.page);
-            sender.send_payload_flush_non_blocking_from_address(
-                reinterpret_cast<uint32_t>(header), sizeof(PACKET_HEADER_TYPE)
-            );
+            if (!sender.send(header, slot, r.page)) {
+                code = kGaveLimit;
+                break;
+            }
             sent_mark[s] = noc_nonposted_writes_num_issued[noc_index];
             if (ahead < total) {  // the slot again, once its packet left L1
                 if (!wait([&] {
@@ -393,28 +315,13 @@ namespace km {
         ) {
             return kGaveBadTransfer;  // one open a kernel: one sender a connection
         }
-        l1(area + kPagesTeardown)[0] = 0;
-        auto& sender = *new (pages_sender_bytes) tt::tt_fabric::WorkerToFabricEdmSender(
-            pages_connection((r.links >> 8 * link) & 0xFFu, area)
-        );
+        auto& sender = link_sender();
+        sender.connect((r.links >> 8 * link) & 0xFFu, area);
         sender.open();
         pages_held = {1, area, r.chunk, r.hops, link, pages_links(r)};
-        auto* header = (
-            reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(
-                area + kPagesHeaders
-            )
-        );
-        for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
-            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(header)[w] = 0;
-        }
-        header->to_chip_unicast(static_cast<uint8_t>(r.hops));
+        const LinkHeaderAt header = link_header(area + kPagesHeaders, r.hops);
         const uint64_t far = (
-            safe_get_noc_addr(
-                r.counter & 0xFFu,
-                r.counter >> 8,
-                r.count + cpu * KM_PORT_STRIDE,
-                tt::tt_fabric::edm_to_local_chip_noc
-            )
+            link_noc(r.counter & 0xFFu, r.counter >> 8, r.count + cpu * KM_PORT_STRIDE)
         );
         volatile tt_l1_ptr uint32_t* here = l1(
             kernel.args().control + KM_CONTROL_PORT +
@@ -429,15 +336,10 @@ namespace km {
                 const uint32_t say = heard != 0 ? 2 : 1;
                 if (
                     (say != said || ++polls % kPagesHelloEvery == 0) &&
-                    ncrisc_noc_nonposted_writes_sent(noc_index) &&
-                    sender.edm_has_space_for_packet<1>()
+                    ncrisc_noc_nonposted_writes_sent(noc_index) && sender.space()
                 ) {
-                    header->to_noc_unicast_inline_write(
-                        tt::tt_fabric::NocUnicastInlineWriteCommandHeader{far, say}
-                    );
-                    sender.send_payload_flush_non_blocking_from_address(
-                        reinterpret_cast<uint32_t>(header), sizeof(PACKET_HEADER_TYPE)
-                    );
+                    link_inline(header, far, say);
+                    sender.send(header, 0, 0);
                     said = say;
                 }
                 return heard == 2 && said == 2;
@@ -495,30 +397,20 @@ namespace km {
         })) {
             return code;
         }
-        auto& sender = pages_sender();
-        const auto packet = [&](uint32_t which, uint32_t to, uint32_t from, uint32_t n) {
-            const uint32_t header = area + KM_LINK_HEADERS + which * 64;
-            for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
-                l1(header)[w] = 0;
-            }
-            auto* made = reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(header);
-            made->to_chip_unicast(1);
-            made->to_noc_unicast_write(
-                tt::tt_fabric::NocUnicastCommandHeader{
-                    safe_get_noc_addr(x, y, to, tt::tt_fabric::edm_to_local_chip_noc)
-                },
-                n
+        auto& sender = link_sender();
+        const auto packet = [&](
+            uint32_t which, uint32_t to, uint32_t from, uint32_t n
+        ) {
+            const LinkHeaderAt made = (
+                link_header(area + KM_LINK_HEADERS + which * 64, 1)
             );
+            link_write(made, link_noc(x, y, to), n);
             if (!wait([&] {
-                return sender.edm_has_space_for_packet<1>();
+                return sender.space();
             })) {
                 return false;
             }
-            sender.send_payload_without_header_non_blocking_from_address(from, n);
-            sender.send_payload_flush_non_blocking_from_address(
-                header, sizeof(PACKET_HEADER_TYPE)
-            );
-            return true;
+            return sender.send(made, from, n);
         };
         if (
             packet(0, a[KM_LINE_PACKET], at, KM_LINK_PACKET_BYTES) &&
@@ -555,14 +447,14 @@ namespace km {
         wait([] {
             return ncrisc_noc_nonposted_writes_sent(noc_index);
         });
-        pages_sender().close_start();
+        link_sender().close_start();
         const bool closed = wait([] {
             return ncrisc_noc_nonposted_writes_flushed(noc_index);
         });
-        if (closed && wait([&] {
-            return l1(area + kPagesTeardown)[0] == 1;
-        })) {
-            l1(area + kPagesTeardown)[0] = 0;
+        if (closed) {
+            wait([&] {
+                return link_sender().closed(area);
+            });
         }
     }
 
@@ -587,8 +479,8 @@ namespace km {
 
     // The lines link's CPU (link 0): the next ask line its island's cores wrote into
     // the link area at `area`, once landed and while the far island has room for it,
-    // into the far link core 0's asks (the same core and area there: both islands'
-    // tables are the same); then its line is free again. One line a call. kGave* code.
+    // into the far link core 0's asks (its tile in the island area, the same area
+    // address there); then its line is free again. One line a call. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_forward(
         const Kernel& kernel, uint32_t area
@@ -603,40 +495,30 @@ namespace km {
         ) {
             return kGaveNone;  // no line yet, or the far asks are full
         }
-        const uint32_t xy = kernel.control(KM_CONTROL_CORES)[kernel.args().me];
-        const uint32_t header = area + KM_ASK_HEADERS;
-        for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
-            l1(header)[w] = 0;
-        }
-        auto* made = reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(header);
-        made->to_chip_unicast(static_cast<uint8_t>(pages_held.hops));
-        made->to_noc_unicast_write(
-            tt::tt_fabric::NocUnicastCommandHeader{
-                safe_get_noc_addr(
-                    xy & 0xFFFFu,
-                    xy >> 16,
-                    area + KM_ASK_INBOX + taken % KM_ASK_SLOTS * 64,
-                    tt::tt_fabric::edm_to_local_chip_noc
-                )
-            },
+        const uint32_t xy = island_area()[KM_ISLAND_RELAY_TILE];
+        const LinkHeaderAt made = link_header(area + KM_ASK_HEADERS, pages_held.hops);
+        link_write(
+            made,
+            link_noc(
+                xy & 0xFFFFu, xy >> 16, area + KM_ASK_INBOX + taken % KM_ASK_SLOTS * 64
+            ),
             64
         );
-        auto& sender = pages_sender();
+        auto& sender = link_sender();
         const uint32_t limit = kernel.args().wait_limit;
         uint32_t code = kernel.poll_at(
             kWherePages,
             [&] {
-                return sender.edm_has_space_for_packet<1>();
+                return sender.space();
             },
             limit
         );
         if (code != kGaveNone) {
             return code;
         }
-        sender.send_payload_without_header_non_blocking_from_address(line, 64);
-        sender.send_payload_flush_non_blocking_from_address(
-            header, sizeof(PACKET_HEADER_TYPE)
-        );
+        if (!sender.send(made, line, 64)) {
+            return kGaveLimit;
+        }
         code = kernel.poll_at(
             kWherePages,
             [] {
@@ -699,42 +581,26 @@ namespace km {
         if (!good) {
             words[KM_ASK_BAD / 4] += 1;
         }
-        const uint32_t xy = kernel.control(KM_CONTROL_CORES)[kernel.args().me];
-        auto* header = (
-            reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(
-                area + KM_ASK_HEADERS + 64
-            )
+        const uint32_t xy = island_area()[KM_ISLAND_RELAY_TILE];
+        const LinkHeaderAt header = (
+            link_header(area + KM_ASK_HEADERS + 64, pages_held.hops)
         );
-        for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
-            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(header)[w] = 0;
-        }
-        header->to_chip_unicast(static_cast<uint8_t>(pages_held.hops));
-        header->to_noc_unicast_inline_write(
-            tt::tt_fabric::NocUnicastInlineWriteCommandHeader{
-                safe_get_noc_addr(
-                    xy & 0xFFFFu,
-                    xy >> 16,
-                    area + KM_ASK_SERVED,
-                    tt::tt_fabric::edm_to_local_chip_noc
-                ),
-                answered + 1
-            }
+        link_inline(
+            header, link_noc(xy & 0xFFFFu, xy >> 16, area + KM_ASK_SERVED), answered + 1
         );
-        auto& sender = pages_sender();
+        auto& sender = link_sender();
         const uint32_t limit = kernel.args().wait_limit;
         code = kernel.poll_at(
             kWherePages,
             [&] {
-                return sender.edm_has_space_for_packet<1>();
+                return sender.space();
             },
             limit
         );
         if (code != kGaveNone) {
             return code;
         }
-        sender.send_payload_flush_non_blocking_from_address(
-            reinterpret_cast<uint32_t>(header), sizeof(PACKET_HEADER_TYPE)
-        );
+        sender.send(header, 0, 0);
         code = kernel.poll_at(
             kWherePages,
             [] {

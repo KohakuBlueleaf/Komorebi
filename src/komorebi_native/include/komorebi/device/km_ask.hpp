@@ -43,7 +43,8 @@ namespace km {
         ) {
             return give_up(kGaveBadItem);  // two islands a link apart, whole packets
         }
-        const uint32_t link = view.ranks();  // link core 0: the core after the ranks
+        // link core 0: the core after the ranks
+        const uint32_t link = view.base() + view.ranks();
         const uint32_t limit = reader.args().wait_limit;
         volatile tt_l1_ptr uint32_t* returned = l1(area + KM_ASK_RETURNED);
         returned[0] = kAskNoAnswer;
