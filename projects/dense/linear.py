@@ -38,6 +38,8 @@ KERNEL_BYTES = {"one": 88 * 1024, "two": 96 * 1024}
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
 SUBBLOCK = None
+# one island: the plan on the grid's first columns only (--columns)
+COLUMNS = None
 # Placements by hint (X, W, Y): "k", W sharded (split along K, Y along N); "rows", W
 # replicated (X and Y split along M, W a copy: Kohaku-TT's default form).
 PLACES = {
@@ -134,12 +136,12 @@ def extra_bytes(plan, exchange):
 
 
 def l1_budget(session, islands):
-    """L1 for the buffers: the project's budget on one island; on more, the L1 the
-    session gives buffers (Session.l1) less the other rows of the load's budget, and
-    the two tokens it counts with the buffers."""
-    if islands == 1:
-        return pl.L1_BUDGET
+    """L1 for the buffers: the L1 the session gives buffers (Session.l1) less the
+    other rows of the load's budget (on more islands also the session's own and the two
+    tokens it counts with the buffers), at most the project's budget."""
     free = session.sessions[0].l1()[1]
+    if islands == 1:  # the host transfer buffer, control block and a slot
+        return min(pl.L1_BUDGET, free - L1_TRANSFER - L1_RUNTIME)
     tokens = 2 * abi.headers()["kTokenBytes"]
     return min(pl.L1_BUDGET, free - L1_HELD - L1_TRANSFER - L1_RUNTIME - tokens)
 
@@ -470,12 +472,17 @@ class Linear:
         )
         one_card = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.nocs.grid)
         self.budget = l1_budget(session, self.islands)
+        grid, planned = self.nocs.grid, ranks  # the grid and ranks planned on
+        if COLUMNS is not None:
+            if self.islands != 1 or not 0 < COLUMNS <= grid[0]:
+                raise SystemExit(f"--columns {COLUMNS}: one island, 1 to {grid[0]}")
+            grid, planned = (COLUMNS, grid[1]), COLUMNS * grid[1]
         self.pieces = island_pieces(
             part_m,
             part_k,
             part_n,
-            self.nocs.grid,
-            ranks,
+            grid,
+            planned,
             self.budget,
             self.exchange,
             # nothing put: any K block the model likes; puts: the one-card plan's
@@ -898,6 +905,9 @@ def main():
     parser.add_argument(
         "--subblock", default=None, help="HxW: the subblock in place of the plan's"
     )
+    parser.add_argument(
+        "--columns", type=int, default=None, help="one card: the grid's first columns"
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     if args.dims:
@@ -913,9 +923,10 @@ def main():
     if any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
+    global SUBBLOCK, COLUMNS
     if args.subblock:
-        global SUBBLOCK
         SUBBLOCK = tuple(int(value) for value in args.subblock.split("x"))
+    COLUMNS = args.columns
     report = {"m": dimensions[0], "k": dimensions[1], "n": dimensions[2]}
     report |= {"cards": cards, "links": args.links, "place": args.place}
     log("building the inputs")
