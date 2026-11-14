@@ -1,0 +1,365 @@
+{
+ "m": 16384,
+ "k": 16384,
+ "n": 16384,
+ "cards": [
+  0,
+  1
+ ],
+ "links": 0,
+ "place": "rows",
+ "upload_s": 2.801,
+ "placements": {
+  "x": [
+   [
+    0,
+    256
+   ],
+   [
+    256,
+    256
+   ]
+  ],
+  "w": [
+   [
+    0,
+    1
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "y": [
+   [
+    0,
+    256
+   ],
+   [
+    256,
+    256
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350,
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 256,
+   "kt": 512,
+   "nt": 480,
+   "rows": 10,
+   "cols": 10,
+   "pcm": 26,
+   "pcn": 48,
+   "bm": 13,
+   "bn": 16,
+   "kb": 2,
+   "sh": 1,
+   "sw": 4,
+   "wa": 2,
+   "ww": 2,
+   "layout": "2d",
+   "l1": 1106944,
+   "form": "grid",
+   "nk": 256,
+   "nbh": 2,
+   "nbw": 3,
+   "rect": [
+    0,
+    0,
+    10,
+    10
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 37716,
+    "NCRISC": 38960,
+    "TRISC0": 14892,
+    "TRISC1": 5920,
+    "TRISC2": 6448
+   },
+   "total": 97488
+  },
+  "pieces": [
+   {
+    "rect": [
+     0,
+     0,
+     10,
+     10
+    ],
+    "m0": 0,
+    "n0": 0,
+    "bands": [
+     26,
+     48
+    ],
+    "blocks": [
+     2,
+     3
+    ],
+    "cores": 100
+   },
+   {
+    "rect": [
+     10,
+     0,
+     2,
+     7
+    ],
+    "m0": 0,
+    "n0": 480,
+    "bands": [
+     39,
+     16
+    ],
+    "blocks": [
+     3,
+     1
+    ],
+    "cores": 14
+   }
+  ],
+  "exchange": false,
+  "l1_budget": 1312176,
+  "l1_held": [
+   49728,
+   49728
+  ],
+  "crossed_bytes": {
+   "blocks": 0,
+   "tiles": 0,
+   "put_bytes": 0
+  },
+  "loop": {
+   "single_microseconds": [
+    20674.54,
+    21050.88,
+    20309.62
+   ],
+   "reps": 0,
+   "microseconds_per_call": 20674.54,
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 0.0,
+    "pages": 0.0,
+    "parts": 0.0,
+    "puts": 0.0,
+    "bytes": 0.0
+   },
+   "aiclk_mhz": {}
+  },
+  "single_detail": [
+   {
+    "host_us": 21267.5,
+    "parts_us": [
+     20674.5,
+     20204.3
+    ],
+    "passes": [
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 27869512,
+       "span": 27869512,
+       "start_spread": 304,
+       "end_spread": 27868010
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 20644.1,
+       "span": 20644.1,
+       "start_spread": 0.2,
+       "end_spread": 20643.0
+      }
+     },
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 27228811,
+       "span": 27228811,
+       "start_spread": 293,
+       "end_spread": 27227320
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 20169.5,
+       "span": 20169.5,
+       "start_spread": 0.2,
+       "end_spread": 20168.4
+      }
+     }
+    ]
+   },
+   {
+    "host_us": 21538.1,
+    "parts_us": [
+     20097.9,
+     21050.9
+    ],
+    "passes": [
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 27091050,
+       "span": 27091050,
+       "start_spread": 276,
+       "end_spread": 27089721
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 20067.4,
+       "span": 20067.4,
+       "start_spread": 0.2,
+       "end_spread": 20066.5
+      }
+     },
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 28371919,
+       "span": 28371919,
+       "start_spread": 261,
+       "end_spread": 28370634
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 21016.2,
+       "span": 21016.2,
+       "start_spread": 0.2,
+       "end_spread": 21015.3
+      }
+     }
+    ]
+   },
+   {
+    "host_us": 20787.7,
+    "parts_us": [
+     20208.4,
+     20309.6
+    ],
+    "passes": [
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 27246854,
+       "span": 27246854,
+       "start_spread": 267,
+       "end_spread": 27245554
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 20182.9,
+       "span": 20182.9,
+       "start_spread": 0.2,
+       "end_spread": 20181.9
+      }
+     },
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 27369364,
+       "span": 27369364,
+       "start_spread": 250,
+       "end_spread": 27368099
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 20273.6,
+       "span": 20273.6,
+       "start_spread": 0.2,
+       "end_spread": 20272.7
+      }
+     }
+    ]
+   }
+  ],
+  "run": {
+   "cores": 236,
+   "kernel": [
+    "none",
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "passes": [
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 0,
+     "sync": 0,
+     "own": 27246854,
+     "span": 27246854,
+     "start_spread": 267,
+     "end_spread": 27245554
+    },
+    "microseconds_at_mhz": {
+     "put": 0.0,
+     "sync": 0.0,
+     "own": 20182.9,
+     "span": 20182.9,
+     "start_spread": 0.2,
+     "end_spread": 20181.9
+    }
+   },
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 0,
+     "sync": 0,
+     "own": 27369364,
+     "span": 27369364,
+     "start_spread": 250,
+     "end_spread": 27368099
+    },
+    "microseconds_at_mhz": {
+     "put": 0.0,
+     "sync": 0.0,
+     "own": 20273.6,
+     "span": 20273.6,
+     "start_spread": 0.2,
+     "end_spread": 20272.7
+    }
+   }
+  ],
+  "check": {
+   "max_rel": 0.0055574524070737255,
+   "rms_rel": 0.00396046160629658,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 2.82
+  },
+  "tflops": 425.46,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "9.17",
+  "9.22",
+  "9.00"
+ ]
+}
