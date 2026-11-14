@@ -527,7 +527,8 @@ the version described above, whose text on one card is 87,888 B (`--kernel-bytes
 
 The same script and kernels on card 0 and on cards 0 and 1, one run a point (three
 single calls, then calls back to back for about three seconds), on 2026-11-15 between
-05:15 and 05:25, host load 5 to 8; every check passed (relative RMS 3.94e-3 to 3.96e-3
+05:15 and 05:38 (the K form's rows after 05:33, after the link cores' chunks stopped
+counting the ranks' buffers), host load 5 to 8; every check passed (relative RMS 3.94e-3 to 3.96e-3
 on one card and in the rows form, 4.12e-3 to 4.14e-3 in the K form: the partial
 rounded to bf16 once). Two cards, K form: X and W split along K, Y along N, W held once
 (`--place k`, the default). Two cards, rows form: X and Y split along M, W a copy on
@@ -537,14 +538,14 @@ median single call / the loop's time a call; "x" is one card's single over two c
 
 | Cube | One card | Two cards, K form (W sharded) | x | Two cards, rows form (W copied) | x | K form: puts / sync / own, us | K form: crossed a call, rate | Kohaku-TT: one card / two cards (W copied) / two cards (K split) |
 |---|---|---|---|---|---|---|---|---|
-| 128 | 7.2 / 16.1 | 71.5 / 39.4 | 0.10 | 7.6 / 41.3 | 0.95 | 10 / 60 / 0 | 33 KB | |
-| 256 | 11.6 / 49.3 | 79.7 / 47.1 | 0.15 | 10.0 / 24.3 | 1.16 | 13 / 62 / 2 | 132 KB | |
-| 512 | 15.9 / 20.3 | 179.9 / 170.7 | 0.09 | 19.8 / 25.6 | 0.80 | 15 / 159 / 5 | 0.53 MB | |
-| 1024 | 43.8 / 47.2 | 180.2 / 179.6 | 0.24 | 40.6 / 46.6 | 1.08 | 55 / 108 / 17 | 2.4 MB, 13.2 GB/s | |
-| 2048 | 167.1 / 195.6 | 368.8 / 399.9 | 0.45 | 125.4 / 134.3 | 1.33 | 174 / 144 / 73 | 9.2 MB, 23.0 GB/s | |
-| 4096 | 655.0 (a) | 1,278.6 / 1,260.0 | 0.51 | 420.7 / 543.9 | 1.56 | 657 / 267 / 332 | 36.7 MB, 29.2 GB/s | 819.8 / 487.3 / 868.8 |
-| 8192 | 4,488.1 (a) | 5,397.1 / 5,947.0 | 0.83 | 2,357.6 (b) | 1.90 | 3,185 / 222 / 2,138 | 135.9 MB, 22.9 GB/s | 4,549.5 / 2,482.8 / 3,930.1 |
-| 16384 | 34,544.8 (a) | 29,151.7 / 37,548.8 | 1.18 | 17,731.5 (b) | 1.95 | 16,691 / 445 / 12,305 | 538.5 MB, 14.3 GB/s | 32,489.3 / 17,067.8 / 32,970.6 |
+| 128 | 7.2 / 16.1 | 72.7 / 39.5 | 0.10 | 7.6 / 41.3 | 0.95 | 10 / 61 / 0 | 33 KB | |
+| 256 | 11.6 / 49.3 | 79.0 / 47.1 | 0.15 | 10.0 / 24.3 | 1.16 | 13 / 63 / 2 | 132 KB | |
+| 512 | 15.9 / 20.3 | 179.8 / 171.1 | 0.09 | 19.8 / 25.6 | 0.80 | 15 / 158 / 5 | 0.53 MB | |
+| 1024 | 43.8 / 47.2 | 154.8 / 143.3 | 0.28 | 40.6 / 46.6 | 1.08 | 48 / 85 / 19 | 2.1 MB, 14.7 GB/s | |
+| 2048 | 167.1 / 195.6 | 356.0 / 405.4 | 0.47 | 125.4 / 134.3 | 1.33 | 131 / 150 / 75 | 9.2 MB, 22.7 GB/s | |
+| 4096 | 655.0 (a) | 1,312.9 / 1,310.9 | 0.50 | 420.7 / 543.9 | 1.56 | 743 / 337 / 310 | 34.1 MB, 26.0 GB/s | 819.8 / 487.3 / 868.8 |
+| 8192 | 4,488.1 (a) | 4,992.6 / 5,474.4 | 0.90 | 2,357.6 (b) | 1.90 | 3,270 / 331 / 1,483 | 144.0 MB, 26.3 GB/s | 4,549.5 / 2,482.8 / 3,930.1 |
+| 16384 | 34,544.8 (a) | 27,151.6 / 35,610.2 | 1.27 | 17,731.5 (b) | 1.95 | 16,463 / 248 / 10,542 | 565.1 MB, 15.9 GB/s | 32,489.3 / 17,067.8 / 32,970.6 |
 
 (a) single calls of the one-card table above (`results/one-card-*.json`), not run
 again; (b) single calls of the rows form below (`results/linear-rows-*.json`, an earlier
@@ -556,27 +557,27 @@ barrier), the own columns. Crossed is `run.crossings()` over the loop, both ways
 pages are exactly the count from the placements and the plan (`Linear.crossed`, whole
 blocks) plus the command's two relayed parts; the rate is over the loop's call. The
 loops from 4096 up lowered the AI clock (one card 1,162 MHz at 2048; two cards 950 to
-1,025 at 4096 rows, 1,093 to 1,187 at 8192 K, 825 to 975 at 16384 K).
+1,025 at 4096 rows, 1,137 to 1,187 at 8192 K, 806 to 925 at 16384 K).
 
 Where two cards win: the rows form from 2048 up (1.33 to 1.95; Kohaku-TT's default
-form 1.68 to 1.90 at 4096 to 16384); the K form only at 16384 (1.18; Kohaku-TT's K
-split 0.94 to 1.16 at 4096 to 16384). Below 2048 a two-card call is the command over
+form 1.68 to 1.90 at 4096 to 16384); the K form only at 16384 (1.27; Kohaku-TT's K
+split 0.94 to 1.16 at 4096 to 16384), crossing over between 8192 (0.90) and 16384. Below 2048 a two-card call is the command over
 two islands and the sync (21 to 160 us). The K form's loss, from the passes and the
 writers' counters (T's words 7 to 12, `Linear.passes()`):
 
-- **The plan.** The link cores' rings for the puts need a chunk of 192 KiB a link CPU
-  or more (a ring holds 8 slots of an 8 KiB packet at least), and the session sizes
-  that chunk from what is left after the program's buffers, so the K form's plan
-  leaves 655 KB of each core's L1 to it (`link_room`): at 8192 it runs 7 x 8 blocks,
-  K block 4, on 80 of the island's 118 ranks, and its own pass takes 2,138 us where
-  the plan with the whole budget (14 x 12 on 105 ranks, puts without rings) took
-  1,477 and a quarter of a one-card call is 1,122; at 16384 12,305 against 10,330.
-- **The crossing.** A writer spends 663 / 3,810 us a call (8192 / 16384) in
-  `km::put_piece`, of it 603 / 3,616 waiting for its ring's slots, and the puts pass
-  takes that much longer than the own pass of the same work.
-- **The sync**: 69 to 445 us from 4096 up, of it each core's wait for its last
-  confirmations 16 to 243 us.
+- **The crossing.** The puts pass makes the same amount of work as the own pass but
+  takes 3,270 against 1,483 us at 8192 (16,463 against 10,542 at 16384). A writer
+  spends 340 to 470 us of it in `km::put_piece` (1,070 to 1,480 at 16384), most of
+  that waiting for its ring's slots. The rest is not counted: the writer also sends W's
+  column broadcast, so its puts may delay the cores it feeds (inferred).
+- **The plan** is the whole budget's (8192: 14 x 12, K block 4, on 105 of the island's
+  118 ranks): the own pass takes 1,483 us, where a quarter of a one-card call is 1,122.
+- **The sync**: 40 to 1,290 us from 1024 up in single calls (mostly 90 to 400), of it
+  each core's wait for its last confirmations 21 to 265 us.
 
+The link cores' rings for the puts need a chunk of 192 KiB a link CPU or more (8
+slots of an 8 KiB packet). The session now sizes it without the program's buffers,
+which are on the ranks only: 512 KiB, 31 slots.
 Before this, with line puts (one 64 KiB put in flight a core, no rings, the whole
 budget), the K form took 10,486 / 45,753 us at 8192 / 16384, its puts at 8.8 GB/s each
 way.
