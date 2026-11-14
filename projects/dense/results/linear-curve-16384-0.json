@@ -6,9 +6,7 @@
   0
  ],
  "links": 0,
- "split_w": 0,
- "split_x": 0,
- "upload_s": 2.332,
+ "upload_s": 2.484,
  "placements": {
   "x": [
    [
@@ -26,12 +24,6 @@
    [
     0,
     512
-   ]
-  ],
-  "p": [
-   [
-    0,
-    1
    ]
   ]
  },
@@ -69,31 +61,30 @@
   },
   "kernel_sizes": {
    "text": {
-    "BRISC": 28232,
-    "NCRISC": 32488,
-    "TRISC0": 12584,
-    "TRISC1": 6400,
-    "TRISC2": 7156
+    "BRISC": 24656,
+    "NCRISC": 32096,
+    "TRISC0": 14456,
+    "TRISC1": 5388,
+    "TRISC2": 5784
    },
-   "total": 87888
+   "total": 83392
   },
   "crossed_bytes": {
-   "x": 0,
-   "y": 0,
-   "partials": 0,
-   "all": 0
+   "blocks": 0,
+   "tiles": 0,
+   "put_bytes": 360448
   },
   "loop": {
    "single_microseconds": [
-    76240.54,
-    76289.32,
-    76312.62
+    74826.54,
+    75169.42,
+    75631.84
    ],
    "reps": 40,
-   "seconds": 3.601,
-   "microseconds_per_call": 90030.641,
+   "seconds": 3.609,
+   "microseconds_per_call": 90231.761,
    "part_microseconds_median": [
-    94807.51000000001
+    95398.41
    ],
    "crossed_a_call": {
     "messages": 0.0,
@@ -106,8 +97,8 @@
    },
    "aiclk_mhz": {
     "0": [
-     1068,
-     1137.2,
+     1043,
+     1114.9,
      1343
     ]
    }
@@ -120,20 +111,35 @@
    "gave_up": [],
    "broadcast_gave_up": []
   },
+  "passes": [
+   {
+    "cores": 120,
+    "cycles": {
+     "put": 0,
+     "sync": 0,
+     "own": 101818030
+    },
+    "microseconds_at_mhz": {
+     "put": 0.0,
+     "sync": 0.0,
+     "own": 75420.8
+    }
+   }
+  ],
   "check": {
    "max_rel": 0.0055574524070737255,
    "rms_rel": 0.00396046160629658,
    "rows": 256,
    "ok": true,
-   "readback_s": 1.994
+   "readback_s": 4.727
   },
-  "tflops": 97.7,
+  "tflops": 97.48,
   "ok": true
  },
  "ok": true,
  "load_avg": [
-  "3.70",
-  "3.83",
-  "4.39"
+  "8.58",
+  "5.77",
+  "4.65"
  ]
 }

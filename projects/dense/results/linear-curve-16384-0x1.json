@@ -7,48 +7,36 @@
   1
  ],
  "links": 0,
- "split_w": 0,
- "split_x": 0,
- "upload_s": 2.241,
+ "upload_s": 7.14,
  "placements": {
   "x": [
    [
     0,
-    276
+    256
    ],
    [
-    276,
-    236
+    256,
+    256
    ]
   ],
   "w": [
    [
     0,
-    276
+    256
    ],
    [
-    276,
-    236
+    256,
+    256
    ]
   ],
   "y": [
    [
     0,
-    276
+    256
    ],
    [
-    276,
-    236
-   ]
-  ],
-  "p": [
-   [
-    0,
-    1
-   ],
-   [
-    0,
-    1
+    256,
+    256
    ]
   ]
  },
@@ -59,79 +47,78 @@
  "linear": {
   "plan": {
    "mt": 512,
-   "kt": 276,
-   "nt": 512,
+   "kt": 256,
+   "nt": 256,
    "rows": 9,
-   "cols": 12,
+   "cols": 11,
    "pcm": 57,
-   "pcn": 44,
+   "pcn": 24,
    "bm": 4,
-   "bn": 44,
-   "kb": 2,
+   "bn": 24,
+   "kb": 4,
    "sh": 1,
    "sw": 4,
    "wa": 2,
    "ww": 2,
    "layout": "2d",
-   "l1": 1131520,
+   "l1": 869376,
    "form": "grid",
-   "nk": 138,
+   "nk": 64,
    "nbh": 15,
    "nbw": 1,
    "rect": [
     0,
     0,
-    12,
+    11,
     9
    ]
   },
   "kernel_sizes": {
    "text": {
-    "BRISC": 59276,
-    "NCRISC": 56996,
-    "TRISC0": 12584,
-    "TRISC1": 6400,
-    "TRISC2": 7156
+    "BRISC": 55884,
+    "NCRISC": 56416,
+    "TRISC0": 14456,
+    "TRISC1": 5388,
+    "TRISC2": 5784
    },
-   "total": 143440
+   "total": 138944
   },
   "crossed_bytes": {
-   "x": 558759936,
-   "y": 0,
-   "partials": 1073741824,
-   "all": 1632501760
+   "blocks": 579600384,
+   "tiles": 536870912,
+   "put_bytes": 196608
   },
   "loop": {
    "single_microseconds": [
-    248660.22,
-    249521.6,
-    248789.12
+    49478.3,
+    49249.6,
+    49403.94
    ],
-   "reps": 13,
-   "seconds": 3.242,
-   "microseconds_per_call": 249358.494,
+   "reps": 61,
+   "seconds": 3.234,
+   "microseconds_per_call": 53022.822,
    "part_microseconds_median": [
-    249214.0,
-    249204.26
+    53945.84,
+    54009.22
    ],
    "crossed_a_call": {
     "messages": 0.0,
     "lines": 0.0,
-    "asks": 202024.0,
-    "pages": 534976.0,
+    "asks": 0.0,
+    "pages": 283008.0,
     "parts": 2.0,
-    "puts": 0.0,
-    "bytes": 1645431488.0
+    "puts": 5896.0,
+    "bytes": 579812704.0
    },
    "aiclk_mhz": {
     "0": [
-     1343,
-     1349.8,
+     1193,
+     1254.8,
      1350
     ],
     "1": [
-     1350,
-     1350.0,
+     1256,
+     1285.2,
      1350
     ]
    }
@@ -145,21 +132,49 @@
    "gave_up": [],
    "broadcast_gave_up": []
   },
+  "passes": [
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 34736265,
+     "sync": 557434,
+     "own": 31171532
+    },
+    "microseconds_at_mhz": {
+     "put": 25730.6,
+     "sync": 412.9,
+     "own": 23090.0
+    }
+   },
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 35754039,
+     "sync": 3365081,
+     "own": 31178906
+    },
+    "microseconds_at_mhz": {
+     "put": 26484.5,
+     "sync": 2492.7,
+     "own": 23095.5
+    }
+   }
+  ],
   "check": {
-   "max_rel": 0.0055574524070737255,
-   "rms_rel": 0.00396046152963508,
+   "max_rel": 0.006483559882010526,
+   "rms_rel": 0.004131212909706623,
    "rows": 256,
    "ok": true,
-   "readback_s": 2.655
+   "readback_s": 3.355
   },
-  "tflops": 35.27,
-  "crossed_gb_per_s": 6.6,
+  "tflops": 165.89,
+  "crossed_gb_per_s": 10.94,
   "ok": true
  },
  "ok": true,
  "load_avg": [
-  "4.00",
-  "4.89",
-  "4.83"
+  "11.14",
+  "5.17",
+  "4.22"
  ]
 }
