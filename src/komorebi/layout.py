@@ -319,11 +319,13 @@ def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buf
     return out
 
 
-def island_broadcast_args(islands, group, rect, along, noc, buffer, stack="below"):
+def island_broadcast_args(
+    islands, group, rect, along, noc, buffer, stack="below", bands=None
+):
     """broadcast_args per island (nocs, first rank, ranks; core = local rank), the grids
-    one `stack` "below" or "beside" the other, `rect` and `group` in that whole. A
-    broadcast that spans islands is a part an island, whose first core the previous
-    part's first core feeds through the relay; a row joins across an island's edge."""
+    one `stack` "below" or "beside" the other, `rect` and `group` in that whole; a split
+    card: `bands` its islands' (first row, rows) of its grid, sender words card cores.
+    A part an island, fed through the relay by the previous part's first core."""
     broadcast_id, cb, window, pages = buffer
     if (window, pages) != (0, 0) and (
         not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1
@@ -335,8 +337,10 @@ def island_broadcast_args(islands, group, rect, along, noc, buffer, stack="below
     if stack not in ("below", "beside") or along not in ("column", "row"):
         raise ValueError(f"islands {stack!r}, broadcasts along {along!r}")
     columns, rows = grid
-    below = stack == "below"
+    below = stack == "below" or bands is not None
     whole = (columns, rows * len(islands)) if below else (columns * len(islands), rows)
+    if bands is not None:
+        whole = grid
     x0, y0, width, height = rect
     if width < 1 or height < 1 or x0 < 0 or y0 < 0:
         raise ValueError(f"rectangle {rect}")
@@ -344,6 +348,9 @@ def island_broadcast_args(islands, group, rect, along, noc, buffer, stack="below
         raise ValueError(f"rectangle {rect} does not fit {whole[0]} by {whole[1]}")
 
     def place(x, y):  # (island, x, y) of a cell of the whole
+        if bands is not None:  # the card's own cells
+            (island,) = [i for i, (top, n) in enumerate(bands) if top <= y < top + n]
+            return island, x, y
         island = y // rows if below else x // columns
         return island, x % columns, y % rows
 
@@ -406,22 +413,23 @@ def island_broadcast_args(islands, group, rect, along, noc, buffer, stack="below
             island = part[0][0]
             nocs, first, count = islands[island]
             local = Broadcast(tuple((x, y) for _, x, y in part))
-            index = [y * columns + x for x, y in local.cores]
+            top = bands[island][0] if bands is not None else 0
+            index = [(y - top) * columns + x for x, y in local.cores]
             flat = [first + i for i in index]
             if max(index) >= count or not workers.issuperset(flat):
                 raise ValueError(f"rectangle {rect} is not inside {group}")
             if len(index) > BROADCAST_CORES_MAX - (part is not parts[-1]):
                 raise ValueError(f"a part of a broadcast of {rect} has too many cores")
             corners = broadcast_rect(local, nocs.noc0, nocs.noc_xy, noc) or (0, 0)
-            heads.append((island, index, flat[0], corners))
-        for k, (island, index, _, corners) in enumerate(heads):
+            heads.append((island, index, flat[0], corners, top * columns))
+        for k, (island, index, _, corners, base) in enumerate(heads):
             feeder = heads[k - 1] if k else None
             after = heads[k + 1][2] if k + 1 < len(heads) else BROADCAST_NO_NEXT
             for rank, i in enumerate(index):
                 out[island][i] = common | {
                     "rank": rank,
                     "receivers": len(index) - 1,
-                    "sender": index[0],
+                    "sender": base + index[0],  # its core of the card
                     "mc_start": corners[0],
                     "mc_end": corners[1],
                     "next": after if rank == 0 else BROADCAST_NO_NEXT,

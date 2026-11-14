@@ -30,6 +30,11 @@ def parse():
     parser.add_argument(
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
+    parser.add_argument(
+        "--line",
+        action="store_true",
+        help="--islands joined in a line (neighbours only): parts forwarded on",
+    )
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument("--tiles", type=int, default=512, help="input tiles T")
     parser.add_argument("--part", type=int, default=1, help="tiles per part P (1 to 3)")
@@ -72,8 +77,8 @@ def main():
     report = {"cards": cards, "tiles": args.tiles, "part": args.part}
     links = 1 if len(cards) > 1 else 0
     opened = {"cards": cards, "links": links}
-    if args.islands:  # one card split: a wire between each pair of islands
-        opened = {"card": cards[0], "islands": args.islands}
+    if args.islands:  # one card split: a wire a pair of islands (--line: neighbours)
+        opened = {"card": cards[0], "islands": args.islands, "line": args.line}
     with km.Session(**opened, log=log) as session:
         ranks = session.ranks
         report["islands"] = [

@@ -135,6 +135,29 @@ namespace km {
 #endif
     }
 
+    // Forwarding over a line: a packet for an island past the one across goes by the
+    // table's next link; link cores between send it on (KM_FORWARD_*). Set at OPEN.
+    struct ForwardHeld {
+        uint32_t area;     // the forward area (0: none)
+        uint32_t control;  // this core's control block
+        uint32_t me;       // its core of the card
+        uint32_t row;      // its row of what crossed (0: not counted)
+        uint32_t limit;    // the wait limit
+        uint32_t route;    // 1 + the island the packets sent now go to; 0: across
+        uint32_t field;    // the KM_CROSS_* field they count in on each link
+        uint32_t turning;  // a turn runs: its waits do not turn again
+    };
+
+    inline ForwardHeld forward_held;
+
+    // Whether a packet sent now leaves by another link than this core's own across.
+    template <int = 0>
+    bool forward_needed();
+
+    // Sends a packet sent now on toward its island; bounded. False: gave up.
+    template <int = 0>
+    bool forward_send(LinkHeaderAt header, uint32_t from, uint32_t bytes);
+
     // This CPU's held link: open from its PAGES open to its kernel's end (a kernel's
     // .bss starts zero). One sender a link.
     class LinkSender {
@@ -161,9 +184,9 @@ namespace km {
             return true;
         }
 
-        // The packet: the payload of `bytes` from L1 `from` (0: none) as the header
-        // says; a count or a word only once the writes before it landed (bounded).
-        bool send(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+        // The packet across: `bytes` from L1 `from` (0: none) as the header says; a
+        // count or a word only once the writes before it landed (bounded).
+        bool send_across(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
             if constexpr (KM_WIRE_DELAY != 0) {
                 const uint64_t until = wall64() + KM_WIRE_DELAY;
                 while (static_cast<int64_t>(wall64() - until) < 0) {
@@ -256,9 +279,9 @@ namespace km {
             return edm().edm_has_space_for_packet<1>();
         }
 
-        // The packet: the payload of `bytes` from L1 `from` (0: none), then the
-        // header, both handed to the router (call when space() is true).
-        bool send(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+        // The packet across: the payload of `bytes` from L1 `from` (0: none), then
+        // the header, both handed to the router (call when space() is true).
+        bool send_across(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
             if (bytes != 0) {
                 edm().send_payload_without_header_non_blocking_from_address(
                     from, bytes
@@ -270,6 +293,14 @@ namespace km {
             return true;
         }
 #endif
+
+        // The packet: across, or on toward the island a route names (forward_send).
+        bool send(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+            if (forward_held.route != 0 && forward_needed()) {
+                return forward_send(header, from, bytes);
+            }
+            return send_across(header, from, bytes);
+        }
 
         // The connection's words in the CPU's L1 (its chunk): teardown, cursor.
         static constexpr uint32_t kTeardown = 0;
@@ -319,6 +350,274 @@ namespace km {
             ncrisc_noc_nonposted_writes_flushed(tt::tt_fabric::get_fabric_worker_noc())
         );
 #endif
+    }
+
+    // What a forward step did: sent, no room there yet (the packet waits), or not
+    // sendable (dropped, counted failed).
+    constexpr uint32_t kForwardSent = 0;
+    constexpr uint32_t kForwardWait = 1;
+    constexpr uint32_t kForwardBad = 2;
+
+    // Packets sent now go to island `island`, counted in KM_CROSS_* field `field` on
+    // each link they cross after this one; forward_route_off(): across again.
+    inline void forward_route(uint32_t island, uint32_t field) {
+        forward_held.route = island + 1;
+        forward_held.field = field;
+    }
+
+    inline void forward_route_off() {
+        forward_held.route = 0;
+    }
+
+    // This link core's index on its island (its link cores after the ranks).
+    inline uint32_t forward_index(const Islands& view) {
+        return forward_held.me - view.base() - view.ranks();
+    }
+
+    // The part link core `owner` keeps for its island's link core `writer`.
+    constexpr uint32_t forward_part(uint32_t owner, uint32_t writer) {
+        return 1 + (writer < owner ? writer : writer - 1);
+    }
+
+    // The NoC address of `address` on core `core` of this card.
+    inline uint64_t forward_core(uint32_t core, uint32_t address) {
+        const uint32_t xy = l1(forward_held.control + KM_CONTROL_CORES)[core];
+        return get_noc_addr(xy & 0xFFFFu, xy >> 16, address);
+    }
+
+    // The NoC address of `address` on the far link core across (km_relay.hpp's tile).
+    inline uint64_t forward_far(uint32_t address) {
+        const uint32_t tile = island_area()[KM_ISLAND_RELAY_TILE];
+        return link_noc(tile & 0xFFFFu, tile >> 16, address);
+    }
+
+    inline volatile tt_l1_ptr uint32_t* forward_state() {
+        return l1(forward_held.area + KM_FORWARD_STATE);
+    }
+
+    // ready() until it holds, bounded by the wait limit and the stop flag.
+    template <typename Ready>
+    inline bool forward_wait(Ready ready) {
+        return (
+            poll_stop(
+                l1(forward_held.control + KM_CONTROL_STOP), ready, forward_held.limit, 0
+            ) == kGaveNone
+        );
+    }
+
+    // The packet across once the sender has room, then until its writes left L1.
+    inline bool forward_across(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+        auto& sender = link_sender();
+        return forward_wait([&] {
+            return sender.space();
+        }) &&
+            sender.send_across(header, from, bytes) && forward_wait([] {
+                return link_sent();
+            });
+    }
+
+    // (Two islands: every link core's link goes to the other; more: a link core a
+    // neighbour, link core i the table's next link i.)
+    template <int>
+    __attribute__((noinline)) bool forward_needed() {
+        const Islands view(island_area());
+        const uint32_t to = forward_held.route - 1;
+        return (
+            view.count() > 2 &&
+            (view.link(to) != forward_index(view) || view.hops(to) > 1)
+        );
+    }
+
+    // The packet at `head` one step on: to the sibling toward it, into the far part 0,
+    // or (last link) by its own header; `counted`: one of this core's parts.
+    template <int = 0>
+    __attribute__((noinline)) uint32_t
+    forward_on(const Islands& view, uint32_t head, uint32_t payload, bool counted) {
+        ForwardHeld& held = forward_held;
+        volatile tt_l1_ptr uint32_t* words = l1(head);
+        const uint32_t to = words[0], bytes = words[1], field = words[2];
+        const uint32_t k = forward_index(view);
+        const uint32_t j = to < view.count() ? view.link(to) : KM_ISLAND_NO_LINK;
+        if (
+            j == KM_ISLAND_NO_LINK || to == view.here() || bytes > KM_PAGES_PACKET_MAX
+        ) {
+            return kForwardBad;
+        }
+        const auto count = [&] {
+            if (!counted || held.row == 0 || field >= KM_CROSS_BYTES) {
+                return;
+            }
+            volatile tt_l1_ptr uint32_t* row = l1(held.row);
+            row[field] += 1;
+            const uint32_t low = row[KM_CROSS_BYTES];
+            row[KM_CROSS_BYTES] = low + bytes;
+            row[KM_CROSS_BYTES + 1] += low + bytes < low ? 1u : 0u;
+        };
+        if (j == k && view.hops(to) == 1) {  // the last link: the packet itself
+            if (!forward_across(
+                reinterpret_cast<LinkHeaderAt>(head + 64), payload, bytes
+            )) {
+                return kForwardBad;
+            }
+            count();
+            return kForwardSent;
+        }
+        const uint32_t d = j == k ? 0 : forward_part(k, j);  // its destination
+        volatile tt_l1_ptr uint32_t* state = forward_state();
+        const uint32_t sent = state[KM_FORWARD_PARTS + d];
+        if (sent - l1(held.area + KM_FORWARD_CREDIT + 16 * d)[0] >= KM_FORWARD_SLOTS) {
+            return kForwardWait;
+        }
+        const uint32_t part = j == k ? 0 : forward_part(j, k);  // its part there
+        const uint32_t at = (
+            held.area + KM_FORWARD_SLOT +
+            (part * KM_FORWARD_SLOTS + sent % KM_FORWARD_SLOTS) * KM_FORWARD_SLOT_BYTES
+        );
+        const uint32_t landed = held.area + KM_FORWARD_LANDED + 16 * part;
+        bool ok = false;
+        if (j != k) {  // the island's link core toward it, over this card's NoC
+            const uint32_t core = view.base() + view.ranks() + j;
+            noc_async_write(head, forward_core(core, at), 128);
+            if (bytes != 0) {
+                noc_async_write(payload, forward_core(core, at + 128), bytes);
+            }
+            ok = forward_wait([] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            });
+            if (ok) {
+                noc_semaphore_inc(forward_core(core, landed), 1);
+                ok = forward_wait([] {
+                    return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+                });
+            }
+        } else if (payload == head + 128) {  // across, whole: one counted write
+            const LinkHeaderAt made = link_header(held.area + KM_FORWARD_HEADERS, 1);
+            link_counted_write(
+                made, forward_far(at), forward_far(landed), 1, 128 + bytes
+            );
+            ok = forward_across(made, head, 128 + bytes);
+        } else {  // across, the head then the payload counted
+            LinkHeaderAt made = link_header(held.area + KM_FORWARD_HEADERS, 1);
+            link_write(made, forward_far(at), 128);
+            ok = forward_across(made, head, 128);
+            made = link_header(held.area + KM_FORWARD_HEADERS, 1);
+            if (bytes != 0) {
+                link_counted_write(
+                    made, forward_far(at + 128), forward_far(landed), 1, bytes
+                );
+            } else {
+                link_increment(made, forward_far(landed), 1);
+            }
+            ok = ok && forward_across(made, payload, bytes);
+        }
+        if (!ok) {
+            return kForwardBad;
+        }
+        state[KM_FORWARD_PARTS + d] = sent + 1;
+        if (j == k) {
+            count();
+        }
+        return kForwardSent;
+    }
+
+    // Part `part`'s count taken, back to its writer: the far link core across (its
+    // destination 0), or the island's link core that writes it.
+    template <int = 0>
+    __attribute__((noinline)) void forward_credit(
+        const Islands& view, uint32_t part, uint32_t taken
+    ) {
+        ForwardHeld& held = forward_held;
+        if (part == 0) {
+            const LinkHeaderAt made = (
+                link_header(held.area + KM_FORWARD_HEADERS + 64, 1)
+            );
+            link_inline(made, forward_far(held.area + KM_FORWARD_CREDIT), taken);
+            forward_across(made, 0, 0);
+            return;
+        }
+        const uint32_t k = forward_index(view);
+        const uint32_t writer = part - 1 < k ? part - 1 : part;
+        noc_inline_dw_write(
+            forward_core(
+                view.base() + view.ranks() + writer,
+                held.area + KM_FORWARD_CREDIT + 16 * forward_part(writer, k)
+            ),
+            taken
+        );
+        forward_wait([] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        });
+    }
+
+    // A step: each part's next landed packet on when there is room (never a wait),
+    // its slot given back; one that cannot go on is dropped, counted failed.
+    template <int = 0>
+    __attribute__((noinline)) void forward_turn() {
+        ForwardHeld& held = forward_held;
+        if (held.area == 0 || held.turning != 0) {
+            return;
+        }
+        held.turning = 1;
+        const uint32_t route = held.route;
+        held.route = 0;
+        const Islands view(island_area());
+        volatile tt_l1_ptr uint32_t* state = forward_state();
+        for (uint32_t part = 0; part < KM_FORWARD_PARTS; part++) {
+            invalidate_l1_cache();
+            const uint32_t taken = state[part];
+            if (l1(held.area + KM_FORWARD_LANDED + 16 * part)[0] == taken) {
+                continue;
+            }
+            const uint32_t slot = (
+                held.area + KM_FORWARD_SLOT +
+                (part * KM_FORWARD_SLOTS + taken % KM_FORWARD_SLOTS) *
+                    KM_FORWARD_SLOT_BYTES
+            );
+            const uint32_t done = forward_on(view, slot, slot + 128, true);
+            if (done == kForwardWait) {
+                continue;
+            }
+            if (done == kForwardBad) {
+                state[KM_FORWARD_FAILED] += 1;
+            }
+            state[part] = taken + 1;
+            forward_credit(view, part, taken + 1);
+        }
+        held.route = route;
+        held.turning = 0;
+    }
+
+    template <int>
+    __attribute__((noinline)) bool forward_send(
+        LinkHeaderAt header, uint32_t from, uint32_t bytes
+    ) {
+        ForwardHeld& held = forward_held;
+        if (held.area == 0) {
+            return false;
+        }
+        const Islands view(island_area());
+        const uint32_t head = held.area + KM_FORWARD_STAGE;
+        volatile tt_l1_ptr uint32_t* words = l1(head);
+        words[0] = held.route - 1;
+        words[1] = bytes;
+        words[2] = held.field;
+        const volatile tt_l1_ptr uint32_t*
+            own = (reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(header));
+        for (uint32_t w = 0; w < sizeof(LinkHeader) / 4; w++) {
+            words[16 + w] = own[w];
+        }
+        uint32_t done = kForwardWait;
+        const bool ready = forward_wait([&] {
+            done = forward_on(view, head, from, false);
+            if (done == kForwardWait) {
+                forward_turn();  // what waits here may be what frees the room
+            }
+            return done != kForwardWait;
+        });
+        if (ready && done == kForwardBad) {
+            forward_state()[KM_FORWARD_FAILED] += 1;
+        }
+        return ready && done == kForwardSent;
     }
 
 }  // namespace km

@@ -108,13 +108,14 @@
 #define KM_PAGES_PACKET_MAX 4352u /* a fabric packet's largest payload */
 /* LINE's words: a0 the stage, a1 the packet's number (each line of the stage holds it
  * in word 0, the count line in word 1), a2 the far tile x | y << 16, a3 the far address
- * of the packet, a4 that of the count line, a5 the link area; a7 as KM_PAGES_COUNTER */
+ * of the packet, a4 the count line's, a5 the link area, a6 its island; a7 as above */
 #define KM_LINE_STAGE 0u
 #define KM_LINE_NUMBER 1u
 #define KM_LINE_TILE 2u
 #define KM_LINE_PACKET 3u
 #define KM_LINE_COUNT 4u
 #define KM_LINE_AREA 5u
+#define KM_LINE_ISLAND 6u
 /* The link area, in link core 0's L1 (a run over islands; its offsets): two packet
  * headers, then the stages, each a packet (the command line and its crossing line) and
  * the count line written after */
@@ -523,7 +524,7 @@ KM_STATIC_ASSERT(
 #define KM_RELAY_ASKED 0x4020u   /* link core: asks posted (asking cores add 1) */
 #define KM_RELAY_CREDIT 0x4030u  /* link core: the far side's taken count */
 #define KM_RELAY_LANDED 0x4040u  /* link core: requests landed from the far side */
-#define KM_RELAY_STATE 0x4050u   /* link core: served, sent, taken, failed, next line */
+#define KM_RELAY_STATE 0x4050u   /* link core: its six words (km_relay.hpp) */
 #define KM_RELAY_LINES 0x4070u   /* link core: 16-byte sources (taken, a done word) */
 #define KM_RELAY_HEADERS 0x40C0u /* link core: four packet headers, 64 bytes each */
 #define KM_RELAY_DESC 0x41C0u    /* link core: an ask as it crosses, 64 bytes */
@@ -534,6 +535,23 @@ KM_STATIC_ASSERT(
 #define KM_RELAY_BYTES (KM_RELAY_INBOX + 64u + KM_RELAY_MAX)
 /* then a word (byte offset): the tensor table's L1 address on this island (0: none) */
 #define KM_ISLAND_TENSORS ((KM_ISLAND_RELAY_TILE + 1u) * 4u)
+/* then a word (byte offset): the forward area's L1 address on this island (0: none) */
+#define KM_ISLAND_FORWARD (KM_ISLAND_TENSORS + 4u)
+/* The forward area (km_transport.hpp), a link core's: packets for an island not its
+ * own, sent on by its next link toward it. Part 0's writer: the far link core */
+#define KM_FORWARD_PARTS 3u /* part 1 + i: link core i (i + 1 when not below this one) */
+#define KM_FORWARD_SLOTS 2u
+#define KM_FORWARD_LANDED 0x00u /* 16 bytes a part: its packets landed */
+#define KM_FORWARD_CREDIT 0x30u /* 16 bytes a destination (0 across): packets it took */
+#define KM_FORWARD_STATE 0x60u  /* taken a part, sent a destination, failed */
+#define KM_FORWARD_FAILED (2u * KM_FORWARD_PARTS) /* state word */
+#define KM_FORWARD_HEADERS 0x80u /* two packet headers */
+#define KM_FORWARD_STAGE 0x100u  /* the head of a packet this core starts */
+#define KM_FORWARD_SLOT 0x180u   /* slots: {island, bytes, KM_CROSS_* field} */
+#define KM_FORWARD_SLOT_BYTES (128u + KM_PAGES_PACKET_MAX) /* header 64, payload 128 */
+#define KM_FORWARD_BYTES \
+    (KM_FORWARD_SLOT + KM_FORWARD_PARTS * KM_FORWARD_SLOTS * KM_FORWARD_SLOT_BYTES)
+#define KM_FORWARD_NO_FIELD 0xFFu
 /* a reference word below KM_TENSORS_MAX names an entry, any other a bank address */
 #define KM_TENSORS_MAX 32u
 /* an entry: {aligned page bytes, steps of the split dimension, pages a step, copy} */
@@ -584,10 +602,13 @@ KM_STATIC_ASSERT(
 KM_STATIC_ASSERT(
     KM_ISLAND_RELAY * 4u >= KM_ISLAND_LINK_AREA + 4u &&
         KM_ISLAND_TENSORS == (KM_ISLAND_RELAY_TILE + 1u) * 4u &&
-        KM_ISLAND_TENSORS + 4u <= KM_ISLANDS_BYTES &&
+        KM_ISLAND_FORWARD + 4u <= KM_ISLANDS_BYTES &&
+        KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_PARTS &&
+        KM_FORWARD_HEADERS >= KM_FORWARD_STATE + 4u * (KM_FORWARD_FAILED + 1u) &&
+        KM_FORWARD_SLOT % 64u == 0 && KM_FORWARD_SLOT_BYTES % 64u == 0 &&
         KM_RELAY_DONE >= KM_RELAY_ASK + 64u * KM_RELAY_ASKS &&
         KM_RELAY_ASKED >= KM_RELAY_DONE + 16u * 2u &&
-        KM_RELAY_LINES >= KM_RELAY_STATE + 4u * 5u &&
+        KM_RELAY_LINES >= KM_RELAY_STATE + 4u * 6u &&
         KM_RELAY_HEADERS >= KM_RELAY_LINES + 32u,
     "the relay and tensor table words after the island table; asks and done words"
 );

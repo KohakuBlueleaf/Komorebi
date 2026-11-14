@@ -351,6 +351,18 @@ namespace km {
         sender.connect((r.links >> 8 * link) & 0xFFu, area);
         sender.open();
         pages_held = {1, area, r.chunk, r.hops, link, pages_links(r)};
+        const uint32_t links_area = islands_at(kernel.args().control).link_area();
+        const uint32_t row = links_area + KM_LINK_CROSS + (link & 1u) * KM_CROSS_ROW;
+        forward_held = {
+            island_area()[KM_ISLAND_FORWARD / 4],
+            kernel.args().control,
+            kernel.args().me,
+            links_area != 0 ? row : 0,
+            kernel.args().wait_limit,
+            0,
+            KM_FORWARD_NO_FIELD,
+            0
+        };
         const LinkHeaderAt header = link_header(area + kPagesHeaders, r.hops);
         const uint64_t far = (
             link_noc(r.counter & 0xFFu, r.counter >> 8, r.count + cpu * KM_PORT_STRIDE)
@@ -388,15 +400,20 @@ namespace km {
         return code != kGaveNone ? code : sent;
     }
 
-    // LINE (link core 0's link 0 CPU): the packet the dispatcher staged in the link
-    // area, then its count line, one hop into the other island's dispatcher, over the
-    // held connection; once both left the core. Every wait bounded. kGave* code.
+    // LINE (link core 0's link 0 CPU): the staged packet, then its count line, into
+    // island a6's dispatcher (forwarded past the one across); bounded. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_line(
         const Kernel& kernel, const km_command_t& command
     ) {
-        const uint32_t a[6] = {
-            command.a0, command.a1, command.a2, command.a3, command.a4, command.a5
+        const uint32_t a[7] = {
+            command.a0,
+            command.a1,
+            command.a2,
+            command.a3,
+            command.a4,
+            command.a5,
+            command.a6
         };
         const uint32_t stage = a[KM_LINE_STAGE], number = a[KM_LINE_NUMBER];
         const uint32_t x = a[KM_LINE_TILE] & 0xFFFFu, y = a[KM_LINE_TILE] >> 16;
@@ -444,11 +461,21 @@ namespace km {
             }
             return sender.send(made, from, n);
         };
-        if (
+        // counted here when this core's link is the first it crosses, else where it
+        // crosses (forward_on)
+        const Islands view = islands_at(kernel.args().control);
+        const uint32_t to = a[KM_LINE_ISLAND];
+        const bool mine = to >= view.count() || view.link(to) == forward_index(view);
+        forward_route(to, KM_CROSS_LINES);
+        const bool sent = (
             packet(0, a[KM_LINE_PACKET], at, KM_LINK_PACKET_BYTES) &&
             packet(1, a[KM_LINE_COUNT], at + KM_LINK_PACKET_BYTES, 64)
-        ) {
-            cross_count(area, KM_CROSS_LINES, 1, KM_LINK_PACKET_BYTES + 64);
+        );
+        forward_route_off();
+        if (sent) {
+            if (mine) {
+                cross_count(area, KM_CROSS_LINES, 1, KM_LINK_PACKET_BYTES + 64);
+            }
             wait([] {
                 return ncrisc_noc_nonposted_writes_sent(noc_index);
             });
@@ -553,11 +580,11 @@ namespace km {
         return pages_held.links > 1 ? pages_held.link - 1 : 0;
     }
 
-    // The island's link core 0 (the core after its ranks): where the lines are.
+    // The first link core of this core's pair (the island's link cores toward one
+    // island): where the lines are.
     template <typename Kernel>
     inline uint32_t link_core0(const Kernel& kernel) {
-        const Islands view = islands_at(kernel.args().control);
-        return view.base() + view.ranks();
+        return kernel.args().me - pages_held.link / 2;
     }
 
     // The far island's link core 0 (x | y << 16): the relay tile of this island's link
@@ -711,6 +738,92 @@ namespace km {
         );
     }
 
+    // An ask for pages an island further on holds: requeued at link core `core` toward
+    // it (pages_onward reserves the line; `later`: not free yet). kGave* code.
+    inline uint32_t pages_onward;  // 1 + the line number reserved; 0: none
+
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t pages_requeue(
+        const Kernel& kernel,
+        const volatile tt_l1_ptr uint32_t* line,
+        uint32_t area,
+        uint32_t core,
+        bool& later
+    ) {
+        const uint32_t limit = kernel.args().wait_limit;
+        volatile tt_l1_ptr uint32_t* returned = l1(area + KM_ASK_RETURNED);
+        uint32_t code = kGaveNone;
+        later = false;
+        if (pages_onward == 0) {
+            returned[0] = 0xFFFFFFFFu;  // the atomic's answer not yet in
+            invalidate_l1_cache();
+            noc_fast_atomic_increment<noc_mode, true>(
+                noc_index,
+                write_at_cmd_buf,
+                kernel.core_noc(core, area + KM_ASK_TAIL),
+                NOC_UNICAST_WRITE_VC,
+                1,
+                31,
+                false,
+                false,
+                area + KM_ASK_RETURNED
+            );
+            code = kernel.poll_at(
+                kWherePages,
+                [&] {
+                    invalidate_l1_cache();
+                    return (
+                        ncrisc_noc_nonposted_atomics_flushed(noc_index) &&
+                        returned[0] != 0xFFFFFFFFu
+                    );
+                },
+                limit
+            );
+            if (code != kGaveNone) {
+                return code;
+            }
+            pages_onward = returned[0] + 1;
+        }
+        const uint32_t number = pages_onward - 1;
+        noc_async_read(
+            kernel.core_noc(core, area + KM_ASK_TAKEN), area + KM_ASK_READ, 16
+        );
+        code = kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            limit
+        );
+        invalidate_l1_cache();
+        if (code != kGaveNone || number - l1(area + KM_ASK_READ)[0] >= KM_ASK_SLOTS) {
+            later = code == kGaveNone;
+            return code;
+        }
+        volatile tt_l1_ptr uint32_t* own = l1(area + KM_ASK_OWN);
+        for (uint32_t w = 0; w < 16; w++) {
+            own[w] = line[w];
+        }
+        own[KM_ASK_NUMBER] = number + 1;
+        own[KM_ASK_END] = number + 1;
+        noc_async_write(
+            area + KM_ASK_OWN,
+            kernel.core_noc(core, area + KM_ASK_LINES + number % KM_ASK_SLOTS * 64),
+            64
+        );
+        code = kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            limit
+        );
+        if (code == kGaveNone) {
+            pages_onward = 0;
+        }
+        return code;
+    }
+
     // Page CPU j (CPU `cpu` of its core): the far island's next ask (in link core 0's
     // link area at `area`), once landed: share j of its pages from this island's DRAM
     // into the asker's L1, each batch counted at the asker's port once landed
@@ -758,20 +871,38 @@ namespace km {
             pages_held.area - cpu * pages_held.chunk,
             KM_PAGES_DRAM
         };
-        const bool good = (
-            line[KM_ASK_HOLDER] == islands_at(kernel.args().control).here() &&
+        const Islands view = islands_at(kernel.args().control);
+        const uint32_t holder = line[KM_ASK_HOLDER];
+        const bool fits = (
             r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
             r.page <= KM_PAGES_PACKET_MAX && r.to % 16 == 0 && r.count % 16 == 0
         );
+        // an island further on holds it: on by this island's link toward it (one
+        // page CPU a link)
+        const uint32_t toward = holder < view.count() ? view.link(holder) : 0xFFu;
+        const bool onward = (
+            holder != view.here() && fits && page_cpus() == 1 &&
+            toward != KM_ISLAND_NO_LINK && toward != forward_index(view)
+        );
+        const bool good = holder == view.here() && fits;
         const uint32_t j = page_index();
         const Partition share = partition(r.pages, j, page_cpus());
-        if (good && share.len != 0) {
+        if (onward) {
+            bool later = false;
+            const uint32_t core = view.base() + view.ranks() + toward;
+            code = pages_requeue(kernel, line, area, core, later);
+            if (later) {
+                return kGaveNone;  // its line there is not free yet
+            }
+        } else if (good && share.len != 0) {
+            forward_route(line[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
             code = pages_push(kernel, r, cpu, share);
+            forward_route_off();
         }
         if (code != kGaveNone) {
             return code;
         }
-        if (!good && j == 0) {
+        if (!good && !onward && j == 0) {
             words[KM_ASK_BAD / 4] += 1;
         }
         const uint32_t xy = pages_far0;  // the far link core 0
@@ -1015,6 +1146,7 @@ namespace km {
         live[kLvSequence + kernel.role()] = 0;
         uint32_t code = kGaveNone;
         if (pages_held.link == 0) {
+            forward_turn();
             code = pages_forward(kernel, area);
         }
         if (page_cpu()) {

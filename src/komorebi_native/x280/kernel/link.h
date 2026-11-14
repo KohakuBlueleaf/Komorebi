@@ -609,7 +609,8 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
             (uint64_t)(far + slots_at + (number % slots) * KM_LINK_PACKET_BYTES) << 32
         );
         send[4] = (uint64_t)(far + count_at) << 32;
-        send[5] = link->area; /* a5; a7: one hop, the LINE mode */
+        /* a5, a6 the packet's island; a7: one hop, the LINE mode */
+        send[5] = link->area | (uint64_t)to << 32;
         send[6] = (uint64_t)(1u << 16 | KM_PAGES_LINE << 24) << 32;
         send[7] = 0;
         command_submit(

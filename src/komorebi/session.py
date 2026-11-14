@@ -1937,6 +1937,9 @@ class _Backend:
             mine[:, at + abi_headers["KM_ISLAND_TENSORS"] // 4] = (
                 self.session.tensor_table
             )
+            mine[:, at + abi_headers["KM_ISLAND_FORWARD"] // 4] = getattr(
+                plan, "forward", 0
+            )
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its

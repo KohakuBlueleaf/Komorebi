@@ -1,7 +1,7 @@
 """Broadcast over two cards (`Session(cards=..., links=1)`), its kernels unchanged: one
 flat group over both islands, a rectangle whose columns ("below") or rows ("beside")
-span the islands; each core's checksum against numpy. The same script on one card.
-Prints one JSON line. See README.md."""
+span the islands; each core's checksum against numpy. Also one card, or one split into
+islands of rows (`--islands`, `--line`). Prints one JSON line. See README.md."""
 
 import argparse
 import json
@@ -25,6 +25,14 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
+    parser.add_argument(
+        "--islands", type=int, default=0, help="one card split into this many islands"
+    )
+    parser.add_argument(
+        "--line",
+        action="store_true",
+        help="--islands joined in a line (neighbours only), not each to each",
+    )
     parser.add_argument("--blocks", type=int, default=8, help="blocks n a broadcast")
     parser.add_argument("--pages", type=int, default=2, help="tiles P per block")
     parser.add_argument("--window", type=int, default=2, help="blocks B in flight")
@@ -36,11 +44,25 @@ def parse():
     return parser.parse_args()
 
 
+def bands(session):
+    """A split card: each island's (first row, rows) of the card's grid; else None."""
+    if len(session.sessions) == 1 or session.sessions[0] is not session.sessions[1]:
+        return None
+    columns = session.island(0).nocs().grid[0]
+    return [
+        (island.cores[0] // columns, len(island.cores) // columns)
+        for island in session.graph.islands
+    ]
+
+
 def cases(session, grid):
     """(stack, rect): 6 x 4 cells across the islands' edge, columns spanning when the
     grids stand one below the other, rows when side by side; one card: the 6 x 4 at
-    the bottom of its grid."""
+    the bottom of its grid; a split card: 6 columns down every row, through every
+    island."""
     columns, rows = grid
+    if bands(session) is not None:
+        return [("below", (0, 0, 6, rows))]
     if len(session.sessions) == 1:
         return [("below", (0, rows - 4, 6, 4))]
     return [("below", (0, rows - 2, 6, 4)), ("beside", (columns - 3, 0, 6, 4))]
@@ -55,6 +77,7 @@ def plan(session, stack, rect, args):
         for i in range(len(session.sessions))
     ]
     columns, rows = islands[0][0].grid
+    split = bands(session)
     group = layout.Group(0, session.ranks)
     window, pages = args.window, args.pages
     by_broadcast = {
@@ -66,6 +89,7 @@ def plan(session, stack, rect, args):
             1,
             (COLUMN, CONSTANTS["kCbCol"], window, pages),
             stack,
+            split,
         ),
         ROW: layout.island_broadcast_args(
             islands,
@@ -75,6 +99,7 @@ def plan(session, stack, rect, args):
             0,
             (ROW, CONSTANTS["kCbRow"], window, pages),
             stack,
+            split,
         ),
     }
     x0, y0, width, height = rect
@@ -83,6 +108,9 @@ def plan(session, stack, rect, args):
         for x in range(x0, x0 + width):
             island = y // rows if stack == "below" else x // columns
             core = (y % rows) * columns + x % columns
+            if split is not None:  # the card's rows, an island's band
+                (island,) = [i for i, (top, n) in enumerate(split) if 0 <= y - top < n]
+                core = (y - split[island][0]) * columns + x
             cells[graph.first(island) + core] = (y - y0, x - x0)
 
     def program_args(island):
@@ -108,6 +136,14 @@ def plan(session, stack, rect, args):
 
         return core_args
 
+    if split is not None:  # one program: a core of the card, its island's arguments
+        starts = [top * columns for top, _ in split]
+
+        def card_args(core):
+            island = max(i for i, start in enumerate(starts) if start <= core)
+            return program_args(island)(core - starts[island])
+
+        return group, [card_args], cells
     return group, [program_args(i) for i in range(len(islands))], cells
 
 
@@ -157,6 +193,8 @@ def run_case(session, generator, stack, rect, args):
     programs = [
         program(one, row_tensor, column_tensor, output, args) for one in core_args
     ]
+    if bands(session) is not None:  # a split card: one launch
+        (programs,) = programs
     run = session.load(programs, deadline=args.deadline, wait=args.wait)
     log(f"{stack} {rect}: loaded")
     times, not_done, error = [], 0, None
@@ -227,7 +265,14 @@ def main():
     report = {"cards": cards, "blocks": args.blocks, "pages": args.pages}
     report["window"] = args.window
     links = 1 if len(cards) > 1 else 0
-    with km.Session(cards=cards, links=links, log=log) as session:
+    opened = {"cards": cards, "links": links}
+    if args.islands:  # one card split into islands of rows
+        opened = {"card": cards[0], "islands": args.islands, "line": args.line}
+        # its kernels with the page links' services, forwarding among them
+        opened["kernel_bytes"] = 128 * 1024
+        # its kernels read a tensor by its bank address: one copy in the card's DRAM
+        opened["card_dram"] = True
+    with km.Session(**opened, log=log) as session:
         grid = session.island(0).nocs().grid
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)]

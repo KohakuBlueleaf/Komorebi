@@ -40,6 +40,14 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
+        "--line",
+        action="store_true",
+        help="--islands joined in a line (neighbours only), not each to each",
+    )
+    parser.add_argument(
+        "--far", type=int, default=1, help="nop: the island whose ranks it goes to"
+    )
+    parser.add_argument(
         "--links", type=int, default=0, help="the session's page links (0: link 0)"
     )
     parser.add_argument(
@@ -261,13 +269,14 @@ def main():
     )
     report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
-    opened = {"card": cards[0]} if args.islands else {"cards": cards}
+    opened = {"card": cards[0], "line": args.line} if args.islands else {"cards": cards}
     with km.Session(
         **opened,
         islands=args.islands or None,
         links=args.links,
         log=log,
-        kernel_bytes=84 * 1024,
+        # a split card: the session's (the link services, forwarding, in every kernel)
+        kernel_bytes=None if args.islands else 84 * 1024,
     ) as session:
         ranks = session.ranks
         graph = session.graph
@@ -288,12 +297,14 @@ def main():
             report["nop_local_us"] = float(
                 np.median([timed_nops(first, own[0], args.nop_jobs) for _ in rounds])
             )
+            far = (graph.first(args.far), graph.count(args.far))
+            report["nop_far"] = args.far
             report["nop_across_us"] = float(
-                np.median([timed_nops(first, own[1], args.nop_jobs) for _ in rounds])
+                np.median([timed_nops(first, far, args.nop_jobs) for _ in rounds])
             )
             log(
                 f"NOP from island 0's ring: its own ranks {report['nop_local_us']:.3f}"
-                f" us, island 1's {report['nop_across_us']:.3f} us"
+                f" us, island {args.far}'s {report['nop_across_us']:.3f} us"
             )
         wrong = None
         if "map" in steps:

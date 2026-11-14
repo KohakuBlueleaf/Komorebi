@@ -143,11 +143,14 @@ namespace km {
             core.gave_up(word, code, kWhereAsk, named, sequence);
             return false;
         };
+        const uint32_t hops = view.hops(holder);
         if (
-            area == 0 || view.hops(holder) != 1 || port >= KM_PORTS || bytes == 0 ||
-            bytes % 16 != 0 || bytes > KM_PAGES_PACKET_MAX || at % 16 != 0
+            area == 0 || hops == 0 || (queue.cursors && hops != 1) ||
+            port >= KM_PORTS || bytes == 0 || bytes % 16 != 0 ||
+            bytes > KM_PAGES_PACKET_MAX || at % 16 != 0
         ) {
-            return give_up(kGaveBadItem);  // two islands a link apart, whole packets
+            // another island (a put: a link apart, not forwarded), whole packets
+            return give_up(kGaveBadItem);
         }
         // the link core toward the holder: the table's next link after the ranks
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
