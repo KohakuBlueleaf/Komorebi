@@ -4,6 +4,7 @@ flat groups, the input placed by a hint (`--split`, `--group`); checks the tiles
 mapcollect.py's sums, times commands and writes. See docs/reference/islands.md."""
 
 import argparse
+import concurrent.futures
 import json
 import sys
 import time
@@ -59,10 +60,17 @@ def parse():
         help="the input's hint: the group that splits it (default every rank)",
     )
     parser.add_argument(
-        "--write-mib",
+        "--host-reaches",
         type=int,
-        default=64,
-        help="MiB written over every island at once, then over island 0 alone",
+        default=None,
+        metavar="ISLAND",
+        help="the host's channel to that island only: the other's parts cross a link",
+    )
+    parser.add_argument(
+        "--io-mib",
+        default="64",
+        metavar="MIB,...",
+        help="sizes written and read over every island at once, then island 0 alone",
     )
     parser.add_argument(
         "--across",
@@ -130,8 +138,10 @@ def open_session(args, cards):
         (card,) = cards
         return km.Session(card=card, islands=args.islands, log=log)
     # the page calls over islands take the kernels past the runtime's 69 KiB buffer
-    kernel_bytes = (96 if args.put else 80) * 1024
-    return km.Session(cards=cards, log=log, kernel_bytes=kernel_bytes)
+    reaches = None if args.host_reaches is None else [args.host_reaches]
+    return km.Session(
+        cards=cards, log=log, kernel_bytes=96 * 1024, host_reaches=reaches
+    )
 
 
 def main():
@@ -157,10 +167,13 @@ def main():
         if args.group is not None:
             hint["group"] = tuple(int(value) for value in args.group.split(","))
         report["hint"] = hint
-        source = session.tensor(matrix, "bfloat16", "tile", **hint)
-        output = session.tensor(
-            np.zeros((ranks * TILE, TILE), np.float32), "bfloat16", "tile"
-        )
+        zeros = np.zeros((ranks * TILE, TILE), np.float32)
+        if args.host_reaches is None:
+            source = session.tensor(matrix, "bfloat16", "tile", **hint)
+            output = session.tensor(zeros, "bfloat16", "tile")
+        else:  # a part that crosses a link is written once the run is loaded
+            source = session.empty(matrix.shape, "bfloat16", "tile", **hint)
+            output = session.empty(zeros.shape, "bfloat16", "tile")
         report["source_parts"] = list(source.placement.parts)
         report["source_part_pages"] = [
             source.placement.part_pages(i) for i in range(len(session.sessions))
@@ -169,9 +182,6 @@ def main():
             f"input {hint or 'no hint'}: steps {report['source_parts']}, pages "
             f"{report['source_part_pages']}, word {source.address:#x}"
         )
-        (back,) = session.read_bf16(source)
-        report["source_read_exact"] = bool(np.array_equal(back, matrix))
-        log(f"input read back from every island: {report['source_read_exact']}")
         far = source
         if args.across:
             far = session.tensor(
@@ -187,14 +197,15 @@ def main():
                 group=tuple(report["islands"][0]),
             )
             log(f"output held by island 0 alone: {list(held.placement.parts)}")
-        pages = args.write_mib * (1 << 20) // 2048
-        shape = (pages * TILE, TILE)
-        written = {
-            "every island": session.empty(shape, "bfloat16", "tile"),
-            "island 0": session.empty(
-                shape, "bfloat16", "tile", group=tuple(report["islands"][0])
-            ),
-        }
+        moved = {}
+        for mib in (int(size) for size in args.io_mib.split(",")):
+            shape = (mib * (1 << 20) // 2048 * TILE, TILE)
+            moved[mib] = {
+                "every island": session.empty(shape, "bfloat16", "tile"),
+                "island 0": session.empty(
+                    shape, "bfloat16", "tile", group=tuple(report["islands"][0])
+                ),
+            }
         program = km.Program(
             "mapcollect",
             kernels=KERNELS,
@@ -211,7 +222,15 @@ def main():
         )
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
-        report["write"] = write_rates(session, written, generator)
+        if args.host_reaches is not None:
+            for tensor, data in ((source, matrix), (output, zeros)):
+                raw, _ = formats.to_bytes(data, "bfloat16", "tile")
+                session.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        (back,) = session.read_bf16(source)
+        report["source_read_exact"] = bool(np.array_equal(back, matrix))
+        log(f"input read back from every island: {report['source_read_exact']}")
+        report["io"] = io_rates(session, moved, generator)
+        report["channel"] = channel_rates(session, generator)
         if args.across:
             report["per_rank"] = args.per_rank
             report.update(across(session, run, args, source, far, output, exact))
@@ -228,6 +247,8 @@ def main():
             report.update(commands(session, run, args, source, output, ranks))
         if args.hang:
             report.update(hang(session, run, source, ranks, matrix))
+        if args.host_reaches is not None:  # island 1's part crosses: in the run
+            (got,) = session.read_bf16(output)
         log("stopping")
         try:
             results = run.stop()
@@ -236,7 +257,8 @@ def main():
         except km.KomorebiError as error:
             report["stop_error"] = str(error)
         log(f"stopped: {report.get('kernel_errors', report.get('stop_error'))}")
-        (got,) = session.read_bf16(output)
+        if args.host_reaches is None:
+            (got,) = session.read_bf16(output)
         log("output read back from every island")
         report.update(check(exact, got, report["map_groups"], report["per_rank"]))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
@@ -248,7 +270,7 @@ def main():
         and report.get("hang_named_island", True)
         and report.get("read_island1_in_run_exact", True)
         and report.get("crossings_agree", True)
-        and all(write["exact"] for write in report.get("write", {}).values())
+        and all(io["exact"] for io in report.get("io", []))
         and report.get("before_reset", {}).get("wrong_tiles", 0) == 0
         and report.get("put_crossings_agree", True)
         and report.get("across_check", {}).get("wrong_tiles", 0) == 0
@@ -257,30 +279,68 @@ def main():
     sys.exit(0 if report["ok"] else 1)
 
 
-def write_rates(session, tensors, generator):
-    """GB/s of one write of each tensor's pages (random bytes) with the run loaded:
-    over every island's host channel at once, then over island 0's alone; a page of
-    each island's part read back."""
-    out = {}
-    for name, tensor in tensors.items():
-        pages = generator.integers(0, 256, (tensor.pages, tensor.page_bytes), np.uint8)
-        log(f"writing {pages.nbytes:,} B held by {name}")
+def io_rates(session, sizes, generator):
+    """GB/s of one write and one read of each tensor (random bytes, the run loaded):
+    over every island's host channel at once, then over island 0's alone; the read
+    compared whole; each island's last round on its cores (cycles)."""
+    out = []
+    for mib, tensors in sizes.items():
+        for name, tensor in tensors.items():
+            pages = generator.integers(
+                0, 256, (tensor.pages, tensor.page_bytes), np.uint8
+            )
+            row = {"mib": mib, "held by": name}
+            started = time.perf_counter()
+            session.write(tensor, pages)
+            row["write_s"] = round(time.perf_counter() - started, 4)
+            row["write_cycles"] = [one.transfer_cycles for one in session.sessions]
+            started = time.perf_counter()
+            (got,) = session.read(tensor)
+            row["read_s"] = round(time.perf_counter() - started, 4)
+            row["read_cycles"] = [one.transfer_cycles for one in session.sessions]
+            row["write_gb_s"] = round(pages.nbytes / row["write_s"] / 1e9, 3)
+            row["read_gb_s"] = round(pages.nbytes / row["read_s"] / 1e9, 3)
+            row["exact"] = bool(np.array_equal(got, pages))
+            log(f"{mib} MiB held by {name}: {row}")
+            out.append(row)
+    return out
+
+
+def channel_rates(session, generator, mib=64):
+    """GB/s of the host's own copies into and out of the islands' host channels (no
+    transfer): island 0's alone, then each island's from its own thread at once."""
+    data = generator.integers(0, 256, mib << 20, np.uint8)
+    channels = [one.channel[: mib << 20] for one in session.sessions]
+    halves = np.split(data, len(channels))
+
+    def copies(work):
         started = time.perf_counter()
-        session.write(tensor, pages)
-        seconds = time.perf_counter() - started
-        checked = True
-        for island, part in enumerate(tensor.parts):
-            if part is not None and len(tensor.placement.part(island)):
-                page = int(tensor.placement.part(island)[-1])
-                (got,) = session.read(tensor, first=page, pages=1)
-                checked = checked and bool(np.array_equal(got[0], pages[page]))
-        out[name] = {
-            "bytes": int(pages.nbytes),
-            "seconds": round(seconds, 4),
-            "gb_s": round(pages.nbytes / seconds / 1e9, 3),
-            "exact": checked,
-        }
-        log(f"write held by {name}: {out[name]}")
+        with concurrent.futures.ThreadPoolExecutor(len(work)) as pool:
+            for done in [pool.submit(*one) for one in work]:
+                done.result()
+        return round(data.nbytes / (time.perf_counter() - started) / 1e9, 3)
+
+    def into(channel, part):
+        channel[: part.nbytes] = part
+
+    def out_of(channel, part):
+        part[:] = channel[: part.nbytes]
+
+    back = np.empty_like(data)
+    out = {
+        "into_island0_gb_s": copies([(into, channels[0], data)]),
+        "out_of_island0_gb_s": copies([(out_of, channels[0], back)]),
+        "into_each_gb_s": copies(
+            [(into, channel, half) for channel, half in zip(channels, halves)]
+        ),
+        "out_of_each_gb_s": copies(
+            [
+                (out_of, channel, half)
+                for channel, half in zip(channels, np.split(back, len(channels)))
+            ]
+        ),
+    }
+    log(f"host copies of {mib} MiB, host channels: {out}")
     return out
 
 
