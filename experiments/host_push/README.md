@@ -106,3 +106,38 @@ It prints one JSON line a push (card cycles, host seconds, the checks) and one f
   (the hugepage file keeps old bytes between processes) and map the channel once.
 - Unknown: pushes while fast dispatch runs, two cards at once, and the X280 as the
   writer.
+
+## In the framework
+
+The session now does this itself ([host](../../docs/reference/host.md#the-host-channel)):
+`Session.read`, `read_chunks`, `write` and `tensor` move DRAM pages through its region
+of the channel. Inside a run they use the reserved handlers 241 and 242, served by
+the runtime's loop. Without a run they launch `kernels/host_transfer.cpp` of the
+native package, from 80 KiB on. `framework.py` measures what a caller sees:
+
+    TT_VISIBLE_DEVICES=1 python framework.py --way device    # Session(channel=0)
+    TT_VISIBLE_DEVICES=1 python framework.py --way channel
+
+Card 1, AICLK 1350 MHz, host load 5 to 9. Host seconds for a whole tensor: a 20 MiB
+frame (2048 rows of 2560 RGBA pixels, 10,240-byte pages) and a 94 MB float32 tensor
+(5,876 rows of 16,000 bytes). Through the channel, the median of three; every byte is
+compared each time:
+
+| | 20 MiB frame read | 94 MB tensor read | 20 MiB write | 94 MB write |
+|---|---|---|---|---|
+| device API (before) | 10.1 | 43.3 | 0.080 | 0.207 |
+| channel, no run | 0.030 | 0.050 | 0.047 | 0.041 |
+| channel, in a run | 0.0067 | 0.023 | 0.0055 | 0.026 |
+
+- Reads: 340 times faster without a run and 1,500 times inside one for the frame, and
+  870 and 1,900 times for the tensor. A run's cores also take a write the device API
+  cannot make while a run is loaded.
+- Writes through the device API were already fast before a load. Through the channel
+  they are about as fast without a run, and 15 to 8 times faster inside one.
+- Without a run, a launch costs about 30 ms whatever the size (27 ms for 10 KiB, 35 ms
+  for 1 MiB). The device API reads 10 KiB in 3.2 ms, 60 KiB in 30 ms and 250 KB in
+  95 ms. They meet at about 76 KiB, and the session launches from 80 KiB on.
+- Inside a run, a push of 4 KiB costs the host 0.2 ms. On the cores, 20 MiB on one
+  core pushes at 12.3 GB/s and pulls at 7.4 GB/s; on 16 cores it pushes at 15.0 GB/s
+  and pulls at 14.4 GB/s.
+

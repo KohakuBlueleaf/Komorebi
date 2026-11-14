@@ -142,7 +142,9 @@ place to ask a question and to be wrong.
 - [host_push](host_push/README.md): reading a frame back by having the cores write it
   over the NoC through the PCIe tile into the host's pinned memory channel, checked byte
   for byte. 4 KiB to 20 MiB exact; 13.5 GB/s from one core and about 15 GB/s from 2 to
-  12 (the x8 link) against 1 to 2 MB/s for `Session.read_chunks`.
+  12 (the x8 link) against 1 to 2 MB/s for `Session.read_chunks`. Now in the session,
+  both ways: a 20 MiB frame read in 30 ms without a run and 7 ms inside one, against
+  10.1 s.
 - [texture_lookup](texture_lookup/README.md): what a texture lookup costs on a core:
   pages of texels in L1 through a 4-way table (10 cycles a pixel with every page held,
   17 to 40 through the table, the same on all four CPUs), a 4 KB miss from DRAM in

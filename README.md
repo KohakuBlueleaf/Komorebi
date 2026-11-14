@@ -536,11 +536,11 @@ property of the model.
 3. **Loading TT-NN's kernels.** A TT-NN operation is a tt-metal program (kernels,
    buffers, arguments), which is what a program loaded as overlays is. Today a program
    is written for Komorebi; nothing loads an operation's kernels as they are.
-4. **Host transfers at the link's speed.** Today reading back from the card runs at 1
-   to 2 MB per second (`Session.read_chunks`; a rendered frame of 20 MB takes 10 to
-   18 s). The card can push into the host's memory through the PCIe tile, as tt-metal's
-   fast dispatch does; cores that load that code as an overlay when a transfer is asked
-   for are not built.
+4. **Host transfers at the link's speed, everywhere.** Today reads and writes go
+   through the host channel (a 20 MiB frame read in 30 ms without a run, 7 ms inside
+   one) for interleaved DRAM tensors with pages of at most 16 KiB, on one card. Tensors
+   in L1, larger pages and a session without the channel still go through the device
+   API at about 2 MB per second ([host](docs/reference/host.md#the-host-channel)).
 5. **Starting without tt-metal's launch.** Today the session opens the card in slow
    dispatch and tt-metal launches the kernels once, core by core. Everything after that
    (commands, programs, overlays) is Komorebi's own and runs from the card.
