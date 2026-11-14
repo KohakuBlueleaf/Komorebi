@@ -17,7 +17,7 @@ constexpr uint32_t kCbRow = 0;
 constexpr uint32_t kCbCol = 1;
 constexpr uint32_t kCbYOut = 16;
 constexpr uint32_t kCbPart = 24;
-constexpr uint32_t kCbSend = 17;  // bf16, one output block (pages consecutive)
+constexpr uint32_t kCbSend = 17;  // bf16, two chunks of the tiles put (put_chunk)
 constexpr uint32_t kCbSent = 5;   // bf16, an output subblock from one other island
 constexpr uint32_t kCbToken = 6;
 constexpr uint32_t kCbArrive = 7;
@@ -26,12 +26,20 @@ constexpr uint32_t kBf16Bytes = 2048;
 constexpr uint32_t kPartBytes = 4096;  // fp32
 constexpr uint32_t kSignalBytes = 32;
 constexpr uint32_t kStampBytes = 64;
+// A put's tiles at least (64 KiB): a chunk is the smallest whole number of subblocks
+// at or over it.
+constexpr uint32_t kPutTiles = 32;
 // T's words: the command taken, the other islands' columns put (sent), the sync done,
 // its own columns written (the wall clock, AICLK cycles).
 constexpr uint32_t kStampStart = 0;
 constexpr uint32_t kStampPut = 1;
 constexpr uint32_t kStampSynced = 2;
 constexpr uint32_t kStampEnd = 3;
+// Inside the sync: the last put counted, the island's tree up, the leaders' crossing
+// (the leader) or the tree's word down.
+constexpr uint32_t kStampSettled = 4;
+constexpr uint32_t kStampUp = 5;
+constexpr uint32_t kStampDown = 6;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
@@ -49,7 +57,9 @@ constexpr uint32_t kArgCore = km::kBroadcastArgs;
 constexpr uint32_t kCoreRank = 0;
 constexpr uint32_t kCoreM0 = 1;
 constexpr uint32_t kCoreN0 = 2;
-constexpr uint32_t kCorePlan = 3;
+constexpr uint32_t kCoreSent = 3;      // its first page in a set of S
+constexpr uint32_t kCoreSetPages = 4;  // the pages of a set
+constexpr uint32_t kCorePlan = 5;
 constexpr uint32_t kPlMt = 0;
 constexpr uint32_t kPlKt = 1;
 constexpr uint32_t kPlNt = 2;
@@ -171,17 +181,20 @@ inline uint32_t blocks_of(uint32_t numerator, uint32_t denominator) {
     return (numerator + denominator - 1) / denominator;
 }
 
-// S: a set a sending island (sent_set), in a set each plan core's output blocks in the
-// order it makes them (core m0 / pcm x blocks_of(nt, pcn) + n0 / pcn), tiles as packed.
+// S: a set a sending island (sent_set), in a set every core's output blocks in the
+// order it makes them (its first page a core word), tiles as packed.
 struct Sent {
-    uint32_t cores;
-    uint32_t blocks;
-    uint32_t block_tiles;
+    uint32_t set_pages;
+    uint32_t first;
 
-    uint32_t page(uint32_t set, uint32_t core, uint32_t block) const {
-        return ((set * cores + core) * blocks + block) * block_tiles;
+    uint32_t page(uint32_t set, uint32_t tile) const {
+        return set * set_pages + first + tile;
     }
 };
+
+inline uint32_t put_chunk(uint32_t subblock_tiles) {
+    return blocks_of(kPutTiles, subblock_tiles) * subblock_tiles;
+}
 
 inline uint32_t sent_set(uint32_t from, uint32_t to) {
     return (from + km::islands() - to - 1) % km::islands();

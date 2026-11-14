@@ -466,24 +466,32 @@ words (the tensor table: which K rows of W and which columns of Y an island hold
 from `km::island()`, `km::islands()` and the command's group:
 
 - **Each island computes its partial product X_i x W_i (M x N) from what it holds.**
-  Its ranks run the grid form above (the project's plan for M x the island's K x one
-  island's columns, its two broadcasts inside the island). Nothing of X or W crosses
-  and no page is asked across: a row of X is read only where it is held.
+  Its ranks run the grid form above (M x the island's K x one island's columns, its two
+  broadcasts inside the island). Nothing of X or W crosses and no page is asked across:
+  a row of X is read only where it is held. A broadcast reaches a straight run of
+  cores that make the same rows (X) or columns (W), so each group of cores sharing
+  broadcasts is a rectangle, but the island need not be one: where the link cores take
+  the end of the last row, the plan may cover the ranks with two rectangles sharing one
+  block and K block (beside: columns split; below: rows split), each in bands of whole
+  blocks, chosen by a cost of blocks a core and the block's shape. The K block is the
+  one-card plan's at that size.
 - **The columns other islands keep come first, the island's own last.** For each
   other island's columns each core packs its output blocks in bfloat16 (the partial
-  rounded once) and puts each whole block to that island in one line
-  (`km::put_pages`), not waiting: before its next block it waits for the one put still
-  counting (`km::put_wait`) and frees the block's buffer. Then one sync: the last puts
+  rounded once) into a buffer of two chunks (a chunk: the fewest whole subblocks of at
+  least 64 KiB) and puts each chunk to that island in one line (`km::put_pages`), not
+  waiting: before its next it waits for the one put still counting (`km::put_wait`)
+  and frees its chunk, while compute fills the other. Then one sync: the last puts
   counted, a barrier (a binary tree of tokens inside the island, its leader to the
   other leaders through `km::to_island(i).put`, the tree back down). Then each core
   makes its blocks of its own island's columns, and for each the tiles the other
   islands put for it join DST before the K block they are taken at (the reader reads
   them from the island's own DRAM); the sum is written to Y here.
 - **Where the put tiles land: S**, a scratch tensor on every island (`copy=True`),
-  laid out block by block: a set a sending island, in a set each plan core's output
-  blocks in the order it makes them, a block's tiles in the order compute packs them.
-  The plan is the command's, the same on every island, so both sides name the same
-  pages, and one put is one whole block (consecutive pages).
+  laid out block by block: a set a sending island, in a set each core's output blocks
+  in the order it makes them (its first page a core argument), a block's tiles in the
+  order compute packs them. The plan is the same on every island, so both sides name
+  the same pages, and a core's chunks are consecutive pages; a block wholly past the
+  island's columns is not put.
 
 So two islands cross M x N / 2 tiles each way, one M x N bf16 matrix in all, once a
 call (whole blocks: a block past Y's edge crosses its padding too).

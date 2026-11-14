@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import abi  # noqa: E402
+from komorebi import abi, layout  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -64,19 +64,18 @@ def spans(placement, outer_split):
     return out
 
 
-def sent_pages(plan, islands):
-    """S's pages on an island: a set each other island (one at least), the output
-    blocks of every plan core."""
-    cores = pl.cdiv(plan.mt, plan.pcm) * pl.cdiv(plan.nt, plan.pcn)
-    return max(1, islands - 1) * cores * plan.nbh * plan.nbw * plan.bm * plan.bn
+def chunk(plan):
+    """Tiles a put: the smallest whole number of subblocks at or over kPutTiles."""
+    subblock = plan.sh * plan.sw
+    return pl.cdiv(L["kPutTiles"], subblock) * subblock
 
 
 def extra_buffers(plan, islands):
-    """The linear kernels' buffers past the grid plan's: an output block to put across
-    (a subblock on one island, where nothing is put), another island's subblock put
-    here, the token and its slot."""
+    """The linear kernels' buffers past the grid plan's: two chunks of the tiles put
+    across (a subblock on one island, where nothing is put), another island's subblock
+    put here, the token and its slot."""
     subblock = plan.sh * plan.sw
-    send = plan.bm * plan.bn if islands > 1 else subblock
+    send = 2 * chunk(plan) if islands > 1 else subblock
     return [
         (L["kCbSend"], "bfloat16", L["kBf16Bytes"], send),
         (L["kCbSent"], "bfloat16", L["kBf16Bytes"], 2 * subblock),
@@ -119,6 +118,247 @@ def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, islands):
     return None
 
 
+@dataclasses.dataclass(frozen=True)
+class Piece:
+    """A rectangle of the island's cores from core column x0, row y0, making the
+    window's tiles from row m0 and column n0 on in `plan`'s bands (2d: whole blocks)."""
+
+    plan: pl.Grid
+    x0: int = 0
+    y0: int = 0
+    m0: int = 0
+    n0: int = 0
+
+    @property
+    def layout(self):
+        return self.plan.layout
+
+    def rect(self, grid):
+        x, y, columns, rows = self.plan.rect(grid)
+        return self.x0 + x, self.y0 + y, columns, rows
+
+    def places(self, grid):
+        """{core index: (first row tile, first column tile)} of the piece's cores."""
+        shift = self.y0 * grid[0] + self.x0
+        return {
+            core + shift: (row + self.m0, column + self.n0)
+            for core, (row, column) in self.plan.places(grid).items()
+        }
+
+
+# ns a tile product a core: the compute's own, or the broadcasts' feed over the block's
+# intensity bm bn / (bm + bn); fitted to the one-card plans measured
+TILE_NS = 37
+FED_NS = 225
+
+
+def block_ns(bm, bn):
+    return max(TILE_NS, FED_NS * (bm + bn) / (bm * bn))
+
+
+def piece_plan(m_tiles, k_tiles, n_tiles, rect_size, block):
+    """A 2d Grid of `rect_size` (columns, rows) cores for m x n tiles in bands of whole
+    blocks `block` (bm, bn, kb, nbh, nbw), or None when its rect does not fit."""
+    bm, bn, kb, nbh, nbw = block
+    if m_tiles <= 0 or n_tiles <= 0:
+        return None
+    pcm, pcn = nbh * bm, nbw * bn
+    plan = pl.Grid(
+        m_tiles,
+        k_tiles,
+        n_tiles,
+        pl.cdiv(m_tiles, pcm),
+        pl.cdiv(n_tiles, pcn),
+        pcm,
+        pcn,
+        bm,
+        bn,
+        kb,
+        *pl.subblock(bm, bn),
+    )
+    try:
+        plan.check(rect_size, budget=1 << 40)  # L1: the caller's
+    except ValueError:
+        return None
+    return plan
+
+
+def two_rects(grid, ranks):
+    """The island's ranks as two rectangles when its link cores take the end of the
+    last row: {"beside": (A, B), "below": (A, B)}, each (x0, y0, columns, rows)."""
+    columns, rows = grid
+    links = columns * rows - ranks
+    if not 0 < links < columns:
+        return {}
+    return {
+        "beside": (
+            (0, 0, columns - links, rows),
+            (columns - links, 0, links, rows - 1),
+        ),
+        "below": ((0, 0, columns, rows - 1), (0, rows - 1, columns - links, 1)),
+    }
+
+
+def island_pieces(m_tiles, k_tiles, n_tiles, grid, ranks, budget, islands, kb):
+    """The pieces of the island's ranks: the old single rect (fitting_plan), or two
+    rectangles sharing one block, its K block `kb` (lower only when nothing fits),
+    bands of whole blocks: the cheapest by block_ns."""
+    single = fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, islands)
+    best = None
+    if single is not None:
+        blocks = single.nbh * single.nbw
+        cost = blocks * single.bm * single.bn * block_ns(single.bm, single.bn)
+        best = ((cost, -single.bm * single.bn), [Piece(single)])
+    rects = two_rects(grid, ranks)
+    if not rects or single is None or single.layout != "2d":
+        return None if best is None else best[1]
+    for k_block in [value for value in pl.K_BLOCKS if value <= kb] or [1]:
+        found = False
+        for bm in range(1, m_tiles + 1):
+            for bn in range(1, n_tiles + 1):
+                sh, sw = pl.subblock(bm, bn)
+                if sh * sw < 4 or bm * bn * G["kPartBytes"] > budget:
+                    continue
+                probe = piece_plan(bm, k_tiles, bn, (1, 1), (bm, bn, k_block, 1, 1))
+                if probe is None:
+                    continue
+                if probe.l1_bytes() + extra_bytes(probe, islands) > budget:
+                    continue
+                for form, (a, b) in rects.items():
+                    for pieces in split_pieces(
+                        form, a, b, m_tiles, k_tiles, n_tiles, (bm, bn, k_block)
+                    ):
+                        found = True
+                        blocks = max(p.plan.nbh * p.plan.nbw for p in pieces)
+                        cost = (blocks * bm * bn * block_ns(bm, bn), -bm * bn)
+                        if cost < best[0]:
+                            best = (cost, pieces)
+        if found:
+            break
+    return best[1]
+
+
+def split_pieces(form, a, b, m_tiles, k_tiles, n_tiles, block):
+    """Each way rects a and b share the window: "beside" a takes the first columns,
+    b the rest; "below" a the first rows. Bands of whole blocks a rect."""
+    bm, bn, kb = block
+    if form == "beside":
+        nbh_a = pl.cdiv(pl.cdiv(m_tiles, a[3]), bm)
+        nbh_b = pl.cdiv(pl.cdiv(m_tiles, b[3]), bm)
+        for nbw_a in range(1, pl.cdiv(n_tiles, a[2] * bn) + 1):
+            n_a = min(n_tiles, a[2] * nbw_a * bn)
+            plan_a = piece_plan(
+                m_tiles, k_tiles, n_a, a[2:], (bm, bn, kb, nbh_a, nbw_a)
+            )
+            if plan_a is None:
+                continue
+            n_b = n_tiles - n_a
+            if n_b == 0:
+                yield [Piece(plan_a, a[0], a[1])]
+                continue
+            nbw_b = pl.cdiv(pl.cdiv(n_b, b[2]), bn)
+            plan_b = piece_plan(
+                m_tiles, k_tiles, n_b, b[2:], (bm, bn, kb, nbh_b, nbw_b)
+            )
+            if plan_b is not None:
+                yield [Piece(plan_a, a[0], a[1]), Piece(plan_b, b[0], b[1], 0, n_a)]
+        return
+    nbw_a = pl.cdiv(pl.cdiv(n_tiles, a[2]), bn)
+    nbw_b = pl.cdiv(pl.cdiv(n_tiles, b[2]), bn)
+    for nbh_a in range(1, pl.cdiv(m_tiles, a[3] * bm) + 1):
+        m_a = min(m_tiles, a[3] * nbh_a * bm)
+        plan_a = piece_plan(m_a, k_tiles, n_tiles, a[2:], (bm, bn, kb, nbh_a, nbw_a))
+        if plan_a is None:
+            continue
+        m_b = m_tiles - m_a
+        if m_b == 0:
+            yield [Piece(plan_a, a[0], a[1])]
+            continue
+        nbh_b = pl.cdiv(m_b, bm)
+        plan_b = piece_plan(m_b, k_tiles, n_tiles, b[2:], (bm, bn, kb, nbh_b, nbw_b))
+        if plan_b is not None:
+            yield [Piece(plan_a, a[0], a[1]), Piece(plan_b, b[0], b[1], m_a, 0)]
+
+
+def sent_pages(pieces, grid):
+    """S's pages a set (a set each other island): the output blocks of every piece's
+    cores, in core order."""
+    return sum(
+        len(piece.places(grid))
+        * piece.plan.nbh
+        * piece.plan.nbw
+        * piece.plan.bm
+        * piece.plan.bn
+        for piece in pieces
+    )
+
+
+def piece_blocks(piece, grid, width):
+    """The output blocks of a piece's cores holding some of the window's tiles (M x
+    `width`): those a core puts."""
+    plan = piece.plan
+    blocks = 0
+    for first_row, first_column in piece.places(grid).values():
+        row_end = min(first_row + plan.pcm, plan.mt + piece.m0)
+        column_end = min(first_column + plan.pcn, width)
+        for block in range(plan.nbh * plan.nbw):
+            row = first_row + block // plan.nbw * plan.bm
+            column = first_column + block % plan.nbw * plan.bn
+            blocks += row < row_end and column < column_end
+    return blocks
+
+
+def pieces_args(pieces, nocs, ranks, m_tiles, group_word):
+    """Each core's argument function: the broadcast words of its piece (row broadcast
+    on NoC0, column broadcast on NoC1, `group_word` the command's), then its core
+    words (in a piece, first row and column, its first page of a set of S, a set's
+    pages, plan words with M whole); compute: core words, then the broadcast windows."""
+    group = layout.Group(0, ranks)
+    set_pages = sent_pages(pieces, nocs.grid)
+    words, first = {}, 0
+    for piece in pieces:
+        plan = piece.plan
+        casts = [
+            card.grid_broadcasts(
+                piece,
+                nocs,
+                group,
+                along,
+                noc,
+                (G[broadcast], G[cb], window, pages),
+            )
+            for along, noc, broadcast, cb, window, pages in (
+                ("row", 0, "kBroadcastRow", "kCbRow", plan.wa, plan.bm * plan.kb),
+                ("column", 1, "kBroadcastCol", "kCbCol", plan.ww, plan.kb * plan.bn),
+            )
+        ]
+        plan_words = [m_tiles, *plan.words()[1:]]
+        for core, (row, column) in sorted(piece.places(nocs.grid).items()):
+            mine = [1, row, column, first, set_pages, *plan_words]
+            words[core] = (
+                [
+                    [
+                        (cast[core] | {"group": group_word})[field]
+                        for field in card.BROADCAST_FIELDS
+                    ]
+                    for cast in casts
+                ],
+                mine,
+                (plan.wa, plan.ww),
+            )
+            first += plan.nbh * plan.nbw * plan.bm * plan.bn
+    windows = (pieces[0].plan.wa, pieces[0].plan.ww)
+    idle = [0] * (len(card.BROADCAST_FIELDS) + L["kCoreWords"])
+
+    def args(core):
+        if core not in words:
+            return idle, idle, idle[: L["kCoreWords"]] + list(windows)
+        (row, column), mine, window = words[core]
+        return row + mine, column + mine, mine + list(window)
+
+    return args
+
+
 class Linear:
     """The linear kernels loaded on every island of `session`: one LINEAR command a
     call on all its ranks, exclusive (the broadcasts inside each island)."""
@@ -140,7 +380,8 @@ class Linear:
             raise SystemExit(f"an island holds no K of W: {self.k_parts}")
         part_k = max(count for _, count in self.k_parts)
         part_n = max(count for _, count in self.columns)
-        self.plan = fitting_plan(
+        one_card = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.nocs.grid)
+        self.pieces = island_pieces(
             m_tiles,
             part_k,
             part_n,
@@ -148,13 +389,15 @@ class Linear:
             ranks,
             l1_budget(session, self.islands),
             self.islands,
+            1 if one_card is None else one_card.kb,
         )
-        if self.plan is None:
+        if self.pieces is None:
             raise SystemExit(f"no grid plan fits L1 and {ranks} ranks: {dimensions}")
+        self.plan = self.pieces[0].plan  # the block, K block and buffers of all
         for name in ("kCbRow", "kCbCol", "kCbPart"):
             assert L[name] == G[name], name
         assert L["kCbYOut"] == G["kCbGridOut"]
-        pages = sent_pages(self.plan, self.islands)
+        pages = max(1, self.islands - 1) * sent_pages(self.pieces, self.nocs.grid)
         tensors["s"] = session.empty(
             (pages * pl.TILE, pl.TILE), "bfloat16", "tile", copy=True
         )
@@ -164,23 +407,22 @@ class Linear:
         self.tensors = tensors
         self.session = session
         self.group = (0, session.ranks)
-        word = self.group[0] | self.group[1] << 16
-        program = card.grid_program(
-            self.plan,
-            self.nocs,
-            {"a": tensors["x"], **tensors},
-            command=((0, ranks), word),
-        )
         x, w, y, s = (tensors[name] for name in "xwys")
-        self.program = dataclasses.replace(
-            program,
-            name="dense_linear",
+        self.program = km.Program(
+            "dense_linear",
             kernels=KERNELS,
             buffers=[
                 km.Buffer(*buffer)
                 for buffer in self.plan.buffers()[:4]
                 + extra_buffers(self.plan, self.islands)
             ],
+            args=pieces_args(
+                self.pieces,
+                self.nocs,
+                ranks,
+                m_tiles,
+                self.group[0] | self.group[1] << 16,
+            ),
             compile_args={
                 "reader": x.accessor_args() + s.accessor_args(),
                 "writer": w.accessor_args()
@@ -219,6 +461,24 @@ class Linear:
             synced = ran[:, L["kStampSynced"]].max() if put != start else start
             end = ran[:, L["kStampEnd"]].max()
             cycles = {"put": put - start, "sync": synced - put, "own": end - synced}
+            if stamped:  # inside the sync: the last core's each step, from the last put
+                at = {
+                    name: ran[:, L[stamp]].max()
+                    for name, stamp in (
+                        ("settled", "kStampSettled"),
+                        ("up", "kStampUp"),
+                        ("down", "kStampDown"),
+                    )
+                }
+                cycles |= {
+                    "settle": at["settled"] - put,
+                    "up": at["up"] - at["settled"],
+                    "down": at["down"] - at["up"],
+                    "go": synced - at["down"],
+                }
+                # each core's own wait for its last put's confirmation
+                waits = ran[:, L["kStampSettled"]] - ran[:, L["kStampPut"]]
+                cycles["settle_median"] = int(np.median(waits))
             out.append(
                 {
                     "cores": len(ran),
@@ -253,29 +513,38 @@ class Linear:
         )
 
     def crossed(self):
-        """Bytes a call should cross, from the placements and the plan: each island
-        holding part of K puts, for every other island keeping columns, each plan
-        core's output blocks that hold some of them (whole blocks, bf16); and the
-        ideal: every other holder's M x columns tiles."""
+        """Bytes a call should cross, from the placements and the pieces: each island
+        holding part of K puts, for every other island keeping columns, each core's
+        output blocks that hold some of them (whole blocks, bf16); and the ideal: every
+        other holder's M x columns tiles."""
         plan = self.plan
         page = self.tensors["s"].aligned_page_bytes
-        places = plan.places(self.nocs.grid).values()
         total = {"blocks": 0, "tiles": 0}
         for sender, (_, k_part) in enumerate(self.k_parts):
             for to, (_, width) in enumerate(self.columns):
                 if to == sender or not k_part or not width:
                     continue
                 total["tiles"] += plan.mt * width * page
-                for first_row, first_column in places:
-                    row_end = min(first_row + plan.pcm, plan.mt)
-                    column_end = min(first_column + plan.pcn, width)
-                    for block in range(plan.nbh * plan.nbw):
-                        row = first_row + block // plan.nbw * plan.bm
-                        column = first_column + block % plan.nbw * plan.bn
-                        if row < row_end and column < column_end:
-                            total["blocks"] += plan.bm * plan.bn * page
-        total["put_bytes"] = plan.bm * plan.bn * page
+                for piece in self.pieces:
+                    total["blocks"] += piece_blocks(piece, self.nocs.grid, width) * (
+                        plan.bm * plan.bn * page
+                    )
+        total["put_bytes"] = chunk(plan) * page
         return total
+
+    def describe(self):
+        """Each piece: its rect on the island's grid, first row and column, bands."""
+        return [
+            {
+                "rect": piece.rect(self.nocs.grid),
+                "m0": piece.m0,
+                "n0": piece.n0,
+                "bands": [piece.plan.pcm, piece.plan.pcn],
+                "blocks": [piece.plan.nbh, piece.plan.nbw],
+                "cores": len(piece.places(self.nocs.grid)),
+            }
+            for piece in self.pieces
+        ]
 
     def stop(self):
         """Stops the run: each island's kernel result and the cores that gave up."""
@@ -428,6 +697,7 @@ def attempt(product_class, session, dimensions, tensors, cards, args, matrices):
     report["plan"] = run.describe(product.plan)
     report["kernel_sizes"] = sizes(product.program)
     if isinstance(product, Linear):
+        report["pieces"] = product.describe()
         report["crossed_bytes"] = product.crossed()
     log(f"{product_class.__name__} loaded, plan {report['plan']}")
     try:
