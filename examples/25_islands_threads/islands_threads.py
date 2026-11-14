@@ -51,6 +51,11 @@ def parse():
     parser.add_argument(
         "--counts", type=int, default=1000, help="COUNTs from the host, then a thread"
     )
+    parser.add_argument(
+        "--reset-link",
+        action="store_true",
+        help="count: reset island 0's link core 0, then the thread's COUNTs again",
+    )
     return parser.parse_args()
 
 
@@ -127,7 +132,7 @@ def counted(run, own):
     return np.asarray(counts, np.int64)
 
 
-def count_check(run, own, ranks, group, rounds):
+def count_check(run, own, ranks, group, rounds, reset_link=False):
     """COUNT `rounds` times on one flat `group` over both islands from the host (its
     split, every line a part), one EXCLUSIVE COUNT on it from the host, then `rounds`
     from island 0's thread (crossed): every rank of the group counts each once."""
@@ -161,6 +166,25 @@ def count_check(run, own, ranks, group, rounds):
         f"thread: {rounds} COUNTs on {group}, {report['thread_count_us']} us a"
         f" command; counts {sorted(set(after_thread))}"
     )
+    if reset_link:  # the lines link's core, between two rounds that cross on it
+        core = run.graph.link_cores[0][0]
+        reset = run.reset_core(0, core)
+        report["link_reset"] = {
+            key: round(value, 6) if isinstance(value, float) else value
+            for key, value in reset.items()
+        }
+        ticks = ask_thread(run.island(0), "counts", [*group, rounds], timeout=60.0)
+        report["thread_count_after_reset_us"] = per_command_us(ticks, rounds)
+        after_reset = counted(run, own)
+        want = np.where(inside, 3 * rounds + 1, 0)
+        report["thread_counts_exact"] = report["thread_counts_exact"] and bool(
+            (after_reset == want).all()
+        )
+        log(
+            f"after the reset of link core 0 (core {core}): {rounds} COUNTs,"
+            f" {report['thread_count_after_reset_us']} us a command; counts"
+            f" {sorted(set(after_reset))}"
+        )
     return report
 
 
@@ -295,7 +319,11 @@ def main():
             log(f"a MAP on all ranks after it: {report['map_after_hang']}")
             wrong = "map"
         if "count" in steps:
-            report.update(count_check(run, own, ranks, (60, 120), args.counts))
+            report.update(
+                count_check(
+                    run, own, ranks, (60, 120), args.counts, reset_link=args.reset_link
+                )
+            )
         if "host-hang" in steps:
             before = gave_up(run)
             word = ask_thread(first, "hang", [100, 40, 30, 300000, 2000000])

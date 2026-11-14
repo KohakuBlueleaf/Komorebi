@@ -57,6 +57,13 @@ def parse():
         metavar="LINKS",
         help="MAP on island 0 reading an input island 1 holds, over LINKS links",
     )
+    parser.add_argument(
+        "--reset-link",
+        type=int,
+        default=-1,
+        metavar="ISLAND",
+        help="with --across: reset that island's link core 0, then read across again",
+    )
     return parser.parse_args()
 
 
@@ -96,7 +103,7 @@ def open_session(args, cards):
     if args.islands:
         (card,) = cards
         return km.Session(card=card, islands=args.islands, log=log)
-    return km.Session(cards=cards, links=args.across, log=log)
+    return km.Session(cards=cards, links=args.across, log=log, kernel_bytes=84 * 1024)
 
 
 def main():
@@ -146,7 +153,7 @@ def main():
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
         if args.across:
-            report.update(across(session, run, args, source, far, output))
+            report.update(across(session, run, args, source, far, output, exact))
         else:
             report.update(commands(session, run, args, source, output, ranks, exact))
         log("stopping")
@@ -167,6 +174,7 @@ def main():
         and report.get("kernel_errors", ["stop"]) == ["none"] * len(report["islands"])
         and report.get("hang_named_island", True)
         and report.get("read_island1_in_run_exact", True)
+        and report.get("before_reset", {}).get("wrong_tiles", 0) == 0
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
@@ -242,11 +250,11 @@ def commands(session, run, args, source, output, ranks, exact):
     return out
 
 
-def across(session, run, args, local, far, output):
+def across(session, run, args, local, far, output, exact):
     """Rounds of one MAP on island 0's ranks (its own run: island 0 starts at rank 0)
     reading `local` (their own DRAM), then `far` (island 1 holds it): the same reader,
     whose read call asks island 1 for the tiles itself (no ask from the host). The
-    last round is checked."""
+    last round is checked; --reset-link checks one, resets a link core, reads again."""
     graph = session.graph
     group = (graph.first(0), graph.count(0))
     handler = run.program.handler("map")
@@ -266,6 +274,18 @@ def across(session, run, args, local, far, output):
         out[f"map_{name}_us"] = spent
         out[f"map_{name}_gb_s"] = round(tile_bytes / spent / 1e3, 3)
         log(f"MAP on {group} reading {name}: {spent} us a round, {tile_bytes:,} B")
+    if args.reset_link >= 0:
+        (got,) = session.read_bf16(output)
+        out["before_reset"] = check(exact, got, [group])
+        session.write(output, np.zeros((output.pages, output.page_bytes), np.uint8))
+        core = session.graph.link_cores[args.reset_link][0]
+        reset = run.reset_core(args.reset_link, core)
+        out["link_reset"] = {
+            key: round(value, 6) if isinstance(value, float) else value
+            for key, value in reset.items()
+        }
+        out["map_across_after_reset_us"] = round(one_round(far, 1), 3)
+        log(f"after the reset, MAP across: {out['map_across_after_reset_us']} us")
     return out
 
 
