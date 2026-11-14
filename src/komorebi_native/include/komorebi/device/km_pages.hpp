@@ -801,6 +801,7 @@ namespace km {
         );
     }
 
+#if defined(KM_PAGE_LINKS)  // else km_worker.hpp's stubs (one card: no link services)
     // At the kernel's end: the held connection's teardown, bounded (the router must
     // not keep this core).
     template <typename Kernel>
@@ -835,6 +836,7 @@ namespace km {
             });
         }
     }
+#endif
 
     // The reader waits until the count at r.count reaches r.pages, then takes that
     // much off it (one request a count at a time). kGave* code.
@@ -1934,6 +1936,7 @@ namespace km {
         return code != kGaveNone ? code : sent;
     }
 
+#if defined(KM_PAGE_LINKS)  // else km_worker.hpp's stubs (one card: no link services)
     // The link core's services, in one place: the part of CPU `cpu` (0 the reader, 1
     // the writer) of a PAGES command (open, send, range, wait, line); a failure gives
     // the command up (recorded). False: given up.
@@ -2033,5 +2036,6 @@ namespace km {
             kernel.gave_up(word, code, kWherePages, 0, 0);
         }
     }
+#endif
 
 }  // namespace km
