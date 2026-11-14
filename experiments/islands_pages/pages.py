@@ -12,6 +12,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import islands
+from komorebi.island_session import Crossings
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 NO_READ = 0x10  # KM_PAGES_SHAPE_NO_READ
@@ -379,7 +380,8 @@ AICLK_HZ = 1.35e9  # the cores' clock (the wall clock the counters read)
 
 def ring_shares(moved, source, ms, log):
     """Each link CPU's put ring from island `source`: the share of the command's time
-    it sent (its own send, then waiting for the router's slots)."""
+    it sent (its own send, then waiting for the router's slots), and the share
+    between its turns by its ring's first slot at the next (Crossings.IDLE)."""
     cycles = ms * 1e-3 * AICLK_HZ
     out = {}
     for (link, here, _), row in sorted(moved.rows.items()):
@@ -389,12 +391,21 @@ def ring_shares(moved, source, ms, log):
         out[link] = {
             "send": round((sending - router) / cycles, 3),
             "router": round(router / cycles, 3),
+            **{
+                f[len("ring_") :]: round(row[f] / cycles, 3)
+                for f in Crossings.IDLE
+                if f != "ring_turns"
+            },
+            "per_turn": round(row["pages"] / max(row["ring_turns"], 1), 1),
             "pages": row["pages"],
         }
     log(
         f"RUNS link CPUs from island {source}, share of the command's time: "
         + ", ".join(
-            f"link {k} send {v['send']} router {v['router']}" for k, v in out.items()
+            f"link {k} send {v['send']} router {v['router']} (between turns: late "
+            f"{v['late']} filling {v['filling']} empty {v['empty']}; "
+            f"{v['per_turn']} packets a turn)"
+            for k, v in out.items()
         )
     )
     return out

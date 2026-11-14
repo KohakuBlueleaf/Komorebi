@@ -178,6 +178,7 @@ namespace km {
         uint32_t held;
         uint32_t held_mark;
         bool holding;
+        uint32_t left;  // the wall clock at its last turn's end
     };
 
     inline PagesRing pages_ring_held;
@@ -758,8 +759,8 @@ namespace km {
     }
 
     // COUNTS: CPU `cpu` of link core `rank` writes its row of what crossed into page
-    // 2 rank + cpu of the DRAM tensor at r.to (a page of 48 bytes or more: its ring's
-    // words after it), then waits for the write. kGave* code.
+    // 2 rank + cpu of the DRAM tensor at r.to (a page of 64 bytes or more: its ring's
+    // words and idle cycles after it), then waits for the write. kGave* code.
     template <typename Kernel>
     inline uint32_t pages_counts(
         const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
@@ -779,10 +780,15 @@ namespace km {
             to.get_noc_addr(2 * rank + cpu),
             KM_CROSS_ROW
         );
-        if (r.page >= KM_CROSS_ROW + 16) {  // then its ring's words
+        if (r.page >= KM_CROSS_ROW + 32) {  // then its ring's words and idle cycles
             noc_async_write(
                 area + KM_PUT_RING_WORDS + 16 * cpu,
                 to.get_noc_addr(2 * rank + cpu) + KM_CROSS_ROW,
+                16
+            );
+            noc_async_write(
+                area + KM_PUT_RING_IDLE + 16 * cpu,
+                to.get_noc_addr(2 * rank + cpu) + KM_CROSS_ROW + 16,
                 16
             );
         }
@@ -976,6 +982,10 @@ namespace km {
         words[KM_PUT_RING_SENT / 4] = 0;
         words[KM_PUT_RING_SENDING / 4] = 0;
         words[KM_PUT_RING_ROUTER / 4] = 0;
+        for (uint32_t w = 0; w < 4; w++) {
+            l1(links + KM_PUT_RING_IDLE + 16 * cpu)[w] = 0;
+        }
+        pages_ring_held.left = wall();
         const uint32_t home = link_core0(kernel);
         const uint32_t queue = link_queue();
         if (kernel.args().me == home && cpu == 0 && queue != 0) {
@@ -1040,12 +1050,22 @@ namespace km {
         ) {
             words[KM_PUT_RING_SENT / 4] = ring.issued;
         }
+        // the cycles since its last turn, by what its first slot is now
+        invalidate_l1_cache();
+        const uint32_t started = wall();
+        volatile tt_l1_ptr uint32_t* idle = l1(area + KM_PUT_RING_IDLE + 16 * cpu);
+        uint32_t since = KM_PUT_RING_LATE;
+        if (l1(ring.at + ring.issued % ring.slots * kRingHeader)[kRingMark] !=
+            ring.issued + 1) {
+            since = words[KM_PUT_RING_TAIL / 4] == ring.issued ? KM_PUT_RING_EMPTY
+                                                               : KM_PUT_RING_FILLING;
+        }
+        idle[since / 4] += started - ring.left;
         auto& sender = link_sender();
         const uint32_t payloads = ring.at + ring.slots * kRingHeader;
         const uint32_t packet = pages_packet();
         const uint32_t limit = kernel.args().wait_limit;
         uint32_t code = kGaveNone;
-        const uint32_t started = wall();
         uint32_t router = 0;  // cycles waiting for the router's slots
         bool sending = false;
         for (uint32_t bursts = 0; bursts < kRingBursts; bursts++) {
@@ -1055,7 +1075,8 @@ namespace km {
                 const uint32_t s = ring.issued % ring.slots;
                 const uint32_t header = ring.at + s * kRingHeader;
                 if (l1(header)[kRingMark] != ring.issued + 1) {
-                    break;  // not ready yet
+                    break;  // not ready yet (a wait here keeps the CPU's other
+                            // services, the put lines' confirmations, late)
                 }
                 const uint32_t size = l1(header)[kRingBytes];
                 if (!sender.space()) {
@@ -1102,7 +1123,9 @@ namespace km {
         if (sending) {  // the turn's cycles sending, and of them waiting for the router
             words[KM_PUT_RING_SENDING / 4] += wall() - started;
             words[KM_PUT_RING_ROUTER / 4] += router;
+            idle[KM_PUT_RING_TURNS / 4] += 1;
         }
+        ring.left = wall();
         return code;
     }
 

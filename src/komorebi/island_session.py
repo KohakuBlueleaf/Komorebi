@@ -74,8 +74,11 @@ class Crossings:
 
     FIELDS = ("messages", "lines", "asks", "pages", "parts", "puts", "bytes")
     # the link CPU's put ring: cycles its turns sent, of them waiting for the router's
-    # slots (32-bit counts: a difference is taken modulo 2 ** 32)
-    CYCLES = ("ring_sending", "ring_router")
+    # slots; the cycles between its turns, by its first slot at the next: ready (the
+    # CPU was elsewhere), reserved but not written, not reserved; and the turns that
+    # sent, a count (32-bit counts: a difference is taken modulo 2 ** 32)
+    IDLE = ("ring_late", "ring_filling", "ring_turns", "ring_empty")
+    CYCLES = ("ring_sending", "ring_router") + IDLE
 
     def __init__(self, rows):
         self.rows = dict(rows)
@@ -1461,6 +1464,10 @@ class IslandSession:
                     "bytes": int(row[low]) | int(row[low + 1]) << 32,
                     "ring_sending": int(row[ring + h["KM_PUT_RING_SENDING"] // 4]),
                     "ring_router": int(row[ring + h["KM_PUT_RING_ROUTER"] // 4]),
+                    **{
+                        f: int(row[ring + 4 + h[f"KM_PUT_{f.upper()}"] // 4])
+                        for f in Crossings.IDLE
+                    },
                 }
         return Crossings(rows)
 
