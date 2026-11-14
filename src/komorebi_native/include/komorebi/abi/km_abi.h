@@ -227,6 +227,10 @@
 #define KM_CROSS_PARTS 4u
 #define KM_CROSS_BYTES 5u /* the low word; the high word after it */
 #define KM_CROSS_PUTS 7u  /* put lines and their confirmations */
+/* A get line of part of a page (km::read_bytes): KM_ASK_RING KM_ASK_GET_BYTES, 1 page
+ * (it counts 1), KM_ASK_GET_SPAN offset | bytes << 16, the bytes into KM_ASK_TO. */
+#define KM_ASK_GET_BYTES 2u
+#define KM_ASK_GET_SPAN 14u
 /* Then a core's puts of pages into DRAM another island holds (km::write_pages), the
  * same way the other direction: on link core 0 the count its cores reserve put lines
  * with, the put lines each page CPU took (a word each), the far island's count of puts

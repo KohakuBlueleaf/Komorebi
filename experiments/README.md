@@ -183,6 +183,10 @@ place to ask a question and to be wrong.
   into the other island's DRAM: 64 MiB over four links (two cores, both CPUs of each)
   in 2.09 ms, 32.1 GB/s, every page exact. Three L1 slots a CPU leave the DRAM reads'
   latency in charge.
+- [islands_bytes](islands_bytes/README.md): whether a kernel's read of a few bytes
+  of a page the other island holds (`km::read_bytes`) lands exactly those bytes. 118
+  ranks, 64 ranges each of 4 to 2,048 bytes at their own offsets: every word exact,
+  nothing beside them written; the other island answers one in 1.7 to 1.95 µs.
 - [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
   bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and

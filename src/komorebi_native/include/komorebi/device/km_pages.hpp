@@ -1310,6 +1310,115 @@ namespace km {
         return code;
     }
 
+    // Page CPU j, the far ask `answered` + 1 at `at` for part of a page: one CPU in
+    // turn sends the range's words, then its 16-byte lines counted; then answered.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t pages_answer_part(
+        const Kernel& kernel,
+        uint32_t cpu,
+        uint32_t area,
+        uint32_t at,
+        uint32_t answered
+    ) {
+        volatile tt_l1_ptr uint32_t* words = l1(area);
+        const volatile tt_l1_ptr uint32_t* line = l1(at);
+        const uint32_t asker = line[KM_ASK_CORE];
+        const uint32_t place = (asker & 0xFFu) | (asker >> 16 & 0xFFu) << 8;
+        const uint32_t page = line[KM_ASK_PAGE];
+        const uint32_t to = line[KM_ASK_TO];
+        const uint32_t count = line[KM_ASK_COUNT];
+        const uint32_t offset = line[KM_ASK_GET_SPAN] & 0xFFFFu;
+        const uint32_t bytes = line[KM_ASK_GET_SPAN] >> 16;
+        const uint64_t from = (
+            pages_dram(KM_PAGES_DRAM, line[KM_ASK_TENSOR], page, line[KM_ASK_FIRST]) +
+            offset
+        );
+        // the range read at a 64-byte line of the slots plus its DRAM address's low 6
+        // bits (the DRAM read's rule), so its 16-byte lines are the asker's too
+        const uint32_t slot = (
+            ((pages_held.area + kPagesSlots + 63) & ~63u) +
+            static_cast<uint32_t>(from) % 64
+        );
+        const bool good = (
+            line[KM_ASK_HOLDER] == islands_at(kernel.args().control).here() &&
+            line[KM_ASK_PAGES] == 1 && page != 0 && page % 16 == 0 &&
+            page <= pages_packet() && bytes != 0 && (offset | bytes) % 4 == 0 &&
+            offset + bytes <= page && (static_cast<uint32_t>(from) ^ to) % 16 == 0 &&
+            count % 16 == 0 && pages_held.open != 0 &&
+            slot + bytes <=
+                pages_held.area + pages_room(pages_held.chunk, pages_packet())
+        );
+        // the asks in turn over the page CPUs (but link 0's, which keeps its lines)
+        const uint32_t j = page_index(area);
+        const uint32_t spare = page_lead(area), cpus = page_cpus(area);
+        const uint32_t server = cpus > spare ? spare + answered % (cpus - spare) : 0;
+        uint32_t code = kGaveNone;
+        if (good && j == server) {
+            noc_async_read(from, slot, bytes);
+            code = kernel.poll_at(
+                kWherePages,
+                [] {
+                    return ncrisc_noc_reads_flushed(noc_index);
+                },
+                kernel.args().wait_limit
+            );
+            invalidate_l1_cache();
+            const uint64_t into = link_noc(place & 0xFFu, place >> 8, to);
+            const uint64_t counter = link_noc(place & 0xFFu, place >> 8, count);
+            const uint32_t head = (
+                (16 - to % 16) % 16 < bytes ? (16 - to % 16) % 16 : bytes
+            );
+            const uint32_t lines = (bytes - head) / 16 * 16;
+            const uint32_t header_at = pages_held.area + kPagesHeaders;
+            forward_route(line[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
+            for (uint32_t w = 0; w < bytes && code == kGaveNone; w += 4) {
+                if (w == head) {
+                    w += lines;  // the lines go last, with the count
+                    if (w == bytes) {
+                        break;
+                    }
+                }
+                auto* header = pages_header(header_at);
+                link_inline(header, into + w, l1(slot + w)[0]);
+                code = pages_packet(kernel, header, 0, 0);
+            }
+            if (code == kGaveNone) {
+                auto* header = pages_header(header_at);
+                if (lines != 0) {
+                    link_counted_write(header, into + head, counter, 1, lines);
+                } else {
+                    link_increment(header, counter, 1);
+                }
+                code = (
+                    pages_packet(kernel, header, lines != 0 ? slot + head : 0, lines)
+                );
+            }
+            forward_route_off();
+            cross_count(
+                islands_at(kernel.args().control).link_area(), KM_CROSS_PAGES, 1, bytes
+            );
+        }
+        if (code != kGaveNone) {
+            return code;
+        }
+        if (!good && j == page_lead(area)) {
+            words[KM_ASK_BAD / 4] += 1;
+        }
+        const uint32_t xy = pages_far0;  // the far link core 0
+        const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;
+        auto* header = pages_header(own + KM_PAGE_CPU_HEADER);
+        link_inline(
+            header,
+            link_noc(xy & 0xFFFFu, xy >> 16, area + KM_ASK_SERVED + 4 * j),
+            answered + 1
+        );
+        code = pages_packet(kernel, header, 0, 0);
+        if (code == kGaveNone) {
+            words[KM_ASK_ANSWERED / 4 + cpu] = answered + 1;
+        }
+        return code;
+    }
+
     // Page CPU j (CPU `cpu` of its core): the far island's next ask (in link core 0's
     // link area at `area`), once landed: share j of its pages from this island's DRAM
     // into the asker's L1, each batch counted at the asker's port once landed
@@ -1338,6 +1447,9 @@ namespace km {
         const volatile tt_l1_ptr uint32_t* line = l1(at);
         if (line[KM_ASK_NUMBER] != answered + 1 || line[KM_ASK_END] != answered + 1) {
             return kGaveNone;
+        }
+        if (line[KM_ASK_RING] == KM_ASK_GET_BYTES) {  // part of a page
+            return pages_answer_part(kernel, cpu, area, at, answered);
         }
         const uint32_t asker = line[KM_ASK_CORE];
         const uint32_t place = (asker & 0xFFu) | (asker >> 16 & 0xFFu) << 8;
