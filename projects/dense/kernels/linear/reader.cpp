@@ -30,25 +30,26 @@ void kernel_main() {
         const uint32_t m_tiles = plan(kPlMt);
         invalidate_l1_cache();  // the tensor table
         const Span mine = k_part(w, here, k_whole, n_whole);
-        const bool exchange = exchanging(w, y, m_tiles, k_whole, n_whole);
+        const bool exchange = exchanging(x, w, y, m_tiles, k_whole, n_whole);
+        // the rows this island makes: the plan's rows start at its first
+        const Span made = made_rows(x, here, m_tiles, k_whole);
         const bool included = core(kCoreRank) != 0;
         const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
         const uint32_t k_block_tiles = plan(kPlKb);
         const uint32_t k_blocks = blocks_of(mine.count, k_block_tiles);
         const uint32_t blocks_high = plan(kPlNbh), blocks_wide = plan(kPlNbw);
-        const uint32_t first_row = core(kCoreM0), first_column = core(kCoreN0);
+        const uint32_t first_row = made.first + core(kCoreM0);
+        const uint32_t first_column = core(kCoreN0);
+        const uint32_t made_end = made.first + made.count;
         const uint32_t row_end = (
-            first_row + plan(kPlPcM) < m_tiles ? first_row + plan(kPlPcM) : m_tiles
+            first_row + plan(kPlPcM) < made_end ? first_row + plan(kPlPcM) : made_end
         );
         const uint32_t subblock_tiles = plan(kPlSh) * plan(kPlSw);
         const uint32_t block_tiles = block_height * block_width;
         const Sent sent = {core(kCoreSetPages), core(kCoreSent)};
         // the other islands that put here, a K block of a block each: k blocks 0 ..
-        uint32_t senders = 0;
-        for (uint32_t turn = 1; turn < islands; ++turn) {
-            senders += k_part(w, island_at(here, turn), k_whole, n_whole).count != 0;
-        }
-        const uint32_t kept = columns(y, here, m_tiles, n_whole).count;
+        const uint32_t senders = senders_to(x, w, y, here, m_tiles, k_whole, n_whole);
+        const uint32_t kept = window(x, y, here, here, m_tiles, k_whole, n_whole).count;
         if (
             included && mine.count != 0 && kept != 0 && senders > 1 &&
             senders >= k_blocks
@@ -75,7 +76,9 @@ void kernel_main() {
             uint32_t step = 0;
             for (uint32_t turn = 1; turn <= islands; ++turn) {
                 const uint32_t to = island_at(here, turn);
-                const uint32_t width = columns(y, to, m_tiles, n_whole).count;
+                const uint32_t width = (
+                    window(x, y, here, to, m_tiles, k_whole, n_whole).count
+                );
                 if (width == 0) {
                     continue;
                 }
@@ -118,10 +121,10 @@ void kernel_main() {
                                     : k_block_tiles
                             );
                             const uint32_t rows = (
-                                block_row >= m_tiles
+                                block_row >= made_end
                                     ? 0
-                                    : m_tiles - block_row < block_height
-                                        ? m_tiles - block_row
+                                    : made_end - block_row < block_height
+                                        ? made_end - block_row
                                         : block_height
                             );
                             for (uint32_t tile_row = 0; tile_row < rows; ++tile_row) {
