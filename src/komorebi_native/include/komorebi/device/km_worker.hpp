@@ -22,7 +22,6 @@ namespace km {
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "km_completion.hpp"
-#include "km_link_send.hpp"
 #include "km_trace.hpp"
 #if defined(KM_PAGE_LINKS)
 #include "km_pages.hpp"
@@ -82,9 +81,7 @@ namespace km {
                 if (pages(*command)) {
                     pages_serve(*this, *command, 0, kStReader);
                 } else if (served(*command)) {
-                    if (handler(*command) != KM_HANDLER_LINK) {  // the writer's
-                        serve(*this, *command);
-                    }
+                    serve(*this, *command);
                 } else {
                     body(*command);
                 }
@@ -286,8 +283,11 @@ namespace km {
             uint32_t passes = 0, gave = kGaveNone, sequence = 0;
             const Islands view = islands_at(arguments.control);
             const uint32_t island_first = view.first();
-            const uint32_t rank = island_first + arguments.me;
             const uint32_t link = KM_GROUP_LINK_BASE + (arguments.me - view.ranks());
+            // a link core is in no group of ranks: its name is its link name
+            const uint32_t rank = (
+                link_core(view, arguments.me) ? link : island_first + arguments.me
+            );
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
             for (;;) {
                 invalidate_l1_cache();
@@ -420,21 +420,11 @@ namespace km {
                 }
                 begin(command);
                 result_ = 0;
-#if defined(KM_LINK_CORE)
-                const bool report = (
-                    pages(command) ? pages_serve(*this, command, 1, kStWriter)
-                    : __builtin_expect(served(command), 0)
-                        ? handler(command) != KM_HANDLER_LINK ||
-                            link_.send(*this, command)
-                        : body(command)
-                );
-#else
                 const bool report = (
                     pages(command)
                         ? pages_serve(*this, command, 1, kStWriter)
                         : __builtin_expect(served(command), 0) || body(command)
                 );
-#endif
                 const bool written = flushed(kFlushWrites, kStWriter);
                 trace_.timestamp(command.sequence, kTraceDone);
                 if (
@@ -451,9 +441,6 @@ namespace km {
             }
             pages_end(*this);
             flushed(kFlushWrites, kStWriter);  // the last acknowledgement has landed
-#if defined(KM_LINK_CORE)
-            link_.close(*this);
-#endif
             trace_.flush(arguments.me, *this);
             put_byte(state(), kStEnds, kEndWriter, end);
         }
@@ -522,9 +509,6 @@ namespace km {
 
         Trace trace_;
         uint32_t result_ = 0;
-#if defined(KM_LINK_CORE)
-        LinkSender link_;
-#endif
     };
 
 }  // namespace km

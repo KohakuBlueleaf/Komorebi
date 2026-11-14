@@ -142,3 +142,27 @@ compared each time:
   core pushes at 12.3 GB/s and pulls at 7.4 GB/s; on 16 cores it pushes at 15.0 GB/s
   and pulls at 14.4 GB/s.
 
+
+## Tensors in L1
+
+A tensor held in the cores' L1 (`shard_grid=`, one row a core) goes through the channel
+too: each core that holds a row writes it from its own L1 into the region, or reads it
+from there into its L1, in one PCIe-aware write or read. `l1_tensor.py` writes a random
+pattern into a tensor of `--bytes` a core on every core and reads it back, without a run
+and then inside one, and a tensor 5 cores wide on 3 rows inside the run (one command a
+row), every byte compared:
+
+    TT_VISIBLE_DEVICES=1 python l1_tensor.py --bytes 131072
+
+Card 1, AICLK 1350 MHz at the start and the end, host load 4, one measurement each;
+15 MiB on 120 cores, 0 wrong bytes in every check:
+
+| | write host s | read host s | write on the cores | read on the cores |
+|---|---|---|---|---|
+| no run | 0.92 (the process's first launch; a build of the kernel in it not separated) | 0.113 | 33.5 ms | 29.9 ms |
+| in a run | 0.0028 | 0.0051 | 1.09 ms, 14.4 GB/s | 1.05 ms, 15.0 GB/s |
+
+Through the device API the same read runs at about 2 MB per second (above). Without a
+run the cores' span is the launch's start spread across 120 cores
+([start_spread](../start_spread/README.md)), not their moves. The 60 KiB tensor on 15
+cores inside the run: written in 0.84 ms and read in 0.60 ms, three commands each.

@@ -1,5 +1,5 @@
-// Transfers between DRAM and the session's region of the host channel, and copies
-// between DRAM pages, one rank's slice through two L1 chunks (data movement).
+// Transfers between the session's region of the host channel and DRAM (through two L1
+// chunks) or an L1 tensor (a rank's own page); copies between DRAM pages.
 #pragma once
 
 #include <stdint.h>
@@ -20,7 +20,7 @@ namespace km {
 
     // The arguments a0 to a9 of a PUSH or PULL command (KM_TRANSFER_*).
     struct Transfer {
-        uint32_t address;  // the tensor's bank address (interleaved over the banks)
+        uint32_t address;  // the tensor's bank address, or its address in every L1
         uint32_t page;     // its aligned page bytes
         uint32_t first;    // first page
         uint32_t pages;    // pages of all ranks
@@ -29,7 +29,7 @@ namespace km {
         uint32_t region;   // the region: channel offsets [0, region)
         uint32_t nonce;
         uint32_t buffer;  // L1: two chunks, then a word slot
-        uint32_t chunk;   // bytes of a chunk, a multiple of the page
+        uint32_t chunk;   // bytes of a chunk, a multiple of the page; KM_TRANSFER_L1
     };
 
     inline Transfer transfer_of(const km_command_t& command) {
@@ -60,7 +60,7 @@ namespace km {
     }
 
     // Every bound of a transfer by `count` ranks, checked before anything is issued:
-    // the data and the words inside the region apart, the region inside the channel.
+    // data and words apart in the region, an L1 page above the firmware and the slot.
     inline __attribute__((noinline)) bool transfer_fits(
         const Transfer& t, uint32_t count
     ) {
@@ -68,13 +68,20 @@ namespace km {
             uint64_t{t.pages} * t.page;
         const uint64_t words_end = static_cast<uint64_t>(t.words) +
             uint64_t{count} * KM_TRANSFER_WORD_BYTES;
+        const uint64_t page_end = uint64_t{t.address} + t.page;
+        const uint64_t slot_end = uint64_t{t.buffer} + KM_TRANSFER_WORD_BYTES;
         bool ok = count >= 1 && count <= KM_CORES_MAX && t.pages >= 1;
         ok = ok && t.page >= 16 && t.page % 16 == 0;
-        ok = ok && t.chunk >= t.page && t.chunk % t.page == 0;
+        if (t.chunk == KM_TRANSFER_L1) {
+            ok = ok && t.pages == count && t.address % 16 == 0;
+            ok = ok && t.address >= MEM_MAP_END && page_end <= MEM_L1_SIZE;
+            ok = ok && (page_end <= t.buffer || slot_end <= t.address);
+        } else {
+            ok = ok && t.chunk >= t.page && t.chunk % t.page == 0;
+        }
         ok = ok && t.offset % 16 == 0 && t.region % 16 == 0 && t.buffer % 16 == 0;
         ok = ok && t.region <= KM_CHANNEL_BYTES && end <= t.region;
-        ok = ok &&
-            uint64_t{t.buffer} + 2ull * t.chunk + KM_TRANSFER_WORD_BYTES <= MEM_L1_SIZE;
+        ok = ok && slot_end + 2ull * t.chunk <= MEM_L1_SIZE;
         ok = ok && t.words % 16 == 0 && words_end <= t.region;
         return ok && (words_end <= t.offset || t.words >= end);
     }
@@ -114,6 +121,38 @@ namespace km {
         return wait(writes_acked) ? kTransferDone : kTransferWrite;
     }
 
+    // Rank `rank` moves its L1 page to (push) or from the channel in one PCIe-aware
+    // write or read, then writes its sequence word.
+    template <typename Wait>
+    __attribute__((noinline)) uint32_t
+    move_l1(const Transfer& t, uint32_t rank, bool push, Wait wait) {
+        const uint64_t start = wall64();
+        const uint32_t at = t.offset + rank * t.page;
+        uint32_t status = kTransferDone;
+        if (push) {
+            noc_async_write_set_pcie_state(pcie_noc() | at);
+            noc_async_write_with_state(t.address, at, t.page);
+            if (!wait(writes_acked)) {
+                status = kTransferWrite;
+            }
+            noc_async_write_clear_pcie_state();
+        } else {
+            noc_async_read_set_pcie_state(pcie_noc() | at);
+            noc_async_read_with_state(at, t.address, t.page);
+            if (!wait(reads_landed)) {
+                status = kTransferRead;
+            }
+            noc_async_read_clear_pcie_state();
+        }
+        if (status == kTransferDone) {
+            status = transfer_word(t, rank, t.page, start, wait);
+        }
+        if (!noc_cmd_bufs_mid_clear()) {
+            status = kTransferRouting;
+        }
+        return status;
+    }
+
     // Rank `rank` of `count` pushes its pages to the channel (set, the writes, flush,
     // clear), then its sequence word. wait(ready) polls with a bound: false on timeout.
     template <typename Wait>
@@ -122,6 +161,9 @@ namespace km {
         static_assert(sizeof(Wait) > 0 && NOC_INDEX == 0, "PCIe coordinates of NoC 0");
         if (rank >= count || !transfer_fits(t, count)) {
             return kTransferRefused;
+        }
+        if (t.chunk == KM_TRANSFER_L1) {
+            return move_l1(t, rank, true, wait);
         }
         const uint64_t start = wall64();
         const Partition share = partition(t.pages, rank, count);
@@ -194,6 +236,9 @@ namespace km {
         static_assert(sizeof(Wait) > 0 && NOC_INDEX == 0, "PCIe coordinates of NoC 0");
         if (rank >= count || !transfer_fits(t, count)) {
             return kTransferRefused;
+        }
+        if (t.chunk == KM_TRANSFER_L1) {
+            return move_l1(t, rank, false, wait);
         }
         const uint64_t start = wall64();
         const Partition share = partition(t.pages, rank, count);

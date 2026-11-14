@@ -131,15 +131,22 @@ namespace km {
         return {start - low, end > start ? end - start : 0};
     }
 
-    // The name local core `me` has in `command`'s group: in a group of link cores,
-    // KM_GROUP_LINK_BASE + its link-core index (a rank core's is in no such group);
-    // else its flat rank. Its rank in the group: this less the group's first.
+    // Whether local core `me` is a link core: a core after the island's ranks.
+    inline bool link_core(const Islands& view, uint32_t me) {
+        return view.ranks() != 0 && me >= view.ranks();
+    }
+
+    // The name local core `me` has in `command`'s group: a link core's is always
+    // KM_GROUP_LINK_BASE + its link-core index (in no group of ranks), a rank core's
+    // its flat rank (in no group of link cores). Its rank in the group: this less the
+    // group's first.
     inline uint32_t name_in(
         const Islands& view, uint32_t me, const km_command_t& command
     ) {
         return (
-            KM_GROUP_IS_LINK(first(command)) ? KM_GROUP_LINK_BASE + (me - view.ranks())
-                                             : view.first() + me
+            link_core(view, me) || KM_GROUP_IS_LINK(first(command))
+                ? KM_GROUP_LINK_BASE + (me - view.ranks())
+                : view.first() + me
         );
     }
 

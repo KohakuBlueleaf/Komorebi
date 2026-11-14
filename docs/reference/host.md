@@ -181,7 +181,7 @@ The session sends each group a load of its own program before `session.load` ret
 ## `Session`
 
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`.
 
 - `cards=[a, b, ...]` gives one session over them, each card's chip an island with flat
   ranks ([Islands](islands.md)); `cards=[a]` is that session over one island, `card=a`
@@ -253,6 +253,11 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
   session opens the device with the runtime's `worker_l1_size` that gives it, so it is
   set only when the session opens the device. `session.l1()` returns `(kernel buffer,
   L1 left)` of the open device, from the runtime's layout.
+- `slow_code` lets a load place code at or above 1 MB of L1. A core's code (the
+  kernels, then the overlay slots as the run's first circular buffer) sits at the
+  bottom of L1 and its circular buffers above it, because a taken branch to code at or
+  above 0x100000 costs about 4 cycles more; a load whose slots would end there raises
+  `km.SlowCodeError` unless `slow_code=True`.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
@@ -350,13 +355,16 @@ are rounded to nearest, ties to even; `komorebi.formats` has the conversions
 own.
 
 Reading tensors while a run is loaded. `session.read(*tensors)` returns the raw pages
-of interleaved DRAM tensors (`[pages, page_bytes]` uint8 each) and
+of tensors in DRAM or L1 (`[pages, page_bytes]` uint8 each; an L1 tensor's page is
+one core's row) and
 `session.read_bf16(*tensors)` bfloat16 tile tensors as float32 arrays. Page p of such a
 tensor lies in DRAM bank p % banks, so the native module reads each bank's pages in one
 go, after one DRAM barrier for all the tensors of the call. These reads do not wait for
 the cores to be idle, so they work while a run is loaded; read then only what no kernel
-writes any more (an output whose command's event has arrived). The control blocks live
-in L1 and are read with `Tensor.read()` after the stop.
+writes any more (an output whose command's event has arrived). An L1 tensor is read
+this way only through the host channel (next section); without it `session.read` reads
+it whole through the device API, which waits for the cores, so not while a run is
+loaded (`km.ChannelError`).
 
 A part of one tensor is read the same way:
 
@@ -364,7 +372,7 @@ A part of one tensor is read the same way:
 |---|---|
 | `session.read(tensor, first=0, pages=None)` | `[pages]`: pages `first` .. `first + pages - 1` as one `[pages, page_bytes]` uint8 array (`pages=None`: to the end); a range outside the tensor raises `km.KomorebiError` naming its page count |
 | `session.read_chunks(tensor, chunk_bytes=2 << 20)` | a generator of `(first, pages)` over the whole tensor, each chunk at most `chunk_bytes` |
-| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them) into pages `first` .. `first + n - 1` of an interleaved DRAM tensor, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
+| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them) into pages `first` .. `first + n - 1` of a tensor in DRAM or L1, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
 | `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]` |
 
 Through the device API, reading back is slow: about 2 MB per second (a 20 MiB frame in
@@ -378,19 +386,21 @@ hang), and check a large result by sample, from `read` or `read_tiles_bf16`.
 When a card opens, the driver maps 1 GiB of pinned host memory that the cores reach
 through the PCIe tile. The session finds the mapping in `/proc/self/maps`, keeps the
 region `[0, channel)` of it and zeroes the region's last 64 KiB: one 64-byte sequence
-word a core. The rest holds data. Each transfer moves pages between an interleaved
-DRAM tensor and the region: up to 16 cores take a contiguous share each. Each core
-moves its share through two chunks of L1 (16 KiB each, or a page each when pages are
-larger) with tt-metal's PCIe-aware calls
-(set, the writes or reads, the flush, clear), then writes its sequence word (a fresh
-nonce, its bytes, its rank). The host copies out only after every word arrived. A
-transfer larger than the region's data goes in rounds, one transfer at a time.
+word a core. The rest holds data. Each transfer moves pages between a tensor and the
+region. For an interleaved DRAM tensor up to 16 cores take a contiguous share each and
+move it through two chunks of L1 (16 KiB each, or a page each when pages are larger).
+For a tensor in L1 each core that holds a page moves it between its own L1 and the
+region in one write or read: no DRAM, no chunks. Every move uses tt-metal's PCIe-aware
+calls (set, the writes or reads, the flush, clear); then the core writes its sequence
+word (a fresh nonce, its bytes, its rank). The host copies out only after every word
+arrived. A transfer larger than the region's data goes in rounds, one transfer at a
+time.
 
 | The session | A read (`read`, `read_chunks`) or a write (`write`, `tensor`) goes |
 |---|---|
-| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's service overlay ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms |
-| no run, 80 KiB or more | through a one-shot transfer kernel on row 0; its launch costs about 30 ms, as the device API's read of some 76 KiB does |
-| no run and less than 80 KiB, a tensor in L1, no channel | through the device API, as before |
+| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's service overlay ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms. An L1 tensor takes one command for each run of its cores that are consecutive in core order and hold one program (one for a tensor as wide as the grid, one a row for a narrower one); if one of its cores holds no program it goes through the device API |
+| no run, 80 KiB or more | through a one-shot transfer kernel: on row 0 for a DRAM tensor, on the cores that hold the pages for an L1 tensor; its launch costs about 30 ms, as the device API's read of some 76 KiB does |
+| no run and less than 80 KiB, no channel | through the device API, as before |
 
 A page over 16 KiB is its own chunk, so it goes through the channel too, in a launch
 when two pages fit a core's L1 and in a run when the run's transfer buffer holds one.
@@ -400,15 +410,14 @@ buffers (a run with overlays, or whose groups switch program, keeps 16 KiB chunk
 tensor with larger pages made after the load, or a page too large for the L1 or for
 the region's data, is read through the device API.
 
-What still goes through the device API, and why: a tensor in L1, because the channel
-moves pages between host memory and an interleaved DRAM tensor with the cores' DRAM
-reads and writes, and an L1 tensor is a row in each core's own memory, not pages of
-a bank; and a read of less than 80 KiB without a run, because a launch costs more than
-the device API's read.
+What still goes through the device API, and why: a read of less than 80 KiB without
+a run, because a launch costs more than the device API's read; and an L1 tensor in a
+run where one of its cores holds no program, because no core would serve its page.
 
 Every offset is checked twice before anything moves: on the host (`km.ChannelError`)
-and in the kernel, against the region and the core's L1. A core that refuses writes
-nothing. Card 1, a p150a at x8 16 GT/s, host seconds of a whole tensor (median of
+and in the kernel, against the region and the core's L1; an L1 tensor's page must also
+lie above the firmware's part of L1 and apart from the core's word slot (that floor is
+the kernel's check alone). A core that refuses writes nothing. Card 1, a p150a at x8 16 GT/s, host seconds of a whole tensor (median of
 three, every byte compared; `experiments/host_push/framework.py`):
 
 | | 20 MiB frame read | 94 MB tensor read | 20 MiB write | 94 MB write |
@@ -416,6 +425,12 @@ three, every byte compared; `experiments/host_push/framework.py`):
 | device API | 10.1 | 43.3 | 0.080 | 0.207 |
 | channel, no run | 0.030 | 0.050 | 0.047 | 0.041 |
 | channel, in a run | 0.0067 | 0.023 | 0.0055 | 0.026 |
+
+An L1 tensor of 128 KiB a core on all 120 cores (15 MiB), card 1, AICLK 1350 MHz, host
+load 4, one measurement each, every byte compared (`experiments/host_push/l1_tensor.py`):
+inside a run written in 2.8 ms and read in 5.1 ms (5.5 and 3.1 GB/s for the host; 1.09
+and 1.05 ms on the cores, 14.4 and 15.0 GB/s); without a run read in 0.11 s, the
+launch's cost. The device API reads at about 2 MB per second (above).
 
 The session takes the channel's address from the driver's own record of the card's
 host memory and checks it against the process's mappings (1 GiB, read-write, a file
@@ -629,6 +644,7 @@ All derive from `km.KomorebiError`.
 | `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core |
 | `L1LayoutError` | programs that share cores declare one buffer index two ways; an `L1BudgetError` | `table` |
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
+| `SlowCodeError` | the overlay slots, which sit just above the kernel buffer, would end above 1 MB of L1 (a kernel buffer near 1 MB); a `ProgramError`, raised before anything is launched. `Session(slow_code=True)` loads it anyway | `end`: the slots' end in L1 |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |

@@ -3,7 +3,9 @@ runtime over it, a dispatcher and the persistent grid on every island. Ranks are
 and contiguous by island; a command's group is split by island on the host, a tensor
 is placed by island. `Session(cards=[...])` returns this; one card is one island."""
 
+import copy
 import os
+import secrets
 import struct
 import time
 
@@ -16,8 +18,14 @@ from komorebi.errors import CardBusy, KomorebiError, WaitTimeout
 from komorebi.program import Program
 
 M32 = 0xFFFFFFFF
-SLICE_S = 0.001  # an island's turn in wait_together
+SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
+# The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
+# sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
+LINK_ARGS = 9
+LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
+LINK_TAIL = 0x20 + 2 * 16 * 256
+LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 
 
 def _named(error, island):
@@ -35,32 +43,13 @@ def _left(deadline):
 
 
 class LinkPlan:
-    """Island `island`'s link toward island `far` for commands across: its link core
-    (`core`, an index of its cores and a rank like any other), the core's link area
-    in L1 (`area`) and the fabric's Ethernet channel toward `far`."""
+    """Island `island`'s link toward island `far` for commands across: its link core 0
+    (`core`, its index in the island's cores, after the ranks), whose link 0 CPU holds
+    link 0's connection and sends the lines, and that core's link area (`area`)."""
 
-    def __init__(self, graph, island, far, core, area, channel):
+    def __init__(self, graph, island, far, core, area):
         self.graph, self.island, self.far = graph, island, far
-        self.core, self.area, self.channel = core, area, channel
-
-    def connection(self):
-        """The link core writer's last runtime arguments: the connection's channel,
-        teardown and cursor words."""
-        headers = abi.headers()
-        return [
-            self.channel,
-            self.area + headers["KM_LINK_TEARDOWN"],
-            self.area + headers["KM_LINK_CURSOR"],
-        ]
-
-    def defines(self, arg):
-        """The kernels' defines: the link core, its area, the connection's arguments
-        at runtime argument `arg` of its writer."""
-        return [
-            ("KM_LINK_CORE", str(self.core)),
-            ("KM_LINK_AREA", str(self.area)),
-            ("KM_LINK_ARG", str(arg)),
-        ]
+        self.core, self.area = core, area
 
     def line(self, dispatch):
         """The dispatcher's link line and island table (KMD_LIM_LINK). The far island's
@@ -83,14 +72,6 @@ class LinkPlan:
             )
             words[table + 2 * island + 1] = threads.start | len(threads) << 16
         return struct.pack(f"<{len(words)}I", *words)
-
-
-def link_core(device, columns, eth_x):
-    """The row-0 core nearest at or right of the link's Ethernet core (x): its index."""
-    right = [x for x in range(columns) if device.worker_core(x, 0)[0] >= eth_x]
-    if right:
-        return min(right, key=lambda x: device.worker_core(x, 0)[0])
-    return max(range(columns), key=lambda x: device.worker_core(x, 0)[0])
 
 
 class IslandTensor:
@@ -150,9 +131,12 @@ class IslandRun:
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
     and it completes when every part has. Errors name the island (`error.island`)."""
 
-    def __init__(self, graph, runs):
+    def __init__(self, graph, runs, linked=False):
         self.graph = graph
         self.runs = tuple(runs)
+        # a dynamic program's messages cross: a dynamic RUN takes every rank, and link
+        # core 0 of each island serves it (a PAGES command of mode MESSAGES)
+        self.linked = linked
         self.cores = graph.ranks
         self.program = self.runs[0].program
         self._next = 1  # the next ticket
@@ -174,6 +158,8 @@ class IslandRun:
         (default every rank): a part on each island it touches. Returns its ticket."""
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
+        if self._dynamic(handler):
+            self._serve_links(group)
         self._grow(1)
         ticket = self._next
         for island, _first, _count in parts:
@@ -211,6 +197,11 @@ class IslandRun:
                 f"group ({int(first[i])}, {int(count[i])}) of {self.cores} ranks"
             )
         rows = len(first)
+        for row in range(rows if self.linked else 0):
+            if self._dynamic(handler if scalar else handlers[row]):
+                raise ValueError(
+                    "a dynamic RUN over a link is submitted alone (submit)"
+                )
         self._grow(rows)
         tickets = np.arange(self._next, self._next + rows)
         for island, run in enumerate(self.runs):
@@ -236,12 +227,40 @@ class IslandRun:
         self._next += rows
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
 
-    def send(self):
-        """Gives every island's queued commands to its dispatcher, so that the
-        islands run their parts at once while the host waits on one."""
+    def _dynamic(self, handler):
+        """Whether `handler` is a dynamic handler of a program whose messages cross."""
+        if not self.linked:
+            return False
+        number, _ = self.runs[0]._handler(handler)
+        return number in self.program.messages.handlers
+
+    def _serve_links(self, group):
+        """Before a dynamic RUN over a link: its group is every rank, and link core 0
+        of each island is given the RUN's group word to serve its messages across."""
+        if group != (0, self.cores):
+            raise ValueError(
+                f"group {group}: a dynamic RUN over a link takes every rank "
+                f"(0, {self.cores})"
+            )
+        h = abi.headers()
+        words = [0] * 10
+        words[h["KM_PAGES_FROM"]] = group[0] | group[1] << 16
+        words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_MESSAGES"] << 24 | 1 << 16
         for island, run in enumerate(self.runs):
             try:
-                run._hand()
+                run._queue_command(
+                    h["KM_HANDLER_PAGES"], self.graph.link_group(island, 0, 1), words
+                )
+            except KomorebiError as error:
+                raise _named(error, island) from None
+
+    def send(self):
+        """Stores every island's queued commands on its card, so that the islands run
+        their parts at once (a run over a link needs every part started) while the
+        host waits on one."""
+        for island, run in enumerate(self.runs):
+            try:
+                run.store()
             except KomorebiError as error:
                 raise _named(error, island) from None
 
@@ -392,6 +411,7 @@ class IslandSession:
         grid_timeout=10.0,
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
+        slow_code=False,
     ):
         self.cards = tuple(int(card) for card in cards)
         if not self.cards or len(set(self.cards)) != len(self.cards):
@@ -400,13 +420,15 @@ class IslandSession:
             raise ValueError(
                 f"links={links}: 0, or 1 to {self.LINKS_MAX} between two islands"
             )
-        self.links = links
+        # two islands always have link 0 (commands across ride it): links 0 is 1
+        self.links = links or (1 if len(self.cards) == 2 else 0)
         self.log = log or (lambda message: None)
         self._options = {
             "pll_mhz": pll_mhz,
             "tree": tree,
             "grid_timeout": grid_timeout,
             "channel": channel,
+            "slow_code": slow_code,
         }
         self.kernel_bytes = kernel_bytes
         self._worker_l1 = session_module.worker_l1_size(kernel_bytes)
@@ -417,6 +439,7 @@ class IslandSession:
         self.graph = None
         self.run = None
         self.link_cores = ()  # per island: the local cores (core table) of its links
+        self._regions = []  # the message service's L1 region on every core, by island
         self.channels = ()  # per island: the Ethernet channel of each link it sends on
 
     def __enter__(self):
@@ -652,6 +675,8 @@ class IslandSession:
                 f"an island session loads one Program or a list of "
                 f"{len(self.sessions)}, one an island"
             )
+        if self.links:
+            programs = self._linked(programs)
         defines = [one.defines for one in programs]
         if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
             for one, own in zip(programs, defines):
@@ -678,7 +703,7 @@ class IslandSession:
         finally:
             for one, own in zip(programs, defines):
                 one.defines = own
-        self.run = IslandRun(self.graph, runs)
+        self.run = IslandRun(self.graph, runs, linked=bool(self._regions))
         if self.links:
             try:
                 self._hold_links()
@@ -694,6 +719,12 @@ class IslandSession:
         ends, and says hello to the far link core's same CPU (an OPEN a link core,
         waited together): no send goes out before the far side runs."""
         h = abi.headers()
+        tables = [list(run.backend.port.core_table()) for run in self.run.runs]
+        if tables[0] != tables[1]:
+            raise KomorebiError(
+                "the islands' core tables differ: a link core that pushes a rank's "
+                "pages finds the far core in its own table"
+            )
         waits = []
         for here in range(2):
             there = 1 - here
@@ -792,6 +823,47 @@ class IslandSession:
             raise ValueError(f"pages {first} + {pages}: island {island} holds them")
         return self.send_pages(tensor, first, pages, to, core, core, port)
 
+    def ask_range(self, tensor, first, pages, group, to, port):
+        """One ask for every rank of `group` (first rank, ranks; all on one island):
+        rank first + i gets pages first + i * pages .. of `tensor` (held by another
+        island) into L1 address `to` of its core, counted at its port `port`. One
+        command to the holder's link cores, which split the ranks among their CPUs.
+        Returns (holder, handle)."""
+        h = abi.headers()
+        if self.ASKS_BY != "host":
+            raise KomorebiError(f"asks by {self.ASKS_BY!r}: not built (only 'host')")
+        rank, ranks = group
+        island, local = self.graph.resolve(rank)
+        if ranks < 1 or self.graph.resolve(rank + ranks - 1)[0] != island:
+            raise ValueError(f"group {group}: not one island's ranks")
+        holders = tensor.holders(first, pages * ranks)
+        if len(holders) != 1 or holders[0][0] == island:
+            raise ValueError(
+                f"pages {first} + {pages * ranks}: held by islands {holders}, not by "
+                f"one other than island {island}"
+            )
+        holder = holders[0][0]
+        if not 0 <= port < h["KM_PORTS"] or ranks > 0xFFFF:
+            raise ValueError(f"port {port}, ranks {ranks}")
+        buffer, chunk = self.staging(holder)
+        links = list(self.channels[holder]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
+        words = [0] * 10
+        words[h["KM_PAGES_FROM"]] = tensor.address
+        words[h["KM_PAGES_PAGE"]] = tensor.aligned_page_bytes
+        words[h["KM_PAGES_FIRST"]] = first
+        words[h["KM_PAGES_PAGES"]] = pages
+        words[h["KM_PAGES_TO"]] = to
+        core = self.graph.rank_cores[island][local]
+        words[h["KM_PAGES_TO_CORE"]] = core | chunk // 64 << 16
+        words[h["KM_PAGES_COUNT"]] = self.port_address(island, port)
+        words[h["KM_PAGES_COUNTER"]] = ranks | 1 << 16 | h["KM_PAGES_RANGE"] << 24
+        words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
+        words[h["KM_PAGES_BUFFER"]] = buffer
+        handle = self.run.island(holder)._queue_command(
+            h["KM_HANDLER_PAGES"], self.graph.link_group(holder), words
+        )
+        return holder, handle
+
     def wait_pages(self, island, core, pages, port=None):
         """Queues on local core `core` of `island` a wait (bounded) until port `port`'s
         count has reached `pages`, which it then takes off. Returns the handle."""
@@ -817,7 +889,7 @@ class IslandSession:
 
     def wait_together(self, waits, timeout=10.0):
         """Waits, within one `timeout`, for [(island, handle)] of the islands' own runs,
-        a short native slice an island in turn: a host's commands reach an island's
+        one native round an island in turn: a host's commands reach an island's
         ring only while the host waits on it, and pages crossing need both islands'.
         Returns the events in the order given; errors name their island."""
         mine = {}
@@ -882,29 +954,79 @@ class IslandSession:
             "seconds": seconds,
         }
 
+    def _linked(self, programs):
+        """The dynamic programs with the message service's arguments after their own
+        reader and writer arguments and KM_LINKS defined: a region on every core of
+        each island, link core 0's NoC place across, one token for both hellos."""
+        for region in self._regions:
+            region.free()
+        self._regions = []
+        dynamic = [one.messages for one in programs if one.messages is not None]
+        if not dynamic:
+            return programs
+        if any(messages.x280_ranks for messages in dynamic):
+            raise ValueError("X280 ranks over a link are not done yet")
+        entry = LINK_PREFIX + max(messages.message_bytes for messages in dynamic)
+        size = (
+            LINK_OUTBOX_AT + LINK_OUTBOX * entry + (LINK_INBOX + 1) * LINK_PACKET_BYTES
+        ) + LINK_TAIL
+        for session in self.sessions:
+            columns, rows = session.grid
+            self._regions.append(
+                session.empty(
+                    (columns * rows, (size + 63) // 64 * 16),
+                    "uint32",
+                    shard_grid=session.grid,
+                )
+            )
+        token = secrets.randbits(31) | 1
+        out = []
+        for island, one in enumerate(programs):
+            if one.messages is None:
+                out.append(one)
+                continue
+            words = self._link_words(island, one.messages.message_bytes, token)
+            out.append(_with_link(one, words))
+        return out
+
+    def _link_words(self, island, message_bytes, token):
+        """LinkArgs of island `island`'s cores: its link core 0, the far one's."""
+        far = 1 - island
+        place = self.noc_of(far, self.link_cores[far][0])
+        words = [
+            self.link_cores[island][0],
+            self._regions[island].address,
+            LINK_OUTBOX,
+            LINK_INBOX,
+            LINK_PACKET_BYTES // (LINK_PREFIX + message_bytes),
+            island,
+            (place & 0xFF) | (place >> 8) << 16,
+            self._regions[far].address,
+            token,
+        ]
+        assert len(words) == LINK_ARGS
+        return words
+
     def _links(self):
         """Each island's LinkPlan for commands across (two islands), else None each:
-        its link core under link 0's Ethernet core, a link area on every core."""
-        if len(self.sessions) != 2 or self.links:
-            # with page links: none (their CPU of link 0 would be a second sender on
-            # link 0's connection, which hangs the cards)
+        its link core 0, a link area on every core."""
+        if len(self.sessions) != 2:
             return [None] * len(self.sessions)
         bytes_ = abi.headers()["KM_LINK_AREA_BYTES"]
         plans = []
         self._link_areas = []
         for island, session in enumerate(self.sessions):
             far = 1 - island
-            _links, channel, eth_x, _eth_y = self.mesh.link(island, far, 0)
             columns, rows = session.grid
             area = session.empty(
                 (columns * rows, bytes_ // 4), "uint32", shard_grid=(columns, rows)
             )
             self._link_areas.append(area)
-            core = link_core(session.device, columns, eth_x)
-            plans.append(LinkPlan(self.graph, island, far, core, area.address, channel))
+            core = self.link_cores[island][0]
+            plans.append(LinkPlan(self.graph, island, far, core, area.address))
             self.log(
-                f"island {island}: link core {core}, channel {channel}, area "
-                f"{area.address:#x}"
+                f"island {island}: commands across on link core {core}, channel "
+                f"{self.channels[island][0]}, area {area.address:#x}"
             )
         return plans
 
@@ -945,3 +1067,29 @@ class IslandSession:
                 self.close()
             except Exception as error:  # noqa: BLE001 (the process ends: logged)
                 self.log(f"{why}: close raised {type(error).__name__}: {error}")
+
+
+def _with_link(program, words):
+    """A copy of `program` whose reader and writer take `words` after their own
+    arguments (as many on both), built with KM_LINKS."""
+    own = program.core_args(0)
+    after = len(own[0])
+    if len(own[1]) != after:
+        raise ValueError(
+            f"{program.name}: over a link the reader and the writer take as many "
+            f"arguments ({len(own[0])}, {len(own[1])})"
+        )
+
+    def args(core):
+        reader, writer, compute = program.core_args(core)
+        if len(reader) != after or len(writer) != after:
+            raise ValueError(
+                f"{program.name}: core {core}'s reader and writer arguments are not "
+                f"{after} each"
+            )
+        return [*reader, *words], [*writer, *words], compute
+
+    linked = copy.copy(program)
+    linked.args = args
+    linked.defines = {**program.defines, "KM_LINKS": 1, "KM_LINK_ARGS_AFTER": after}
+    return linked
