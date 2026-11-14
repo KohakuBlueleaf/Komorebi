@@ -1,6 +1,7 @@
 """Bucket sort over two cards as the islands of one session: island 0's ranks and
 thread sort, the output held by island 0 (each key's word a NoC write), then by island
-1 (each key's word a byte put across). Checks both against numpy; one JSON line."""
+1 (each key's word a record of a batch put across). Checks both against numpy; one
+JSON line."""
 
 import argparse
 import json
@@ -112,9 +113,12 @@ def main():
         result["place_us_a_key"] = round(result["ms"]["place"] * 1e3 / per_core, 3)
     report.update(results)
     crossed = results["across"]["crossed"]
+    batches = crossed["0->1"]["puts"]  # a batch: a line, a piece, a confirmation
+    report["keys_a_batch"] = round(args.keys / batches, 1) if batches else None
     report["crossings_agree"] = (
-        crossed["0->1"]["puts"] == args.keys
-        and crossed["1->0"]["puts"] == args.keys
+        0 < batches <= args.keys
+        and crossed["0->1"]["pages"] == batches
+        and crossed["1->0"]["puts"] == batches
         and not any(results["here"]["crossed"][way]["puts"] for way in crossed)
     )
     report["ok"] = report["crossings_agree"] and all(

@@ -858,24 +858,18 @@ namespace km {
         );
     }
 
-    // One byte line of `bytes` (KM_PUT_INLINE at most) from L1 `source`, sent as a put
-    // line is (ask_line_at), for page `index` of island `holder`. False: gave up.
+    // This CPU's batch at L1 `batch` sent once its last was confirmed (so in order): a
+    // line, then the batch through the rings onto its landing page. False: gave up.
     template <typename Kernel>
-    inline bool put_bytes_line(
-        const Kernel& core,
-        uint32_t slot,
-        uint32_t sequence,
-        uint32_t holder,
-        uint32_t address,
-        uint32_t page,
-        uint32_t index,
-        uint32_t offset,
-        uint32_t bytes,
-        uint32_t source
+    inline bool put_batch_send(
+        const Kernel& core, uint32_t slot, uint32_t sequence, uint32_t batch
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
+        const uint32_t mine = view.own_words();
         const AskQueue queue = ask_puts(core.role());
+        volatile tt_l1_ptr uint32_t* head = l1(batch);
+        const uint32_t holder = head[KM_BATCH_HOLDER];
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
         const auto give_up = [&](uint32_t code) {
             core.gave_up(word, code, kWhereAsk, slot | holder << 8, sequence);
@@ -883,27 +877,35 @@ namespace km {
         };
         const uint32_t me = core.args().me - view.base();
         if (
-            area == 0 || view.hops(holder) != 1 || me >= KM_CORES_MAX || page == 0 ||
-            page % 16 != 0 || page > view.packet() || bytes == 0 ||
-            bytes > KM_PUT_INLINE
+            area == 0 || mine == 0 || view.hops(holder) != 1 || me >= KM_CORES_MAX ||
+            KM_PUT_BATCH_BYTES > view.packet()
         ) {
-            return give_up(kGaveBadItem);  // a link apart, a page a packet holds
+            return give_up(kGaveBadItem);  // a link apart, a batch a packet holds
         }
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
-        volatile tt_l1_ptr uint32_t* mine = l1(area + queue.own);
-        invalidate_l1_cache();
-        const uint32_t parity = mine[KM_PUT_OWN_SENT / 4] & 1u;
-        const uint32_t owner = (
-            (me * 2 + (core.role() == kRoleWriter ? 1 : 0)) * 2 + parity
+        const uint32_t block = (
+            mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0)
         );
-        uint32_t code = core.poll_at(
+        const uint32_t build = block + KM_OWN_BUILD;
+        // the rings and the landing (read with them), before a line is reserved
+        PutRings rings{};
+        uint32_t code = put_rings_read(core, link, area, build, rings);
+        if (code != kGaveNone) {
+            return give_up(code);
+        }
+        const uint32_t landing = l1(build)[(KM_PUT_LANDING - KM_PUT_TAKEN) / 4];
+        if (rings.slots == 0 || landing == 0) {
+            return give_up(kGaveBadItem);  // a batch follows only into rings
+        }
+        volatile tt_l1_ptr uint32_t* own = l1(block);
+        code = core.poll_at(
             kWhereAsk,
             [&] {
                 invalidate_l1_cache();
                 return (
-                    mine[KM_PUT_OWN_NUMBER / 4 + parity] ==
-                    mine[KM_PUT_OWN_CONFIRMED / 4 + parity]
+                    own[KM_OWN_PUT_NUMBER / 4] == own[KM_OWN_PUT_CONFIRMED / 4] &&
+                    own[KM_OWN_PUT_NUMBER / 4 + 1] == own[KM_OWN_PUT_CONFIRMED / 4 + 1]
                 );
             },
             limit
@@ -911,7 +913,11 @@ namespace km {
         if (code != kGaveNone) {
             return give_up(code);
         }
-        volatile tt_l1_ptr uint32_t* returned = l1(area + queue.returned);
+        const uint32_t parity = own[KM_OWN_PUT_SENT / 4] & 1u;
+        const uint32_t owner = (
+            (me * 2 + (core.role() == kRoleWriter ? 1 : 0)) * 2 + parity
+        );
+        volatile tt_l1_ptr uint32_t* returned = l1(mine + queue.returned);
         returned[0] = kAskNoAnswer;
         invalidate_l1_cache();  // a fence: the store lands before the answer can
         noc_fast_atomic_increment<noc_mode, true>(
@@ -923,7 +929,7 @@ namespace km {
             31,
             false,
             false,
-            area + queue.returned
+            mine + queue.returned
         );
         code = core.poll_at(
             kWhereAsk,
@@ -940,25 +946,18 @@ namespace km {
             return give_up(code);
         }
         const uint32_t number = returned[0];
-        const uint32_t build = (
-            area + KM_PUT_BUILD + (core.role() == kRoleWriter ? KM_PUT_BUILD_BYTES : 0)
-        );
-        PutRings rings{};
         code = put_rings_read(core, link, area, build, rings, number);
         if (code != kGaveNone) {
             return give_up(code);
         }
-        volatile tt_l1_ptr uint32_t* line = l1(area + queue.own);
+        const uint32_t first = holder * KM_QUEUE_LINES + owner;  // its landing page
+        volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
         for (uint32_t w = 0; w < 16; w++) {
             line[w] = 0;
         }
-        const volatile uint32_t* from = reinterpret_cast<volatile uint32_t*>(source);
-        for (uint32_t w = 0; w < bytes / 4; w++) {
-            line[KM_ASK_DATA + w] = from[w];
-        }
-        line[KM_ASK_TENSOR] = address;
-        line[KM_ASK_PAGE] = page;
-        line[KM_ASK_FIRST] = index;
+        line[KM_ASK_TENSOR] = landing;
+        line[KM_ASK_PAGE] = KM_PUT_BATCH_BYTES;
+        line[KM_ASK_FIRST] = first;
         line[KM_ASK_PAGES] = 1;
         line[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
         line[KM_ASK_COUNT] = (
@@ -966,15 +965,15 @@ namespace km {
             KM_PORT_COUNT * 4
         );
         line[KM_ASK_HOLDER] = holder;
-        line[KM_ASK_RING] = KM_ASK_RING_BYTES;
+        line[KM_ASK_FROM] = view.here();
+        line[KM_ASK_RING] = KM_ASK_RING_BATCH;
         line[KM_ASK_OWNER] = owner;
-        line[KM_ASK_SPAN] = offset | bytes << 16;
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
         const uint32_t to_line = (
             rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64
         );
-        noc_async_write(area + queue.own, core.core_noc(link, to_line), 64);
+        noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
         code = core.poll_at(
             kWhereAsk,
             [] {
@@ -982,13 +981,32 @@ namespace km {
             },
             limit
         );
-        mine[KM_PUT_OWN_SENT / 4] = mine[KM_PUT_OWN_SENT / 4] + 1;
-        mine[KM_PUT_OWN_NUMBER / 4 + parity] = number + 1;
+        own[KM_OWN_PUT_SENT / 4] = own[KM_OWN_PUT_SENT / 4] + 1;
+        own[KM_OWN_PUT_NUMBER / 4 + parity] = number + 1;
+        if (code == kGaveNone) {
+            PutRun run;
+            put_run_clear(run);
+            run.rings = rings;
+            run.holder = holder;
+            run.area = area;
+            run.build = build;
+            run.answer = mine + queue.returned;
+            run.number = number;
+            run.hops = 1;
+            run.address = landing;
+            run.bytes = KM_PUT_BATCH_BYTES;
+            run.first = first;
+            run.pages = 1;
+            run.owner = owner;
+            code = put_ring_pieces(core, run, batch, 1);
+        }
+        head[KM_BATCH_USED] = KM_BATCH_HEAD;
+        head[KM_BATCH_RECORDS] = 0;
         return code == kGaveNone || give_up(code);
     }
 
-    // `bytes` bytes at byte `offset` of page `page` of `tensor` become those at L1
-    // `source`, nothing else of the page; not waited (put_wait). False: gave up.
+    // Bytes `offset` on of page `page` become L1 `source`'s, unwaited (put_wait): here
+    // a NoC write (`source` kept), else a record in this CPU's batch. False: gave up.
     template <typename Kernel, uint32_t Base>
     inline bool put_bytes(
         const Kernel& core,
@@ -1001,20 +1019,17 @@ namespace km {
     ) {
         // multiples of 4 inside the page, `source` with the offset's low 4 bits
         const uint32_t page_bytes = tensor.page_bytes();
+        const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
         if (
             bytes == 0 || (offset | bytes) % 4 != 0 || offset >= page_bytes ||
             bytes > page_bytes - offset || (source ^ offset) % 16 != 0
         ) {
             core.gave_up(
-                core.role() == kRoleWriter ? kStWriter : kStReader,
-                kGaveBadTransfer,
-                kWhereAsk,
-                slot(command),
-                command.sequence
+                word, kGaveBadTransfer, kWhereAsk, slot(command), command.sequence
             );
             return false;
         }
-        if constexpr (Tensor<Base>::kLocal) {  // here: a NoC write, `source` kept
+        if constexpr (Tensor<Base>::kLocal) {
             noc_async_write(source, tensor.accessor.get_noc_addr(page, offset), bytes);
             return true;
         } else {
@@ -1028,34 +1043,83 @@ namespace km {
                 );
                 return true;
             }
-            // another island's: byte lines its link core 0 writes, `source` free
-            for (uint32_t done = 0; done < bytes; done += KM_PUT_INLINE) {
-                const uint32_t left = bytes - done;
-                if (!put_bytes_line(
-                    core,
-                    slot(command),
-                    command.sequence,
-                    at.island,
-                    at.address,
-                    page_bytes,
-                    at.index,
-                    offset + done,
-                    left < KM_PUT_INLINE ? left : KM_PUT_INLINE,
-                    source + done
-                )) {
+            const uint32_t own = islands_at(core.args().control).own_words();
+            const uint32_t batch = put_batch(own, core.role() == kRoleWriter ? 1 : 0);
+            if (batch == 0 || offset + bytes > (1u << KM_BATCH_SPAN_SHIFT)) {
+                core.gave_up(
+                    word,
+                    kGaveBadItem,
+                    kWhereAsk,
+                    slot(command) | at.island << 8,
+                    command.sequence
+                );
+                return false;
+            }
+            volatile tt_l1_ptr uint32_t* head = l1(batch);
+            if (  // an earlier command's, or none yet
+                head[KM_BATCH_SEQUENCE] != command.sequence ||
+                head[KM_BATCH_USED] < KM_BATCH_HEAD
+            ) {
+                head[KM_BATCH_USED] = KM_BATCH_HEAD;
+                head[KM_BATCH_RECORDS] = 0;
+                head[KM_BATCH_SEQUENCE] = command.sequence;
+            }
+            // a record's bytes at most: a batch's, less its header, the record's and
+            // the offset's low 4 bits
+            constexpr uint32_t most = KM_PUT_BATCH_BYTES - 3 * KM_BATCH_HEAD;
+            for (uint32_t done = 0; done < bytes;) {
+                const uint32_t to = offset + done;
+                const uint32_t n = bytes - done < most ? bytes - done : most;
+                const uint32_t size = KM_BATCH_HEAD + (to % 16 + n + 15) / 16 * 16;
+                if (
+                    head[KM_BATCH_RECORDS] != 0 &&
+                    (
+                        head[KM_BATCH_HOLDER] != at.island ||
+                        head[KM_BATCH_USED] + size > KM_PUT_BATCH_BYTES
+                    ) &&
+                    !put_batch_send(core, slot(command), command.sequence, batch)
+                ) {
                     return false;
                 }
+                head[KM_BATCH_HOLDER] = at.island;
+                const uint32_t record = batch + head[KM_BATCH_USED];
+                l1(record)[0] = at.address;
+                l1(record)[1] = at.index;
+                l1(record)[2] = page_bytes;
+                l1(record)[3] = to | n << KM_BATCH_SPAN_SHIFT;
+                volatile tt_l1_ptr uint32_t* into = (
+                    l1(record + KM_BATCH_HEAD + to % 16)
+                );
+                const volatile tt_l1_ptr uint32_t* from = l1(source + done);
+                for (uint32_t w = 0; w < n / 4; w++) {
+                    into[w] = from[w];
+                }
+                head[KM_BATCH_USED] = head[KM_BATCH_USED] + size;
+                head[KM_BATCH_RECORDS] = head[KM_BATCH_RECORDS] + 1;
+                done += n;
             }
             return true;
         }
     }
 
-    // Reader or writer: waits until every byte line this CPU sent was confirmed (its
-    // bytes written there) and its own writes here are written. False: gave up.
+    // This CPU's batch sent, then waits until its batches were confirmed (written
+    // there) and its writes here are written. False: gave up.
     template <typename Kernel>
     inline bool put_wait(const Kernel& core, const km_command_t& command) {
-        const uint32_t area = islands_at(core.args().control).link_area();
-        const volatile tt_l1_ptr uint32_t* mine = l1(area + ask_puts(core.role()).own);
+        const uint32_t mine = islands_at(core.args().control).own_words();
+#if defined(KM_TENSOR_TABLE)  // else every page is here: no batch
+        const uint32_t batch = put_batch(mine, core.role() == kRoleWriter ? 1 : 0);
+        if (
+            batch != 0 && l1(batch)[KM_BATCH_SEQUENCE] == command.sequence &&
+            l1(batch)[KM_BATCH_RECORDS] != 0 &&
+            !put_batch_send(core, slot(command), command.sequence, batch)
+        ) {
+            return false;
+        }
+#endif
+        const volatile tt_l1_ptr uint32_t* own = (
+            l1(mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0))
+        );
         const uint32_t code = core.poll_at(
             kWhereAsk,
             [&] {
@@ -1063,12 +1127,12 @@ namespace km {
                 return (
                     ncrisc_noc_nonposted_writes_flushed(noc_index) &&
                     (
-                        area == 0 ||
+                        mine == 0 ||
                         (
-                            mine[KM_PUT_OWN_NUMBER / 4] ==
-                                mine[KM_PUT_OWN_CONFIRMED / 4] &&
-                            mine[KM_PUT_OWN_NUMBER / 4 + 1] ==
-                                mine[KM_PUT_OWN_CONFIRMED / 4 + 1]
+                            own[KM_OWN_PUT_NUMBER / 4] ==
+                                own[KM_OWN_PUT_CONFIRMED / 4] &&
+                            own[KM_OWN_PUT_NUMBER / 4 + 1] ==
+                                own[KM_OWN_PUT_CONFIRMED / 4 + 1]
                         )
                     )
                 );

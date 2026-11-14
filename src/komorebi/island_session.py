@@ -2047,7 +2047,7 @@ class IslandSession:
             len(self.sessions)
         )
         if self.links:
-            size += h["KM_OWN_BYTES"]
+            size += h["KM_OWN_ALL_BYTES"]
             if not apart:
                 size += h["KM_LINK_AREA_BYTES"] + -(-h["KM_RELAY_BYTES"] // 64) * 64
         return size
@@ -2085,6 +2085,7 @@ class IslandSession:
         # the page CPUs (the last links): every link when no message service holds
         # link 0, else links 1 on (link 0 alone)
         cpus = self.links if not self._regions else max(self.links - 1, 1)
+        landings = self._landings(h)
         for island, session in enumerate(self.sessions):
             far = self.graph.neighbours(island)[0]
             columns, rows = session.grid
@@ -2106,8 +2107,8 @@ class IslandSession:
                 (area, relay), own = self._areas[0], self._held[0]["own words"][0]
                 self._held.append({})
             else:
-                own = session.tensor(  # zeros: no line, answer or done word
-                    np.zeros((columns * rows, h["KM_OWN_BYTES"] // 4)),
+                own = session.tensor(  # zeros: no line, answer, done word or batch
+                    np.zeros((columns * rows, h["KM_OWN_ALL_BYTES"] // 4)),
                     "uint32",
                     shard_grid=(columns, rows),
                 )
@@ -2118,6 +2119,8 @@ class IslandSession:
                 else:
                     words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
                     words[:, h["KM_PUT_CPUS"] // 4] = cpus
+                    words[:, h["KM_PUT_LANDING"] // 4] = landings[far].address
+                    words[:, h["KM_PUT_LANDED"] // 4] = landings[island].address
                     tensors = [
                         session.tensor(words, "uint32", shard_grid=(columns, rows)),
                         session.tensor(  # zeros: no ask, no count, no done word
@@ -2130,6 +2133,7 @@ class IslandSession:
                     held |= {"link area": tensors[:1], "relay": tensors[1:]}
                 self._held.append(held)
                 self._link_areas += [t for each in held.values() for t in each]
+                self._link_areas.append(landings[island])
             if area != (self._areas or [(area, 0)])[0][0]:
                 raise KomorebiError(
                     f"island {island}: the link area is at {area:#x}, "
@@ -2154,6 +2158,8 @@ class IslandSession:
             if apart:
                 words = np.zeros((bytes_ + relay_bytes) // 4, np.uint32)
                 words[h["KM_PUT_CPUS"] // 4] = cpus
+                words[h["KM_PUT_LANDING"] // 4] = landings[far].address
+                words[h["KM_PUT_LANDED"] // 4] = landings[island].address
                 plans[-1].apart = (
                     [(c % columns, c // columns) for c in self.link_cores[island]],
                     words.tolist(),
@@ -2174,6 +2180,27 @@ class IslandSession:
             plan.relay[1] = relays[plan.far]
         self._link_areas += forwards  # held while the run lives
         return plans
+
+    def _landings(self, h):
+        """Each island's landing of km::put_bytes' batches, in DRAM: a page an island
+        and put line owner (a split card: island 0's for every island)."""
+        size = h["KM_PUT_BATCH_BYTES"]
+        landings = []
+        for island, session in enumerate(self.sessions):
+            if self.split > 1 and island:
+                landings.append(landings[0])
+                continue
+            landings.append(
+                session.empty(
+                    (len(self.sessions) * h["KM_QUEUE_LINES"], size // 4), "uint32"
+                )
+            )
+            if landings[-1].aligned_page_bytes != size:
+                pages = landings[-1].aligned_page_bytes
+                for landing in landings:
+                    landing.free()
+                raise KomorebiError(f"the put batches' landing: {pages} bytes a page")
+        return landings
 
     def _check_links(self, runs, plans):
         """Every island's dispatcher has the tile and LIM base its link line took for

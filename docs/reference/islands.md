@@ -97,9 +97,10 @@ written for islands runs on one card unchanged.
   `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
   is launched. `kernel_bytes` sets another size at the open.
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
-  `session: ...`: the own words (`KM_OWN_BYTES`, 4,480 bytes: each data-movement
+  `session: ...`: the own words (`KM_OWN_ALL_BYTES`, 8,640 bytes: each data-movement
   CPU's scratch for an ask, a put line and a relay ask, the relay's done word, its put
-  lines' words, and the headers it builds for a piece of a put into the rings), the
+  lines' words, the headers it builds for a piece of a put into the rings, and its
+  batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, as many entries as the tensors held
   at the load, in steps of 4; a tensor made while a run lives takes a free entry) and
   a dynamic run's message region. When the link cores run the link kernels, the link
@@ -542,9 +543,9 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::Tensor<offset>` | a tensor's accessor arguments, from the compile arguments the host's `tensor.tensor_args()` gives (`accessor_args()`), and its reference word (`tensor.address`); `next_compile_time_args_offset()` for the next one |
 | `km::read_pages(core, command, tensor, first, pages, to)` | pages `first` .. `first + pages - 1` into L1 `to` on, page k at `to` + k aligned pages; on the reader or the writer (`core`: its `km::Reader` or `km::Writer`); each run of pages another island holds asked for and waited for, counted at the CPU's page port (`KM_PORT_PAGES` the reader's, + 1 the writer's, past the ports a kernel names). False: gave up |
 | `km::write_pages(core, command, tensor, first, pages, from)` | pages `first` .. from L1 `from` on; each run of pages another island holds one put line, waited for at the CPU's page port, so `from` is free on return. False: gave up |
-| `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a byte line of up to 12 bytes, the bytes inside the line, which that island's link core 0 writes at the page's address plus the offset, a plain write (a longer range goes as several lines; `source` free on return). Does not wait. Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
+| `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a record (the page, the offset and the bytes, 16 bytes of head and the bytes padded to 16) appended to the CPU's batch (2,048 bytes in its own words), `source` free on return; the batch is sent when the next record does not fit, when a record is for another island, or at `km::put_wait`: one put line, the batch as one ring piece onto a landing page in that island's DRAM, and one confirmation once that island's lead page CPU has written each record with one plain NoC write at its page's address plus the offset. One batch of a CPU is in flight at a time, so one CPU's records apply in the order it put them. A range of up to 2,000 bytes is one record (a longer one, several). Does not wait; the batch is sent only when full or at `km::put_wait`, so a command ends with it (a batch left by an earlier command is dropped). Across, the page CPUs need their rings and the range ends below 1 MiB of its page (else `bad_item` at `ask`). Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
 | `km::write_bytes(core, command, tensor, page, offset, bytes, source)` | `km::put_bytes`, then `km::put_wait(core, command)`: the bytes written on return |
-| `km::put_wait(core, command)` | waits until the CPU's NoC writes are written and every byte line it sent was confirmed by the other island (its bytes written there). False: gave up |
+| `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there). False: gave up |
 | `km::Stream` | a stream over a `km::Tensor` reads and writes through these calls ([Movement](movement.md#a-stream-over-islands)) |
 
 A program loaded on one island (a card's own session, or an island session of one
@@ -566,9 +567,11 @@ from 16 on. Example 09's writer writes single words of its output, each with
 p150a cards, one page link, 2026-11-15:
 
 - Example 09's `islands.py` (65,536 keys, 4,096 buckets, island 0's 118 ranks and its
-  thread): the output held by island 0, PLACE 0.125 ms; held by island 1 (every key a
-  byte line across, 65,536 lines and as many confirmations), PLACE 112.9 ms, 1.72 µs
-  a key for the island (one line at a time through its link core 0), both exact.
+  thread): the output held by island 0, PLACE 0.128 ms; held by island 1 (every key a
+  32-byte record, 1,062 batches across, 61.7 keys each, a line, a ring piece and a
+  confirmation a batch), PLACE 5.99 ms, 0.091 µs a key for the island, both exact.
+  The same with a line of its own for every key (12 bytes inside the line) was
+  112.9 ms.
 
 - Example 11's `islands.py`: island 0's four cores copy 192 pages island 1 holds
   alone, exact, and READ them in 275.8 µs (1.43 GB/s); with `--write-across` they copy

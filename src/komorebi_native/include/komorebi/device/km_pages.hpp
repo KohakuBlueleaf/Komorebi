@@ -1521,43 +1521,80 @@ namespace km {
         return code;
     }
 
-    // The lead page CPU: the bytes of the byte line arrived at L1 `at` written, waited
-    // for, at their page's DRAM address plus the offset (a bad one counted). kGave*.
+    // CPU `cpu`'s batch of byte records in this core's own words `own` (KM_OWN_BATCH),
+    // 0: none.
+    inline uint32_t put_batch(uint32_t own, uint32_t cpu) {
+        const uint32_t base = own + KM_OWN_BATCH;
+        return own != 0 ? (base + 63) / 64 * 64 + cpu * KM_PUT_BATCH_BYTES : 0;
+    }
+
+    // A pending batch line (KM_QUEUE_E_PAGES): its pages with this mark until its
+    // records are written, so the confirming loop passes it until then.
+    constexpr uint32_t kPutBatchMark = 1u << 30;
+
+    // The lead page CPU: owner `owner`'s batch read from its landing page, each record
+    // one NoC write at its page plus the offset, in order, waited for (bad: counted).
     template <typename Kernel>
     __attribute__((noinline)) uint32_t
-    pages_bytes_land(const Kernel& kernel, uint32_t area, uint32_t at) {
-        volatile tt_l1_ptr uint32_t* line = l1(at);
-        const uint32_t span = line[KM_ASK_SPAN];
-        const uint32_t offset = span & 0xFFFFu, bytes = span >> 16;
-        const uint32_t page = line[KM_ASK_PAGE];
-        const bool good = (
-            line[KM_ASK_HOLDER] == islands_at(kernel.args().control).here() &&
-            bytes != 0 && bytes <= KM_PUT_INLINE && (offset | bytes) % 4 == 0 &&
-            page != 0 && page % 16 == 0 && offset + bytes <= page
-        );
-        if (!good) {
+    pages_batch_apply(const Kernel& kernel, uint32_t area, uint32_t owner) {
+        const Islands view = islands_at(kernel.args().control);
+        const uint32_t room = put_batch(view.own_words(), 0);  // a link core puts none
+        invalidate_l1_cache();
+        const uint32_t landing = l1(area)[KM_PUT_LANDED / 4];
+        if (room == 0 || landing == 0) {
             l1(area)[KM_PUT_BAD / 4] += 1;
             return kGaveNone;
         }
-        uint32_t data[KM_PUT_INLINE / 4];
-        for (uint32_t w = 0; w < KM_PUT_INLINE / 4; w++) {
-            data[w] = line[KM_ASK_DATA + w];
-        }
-        // staged in the line's words 4 to 11 at the offset's low 4 bits (the NoC rule)
-        const uint32_t stage = at + 16 + offset % 16;
-        for (uint32_t w = 0; w < bytes / 4; w++) {
-            l1(stage)[w] = data[w];
-        }
-        const uint64_t to = (
-            pages_dram(KM_PAGES_DRAM, line[KM_ASK_TENSOR], page, line[KM_ASK_FIRST])
+        const uint32_t limit = kernel.args().wait_limit;
+        const uint32_t page = view.here() * KM_QUEUE_LINES + owner;
+        noc_async_read(
+            pages_dram(KM_PAGES_DRAM, landing, KM_PUT_BATCH_BYTES, page),
+            room,
+            KM_PUT_BATCH_BYTES
         );
-        noc_async_write(stage, to + offset, bytes);
+        uint32_t code = kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            limit
+        );
+        if (code != kGaveNone) {
+            return code;
+        }
+        invalidate_l1_cache();
+        const volatile tt_l1_ptr uint32_t* head = l1(room);
+        const uint32_t used = head[KM_BATCH_USED];
+        bool good = used >= KM_BATCH_HEAD && used <= KM_PUT_BATCH_BYTES;
+        for (uint32_t at = KM_BATCH_HEAD; good && at < used;) {
+            const volatile tt_l1_ptr uint32_t* record = l1(room + at);
+            const uint32_t page_bytes = record[2];
+            const uint32_t offset = record[3] & ((1u << KM_BATCH_SPAN_SHIFT) - 1);
+            const uint32_t bytes = record[3] >> KM_BATCH_SPAN_SHIFT;
+            const uint32_t size = KM_BATCH_HEAD + (offset % 16 + bytes + 15) / 16 * 16;
+            good = (
+                bytes != 0 && (offset | bytes) % 4 == 0 && page_bytes % 16 == 0 &&
+                offset + bytes <= page_bytes && size <= used - at
+            );
+            if (good) {  // its bytes at the offset's low 4 bits (the NoC rule)
+                const uint64_t to = (
+                    pages_dram(KM_PAGES_DRAM, record[0], page_bytes, record[1])
+                );
+                noc_async_write(
+                    room + at + KM_BATCH_HEAD + offset % 16, to + offset, bytes
+                );
+                at += size;
+            }
+        }
+        if (!good) {
+            l1(area)[KM_PUT_BAD / 4] += 1;
+        }
         return kernel.poll_at(
             kWherePages,
             [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
-            kernel.args().wait_limit
+            limit
         );
     }
 
@@ -1598,18 +1635,35 @@ namespace km {
             entry[KM_QUEUE_E_CORE] = line[KM_ASK_CORE];
             entry[KM_QUEUE_E_COUNT] = line[KM_ASK_COUNT];
             entry[KM_QUEUE_E_NUMBER] = line[KM_ASK_NUMBER];
-            if (line[KM_ASK_RING] == KM_ASK_RING_BYTES) {
-                // a byte line: its bytes written here first; it counts no page
-                const uint32_t code = (
-                    pages_bytes_land(kernel, area, reinterpret_cast<uint32_t>(line))
-                );
-                if (code != kGaveNone) {
-                    return code;
-                }
-                entry[KM_QUEUE_E_PAGES] = 0;
+            if (line[KM_ASK_RING] == KM_ASK_RING_BATCH && line[KM_ASK_PAGES] != 0) {
+                entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES] | kPutBatchMark;
             }
             count[0] = count[0] + 1;
             words[KM_PUT_CONFIRMED / 4] = taken + 1;
+        }
+        // each pending batch whose page has landed: its records written, then it
+        // counts no page (its count taken off here), so it is confirmed below
+        for (uint32_t i = 0; i < count[0]; i++) {
+            volatile tt_l1_ptr uint32_t* entry = (
+                l1(queue + KM_QUEUE_PENDING + i * KM_QUEUE_ENTRY)
+            );
+            const uint32_t pages = entry[KM_QUEUE_E_PAGES];
+            volatile tt_l1_ptr uint32_t*
+                arrived = (l1(queue + KM_QUEUE_ARRIVED) + entry[KM_QUEUE_E_OWNER]);
+            if (
+                (pages & kPutBatchMark) == 0 ||
+                static_cast<int32_t>(arrived[0] - (pages & ~kPutBatchMark)) < 0
+            ) {
+                continue;
+            }
+            const uint32_t code = (
+                pages_batch_apply(kernel, area, entry[KM_QUEUE_E_OWNER])
+            );
+            if (code != kGaveNone) {
+                return code;
+            }
+            arrived[0] -= pages & ~kPutBatchMark;
+            entry[KM_QUEUE_E_PAGES] = 0;
         }
         // each pending line whose pages have all landed, the last moved into its place
         for (uint32_t i = 0; i < count[0];) {
