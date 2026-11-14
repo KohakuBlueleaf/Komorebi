@@ -45,7 +45,7 @@ km::Movement movement;
 movement.run([&](const km_command_t& command) {
     const km::Stream read(km::kMoveRead, Input(command.a0), rank * tiles, tiles,
                           tiles_per_block, repetitions, kInput,
-                          km::Pattern::of(command.a4), kAskPort);
+                          km::Pattern::of(command.a4));
     return movement.move(read);  // this mover's blocks of the stream
 });
 

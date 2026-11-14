@@ -345,7 +345,7 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   2026-11-15). 64 MiB over all four links, three slots a CPU, before link 0 became the
   lines link: 2.09 ms, 32.1 GB/s.
 - A kernel reads a tensor's pages wherever they live with one call (`km_ask.hpp`):
-  `km::read_pages(reader, command, args, tensor, first, pages, to, port)`, with the
+  `km::read_pages(reader, command, args, tensor, first, pages, to)`, with the
   tensor's accessor arguments, its reference word, and L1 address `to` of the core,
   page k at `to` + k aligned pages.
   The pages its island holds are read as `noc_async_read_page` reads them, at their
@@ -393,10 +393,10 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   bytes). On one island, or for a tensor named by a bank address, the copy is what it
   was.
 - `IslandSession.ASKS_BY` is `"core"` (the call asks itself) by default; with
-  `"host"` (the define `KM_ASKS_BY_HOST`) the call only waits on the port, and the host
-  sends: `session.ask(tensor, first, pages, island, core, to, port)` has the holder's
-  link cores send the pages into L1 address `to` of the asking core, counted at its
-  port, and `session.ask_range(tensor, first, pages, group, to, port)` is one ask for
+  `"host"` (the define `KM_ASKS_BY_HOST`) the call only waits on its page port, and
+  the host sends: `session.ask(tensor, first, pages, island, core, to, port)` has the
+  holder's link cores send the pages into L1 address `to` of the asking core, counted
+  at its port `port` (`KM_PORT_PAGES` for a reader's call, + 1 for a writer's), and `session.ask_range(tensor, first, pages, group, to, port)` is one ask for
   the ranks of `group` (one island's): rank `group[0] + i` gets pages
   `first + i * pages` on into L1 address `to` of its core, counted at its port; one
   `PAGES` range command to the holder's link cores, whose page CPUs split the ranks.
@@ -474,16 +474,16 @@ using Input = km::Tensor<0>;  // compile arguments from 0 on: tensor_args()
 using Output = km::Tensor<Input::next_compile_time_args_offset()>;
 
 const Input input(command.a0);  // the tensor's reference word
-if (!km::read_pages(core, command, input, first, pages, to, kAskPort)) return;
+if (!km::read_pages(core, command, input, first, pages, to)) return;
 noc_async_read_barrier();
-if (!km::write_pages(core, command, output, first, pages, from, kAskPort)) return;
+if (!km::write_pages(core, command, output, first, pages, from)) return;
 ```
 
 | Call | What it does |
 |---|---|
 | `km::Tensor<offset>` | a tensor's accessor arguments, from the compile arguments the host's `tensor.tensor_args()` gives (`accessor_args()`), and its reference word (`tensor.address`); `next_compile_time_args_offset()` for the next one |
-| `km::read_pages(core, command, tensor, first, pages, to, port)` | pages `first` .. `first + pages - 1` into L1 `to` on, page k at `to` + k aligned pages; on the reader or the writer (`core`: its `km::Reader` or `km::Writer`); each run of pages another island holds asked for and waited for, counted at `port` (one port a CPU that asks). False: gave up |
-| `km::write_pages(core, command, tensor, first, pages, from, port)` | pages `first` .. from L1 `from` on; each run of pages another island holds one put line, waited for at `port`, so `from` is free on return. False: gave up |
+| `km::read_pages(core, command, tensor, first, pages, to)` | pages `first` .. `first + pages - 1` into L1 `to` on, page k at `to` + k aligned pages; on the reader or the writer (`core`: its `km::Reader` or `km::Writer`); each run of pages another island holds asked for and waited for, counted at the CPU's page port (`KM_PORT_PAGES` the reader's, + 1 the writer's, past the ports a kernel names). False: gave up |
+| `km::write_pages(core, command, tensor, first, pages, from)` | pages `first` .. from L1 `from` on; each run of pages another island holds one put line, waited for at the CPU's page port, so `from` is free on return. False: gave up |
 | `km::Stream` | a stream over a `km::Tensor` reads and writes through these calls ([Movement](movement.md#a-stream-over-islands)) |
 
 A program loaded on one island (a card's own session, or an island session of one
@@ -636,9 +636,6 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   one line a core in flight.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
-- Examples 02 and 26 count pages across at ports 6 and 7, which a reduce's rank 0
-  also counts its last rounds on: a group whose rank 0 reads its input across can mix
-  the two counts (the session's placement by the command's group reads none across).
 - A write of part of a page (example 09's writer), a tensor read by an address the
   kernel builds itself (`InterleavedAddrGen`: profile pages, job tables, the raster and
   ray tracer projects), and the dense project's resident and streamed forms, whose

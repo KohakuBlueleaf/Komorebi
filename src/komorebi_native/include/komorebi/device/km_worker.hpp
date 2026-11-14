@@ -225,7 +225,7 @@ namespace km {
             ) {
                 control(KM_CONTROL_BROADCAST)[word] = 0;
             }
-            for (uint32_t word = 0; word < KM_PORTS * KM_PORT_STRIDE / 4; word++) {
+            for (uint32_t word = 0; word < KM_PORT_SLOTS * KM_PORT_STRIDE / 4; word++) {
                 control(KM_CONTROL_PORT)[word] = 0;
             }
             trace_.clear();

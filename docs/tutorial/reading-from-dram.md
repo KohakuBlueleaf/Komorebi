@@ -61,13 +61,13 @@ cb_push_back(INDEX, PAGES);
   one card, where it starts. Python has it as `tensor.address`; it travels in a command
   argument.
 - `reader.reserve(INDEX, PAGES)` waits until the buffer has room for `PAGES` tiles.
-- `km::read_pages(reader, command, tensor, TILE, PAGES, where, PORT)` starts a copy of
+- `km::read_pages(reader, command, tensor, TILE, PAGES, where)` starts a copy of
   `PAGES` tiles from tile number `TILE` of the tensor to the L1 address `where`.
   `get_write_ptr(INDEX)` is the address of the room in the buffer. The call returns at
   once; the copy goes on. On one card it is exactly tt-metal's `noc_async_read_page`,
   once a tile. When the session spans two cards and another card holds a tile, the
-  call asks that card for it and waits for it, counted at port `PORT` ([[port]]); the
-  kernel is the same either way. It returns false if it gave up.
+  call asks that card for it and waits for it, counted at the reader's own page port
+  (a [[port]] no kernel names); the kernel is the same either way. It returns false if it gave up.
 - `noc_async_read_barrier()` waits until every copy that was started is finished.
 - `cb_push_back(INDEX, PAGES)` says "these tiles are now in the buffer". Whoever waits
   for them is let through.

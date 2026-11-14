@@ -9,7 +9,6 @@
 
 // Two 4 KiB pages of keys: while the writer reads one, the reader fills the other.
 constexpr uint32_t kCbKeys = 0;
-constexpr uint32_t kAskPort = 0;  // keys another island holds are counted here
 
 void kernel_main() {
     // The keys tensor's layout (interleaved over the DRAM banks, 4 KiB pages) and
@@ -47,7 +46,7 @@ void kernel_main() {
             // DRAM to L1 over NoC 0 (another island's page: asked for and waited
             // for); the wait for it times out at the wait limit.
             if (!km::read_pages(
-                reader, command, keys, page, 1, get_write_ptr(kCbKeys), kAskPort
+                reader, command, keys, page, 1, get_write_ptr(kCbKeys)
             )) {
                 return;
             }

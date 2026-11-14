@@ -21,13 +21,7 @@ void kernel_main() {
             return false;
         }
         if (!km::write_pages(
-            writer,
-            command,
-            sums,
-            command.a4 + rank,
-            1,
-            get_read_ptr(kCbSum),
-            kAskPortWriter
+            writer, command, sums, command.a4 + rank, 1, get_read_ptr(kCbSum)
         )) {
             return false;
         }

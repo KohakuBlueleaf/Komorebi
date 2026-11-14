@@ -69,13 +69,7 @@ void kernel_main() {
                     const uint32_t page = (block_row + tile_row) * k_tiles + k_start;
                     const uint32_t to = base + tile_row * k_block_tiles * kTileBytes;
                     if (!km::read_pages(
-                        reader,
-                        command,
-                        a_matrix,
-                        page,
-                        k_length,
-                        to,
-                        kAskPortReader
+                        reader, command, a_matrix, page, k_length, to
                     )) {
                         return;
                     }

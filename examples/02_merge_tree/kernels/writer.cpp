@@ -65,13 +65,7 @@ void kernel_main() {
         const Output output(output_address);  // its reference word
         // the pages another island holds are put there and waited for
         if (!km::write_pages(
-            writer,
-            command,
-            output,
-            first_page,
-            part_tiles,
-            get_read_ptr(kCbOut),
-            kPutPort
+            writer, command, output, first_page, part_tiles, get_read_ptr(kCbOut)
         )) {
             return false;
         }

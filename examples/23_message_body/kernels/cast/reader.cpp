@@ -28,7 +28,7 @@ void kernel_main() {
                     return;
                 }
                 if (!km::read_pages(
-                    reader, command, bodies, cast % command.a2, 1, address, kAskPort
+                    reader, command, bodies, cast % command.a2, 1, address
                 )) {
                     return;
                 }

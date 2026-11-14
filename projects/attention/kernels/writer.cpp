@@ -51,7 +51,6 @@ namespace {
                     !broadcast_job<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
                         writer,
                         command,
-                        kAskPortWriter,
                         *broadcast,
                         keys,
                         values,
@@ -80,8 +79,7 @@ namespace {
                             outputs,
                             first_page + row * stride * VALUE_TILES,
                             VALUE_TILES,
-                            source,
-                            kAskPortWriter
+                            source
                         )
                     ) {
                         return false;

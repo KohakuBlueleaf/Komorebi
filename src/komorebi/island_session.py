@@ -1368,10 +1368,11 @@ class IslandSession:
         return int(x) | int(y) << 8
 
     def port_address(self, island, port):
-        """The L1 address of port `port`'s count, the same on every core of `island`."""
+        """The L1 address of port `port`'s count, the same on every core of `island`
+        (KM_PORT_PAGES and the one after it: the page calls' own)."""
         h = abi.headers()
-        if not 0 <= port < h["KM_PORTS"]:
-            raise ValueError(f"port {port} of {h['KM_PORTS']}")
+        if not 0 <= port < h["KM_PORT_SLOTS"]:
+            raise ValueError(f"port {port} of {h['KM_PORT_SLOTS']}")
         control = self.run.island(island).backend.control_addr
         return control + h["KM_CONTROL_PORT"] + port * h["KM_PORT_STRIDE"]
 
@@ -1518,7 +1519,7 @@ class IslandSession:
                 f"one other than island {island}"
             )
         holder, _, _, index = holders[0]
-        if not 0 <= port < h["KM_PORTS"] or ranks > 0xFFFF:
+        if not 0 <= port < h["KM_PORT_SLOTS"] or ranks > 0xFFFF:
             raise ValueError(f"port {port}, ranks {ranks}")
         buffer, chunk = self.staging(holder)
         links = list(self.channels[holder]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
