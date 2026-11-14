@@ -50,6 +50,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_port_run(const km_command_t* command, void (*function)(int cluster, int x280_core, uint64_t arg), uint64_t arg, kmx_event* event)` | the lead's 0, not nested | submits `command`, runs `function(cluster, x280_core, arg)` on every X280 core as `kmx_parallel_all` does, ends the serve at the command's event | `KMX_OK` and `event` once every `function` returned; `KMX_FULL` (nothing submitted, or 32 events kept); `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ports; error `parallel` elsewhere |
 | `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `function` | whether the command still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
 | `int kmx_pull_run(const km_command_t* command, const kmx_pull* settings, kmx_event* event)` | the lead's 0, not nested | submits `command` and serves its pulls on every X280 core until its event: units 0 to `settings->units - 1` in ranges of `settings->per`, by `settings->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `settings->log`), `settings->pick` (the range) or `settings->pick_word` (the range and a word the core gets with it, [the pull's word](#the-pulls-word)) | as `kmx_port_run`; `KMX_BAD` also for a bad mode, both `pick` and `pick_word` set, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
+| `void kmx_command(km_command_t* command, uint32_t program, uint32_t handler, uint32_t first, uint32_t count)` | any | fills `command`: `hdr = handler \| program << 24`, `group = first \| count << 16`, every other word 0 ([several programs](#a-thread-in-a-run-of-several-programs)) | - |
 | `int kmx_submit(const km_command_t* command, uint32_t* handle)` | 0 | stores `command` as the next command of the ring | `KMX_OK` and the handle (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
 | `int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event)` | 0 | waits for the handle's event until `kmx_time()` passes `deadline`; other handles' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_poll(kmx_event* event)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
@@ -163,6 +164,30 @@ Measured: 200 commands never waited for, over 20 calls, each with a command from
 between them; every one answered, and `kmx_poll` then took 32
 (`tests/hardware/thread/open_points_case.py`). Without this a ring full of unread
 events stopped the thread's commands and its answer queued behind them.
+
+### A thread in a run of several programs
+
+In a run loaded with several programs in the runtime's form (`session.load([a, b])`,
+[host](host.md#several-programs-in-one-run)), one of them declares the threads, and the
+thread commands any of them: a command's header names its program in bits 24 to 31. The
+C gets each program's field and handlers as defines, `kProgram<Name>` and
+`kProgram<Name>Handler<Handler>` (a name in camel case, as `kHandler<Name>` for the
+thread's own handlers); a run of one program adds none, so its thread's defines are what
+they were. A define that the thread's own defines or handlers also give is refused at
+the build (`ValueError`).
+
+```c
+km_command_t command; /* a run of programs spin and scale */
+kmx_command(&command, kProgramScale, kProgramScaleHandlerScale, first, count);
+command.a1 = tiles;
+uint32_t handle;
+kmx_submit(&command, &handle);
+```
+
+A group that does not hold the program (with `{program: group}`) gives up on the
+command; in the combined form every core holds every program.
+[19_thread_programs](../../examples/19_thread_programs/README.md) splits the grid between
+two programs every round from the thread.
 
 **What the host sees.** `run.submit(handler, cluster=c, args=..., result=True)` returns
 a handle; `run.wait` and `run.event` give its `Event` as for a core group. A rejection

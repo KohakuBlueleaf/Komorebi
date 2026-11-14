@@ -116,8 +116,16 @@ run.submit(tracer.handler("trace"), group=(0, 88), args=[...])
 The programs' order (the list, or the dict's) is their program field. Programs that share
 cores share compute options (`compute`) and `opt` levels; per-core `args` are taken when a
 group holds one program. In the runtime's form a program has no dynamic handler and no
-overlays of its own, and only the first program has X280 threads or ports. A run holds up
-to 63 programs. `run.programs` lists them by program field.
+overlays of its own. A run holds up to 63 programs. `run.programs` lists them by program
+field.
+
+**Threads in a run of programs.** A run's X280 threads and ports belong to one program:
+whichever of the run's programs declares them (any one, not only the first). A second
+program that declares threads or ports is refused (`ProgramError`, "belong to one
+program of a run"). The thread images are built once for the run, with each program's
+field and handlers as C defines when the run holds several
+([threads](threads.md#a-thread-in-a-run-of-several-programs)); `run.submit(...,
+cluster=c)` names a handler of that program's thread.
 
 The host refuses (`ValueError`, before anything is sent) a command whose group has a core
 that does not hold its program, a queued one unless every core holds it, and a handler of
