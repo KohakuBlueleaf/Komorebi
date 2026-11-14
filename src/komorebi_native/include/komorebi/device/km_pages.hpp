@@ -560,6 +560,41 @@ namespace km {
         return view.base() + view.ranks();
     }
 
+    // The far island's link core 0 (x | y << 16): the relay tile of this island's link
+    // core 0 (each link core's is the far link core across from it), read from there
+    // once a kernel by a page CPU on another link core (0 until then).
+    inline uint32_t pages_far0;
+
+    // Sets pages_far0 if it is not yet, with L1 `copy` (16 bytes) for the read across.
+    // kGave* code.
+    template <typename Kernel>
+    inline uint32_t pages_far_core0(const Kernel& kernel, uint32_t copy) {
+        if (pages_far0 != 0) {
+            return kGaveNone;
+        }
+        const uint32_t home = link_core0(kernel);
+        if (kernel.args().me == home) {
+            pages_far0 = island_area()[KM_ISLAND_RELAY_TILE];
+            return kGaveNone;
+        }
+        const uint32_t at = (
+            reinterpret_cast<uint32_t>(&island_area()[KM_ISLAND_RELAY_TILE])
+        );
+        noc_async_read(kernel.core_noc(home, at & ~15u), copy, 16);
+        const uint32_t code = kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+        invalidate_l1_cache();
+        if (code == kGaveNone) {
+            pages_far0 = l1(copy)[(at & 15u) / 4];
+        }
+        return code;
+    }
+
     // The line at `line` of link core 0's area as this CPU sees it: the line itself
     // on link core 0, else read across the NoC into `copy` (64 bytes, bounded). 0: the
     // read gave up (`code` says why).
@@ -739,7 +774,7 @@ namespace km {
         if (!good && j == 0) {
             words[KM_ASK_BAD / 4] += 1;
         }
-        const uint32_t xy = island_area()[KM_ISLAND_RELAY_TILE];  // the far link core 0
+        const uint32_t xy = pages_far0;  // the far link core 0
         auto* header = pages_header(own + KM_PAGE_CPU_HEADER);
         link_inline(
             header,
@@ -785,8 +820,7 @@ namespace km {
             return kGaveNone;  // no line yet
         }
         const uint32_t home = link_core0(kernel);
-        // the far link core across (its tile in the island area)
-        const uint32_t xy = island_area()[KM_ISLAND_RELAY_TILE];
+        const uint32_t xy = pages_far0;  // the far link core 0
         const uint32_t place = (xy & 0xFFu) | (xy >> 16 & 0xFFu) << 8;
         const PagesRequest r = {
             line[KM_ASK_TO],
@@ -984,6 +1018,10 @@ namespace km {
             code = pages_forward(kernel, area);
         }
         if (page_cpu()) {
+            if (code == kGaveNone) {
+                const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;
+                code = pages_far_core0(kernel, own + KM_PAGE_CPU_HEADER);
+            }
             if (code == kGaveNone) {
                 code = pages_answer(kernel, cpu, area);
             }
