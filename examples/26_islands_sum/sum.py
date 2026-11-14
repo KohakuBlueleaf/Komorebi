@@ -70,16 +70,11 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     generator = np.random.default_rng(1)
     report = {"cards": cards, "tiles": args.tiles, "part": args.part}
-    links = 1 if len(cards) > 1 or args.islands else 0
-    # the link cores' services make the kernels 83.5 KB: past the default
-    opened = {"cards": cards} if not args.islands else {"card": cards[0]}
-    with km.Session(
-        **opened,
-        islands=args.islands or None,
-        links=links,
-        kernel_bytes=82 * 1024,
-        log=log,
-    ) as session:
+    links = 1 if len(cards) > 1 else 0
+    opened = {"cards": cards, "links": links}
+    if args.islands:  # one card split: a wire between each pair of islands
+        opened = {"card": cards[0], "islands": args.islands}
+    with km.Session(**opened, log=log) as session:
         ranks = session.ranks
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)]

@@ -2362,7 +2362,7 @@ namespace {
                 return out;
             }
             std::vector<uint32_t> before, after, words;
-            std::string x280_cores, failed;
+            std::string x280_states, failed;
             {
                 nb::gil_scoped_release release;
                 try {
@@ -2376,11 +2376,11 @@ namespace {
                     failed = std::string("LIM not readable: ") + error.what();
                 }
                 try {
-                    x280_cores = (
+                    x280_states = (
                         x280::describe(x280_runtime().session(*session_).inspect())
                     );
                 } catch (const std::exception& error) {
-                    x280_cores = (
+                    x280_states = (
                         std::string("core states not readable: ") + error.what()
                     );
                 }
@@ -2389,9 +2389,10 @@ namespace {
                 out["marker_before"] = before[KMD_H_MARKER0];
                 out["marker_after"] = after[KMD_H_MARKER0];
                 out["words"] = words;
+                out["x280_cores"] = after;  // the core block (KMD_H_*)
             }
             out["failed"] = failed;
-            out["x280_cores"] = x280_cores;
+            out["x280_states"] = x280_states;  // the runtime's view of each core
             return out;
         }
 
