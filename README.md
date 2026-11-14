@@ -82,169 +82,114 @@ triangles up (the rasterizer) and a third or less (the ray tracer).
 ## A kernel
 
 A kernel is loaded once on its core and stays there: `run` calls the function below for
-every command the core receives, and the command's handler says which piece of work it
-asks for (code that is not in the kernel is an [overlay](docs/reference/overlays.md),
-loaded into a slot while the run lives). Two kernels show how cores talk to each other. A core's two data-movement
-CPUs run the roles of the easy layout, the reader and the writer; they are roles, not
-"the CPU that reads" and "the CPU that writes": either CPU can read, write and send to
-other cores. What differs is the NoC each uses, that a circular buffer has one CPU
-filling it and the other draining it, and that the writer reports the command.
+every command the core receives. A program is a data-movement kernel and a compute
+kernel.
 
-A reader kernel that broadcasts along a row. The host lays the rows out, and each core
-finds its place in its row in its own arguments. One core of the row reads a block from
-DRAM and sends it to the whole row in one multicast; the others wait for it in L1
-(reduced from [03_broadcast](examples/03_broadcast/kernels/reader.cpp)):
+The example computes the gate of a SwiGLU layer, `out = silu(a) * b`, over two tensors
+in DRAM. A command goes to a core group; each core takes its share of the tiles. Its
+two data-movement CPUs, the movers, bring that share of `a` and `b` from DRAM into L1
+and take `out` back, sharing every stream by a pattern (`AAAB`: mover A three of every
+four blocks, mover B the fourth). Its compute kernel does the math in the vector unit,
+a block of tiles at a time:
 
 ```cpp
-// Reader kernel: one core of each row reads blocks from DRAM and broadcasts them along
-// the row; the other cores of the row wait for them.
+// ---- kernels/movement.cpp: one file, built for both data-movement CPUs of a core ----
+// Moves this core's share of the tiles: a and b from DRAM into L1, out back to DRAM.
 void kernel_main() {
-    constexpr auto row_args = TensorAccessorArgs<0>();
-    km::Reader reader;  // stays loaded; runs once per command
-    reader.run([&](const km_command_t& command) {
-        if (km::handler(command) != kHandlerBroadcast) {
-            return;
-        }
-        // The command's arguments, each read once: where the row is, how many blocks.
-        const uint32_t row_address = command.a0;
-        const uint32_t blocks = command.a3;
-        // This core's row, and whether it sends or receives, from its own arguments.
-        km::Broadcast broadcast(reader, command, kArgBroadcast);
-        const auto row_source = TensorAccessor(row_args, row_address);
-        for (uint32_t block = 0; block < blocks; block++) {
-            if (!broadcast.sender()) {
-                broadcast.arrive(block);  // wait until the block is in my L1
-                continue;
-            }
-            const uint32_t address = broadcast.reserve(block);
-            noc_async_read_page(block, row_source, address);
-            broadcast.cast(block);  // one multicast to the whole row
-        }
-        broadcast.finish();
+    constexpr auto tensors = TensorAccessorArgs<0>();
+    km::Movement movement;  // stays loaded; runs once per command
+    movement.run([&](const km_command_t& command) {
+        const uint32_t tiles = command.a3;  // tiles a core
+        const uint32_t first = (movement.me() - km::first(command)) * tiles;  // my share
+        const km::Pattern pattern = km::Pattern::of(command.a4);  // which mover, which block
+        const auto stream = [&](uint32_t direction, uint32_t address, km::BufferPair pair) {
+            return km::Stream(
+                direction, TensorAccessor(tensors, address), first, tiles, kBlock, 1, pair,
+                pattern
+            );
+        };
+        return movement.move(
+            stream(km::kMoveRead, command.a0, kA),
+            stream(km::kMoveRead, command.a1, kB),
+            stream(km::kMoveWrite, command.a2, kOut)
+        );
     });
 }
-```
 
-A compute kernel whose messages choose their next core at run time. Every core first
-sends its own messages, then handles whatever arrives: a message is either finished
-here or forwarded to the core it names (reduced from
-[05_forward](examples/05_forward/kernels/compute.cpp); `visit` stands for the
-program's own work on a message):
-
-```cpp
-// Compute kernel: messages that choose their next core at run time.
+// ---- kernels/compute.cpp: another file, the core's compute kernel ----
+// out = silu(a) * b, a block of tiles at a time, in the vector unit.
 void kernel_main() {
     km::Compute compute;
+    compute_kernel_hw_startup(kA.mover_a, kOut.mover_a);
     compute.run([&](const km_command_t& command) {
-        km::Messages messages(compute, command);  // routed messages for this command
-        uint32_t message[kMessageWords] = {};
-        if (messages.seeding()) {  // first, every core sends its own
-            messages.send(messages.rank(), message);
-            messages.seeded();
-        }
-        while (km::Packet packet = messages.next()) {  // then handle whatever arrives
-            for (uint32_t index = 0; index < packet.count; index++) {
-                const uint32_t next_core = visit(packet[index], message);
-                if (next_core == kFinished) {
-                    messages.consume();  // the message ends here
-                } else {
-                    messages.forward(next_core, message);
-                }
+        const km::Pattern pattern = km::Pattern::of(command.a4);
+        for (uint32_t block = 0; block < command.a3 / kBlock; block++) {
+            // each block from the half of the buffer pair its mover filled
+            const uint32_t a = km::block_half(kA, pattern, block);
+            const uint32_t b = km::block_half(kB, pattern, block);
+            const uint32_t out = km::block_half(kOut, pattern, block);
+            compute.wait_front(a, kBlock);
+            compute.wait_front(b, kBlock);
+            tile_regs_acquire();
+            copy_init(a);
+            silu_tile_init();
+            binary_dest_reuse_tiles_init<kMultiply, kDestToSourceA>(b);
+            for (uint32_t tile = 0; tile < kBlock; tile++) {
+                copy_tile(a, tile, tile);  // a into the vector unit's registers
+                silu_tile(tile);           // silu(a)
+                binary_dest_reuse_tiles<kMultiply, kDestToSourceA>(b, tile, tile);  // * b
             }
-            messages.done(packet);
+            tile_regs_commit();
+            tile_regs_wait();
+            compute.reserve_back(out, kBlock);
+            for (uint32_t tile = 0; tile < kBlock; tile++) {
+                pack_tile(tile, out);
+            }
+            tile_regs_release();
+            cb_push_back(out, kBlock);
+            cb_pop_front(a, kBlock);
+            cb_pop_front(b, kBlock);
         }
     });
 }
 ```
 
-A third kind of kernel only computes. The merge-tree example adds up a job's input
-tiles over a core group, the parts meeting at one owner or along a tree
-([02_merge_tree/kernels/compute.cpp](examples/02_merge_tree/kernels/compute.cpp)).
-
-For that example the host declares the program (`program()` in
-[merge.py](examples/02_merge_tree/merge.py): the three kernels, three circular buffers,
-the handler header) and submits one `MERGE` command per job to its group (`launch()`,
-lines 110 to 114 and 130 to 136):
+The host declares the program, loads it and submits the command to a core group:
 
 ```python
-run = session.load(
-    program(args, inputs[0], out),
-    deadline=args.deadline if stall < 0 else 4 * args.wait,
-    wait=args.wait,
+program = km.Program(
+    "gate",
+    kernels="kernels/",  # movement.cpp for both movers, compute.cpp
+    buffers=[
+        km.BufferPair(0, 1, "bfloat16", 2048, pages=32),  # a: mover A's, mover B's
+        km.BufferPair(2, 3, "bfloat16", 2048, pages=32),  # b
+        km.BufferPair(16, 17, "bfloat16", 2048, pages=32),  # out
+    ],
+    handlers="kernels/gate.h",
 )
-# ... the command words of job `job` (lines 115 to 129)
-group = (first, count)
-handles.append(run.submit("merge", group, words, exclusive=True, result=True))
-log(f"{run.drain(timeout=30.0)} events")
-host_seconds = time.perf_counter() - start
-run.stop()
+run = session.load(program)
+pattern = km.Pattern("AAAB")
+run.submit("gate", (0, 120), [a.address, b.address, out.address, tiles, pattern.word])
 ```
 
-It checks every total against numpy and prints one JSON line with `ok`: 1,000 jobs on
-random groups, 0 wrong; 36.7 µs a job on 8 cores and 51.8 µs on 119, each command
-returning a checksum of its total
-([02_merge_tree](examples/02_merge_tree/README.md)).
-
-The irregular part of a program is C on an X280 work cluster, where `kmx_parallel` runs a
-function on the cluster's four cores (cores). A two-pass prefix sum over chunks of the
-input, 2.48 ms for 262,144 words on four cores, exact against numpy
-([08_parallel_thread/thread/parallel.c](examples/08_parallel_thread/thread/parallel.c),
-lines 160 to 215 without `nothing`, an empty function for timing `kmx_parallel`; the job
-struct and the chunk helpers are above them):
+The part of a program that decides is C on an X280 work cluster. A thread that splits
+the grid between two programs every round, after one command from the host (reduced
+from [19_thread_programs](examples/19_thread_programs/thread/rounds.c)):
 
 ```c
-/* (c) prefix, pass 1: each chunk's sum. */
-static void sum_chunks(int core, void* arg) {
-    const job_t* job = (const job_t*)arg;
-    /* my chunks of CHUNK words: core, core + partitions, ... (partitions: the cores in
-     * use) */
-    for (
-        uint64_t chunk = first(job, core); chunk < chunks(job); chunk += job->partitions
-    ) {
-        uint32_t total = 0;
-        for (uint64_t word = chunk * CHUNK; word < end(job, chunk); word++) {
-            total += job->input[word];
-        }
-        chunk_sums[chunk] = total;
-    }
-}
-
-/* Pass 2: output[word] = the chunk's base + the chunk's words before it. */
-static void chunk_prefix(int core, void* arg) {
-    const job_t* job = (const job_t*)arg;
-    for (
-        uint64_t chunk = first(job, core); chunk < chunks(job); chunk += job->partitions
-    ) {
-        uint32_t running_total = chunk_sums[chunk];
-        for (uint64_t word = chunk * CHUNK; word < end(job, chunk); word++) {
-            job->output[word] = running_total;
-            running_total += job->input[word];
-        }
-    (void)arg;
-}
-
-/* Runs `function` on core 0 alone or on all four; KMX_OK, or kmx_parallel's error. */
-static int run_on_cores(void (*function)(int, void*), job_t* job) {
-    if (job->partitions == 1) {
-        function(0, job);
-        return KMX_OK;
-    }
-    return kmx_parallel(function, job);
-}
-
-/* The two-pass exclusive prefix sum (mod 2^32); between the passes core 0 turns the
- * chunk sums into bases. */
-static int prefix(job_t* job) {
-    const int error = run_on_cores(sum_chunks, job);
-    uint32_t base = 0;
-    for (uint64_t chunk = 0; chunk < chunks(job); chunk++) {
-        const uint32_t chunk_sum = chunk_sums[chunk];
-        chunk_sums[chunk] = base;
-        base += chunk_sum;
-    }
-    return error != KMX_OK ? error : run_on_cores(chunk_prefix, job);
-}
+const uint32_t spin_cores = split(cores, spin_units, spin_rate, tiles, scale_rate);
+km_command_t spin, scale;
+kmx_command(&spin, kProgramSpin, kProgramSpinHandlerSpin, 0, spin_cores);
+kmx_command(&scale, kProgramScale, kProgramScaleHandlerScale, spin_cores, cores - spin_cores);
+kmx_submit(&spin, &spin_handle);
+kmx_submit(&scale, &scale_handle);
+kmx_wait(spin_handle, deadline, &spin_event);
+kmx_wait(scale_handle, deadline, &scale_event);
 ```
+
+Code that is not in the kernels is an [overlay](docs/reference/overlays.md), loaded
+into a slot of a core's L1 while the run lives. Every example is a page under
+[examples](examples/README.md), with what it measured.
 
 ## The programming model
 
@@ -275,19 +220,7 @@ colour; the next two figures take them one at a time, with the code that does ea
 Each panel is one way cores talk, on the piece of the grid it uses, with lines of the
 example that does it (the example's name is in the panel's corner). A **breakpoint** is
 a point where a thread must deal with another core; between two breakpoints it runs on
-its core. Today a program is written as the handler bodies of its kernels, as above; the
-thread language in the first column is planned:
-
-| Planned thread language | What is sent | On the card today |
-|---|---|---|
-| `at X[i]: block` | the thread's state | a dynamic handler: the state as a 64-byte message, `messages.forward` ([dynamic handlers](docs/reference/dynamic.md), [05_forward](examples/05_forward/)) |
-| `emit v -> thread(j)` | the value | `km::emit` into a fixed slot, reduce by owner or by tree ([ports](docs/reference/ports.md), [02_merge_tree](examples/02_merge_tree/)) |
-| `v = wait(n)` | nothing | `km::arrive`: a timed wait until `n` values have landed |
-| a block to a row or a column | the block, once per broadcast | a broadcast ([broadcasts](docs/reference/broadcast.md), [03_broadcast](examples/03_broadcast/)) |
-| - | a word, the same on every core of a row or a column | a cast of a word, `broadcast.cast(block, word)`, read with `broadcast.word()` ([broadcasts](docs/reference/broadcast.md#a-word), [15_leader](examples/15_leader/)) |
-| - | a tell, an ask and its answer, 16 bytes each; a pull's range and word | an X280 port: `tell`, `ask`, `next` ([X280 ports](docs/reference/ports.md#x280-ports), [10_x280_ports](examples/10_x280_ports/), [18_thread_split](examples/18_thread_split/)) |
-| - | a command, one 64-byte line | `run.submit` from the host or `kmx_submit` from an X280 thread, to a core group or to an X280 thread ([commands to a thread](docs/reference/threads.md#commands-to-a-thread), [13_thread_commands](examples/13_thread_commands/), [19_thread_programs](examples/19_thread_programs/)) |
-| - | the blocks of a stream | both data-movement CPUs of a core on one stream under a pattern, `km::Movement` ([movement](docs/reference/movement.md), [11_movement](examples/11_movement/)) |
+its core. Today a program is written as the handler bodies of its kernels, as above.
 
 ### Code goes where the work is
 
@@ -437,13 +370,12 @@ plan by the frame before takes 35 to 46 ms off Sponza and Bistro's overview, not
 Bistro's close view, and costs 12 to 38 ms on 10^4 to 10^6: it cuts the traces into up
 to 8 commands, and the cores read more treelets.
 
-<img src="docs/images/raster-sponza.jpg" width="256" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card">
-<img src="docs/images/raytrace-sponza.jpg" width="256" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
+<img src="docs/images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="docs/images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
-*Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. Top: rasterized,
-both bit-exact against numpy, Sponza overview (3.80 ms a settled frame above) and Bistro
-interior overview (6.50 ms). Bottom: ray traced, Sponza close (359.86 ms a frame
-above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
+*Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
+are rasterized, both bit-exact against numpy: Sponza overview (3.80 ms a settled frame
+above) and Bistro interior overview (6.50 ms). The last two are ray traced: Sponza close
+(359.86 ms a frame above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
 
