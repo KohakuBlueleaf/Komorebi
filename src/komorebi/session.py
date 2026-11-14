@@ -249,6 +249,12 @@ def _core_args(program, placed, core):
     return [], [], []
 
 
+# A link CPU's own chunk on the link cores (Run._link_chunk): at most, at least (the
+# put rings' least, km_pages.hpp kRingChunkMin), and what is left besides.
+LINK_CHUNK_MOST = 256 << 10
+LINK_CHUNK_LEAST = 128 << 10
+LINK_CHUNK_MARGIN = 64 << 10
+
 # The defines of an island run that the link cores' own kernels are built with too.
 LINK_DEFINES = ("KM_PAGE_LINKS", "KM_TENSOR_TABLE", "KM_ASKS_BY_HOST")
 
@@ -2126,6 +2132,16 @@ class _Backend:
                 for name, value in program.defines.items()
                 if name in LINK_DEFINES
             ] + [("KM_LINK_SERVICES", "1")]
+            chunk = self._link_chunk(program, cores)
+            if chunk:  # the link cores' own chunks, on them alone
+                index = abi.headers()["KM_LINK_CB"]
+                if index in self.cb_indices:
+                    raise ValueError(
+                        f"{program.name}: buffer index {index} is the link cores' own"
+                    )
+                launch.cb(served, index, "uint32", chunk, 2 * chunk)
+                link_defines.append(("KM_LINK_CHUNK", str(chunk)))
+                self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
             for kernel, args, processor, _ in kernels:
                 launch.kernel(
                     str(
@@ -2188,6 +2204,24 @@ class _Backend:
         return (
             channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
         )
+
+    def _link_chunk(self, program, cores):
+        """A link CPU's own chunk on the link cores (bytes; 0: none, the run's transfer
+        chunk serves): LINK_CHUNK_MOST, else the most whole 64 KiB that two of fit in
+        what a link core has left after the program's buffers, the transfer buffer and
+        what the session keeps, LINK_CHUNK_LEAST at least."""
+        buffers = sum(buffer.page_bytes * buffer.pages for buffer in program.buffers)
+        buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
+        buffers += self.transfer.bytes if self.transfer is not None else 0
+        spare = (
+            self.session.l1()[1]
+            - buffers
+            - self.control.nbytes // cores
+            - self._held_bytes()
+            - LINK_CHUNK_MARGIN
+        )
+        chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
+        return chunk if chunk >= LINK_CHUNK_LEAST else 0
 
     def _transfer_buffer(self, cores, grid, chunk):
         """The L1 every core moves a transfer's chunks through (a sharded tensor)."""

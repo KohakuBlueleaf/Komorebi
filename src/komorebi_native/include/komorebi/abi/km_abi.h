@@ -150,6 +150,9 @@
  * of them, the last links); each serves its share of every ask and put
  * (partition(pages, j, page CPUs)). */
 #define KM_PAGE_CPUS 4u
+/* the circular buffer index of a link core's own chunks (link cores alone; its
+ * kernels built with KM_LINK_CHUNK, a CPU's bytes) */
+#define KM_LINK_CB 31u
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
 #define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */

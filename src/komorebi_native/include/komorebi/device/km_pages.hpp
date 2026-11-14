@@ -567,8 +567,15 @@ namespace km {
         if (link >= pages_links(r)) {
             return kGaveNone;  // no link of this CPU
         }
+#if defined(KM_LINK_CHUNK)
+        // a link core's own chunks (the session's buffer KM_LINK_CB, on link cores
+        // alone), not the run's transfer buffer every core has
+        const uint32_t chunk = KM_LINK_CHUNK;
+        const uint32_t buffer = get_write_ptr(KM_LINK_CB);
+#else
         const uint32_t chunk = r.chunk;
         const uint32_t buffer = r.buffer;
+#endif
         const uint32_t area = buffer + cpu * chunk;
         if (
             pages_held.open != 0 || area % 16 != 0 || chunk % 64 != 0 ||
