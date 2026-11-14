@@ -5,7 +5,7 @@ a message for a handler that is not the program's stops the run, the reason deco
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 EXAMPLE = (

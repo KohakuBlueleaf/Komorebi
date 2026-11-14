@@ -5,7 +5,7 @@ host-fed and on the X280 is exact on both paths."""
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "06_graph" / "graph.py"

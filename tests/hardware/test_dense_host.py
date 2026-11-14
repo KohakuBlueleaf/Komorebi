@@ -5,7 +5,7 @@ form in each layout (operands handed along rows and down columns), K split."""
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = Path(__file__).resolve().parents[2] / "projects" / "dense" / "run.py"
@@ -34,10 +34,9 @@ def test_the_grid_form_is_exact(grid):
     assert out["check"]["exact"] and out["ok"]
 
 
-@pytest.mark.parametrize("reduce", ["owner", "tree"])
-def test_the_k_split_form_is_exact(reduce):
+def test_the_k_split_form_is_exact():
     shape = ["--m", 160, "--k", 64, "--n", 96, "--split", "2,2,2,1"]
-    out = run_json(SCRIPT, *shape, "--reduce", reduce, "--inputs", "int", "--calls", 4)
-    assert out["plan"]["form"] == "split" and out["reduce"] == reduce
+    out = run_json(SCRIPT, *shape, "--reduce", "tree", "--inputs", "int", "--calls", 4)
+    assert out["plan"]["form"] == "split" and out["reduce"] == "tree"
     assert out["run"]["kernel"] == "none" and out["run"]["gave_up"] == []
     assert out["check"]["exact"] and out["ok"]

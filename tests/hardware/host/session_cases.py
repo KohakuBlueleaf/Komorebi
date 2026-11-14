@@ -216,7 +216,7 @@ def case_start_error(session):
     out = {}
     started = time.monotonic()
     try:
-        session.load(program(EXAMPLE / "kernels"), deadline=1e-9, idle=60.0)
+        session.load(program(EXAMPLE / "kernels"), deadline=1e-9, idle=60.0, start=1.0)
         out["raised"] = None
     except km.StartError as error:
         out["raised"] = type(error).__name__

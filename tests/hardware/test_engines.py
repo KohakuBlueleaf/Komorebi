@@ -11,7 +11,6 @@ from komorebi.engines.graph import Graph
 from komorebi.engines.stream import Stream
 
 pytestmark = pytest.mark.card
-CARD_IN_PROCESS = True  # opens the card in this process
 KERNELS = Path(__file__).resolve().parents[2] / "examples" / "01_mapcollect" / "kernels"
 RESULT = 6  # kHandlerResult: with KM_FLAG_RESULT the result word is the leader's a0
 CORES = 120
@@ -83,9 +82,11 @@ def looping_stream(req=13):
 
 
 @pytest.fixture(scope="module")
-def run():
-    with km.Session(log=log) as session:
-        yield session.load(program(), deadline=2.0)
+def run(session):
+    loaded = session.load(program(), deadline=2.0)
+    yield loaded
+    if not loaded.stopped:
+        loaded.abort()
 
 
 def test_a_stream_of_eight_commands_ends_alike_uploaded_and_host_fed(run):

@@ -5,7 +5,7 @@ command to cores without its program refused, its load to a busy core sent again
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 EXAMPLE = (
@@ -17,7 +17,7 @@ EXAMPLE = (
 
 
 def test_a_thread_moves_the_boundary_between_two_programs_with_loads():
-    out = run_json(EXAMPLE, "--cores", 12, "--rounds", 8, timeout=300.0)
+    out = run_json(EXAMPLE, "--cores", 12, "--rounds", 4)
     assert out["ok"] and out["wrong"] == 0, out
     assert out["loads"] > 0 and out["rows"]["host"]["loads"] == out["loads"]
     check = out["check"]

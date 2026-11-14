@@ -5,7 +5,7 @@ a run whose queue positions pass 65536 laps (the lap mark wraps) stays exact."""
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
