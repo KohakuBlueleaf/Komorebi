@@ -176,6 +176,9 @@ class FlatProduct(islands.Rows):
             flat_program(flat.plan, args, tensors) for args in flat.program_args()
         ]
         self.deadline = bench.deadline(flat.plan)
+        if len(flat.touched) > 1:
+            # pages and blocks crossing at a few GB/s: three times the call at 2 TFLOP/s
+            self.deadline = round(3 * pl.flops(flat.plan) / 2e12 + 0.05, 3)
         self.run = session.load(programs, deadline=self.deadline, wait=wait)
 
     def calls(self, commands, mode=G["kGridFull"], timeout=60.0):
