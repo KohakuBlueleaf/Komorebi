@@ -409,7 +409,21 @@ holds gives the command up (`bad_item` at `ask`).
 
 The examples and projects whose kernels read or write a tensor's pages use these calls:
 06, 07 and 09 (the reader), 11, 15, 17, 19, 22, 23, the dense project's grid and K-split
-forms, and attention. MEASURED_CALLS
+forms, attention, 02, 26 and the core reset experiment's reader. Measured on two
+p150a cards, one page link, 2026-11-15:
+
+- Example 11's `islands.py`: island 0's four cores copy 192 pages island 1 holds
+  alone, exact, and READ them in 275.8 µs (1.43 GB/s); with `--write-across` they copy
+  island 0's input into an output island 1 holds alone (every page put across), exact,
+  313.4 µs.
+- The dense project's `islands.py --b-far` (7680 x 64 x 128, integer inputs): island 1's
+  grid reads all of W from island 0, bit for bit, 36.7 µs a call.
+- Example 26's `sum.py` (238 ranks, T = 512, the input a copy): exact, 170.3 µs a
+  round.
+
+With the page links built in, example 11's kernels take 87,360 bytes of the two-card
+session's 112 KiB kernel buffer and example 26's 93,904; the dense grid's take 122,752
+and need `kernel_bytes=131072`.
 
 ## A card split into islands
 
@@ -534,6 +548,9 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   most).
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
+- Examples 02 and 26 count pages across at ports 6 and 7, which a reduce's rank 0
+  also counts its last rounds on: a group whose rank 0 reads its input across can mix
+  the two counts (the session's placement by the command's group reads none across).
 - A write of part of a page (example 09's writer), a tensor read by an address the
   kernel builds itself (`InterleavedAddrGen`: profile pages, job tables, the raster and
   ray tracer projects), and the dense project's resident and streamed forms, whose

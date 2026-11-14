@@ -113,11 +113,18 @@ the pattern.
 
 A program loaded on one island is built without the tensor table: the stream keeps the
 tensor's accessor and its build is the one-card stream's: the movement example's two
-kernels have the same code size within 0.6% (MEASURED_SIZE) and read at the same rate
-(the whole grid of a p150a, patterns `A`, `AB`, `AAAB`, `B`: MEASURED_RATE GB/s against
-the example's 427.8, 485.9, 502.6 and 247.4).
+kernels have the same code size within 0.6% (mover A 15,292 bytes against the plain
+accessor stream's 15,384, mover B 11,040 against 11,020). Its one-island loop is the
+plain stream's; measured on the whole grid of a p150a before the reference word (the
+same loop, mover A 15,248 bytes), patterns `A`, `AB`, `AAAB`, `B` read at 427.9, 486.4,
+502.7 and 247.2 GB/s against the example's 427.8, 485.9, 502.6 and 247.4.
 
-MEASURED_STREAM
+Over two cards, island 0's first four cores copy 192 pages that island 1 holds alone,
+exact, with the movement example's kernels unchanged (`examples/11_movement/islands.py`):
+a READ of 48 pages a core takes 275.8 µs, 1.43 GB/s in all. With `--write-across` the
+copy's output is island 1's and every page is put across: exact, 313.4 µs. Each row of
+a block crosses as one line and its answer; the cores wait for it before the block is
+handed on.
 
 ### The blocks of a stream
 

@@ -367,14 +367,15 @@ are computed from the crossed B.
 The integer case above (7680 x 64 x 128, 120 row tiles each) is bit for bit on two
 cards and on one (by rank, the first version).
 
-"B read across": with `--b-far` B is held by island 0 alone as above, and island 1's
-grid reads its W pages from island 0's DRAM in the kernels themselves (the grid writer
-reads W through `km::read_pages`, which asks island 0 for the pages it does not hold);
-no copy is made before the call. Measured on 2026-11-14 at 23:44, 64 x 64 x 256 on
-integer inputs, one row tile an island, one page link
-(`--m 64 --k 64 --n 256 --inputs int --b-far --links 1 --kernel-bytes 131072`; the
-grid's kernels take 105,808 bytes of kernel buffer with the page links built in): exact
-on both islands' rows, 44.9 us a call in the loop; island 0 5.2 us, island 1 39.9 us.
+"B read across": with `--b-far` B is held by island 0 alone (split over island 0's
+ranks), and island 1's grid reads its W pages from island 0's DRAM in the kernels
+themselves (the grid writer reads W through `km::read_pages`, which asks island 0 for
+the pages it does not hold); no copy is made before the call. Measured on 2026-11-15
+at 00:22, the integer case above (7680 x 64 x 128, 121 and 119 row tiles), one page
+link (`--m 7680 --k 64 --n 128 --inputs int --b-far --links 1 --kernel-bytes 131072`:
+the grid's kernels take 122,752 bytes of kernel buffer with the page links built in,
+more than the two-card default of 112 KiB): bit for bit on the 256 sampled rows of
+both islands, 36.7 us a call in the loop; island 0 15.2 us, island 1 31.8 us.
 
 ## Files
 
