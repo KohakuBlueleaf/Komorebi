@@ -13,6 +13,8 @@ import numpy as np
 from mapcollect import rank_sums
 
 import komorebi as km
+from komorebi import formats
+from komorebi.errors import describe_core
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -36,7 +38,7 @@ def parse():
     parser.add_argument(
         "--whole",
         action="store_true",
-        help="MAP on one group of every rank (needs the island table on the cores)",
+        help="MAP on one group of every rank, else on each island's own group",
     )
     parser.add_argument(
         "--hang", action="store_true", help="a HANG on island 1 must name island 1"
@@ -114,7 +116,7 @@ def main():
         )
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
-        report.update(commands(session, run, args, source, output, ranks))
+        report.update(commands(session, run, args, source, output, ranks, exact))
         log("stopping")
         try:
             results = run.stop()
@@ -132,12 +134,13 @@ def main():
         and report["wrong_tiles"] == 0
         and report.get("kernel_errors", ["stop"]) == ["none"] * len(cards)
         and report.get("hang_named_island", True)
+        and report.get("read_island1_in_run_exact", True)
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 
-def commands(session, run, args, source, output, ranks):
+def commands(session, run, args, source, output, ranks, exact):
     """NOP rounds on the first island alone and on every rank; MAP rounds on each
     island's own group (or every rank with --whole); joined tickets; a HANG."""
     out = {}
@@ -178,18 +181,31 @@ def commands(session, run, args, source, output, ranks):
     out["map_groups"] = [list(group) for group in groups]
     log(f"MAP on groups {groups} in turn: {out['map_groups_us']} us")
     if args.hang:
-        # Its parts: the last 20 ranks of island 0 and all of island 1. The cores see
-        # their part's ranks, so a0 30 names a rank of island 1's part only.
+        # Flat rank 130 of a group over both islands: island 1's core 10. Its reader
+        # waits for a port arrival (hang_mode 1) until the deadline gives it up.
         group = (graph.first(1) - 20, graph.count(1) + 20)
-        hang = run.submit("hang", group, [30, 1])  # hang_mode 1: a port arrival
+        hang = run.submit("hang", group, [130 - group[0], 1])
+        run.send()
+        time.sleep(0.25)  # a quarter of the deadline
+        (core,) = run.inspect(1, (130 - graph.first(1), 1))
+        out["inspect_island1"] = describe_core(core)
+        log(f"inspect of island 1: {out['inspect_island1']}")
         try:
             run.wait(hang, timeout=10.0)
             out["hang"] = "returned"
         except km.CommandTimeout as error:
-            out["hang"] = str(error)[:300]
+            out["hang"] = str(error)[:400]
+            out["hang_recovered"] = error.recovered
             out["hang_named_island"] = error.island == 1 and error.given_up
         log(f"HANG on group {group}: {out['hang']}")
         out["hang_named_island"] = out.get("hang_named_island", False)
+        raw, _ = formats.to_bytes(exact, "bfloat16", "tile")
+        rows = raw.reshape(source.pages, source.page_bytes)
+        (got,) = session.read(source, first=ranks, pages=16)
+        out["read_island1_in_run_exact"] = bool(
+            np.array_equal(got, rows[ranks : ranks + 16])
+        )
+        log(f"16 pages of island 1 read in the run: {out['read_island1_in_run_exact']}")
     return out
 
 

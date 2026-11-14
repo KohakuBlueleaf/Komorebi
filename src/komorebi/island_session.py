@@ -82,10 +82,6 @@ class IslandRun:
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
     and it completes when every part has. Errors name the island (`error.island`)."""
 
-    # What an island is sent: its part in its own ranks (False), or the group's word
-    # unchanged in flat ranks, cut by its dispatcher (True: needs the island table).
-    flat_groups = False
-
     def __init__(self, graph, runs):
         self.graph = graph
         self.runs = tuple(runs)
@@ -112,11 +108,10 @@ class IslandRun:
         parts = self.graph.split(group)
         self._grow(1)
         ticket = self._next
-        for island, first, count in parts:
-            sent = group if self.flat_groups else (first, count)
-            try:
+        for island, _first, _count in parts:
+            try:  # the flat group word unchanged: the dispatcher cuts its part
                 handle = self.runs[island].submit(
-                    handler, sent, args, exclusive=exclusive, result=result
+                    handler, group, args, exclusive=exclusive, result=result
                 )
             except KomorebiError as error:
                 raise _named(error, island) from None
@@ -159,13 +154,13 @@ class IslandRun:
             if not mine.any():
                 continue
             named = handler if scalar else handlers[mine]
-            if self.flat_groups:
-                sent = first[mine], count[mine]
-            else:
-                sent = low[mine] - self.graph.first(island), (high - low)[mine]
-            try:
+            try:  # the flat group words unchanged: the dispatcher cuts its part
                 handles = run.submit_many(
-                    named, *sent, None if args is None else args[mine], exclusive
+                    named,
+                    first[mine],
+                    count[mine],
+                    None if args is None else args[mine],
+                    exclusive,
                 )
             except KomorebiError as error:
                 raise _named(error, island) from None
@@ -173,7 +168,7 @@ class IslandRun:
         self._next += rows
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
 
-    def _send(self):
+    def send(self):
         """Gives every island's queued commands to its dispatcher, so that the
         islands run their parts at once while the host waits on one."""
         for island, run in enumerate(self.runs):
@@ -193,7 +188,7 @@ class IslandRun:
         if wanted.min() < 1 or wanted.max() >= self._next:
             raise ValueError("a ticket that was never submitted")
         deadline = time.monotonic() + timeout
-        self._send()
+        self.send()
         events = {}
         for island, run in enumerate(self.runs):
             handles = self._parts[island][wanted]
@@ -212,6 +207,14 @@ class IslandRun:
         out = [tuple(events[ticket]) for ticket in wanted.tolist()]
         return out[0] if single else out
 
+    def inspect(self, island, cores=None, timeout=10.0):
+        """Run.inspect of island `island`'s cores [first, first + count) of `cores`
+        (its own core numbers; default all), asked of that island's dispatcher."""
+        try:
+            return self.runs[island].inspect(cores, timeout)
+        except KomorebiError as error:
+            raise _named(error, island) from None
+
     def _tickets(self, island, handles):
         """The tickets whose part on `island` has one of these handles."""
         parts = self._parts[island][: self._next]
@@ -222,7 +225,7 @@ class IslandRun:
         island's events; returns how many events it waited for, every island's
         together."""
         deadline = time.monotonic() + timeout
-        self._send()
+        self.send()
         waited = 0
         for island, run in enumerate(self.runs):
             try:
@@ -492,7 +495,8 @@ class IslandSession:
         try:
             for island, session in enumerate(self.sessions):
                 try:
-                    runs.append(session.load(program, **options))
+                    island_of = (self.graph, island)
+                    runs.append(session.load(program, island=island_of, **options))
                 except KomorebiError as error:
                     raise _named(error, island) from None
         except BaseException:
