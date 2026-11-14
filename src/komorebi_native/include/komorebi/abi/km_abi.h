@@ -85,6 +85,23 @@
 #define KM_PAGES_OPEN 2u
 #define KM_PAGES_HELLO_PORT 5u
 #define KM_PAGES_PACKET_MAX 4352u /* a fabric packet's largest payload */
+/* dispatcher -> its island's link core only: the writer sends the packet staged in its
+ * link area over the fabric into the other island's dispatcher (the reader skips it) */
+#define KM_HANDLER_LINK 246u
+/* The link area, in the link core's L1 (a run over islands; its offsets): the
+ * connection's teardown and cursor words, two packet headers, then the stages, each a
+ * packet (the command line and its crossing line) and the count line written after */
+#define KM_LINK_TEARDOWN 0x00u
+#define KM_LINK_CURSOR 0x10u
+#define KM_LINK_HEADERS 0x40u /* 64 bytes each: the packet's, the count line's */
+#define KM_LINK_STAGE 0x100u
+#define KM_LINK_STAGES 4u
+#define KM_LINK_PACKET_BYTES 128u
+#define KM_LINK_STAGE_BYTES 192u
+#define KM_LINK_AREA_BYTES (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
+/* LINK's words: a0 the stage, a1 the packet's number (each line of the stage holds it
+ * in word 0, the count line in word 1), a2 the far tile x | y << 16, a3 the far address
+ * of the packet, a4 that of the count line */
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u
@@ -285,7 +302,8 @@ KM_STATIC_ASSERT(
 /* KM_X280_RANK_CORE(r), the last indices: no core of a grid of at most 124 cores */
 #define KM_X280_RANK_CORE(r) (KM_CORES_MAX - KM_X280_RANKS_MAX + (uint32_t)(r))
 /* The run line: one 16-byte store of the dispatcher into the X280 ranks' thread at a
- * dynamic run's RUN and at its end command, {run, KM_X280_RUN_*, group, its handler}. */
+ * dynamic run's RUN and at its end command, {run, KM_X280_RUN_*, group, its handler}.
+ */
 #define KM_X280_RUN_SEQUENCE 0u /* word offsets */
 #define KM_X280_RUN_STATE 1u
 #define KM_X280_RUN_GROUP 2u
@@ -456,6 +474,13 @@ KM_STATIC_ASSERT(sizeof(km_event_t) == 16, "an event is one 16-byte chunk");
 #define KM_EVENT_SEQUENCE_MASK 0xFFFFu
 KM_STATIC_ASSERT(
     KM_CORES_MAX <= KM_EVENT_AUXILIARY_LOW + 1u, "a first core fits in 8 bits"
+);
+/* A TIMEOUT of a command whose part on another island did not come back by its
+   deadline: its low 8 bits are KM_EVENT_ISLAND + that island (no slot reaches it) */
+#define KM_EVENT_ISLAND 0x80u
+KM_STATIC_ASSERT(
+    KM_RING_SLOTS <= KM_EVENT_ISLAND && KM_EVENT_ISLAND + KM_ISLANDS_MAX <= 0x100u,
+    "an island's timeout is no slot's"
 );
 
 #endif /* KOMOREBI_ABI_KM_ABI_H */

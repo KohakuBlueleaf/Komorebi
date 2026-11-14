@@ -1,9 +1,10 @@
 """A session over several cards, each card's chip an island: one fabric mesh, one X280
 runtime over it, a dispatcher and the persistent grid on every island. Ranks are flat
 and contiguous by island; a command's group is split by island on the host, a tensor
-is placed by island. `Session(cards=[...])` with more than one card returns this."""
+is placed by island. `Session(cards=[...])` returns this; one card is one island."""
 
 import os
+import struct
 import time
 
 import numpy as np
@@ -16,6 +17,7 @@ from komorebi.program import Program
 
 M32 = 0xFFFFFFFF
 SLICE_S = 0.001  # an island's turn in wait_together
+THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
 
 
 def _named(error, island):
@@ -30,6 +32,65 @@ def _named(error, island):
 
 def _left(deadline):
     return max(deadline - time.monotonic(), 0.0)
+
+
+class LinkPlan:
+    """Island `island`'s link toward island `far` for commands across: its link core
+    (`core`, an index of its cores and a rank like any other), the core's link area
+    in L1 (`area`) and the fabric's Ethernet channel toward `far`."""
+
+    def __init__(self, graph, island, far, core, area, channel):
+        self.graph, self.island, self.far = graph, island, far
+        self.core, self.area, self.channel = core, area, channel
+
+    def connection(self):
+        """The link core writer's last runtime arguments: the connection's channel,
+        teardown and cursor words."""
+        headers = abi.headers()
+        return [
+            self.channel,
+            self.area + headers["KM_LINK_TEARDOWN"],
+            self.area + headers["KM_LINK_CURSOR"],
+        ]
+
+    def defines(self, arg):
+        """The kernels' defines: the link core, its area, the connection's arguments
+        at runtime argument `arg` of its writer."""
+        return [
+            ("KM_LINK_CORE", str(self.core)),
+            ("KM_LINK_AREA", str(self.area)),
+            ("KM_LINK_ARG", str(arg)),
+        ]
+
+    def line(self, dispatch):
+        """The dispatcher's link line and island table (KMD_LIM_LINK). The far island's
+        dispatcher tile and link block are taken as this one's (checked after load)."""
+        headers = abi.headers()
+        words = [0] * (headers["KMD_LINK_COUNT"] // 4)
+        words[headers["KMD_L_MARK"]] = headers["KMD_LINK_MARK"]
+        words[headers["KMD_L_ISLAND"]] = self.island
+        words[headers["KMD_L_ISLANDS"]] = len(self.graph.islands)
+        words[headers["KMD_L_CORE"]] = self.core
+        words[headers["KMD_L_AREA"]] = self.area
+        words[headers["KMD_L_FAR"]] = self.far
+        words[headers["KMD_L_FAR_TILE"]] = dispatch.l2_x | dispatch.l2_y << 16
+        words[headers["KMD_L_FAR_BLOCK"]] = dispatch.lim_base + headers["KMD_LIM_LINK"]
+        table = headers["KMD_LINK_TABLE"] // 4
+        for island in range(len(self.graph.islands)):
+            threads = self.graph.thread_numbers(island)
+            words[table + 2 * island] = (
+                self.graph.first(island) | self.graph.count(island) << 16
+            )
+            words[table + 2 * island + 1] = threads.start | len(threads) << 16
+        return struct.pack(f"<{len(words)}I", *words)
+
+
+def link_core(device, columns, eth_x):
+    """The row-0 core nearest at or right of the link's Ethernet core (x): its index."""
+    right = [x for x in range(columns) if device.worker_core(x, 0)[0] >= eth_x]
+    if right:
+        return min(right, key=lambda x: device.worker_core(x, 0)[0])
+    return max(range(columns), key=lambda x: device.worker_core(x, 0)[0])
 
 
 class IslandTensor:
@@ -196,6 +257,7 @@ class IslandRun:
             raise ValueError("a ticket that was never submitted")
         deadline = time.monotonic() + timeout
         self.send()
+        self._store(wanted, deadline)
         events = {}
         for island, run in enumerate(self.runs):
             handles = self._parts[island][wanted]
@@ -213,6 +275,28 @@ class IslandRun:
                 events.setdefault(ticket, []).append(event)
         out = [tuple(events[ticket]) for ticket in wanted.tolist()]
         return out[0] if single else out
+
+    def _store(self, wanted, deadline):
+        """Until the tickets' parts arrived or the deadline: one native round an island
+        in turn (store what its ring has room for, file its events), so that every
+        island is fed while the host waits; Run.wait then returns or raises."""
+        pending = {}
+        for island in range(len(self.runs)):
+            handles = self._parts[island][wanted]
+            pending[island] = np.unique(handles[handles != 0])
+        while any(handles.size for handles in pending.values()):
+            if time.monotonic() > deadline:
+                return
+            for island, handles in pending.items():
+                if not handles.size:
+                    continue
+                run = self.runs[island]
+                try:
+                    run._check_alive()
+                    run._step(handles, int(handles[-1]), 0.0)
+                except KomorebiError as error:
+                    raise _named(error, island) from None
+                pending[island] = handles[~run._arrived(handles)]
 
     def inspect(self, island, cores=None, timeout=10.0):
         """Run.inspect of island `island`'s cores [first, first + count) of `cores`
@@ -287,10 +371,11 @@ class IslandRun:
 
 
 class IslandSession:
-    """Cards `cards` as islands of one 1 x n fabric mesh, the X280 runtime once over
-    it, per island a Session given its device. `links` 1 to 4 (two islands): links
-    pages cross on, a link core (the island's last cores, not ranks) a pair; 0: every
-    core is a rank. Use as a context manager."""
+    """Cards `cards` as islands of one 1 x n fabric mesh in this process: the X280
+    runtime once over the mesh, then per island a Session given its device (one card:
+    its own Session, no mesh). `links` 1 to 4 (two islands): links pages cross on, a
+    link core (the island's last cores, not ranks) a pair; 0: every core is a rank. A
+    context manager."""
 
     LINKS_MAX = 4  # a byte each in a PAGES command's link word
     # How a core's ask for pages another island holds reaches the holder: "host" (the
@@ -309,8 +394,8 @@ class IslandSession:
         channel=channel_module.REGION_DEFAULT,
     ):
         self.cards = tuple(int(card) for card in cards)
-        if len(self.cards) < 2 or len(set(self.cards)) != len(self.cards):
-            raise ValueError(f"cards {cards}: two or more different cards")
+        if not self.cards or len(set(self.cards)) != len(self.cards):
+            raise ValueError(f"cards {cards}: one or more different cards")
         if not 0 <= links <= self.LINKS_MAX or (links and len(self.cards) != 2):
             raise ValueError(
                 f"links={links}: 0, or 1 to {self.LINKS_MAX} between two islands"
@@ -350,7 +435,20 @@ class IslandSession:
 
     def open(self):
         """Opens the mesh (the fabric set first), the X280 runtime over it, then a
-        Session on each island's device; the graph of the islands' ranks."""
+        Session on each island's device; the graph of the islands' ranks. One card:
+        its Session opens the card alone, the graph is one island."""
+        if len(self.cards) == 1:
+            session = session_module.Session(
+                card=self.cards[0],
+                log=self.log,
+                kernel_bytes=self.kernel_bytes,
+                **self._options,
+            )
+            session.open()
+            self.chips, self.sessions = [self.cards[0]], (session,)
+            columns, rows = session.grid
+            self.graph = islands.one(columns * rows, columns)
+            return
         listed = ",".join(str(card) for card in self.cards)
         visible = os.environ.get("TT_VISIBLE_DEVICES")
         if visible is not None and visible != listed:
@@ -397,7 +495,7 @@ class IslandSession:
             for session in self.sessions:
                 columns, rows = session.grid
                 cores = columns * rows
-                parts.append(islands.Island(tuple(range(cores)), columns))
+                parts.append(islands.Island(tuple(range(cores)), columns, THREADS))
                 link_cores.append(tuple(range(cores - taken, cores)))
             links = [
                 islands.Link(i, i + 1, max(self.links, 1))
@@ -445,12 +543,13 @@ class IslandSession:
         """Island `island`'s own Session (local ranks, its own tensors)."""
         return self.sessions[island]
 
-    def tensor(self, data, dtype, layout="row", like=None, copy=False):
+    def tensor(self, data, dtype, layout="row", like=None, copy=False, by="rank"):
         """A DRAM tensor holding `data` as Session.tensor takes it, placed by
-        islands.place: split by island along the leading dimension as its ranks
-        partition it (`like`: the group (first, count) it follows), or a `copy`."""
+        islands.place: split along the leading dimension as the ranks partition it
+        (`like`: the group it follows), even parts by island (`by` "island"), or a copy.
+        """
         raw, shape = formats.to_bytes(data, dtype, layout)
-        tensor = self.empty(shape, dtype, layout, like, copy)
+        tensor = self.empty(shape, dtype, layout, like, copy, by)
         rows = raw.reshape(tensor.pages, tensor.page_bytes)
         for island, part in enumerate(tensor.parts):
             if tensor.placement.copy:
@@ -462,7 +561,7 @@ class IslandSession:
             self.sessions[island].write(part, mine)
         return tensor
 
-    def empty(self, shape, dtype, layout="row", like=None, copy=False):
+    def empty(self, shape, dtype, layout="row", like=None, copy=False, by="rank"):
         """A tensor as tensor() places it, not written."""
         parts = [session.empty(shape, dtype, layout) for session in self.sessions]
         first = parts[0]
@@ -472,6 +571,7 @@ class IslandSession:
             islands.leading_units(shape, layout),
             like,
             copy,
+            by,
         )
         try:
             return IslandTensor(parts, placement)
@@ -510,6 +610,15 @@ class IslandSession:
             out.append(dram.untilize_bf16(rows, *tensor.shape))
         return out
 
+    def read_tiles_bf16(self, tensor, first, pages):
+        """Tiles first .. first + pages - 1 of a bfloat16 tile tensor as float32
+        [pages, 32, 32], as Session.read_tiles_bf16, read as read() does."""
+        if tensor.layout != "tile" or tensor.dtype != "bfloat16":
+            raise ValueError("read_tiles_bf16 takes a bfloat16 tile tensor")
+        (raw,) = self.read(tensor, first=first, pages=pages)
+        tile = dram.TILE
+        return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+
     def write(self, tensor, pages, first=0):
         """Writes `pages` ([n, page_bytes] uint8) into pages first .. first + n - 1,
         each into the island that holds it (a copy: into every island)."""
@@ -527,33 +636,48 @@ class IslandSession:
             )
 
     def load(self, program, **options):
-        """Loads `program` on every island in turn (its grid, then its dispatcher),
-        with Session.load's options; returns an IslandRun over flat ranks."""
+        """Loads `program` on every island in turn (its grid, then its dispatcher), or
+        a list of Programs, one an island in island order, with Session.load's
+        options; returns an IslandRun over flat ranks. Each Program brings its own
+        X280 threads."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
-        if not isinstance(program, Program):
-            raise ValueError("an island session loads one Program (not yet a list)")
-        if program.threads:
+        programs = list(program) if isinstance(program, list | tuple) else [program]
+        if len(programs) == 1:
+            programs *= len(self.sessions)
+        if len(programs) != len(self.sessions) or not all(
+            isinstance(one, Program) for one in programs
+        ):
             raise ValueError(
-                f"{program.name}: X280 threads over islands are not done yet"
+                f"an island session loads one Program or a list of "
+                f"{len(self.sessions)}, one an island"
             )
-        defines = program.defines
+        defines = [one.defines for one in programs]
         if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
-            program.defines = {**defines, "KM_PAGE_LINKS": 1}
+            for one, own in zip(programs, defines):
+                one.defines = {**own, "KM_PAGE_LINKS": 1}
+        plans = self._links()
         runs = []
         try:
-            for island, session in enumerate(self.sessions):
+            for island, (session, one) in enumerate(zip(self.sessions, programs)):
                 try:
-                    island_of = (self.graph, island)
-                    runs.append(session.load(program, island=island_of, **options))
+                    # one island: the card's run as it is without islands
+                    island_of = (self.graph, island) if len(programs) > 1 else None
+                    runs.append(
+                        session.load(
+                            one, island=island_of, link=plans[island], **options
+                        )
+                    )
                 except KomorebiError as error:
                     raise _named(error, island) from None
+            self._check_links(runs, plans)
         except BaseException:
             for run in runs:
                 run.abort()
             raise
         finally:
-            program.defines = defines
+            for one, own in zip(programs, defines):
+                one.defines = own
         self.run = IslandRun(self.graph, runs)
         if self.links:
             try:
@@ -758,6 +882,44 @@ class IslandSession:
             "seconds": seconds,
         }
 
+    def _links(self):
+        """Each island's LinkPlan for commands across (two islands), else None each:
+        its link core under link 0's Ethernet core, a link area on every core."""
+        if len(self.sessions) != 2 or self.links:
+            # with page links: none (their CPU of link 0 would be a second sender on
+            # link 0's connection, which hangs the cards)
+            return [None] * len(self.sessions)
+        bytes_ = abi.headers()["KM_LINK_AREA_BYTES"]
+        plans = []
+        self._link_areas = []
+        for island, session in enumerate(self.sessions):
+            far = 1 - island
+            _links, channel, eth_x, _eth_y = self.mesh.link(island, far, 0)
+            columns, rows = session.grid
+            area = session.empty(
+                (columns * rows, bytes_ // 4), "uint32", shard_grid=(columns, rows)
+            )
+            self._link_areas.append(area)
+            core = link_core(session.device, columns, eth_x)
+            plans.append(LinkPlan(self.graph, island, far, core, area.address, channel))
+            self.log(
+                f"island {island}: link core {core}, channel {channel}, area "
+                f"{area.address:#x}"
+            )
+        return plans
+
+    def _check_links(self, runs, plans):
+        """Every island's dispatcher has the tile and LIM base its link line took for
+        the far one's (its own)."""
+        if plans[0] is None:
+            return
+        ports = [run.backend.port for run in runs]
+        seen = {(port.l2_x, port.l2_y, port.lim_base) for port in ports}
+        if len(seen) != 1:
+            raise KomorebiError(
+                f"the islands' dispatchers differ in tile or LIM base: {sorted(seen)}"
+            )
+
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'
         sessions, then the mesh (not while a grid did not return)."""
@@ -771,7 +933,7 @@ class IslandSession:
                 self.mesh.close()
                 self.mesh = None
                 session_module._LIVE.discard(self)
-            elif stuck:
+            elif stuck and self.mesh is not None:
                 self.log(f"mesh not closed: the grid of islands {stuck} did not return")
 
     def _release(self, why, close_device):

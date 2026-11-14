@@ -33,8 +33,11 @@ with km.Session(cards=[0, 1]) as session:  # one session, 240 ranks
 ## The session
 
 `km.Session(cards=[a, b, ...], links=0, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)` with two or more cards
-returns an `IslandSession`; with one card it is the card's `Session` as before.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)` returns an `IslandSession`.
+With one card it has the same calls over one island: no mesh and no fabric, the card's
+own `Session` as `session.island(0)`, the graph `islands.one`, every page of every
+tensor on the card, and each load the card's run as it is without islands. A program
+written for islands runs on one card unchanged.
 
 - **Open.** In this order: tt-metal's 1-D fabric is set, the cards open as one 1 x n
   mesh (each card's chip a 1 x 1 submesh with its own command queue), the X280 runtime
@@ -63,9 +66,9 @@ returns an `IslandSession`; with one card it is the card's `Session` as before.
 ## The run
 
 `session.load(program, **options)` loads one `Program` on every island in turn (its
-grid, then its dispatcher), with `Session.load`'s options and `island=(graph, i)`: each
-core gets the island table and each dispatcher its island's range of ranks. It returns
-an `IslandRun`.
+grid, then its dispatcher), or a list of Programs, one an island in island order, with
+`Session.load`'s options and `island=(graph, i)`: each core gets the island table and
+each dispatcher its island's range of ranks. It returns an `IslandRun`.
 
 - `run.submit(handler, group, args)` takes a group of flat ranks. The host finds the
   islands it touches with `Graph.split` and sends each of them the group's word
@@ -73,8 +76,10 @@ an `IslandRun`.
   first of its cores in the group, and a core's rank is its flat rank less the group's
   first, its count the whole group's. The call returns a ticket. `run.submit_many` does the same for n commands, one `submit_many` an
   island.
-- `run.wait(tickets, timeout)` sends every island's queued commands first, so the
-  islands run their parts at once, then waits for every part within the one timeout.
+- `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
+  islands in turn (one native round each: store what its ring has room for, take its
+  events) until every part arrived, so the islands run their parts at once; all within
+  the one timeout.
   A ticket completes when every part has; its result is the tuple of its parts' events
   in island order. `run.drain`, `run.stop` and `run.abort` act on every island within
   one timeout; `run.state()` lists every rank in flat order, `run.result()` every
@@ -90,12 +95,15 @@ an `IslandRun`.
 
 ## Tensors
 
-`session.tensor(data, dtype, layout, like=None, copy=False)` makes one tensor of the
-whole shape on every island, at the same address, so a program takes its `address`
-and `accessor_args()` unchanged. Its pages are placed by `islands.place`: split by
-island along the leading dimension in rank order (`like`: the group the split
+`session.tensor(data, dtype, layout, like=None, copy=False, by="rank")` makes one
+tensor of the whole shape on every island, at the same address, so a program takes its
+`address` and `accessor_args()` unchanged. Its pages are placed by `islands.place`:
+split by island along the leading dimension in rank order (`like`: the group the split
 follows; default every rank), so a rank that partitions the tensor by rank finds its
-part in its own island's DRAM; `copy=True` puts every page on every island. A split
+part in its own island's DRAM; `by="island"` splits the leading dimension into even
+parts by island (`partition(units, i, islands)` to island i), for a program that cuts
+its work by island first and over an island's ranks inside; `copy=True` puts every
+page on every island. A split
 tensor's pages that another island holds are zeros on this one.
 
 A kernel asks where a page lives with `km::island_of(placement, page)`
@@ -184,10 +192,11 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
 ## Not yet
 
-- Links: no message or command crosses between islands inside a run; `forward` to
-  another island's rank, `collect` and `broadcast` over islands need the link service.
-  Pages cross on the host's command (`send_pages`, `ask`), not yet on a kernel's own
-  request.
-- A list or a dict of programs, X280 threads and ports, engines and uploads over
-  islands; tensors in L1.
+- Links: no message crosses between islands inside a run; `forward` to another
+  island's rank, `collect` and `broadcast` over islands need the link service. Pages
+  cross on the host's command (`send_pages`, `ask`), not yet on a kernel's own
+  request. A session with `links` has no commands across: their link core would share
+  link 0's connection with a page link's CPU.
+- A dict of programs, X280 threads and ports, engines and uploads over islands;
+  tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.

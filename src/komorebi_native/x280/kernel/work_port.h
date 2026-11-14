@@ -138,7 +138,11 @@ work_command(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     uint64_t* line = ring->line;
     const uint32_t request = ring->next, header = (uint32_t)(line[0] >> 32);
     const uint32_t flags = (header >> 8) & 0xFFu, group = (uint32_t)line[1];
-    const uint32_t cluster = (group & 0xFFFFu) - KM_GROUP_CLUSTER_BASE;
+    /* on an island, thread numbers are flat: this island's first is its cluster 1 */
+    const uint32_t cluster = (
+        (group & 0xFFFFu) - KM_GROUP_CLUSTER_BASE -
+        (dispatcher->thread_first ? dispatcher->thread_first - 1u : 0u)
+    );
     uint32_t reject = 0;
     if (flags & (1u | KM_FLAG_EXCLUSIVE | KM_FLAG_QUEUE)) {
         reject = KMD_REJECT_FLAGS;

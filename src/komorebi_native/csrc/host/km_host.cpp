@@ -1781,9 +1781,16 @@ namespace {
             int64_t upload_bytes,
             uint64_t messages_handler,
             const std::vector<uint8_t>& programs,
-            uint64_t island
+            uint64_t island,
+            const std::vector<uint8_t>& link
         ) {
             require_open();
+            if (link.size() > KMD_LINK_COUNT || link.size() % 4 != 0) {
+                throw std::runtime_error(
+                    "link: the link line and the island table, at most KMD_LINK_COUNT "
+                    "bytes"
+                );
+            }
             if (programs.size() > KM_CORES_MAX) {
                 throw std::runtime_error(
                     "programs: a byte per core, at most KM_CORES_MAX"
@@ -1917,6 +1924,9 @@ namespace {
             std::vector<uint8_t> coordinates(4 * table.size());
             std::memcpy(coordinates.data(), table.data(), coordinates.size());
             tile_->write_available_lim(base_ + KMD_LIM_COORDS, coordinates);
+            if (!link.empty()) {  // the dispatcher reads it after the hello
+                tile_->write_available_lim(base_ + KMD_LIM_LINK, link);
+            }
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &arguments, sizeof(arguments));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
@@ -3014,7 +3024,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("upload_bytes") = -1,
             nb::arg("messages_handler") = 0,
             nb::arg("programs") = std::vector<uint8_t>{},
-            nb::arg("island") = 0
+            nb::arg("island") = 0,
+            nb::arg("link") = std::vector<uint8_t>{}
         ).def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
         .def_ro("upload_bytes", &Dispatch::upload_bytes_)

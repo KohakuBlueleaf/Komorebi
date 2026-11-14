@@ -183,8 +183,9 @@ The session sends each group a load of its own program before `session.load` ret
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
 
-- `cards=[a, b, ...]` with two or more cards gives one session over them, each card's chip
-  an island with flat ranks ([Islands](islands.md)); with one card it is `card`.
+- `cards=[a, b, ...]` gives one session over them, each card's chip an island with flat
+  ranks ([Islands](islands.md)); `cards=[a]` is that session over one island, `card=a`
+  the card's own session.
 - `pll_mhz` is the X280 clock. The runtime's table is 15, 200, 800, 1000, 1250, 1350, 1500
   and 1750 MHz; a runtime built before 1250, 1350 and 1500 were added has 15, 200, 800,
   1000 and 1750. One PLL clocks all four X280 clusters, so the work

@@ -211,9 +211,17 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     const uint32_t auxiliary = (
         slot | (sequence & KM_EVENT_SEQUENCE_MASK) << KM_EVENT_SEQUENCE_SHIFT
     );
-    ring_push(
-        ring, dispatcher->slot_request[slot], KM_EVENT_TIMEOUT | auxiliary << 8, took
-    );
+    if (
+        !(dispatcher->link_slots & (1ull << slot)) ||
+        !link_freed(dispatcher, slot, KM_EVENT_TIMEOUT | auxiliary << 8, took, now)
+    ) {
+        ring_push(
+            ring,
+            dispatcher->slot_request[slot],
+            KM_EVENT_TIMEOUT | auxiliary << 8,
+            took
+        );
+    }
     dispatcher->x280_cores[KMD_H_GIVEN_UP] = ++dispatcher->given_up;
     dispatcher->last_event_mtime = now;
     if (dispatcher->waits) {
@@ -328,7 +336,10 @@ static void inspect_turn(kmd_t* dispatcher) {
 static inline int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot) {
     const uint32_t handler = dispatcher->slot_handler[slot];
     return (
-        dispatcher->slot_source[slot] == KMD_SRC_HOST &&
+        (
+            dispatcher->slot_source[slot] == KMD_SRC_HOST ||
+            dispatcher->slot_source[slot] == KMD_SRC_LINK
+        ) &&
         handler <= KM_HANDLER_USER_MAX &&
         !KM_IS_DYNAMIC(dispatcher->messages.handler, handler) &&
         dispatcher->messages.end != slot + 1u

@@ -68,6 +68,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_poll(kmx_event* event)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
 | `int kmx_cluster(void)` | any | the work cluster the thread runs on | 1, 2 or 3 |
 | `int kmx_island(void)`, `int kmx_islands(void)` | any | the island the thread's cores are on, and the run's islands ([islands](runtime.md#islands)) | 0 and 1 on one island |
+| `int kmx_island_of(uint32_t number)` | any | the island of thread `number` (`KMX_THREAD(island, cluster)` = 3 x island + cluster, the group `KM_GROUP_CLUSTER(number)`) ([commands across islands](#commands-across-islands)) | the island; -1 for no thread of the run |
 | `uint64_t kmx_time(void)` | any | the 50 MHz timer (`KMX_TICKS_PER_SECOND`) | ticks |
 | `int kmx_stop_requested(void)` | any | true once the host asked for a stop or the thread's deadline passed (never once it serves commands) | 0 or 1 |
 | `void kmx_progress(uint32_t where)` | any | writes `where` and its time into the result block as a progress marker | - |
@@ -228,6 +229,41 @@ Measured: 200 commands never waited for, over 20 calls, each with a command from
 between them; every one answered, and `kmx_poll` then took 32
 (`tests/hardware/thread/open_points_case.py`). Without this a ring full of unread
 events stopped the thread's commands and its answer queued behind them.
+
+### Commands across islands
+
+In a run over several islands ([islands](runtime.md#islands)) a command's group is in
+flat ranks and a thread's number is flat: `KMX_THREAD(island, cluster)`, 3 x island +
+the cluster, so island 0's numbers are the ones of one island and island 1's work
+cluster 1 is 4. `kmx_island_of(number)` names the island of a thread. A thread submits
+to any of them, and to any flat group, with `kmx_submit` as on one island:
+
+```c
+kmx_command(&question, 0, kHandlerFold, KM_GROUP_CLUSTER(KMX_THREAD(1, 1)), 1);
+kmx_command(&map, 0, kHandlerMap, 0, 240); /* both islands' ranks */
+```
+
+The dispatcher splits the group by the island table. It runs its own part and sends the
+other island's part to that island's dispatcher as a command packet: the 64-B command
+line unchanged and a 64-B crossing line (the origin island, the origin ticket, the time
+left, a sequence). The packet goes through the island's link core into the other
+dispatcher's link inbox, one inbox a link, written only by that link's core (whole
+lines, its count word last; nothing atomic crosses). The other dispatcher runs the
+packet as its own command and sends DONE back (ticket, status, completion words). The
+ticket's event comes once every part is back: `ticks` is the whole command's, a result
+(`KM_FLAG_RESULT`) is the leader's. A part not back by the command's deadline gives the
+command up: `KM_EVENT_TIMEOUT` with `KM_EVENT_ISLAND` (0x80) + that island in the low 8
+bits of `auxiliary`, and the run goes on.
+
+Measured (`examples/25_islands_threads`, two cards): a NOP submitted to island 0's
+ring, 2,000 pipelined, 3.08 µs to island 0's 120 ranks and 4.36 µs to island 1's;
+example 01's MAP from island 0's thread, one at a time, 6.00 µs on island 0's ranks and
+15.41 µs on all 240, every tile exact; a FOLD with its result from island 0's thread to
+island 1's, one at a time, 10.69 µs.
+
+Not done: a `kmx_push` larger than one packet does not cross (one command line and its
+crossing line are a packet); runs of more than two islands (one link, no routing); a
+crossing's local part that times out from a thread ends the run as on one island.
 
 ### A thread in a run of several programs
 

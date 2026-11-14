@@ -37,6 +37,14 @@ int kmx_cluster(void);
 int kmx_island(void);
 int kmx_islands(void);
 
+/* Thread numbers are flat over islands, one a work cluster: island i's cluster c is
+ * KMX_THREAD(i, c). A command's group (KM_GROUP_CLUSTER_BASE + number, 1) names it;
+ * one for a thread of another island crosses to that island's dispatcher. */
+#define KMX_THREAD(island, cluster) (3u * (uint32_t)(island) + (uint32_t)(cluster))
+
+/* The island of thread `number` (1 to 3 * kmx_islands()), or -1 for none. */
+int kmx_island_of(uint32_t number);
+
 /* Region `id` of the DRAM bank, as memory, and its size; 0 for an unknown id. */
 void* kmx_region(int id, uint64_t* bytes);
 
@@ -258,12 +266,12 @@ int kmx_pull_run(
 /* X280 ranks of a dynamic run: X280 core h < kmx_ranks() is rank count + h after the
  * run's `count` core ranks. A rank takes the messages of its queue, sends to cores. */
 typedef struct {
-    uint32_t run;     /* the RUN command's sequence */
-    uint32_t rank;    /* this X280 core's rank */
-    uint32_t count;   /* the core ranks: the group without its counter tiles */
-    uint32_t first;   /* the group's first core */
-    uint32_t handler; /* of the message taken last; before it the RUN's */
-    uint32_t quota;   /* sends left */
+    uint32_t run;            /* the RUN command's sequence */
+    uint32_t rank;           /* this X280 core's rank */
+    uint32_t count;          /* the core ranks: the group without its counter tiles */
+    uint32_t first;          /* the group's first core */
+    uint32_t handler;        /* of the message taken last; before it the RUN's */
+    uint32_t quota;          /* sends left */
     uint32_t sent, consumed; /* this run's messages, as its status line has them */
     uint32_t gave;           /* KMX_GAVE_*: why this rank stopped (0: it did not) */
     /* the library's: the queue's head, the messages of the take not yet handed out,
