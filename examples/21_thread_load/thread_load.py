@@ -147,7 +147,10 @@ def programs(tensors, work):
     readers and computes); the thread is sum's."""
     compute = {"math_fidelity": "HiFi4", "fp32_dest_acc_en": True}
     line = dict(format="uint32", page_bytes=C["TL_LINE_BYTES"], pages=1)
-    reader = {"reader": tensors["input"].accessor_args()}
+    tensor_args = {
+        "reader": tensors["input"].tensor_args(),
+        "writer": tensors["outs"].tensor_args(),
+    }
     sum_program = km.Program(
         "sum",
         kernels=KERNELS / "sum",
@@ -156,7 +159,7 @@ def programs(tensors, work):
             km.Buffer(index=C["TL_CB_SUM_LINE"], **line),
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
         ],
-        compile_args=reader,
+        compile_args=tensor_args,
         compute=compute,
         handlers={"sum": C["TL_HANDLER_SUM"]},
     )
@@ -168,7 +171,7 @@ def programs(tensors, work):
             km.Buffer(index=16, format="float32", page_bytes=4096, pages=2),
             km.Buffer(index=C["TL_CB_WIDEN_LINE"], **line),
         ],
-        compile_args=reader,
+        compile_args=tensor_args,
         compute=compute,
         handlers={"widen": C["TL_HANDLER_WIDEN"]},
     )

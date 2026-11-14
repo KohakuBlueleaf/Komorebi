@@ -4,17 +4,21 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "dense.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 namespace {
 
-    // Reads `rows` x `width` tiles of accessor from tile `first` (rows `stride` tiles
+    // Every operand: bf16 tiles in DRAM, one accessor's arguments; each its own word.
+    using Tile = km::Tensor<0>;
+
+    // Reads `rows` x `width` tiles of `matrix` from tile `first` (rows `stride` tiles
     // apart) into the reserved item of cb, then pushes it. False: the reads gave up.
-    template <typename Accessor>
     bool read_item(
         const km::Reader& reader,
+        const km_command_t& command,
         uint32_t cb,
-        const Accessor& accessor,
+        const Tile& matrix,
         uint32_t first,
         uint32_t rows,
         uint32_t width,
@@ -22,12 +26,12 @@ namespace {
     ) {
         uint32_t destination = get_write_ptr(cb);
         for (uint32_t row = 0; row < rows; ++row) {
-            for (uint32_t column = 0; column < width; ++column) {
-                noc_async_read_page(
-                    first + row * stride + column, accessor, destination
-                );
-                destination += kTileBytes;
+            if (!km::read_pages(
+                reader, command, matrix, first + row * stride, width, destination
+            )) {
+                return false;
             }
+            destination += width * kTileBytes;
         }
         if (!flushed(reader, km::kStReader, km::kFlushReads)) {
             return false;
@@ -37,11 +41,10 @@ namespace {
     }
 
     // LAYER: A's row from DRAM per owned row when A is not held (B is always held).
-    template <typename Accessor>
     void layer(
         const km::Reader& reader,
         const km_command_t& command,
-        const Accessor& a_matrix,
+        const Tile& a_matrix,
         volatile tt_l1_ptr uint32_t* profile
     ) {
         if ((command.a8 & 0xFF) != kDram) {
@@ -63,7 +66,9 @@ namespace {
                 return;
             }
             const uint32_t reserved = km::wall();
-            if (!read_item(reader, kCbA, a_matrix, row * k_tiles, 1, k_tiles, 0)) {
+            if (!read_item(
+                reader, command, kCbA, a_matrix, row * k_tiles, 1, k_tiles, 0
+            )) {
                 return;
             }
             wait += reserved - asked;
@@ -78,7 +83,6 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    constexpr auto tile_args = TensorAccessorArgs<0>();  // every operand: bf16 tiles in DRAM
     km::Reader reader;
     volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbProf));
     for (uint32_t word = 0; word < kProfWords; ++word) {
@@ -92,18 +96,18 @@ void kernel_main() {
             if (!reader.reserve(w_buffer, k_tiles * n_tiles)) {
                 return;
             }
-            const auto w_matrix = TensorAccessor(tile_args, w_address);
-            if (
-                read_item(reader, w_buffer, w_matrix, 0, 1, k_tiles * n_tiles, 0) &&
-                reader.reserve(kCbLoaded, 1)
-            ) {
+            const Tile w_matrix(w_address);
+            if (read_item(
+                reader, command, w_buffer, w_matrix, 0, 1, k_tiles * n_tiles, 0
+            ) &&
+                reader.reserve(kCbLoaded, 1)) {
                 cb_push_back(kCbLoaded, 1);
             }
             return;
         }
         if (km::handler(command) == kHandlerLayer) {
             const uint32_t a_address = command.a0;
-            layer(reader, command, TensorAccessor(tile_args, a_address), profile);
+            layer(reader, command, Tile(a_address), profile);
             km::add_sat(profile + kPrRdBody, km::wall() - started);
             return;
         }
@@ -117,8 +121,8 @@ void kernel_main() {
         const km::Partition owned_rows = (
             km::partition(m_tiles, reader.me() - km::first(command), km::count(command))
         );
-        const auto a_matrix = TensorAccessor(tile_args, a_address);
-        const auto w_matrix = TensorAccessor(tile_args, w_address);
+        const Tile a_matrix(a_address);
+        const Tile w_matrix(w_address);
         const bool stream = form == kFormStream;
         // The row is one item when it is one chunk or when W is streamed.
         const bool row_item = stream || chunk_tiles == k_tiles;
@@ -138,6 +142,7 @@ void kernel_main() {
                         const uint32_t reserved = km::wall();
                         if (!read_item(
                             reader,
+                            command,
                             kCbA,
                             a_matrix,
                             row * k_tiles + chunk,
@@ -159,6 +164,7 @@ void kernel_main() {
                         const uint32_t reserved = km::wall();
                         if (!read_item(
                             reader,
+                            command,
                             kCbWs,
                             w_matrix,
                             chunk * n_tiles + column,

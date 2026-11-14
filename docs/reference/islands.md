@@ -489,7 +489,7 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 A program loaded on one island (a card's own session, or an island session of one
 card) is built without the tensor table (no `KM_TENSOR_TABLE`): the word is the bank
 address, and each call compiles to exactly tt-metal's page call it replaces,
-`noc_async_read_page` or `noc_async_write_page` once a page, with `port` unused. Over
+`noc_async_read_page` or `noc_async_write_page` once a page. Over
 islands each page is found by `km::page_at` and the calls are the forms by word above
 (`km::read_pages(core, command, args, word, ...)`). The reader asks with the link
 area's own line and answer words; the writer with the first ask line's place, which
@@ -497,9 +497,13 @@ only link core 0 holds lines in. Without page links (`links=0`) a page another i
 holds gives the command up (`bad_item` at `ask`).
 
 The examples and projects whose kernels read or write a tensor's pages use these calls:
-06, 07 and 09 (the reader), 11, 15, 17, 19, 22, 23, the dense project's grid and K-split
-forms, attention, 02, 26 and the core reset experiment's reader. Measured on two
-p150a cards, one page link, 2026-11-15:
+02, 03, 04, 06, 07, 09, 11, 15, 16, 17, 19, 21, 22, 23, 26, the dense project's
+resident, streamed, grid and K-split forms and its SwiGLU layer (each operand by its
+own word), attention, the core reset experiment's reader and the tutorial's lessons
+from 16 on. Example 09's writer writes single words of its output: a word goes to
+the part of the island that holds its page (`km::page_at`); a word of a page another
+island holds gives the command up. Measured on two p150a cards, one page link,
+2026-11-15:
 
 - Example 11's `islands.py`: island 0's four cores copy 192 pages island 1 holds
   alone, exact, and READ them in 275.8 µs (1.43 GB/s); with `--write-across` they copy
@@ -508,7 +512,9 @@ p150a cards, one page link, 2026-11-15:
 - The dense project's `islands.py --b-far` (7680 x 64 x 128, integer inputs): island 1's
   grid reads all of W from island 0, bit for bit, 36.7 µs a call.
 - Example 26's `sum.py` (238 ranks, T = 512, the input a copy): exact, 170.3 µs a
-  round.
+  round. With `--far` (the input held by island 1's ranks, so island 0's ranks, rank 0
+  among them, ask for all of theirs while rank 0 counts the reduce on its ports):
+  exact, 529.3 µs a round.
 
 With the link services in the link cores' kernels only, example 11's build takes
 61,328 bytes of the two-card session's 112 KiB kernel buffer (92,192 with the services
@@ -636,10 +642,11 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   one line a core in flight.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
-- A write of part of a page (example 09's writer), a tensor read by an address the
-  kernel builds itself (`InterleavedAddrGen`: profile pages, job tables, the raster and
-  ray tracer projects), and the dense project's resident and streamed forms, whose
-  operands share one layout argument, do not cross.
+- A write of part of a page another island holds (example 09's writer gives up), a
+  tensor read by an address the kernel builds itself (`InterleavedAddrGen`: profile
+  pages, job tables, the raster and ray tracer projects, the result lines of examples
+  12 and 18), and an overlay's part (examples 12 and 18: an overlay takes no compile
+  arguments, so no `km::Tensor`) do not cross.
 - More than two cards: the mesh opens 1 x n; tried with two.
 - A split card: messages and a copy across over more than two islands; more than one
   wire a pair with more than two islands; two cards each split (fabric links and wires

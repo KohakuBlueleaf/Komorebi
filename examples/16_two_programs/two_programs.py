@@ -58,7 +58,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
         "sum",
         kernels=KERNELS / "sum",  # reader.cpp, compute.cpp, writer.cpp: km_program
         buffers=buffers,
-        compile_args={"reader": inputs.accessor_args(), "writer": sums.accessor_args()},
+        compile_args={"reader": inputs.tensor_args(), "writer": sums.tensor_args()},
         compute=compute,
         handlers={"sum": 1, "empty": 2},
     )
@@ -67,8 +67,8 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
         kernels=KERNELS / "scale",
         buffers=buffers,
         compile_args={
-            "reader": inputs.accessor_args(),
-            "writer": doubled.accessor_args(),
+            "reader": inputs.tensor_args(),
+            "writer": doubled.tensor_args(),
         },
         compute=compute,
         handlers={"scale": 1, "empty": 2},
@@ -85,7 +85,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
             km.Buffer(index=16, format="float32", page_bytes=4096, pages=2),
             km.Buffer(index=24, format="uint32", page_bytes=64, pages=1),
         ],
-        compile_args={"reader": inputs.accessor_args(), "writer": wide.accessor_args()},
+        compile_args={"reader": inputs.tensor_args(), "writer": wide.tensor_args()},
         compute=compute,
         handlers={"widen": 1},
     )
@@ -104,7 +104,7 @@ def kernel_form(inputs, sums):
             km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16),
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
         ],
-        compile_args={"reader": inputs.accessor_args(), "writer": sums.accessor_args()},
+        compile_args={"reader": inputs.tensor_args(), "writer": sums.tensor_args()},
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         handlers=KERNEL_FORM / "mapcollect.h",
     )

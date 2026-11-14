@@ -27,8 +27,8 @@ with km.Session() as session:
             km.Buffer(index=16, **tile),
         ],
         compile_args={
-            "reader": source.accessor_args(),
-            "writer": destination.accessor_args(),
+            "reader": source.tensor_args(),
+            "writer": destination.tensor_args(),
         },
     )
     # --8<-- [end:program]

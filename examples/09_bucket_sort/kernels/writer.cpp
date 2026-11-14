@@ -4,6 +4,7 @@
 
 #include "../bucket_sort.h"
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 constexpr uint32_t kCbKeys = 0;  // filled by the reader, a page of 1,024 keys at a time
@@ -24,7 +25,7 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    constexpr auto output_args = TensorAccessorArgs<0>();
+    using Output = km::Tensor<0>;
     km::Writer writer;
     const uint32_t scratch = get_write_ptr(kCbScratch);
     // One word per bucket: the counts in COUNT, the next place of each bucket in PLACE.
@@ -110,7 +111,30 @@ void kernel_main() {
         }
 
         // Steps 1b and 3b: my keys, a page at a time, as the reader brings them.
-        const auto output = TensorAccessor(output_args, output_address);
+        const Output output(output_address);  // its reference word
+        // Byte `offset` of page `page` where its island holds it: a word of a page
+        // another island holds is not written (0; the give-up is recorded).
+        auto output_at = [&](uint32_t page, uint32_t offset) -> uint64_t {
+            if constexpr (Output::kLocal) {
+                return output.accessor.get_noc_addr(page, offset);
+            } else {
+                const km::PageAt at = km::page_at(output.word, page);
+                if (at.island != km::island()) {
+                    writer.gave_up(
+                        km::kStWriter,
+                        km::kGaveBadItem,
+                        km::kWhereAsk,
+                        km::slot(command) | at.island << 8,
+                        command.sequence
+                    );
+                    return 0;
+                }
+                return (
+                    TensorAccessor(Output::kArgs, at.address)
+                    .get_noc_addr(at.index, offset)
+                );
+            }
+        };
         uint32_t written = 0;
         const uint32_t first_page = partition.start / BS_KEYS_PER_PAGE;
         const uint32_t last_page = (
@@ -156,7 +180,11 @@ void kernel_main() {
                 *reinterpret_cast<volatile uint32_t*>(source) = keys[key_index];
                 const uint32_t page_of = place / BS_KEYS_PER_PAGE;
                 const uint32_t offset = (place % BS_KEYS_PER_PAGE) * 4;
-                noc_async_write(source, output.get_noc_addr(page_of, offset), 4);
+                const uint64_t target = output_at(page_of, offset);
+                if (target == 0) {
+                    return false;
+                }
+                noc_async_write(source, target, 4);
                 written++;
             }
             cb_pop_front(kCbKeys, 1);

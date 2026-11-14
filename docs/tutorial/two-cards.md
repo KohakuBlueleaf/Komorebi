@@ -66,7 +66,7 @@ A tensor is one logical tensor: each card holds only its part. With no hint its 
 are split along the leading dimension over the ranks in rank order, with the rule of
 `km::partition`; `split=d` splits dimension `d` instead and `group=` names the ranks that
 split it (`--split`, `--group` here). So a kernel is given `source.address` and
-`source.accessor_args()` as on one card, and rank `r`, which reads the tiles `2r` and
+`source.tensor_args()` as on one card, and rank `r`, which reads the tiles `2r` and
 `2r + 1`, finds them in its own card's DRAM; `km::read_pages` asks the other card for a
 page it holds. `session.read_bf16(source)` assembles the whole tensor from the card that
 holds each page:

@@ -52,7 +52,7 @@ def prof_tensor(session, cores):
 
 def program(plan, a_tensor, fidelity="HiFi2"):
     """The persistent program of `plan`: the three kernels and the plan's buffers."""
-    accessor_args = a_tensor.accessor_args()
+    tile_args = a_tensor.tensor_args()  # every operand's: bf16 tiles in DRAM
     buffers = [
         km.Buffer(index, "bfloat16", pl.TILE_BYTES, pages)
         for index, pages in plan.buffers()
@@ -65,7 +65,7 @@ def program(plan, a_tensor, fidelity="HiFi2"):
         "dense",
         kernels=KERNELS,
         buffers=buffers,
-        compile_args={"reader": accessor_args, "writer": accessor_args},
+        compile_args={"reader": tile_args, "writer": tile_args},
         compute={"math_fidelity": fidelity, "fp32_dest_acc_en": True},
         handlers=pl.DENSE_H,
     )

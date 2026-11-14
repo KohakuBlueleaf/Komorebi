@@ -40,8 +40,8 @@ for (uint32_t index = 0; index < COUNT; index++) {
 ```
 
 - `COUNT` is how many tiles this command moves: here an argument of the command.
-- `STEP` in `reader.cpp` is `reserve`, `noc_async_read_page`, `noc_async_read_barrier`,
-  `cb_push_back`; in `writer.cpp` `wait_front`, `noc_async_write_page`,
+- `STEP` in `reader.cpp` is `reserve`, `km::read_pages`, `noc_async_read_barrier`,
+  `cb_push_back`; in `writer.cpp` `wait_front`, `km::write_pages`,
   `noc_async_write_barrier`, `cb_pop_front`.
 - The two loops have the same `COUNT`. Each tile that `reader.cpp` pushes is a tile that
   `writer.cpp` pops. If the counts differ, one of them waits for ever.

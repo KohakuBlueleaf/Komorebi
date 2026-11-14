@@ -8,9 +8,8 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    constexpr auto column_args = TensorAccessorArgs<0>();
-    constexpr uint32_t output_offset = column_args.next_compile_time_args_offset();
-    constexpr auto output_args = TensorAccessorArgs<output_offset>();
+    using Column = km::Tensor<0>;  // W, then the output
+    using Output = km::Tensor<Column::next_compile_time_args_offset()>;
     km::Writer writer;
     writer.run([&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
@@ -29,7 +28,7 @@ void kernel_main() {
         if (!broadcast.included()) {
             return true;
         }
-        const auto column_source = TensorAccessor(column_args, column_address);
+        const Column column_source(column_address);  // its reference word
         const uint32_t first_tile = (
             writer.arg(kArgIndex) * data_blocks * broadcast.pages()
         );
@@ -50,6 +49,8 @@ void kernel_main() {
             );
         } else {
             got_blocks = broadcast_blocks(
+                writer,
+                command,
                 broadcast,
                 column_source,
                 first_tile,
@@ -63,17 +64,22 @@ void kernel_main() {
         if (!got_blocks || !writer.wait_front(kCbOut, 1)) {
             return false;
         }
-        const auto output = TensorAccessor(output_args, output_address);
-        noc_async_write_page(
-            first_page + writer.me() - km::first(command), output, get_read_ptr(kCbOut)
-        );
-        const bool sent = writer.poll(
-            [] {
-                return ncrisc_noc_nonposted_writes_sent(noc_index);
-            },
-            writer.args().wait_limit,
-            writer.args().wait_limit
-        ) == km::kGaveNone;
+        const Output output(output_address);
+        const bool sent = km::write_pages(
+            writer,
+            command,
+            output,
+            first_page + writer.me() - km::first(command),
+            1,
+            get_read_ptr(kCbOut)
+        ) &&
+            writer.poll(
+                [] {
+                    return ncrisc_noc_nonposted_writes_sent(noc_index);
+                },
+                writer.args().wait_limit,
+                writer.args().wait_limit
+            ) == km::kGaveNone;
         cb_pop_front(kCbOut, 1);
         return sent;
     });

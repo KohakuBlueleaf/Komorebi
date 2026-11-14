@@ -45,7 +45,7 @@ using Tensor = km::Tensor<0>;
 ...
 const Tensor tensor(ADDRESS);
 reader.reserve(INDEX, PAGES);
-km::read_pages(reader, command, tensor, TILE, PAGES, get_write_ptr(INDEX), PORT);
+km::read_pages(reader, command, tensor, TILE, PAGES, get_write_ptr(INDEX));
 noc_async_read_barrier();
 cb_push_back(INDEX, PAGES);
 ```
