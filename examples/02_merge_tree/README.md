@@ -24,6 +24,11 @@ Each of the n threads of the group has an index `j`, 0 to n - 1.
  round 2:   t4 -> t0
 ```
 
+Thread j reads its tiles and thread 0 writes the sum through Komorebi's page calls
+(`km::read_pages`, `km::write_pages`), so the kernels hold over islands; a page another
+island holds is asked for on port 6 or put on port 7, which thread 0 also counts the
+last tree rounds on: a group whose thread 0 reads across can mix the two counts.
+
 Both forms add the parts in a fixed order given by the ranks, never by arrival
 order, so a job gives the same bits every time. On exact-valued inputs both forms
 give the same bits as each other.

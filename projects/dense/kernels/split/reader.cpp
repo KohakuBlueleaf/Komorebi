@@ -8,10 +8,8 @@
 #include "split.h"
 
 void kernel_main() {
-    constexpr auto a_args = TensorAccessorArgs<0>();
-    constexpr auto w_args = (
-        TensorAccessorArgs<a_args.next_compile_time_args_offset()>()
-    );
+    using A = km::Tensor<0>;
+    using W = km::Tensor<A::next_compile_time_args_offset()>;
     km::Reader reader;
     const auto plan = [&](uint32_t word) {
         return reader.arg(word);
@@ -23,9 +21,7 @@ void kernel_main() {
         const uint32_t reduce_form = command.a3, mode = command.a4;
         const uint32_t block_height = plan(kSpOh), block_width = plan(kSpOw);
         const km::Group group = km::digit_group(command, reader.me(), 1, plan(kSpS));
-        const auto a_matrix = TensorAccessor(a_args, command.a0);
-        const auto w_matrix = TensorAccessor(w_args, command.a1);
-        if (!move_chunks(reader, command, a_matrix, w_matrix)) {
+        if (!move_chunks(reader, command, A(command.a0), W(command.a1))) {
             return;
         }
         if (mode == kSplitFull) {

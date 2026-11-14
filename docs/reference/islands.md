@@ -144,14 +144,23 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
   is each island's `Run.recovery`. On two p150a cards with the map/collect example,
   each island's lists take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores
-  get no list, so a give-up does not reset one.
+  get no list, so a give-up does not reset one: a link core still in a given-up
+  command is named instead (`KMD_EVENT_LINK`, `run.links_hung`), see below.
 - `run.reset_link(island, k)` resets link core k of `island` by the host
   (`session.reset_link`): each of its connections closed at its router (the close
   request, the router's teardown, the producer cursor set at the router's read
   counter), the core reset and loaded again, then its OPEN with the far link core's
-  hello taken as heard. Returns `{island, core, by, seconds, reset_seconds,
-  open_seconds, parts}`. Between commands only: a line or ask in flight on that core
-  is lost and its command times out at its deadline.
+  hello taken as heard; on link core 0 its ask and put queues drop the lines not yet
+  taken (the tail set to the taken count, those lines cleared) while it is in reset.
+  Returns `{island, core, by, seconds, reset_seconds, open_seconds, parts}`.
+- A link core that does not leave a given-up command (the runtime's PAGES commands on
+  link cores are given up at their deadline too) is left to the host: its dispatcher
+  posts `KMD_EVENT_LINK` (`Run.link_events`: `link`, `what`, `req`, `ticks`), the
+  time-out's `links` holds `(k, "hung")`, and every other command whose traffic the
+  core held is given up at once, its `links` `(k, "lost")`: a group that has the core,
+  a crossing whose line was staged on it (the line's packet number is taken again by
+  the next packet), or, on link core 0, a command whose cores wait for an ask or put.
+  `run.links_hung` lists `(island, k)` until `run.reset_link(island, k)`.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
@@ -453,6 +462,59 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   16 KiB chunk (4 pages) a line, one line a core in flight, so a page CPU gets one or
   two pages a line: the lines' round trip bounds it, not the links.
 
+## A kernel's page reads and writes
+
+A kernel reads and writes a tensor's pages through Komorebi's calls, never tt-metal's
+own page calls: a page read through `noc_async_read_page` reads its own island's DRAM
+only, so a kernel that calls it works on one card and reads the wrong pages over
+islands. The calls (`km_ask.hpp`) take the tensor as one object:
+
+```c++
+using Input = km::Tensor<0>;  // compile arguments from 0 on: tensor_args()
+using Output = km::Tensor<Input::next_compile_time_args_offset()>;
+
+const Input input(command.a0);  // the tensor's reference word
+if (!km::read_pages(core, command, input, first, pages, to, kAskPort)) return;
+noc_async_read_barrier();
+if (!km::write_pages(core, command, output, first, pages, from, kAskPort)) return;
+```
+
+| Call | What it does |
+|---|---|
+| `km::Tensor<offset>` | a tensor's accessor arguments, from the compile arguments the host's `tensor.tensor_args()` gives (`accessor_args()`), and its reference word (`tensor.address`); `next_compile_time_args_offset()` for the next one |
+| `km::read_pages(core, command, tensor, first, pages, to, port)` | pages `first` .. `first + pages - 1` into L1 `to` on, page k at `to` + k aligned pages; on the reader or the writer (`core`: its `km::Reader` or `km::Writer`); each run of pages another island holds asked for and waited for, counted at `port` (one port a CPU that asks). False: gave up |
+| `km::write_pages(core, command, tensor, first, pages, from, port)` | pages `first` .. from L1 `from` on; each run of pages another island holds one put line, waited for at `port`, so `from` is free on return. False: gave up |
+| `km::Stream` | a stream over a `km::Tensor` reads and writes through these calls ([Movement](movement.md#a-stream-over-islands)) |
+
+A program loaded on one island (a card's own session, or an island session of one
+card) is built without the tensor table (no `KM_TENSOR_TABLE`): the word is the bank
+address, and each call compiles to exactly tt-metal's page call it replaces,
+`noc_async_read_page` or `noc_async_write_page` once a page, with `port` unused. Over
+islands each page is found by `km::page_at` and the calls are the forms by word above
+(`km::read_pages(core, command, args, word, ...)`). The reader asks with the link
+area's own line and answer words; the writer with the first ask line's place, which
+only link core 0 holds lines in. Without page links (`links=0`) a page another island
+holds gives the command up (`bad_item` at `ask`).
+
+The examples and projects whose kernels read or write a tensor's pages use these calls:
+06, 07 and 09 (the reader), 11, 15, 17, 19, 22, 23, the dense project's grid and K-split
+forms, attention, 02, 26 and the core reset experiment's reader. Measured on two
+p150a cards, one page link, 2026-11-15:
+
+- Example 11's `islands.py`: island 0's four cores copy 192 pages island 1 holds
+  alone, exact, and READ them in 275.8 µs (1.43 GB/s); with `--write-across` they copy
+  island 0's input into an output island 1 holds alone (every page put across), exact,
+  313.4 µs.
+- The dense project's `islands.py --b-far` (7680 x 64 x 128, integer inputs): island 1's
+  grid reads all of W from island 0, bit for bit, 36.7 µs a call.
+- Example 26's `sum.py` (238 ranks, T = 512, the input a copy): exact, 170.3 µs a
+  round.
+
+With the page links built in, example 11's kernels take 92,192 bytes of the two-card
+session's 112 KiB kernel buffer (with a page CPU on every link core; 87,360 before),
+example 26's 93,904 and the dense grid's 122,752, which need `kernel_bytes=131072`
+(both measured before the page CPUs on every link core).
+
 ## A card split into islands
 
 `km.Session(card=a, islands=n)`, n 2 to 4, returns the same `IslandSession` over one
@@ -574,6 +636,13 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   one line a core in flight.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
+- Examples 02 and 26 count pages across at ports 6 and 7, which a reduce's rank 0
+  also counts its last rounds on: a group whose rank 0 reads its input across can mix
+  the two counts (the session's placement by the command's group reads none across).
+- A write of part of a page (example 09's writer), a tensor read by an address the
+  kernel builds itself (`InterleavedAddrGen`: profile pages, job tables, the raster and
+  ray tracer projects), and the dense project's resident and streamed forms, whose
+  operands share one layout argument, do not cross.
 - More than two cards: the mesh opens 1 x n; tried with two.
 - A split card: messages and a copy across over more than two islands; more than one
   wire a pair with more than two islands; two cards each split (fabric links and wires

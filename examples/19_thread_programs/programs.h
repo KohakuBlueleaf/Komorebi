@@ -21,7 +21,9 @@ enum {
     TP_CB_OUT = 16,
     TP_CB_LINE = 1,
     TP_LINE_BYTES = 64,
-    TP_TILE_BYTES = 2048
+    TP_TILE_BYTES = 2048,
+    TP_ASK_PORT = 0, /* the port tiles another island holds are counted at: reader */
+    TP_PUT_PORT = 1  /* writer */
 };
 
 /* What a SPIN unit writes: mixed from the unit, its cost and the job. */

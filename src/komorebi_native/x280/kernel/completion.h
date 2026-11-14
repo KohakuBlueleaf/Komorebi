@@ -77,6 +77,7 @@ static inline void slot_take(
     dispatcher->slot_group[slot] = group;
     dispatcher->slot_source[slot] = (uint8_t)source;
     dispatcher->slot_handler[slot] = (uint8_t)handler;
+    dispatcher->slot_lost[slot] = 0;
     dispatcher->ring[source].busy_count++;
     dispatcher->slot_submitted[slot] = now;
     dispatcher->slot_deadline[slot] = now + ticks;
@@ -206,11 +207,26 @@ static inline void sources_wake(kmd_t* dispatcher) {
     dispatcher->waits = 0;
 }
 
+/* KMD_EVENT_LINK on the host ring: KMD_LINK_* `what` of link core `k`, naming host
+ * command `request` (0: none); none without room. */
+static inline void link_event(
+    kmd_t* dispatcher, uint32_t request, uint32_t k, uint32_t what, uint32_t ticks
+) {
+    kmd_ring_t* ring = &dispatcher->ring[KMD_SRC_HOST];
+    if (ring->events == 0 || !ring_room(ring)) {
+        return;
+    }
+    ring_push(ring, request, KMD_EVENT_LINK | (k | what << 8) << 8, ticks);
+}
+
 /* link.h: a freed slot of the link's (a crossing's local part, a LINK command). */
 static int link_freed(
     kmd_t* dispatcher, uint32_t slot, uint32_t status, uint32_t ticks, uint64_t now
 );
 static inline void link_gave(kmd_t* dispatcher, uint32_t source);
+
+/* inspect.h: a given-up slot freed, its TIMEOUT (and link) events sent. */
+static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now);
 
 /* Sweeps busy slots' ack lines (8-byte loads); a slot showing its sequence is freed:
  * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */
@@ -227,6 +243,10 @@ KMD_HOT void slots_sweep(kmd_t* dispatcher) {
         }
         if (now == 0) {
             now = x280_mtime();
+        }
+        if (dispatcher->slot_lost[slot] != 0) { /* its cores left on the abort */
+            inspect_give_up(dispatcher, slot, now);
+            continue;
         }
         uint32_t ticks = (uint32_t)(now - dispatcher->slot_submitted[slot]);
         const uint64_t result = dispatcher->result_busy & (1ull << slot);

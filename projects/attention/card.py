@@ -70,8 +70,7 @@ def broadcast_words(nocs, plan, group, noc=0):
 
 def program(
     plan,
-    q_tensor,
-    o_tensor,
+    tensors,
     scale,
     approx=False,
     fidelity="HiFi2",
@@ -80,7 +79,8 @@ def program(
 ):
     """The persistent program of `plan`: the three kernels, the plan's buffers, each
     core's broadcast words (`broadcasts`, by core) for the kernel on NoC `noc` (0: the
-    reader, 1: the writer) and the compute's window."""
+    reader, 1: the writer), the compute's window and the tensor arguments of q, k, v
+    (reader) and o, k, v (writer) of `tensors`."""
     call = plan.dims
     scale_bits, threshold_bits = pl.exp_constants(scale, approx)
     tile_sizes = [call.dt, call.dvt, plan.r, plan.kb]
@@ -101,8 +101,12 @@ def program(
         buffers=[km.Buffer(*buffer) for buffer in plan.buffers()],
         args=args,
         compile_args={
-            "reader": tile_sizes + [plan.window] + q_tensor.accessor_args(),
-            "writer": tile_sizes + [plan.window] + o_tensor.accessor_args(),
+            "reader": tile_sizes
+            + [plan.window]
+            + [word for name in "qkv" for word in tensors[name].tensor_args()],
+            "writer": tile_sizes
+            + [plan.window]
+            + [word for name in "okv" for word in tensors[name].tensor_args()],
             "compute": tile_sizes + [scale_bits, threshold_bits],
         },
         compute={
@@ -135,8 +139,7 @@ class Attention:
         broadcasts = broadcast_words(nocs, plan, layout.Group(0, cores), noc)
         persistent_program = program(
             plan,
-            tensors["q"],
-            tensors["o"],
+            tensors,
             scale,
             approx,
             broadcasts=broadcasts,

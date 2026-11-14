@@ -3,12 +3,13 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "cast.h"
 
 void kernel_main() {
-    constexpr auto bodies_args = TensorAccessorArgs<0>();
+    using Bodies = km::Tensor<0>;
     km::Reader reader;
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerCast) {
@@ -18,7 +19,7 @@ void kernel_main() {
         if (!broadcast.ok() || !broadcast.included()) {
             return;
         }
-        const auto bodies = TensorAccessor(bodies_args, command.a1);
+        const Bodies bodies(command.a1);
         const uint32_t casts = command.a0;
         for (uint32_t cast = 0; cast < casts; cast++) {
             if (broadcast.sender()) {
@@ -26,7 +27,11 @@ void kernel_main() {
                 if (address == 0) {
                     return;
                 }
-                noc_async_read_page(cast % command.a2, bodies, address);
+                if (!km::read_pages(
+                    reader, command, bodies, cast % command.a2, 1, address, kAskPort
+                )) {
+                    return;
+                }
                 const uint32_t code = reader.poll(
                     [] {
                         return ncrisc_noc_reads_flushed(noc_index);

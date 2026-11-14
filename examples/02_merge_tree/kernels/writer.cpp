@@ -3,11 +3,12 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "merge.h"
 
 void kernel_main() {
-    constexpr auto output_args = TensorAccessorArgs<0>();
+    using Output = km::Tensor<0>;
     km::Writer writer;
     writer.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerMerge) {
@@ -61,11 +62,18 @@ void kernel_main() {
             }
             writer.result(checksum);
         }
-        const auto output = TensorAccessor(output_args, output_address);
-        for (uint32_t tile = 0; tile < part_tiles; tile++) {
-            noc_async_write_page(
-                first_page + tile, output, get_read_ptr(kCbOut) + tile * kTileBytes
-            );
+        const Output output(output_address);  // its reference word
+        // the pages another island holds are put there and waited for
+        if (!km::write_pages(
+            writer,
+            command,
+            output,
+            first_page,
+            part_tiles,
+            get_read_ptr(kCbOut),
+            kPutPort
+        )) {
+            return false;
         }
         noc_async_writes_flushed();
         cb_pop_front(kCbOut, part_tiles);

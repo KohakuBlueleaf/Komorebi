@@ -53,8 +53,8 @@ def program(input_tensor, output_tensor):
             km.Buffer(CONSTANTS["kCbOut"], "float32", page, CONSTANTS["kOutPages"]),
         ],
         compile_args={
-            "reader": input_tensor.accessor_args(),
-            "writer": output_tensor.accessor_args(),
+            "reader": input_tensor.tensor_args(),
+            "writer": output_tensor.tensor_args(),
         },
         compute={
             "math_fidelity": "HiFi4",

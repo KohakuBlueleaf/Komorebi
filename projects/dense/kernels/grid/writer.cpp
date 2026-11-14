@@ -4,14 +4,13 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "grid.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    constexpr auto w_args = TensorAccessorArgs<0>();
-    constexpr auto y_args = (
-        TensorAccessorArgs<w_args.next_compile_time_args_offset()>()
-    );
+    using W = km::Tensor<0>;
+    using Y = km::Tensor<W::next_compile_time_args_offset()>;
     km::Writer writer;
     volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbGridProf));
     const auto core = [&](uint32_t word) {
@@ -64,8 +63,8 @@ void kernel_main() {
                 ? first_column + plan(kPlPcN)
                 : n_tiles
         );
-        const auto w_matrix = TensorAccessor(w_args, w_address);
-        const auto y_matrix = TensorAccessor(y_args, y_address);
+        const W w_matrix(w_address);
+        const Y y_matrix(y_address);
         uint32_t read = 0, broadcast_cycles = 0, wait = 0, write = 0;
 
         // Output block (block_row, block_column) from kCbGridOut, subblocks of
@@ -96,10 +95,19 @@ void kernel_main() {
                             const uint32_t column = (
                                 block_column + subblock_column + tile_column
                             );
-                            if (store && row < row_end && column < column_end) {
-                                noc_async_write_page(
-                                    row * n_tiles + column, y_matrix, source
-                                );
+                            if (
+                                store && row < row_end && column < column_end &&
+                                !km::write_pages(
+                                    writer,
+                                    command,
+                                    y_matrix,
+                                    row * n_tiles + column,
+                                    1,
+                                    source,
+                                    kAskPortWriter
+                                )
+                            ) {
+                                return false;
                             }
                             source += kTileBytes;
                         }
@@ -144,20 +152,28 @@ void kernel_main() {
                             ? k_tiles - k_start
                             : k_block_tiles
                     );
+                    const uint32_t columns = (
+                        block_column >= n_tiles
+                            ? 0
+                            : n_tiles - block_column < block_width
+                                ? n_tiles - block_column
+                                : block_width
+                    );
                     for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
                         const uint32_t page = (
                             (k_start + k_tile) * n_tiles + block_column
                         );
-                        for (
-                            uint32_t column = 0;
-                            column < block_width && block_column + column < n_tiles;
-                            ++column
-                        ) {
-                            noc_async_read_page(
-                                page + column,
-                                w_matrix,
-                                base + (k_tile * block_width + column) * kTileBytes
-                            );
+                        const uint32_t to = base + k_tile * block_width * kTileBytes;
+                        if (!km::read_pages(
+                            writer,
+                            command,
+                            w_matrix,
+                            page,
+                            columns,
+                            to,
+                            kAskPortWriter
+                        )) {
+                            return false;
                         }
                     }
                     if (!flushed(writer, km::kStWriter, km::kFlushReads)) {

@@ -25,7 +25,7 @@ with km.Session() as session:
         buffers=[
             km.Buffer(index=0, format="uint32", page_bytes=source.page_bytes, pages=1)
         ],
-        compile_args={"reader": source.accessor_args()},
+        compile_args={"reader": source.tensor_args()},
     )
     # --8<-- [end:program]
     run = session.load(program)

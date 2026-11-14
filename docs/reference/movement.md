@@ -30,15 +30,18 @@ buffers, and compute takes the blocks in order, each from the half its owner fil
 
 constexpr km::BufferPair kInput = {kInputMoverA, kInputMoverB};  // two buffer indices
 
+using Input = km::Tensor<0>;  // the host's tensor_args() from compile argument 0 on
+
 // One source for both movers (movement.cpp): a km::Reader on mover A, a km::Writer on B.
 km::Movement movement;
 movement.run([&](const km_command_t& command) {
     const km::Stream read(
         km::kMoveRead,                              // or km::kMoveWrite
-        TensorAccessor(arguments, command.a0),      // the tensor
+        Input(command.a0),                          // the tensor
         first_page, tiles, tiles_per_block,         // the blocks
         repetitions, kInput,
-        km::Pattern::of(command.a4)                 // the host's pattern word
+        km::Pattern::of(command.a4),                // the host's pattern word
+        kAskPort                                    // pages another island holds
     );
     return movement.move(read);  // this mover's blocks; false: gave up (recorded)
 });
@@ -62,7 +65,7 @@ for (uint32_t block = 0; block < blocks; block++) {
 | `km::block_half(pair, pattern, block)` | the half that holds block `block` (compute and movers alike) |
 | `km::kMoverA`, `km::kMoverB`, `km::kMover` | the movers; `kMover` is this CPU's (data-movement kernels only) |
 | `km::Walk` | a stream's blocks (below); `Walk::run(first_page, tiles, tiles_per_block)` is the plain case |
-| `km::Stream` | direction (`kMoveRead`: tensor pages into this mover's half, `kMoveWrite`: pages of its half to the tensor), tensor accessor, walk, repetitions, pair, pattern. Two constructors: the plain one above and `(direction, tensor, walk, repetitions, pair, pattern)` |
+| `km::Stream` | direction (`kMoveRead`: tensor pages into this mover's half, `kMoveWrite`: pages of its half to the tensor), tensor (a `km::Tensor`, or a tensor accessor whose pages are all on this island), walk, repetitions, pair, pattern, port (default 0). Two constructors: the plain one above and `(direction, tensor, walk, repetitions, pair, pattern, port)` |
 | `km::move(core, streams...)` | runs this mover's share of every stream given, from any data-movement handler (`core`: the handler's `km::Reader`, `km::Writer` or `km::Movement`). False: gave up |
 | `km::move(moved, core, streams...)` | the same, adding to `moved` (`km::Moved`: tiles moved, cycles in passes that moved a block) |
 | `km::Movement` | for a source compiled for both movers: on mover A a `km::Reader`, on mover B a `km::Writer`, plus `mover()` and `move(streams...)` |
@@ -80,19 +83,48 @@ blocks.
 ### A tensor's pages on any island
 
 Two calls read and write a tensor's pages wherever they live (`km_ask.hpp`; on one
-island each is exactly the tt-metal page call it stands for):
+island each is exactly the tt-metal page call it stands for). A kernel takes the tensor
+as a `km::Tensor<offset>` (its accessor arguments from compile argument `offset` on,
+`tensor.tensor_args()` on the host, and its reference word):
 
 | Name | What it is |
 |---|---|
-| `km::read_pages(reader, command, args, tensor, first, pages, to, port)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages): this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at port `port` |
-| `km::write_pages(core, command, args, tensor, first, pages, from, port)` | the other way, from a reader or a writer: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at `port` until written; `from` is free on return |
+| `km::read_pages(core, command, tensor, first, pages, to, port)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages), from a reader or a writer: this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at port `port` |
+| `km::write_pages(core, command, tensor, first, pages, from, port)` | the other way: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at `port` until written; `from` is free on return |
 
-`args` are the tensor's `TensorAccessorArgs` (`tensor.accessor_args()` on the host),
-`tensor` its reference word (`tensor.address`: a bank address on one card, an entry of
-the tensor table over islands), the same on every island. Both return false when they gave up
-(recorded, the island named). `km::Stream` does not use them yet: a stream's tensor is
-read and written on the core's own island. How the pages cross:
+The forms by word take the accessor arguments and the word apart:
+`km::read_pages(core, command, args, word, first, pages, to, port)` and the same for
+`write_pages`. `args` are the tensor's `TensorAccessorArgs` (`tensor.accessor_args()`
+on the host), `word` its reference word (`tensor.address`: a bank address on one card,
+an entry of the tensor table over islands), the same on every island. All return false
+when they gave up (recorded, the island named). How the pages cross:
 [islands](islands.md#pages-across-a-link).
+
+### A stream over islands
+
+A stream's tensor given as a `km::Tensor` reads and writes its pages through these
+calls, so a stream over a tensor whose pages are on several islands works with the same
+kernel: the pages this island holds are read or written as on one card; a row of a
+block whose pages another island holds is asked for or put (one line a row of
+consecutive pages) and waited for before the block is handed on, counted at port
+`port` on mover A and `port + 1` on mover B. A crossing block is slower than a local
+one by the link's rate and the line's round trip; the movers still share the blocks by
+the pattern.
+
+A program loaded on one island is built without the tensor table: the stream keeps the
+tensor's accessor and its build is the one-card stream's: the movement example's two
+kernels have the same code size within 0.6% (mover A 15,292 bytes against the plain
+accessor stream's 15,384, mover B 11,040 against 11,020). Its one-island loop is the
+plain stream's; measured on the whole grid of a p150a before the reference word (the
+same loop, mover A 15,248 bytes), patterns `A`, `AB`, `AAAB`, `B` read at 427.9, 486.4,
+502.7 and 247.2 GB/s against the example's 427.8, 485.9, 502.6 and 247.4.
+
+Over two cards, island 0's first four cores copy 192 pages that island 1 holds alone,
+exact, with the movement example's kernels unchanged (`examples/11_movement/islands.py`):
+a READ of 48 pages a core takes 275.8 µs, 1.43 GB/s in all. With `--write-across` the
+copy's output is island 1's and every page is put across: exact, 313.4 µs. Each row of
+a block crosses as one line and its answer; the cores wait for it before the block is
+handed on.
 
 ### The blocks of a stream
 
@@ -128,7 +160,7 @@ program = km.Program(
     "movement",
     kernels="kernels/",  # movement.cpp (built for both movers) and compute.cpp
     buffers=[km.BufferPair(0, 1, "bfloat16", 2048, pages=64)],  # or pages=(48, 16)
-    compile_args={"movement": tensor.accessor_args()},  # both movers
+    compile_args={"movement": tensor.tensor_args()},  # both movers: a km::Tensor<0>
     handlers="kernels/movement.h",
 )
 ```

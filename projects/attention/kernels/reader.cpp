@@ -19,10 +19,11 @@ namespace {
 
     // Rows `rows` of a job's Q (HEAD_TILES tiles each, `stride` tile rows apart) into
     // the Q buffer, as one item of MAX_ROWS x HEAD_TILES pages. False: gave up.
-    template <typename Accessor>
+    template <typename Queries>
     bool read_q(
         const km::Reader& reader,
-        const Accessor& queries,
+        const km_command_t& command,
+        const Queries& queries,
         uint32_t first_tile,
         uint32_t rows,
         uint32_t stride,
@@ -35,12 +36,16 @@ namespace {
         const uint32_t reserved = km::wall();
         const uint32_t destination = get_write_ptr(kCbQ);
         for (uint32_t row = 0; row < rows; ++row) {
-            for (uint32_t head_tile = 0; head_tile < HEAD_TILES; ++head_tile) {
-                noc_async_read_page(
-                    first_tile + row * stride * HEAD_TILES + head_tile,
-                    queries,
-                    destination + (row * HEAD_TILES + head_tile) * kTileBytes
-                );
+            if (!km::read_pages(
+                reader,
+                command,
+                queries,
+                first_tile + row * stride * HEAD_TILES,
+                HEAD_TILES,
+                destination + row * HEAD_TILES * kTileBytes,
+                kAskPortReader
+            )) {
+                return false;
             }
         }
         if (!flushed(reader, km::kStReader, km::kFlushReads)) {
@@ -64,14 +69,14 @@ namespace {
 
     // The command's jobs, `passes` times: Q rows, then K / V blocks through `broadcast`
     // (null: not this kernel's), or pushed as they are (compute only).
-    template <typename Accessor>
+    template <typename Queries, typename Keys, typename Values>
     void run_jobs(
         const km::Reader& reader,
         const km_command_t& command,
         uint32_t table,
-        const Accessor& queries,
-        const Accessor& keys,
-        const Accessor& values,
+        const Queries& queries,
+        const Keys& keys,
+        const Values& values,
         km::Broadcast* broadcast,
         volatile tt_l1_ptr uint32_t* profile,
         uint32_t started
@@ -97,6 +102,7 @@ namespace {
                 const uint32_t rows = reads ? job_words[kJobRows] : 0;
                 if (!read_q(
                     reader,
+                    command,
                     queries,
                     job_words[kJobQ],
                     rows,
@@ -108,7 +114,15 @@ namespace {
                 if (
                     broadcast != nullptr &&
                     !broadcast_job<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
-                        *broadcast, keys, values, job_words, blocks, counters
+                        reader,
+                        command,
+                        kAskPortReader,
+                        *broadcast,
+                        keys,
+                        values,
+                        job_words,
+                        blocks,
+                        counters
                     )
                 ) {
                     return;
@@ -147,7 +161,10 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    constexpr auto tile_args = TensorAccessorArgs<5>();  // Q, K, V: bf16 tiles in DRAM
+    // Q, K, V: bf16 tiles in DRAM, after the five sizes
+    using Q = km::Tensor<5>;
+    using K = km::Tensor<Q::next_compile_time_args_offset()>;
+    using V = km::Tensor<K::next_compile_time_args_offset()>;
     km::Reader reader;
     volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbProf));
     for (uint32_t word = 0; word < kProfWords; ++word) {
@@ -175,9 +192,9 @@ void kernel_main() {
             return;
         }
         cb_push_back(kCbJobs, 1);  // compute pops it at the command's end
-        const auto queries = TensorAccessor(tile_args, q_address);
-        const auto keys = TensorAccessor(tile_args, k_address);
-        const auto values = TensorAccessor(tile_args, v_address);
+        const Q queries(q_address);
+        const K keys(k_address);
+        const V values(v_address);
 #ifndef BROADCAST_ON_WRITER
         if (mode != kModeComputeOnly) {
             km::Broadcast broadcast(reader, command, kArgBroadcast);

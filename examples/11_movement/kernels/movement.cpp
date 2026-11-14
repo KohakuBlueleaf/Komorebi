@@ -10,7 +10,8 @@ constexpr km::BufferPair kInput = {kInputMoverA, kInputMoverB};
 constexpr km::BufferPair kOutput = {kOutputMoverA, kOutputMoverB};
 
 void kernel_main() {
-    constexpr auto tensor_arguments = TensorAccessorArgs<0>();  // input and output
+    using Input = km::Tensor<0>;
+    using Output = km::Tensor<Input::next_compile_time_args_offset()>;
     km::Movement movement;
     movement.run([&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
@@ -24,20 +25,21 @@ void kernel_main() {
         const bool copy = handler == kHandlerCopy;
         const km::Stream read(
             km::kMoveRead,
-            TensorAccessor(tensor_arguments, command.a0),
+            Input(command.a0),
             rank * tiles,
             tiles,
             tiles_per_block,
             copy ? 1 : command.a5,
             kInput,
-            pattern
+            pattern,
+            kAskPort
         );
         if (!copy) {
             return movement.move(read);
         }
         const km::Stream write(
             km::kMoveWrite,
-            TensorAccessor(tensor_arguments, command.a1),
+            Output(command.a1),
             rank * tiles,
             tiles,
             tiles_per_block,

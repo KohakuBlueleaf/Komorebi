@@ -132,7 +132,7 @@ A step is tried only when the one before it was not enough.
     give-up's text starts `island i:` and names flat ranks, `rank 128 (island 1, core
     10)`; `run.reset_core(rank)` and `run.recoveries` (with each give-up's ranks) are
     the calls ([islands](../reference/islands.md#the-run)). Link cores get no list, so
-    the dispatcher never resets one at a give-up.
+    the dispatcher never resets one at a give-up: step 7.
 
 6. **The dispatcher's own loop.** Core 2 of the dispatcher's cluster watches the loop on
    core 0. A loop that makes no pass for 100 ms is reported to the host (`run.stalls`,
@@ -141,13 +141,23 @@ A step is tried only when the one before it was not enough.
    it run as before. If core 0 is not back 50 ms later, the host gets "lost" and stops the
    run with `km.KernelFailed`. Nothing has to be called for this to work.
 
-7. **A link core, by the host.** `run.reset_link(island, k)` closes link core k's
-   fabric connections at their routers, resets the core and loads it again, then
-   opens its connections again; the far link core needs nothing. On two p150a cards
-   with two links on the core: 95 to 98 ms for the reset, 0.24 ms to open again, and the next reads across (example 01's islands script with `--reset-link
-   1`) and the next commands that cross (example 25 with `--reset-link`) are exact.
-   Use it between commands: a line or an ask in flight on that core is lost, and the
-   command waiting for it times out at its deadline.
+7. **A link core, by the host.** A link core is recovered by the host, never by the
+   dispatcher. A command on a link core (its own, or the runtime's line, open or
+   message service) is given up at its deadline like any other. If the link core does
+   not leave it, the dispatcher posts an event naming the link: the time-out says
+   `link core k: did not leave the command: reset it with run.reset_link`. Every other
+   command whose traffic that core held is given up at once and says so: a crossing
+   whose line was on it, or a command whose cores wait for an ask or put through link
+   core 0 (`link core 0: held this command's traffic`). `run.links_hung` lists
+   `(island, k)` for each such link core not reset since. Nothing is sent again.
+   `run.reset_link(island, k)` then closes link core k's fabric connections at their
+   routers, drops link core 0's ask and put lines not yet sent (their commands were
+   given up), resets the core, loads it again and opens its connections again; the
+   far link core needs nothing. On two p150a cards, with a handler that never returns
+   on island 0's link core 0: the give-up came 20.2 ms after the deadline, the
+   held-up command's 0.1 to 2.9 ms later, the host's reset took 102 to 104 ms and
+   0.3 ms to open again, and the next read across and the next crossed command were
+   exact (`experiments/core_reset/links.py`).
 
 ## When a card reset is still the only way
 

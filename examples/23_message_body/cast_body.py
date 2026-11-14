@@ -106,7 +106,7 @@ def main():
                 )
             ],
             args=arguments_of,
-            compile_args={"reader": bodies_tensor.accessor_args()},
+            compile_args={"reader": bodies_tensor.tensor_args()},
         )
         # --8<-- [end:program]
         run = session.load(program)

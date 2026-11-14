@@ -4,7 +4,7 @@
 // 0, whose page CPU pushes the pages into this core's L1 and counts them at its port.
 // A put: its page CPU reads the pages from this core into the holder's DRAM, and the
 // holder's link core 0 counts them at this core's port once written. On one island:
-// exactly the local read or write.
+// exactly the local read or write. A kernel takes a tensor as a km::Tensor.
 #pragma once
 
 #include <stdint.h>
@@ -53,14 +53,79 @@ namespace km {
         };
     }
 
+    // The get queue of CPU `role`: the writer's own line and answer words at its
+    // area's ask lines, which only link core 0 holds lines in.
+    constexpr AskQueue ask_gets(uint32_t role) {
+        if (role != kRoleWriter) {
+            return ask_gets();
+        }
+        constexpr uint32_t own = KM_ASK_LINES;
+        return {
+            KM_ASK_TAIL, KM_ASK_TAKEN, KM_ASK_LINES, own, own + 0x40, own + 0x50, false
+        };
+    }
+
+    // A tensor as the page calls take it: its accessor's compile arguments from `Base`
+    // on (the host's tensor_args()) and its reference word (`tensor.address`).
+    template <uint32_t Base>
+    struct Tensor {
+        static constexpr auto kArgs = TensorAccessorArgs<Base>();
+        using Accessor = decltype(TensorAccessor(kArgs, 0u));
+        // Built for one island (no tensor table): the word is this island's bank
+        // address and every page is here.
+#if defined(KM_TENSOR_TABLE)
+        static constexpr bool kLocal = false;
+#else
+        static constexpr bool kLocal = true;
+#endif
+
+        Accessor accessor;
+        uint32_t word;
+
+        explicit Tensor(uint32_t word) :
+            accessor(TensorAccessor(kArgs, word)), word(word) {
+        }
+
+        static constexpr uint32_t next_compile_time_args_offset() {
+            return kArgs.next_compile_time_args_offset();
+        }
+
+        uint32_t page_bytes() const {
+            return accessor.get_aligned_page_size();
+        }
+    };
+
+    // Whether `T` is a Tensor (the page calls' tensor) or a plain accessor; the
+    // accessor of either.
+    template <typename T>
+    constexpr bool kIsTensor = false;
+    template <uint32_t Base>
+    constexpr bool kIsTensor<Tensor<Base>> = true;
+
+    // Whether some page of `T` may be another island's: a Tensor not known local.
+    template <typename T>
+    constexpr bool kMayCross = false;
+    template <uint32_t Base>
+    constexpr bool kMayCross<Tensor<Base>> = !Tensor<Base>::kLocal;
+
+    template <typename T>
+    inline const auto& accessor_of(const T& tensor) {
+        if constexpr (kIsTensor<T>) {
+            return tensor.accessor;
+        } else {
+            return tensor;
+        }
+    }
+
     // One line into `queue` for pages first .. first + pages - 1 of the tensor at bank
     // address `address` (`bytes` aligned page bytes), held by island `holder`, and L1
-    // `at` of this core, counted at port `port`: a line reserved on link core 0 with a
-    // local atomic, written once that line is free. False: gave up (recorded).
+    // `at` of this core, counted at port `port`, for command (`slot`, `sequence`): a
+    // line reserved on link core 0 with a local atomic. False: gave up (recorded).
     template <typename Kernel>
-    inline bool ask_line(
+    inline bool ask_line_at(
         const Kernel& core,
-        const km_command_t& command,
+        uint32_t slot,
+        uint32_t sequence,
         const AskQueue& queue,
         uint32_t holder,
         uint32_t address,
@@ -72,10 +137,10 @@ namespace km {
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
-        const uint32_t named = slot(command) | holder << 8;
+        const uint32_t named = slot | holder << 8;
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
         const auto give_up = [&](uint32_t code) {
-            core.gave_up(word, code, kWhereAsk, named, command.sequence);
+            core.gave_up(word, code, kWhereAsk, named, sequence);
             return false;
         };
         if (
@@ -185,6 +250,71 @@ namespace km {
         return code == kGaveNone || give_up(code);
     }
 
+    // ask_line_at for `command`.
+    template <typename Kernel>
+    inline bool ask_line(
+        const Kernel& core,
+        const km_command_t& command,
+        const AskQueue& queue,
+        uint32_t holder,
+        uint32_t address,
+        uint32_t bytes,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t at,
+        uint32_t port
+    ) {
+        return (
+            ask_line_at(
+                core,
+                slot(command),
+                command.sequence,
+                queue,
+                holder,
+                address,
+                bytes,
+                first,
+                pages,
+                at,
+                port
+            )
+        );
+    }
+
+    // Waits until port `port` has counted `wanted` pages asked for or put, then clears
+    // it, for command (`slot`, `sequence`); a give-up names the island. False: gave up.
+    template <typename Kernel>
+    inline bool ask_wait(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        uint32_t port,
+        uint32_t wanted,
+        uint32_t holder
+    ) {
+        const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+        if (port >= KM_PORTS) {
+            core.gave_up(word, kGaveBadItem, kWhereAsk, slot | holder << 8, sequence);
+            return false;
+        }
+        volatile tt_l1_ptr uint32_t* words = port_words(core, port);
+        words[KM_PORT_WANT] = wanted;
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
+            },
+            core.args().wait_limit
+        );
+        if (code != kGaveNone) {
+            core.gave_up(word, code, kWhereAsk, slot | holder << 8, sequence);
+            return false;
+        }
+        words[KM_PORT_COUNT] = 0;
+        words[KM_PORT_WANT] = 0;
+        return true;
+    }
+
     // Reader: one get line (the far island pushes the pages into L1 `to`).
     inline bool ask_pages(
         const Reader& reader,
@@ -197,17 +327,20 @@ namespace km {
         uint32_t to,
         uint32_t port
     ) {
-        return ask_line(
-            reader, command, ask_gets(), holder, address, bytes, first, pages, to, port
+        return (
+            ask_line(
+                reader, command, ask_gets(), holder, address, bytes, first, pages, to, port
+            )
         );
     }
 
-    // Reader: pages first .. of tensor `tensor` (its word; `args`: its accessor's) into
-    // L1 `to` on; local pages read, another island's runs asked for. One card: a read.
-    template <typename Args>
-    inline bool read_pages(
-        const Reader& reader,
-        const km_command_t& command,
+    // Reader or writer: pages first .. of tensor `tensor` (its word; `args`: its
+    // accessor's) into L1 `to`; another island's runs asked for. One card: a read.
+    template <typename Kernel, typename Args>
+    inline bool read_pages_at(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
         const Args& args,
         uint32_t tensor,
         uint32_t first,
@@ -230,19 +363,19 @@ namespace km {
             }
             const uint32_t run = page_run(tensor, first + k, pages - k, at);
 #if !defined(KM_ASKS_BY_HOST)
-            if (
-                !ask_pages(
-                    reader,
-                    command,
-                    at.island,
-                    at.address,
-                    bytes,
-                    at.index,
-                    run,
-                    to + k * bytes,
-                    port
-                )
-            ) {
+            if (!ask_line_at(
+                core,
+                slot,
+                sequence,
+                ask_gets(core.role()),
+                at.island,
+                at.address,
+                bytes,
+                at.index,
+                run,
+                to + k * bytes,
+                port
+            )) {
                 return false;
             }
 #endif
@@ -251,20 +384,35 @@ namespace km {
             k += run;
         }
         // asks by the host: the host's send brings them to `to` and counts them here
+        return asked == 0 || ask_wait(core, slot, sequence, port, asked, holder);
+    }
+
+    // read_pages_at for `command`.
+    template <typename Kernel, typename Args>
+    inline bool read_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        const Args& args,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t to,
+        uint32_t port
+    ) {
         return (
-            asked == 0 ||
-            port_wait_at(
-                reader, command, port, asked, kWhereAsk, slot(command) | holder << 8
+            read_pages_at(
+                core, slot(command), command.sequence, args, tensor, first, pages, to, port
             )
         );
     }
 
-    // Reader or writer: pages first .. of tensor `tensor` (its word) from L1 `from` on;
-    // local pages written, each other island's run one put line. `from` free on return.
+    // Reader or writer: pages first .. of tensor `tensor` (its word) from L1 `from`;
+    // each other island's run one put line. `from` free on return.
     template <typename Kernel, typename Args>
-    inline bool write_pages(
+    inline bool write_pages_at(
         const Kernel& core,
-        const km_command_t& command,
+        uint32_t slot,
+        uint32_t sequence,
         const Args& args,
         uint32_t tensor,
         uint32_t first,
@@ -286,30 +434,159 @@ namespace km {
                 continue;
             }
             const uint32_t run = page_run(tensor, first + k, pages - k, at);
-            if (
-                !ask_line(
-                    core,
-                    command,
-                    ask_puts(core.role()),
-                    at.island,
-                    at.address,
-                    bytes,
-                    at.index,
-                    run,
-                    from + k * bytes,
-                    port
-                )
-            ) {
+            if (!ask_line_at(
+                core,
+                slot,
+                sequence,
+                ask_puts(core.role()),
+                at.island,
+                at.address,
+                bytes,
+                at.index,
+                run,
+                from + k * bytes,
+                port
+            )) {
                 return false;
             }
             put += run;
             holder = at.island;
             k += run;
         }
+        return put == 0 || ask_wait(core, slot, sequence, port, put, holder);
+    }
+
+    // write_pages_at for `command`.
+    template <typename Kernel, typename Args>
+    inline bool write_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        const Args& args,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t from,
+        uint32_t port
+    ) {
         return (
-            put == 0 ||
-            port_wait_at(
-                core, command, port, put, kWhereAsk, slot(command) | holder << 8
+            write_pages_at(
+                core,
+                slot(command),
+                command.sequence,
+                args,
+                tensor,
+                first,
+                pages,
+                from,
+                port
+            )
+        );
+    }
+
+    // The read of a Tensor's pages: built for one island, the local reads alone
+    // (`port` unused); else read_pages_at by its word.
+    template <typename Kernel, uint32_t Base>
+    inline bool read_pages_at(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        const Tensor<Base>& tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t to,
+        uint32_t port
+    ) {
+        if constexpr (Tensor<Base>::kLocal) {
+            const uint32_t bytes = tensor.page_bytes();
+            for (uint32_t k = 0; k < pages; k++) {
+                noc_async_read_page(first + k, tensor.accessor, to + k * bytes);
+            }
+            return true;
+        } else {
+            return (
+                read_pages_at(
+                    core,
+                    slot,
+                    sequence,
+                    Tensor<Base>::kArgs,
+                    tensor.word,
+                    first,
+                    pages,
+                    to,
+                    port
+                )
+            );
+        }
+    }
+
+    // read_pages_at of a Tensor for `command`.
+    template <typename Kernel, uint32_t Base>
+    inline bool read_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        const Tensor<Base>& tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t to,
+        uint32_t port
+    ) {
+        return (
+            read_pages_at(
+                core, slot(command), command.sequence, tensor, first, pages, to, port
+            )
+        );
+    }
+
+    // The write of a Tensor's pages: built for one island, the local writes alone
+    // (`port` unused); else write_pages_at by its word.
+    template <typename Kernel, uint32_t Base>
+    inline bool write_pages_at(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        const Tensor<Base>& tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t from,
+        uint32_t port
+    ) {
+        if constexpr (Tensor<Base>::kLocal) {
+            const uint32_t bytes = tensor.page_bytes();
+            for (uint32_t k = 0; k < pages; k++) {
+                noc_async_write_page(first + k, tensor.accessor, from + k * bytes);
+            }
+            return true;
+        } else {
+            return (
+                write_pages_at(
+                    core,
+                    slot,
+                    sequence,
+                    Tensor<Base>::kArgs,
+                    tensor.word,
+                    first,
+                    pages,
+                    from,
+                    port
+                )
+            );
+        }
+    }
+
+    // write_pages_at of a Tensor for `command`.
+    template <typename Kernel, uint32_t Base>
+    inline bool write_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        const Tensor<Base>& tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t from,
+        uint32_t port
+    ) {
+        return (
+            write_pages_at(
+                core, slot(command), command.sequence, tensor, first, pages, from, port
             )
         );
     }
@@ -362,9 +639,7 @@ namespace km {
         // the lines' pages on the port; a miss names the island
         const auto copy_wait = [&](uint32_t holder, uint32_t pages) {
             const uint32_t named = slot(command) | holder << 8;
-            return port_wait_at(
-                reader, command, kCopyPort, pages, kWhereAsk, named
-            );
+            return port_wait_at(reader, command, kCopyPort, pages, kWhereAsk, named);
         };
         const uint32_t here = island();
         const bool from = copy_placed(c.from);
@@ -387,9 +662,8 @@ namespace km {
             uint32_t lined = 0;
             for (uint32_t k = 0; k < n;) {
                 const uint32_t page = s.first + start + k;
-                const PageAt where = (
-                    placed ? page_at(s.address, page) : PageAt{here, s.address, page}
-                );
+                const PageAt where = placed ? page_at(s.address, page)
+                                            : PageAt{here, s.address, page};
                 if (where.island == here) {
                     km_copy_side_t mine = s;
                     mine.address = where.address;
@@ -398,20 +672,18 @@ namespace km {
                     continue;
                 }
                 const uint32_t run = page_run(s.address, page, n - k, where);
-                if (
-                    !ask_line(
-                        reader,
-                        command,
-                        queue,
-                        where.island,
-                        where.address,
-                        c.page,
-                        where.index,
-                        run,
-                        at + k * c.page,
-                        kCopyPort
-                    )
-                ) {
+                if (!ask_line(
+                    reader,
+                    command,
+                    queue,
+                    where.island,
+                    where.address,
+                    c.page,
+                    where.index,
+                    run,
+                    at + k * c.page,
+                    kCopyPort
+                )) {
                     return 0xFFFFFFFFu;
                 }
                 lined += run;
