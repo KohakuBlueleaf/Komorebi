@@ -31,6 +31,10 @@ LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 # The kernel buffer of a session over two cards: the largest build with page links
 # (90,112 B) and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
 KERNEL_BYTES = 112 * 1024
+# The transfer buffer's chunk a session over two cards asks for: a page CPU passes
+# pages through its chunk, one L1 slot a read in flight (15 slots of 4 KiB and their
+# headers); a run with no room for it keeps the default.
+LINK_CHUNK = 64 * 1024
 CROSS_PAGE = 64  # bytes of a link CPU's row of what crossed, as COUNTS writes it
 
 
@@ -61,7 +65,7 @@ class Crossings:
     what island `source` sent to `target` on its link `link` (FIELDS, each a count).
     `after - before` is what crossed between two reads; `total` sums links."""
 
-    FIELDS = ("messages", "lines", "asks", "pages", "parts", "bytes")
+    FIELDS = ("messages", "lines", "asks", "pages", "parts", "puts", "bytes")
 
     def __init__(self, rows):
         self.rows = dict(rows)
@@ -746,6 +750,8 @@ class IslandSession:
                 )
                 for island, chip in enumerate(self.chips)
             )
+            for session in self.sessions:
+                session.transfer_chunk = LINK_CHUNK
             if len(self.chips) == 2:
                 found = int(self.mesh.link(0, 1, 0)[0])
                 most = min(found, self.LINKS_MAX)
@@ -1751,6 +1757,8 @@ class IslandSession:
                 area, relay = self._link_areas[:2]
             else:
                 words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
+                # the page CPUs a put line waits for (links 1 on, or link 0 alone)
+                words[:, h["KM_PUT_CPUS"] // 4] = max(self.links - 1, 1)
                 area = session.tensor(words, "uint32", shard_grid=(columns, rows))
                 relay = session.tensor(  # zeros: no ask, no count, no done word
                     np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),
