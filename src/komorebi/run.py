@@ -112,6 +112,7 @@ class Run:
         ranks=None,
         island_first=0,
         island_ranks=None,
+        island_cores=None,
     ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
@@ -122,10 +123,12 @@ class Run:
         self.cores = grid[0] * grid[1]
         # groups are in flat ranks, of all islands (one island: rank = core)
         self.ranks = ranks or self.cores
-        self.island_first = island_first  # rank island_first + c is core c
+        self.island_first = island_first  # rank island_first + c is core base + c
         # link core k (group first KM_GROUP_LINK_BASE + k) is core island_ranks + k
         self.island_ranks = self.cores if island_ranks is None else island_ranks
         self._link_base = self.h["KM_GROUP_LINK_BASE"]
+        # (base, count): the island's cores of the card (a split card's); default all
+        self.island_cores = island_cores or (0, self.cores)
         self.program = program
         # the run's programs by program field; holds[field]: the cores holding it
         self.programs = list(programs or ([program] if program is not None else []))
@@ -605,8 +608,9 @@ class Run:
         link = (first >= self._link_base) & (first < self._cluster_base)
         first = np.where(link, first - self._link_base + self.island_ranks, first)
         island_first = np.where(link, 0, self.island_first)
-        low = np.clip(first - island_first, 0, self.cores)
-        high = np.clip(first + count - island_first, low, self.cores)
+        base, cores = self.island_cores
+        low = np.clip(first - island_first + base, base, base + cores)
+        high = np.clip(first + count - island_first + base, low, base + cores)
         return low, high
 
     def _group(self, group):

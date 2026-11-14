@@ -6,6 +6,7 @@ Needs a tt-metal tree or the runtime package; `import komorebi` does not import 
 
 import atexit
 import contextlib
+import copy
 import ctypes
 import os
 import re
@@ -94,6 +95,7 @@ TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 LAUNCH_MIN_BYTES = 80 << 10
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
+SPLIT_ISLANDS_MAX = 4  # a card split into islands: a dispatcher an X280 cluster
 
 
 # The runtime's ComputeConfigDescriptor fields that are flags.
@@ -413,16 +415,21 @@ def _read_uint32(tensor, device=None, module=None):
 
 
 class Session:
-    """One card: `card` selects it, `device` uses an open one (`cards`: IslandSession,
-    each card an island); `grid_timeout` is the timeout of every grid wait. As a context
-    manager it stops a loaded run at the exit (through the runtime on an exception) and
-    closes the device it opened; so do the process's exit and SIGTERM."""
+    """One card: `card` selects it, `device` uses an open one (`cards`, or `islands` 2
+    to 4 beside `card`: an IslandSession); `grid_timeout` bounds every grid wait. As a
+    context manager it stops a loaded run at the exit (through the runtime on an
+    exception) and closes the device it opened; so do the process's exit and SIGTERM."""
 
-    def __new__(cls, *args, cards=None, **options):
+    def __new__(cls, *args, cards=None, islands=None, **options):
         if cards is not None:
             if args or "card" in options or "device" in options:
                 raise ValueError("cards= is given alone, without card or device")
-            return island_session.IslandSession(cards, **options)
+            return island_session.IslandSession(cards, islands=islands, **options)
+        if islands is not None:
+            if args or "card" not in options or "device" in options:
+                raise ValueError("islands= is given with card=, without device")
+            card = options.pop("card")
+            return island_session.IslandSession([card], islands=islands, **options)
         return super().__new__(cls)
 
     def __init__(
@@ -1217,6 +1224,142 @@ class Session:
             self.log(f"threads {list(run.threads)} {where}")
         return run
 
+    def load_islands(
+        self,
+        program,
+        graph,
+        depth=None,
+        trace=0,
+        deadline=1.0,
+        wait=2.0,
+        idle=0.0,
+        kernel_idle=0.0,
+        start=10.0,
+        host_depth=64,
+        event_depth=128,
+        batch=64,
+        settle_microseconds=1.0,
+        image=None,
+    ):
+        """This card split into the islands of `graph` (whole rows each, no link cores:
+        islands.split_card(..., rows=True, reserve=False)): `program` launched once on
+        every core, island i's dispatcher on X280 cluster i. Returns a Run an island,
+        each over flat ranks; Session.load's options. No X280 threads or messages."""
+        if self.run is not None and not self.run.stopped:
+            raise RuntimeError("a run is loaded: stop it first")
+        if not isinstance(program, Program) or program.form() == "program":
+            raise ValueError("a card split into islands loads one Program")
+        if program.threads or program.messages is not None or program.x280_ports:
+            raise ValueError(
+                f"{program.name}: X280 threads, ports and dynamic handlers need the "
+                "work clusters, which a split card's dispatchers take"
+            )
+        rows = _split_rows(graph, self.grid)
+        image = Path(image) if image else native.image_path(self.tree)
+        if not image.is_file() or image.stat().st_size == 0:
+            raise StartError(f"dispatcher image {image}: missing or empty")
+        module = self._module = native.load_module(self.tree)
+        depth = depth or program.depth
+        sources = program.sources()
+        mhz = aiclk_mhz(self.card)
+        dispatches = _Dispatches([self._open_dispatch(module)])
+        self.log(f"X280 clock set: {self.pll_mhz} MHz")
+        _hook_exit()
+        _LIVE.add(self)
+        self._starting = dispatches
+        backends, launched = [], False
+        try:
+            for cluster in range(1, len(rows)):
+                dispatches.append(module.Dispatch(dispatches[0], cluster))
+            states, tags = [], []
+            for island, (dispatch, (first_row, count)) in enumerate(
+                zip(dispatches, rows)
+            ):
+                dispatch.settle_microseconds = settle_microseconds
+                if not dispatch.idle:
+                    raise StartError(f"X280 cluster {island} is not idle")
+                states.append(_state_area(self))
+                base = first_row * self.grid[0]
+                tags.append(
+                    dispatch.prepare(
+                        depth, host_depth, event_depth, start, deadline, kernel_idle,
+                        states[-1].address,
+                        island=_island_word((graph, island)) | base << 32,
+                        first_row=first_row, rows=count,
+                    )  # fmt: skip
+                )
+                check_bases(lim_bases(dispatch.lim_base))
+            first = _Backend(self, dispatches[0], mhz, trace)
+            first.split = (graph, list(dispatches), tags, rows, set())
+            first.state_tensor = states[0]
+            descriptor = first.describe(
+                program, sources, tags[0], depth, wait, idle, trace
+            )
+            try:
+                elves, *build = descriptor.build()
+            except Exception as error:
+                raise ProgramError(f"{program.name}: build failed: {error}") from error
+            program.sizes = kernel_sizes(build)
+            if build[-1]:
+                raise KernelSizeError(program.name, program.sizes, KERNEL_BUFFER_MAX)
+            if insn_check.enabled():
+                insn_check.check_kernels(
+                    program.name,
+                    elves,
+                    native.metal_tree(self.tree),
+                    native.cache_directory() / "insn-check",
+                )
+            first.load_overlays(program, descriptor)
+            for island, dispatch in enumerate(dispatches):
+                backend = first if island == 0 else copy.copy(first)
+                backend.port, backend.state_tensor = dispatch, states[island]
+                backend.rows = rows[island]
+                backends.append(backend)
+            self.log(f"launch: one grid, {len(rows)} islands")
+            launched = True
+            try:
+                descriptor.run()
+            except Exception as error:
+                raise ProgramError(f"{program.name}: launch failed: {error}") from error
+            for island, (backend, dispatch) in enumerate(zip(backends, dispatches)):
+                backend.launch = descriptor
+                dispatch.start(str(image))
+                self.log(
+                    f"island {island}: dispatcher started on X280 cluster {island}"
+                )
+            ready = [dispatch.wait_ready(start + 1.0) for dispatch in dispatches]
+        except BaseException:
+            if not dispatches.close():
+                self.log(f"x280 runtime not restored: {dispatches.close_failed}")
+            self._starting = None
+            if launched:
+                for backend in backends:  # the kernels never stopped the grid
+                    backend.read_back(stop_grid=True)
+            raise
+        runs = []
+        for island, backend in enumerate(backends):
+            run = Run(
+                backend,
+                self.grid,
+                program,
+                batch,
+                ranks=graph.ranks,
+                island_first=graph.first(island),
+                island_cores=(rows[island][0] * self.grid[0], graph.count(island)),
+            )
+            run.recovery_refused = "a card split into islands"
+            runs.append(run)
+        self.run, self.island = runs[0], (graph, 0)
+        self._starting = None
+        for run, state in zip(runs, ready):
+            if state != abi.headers()["KMD_STATE_READY"]:
+                for other in runs:
+                    if other is not run:
+                        other.abort()
+                run._fail_start(state)
+        self.log("ready: every island")
+        return runs
+
 
 def _recipe_group(recipe):
     """The group number a runtime kernel's build was made for (KM_PROGRAM_GROUP, in
@@ -1253,6 +1396,42 @@ def _island_word(island):
         return 0
     graph, here = island
     return graph.first(here) | graph.count(here) << 16
+
+
+def _split_rows(graph, grid):
+    """[(first row, rows)] of each island of a card split into islands: its cores whole
+    rows of the grid in order, no link cores, at most one island an X280 cluster."""
+    columns, rows = grid
+    out, at = [], 0
+    if not 2 <= len(graph.islands) <= SPLIT_ISLANDS_MAX:
+        raise ValueError(f"{len(graph.islands)} islands: 2 to {SPLIT_ISLANDS_MAX}")
+    for island, cores in enumerate(graph.rank_cores):
+        if (
+            graph.link_cores[island]
+            or cores != tuple(range(at, at + len(cores)))
+            or at % columns
+            or len(cores) % columns
+        ):
+            raise ValueError(
+                f"island {island}: its cores are not whole rows of the {columns} x "
+                f"{rows} grid after the island before it, without link cores"
+            )
+        out.append((at // columns, len(cores) // columns))
+        at += len(cores)
+    if at != columns * rows:
+        raise ValueError(f"the islands hold {at} cores of {columns * rows}")
+    return out
+
+
+class _Dispatches(list):
+    """The dispatches of a card split into islands, closed together (a load's)."""
+
+    close_failed = ""
+
+    def close(self):
+        failed = [d.close_failed for d in self if not d.close()]
+        self.close_failed = "; ".join(failed)
+        return not failed
 
 
 def _group_recipes(kernels, count):
@@ -1627,6 +1806,10 @@ class _Backend:
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
         self.transfer = None  # a _TransferBuffer: with the host channel, or threads
+        # a split card: (graph, dispatches, tags, [(first row, rows)], the islands whose
+        # cores returned) of the one launch; `rows` this backend's island's
+        self.split = None
+        self.rows = None
 
     def block(self, data):
         """A command's block (uint8 data) in DRAM: a copy at the same address of every
@@ -1683,23 +1866,32 @@ class _Backend:
 
     def _island_rows(self, cores, columns):
         """Every core's island area in control_rows: island i of the load's graph,
-        else island 0 of 1 with every core a rank (its header line, then its table,
-        then the link area's address)."""
+        else island 0 of 1 with every core a rank (its header, then its table, then
+        the link area's address); on a split card each island's rows its own."""
         abi_headers = abi.headers()
         graph, here = self.session.island or (islands.one(cores, columns), 0)
-        table = np.frombuffer(graph.table(here), np.uint32)
-        header = [here, len(graph.islands), graph.first(here), graph.count(here)]
+        parts = [(here, 0, cores)]
+        if self.split is not None:
+            graph, _, _, rows, _ = self.split
+            parts = [
+                (i, first * columns, n * columns) for i, (first, n) in enumerate(rows)
+            ]
         at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
         line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
-        self.control_rows[:, at : at + line] = header
-        self.control_rows[:, at + line : at + line + len(table)] = table
         plan = getattr(self.session, "link_plan", None)
-        if plan is not None:  # the relay's words after the table (km_relay.hpp)
-            relay = at + abi_headers["KM_ISLAND_RELAY"]
-            self.control_rows[:, relay : relay + 3] = plan.relay
-        self.control_rows[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = (
-            self.session.link_area
-        )
+        for here, base, count in parts:
+            table = np.frombuffer(graph.table(here), np.uint32)
+            header = [here, len(graph.islands), graph.first(here), graph.count(here)]
+            header.append(base)
+            mine = self.control_rows[base : base + count]
+            mine[:, at : at + len(header)] = header
+            mine[:, at + line : at + line + len(table)] = table
+            if plan is not None:  # the relay's words after the table (km_relay.hpp)
+                relay = at + abi_headers["KM_ISLAND_RELAY"]
+                mine[:, relay : relay + 3] = plan.relay
+            mine[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = (
+                self.session.link_area
+            )
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
@@ -1789,16 +1981,22 @@ class _Backend:
         messages_reader_writer_args, messages_compute_args = self._dynamic(
             program, cores, depth, base, grid, x280
         )
+        owners = [(0, common, base)] * cores  # per core: its island's first core
+        if self.split is not None:  # each island's cores hello its own dispatcher
+            owners, groups = self._split_owners(common, grid)
         reader_args, writer_args, compute_args = [], [], []
         for core in range(cores):
             x, y = core % grid[0], core // grid[0]
             leader, rank, peers, slot = groups[core]
+            first_core, mine, lim = owners[core]
             start = abi.start_args(
-                common
+                mine
                 | {
                     "me": core,
                     "mailbox": (
-                        base + abi_headers["KMD_LIM_MAILBOX"] if core == 0 else 0
+                        lim + abi_headers["KMD_LIM_MAILBOX"]
+                        if core == first_core
+                        else 0
                     ),
                     "leader": leader,
                     "rank": rank,
@@ -1845,6 +2043,27 @@ class _Backend:
                 **config,
             )
         return launch
+
+    def _split_owners(self, common, grid):
+        """A split card's per-core (island's first core, start-up words, LIM base) and
+        start-up groups: each island's column leaders report to its own dispatcher."""
+        abi_headers = abi.headers()
+        _, ports, tags, rows, _ = self.split
+        owners, groups = [], {}
+        for (first, count), port, tag in zip(rows, ports, tags):
+            lim = port.lim_base
+            mine = common | {
+                "dispatcher_coordinates": port.l2_x | port.l2_y << 16,
+                "ack_base": lim + abi_headers["KMD_LIM_ACKS"],
+                "ready_base": lim + abi_headers["KMD_LIM_READY"],
+                "tag": tag,
+            }
+            low = first * grid[0]
+            owners += [(low, mine, lim)] * (count * grid[0])
+            local = abi.column_groups((grid[0], count), count * grid[0])
+            for core, (leader, rank, peers, slot) in local.items():
+                groups[low + core] = (low + leader, rank, peers, slot)
+        return owners, groups
 
     def _transfer_chunk(self, program, placed, cores):
         """The chunk of the run's transfer buffer: CHUNK_DEFAULT, or the largest page
@@ -2235,12 +2454,9 @@ class _Backend:
         """The failure path: the stop flag to every core, a timed wait for the grid,
         then the runtime's close, so core 0 is not held behind a grid that runs on.
         Returns whether cluster 0 was restored; `aborted` holds what the kernel left."""
-        grid_x, grid_y = self.port.grid_x, self.port.grid_y
         try:
             self.stop_grid()
-            back = self.session._module.wait_grid(
-                self.device, grid_x, grid_y, ABORT_GRID_S
-            )
+            back = self._wait_grid(ABORT_GRID_S)
             self.session.log("grid returned" if back else "grid still running")
         except Exception as error:  # noqa: BLE001 (the close below always runs)
             self.session.log(
@@ -2309,17 +2525,28 @@ class _Backend:
         return report
 
     def stop_grid(self):
-        """Writes the stop flag into every core through the device API."""
+        """Writes the stop flag into every core (of this island on a split card)
+        through the device API."""
         abi_headers = abi.headers()
-        module, grid_x, grid_y = (
-            self.session._module,
-            self.port.grid_x,
-            self.port.grid_y,
-        )
-        for core in range(grid_x * grid_y):
+        module, grid_x = self.session._module, self.port.grid_x
+        for core in self._cores():
             address = self.control_addr + abi_headers["KM_CONTROL_STOP"]
             module.write_l1(self.device, core % grid_x, core // grid_x, address, [1])
         self.session.log("stop flag written by the host")
+
+    def _cores(self):
+        """The cores of this backend's island on a split card; else every core."""
+        grid_x, grid_y = self.port.grid_x, self.port.grid_y
+        if self.rows is None:
+            return range(grid_x * grid_y)
+        return range(self.rows[0] * grid_x, sum(self.rows) * grid_x)
+
+    def _wait_grid(self, timeout):
+        """Whether this backend's cores (_cores) returned within `timeout`."""
+        first, rows = self.rows or (0, self.port.grid_y)
+        return self.session._module.wait_grid(
+            self.device, self.port.grid_x, rows, timeout, first
+        )
 
     def read_back(self, stop_grid=False):
         """After the X280 runtime is closed: waits (with a timeout) for the grid's
@@ -2338,7 +2565,7 @@ class _Backend:
             self.stop_grid()
         started = time.monotonic()
         timeout = self.session.grid_timeout
-        if not module.wait_grid(self.device, grid_x, grid_y, timeout):
+        if not self._wait_grid(timeout):
             self.session.stuck = True
             raise GridTimeout(
                 f"the grid's kernels did not return within {timeout} s after the stop. "
@@ -2348,13 +2575,26 @@ class _Backend:
                 "that left a compute unit running is not, and if the next open fails "
                 "the card needs a reset"
             )
-        self.device.finish()  # returns at once: every core is done
-        self.session.log(f"grid returned ({time.monotonic() - started:.1f} s)")
-        rows = _read_uint32(self.control)
-        start = self.control_offset
-        blocks = rows[:, start : start + abi_headers["KM_CONTROL_BYTES"] // 4].astype(
-            np.uint32
-        )
+        words = abi_headers["KM_CONTROL_BYTES"] // 4
+        if self.split is not None:  # the other islands may run: no buffer read
+            blocks = np.zeros((grid_x * grid_y, words), np.uint32)
+            for core in self._cores():
+                blocks[core] = module.read_l1(
+                    self.device, core % grid_x, core // grid_x, self.control_addr, words
+                )
+            returned = self.split[4]
+            returned.add(self.rows)
+            if len(returned) == len(self.split[3]):
+                self.device.finish()  # returns at once: every island is done
+            self.session.log(
+                f"island cores returned ({time.monotonic() - started:.1f} s)"
+            )
+        else:
+            self.device.finish()  # returns at once: every core is done
+            self.session.log(f"grid returned ({time.monotonic() - started:.1f} s)")
+            rows = _read_uint32(self.control)
+            start = self.control_offset
+            blocks = rows[:, start : start + words].astype(np.uint32)
         trace = None
         if self.trace_tensor is not None:
             words = _read_uint32(self.trace_tensor, self.device, module).astype(

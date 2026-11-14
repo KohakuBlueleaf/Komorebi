@@ -579,16 +579,17 @@ namespace km {
                 args_.depth = KM_RING_SLOTS;
             }
             invalidate_l1_cache();
-            island_first_ = islands_at(args_.control).first();
+            rank_offset_ = islands_at(args_.control).offset();
         }
 
         const Args& args() const {
             return args_;
         }
 
-        // This core's flat rank: its island's first rank plus its index (args().me).
+        // This core's flat rank: its island's first rank plus its index (args().me)
+        // less the island's base.
         uint32_t me() const {
-            return island_first_ + args_.me;
+            return rank_offset_ + args_.me;
         }
 
         // This core's name in `command`'s group (km::name_in): its rank in the group
@@ -597,9 +598,9 @@ namespace km {
             return name_in(islands_at(args_.control), args_.me, command);
         }
 
-        // This island's core index of flat rank `rank` (for the core table).
+        // The core index of flat rank `rank` on this island (for the core table).
         uint32_t core_of(uint32_t rank) const {
-            return rank - island_first_;
+            return rank - rank_offset_;
         }
 
         // The program's argument `index` (after the start-up arguments).
@@ -828,7 +829,7 @@ namespace km {
 
     private:
         Args args_;
-        uint32_t island_first_;
+        uint32_t rank_offset_;  // rank of core 0: the island's first rank less its base
         uint32_t role_;
         uint32_t index_ = 0;             // commands this kernel took (EXIT aside)
         mutable uint32_t produces_ = 0;  // bit cb: filled through a timed wait

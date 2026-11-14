@@ -132,6 +132,18 @@ namespace {
         );
     }
 
+    // `count` words of core (x, y)'s L1 at `address`, read through the driver: no
+    // command queue, so it does not wait for a launched program.
+    std::vector<uint32_t> read_l1(
+        const MeshDevice& mesh, uint32_t x, uint32_t y, uint32_t address, uint32_t count
+    ) {
+        std::vector<uint32_t> words;
+        tt::tt_metal::detail::ReadFromDeviceL1(
+            chip(mesh), tt::tt_metal::CoreCoord{x, y}, address, count * 4, words
+        );
+        return words;
+    }
+
     // The grid (x, y), then per core in core order its translated NoC address (the
     // core table's) and its NoC0 coordinates, as x | y << 16 words; no X280 needed.
     std::tuple<uint32_t, uint32_t, std::vector<uint32_t>, std::vector<uint32_t>>
@@ -408,14 +420,18 @@ namespace {
         tt::tt_metal::MetalContext::instance().get_cluster().dram_barrier(dev->id());
     }
 
-    // Waits up to timeout_s for the kernels of the worker grid to return, in slices of
-    // at most a second, signals checked between them. True: returned.
+    // Waits up to timeout_s for the kernels of grid_y rows from first_row to return, in
+    // slices of at most a second, signals checked between them. True: returned.
     bool wait_grid(
-        const MeshDevice& mesh, uint32_t grid_x, uint32_t grid_y, double timeout_s
+        const MeshDevice& mesh,
+        uint32_t grid_x,
+        uint32_t grid_y,
+        double timeout_s,
+        uint32_t first_row = 0
     ) {
         auto* dev = chip(mesh);
         std::unordered_set<tt::tt_metal::CoreCoord> left;
-        for (uint32_t y = 0; y < grid_y; y++) {
+        for (uint32_t y = first_row; y < first_row + grid_y; y++) {
             for (uint32_t x = 0; x < grid_x; x++) {
                 left.insert(dev->virtual_core_from_logical_core(
                     tt::tt_metal::CoreCoord{x, y}, tt::CoreType::WORKER
@@ -1720,6 +1736,25 @@ namespace {
             }
         }
 
+        // A dispatch on X280 cluster `cluster` of `first`'s chip, beside it: its
+        // runtime, its tiles booted and clocked by `first` (a card split into islands).
+        Dispatch(const Dispatch& first, uint32_t cluster) :
+            mesh_(first.mesh_),
+            opened_(first.opened_),
+            chip_id_(first.chip_id_),
+            cluster_(cluster) {
+            require_open();
+            if (cluster_ == 0 || cluster_ >= tile_ids().size()) {
+                throw std::runtime_error("a dispatch beside another: clusters 1 to 3");
+            }
+            try {
+                locate();
+            } catch (...) {
+                close();
+                throw;
+            }
+        }
+
         ~Dispatch() {
             close();
         }
@@ -1732,7 +1767,7 @@ namespace {
             return session_.has_value();
         }
 
-        // Whether cluster 0 runs its idle image and no session: an image can start.
+        // Whether its cluster runs its idle image and no session: an image can start.
         bool idle() const {
             return (
                 opened_ && !session_ && tile_ != nullptr &&
@@ -1788,9 +1823,15 @@ namespace {
             uint64_t messages_handler,
             const std::vector<uint8_t>& programs,
             uint64_t island,
-            const std::vector<uint8_t>& link
+            const std::vector<uint8_t>& link,
+            uint32_t first_row,
+            uint32_t rows
         ) {
             require_open();
+            rows = rows == 0 ? grid_y_ - std::min(first_row, grid_y_) : rows;
+            if (rows == 0 || first_row + rows > grid_y_) {
+                throw std::runtime_error("rows: a range of the grid's rows");
+            }
             if (link.size() > KMD_LINK_COUNT || link.size() % 4 != 0) {
                 throw std::runtime_error(
                     "link: the link line and the island table, at most KMD_LINK_COUNT "
@@ -1893,8 +1934,10 @@ namespace {
             arguments.cores = grid_x_ * grid_y_;
             arguments.panels = panels_.size();
             for (size_t panel = 0; panel < panels_.size(); panel++) {
-                const auto first_corner = translated(panels_[panel][0], 0);
-                const auto last_corner = translated(panels_[panel][1], grid_y_ - 1);
+                const auto first_corner = translated(panels_[panel][0], first_row);
+                const auto last_corner = (
+                    translated(panels_[panel][1], first_row + rows - 1)
+                );
                 arguments.rect[panel][0] = first_corner[0];
                 arguments.rect[panel][1] = first_corner[1];
                 arguments.rect[panel][2] = last_corner[0];
@@ -2664,7 +2707,7 @@ namespace {
         void locate() {
             auto& runtime = x280_runtime();
             const auto ids = tile_ids();
-            tile_ = &runtime.tile(ids.front());
+            tile_ = &runtime.tile(ids.at(cluster_));
             work_.resize(ids.size());
             for (
                 size_t cluster_index = 0; cluster_index < ids.size(); cluster_index++
@@ -2679,11 +2722,15 @@ namespace {
                 );
             }
             const auto l2 = (
-                runtime.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_0)
+                runtime.virtual_core_from_tile(
+                    ids.at(cluster_), tt::tt_metal::NOC::NOC_0
+                )
             );
             // The writers push completions on NoC1: the same coordinate must reach it.
             const auto l2_noc1 = (
-                runtime.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_1)
+                runtime.virtual_core_from_tile(
+                    ids.at(cluster_), tt::tt_metal::NOC::NOC_1
+                )
             );
             if (l2.x() != l2_noc1.x() || l2.y() != l2_noc1.y()) {
                 throw std::runtime_error(
@@ -2764,7 +2811,8 @@ namespace {
 
         std::shared_ptr<MeshDevice> mesh_;
         std::shared_ptr<x280::RuntimeOpenResult> opened_;  // shared on islands
-        int chip_id_ = -1;  // an island's chip: only its tiles; -1 every tile
+        int chip_id_ = -1;      // an island's chip: only its tiles; -1 every tile
+        uint32_t cluster_ = 0;  // the X280 cluster it runs on (tile_ids() order)
         x280::X280Tile* tile_ = nullptr;
         uint64_t run_ = 0;
         std::shared_ptr<tt::umd::IoWindow> win_;         // host -> LIM, write-combining
@@ -2973,13 +3021,37 @@ NB_MODULE(_km_host, m) {
     );
     m.def(
         "wait_grid",
-        [](const Device& device, uint32_t grid_x, uint32_t grid_y, double timeout_s) {
-            return wait_grid(device.mesh(), grid_x, grid_y, timeout_s);
+        [](
+            const Device& device,
+            uint32_t grid_x,
+            uint32_t grid_y,
+            double timeout_s,
+            uint32_t first_row
+        ) {
+            return wait_grid(device.mesh(), grid_x, grid_y, timeout_s, first_row);
         },
         nb::arg("device"),
         nb::arg("grid_x"),
         nb::arg("grid_y"),
-        nb::arg("timeout_s")
+        nb::arg("timeout_s"),
+        nb::arg("first_row") = 0
+    );
+    m.def(
+        "read_l1",
+        [](
+            const Device& device,
+            uint32_t x,
+            uint32_t y,
+            uint32_t address,
+            uint32_t count
+        ) {
+            return read_l1(device.mesh(), x, y, address, count);
+        },
+        nb::arg("device"),
+        nb::arg("x"),
+        nb::arg("y"),
+        nb::arg("address"),
+        nb::arg("count")
     );
 
     nb::class_<Dispatch>(m, "Dispatch")
@@ -2995,6 +3067,13 @@ NB_MODULE(_km_host, m) {
             },
             nb::arg("device"),
             nb::arg("pll_mhz") = 1000
+        ).def(
+            "__init__",
+            [](Dispatch* self, const Dispatch& first, uint32_t cluster) {
+                new (self) Dispatch(first, cluster);
+            },
+            nb::arg("first"),
+            nb::arg("cluster")
         ).def_ro("grid_x", &Dispatch::grid_x_).def_ro("grid_y", &Dispatch::grid_y_)
         .def_ro("panels", &Dispatch::panels_)
         .def_ro("l2_x", &Dispatch::l2x_)
@@ -3032,7 +3111,9 @@ NB_MODULE(_km_host, m) {
             nb::arg("messages_handler") = 0,
             nb::arg("programs") = std::vector<uint8_t>{},
             nb::arg("island") = 0,
-            nb::arg("link") = std::vector<uint8_t>{}
+            nb::arg("link") = std::vector<uint8_t>{},
+            nb::arg("first_row") = 0,
+            nb::arg("rows") = 0
         ).def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
         .def_ro("upload_bytes", &Dispatch::upload_bytes_)

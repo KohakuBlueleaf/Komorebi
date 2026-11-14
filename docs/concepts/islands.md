@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, the links between islands and what they carry, messages across a link, acting by island, and what is not built.
+summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, a card split into islands, the links between islands and what they carry, messages across a link, acting by island, and what is not built.
 tags:
   - concepts
   - islands
@@ -9,18 +9,18 @@ tags:
 
 # Islands
 
-Status: implemented over two Blackhole p150a cards, each card's chip an island. A group
-that spans both cards runs as one part on each, every core sees its flat rank in the
-whole group, and a program written for one card (one `Program`, as example 01's) runs on two as
-it does on one. Nothing
-crosses between the cards inside a run yet: no message, page or command goes over a
-link from a kernel. The calls are in [islands](../reference/islands.md), the kernel
-side in the [runtime reference](../reference/runtime.md#islands).
+Status: implemented over two Blackhole p150a cards, each card's chip an island, and
+over one card split into islands. A group that spans islands runs as one part on each,
+every core sees its flat rank in the whole group, and a program written for one card
+(one `Program`, as example 01's) runs on two as it does on one. Nothing crosses between
+islands inside a run yet: no message, page or command goes over a link from a kernel.
+The calls are in [islands](../reference/islands.md), the kernel side in the
+[runtime reference](../reference/runtime.md#islands).
 
 An **island** is a set of cores that reach the others only through links. Today it is one
 card's chip: its own Tensix grid, its own dispatcher on its own X280 cluster 0, its own
-DRAM banks. Cores inside an island reach each other by the NoC, as on a card opened
-alone. A core of one island reaches a core of another only over a link, which is slower
+DRAM banks; or rows of one card split into islands (below). Cores inside an island
+reach each other by the NoC, as on a card opened alone. A core of one island reaches a core of another only over a link, which is slower
 than the NoC and which a program has to be able to see.
 
 ## Why the level exists
@@ -69,6 +69,20 @@ next link 0 and hops 1 in island 0's. The host's values are in `komorebi.islands
 `islands.place` for a tensor's pages, and `ENTRY` for the layout. On one card the table
 has one entry, `(0, cores, NO_LINK, 0)`, and every answer below is the one of a run
 without islands.
+
+## A card split into islands
+
+An island is a set of ranks with a table entry, not a card. So one card can be several
+islands: `km.Session(card=0, islands=2)` gives the session of two islands over one card,
+the same object and calls as over two cards, which is how a program for islands is
+developed and checked with one card. Each island's ranks run on a contiguous range of the
+card's cores from its base (core = base + rank - the island's first rank), and island
+i's dispatcher runs on X280 cluster i of that card. The limits: at most four islands (one
+a cluster), each island past the first takes a work cluster away (a split card runs no
+X280 threads), and each island is whole rows of the grid, since a dispatcher sends
+commands over its own rows. Nothing crosses between the islands of a split card inside a
+run yet. The calls and the numbers are in
+[islands](../reference/islands.md#a-card-split-into-islands).
 
 ## What a kernel sees
 
@@ -213,8 +227,8 @@ root); those of example 26 did not.
   completes with the result word of the first part back, not of
   the group's rank 0.
 - **A rate in the table**, so `km::rate` of another island is 0.
-- **A card split into islands.** The host's graph describes it (`islands.split_card`);
-  nothing runs on it.
+- **A link between the islands of one card.** A split card runs, but nothing crosses
+  between its islands inside a run.
 - **A dict of programs, X280 threads and ports, engines and uploads over islands,
   tensors in L1.** A list of programs, one an island, loads.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.

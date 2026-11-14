@@ -440,18 +440,19 @@ KM_STATIC_ASSERT(
 #define KM_LIVE_TRACE_CAP 21u /* live word: the sequences it holds */
 #define KM_TRACE_ENTRY 16u /* bytes of one sequence's trace entry (km::kTraceWords) */
 /* Islands: sets of cores that reach each other only through links, ranks flat and
-   contiguous by island. A header line {island, islands, its first rank, its ranks} */
+   contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
 /* then the island table: an entry per island {first rank u16, count u16, next link u8
    (this island's own link number toward it), hops u8, 0 u16}; the host's, at load */
 #define KM_ISLANDS_MAX 16u
 #define KM_ISLAND_ENTRY_BYTES 8u
-#define KM_ISLAND_HEADER_BYTES 16u
+#define KM_ISLAND_HEADER_BYTES 32u
 #define KM_ISLAND_NO_LINK 0xFFu /* next link of the holder's own entry */
 #define KM_ISLAND_HERE 0u       /* header words: this island (0: island 0 of one) */
 #define KM_ISLAND_COUNT 1u      /* islands in the table (0 read as 1) */
 #define KM_ISLAND_FIRST 2u      /* this island's first rank */
 #define KM_ISLAND_RANKS 3u      /* this island's ranks */
+#define KM_ISLAND_BASE 4u       /* its first core of the card: core = base + local */
 #define KM_ISLANDS_BYTES                                                             \
     ((KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES + 63u) / 64u * \
      64u)
@@ -461,9 +462,9 @@ KM_STATIC_ASSERT(
     (KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES)
 /* words after it: the relay area's L1 address on this island (0: no relay), the far
  * island's, and the far link core 0's NoC tile x | y << 16 (km_relay.hpp) */
-#define KM_ISLAND_RELAY 37u
-#define KM_ISLAND_RELAY_FAR 38u
-#define KM_ISLAND_RELAY_TILE 39u
+#define KM_ISLAND_RELAY (KM_ISLAND_LINK_AREA / 4u + 1u)
+#define KM_ISLAND_RELAY_FAR (KM_ISLAND_RELAY + 1u)
+#define KM_ISLAND_RELAY_TILE (KM_ISLAND_RELAY + 2u)
 /* The relay area, on every core: a leader's ask to link core 0 (64 bytes a ring slot),
  * the link core's done word back to the leader (16 bytes a slot), then link core 0's */
 #define KM_RELAY_ASK 0x0000u

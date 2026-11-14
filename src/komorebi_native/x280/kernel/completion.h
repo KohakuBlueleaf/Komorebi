@@ -97,22 +97,28 @@ static inline int group_outside(
     return count == 0 || first > dispatcher->cores || count > dispatcher->cores - first;
 }
 
-/* A group word in flat ranks as this island's part in its cores (first | count << 16),
- * 0 when it has none there; without islands, the word itself. Link cores k on
- * (KM_GROUP_LINK_BASE + k) are the island's cores after its ranks, never cut. */
+/* A flat group as this island's part in its cores from its base, first | count << 16
+ * (0: none; no islands: itself). Link cores k on: after its ranks, never cut. */
 static inline uint32_t island_part(const kmd_t* dispatcher, uint32_t group) {
     if (dispatcher->island_count == 0) {
         return group;
     }
     const uint32_t first = group & 0xFFFFu, end = first + (group >> 16);
     if (KM_GROUP_IS_LINK(first)) {
-        const uint32_t core = dispatcher->island_count + first - KM_GROUP_LINK_BASE;
+        const uint32_t core = (
+            dispatcher->island_base + dispatcher->island_count + first -
+            KM_GROUP_LINK_BASE
+        );
         return core | (group >> 16) << 16;
     }
     const uint32_t low = dispatcher->island_first;
     const uint32_t high = low + dispatcher->island_count;
     const uint32_t start = first > low ? first : low, stop = end < high ? end : high;
-    return stop > start ? (start - low) | (stop - start) << 16 : 0u;
+    return (
+        stop > start
+            ? (start - low + dispatcher->island_base) | (stop - start) << 16
+            : 0u
+    );
 }
 
 /* Bits [low, high) of a 64-bit word, for low <= high <= 64. */

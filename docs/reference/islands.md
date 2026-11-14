@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: A session over several cards, each card's chip an island with its own grid and dispatcher; ranks flat and contiguous by island, commands split by island on the host, tensors placed by island. What it does today and what it does not yet.
+summary: A session over several cards, each card's chip an island with its own grid and dispatcher, or one card split into islands; ranks flat and contiguous by island, commands split by island on the host, tensors placed by island. What it does today and what it does not yet.
 tags:
   - reference
   - host
@@ -8,10 +8,11 @@ tags:
 
 # Islands
 
-Status: implemented over two Blackhole p150a cards. A group that spans islands runs
-as one part on each island, and every core sees its flat rank in the whole group, so
-an existing program runs unchanged. Commands cross between the cards on link 0 and
-pages on the session's links, through each island's link cores.
+Status: implemented over two Blackhole p150a cards, and over one card split into two
+to four islands. A group that spans islands runs as one part on each island, and every
+core sees its flat rank in the whole group, so an existing program runs unchanged.
+Commands cross between the cards on link 0 and pages on the session's links, through
+each island's link cores; nothing crosses between the islands of a split card.
 
 An island is a set of cores that reach the others only through links: here one card's
 chip, with its own Tensix grid and its own dispatcher on its own X280 cluster 0. The
@@ -217,6 +218,58 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   | 118 asks a round (one a rank), connections held | 3,009.1 | 170.5 |
   | 118 asks a round, a connection opened and closed by each command | 3,132.5 | 169.9 |
 
+## A card split into islands
+
+`km.Session(card=a, islands=n)`, n 2 to 4, returns the same `IslandSession` over one
+card described as n islands: the same calls, the same `IslandRun`, so a program for
+islands is developed and checked with one card. One device and one open; the graph is
+`islands.split_card(cores, columns, n, rows=True, reserve=False)`.
+
+- **Cores.** An island's ranks run on a contiguous range of the card's cores from its
+  base: core = base + (rank - the island's first rank). The base is in the island
+  header of every core (`KM_ISLAND_BASE`) and in the dispatcher's island word; on a
+  whole card it is 0. With no link cores, rank and core are the same number.
+- **Dispatchers.** Island i's dispatcher runs on X280 cluster i of the card, the same
+  image as cluster 0's, with its own ring from the host, its own state area and its own
+  LIM; each island's cores report to their own dispatcher. So a card splits into at
+  most four islands, and each island past the first takes a work cluster: a split
+  card runs no X280 threads (the session refuses them).
+- **Load.** `session.load(program)` builds and launches one `Program` once on every
+  core, each core given its island's table, base and dispatcher, then starts every
+  dispatcher. Each dispatcher sends commands over its island's rows only, so an island
+  is whole rows of the grid: on the 12 x 10 grid of a p150a, 2 islands of 5 rows (60
+  cores each), 3 of 4, 3 and 3 rows (48, 36, 36), 4 of 3, 3, 2 and 2 rows (36, 36,
+  24, 24).
+- **Commands.** As on two cards: the host sends a flat group's word to each island it
+  touches, and each dispatcher runs its part. `run.inspect(island, cores)` takes the
+  card's core numbers; a give-up names its island and the run goes on.
+- **Stop.** Each island stops alone: the host waits for its rows and reads its cores'
+  control blocks from L1, since a buffer read would wait for the whole launch.
+- **Tensors.** One tensor in the card's DRAM; its placement by island is kept, so a
+  kernel's `km::island_of(placement, page)` answers as on two cards.
+- **Not on a split card.** A list or dict of programs, dynamic handlers, X280 threads
+  and ports, links, a reset list for a core (a given-up command is not recovered by
+  a reset), queued commands (the dispatcher places them over the whole card), and
+  engine streams and graphs (not checked on a split card).
+
+Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,
+then with `--islands 2`), 2026-11-14, X280 at 1350 MHz, host load about 3, the median
+of 3 rounds of 20,000 NOP or 2,000 MAP, microseconds a command, submit to event,
+pipelined:
+
+| What | The whole card | Split in 2 |
+|---|---|---|
+| NOP on each island's own ranks | 1.190 (0, 120) | 1.218 (0, 60), 1.249 (60, 60) |
+| NOP on all 120 ranks | 1.218 | 2.537 (a part on each island, joined) |
+| MAP on (0, 120), the input split over the islands | 2.651 | 4.674 |
+
+A NOP on one island of the split card costs what it costs on the whole card; a group
+over both islands costs two commands of host work, as on two cards. MAP on (0, 120):
+120 tiles bit-exact on both. With `--hang`: an inspect of island 1's core 70 during a
+HANG on ranks 40 to 119 named its reader waiting for a port arrival; the deadline gave
+the command up, `CommandTimeout` named island 1, and the run went on; 16 pages of
+island 1 read inside the run were exact.
+
 ## Measured
 
 Two Blackhole p150a cards joined by four Ethernet links, one process, example 01's
@@ -256,3 +309,5 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.
+- Between the islands of a split card: no link (a NoC write with a settable rate).
+  Three and four islands on one card were not run.

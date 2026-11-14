@@ -185,7 +185,8 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`.
 
 - `cards=[a, b, ...]` gives one session over them, each card's chip an island with flat
   ranks ([Islands](islands.md)); `cards=[a]` is that session over one island, `card=a`
-  the card's own session.
+  the card's own session. `card=a, islands=n` (2 to 4) is that session over the one
+  card split into n islands ([a card split into islands](islands.md#a-card-split-into-islands)).
 - `pll_mhz` is the X280 clock. The runtime's table is 15, 200, 800, 1000, 1250, 1350, 1500
   and 1750 MHz; a runtime built before 1250, 1350 and 1500 were added has 15, 200, 800,
   1000 and 1750. One PLL clocks all four X280 clusters, so the work

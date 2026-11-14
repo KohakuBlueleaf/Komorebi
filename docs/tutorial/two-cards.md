@@ -44,7 +44,8 @@ is opened over it, and each card gets a session of its own, a dispatcher and its
 number of ranks is the cores of all of them:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:85:86"
+--8<-- "examples/01_mapcollect/islands.py:99:99"
+--8<-- "examples/01_mapcollect/islands.py:108:108"
 ```
 
 `session.graph` is the host's picture of the islands: `graph.first(i)` is island `i`'s
@@ -55,7 +56,7 @@ The tensors come next. The input has two tiles for each rank of both cards; the 
 one:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:93:97"
+--8<-- "examples/01_mapcollect/islands.py:115:119"
 ```
 
 A tensor is one tensor of the whole shape on every card, at the same address, and its
@@ -66,20 +67,20 @@ is zeros on this one. `session.read_bf16(source)` assembles the whole tensor fro
 that holds each page:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:100:100"
+--8<-- "examples/01_mapcollect/islands.py:122:122"
 ```
 
 The program is loaded on every card, one after the other, and each card's cores get the
 island table that tells them where the ranks are:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:117:117"
+--8<-- "examples/01_mapcollect/islands.py:139:139"
 ```
 
 A command for a group of every rank:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:158:159"
+--8<-- "examples/01_mapcollect/islands.py:185:186"
 ```
 
 `submit` takes the group `(0, ranks)`, the host cuts it into the part on each card, and
@@ -91,7 +92,7 @@ handle of a command over several cards.
 When the run is stopped, the output is read back in the same way:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:128:128"
+--8<-- "examples/01_mapcollect/islands.py:155:155"
 ```
 
 ## What changes in the kernel
