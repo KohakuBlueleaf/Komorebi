@@ -28,8 +28,8 @@ LINK_ARGS = 9
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
 LINK_TAIL = 0x20 + 2 * 16 * 256
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
-# The kernel buffer of a session over two cards: the largest build with page links
-# (90,112 B) and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
+# The kernel buffer over two cards: the largest page-link build (the dense grid's
+# 82,432 B) and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
 KERNEL_BYTES = 112 * 1024
 # The transfer buffer's chunk a session over two cards asks for: a page CPU passes
 # pages through its chunk, one L1 slot a read in flight (15 slots of 4 KiB and their
@@ -642,7 +642,7 @@ class IslandSession:
             "slow_code": slow_code,
         }
         if kernel_bytes is None and (len(self.cards) == 2 or self.split > 1):
-            kernel_bytes = KERNEL_BYTES  # the link services' code in every kernel
+            kernel_bytes = KERNEL_BYTES  # the page links' code
         self.kernel_bytes = kernel_bytes
         self._worker_l1 = session_module.worker_l1_size(kernel_bytes)
         self.tree = tree

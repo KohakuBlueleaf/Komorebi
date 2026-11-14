@@ -75,10 +75,19 @@ written for islands runs on one card unchanged.
   | 1 or 2 | 1 | 119 | 238 |
   | 3 or 4 (the default on two p150a) | 2 | 118 | 236 |
 
-- **Kernel buffer.** The kernels of a run over two cards carry the link cores'
-  services, so the session opens with a kernel buffer of 112 KiB
-  (`island_session.KERNEL_BYTES`: the largest such build, 90,112 bytes, and at least
-  16 KiB more, in steps of 16 KiB); one card keeps the runtime's 70,656 bytes. The
+- **Kernel buffer.** On islands with links the ranks and the link cores load
+  different kernels from one program: the ranks the program's kernels with the client
+  side of the page calls only (posting an ask or a put, a wait on its port, the relay's
+  ask), the link cores the runtime's link kernels (`kernels/link_reader.cpp`,
+  `link_writer.cpp`, `link_compute.cpp`, built with `KM_LINK_SERVICES`): the page
+  CPUs' service, the lines and messages, the relay's serving side. A rank still
+  serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
+  holds each CPU's largest text over the two groups. A program with messages, a card
+  split into islands and a program placed by overlays keep the services in every
+  kernel. The session opens with a kernel buffer of 112 KiB
+  (`island_session.KERNEL_BYTES`: the largest such build, the dense grid's 82,432
+  bytes, and at least 16 KiB more, in steps of 16 KiB); one card keeps the runtime's
+  70,656 bytes. The
   load checks each build against the buffer: one that does not fit raises
   `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
   is launched. `kernel_bytes` sets another size at the open.
@@ -501,10 +510,10 @@ p150a cards, one page link, 2026-11-15:
 - Example 26's `sum.py` (238 ranks, T = 512, the input a copy): exact, 170.3 µs a
   round.
 
-With the page links built in, example 11's kernels take 92,192 bytes of the two-card
-session's 112 KiB kernel buffer (with a page CPU on every link core; 87,360 before),
-example 26's 93,904 and the dense grid's 122,752, which need `kernel_bytes=131072`
-(both measured before the page CPUs on every link core).
+With the link services in the link cores' kernels only, example 11's build takes
+61,328 bytes of the two-card session's 112 KiB kernel buffer (92,192 with the services
+in every kernel) and the dense grid's 82,432 (122,752 before); the link reader's
+33,868 bytes of BRISC text are the larger of the two groups' in both.
 
 ## A card split into islands
 

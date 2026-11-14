@@ -53,6 +53,51 @@ namespace km {
     }
 #endif
 
+    // A link core's services (the link cores' own kernels, built with
+    // KM_LINK_SERVICES); a rank's kernel serves a PAGES command's wait alone.
+    template <typename Kernel>
+    inline bool link_serve(
+        const Kernel& kernel, const km_command_t& command, uint32_t cpu, uint32_t word
+    ) {
+#if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
+        return pages_serve(kernel, command, cpu, word);
+#else
+        const PagesRequest r = pages_of(command);
+        const uint32_t code = (
+            r.mode != KM_PAGES_WAIT
+                ? kGaveBadTransfer
+                : cpu == 0
+                    ? pages_wait(kernel, r)
+                    : kGaveNone
+        );
+        if (code != kGaveNone) {
+            kernel.gave_up(word, code, kWherePages, slot(command), command.sequence);
+            return false;
+        }
+        return true;
+#endif
+    }
+
+    // Between commands: a link core's services; nothing on a rank.
+    template <typename Kernel>
+    inline void link_serve(const Kernel& kernel, uint32_t cpu, uint32_t word) {
+#if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
+        pages_serve(kernel, cpu, word);
+#else
+        static_cast<void>(kernel), static_cast<void>(cpu), static_cast<void>(word);
+#endif
+    }
+
+    // At the end: a link core closes its connections; nothing on a rank.
+    template <typename Kernel>
+    inline void link_end(const Kernel& kernel) {
+#if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
+        pages_end(kernel);
+#else
+        static_cast<void>(kernel);
+#endif
+    }
+
     // A command the runtime serves (served()): the reader loads the runtime's service
     // overlay on first use and calls it (km_overlay.hpp).
     template <typename Kernel>
@@ -78,13 +123,13 @@ namespace km {
             }
             while (const km_command_t* command = next()) {
                 if (handler(*command) == KM_HANDLER_EXIT) {
-                    pages_end(*this);
+                    link_end(*this);
                     put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
                 begin(*command);
                 if (pages(*command)) {
-                    pages_serve(*this, *command, 0, kStReader);
+                    link_serve(*this, *command, 0, kStReader);
                 } else if (served(*command)) {
                     serve(*this, *command);
                 } else {
@@ -95,7 +140,7 @@ namespace km {
                 )[kDoneReader] = command->sequence;
                 finish(*command, kStReader);  // a failed clear stops the tile
             }
-            pages_end(*this);
+            link_end(*this);
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
@@ -299,14 +344,14 @@ namespace km {
             const bool relays = link_core(view, arguments.me);
             for (;;) {
                 if (serves) {  // a link core's services between commands
-                    pages_serve(*this, 0, kStReader);
+                    link_serve(*this, 0, kStReader);
                 }
                 invalidate_l1_cache();
                 if (stop()) {
                     gave = kGaveStop;
                     break;
                 }
-#if defined(KM_PAGE_LINKS)
+#if defined(KM_LINK_SERVICES)
                 if (relays) {
                     Relay::turn(*this);
                 }
@@ -416,7 +461,7 @@ namespace km {
                     kWhereWriter,
                     [&] {
                         if (serves) {  // a link core's services between commands
-                            pages_serve(*this, 1, kStWriter);
+                            link_serve(*this, 1, kStWriter);
                         }
                         return cb_pages_available_at_front(kCbTokenWriter, 1);
                     },
@@ -444,7 +489,7 @@ namespace km {
                 result_ = 0;
                 const bool report = (
                     pages(command)
-                        ? pages_serve(*this, command, 1, kStWriter)
+                        ? link_serve(*this, command, 1, kStWriter)
                         : __builtin_expect(served(command), 0) || body(command)
                 );
                 const bool written = flushed(kFlushWrites, kStWriter);
@@ -461,7 +506,7 @@ namespace km {
                 add_sat(state() + kStCompleted, 1);
                 finish(command, kStWriter);
             }
-            pages_end(*this);
+            link_end(*this);
             flushed(kFlushWrites, kStWriter);  // the last acknowledgement has landed
             trace_.flush(arguments.me, *this);
             put_byte(state(), kStEnds, kEndWriter, end);
