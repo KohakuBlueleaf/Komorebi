@@ -183,6 +183,7 @@ class IslandRun:
         # a dynamic program's messages cross: a dynamic RUN takes every rank, and link
         # core 0 of each island serves it (a PAGES command of mode MESSAGES)
         self.linked = linked
+        self.session = None  # the IslandSession with links: a link core's reset
         self.cores = graph.ranks
         self.program = self.runs[0].program
         self._next = 1  # the next ticket
@@ -315,7 +316,8 @@ class IslandRun:
     def wait(self, tickets, timeout=10.0):
         """Sends what is queued and waits, within one `timeout` for all, for every
         part of the tickets. Returns per ticket the tuple of its parts' events in
-        island order (one tuple, or a list for a list of tickets)."""
+        island order (one tuple, or a list for a list of tickets); the first holds the
+        group's first rank, so its result word is the command's, as on one island."""
         single = isinstance(tickets, int | np.integer)
         wanted = np.asarray([tickets] if single else list(tickets), np.int64)
         if not wanted.size:
@@ -402,6 +404,13 @@ class IslandRun:
             error.island = island
             raise
         return {**done, "rank": rank, "island": island}
+
+    def reset_link(self, island, k, timeout=10.0):
+        """Resets link core k of island `island` by the host and opens its connections
+        again (the session's reset_link): {island, core, by, seconds, ...}."""
+        if self.session is None:
+            raise ValueError("a run without links has no link core to reset")
+        return self.session.reset_link(island, k, timeout)
 
     def _ranked(self, island, cores):
         """Core dicts of island `island` (its own core numbers in `core`) with their
@@ -601,6 +610,7 @@ class IslandSession:
         self.run = None
         self.link_cores = ()  # per island: the local cores (core table) of its links
         self._regions = []  # the message service's L1 region on every core, by island
+        self._placed = []  # the island tensors made, in order (the placement table)
         self.channels = ()  # per island: the Ethernet channel of each link it sends on
 
     def __enter__(self):
@@ -775,7 +785,9 @@ class IslandSession:
             by,
         )
         try:
-            return IslandTensor(parts, placement)
+            made = IslandTensor(parts, placement)
+            self._placed.append(made)
+            return made
         except KomorebiError:
             for part in parts:
                 part.free()
@@ -894,6 +906,7 @@ class IslandSession:
             linked=bool(self._regions),
             counts=self._crossings if self.links else None,
         )
+        self.run.session = self
         if self.links:
             try:
                 self._hold_links()
@@ -908,35 +921,93 @@ class IslandSession:
         """Each link CPU of both islands opens its connection, held until its kernel
         ends, and says hello to the far link core's same CPU (an OPEN a link core,
         waited together): no send goes out before the far side runs."""
-        h = abi.headers()
         tables = [list(run.backend.port.core_table()) for run in self.run.runs]
         if tables[0] != tables[1]:
             raise KomorebiError(
                 "the islands' core tables differ: a link core that pushes a rank's "
                 "pages finds the far core in its own table"
             )
-        waits = []
-        for here in range(2):
-            there = 1 - here
-            buffer, chunk = self.staging(here)
-            links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
-            for k, far in enumerate(self.link_cores[there]):
-                words = [0] * 10
-                words[h["KM_PAGES_TO_CORE"]] = chunk // 64 << 16
-                words[h["KM_PAGES_COUNT"]] = self.port_address(
-                    there, h["KM_PAGES_HELLO_PORT"]
-                )
-                words[h["KM_PAGES_COUNTER"]] = (
-                    self.noc_of(there, far) | 1 << 16 | h["KM_PAGES_OPEN"] << 24
-                )
-                words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
-                words[h["KM_PAGES_BUFFER"]] = buffer
-                handle = self.run.island(here)._queue_command(
-                    h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, 1), words
-                )
-                waits.append((here, handle))
+        waits = [
+            (here, self._open_link(here, k))
+            for here in range(2)
+            for k in range(len(self.link_cores[1 - here]))
+        ]
         self.wait_together(waits, timeout)
         self.log(f"page links held, hello both ways: link cores {self.link_cores}")
+
+    def _open_link(self, here, k):
+        """Queues the OPEN of link core k of island `here` (its CPUs' connections,
+        then a hello to the far link core k's same CPUs). Returns its handle."""
+        h = abi.headers()
+        there = 1 - here
+        buffer, chunk = self.staging(here)
+        links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
+        words = [0] * 10
+        words[h["KM_PAGES_TO_CORE"]] = chunk // 64 << 16
+        words[h["KM_PAGES_COUNT"]] = self.port_address(there, h["KM_PAGES_HELLO_PORT"])
+        words[h["KM_PAGES_COUNTER"]] = (
+            self.noc_of(there, self.link_cores[there][k])
+            | 1 << 16
+            | h["KM_PAGES_OPEN"] << 24
+        )
+        words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
+        words[h["KM_PAGES_BUFFER"]] = buffer
+        return self.run.island(here)._queue_command(
+            h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, 1), words
+        )
+
+    def reset_link(self, island, k, timeout=10.0):
+        """Resets link core k of `island` by the host and opens its connections again:
+        each closed at its router first, the core reloaded, then its OPEN with the far
+        link core's hello taken as said (the far side runs). {island, core, by, seconds,
+        reset_seconds, open_seconds}; KomorebiError if a step did not finish."""
+        h = abi.headers()
+        if (
+            self.run is None
+            or not self.links
+            or not 0 <= k < len(self.link_cores[island])
+        ):
+            raise ValueError(f"island {island}: no link core {k} in a run with links")
+        run = self.run.island(island)
+        core = self.link_cores[island][k]
+        held = [
+            2 * k + cpu for cpu in range(2) if 2 * k + cpu < len(self.channels[island])
+        ]
+        started = time.perf_counter()
+        try:
+            reset = run.reset_core(
+                core, timeout, channels=[self.channels[island][link] for link in held]
+            )
+            group = self.graph.link_group(island, k, 1)
+            run.wait(run._queue_command(h["KM_HANDLER_NOP"], group), timeout)
+            opened = time.perf_counter()
+            backend = run.backend
+            module, columns = backend.session._module, backend.port.grid_x
+            for link in held:  # the far CPU said hello at the load: taken as heard
+                port = self.port_address(
+                    island, h["KM_PAGES_HELLO_PORT"] + link - 2 * k
+                )
+                module.write_l1(
+                    backend.device, core % columns, core // columns, port, [2]
+                )
+            run.wait(self._open_link(island, k), timeout)
+        except KomorebiError as error:
+            raise _named(error, island) from None
+        done = time.perf_counter()
+        self.log(
+            f"island {island}: link core {k} (core {core}) reset and opened again: "
+            f"reset {(opened - started) * 1e3:.1f} ms, "
+            f"open {(done - opened) * 1e3:.3f} ms"
+        )
+        return {
+            "island": island,
+            "core": core,
+            "by": "host",
+            "seconds": done - started,
+            "reset_seconds": opened - started,
+            "open_seconds": done - opened,
+            "parts": reset["parts"],
+        }
 
     def _crossings(self, timeout=10.0):
         """Crossings read now: a COUNTS command to every link core of each island (each
@@ -1247,11 +1318,11 @@ class IslandSession:
         for island, session in enumerate(self.sessions):
             far = 1 - island
             columns, rows = session.grid
-            area = session.tensor(
-                np.zeros((columns * rows, bytes_ // 4), np.uint32),
-                "uint32",
-                shard_grid=(columns, rows),
-            )
+            words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
+            table = self._place_table()
+            at = h["KM_PLACE_TABLE"] // 4
+            words[:, at : at + table.size] = table
+            area = session.tensor(words, "uint32", shard_grid=(columns, rows))
             self._link_areas.append(area)
             if area.address != self._link_areas[0].address:
                 raise KomorebiError(
@@ -1287,9 +1358,29 @@ class IslandSession:
             plan.relay[1] = relays[plan.far]
         return plans
 
+    def _place_table(self):
+        """The placement table of the link area (KM_PLACE_TABLE): the island tensors
+        made before the load, newest first, an entry each {address, copy, then first
+        page and pages of each island}; a copy that names a tensor by its address
+        crosses for the pages another island holds. Tensors made after the load are
+        not in it."""
+        h = abi.headers()
+        entries, width = h["KM_PLACE_ENTRIES"], h["KM_PLACE_ENTRY_BYTES"] // 4
+        table = np.zeros(entries * width, np.uint32)
+        newest = [t for t in reversed(self._placed) if len(t.placement.parts) == 2]
+        for e, tensor in enumerate(newest[:entries]):
+            parts = [word for part in tensor.placement.parts for word in part]
+            table[e * width : e * width + 6] = [
+                tensor.address,
+                int(tensor.placement.copy),
+                *parts,
+            ]
+        return table
+
     def _check_links(self, runs, plans):
         """Every island's dispatcher has the tile and LIM base its link line took for
-        the far one's (its own)."""
+        the far one's (its own); the control blocks are at one address (what crosses
+        through the relay lands at its sender's addresses)."""
         if plans[0] is None:
             return
         ports = [run.backend.port for run in runs]
@@ -1298,6 +1389,9 @@ class IslandSession:
             raise KomorebiError(
                 f"the islands' dispatchers differ in tile or LIM base: {sorted(seen)}"
             )
+        controls = sorted({run.backend.control.address for run in runs})
+        if len(controls) != 1:
+            raise KomorebiError(f"the islands' control blocks differ: {controls}")
 
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'
