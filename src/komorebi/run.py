@@ -445,12 +445,21 @@ class Run:
         groups = list(launch.reset_groups())[: self.cores]
         excluded = set(exclude)
         lists, owner = [], {}
+        # A reset ends once the reader's start-up cleared the ring and wrote its magic.
+        magic = self.h["kStateMagic"]
+        ready = {
+            "ready": self.backend.control_addr
+            + self.h["KM_CONTROL_STATE"]
+            + 4 * self.h["kStMagic"],
+            "ready_mask": 0xFF000000,
+            "ready_value": magic & 0xFF000000,
+        }
         try:  # one list a group, built on its first core
             for core, group in enumerate(groups):
                 if group >= 0 and core not in excluded and group not in owner:
                     owner[group] = len(lists)
                     x, y = core % self.grid[0], core // self.grid[0]
-                    lists.append(launch.reset_list(x, y, every=True))
+                    lists.append(launch.reset_list(x, y, every=True, **ready))
         except (ValueError, RuntimeError) as error:  # semaphores
             self.recovery_refused = str(error)
             return False
