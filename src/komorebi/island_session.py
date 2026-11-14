@@ -24,10 +24,12 @@ THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
 TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries
 # The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
-LINK_ARGS = 9
+LINK_ARGS = 12
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
-LINK_TAIL = 0x20 + 2 * 16 * 256
+LINK_TAIL = 0x20 + 2 * 16 * 256 + 16 * 16 + 3 * 16  # lines, island reports, 3 lines
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
+LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
+LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
 # The kernel buffer of a session over two cards: the largest build with page links
 # (90,112 B) and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
 KERNEL_BYTES = 112 * 1024
@@ -318,7 +320,8 @@ class IslandRun:
 
     def _serve_links(self, group):
         """Before a dynamic RUN over a link: its group is every rank, and link core 0
-        of each island is given the RUN's group word to serve its messages across."""
+        of each island (each link core, over more than two islands) is given the RUN's
+        group word to serve its messages across."""
         if group != (0, self.cores):
             raise ValueError(
                 f"group {group}: a dynamic RUN over a link takes every rank "
@@ -328,10 +331,13 @@ class IslandRun:
         words = [0] * 10
         words[h["KM_PAGES_FROM"]] = group[0] | group[1] << 16
         words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_MESSAGES"] << 24 | 1 << 16
+        many = len(self.runs) > 2
         for island, run in enumerate(self.runs):
             try:
                 run._queue_command(
-                    h["KM_HANDLER_PAGES"], self.graph.link_group(island, 0, 1), words
+                    h["KM_HANDLER_PAGES"],
+                    self.graph.link_group(island, 0, None if many else 1),
+                    words,
                 )
             except KomorebiError as error:
                 raise self._error(error, island) from None
@@ -1720,10 +1726,13 @@ class IslandSession:
             return programs
         if any(messages.x280_ranks for messages in dynamic):
             raise ValueError("X280 ranks over a link are not done yet")
-        if len(self.graph.islands) > 2:
+        islands_count = len(self.graph.islands)
+        if islands_count > 2 and (
+            self.links != 1 or max(map(len, self.link_cores)) > LINK_CORES_MAX
+        ):
             raise ValueError(
-                f"messages over {len(self.graph.islands)} islands are not done yet: "
-                "a link's quiet test reads one far island (two islands)"
+                f"messages over {islands_count} islands: one link between two islands "
+                f"(links={self.links}), {LINK_CORES_MAX} neighbours at most"
             )
         entry = LINK_PREFIX + max(messages.message_bytes for messages in dynamic)
         size = (
@@ -1765,9 +1774,23 @@ class IslandSession:
         return out
 
     def _link_words(self, island, message_bytes, token):
-        """LinkArgs of island `island`'s cores: its link core 0, the far one's."""
-        far = self.graph.neighbours(island)[0]
-        place = self.noc_of(far, self.link_cores[far][0])
+        """LinkArgs of island `island`'s cores: its link core 0, the far one's; over
+        more than two islands link cores 1 and 2's far ones, and island 0's link core
+        0 (the island reports' end)."""
+
+        def at(there, core):  # x | y << 16
+            noc = self.noc_of(there, core)
+            return (noc & 0xFF) | (noc >> 8) << 16
+
+        far, _, core = self.pair(island, 0)
+        place = at(far, core)
+        fars = [LINK_NONE, LINK_NONE]
+        root = LINK_NONE
+        if len(self.graph.islands) > 2:
+            for k in range(1, len(self.link_cores[island])):
+                there, _, core = self.pair(island, k)
+                fars[k - 1] = at(there, core)
+            root = at(0, self.link_cores[0][0])
         words = [
             self.link_cores[island][0],
             self._regions[island].address,
@@ -1775,9 +1798,11 @@ class IslandSession:
             LINK_INBOX,
             LINK_PACKET_BYTES // (LINK_PREFIX + message_bytes),
             island,
-            (place & 0xFF) | (place >> 8) << 16,
+            place,
             self._regions[far].address,
             token,
+            *fars,
+            root,
         ]
         assert len(words) == LINK_ARGS
         return words
