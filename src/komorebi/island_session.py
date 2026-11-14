@@ -996,7 +996,9 @@ class IslandSession:
         (default `core`, else the first link core). Returns (island, handle)."""
         h = abi.headers()
         if not self.links:
-            raise KomorebiError("no page links: open the session with links=1 to 4")
+            raise KomorebiError(
+                "no page links: pages cross in a session over two cards"
+            )
         holders = source.holders(first, pages)
         if len(holders) != 1:
             raise ValueError(f"pages {first} + {pages}: held by islands {holders}")
