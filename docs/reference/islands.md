@@ -501,9 +501,10 @@ p150a cards, one page link, 2026-11-15:
 - Example 26's `sum.py` (238 ranks, T = 512, the input a copy): exact, 170.3 µs a
   round.
 
-With the page links built in, example 11's kernels take 87,360 bytes of the two-card
-session's 112 KiB kernel buffer and example 26's 93,904; the dense grid's take 122,752
-and need `kernel_bytes=131072`.
+With the page links built in, example 11's kernels take 92,192 bytes of the two-card
+session's 112 KiB kernel buffer (with a page CPU on every link core; 87,360 before),
+example 26's 93,904 and the dense grid's 122,752, which need `kernel_bytes=131072`
+(both measured before the page CPUs on every link core).
 
 ## A card split into islands
 

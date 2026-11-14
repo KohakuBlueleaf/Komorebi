@@ -98,4 +98,4 @@ input that island 1 holds alone; the kernels are the same, the pages cross the l
 (`python islands.py`, one page link): the copy is exact, COPY takes 316.4 us and READ
 275.8 us, 1.43 GB/s. With `--write-across` the input is island 0's and the output
 island 1's, so every page of the copy is put across: exact, COPY 313.4 us. The kernels
-take 87,360 bytes of the two-card session's kernel buffer (112 KiB).
+take 92,192 bytes of the two-card session's kernel buffer (112 KiB).
