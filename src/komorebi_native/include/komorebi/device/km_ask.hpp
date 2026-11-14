@@ -807,6 +807,313 @@ namespace km {
         );
     }
 
+    // A get line (ask_line_at's) of `bytes` at `offset` of page `index` (bank address
+    // `address`, `page` bytes) on island `holder`, into L1 `into`. False: gave up.
+    template <typename Kernel>
+    inline bool ask_bytes_line(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        uint32_t holder,
+        uint32_t address,
+        uint32_t page,
+        uint32_t index,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t into
+    ) {
+        const Islands view = islands_at(core.args().control);
+        const uint32_t area = view.link_area();
+        const uint32_t mine = view.own_words();
+        const AskQueue queue = ask_gets(core.role());
+        const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+        const auto give_up = [&](uint32_t code) {
+            core.gave_up(word, code, kWhereAsk, slot | holder << 8, sequence);
+            return false;
+        };
+        if (
+            area == 0 || mine == 0 || view.hops(holder) != 1 || page == 0 ||
+            page % 16 != 0 || page > view.packet() || into % 4 != 0
+        ) {
+            return give_up(kGaveBadItem);  // a link apart, a page a packet holds
+        }
+        const uint32_t link = view.base() + view.ranks() + view.link(holder);
+        const uint32_t limit = core.args().wait_limit;
+        volatile tt_l1_ptr uint32_t* returned = l1(mine + queue.returned);
+        returned[0] = kAskNoAnswer;
+        invalidate_l1_cache();  // a fence: the store lands before the answer can
+        noc_fast_atomic_increment<noc_mode, true>(
+            noc_index,
+            write_at_cmd_buf,
+            core.core_noc(link, area + queue.tail),
+            NOC_UNICAST_WRITE_VC,
+            1,
+            31,
+            false,
+            false,
+            mine + queue.returned
+        );
+        uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                return (
+                    ncrisc_noc_nonposted_atomics_flushed(noc_index) &&
+                    returned[0] != kAskNoAnswer
+                );
+            },
+            limit
+        );
+        if (code != kGaveNone) {
+            return give_up(code);
+        }
+        const uint32_t number = returned[0];
+        // the line free once link core 0 took the one KM_ASK_SLOTS before
+        volatile tt_l1_ptr uint32_t* taken = l1(mine + queue.read);
+        bool reading = false;
+        code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                if (reading) {
+                    if (!ncrisc_noc_reads_flushed(noc_index)) {
+                        return false;
+                    }
+                    reading = false;
+                    invalidate_l1_cache();
+                    if (number - taken[0] < KM_ASK_SLOTS) {
+                        return true;
+                    }
+                }
+                noc_async_read(
+                    core.core_noc(link, area + queue.taken), mine + queue.read, 16
+                );
+                reading = true;
+                return false;
+            },
+            limit
+        );
+        if (code != kGaveNone) {
+            return give_up(code);
+        }
+        volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
+        for (uint32_t w = 0; w < 16; w++) {
+            line[w] = 0;
+        }
+        line[KM_ASK_TENSOR] = address;
+        line[KM_ASK_PAGE] = page;
+        line[KM_ASK_FIRST] = index;
+        line[KM_ASK_PAGES] = 1;
+        line[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
+        line[KM_ASK_TO] = into;
+        line[KM_ASK_COUNT] = (
+            core.args().control + KM_CONTROL_PORT + pages_port(core) * KM_PORT_STRIDE +
+            KM_PORT_COUNT * 4
+        );
+        line[KM_ASK_HOLDER] = holder;
+        line[KM_ASK_FROM] = view.here();
+        line[KM_ASK_RING] = KM_ASK_GET_BYTES;
+        line[KM_ASK_GET_SPAN] = offset | bytes << 16;
+        line[KM_ASK_NUMBER] = number + 1;
+        line[KM_ASK_END] = number + 1;
+        noc_async_write(
+            mine + queue.own,
+            core.core_noc(link, area + queue.lines + number % KM_ASK_SLOTS * 64),
+            64
+        );
+        code = core.poll_at(
+            kWhereAsk,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            limit
+        );
+        return code == kGaveNone || give_up(code);
+    }
+
+    // Whether `bytes` at `offset` of a page of `page_bytes` may land at L1 `into`: 4s
+    // in the page, `into` the offset mod 64 (a DRAM read's rule). Else gives up.
+    template <typename Kernel>
+    inline bool bytes_fit(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t page_bytes,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t into
+    ) {
+        if (
+            bytes == 0 || (offset | bytes) % 4 != 0 || offset >= page_bytes ||
+            bytes > page_bytes - offset || (into ^ offset) % 64 != 0
+        ) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                kGaveBadTransfer,
+                kWhereAsk,
+                slot(command),
+                command.sequence
+            );
+            return false;
+        }
+        return true;
+    }
+
+    // `bytes` at `offset` of page `page` of `tensor` (its word, `args`) into L1 `into`,
+    // not waited for: here a NoC read, else a get line, `asked` + 1. False: gave up.
+    template <typename Kernel, typename Args>
+    inline bool ask_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Args& args,
+        uint32_t tensor,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t into,
+        uint32_t& asked
+    ) {
+        const uint32_t page_bytes = TensorAccessor(args, 0).get_aligned_page_size();
+        if (!bytes_fit(core, command, page_bytes, offset, bytes, into)) {
+            return false;
+        }
+        invalidate_l1_cache();  // the table may have grown since the last read
+        const PageAt at = page_at(tensor, page);
+        if (at.island == island()) {
+            noc_async_read(
+                TensorAccessor(args, at.address).get_noc_addr(at.index, offset),
+                into,
+                bytes
+            );
+            return true;
+        }
+        if (!ask_bytes_line(
+            core,
+            slot(command),
+            command.sequence,
+            at.island,
+            at.address,
+            page_bytes,
+            at.index,
+            offset,
+            bytes,
+            into
+        )) {
+            return false;
+        }
+        asked++;
+        return true;
+    }
+
+    // ask_bytes of a Tensor: built for one island, the local read alone.
+    template <typename Kernel, uint32_t Base>
+    inline bool ask_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Tensor<Base>& tensor,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t into,
+        uint32_t& asked
+    ) {
+        if constexpr (Tensor<Base>::kLocal) {
+            if (!bytes_fit(core, command, tensor.page_bytes(), offset, bytes, into)) {
+                return false;
+            }
+            noc_async_read(tensor.accessor.get_noc_addr(page, offset), into, bytes);
+            return true;
+        } else {
+            return (
+                ask_bytes(
+                    core,
+                    command,
+                    Tensor<Base>::kArgs,
+                    tensor.word,
+                    page,
+                    offset,
+                    bytes,
+                    into,
+                    asked
+                )
+            );
+        }
+    }
+
+    // Waits until this CPU's ask_bytes ranges landed: its reads, and `asked` counted
+    // at its page port (cleared; `asked` 0 again). False: gave up (recorded).
+    template <typename Kernel>
+    inline bool bytes_wait(
+        const Kernel& core, const km_command_t& command, uint32_t& asked
+    ) {
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            core.args().wait_limit
+        );
+        if (code != kGaveNone) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                code,
+                kWhereAsk,
+                slot(command),
+                command.sequence
+            );
+            return false;
+        }
+        const uint32_t wanted = asked;
+        asked = 0;
+        return (
+            wanted == 0 ||
+            ask_wait(
+                core,
+                slot(command),
+                command.sequence,
+                pages_port(core),
+                wanted,
+                KM_PAGES_NO_LINK
+            )
+        );
+    }
+
+    // Reader or writer: the `bytes` bytes at byte `offset` of page `page` of `tensor`
+    // in L1 `into` on return (ask_bytes, then bytes_wait). False: gave up.
+    template <typename Kernel, uint32_t Base>
+    inline bool read_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Tensor<Base>& tensor,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t into
+    ) {
+        uint32_t asked = 0;
+        return (
+            ask_bytes(core, command, tensor, page, offset, bytes, into, asked) &&
+            bytes_wait(core, command, asked)
+        );
+    }
+
+    // read_bytes of tensor `tensor` by its word (`args`: its accessor's).
+    template <typename Kernel, typename Args>
+    inline bool read_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Args& args,
+        uint32_t tensor,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t into
+    ) {
+        uint32_t asked = 0;
+        return (
+            ask_bytes(core, command, args, tensor, page, offset, bytes, into, asked) &&
+            bytes_wait(core, command, asked)
+        );
+    }
+
     // The write of a Tensor's pages: built for one island, the local writes alone;
     // else write_pages_at by its word.
     template <typename Kernel, uint32_t Base>
