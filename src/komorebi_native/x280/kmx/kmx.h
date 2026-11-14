@@ -238,6 +238,58 @@ int kmx_pull_run(
     const km_command_t* command, const kmx_pull* settings, kmx_event* event
 );
 
+/* X280 ranks of a dynamic run: X280 core h < kmx_ranks() is rank count + h after the
+ * run's `count` core ranks. A rank takes the messages of its queue, sends to cores. */
+typedef struct {
+    uint32_t run;     /* the RUN command's sequence */
+    uint32_t rank;    /* this X280 core's rank */
+    uint32_t count;   /* the core ranks: the group without its counter tiles */
+    uint32_t first;   /* the group's first core */
+    uint32_t handler; /* of the message taken last; before it the RUN's */
+    uint32_t quota;   /* sends left */
+    uint32_t sent, consumed; /* this run's messages, as its status line has them */
+    uint32_t gave;           /* KMX_GAVE_*: why this rank stopped (0: it did not) */
+    /* the library's: the queue's head, the messages of the take not yet handed out,
+     * the next of them, whether the line says idle, the last time there was work */
+    uint32_t head, left, at, idle;
+    uint64_t last;
+} kmx_messages;
+
+/* An X280 rank's give-up, word 3 of its status line (word 2 its queue's head). */
+#define KMX_GAVE_ROOM 1u    /* a core's inbox had no room within the wait */
+#define KMX_GAVE_RANK 2u    /* forward or send named no core rank */
+#define KMX_GAVE_STOPPED 3u /* a stop, or the thread's deadline */
+#define KMX_GAVE_LINE 4u    /* the status line's window could not be opened */
+
+/* X280 ranks of this cluster (0: the program declares none). */
+int kmx_ranks(void);
+
+/* Core 0, not nested: waits for the next dynamic run (by `deadline`), then runs
+ * function(x280_core, messages, arg) on each X280 rank; KMX_OK once all returned. */
+int kmx_messages_run(
+    void (*function)(int x280_core, kmx_messages* messages, void* arg),
+    void* arg,
+    uint64_t deadline
+);
+
+/* The next message of this rank's queue (message_bytes / 4 words, word 0 the
+ * runtime's), valid until the next call; 0 once the run ended or this rank gave up. */
+const volatile uint32_t* kmx_messages_next(kmx_messages* messages);
+
+/* The message goes on at core rank `rank`, handled by `handler` there: KMX_OK, or
+ * KMX_BAD (gave up: no such core rank, or no room in its inbox within the wait). */
+int kmx_messages_forward(
+    kmx_messages* messages, uint32_t rank, const uint32_t* message, uint32_t handler
+);
+
+/* A new message, as forward: KMX_FULL with no quota left (nothing sent). */
+int kmx_messages_send(
+    kmx_messages* messages, uint32_t rank, const uint32_t* message, uint32_t handler
+);
+
+/* The message taken last ends here: one send returns to the quota. */
+void kmx_messages_consume(kmx_messages* messages);
+
 /* Timer ticks since an arbitrary point (KMX_TICKS_PER_SECOND per second). */
 uint64_t kmx_time(void);
 

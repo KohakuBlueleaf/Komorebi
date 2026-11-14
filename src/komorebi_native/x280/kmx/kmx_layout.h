@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "komorebi/abi/km_abi.h"
+
 #if defined(__cplusplus)
 #define KMX_STATIC_ASSERT(condition, message) static_assert(condition, message)
 #else
@@ -12,7 +14,7 @@
 #endif
 
 #define KMX_MAGIC 0x31786D6Bu /* "kmx1" */
-#define KMX_VERSION 4u
+#define KMX_VERSION 5u
 #define KMX_REGIONS_MAX 16u
 /* The DRAM bank of work cluster c (1 to 3), where its regions live. */
 #define KMX_BANK_OF_CLUSTER(c) ((c) == 1u ? 6u : 7u)
@@ -30,7 +32,8 @@
 #define KMX_LIM_RING 0x480u
 #define KMX_LIM_PEERS 0x4C0u /* kmx_peers (host, before the start) */
 #define KMX_LIM_PORTS 0x500u /* kmx_ports (host, before the start) */
-#define KMX_LIM_BYTES 0x540u
+#define KMX_LIM_RANKS 0x540u /* kmx_ranks_line (host, before the start) */
+#define KMX_LIM_BYTES 0x580u
 #define KMX_STOP_WORD 0x53544F50u /* "STOP" */
 
 /* A spawn line's 64-bit words: the call's number, fn and arg (core 0 writes them), the
@@ -123,6 +126,33 @@ typedef struct {
 /* core i's control block through window KMX_PORT_WINDOW + i */
 #define KMX_PORT_WINDOW 24u
 
+/* X280 ranks of a dynamic run (at 0: none). The host writes the line, and before any
+ * start the area at `at`: each core's tile, the cores' credit lines, inbox places. */
+typedef struct {
+    uint32_t at;     /* LIM offset of the area, a multiple of 64 */
+    uint32_t ranks;  /* X280 cores 0 to ranks - 1 are ranks, 1 to KM_X280_RANKS_MAX */
+    uint32_t cores;  /* entries of the tile table, the grid's cores */
+    uint32_t queue;  /* bank address of X280 rank 0's queue; rank r's r queues on */
+    uint32_t cap;    /* messages a queue, a power of two */
+    uint32_t message_bytes; /* 64 to 256, a multiple of 64 */
+    uint32_t quota;         /* sends each X280 rank starts a run with */
+    uint32_t counters;      /* the run group's last `counters` cores are counter tiles */
+    uint32_t idle;          /* ticks with nothing to take before its line says idle */
+    uint32_t inbox;         /* L1 address of every core's inbox */
+    uint32_t inbox_messages; /* messages an inbox holds, a power of two */
+    uint32_t lines;          /* the dispatcher's LIM address of core 0's status line */
+    uint32_t lines_tile;     /* the dispatcher's tile, x | y << 16 */
+    uint32_t wait;           /* ticks a wait for an inbox's room may take */
+    uint32_t reserved, spare; /* zero */
+} kmx_ranks_line;
+
+#define KMX_RANKS_TILES 0x000u   /* + 4 i: core i's tile, x | y << 16 */
+#define KMX_RANKS_CREDITS 0x200u /* + 16 i: core i's credit line (KM_X280_CREDIT_*) */
+#define KMX_RANKS_PLACES 0xA00u  /* + 4 i: core i's next inbox position, an amoadd */
+#define KMX_RANKS_BYTES 0xC00u
+/* X280 rank r's window onto the dispatcher's status lines (non-posted) */
+#define KMX_RANKS_WINDOW 152u
+
 /* The command ring as the thread's cluster addresses it: command slots, the kernel's
  * consumed word, the events, the read-count line. Depths: powers of two. */
 #define KMX_RING_DEPTH_MAX 1024u
@@ -136,6 +166,8 @@ typedef struct {
  * 64 bytes this many bytes after the events; line n (from 1) in slot n % depth. */
 #define KMX_RING_IN_AFTER(event_depth) (((event_depth) * 16u + 63u) & ~63u)
 #define KMX_RING_IN_DEPTH 8u
+/* The run line of X280 ranks (KM_X280_RUN_*): this many bytes after those lines. */
+#define KMX_RING_RUN_AFTER (KMX_RING_IN_DEPTH * 64u)
 /* The thread's answer to line a0, a1 the word kmx_program returned: a command of the
  * dispatcher's own, which sends no event for it. */
 #define KMX_HANDLER_ANSWER 243u
@@ -224,4 +256,17 @@ KMX_STATIC_ASSERT(KMX_PORTS_OWNER == 4u * KMX_PORTS_CORES, "ports: tiles, then o
 KMX_STATIC_ASSERT(KMX_PORTS_BOX >= KMX_PORTS_OWNER + KMX_PORTS_CORES, "ports: owners");
 KMX_STATIC_ASSERT(
     KMX_PORT_WINDOW + KMX_PORTS_CORES <= 192u, "ports: below the host's windows"
+);
+KMX_STATIC_ASSERT(sizeof(kmx_ranks_line) == 64, "kmx_ranks_line is one line");
+KMX_STATIC_ASSERT(KMX_LIM_RANKS + 64 <= KMX_LIM_BYTES, "LIM: ranks");
+KMX_STATIC_ASSERT(
+    KMX_RANKS_CREDITS == 4u * KMX_PORTS_CORES &&
+        KMX_RANKS_PLACES == KMX_RANKS_CREDITS + KM_X280_CREDIT_BYTES * KMX_PORTS_CORES &&
+        KMX_RANKS_BYTES == KMX_RANKS_PLACES + 4u * KMX_PORTS_CORES,
+    "ranks: tiles, credit lines, places"
+);
+KMX_STATIC_ASSERT(
+    KMX_PORT_WINDOW + KMX_PORTS_CORES <= KMX_RANKS_WINDOW &&
+        KMX_RANKS_WINDOW + KM_X280_RANKS_MAX <= 192u,
+    "ranks: windows after the ports', below the host's"
 );

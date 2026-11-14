@@ -41,14 +41,28 @@ static int pow2(uint64_t value) {
     return value != 0 && (value & (value - 1u)) == 0;
 }
 
-/* Dynamic handlers, one per byte: each 0 or a program handler. */
-static int dynamic_valid(uint64_t handlers) {
+/* Dynamic handlers, one per byte: each 0 or a program handler; above them none or the
+ * X280 ranks (KMD_X280_RANKS), on a cluster with a work ring. */
+static int dynamic_valid(const volatile kmd_args_t* arguments) {
+    const uint64_t handlers = arguments->messages_handler;
     for (uint32_t index = 0; index < KM_DYNAMIC_MAX; index++) {
         if ((uint32_t)(handlers >> 8u * index & 0xFFu) > KM_HANDLER_USER_MAX) {
             return 0;
         }
     }
-    return handlers >> 32 == 0;
+    const uint32_t cluster = KMD_X280_RANKS_CLUSTER(handlers);
+    const uint32_t count = KMD_X280_RANKS_COUNT(handlers);
+    if (handlers >> 40 != 0 || (cluster == 0) != (count == 0)) {
+        return 0;
+    }
+    return (
+        count == 0 ||
+        (
+            cluster <= KMD_WORK_CLUSTERS && count <= KM_X280_RANKS_MAX &&
+            arguments->cores <= KM_X280_RANK_CORE(0) && arguments->work_cmds != 0 &&
+            arguments->work_noc_addr[cluster - 1] != 0
+        )
+    );
 }
 
 /* Checks the argument block against this run: ring depths are powers of two, so the
@@ -78,7 +92,7 @@ static int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
         (arguments->state_ddr & 63u) == 0 && (arguments->host_noc_addr & 63u) == 0 &&
         (arguments->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE &&
-        work_args_valid(arguments) && dynamic_valid(arguments->messages_handler) &&
+        work_args_valid(arguments) && dynamic_valid(arguments) &&
         arguments->programs <= 1u
     );
 }
@@ -811,6 +825,8 @@ static __attribute__((noinline)) void run(uint64_t core) {
     dispatcher->full = ~0ull >> (64u - dispatcher->depth);
     dispatcher->cores = (uint32_t)arguments->cores;
     dispatcher->messages.handler = (uint32_t)arguments->messages_handler;
+    dispatcher->messages.x280_cluster = KMD_X280_RANKS_CLUSTER(arguments->messages_handler);
+    dispatcher->messages.x280_count = KMD_X280_RANKS_COUNT(arguments->messages_handler);
     dispatcher->programs = (uint32_t)arguments->programs;
     for (uint32_t program = 0; program < KMD_PROGRAMS_MAX; program++) {
         dispatcher->holds[program][0] = dispatcher->holds[program][1] = 0;

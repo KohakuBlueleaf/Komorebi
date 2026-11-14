@@ -215,6 +215,8 @@ KM_STATIC_ASSERT(
 #define KM_MESSAGES_OUT 0x80u      /* source slot of the status line */
 #define KM_MESSAGES_GAVE 0x90u     /* first give-up: where, position, run, word seen */
 #define KM_MESSAGES_RETURNED 0xA0u /* writer: the reservation's returned position */
+/* reader: its inbox's head (the X280 ranks' messages to it), kept over a load's runs */
+#define KM_MESSAGES_INBOX_HEAD 0xB0u
 #define KM_MESSAGES_BYTES 0xC0u
 /* Counter tiles: the last K cores of a dynamic run's group hold the cores' tails and
  * never submit an atomic; offsets inside KM_CONTROL_TAILS. */
@@ -245,6 +247,34 @@ KM_STATIC_ASSERT(
 #define KM_MESSAGES_BUSY 1u /* line states */
 #define KM_MESSAGES_IDLE 2u
 #define KM_MESSAGES_GAVE_UP 3u
+
+/* X280 ranks: X280 cores 0 to n - 1 of one work cluster, ranks after the group's cores.
+ * Rank r has the tail line, status line and destination byte of core index: */
+#define KM_X280_RANKS_MAX 4u
+/* KM_X280_RANK_CORE(r), the last indices: no core of a grid of at most 124 cores */
+#define KM_X280_RANK_CORE(r) (KM_CORES_MAX - KM_X280_RANKS_MAX + (uint32_t)(r))
+/* The run line: one 16-byte store of the dispatcher into the X280 ranks' thread at a
+ * dynamic run's RUN and at its end command, {run, KM_X280_RUN_*, group, its handler}. */
+#define KM_X280_RUN_SEQUENCE 0u /* word offsets */
+#define KM_X280_RUN_STATE 1u
+#define KM_X280_RUN_GROUP 2u
+#define KM_X280_RUN_HANDLER 3u
+#define KM_X280_RUN_START 1u /* states */
+#define KM_X280_RUN_END 2u
+/* A core's credit line in the X280 ranks' cluster (16 bytes, the core's reader writes
+ * it): word 0 its inbox's head, the positions it has taken. */
+#define KM_X280_CREDIT_BYTES 16u
+
+KM_STATIC_ASSERT(
+    KM_X280_RANK_CORE(KM_X280_RANKS_MAX - 1u) == KM_CORES_MAX - 1u &&
+        KM_X280_RANK_CORE(KM_X280_RANKS_MAX - 1u) <= 0xFFu,
+    "an X280 rank's index is a core index and fits a destination byte"
+);
+KM_STATIC_ASSERT(
+    KM_MESSAGES_INBOX_HEAD + 16u <= KM_MESSAGES_BYTES &&
+        KM_MESSAGES_INBOX_HEAD >= KM_MESSAGES_RETURNED + 16u,
+    "the inbox head's slot"
+);
 
 KM_STATIC_ASSERT(
     KM_CONTROL_MESSAGES == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0x300u,
