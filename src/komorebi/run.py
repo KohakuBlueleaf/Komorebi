@@ -697,6 +697,16 @@ class Run:
         self.forget(wanted)
         return events[0] if single else events
 
+    def store(self):
+        """Stores what is queued on the card now, without waiting for an event: a
+        command reaches the card only here or in a wait. Runs that talk to each
+        other (islands joined by a link) are all started before any is waited on."""
+        self._hand()
+        if self.port.queued and self._handed > self._base:
+            rows = self.port.wait(np.zeros(0, np.uint32), (self._handed - 1) & M32, 0.0)
+            if len(rows):
+                self._take(rows)
+
     def wait_any(self, handles, timeout=10.0):
         """Sends what is queued and waits for the first event among the handles;
         returns it (the lowest handle if several arrived) and forgets that handle.

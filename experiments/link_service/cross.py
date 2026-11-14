@@ -179,21 +179,22 @@ def case_words(spec, link_rank):
 
 
 def check(rows, ranks, link_rank, origins, messages, trips, sequence):
-    """Wrong counts of island 0's origins and the time span of the case."""
-    wrong = 0
+    """The wrong origins of island 0 ([rank, its result words]) and the case's span."""
+    wrong = []
     firsts, lasts = [], []
     ordinals = [rank for rank in range(ranks) if rank != link_rank][:origins]
     for ordinal, rank in enumerate(ordinals):
         row = rows[rank]
         ids = np.arange(ordinal * messages, (ordinal + 1) * messages).sum()
         got = int(row[CROSS["kResIdsLo"]]) | int(row[CROSS["kResIdsHi"]]) << 32
-        wrong += int(
+        if (
             row[CROSS["kResRun"]] != sequence
             or row[CROSS["kResConsumed"]] != messages
             or got != ids
             or row[CROSS["kResWrong"]] != 0
             or row[CROSS["kResRejected"]] != 0
-        )
+        ):
+            wrong.append([rank, row[: CROSS["kResWords"]].tolist()])
         firsts.append(int(row[CROSS["kResFirst"]]))
         lasts.append(int(row[CROSS["kResLast"]]))
     start = min(firsts)
@@ -234,31 +235,19 @@ def main():
             if mode == "across":
                 handles.append((second, second.submit(words)))
             handles.append((first, first.submit(words)))
-            kinds, events = set(), {}
+            kinds, events, sequences = set(), {}, {}
             for island, handle in handles:  # both runs start before either is waited on
-                try:
-                    events[handle, island.index] = island.run.wait_any(
-                        [handle], timeout=0.001
-                    )
-                except km.WaitTimeout:
-                    pass
+                island.run.store()
                 island.log(f"started at {time.monotonic() - STARTED:.4f} s")
-            sequences = {}
             for (
                 island,
                 handle,
             ) in handles:  # drain: the event and sequence stay readable
-                if (handle, island.index) not in events:
-                    island.run.drain(timeout=args.deadline + 5.0)
-                    event = island.run.event(handle)
-                    sequences[island.index] = island.run.sequence(handle)
-                    island.run.forget([handle])
-                    events[handle, island.index] = event
-                kinds.add(
-                    "none"
-                    if events[handle, island.index] is None
-                    else events[handle, island.index].kind
-                )
+                island.run.drain(timeout=args.deadline + 5.0)
+                event = island.run.event(handle)
+                sequences[island.index] = island.run.sequence(handle)
+                island.run.forget([handle])
+                kinds.add("none" if event is None else event.kind)
             host_us = (time.perf_counter() - started) * 1e6
             kinds = sorted(kinds)
             log(f"case {spec}: events {kinds}, {host_us:.0f} us; stopping")
@@ -295,7 +284,9 @@ def main():
                 "case": spec,
                 "events": kinds,
                 "kernel_error": errors,
-                "wrong_origins": wrong,
+                "wrong_origins": len(wrong),
+                "wrong_rows": wrong[:4],
+                "sequence": sequence,
                 "aiclk_mhz": [clock, aiclk(first.chip)],
                 "span_us": round(seconds * 1e6, 2),
                 "host_us": round(host_us, 1),
@@ -315,7 +306,7 @@ def main():
                 entry["far_wrong"] = int(far_rows[:, CROSS["kResWrong"]].sum())
                 ok = ok and entry["partner_visits"] == each_way
                 ok = ok and entry["far_wrong"] == 0
-            ok = ok and wrong == 0 and errors == ["none", "none"]
+            ok = ok and not wrong and errors == ["none", "none"]
             report["cases"].append(entry)
             log(f"case {spec}: {json.dumps(entry)}")
     finally:

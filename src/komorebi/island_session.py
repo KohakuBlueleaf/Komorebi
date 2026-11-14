@@ -174,11 +174,11 @@ class IslandRun:
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
 
     def _send(self):
-        """Gives every island's queued commands to its dispatcher, so that the
-        islands run their parts at once while the host waits on one."""
+        """Stores every island's queued commands on its card, so that the islands
+        run their parts at once while the host waits on one."""
         for island, run in enumerate(self.runs):
             try:
-                run._hand()
+                run.store()
             except KomorebiError as error:
                 raise _named(error, island) from None
 
