@@ -561,10 +561,11 @@ property of the model.
    is written for Komorebi; nothing loads an operation's kernels as they are.
 4. **Host transfers at the link's speed, everywhere.** Today reads and writes go
    through the host channel (a 20 MiB frame read in 30 ms without a run, 7 ms inside
-   one) for interleaved DRAM tensors, on each card. Tensors in L1, reads under 80 KiB
-   without a run, pages the L1 or the channel cannot hold and a session without the
-   channel still go through the device API at about 2 MB per second
-   ([host](docs/reference/host.md#the-host-channel)).
+   one) for interleaved DRAM tensors and tensors in L1 (15 MiB over 120 cores read in
+   5 ms inside a run), on each card. Reads under 80 KiB without a run, pages the L1 or
+   the channel cannot hold, an L1 tensor on a core that holds no program in the run and
+   a session without the channel still go through the device API at about 2 MB per
+   second ([host](docs/reference/host.md#the-host-channel)).
 5. **Starting without tt-metal's launch.** Today the session opens the card in slow
    dispatch and tt-metal launches the kernels once, core by core. Everything after that
    (commands, programs, overlays) is Komorebi's own and runs from the card.

@@ -312,8 +312,8 @@ host), and `kmx_load` returns 6.1 to 6.2 µs after it is called, where the host'
 
 ## Transfers to and from the host
 
-Two more reserved handlers move pages between a DRAM tensor and the session's region of
-the host channel while a run is loaded ([host](host.md#the-host-channel)): 241
+Two more reserved handlers move pages between a tensor in DRAM or L1 and the session's
+region of the host channel while a run is loaded ([host](host.md#the-host-channel)): 241
 (`KM_HANDLER_PUSH`, card to host) and 242 (`KM_HANDLER_PULL`, host to card). Their code
 (`komorebi/device/km_transfer.hpp`) is the reader part of the runtime's **service
 overlay**, number 63 (`km::kOverlayService`, source
@@ -341,8 +341,9 @@ that range adds nothing to them.
   failed bound gives up with where `tohost` or `fromhost` and gave `bad_transfer`,
   having written nothing. Then the reader moves its share (`km::partition` of the
   pages) through the two chunks: set the PCIe state, the writes or reads, wait for
-  them, clear. Then it writes its sequence word. Each wait is bounded by the run's wait
-  limit. The writer only completes the command, and compute skips it.
+  them, clear. For a tensor in L1 (a chunk of `KM_TRANSFER_L1`, one page a core) the
+  reader moves its own page in one write or read instead. Then it writes its sequence
+  word. Each wait is bounded by the run's wait limit. The writer only completes the command, and compute skips it.
 
 A third, 245 (`KM_HANDLER_COPY`), copies pages from DRAM to DRAM through the same two
 chunks: from a range of one bank or a tensor's pages into another range or tensor
