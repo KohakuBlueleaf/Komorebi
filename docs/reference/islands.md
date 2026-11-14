@@ -242,7 +242,12 @@ answers the core's own island. `tensor.accessor_args()` is the same on every isl
 `session.write(tensor, pages, first=0)` scatters each island's pages into its part
 through that island's own host channel, and `session.read` and `session.read_bf16`
 gather them into one array; while a run is loaded, the islands' transfers go at once,
-one host thread an island. Example 01's MAP on one group of the 238 ranks of two
+one host thread an island. A part that is one run of the tensor's pages moves from and
+into the caller's rows themselves, without a copy of its own. A hint whose part does not
+fit an island's DRAM raises `km.KomorebiError` before anything is written: the island,
+the pages and shape asked, the allocator's sentence, and the most pages of that kind
+that fit there now (asking island 0 alone for 48 GiB on a p150a: refused in 35 ms, at
+most 16,688,832 pages of 2 KiB). Example 01's MAP on one group of the 238 ranks of two
 cards, its input of 238 x 2 tiles placed with no hint, `split=0` and `split=1` over the
 group (118, 2) (`examples/01_mapcollect/islands.py --whole --split 1 --group 118,2`;
 2026-11-14, AICLK 800 MHz idle before the run, host load 3.8 to 8.4, one run each):
@@ -257,8 +262,40 @@ With `split=1` every rank reads one tile from its own island and asks the other 
 for the other. The same script with `--cards 0` and `split=1`: one island holds every
 page, the word is the bank address, 0 wrong of 120, 3.13 us a MAP. A write of 64 MiB
 with the run loaded, one run each: split over both cards 1.85 to 3.69 GB/s, all on
-island 0 2.89 to 3.11 GB/s, card 0 alone 2.86 to 3.13 GB/s; one write takes 18 to 36
-ms, so the two channels at once are not measurably faster than one.
+island 0 2.89 to 3.11 GB/s, card 0 alone 2.86 to 3.13 GB/s: each island first copied
+its part out of the caller's rows, and those copies did not overlap.
+
+Without that copy (`examples/01_mapcollect/islands.py --whole --io-mib 64,512`, the
+run loaded, AICLK 800 MHz, host load 4.3, one run, every byte read back compared), GB/s
+of one write and one read:
+
+| Size | Split over both cards: write, read | Island 0 alone: write, read |
+|---|---|---|
+| 64 MiB | 7.38, 8.39 | 6.52, 4.93 |
+| 512 MiB | 13.59, 3.43 | 7.54, 5.14 |
+
+What bounds them: island 0's cores move 64 MiB in 7.9 ms (write) and 7.6 ms (read) of
+the 10.3 and 13.6 ms; the rest is the host's copy into and out of the hugepage channel,
+13.1 GB/s in and 7.1 out for one thread in that run. Both cards at once, each card's
+cores took 5.0 ms for its 32 MiB written (3.9 ms read), and the host's two copies at once
+reached 7.3 GB/s in and 7.5 out in that run against 21.5 and 20.0 in the run before,
+the machine shared with other work: the 512 MiB read over both cards is bound by the
+host's copies out of the channels.
+
+`IslandSession(host_reaches=[0])`, for a test (`km.Session(cards=[0, 1],
+host_reaches=[0])`), is the machine whose second island has no host link: every
+tensor's parts are written and read through island 0's channel. Island 1's part is
+written into a buffer of its shape on island 0 and sent by island 0's link cores into
+island 1's part; a read has island 1's link cores send it into such a buffer, read
+through island 0's channel. Both run inside a loaded run with links, and a write or
+read outside one raises. Example 01 with `--host-reaches 0 --split 0` (input and output
+written after the load): MAP 0 wrong of 236, every read exact; GB/s with island 1's
+half crossing, against island 0 alone in the same run:
+
+| Size | Write | Read | Island 0 alone: write, read |
+|---|---|---|---|
+| 64 MiB | 5.12 | 2.74 | 6.52, 5.05 |
+| 512 MiB | 6.11 | 3.51 | 7.58, 5.23 |
 
 ## Pages across a link
 
