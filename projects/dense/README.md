@@ -407,9 +407,13 @@ grid` on card 0 (128 to 2048 cubed measured on 2026-11-14 between 23:48 and 23:5
 16,384 the results table above). Two cards: `flat.py --cards 0,1`, measured on 2026-11-15
 (the 1024 cubed hinted row on 2026-11-14), X280 and card clocks 1,350 MHz, "hints" with
 `--hints`, "none" without (the session's default placement). "Crossed" is what
-`run.crossings()` counted a call: bytes, page asks and pages of the kernels' page calls,
-blocks relayed by broadcasts; "rate" is those bytes over the call. Results:
-`results/sq*-flat-0x1.json` (hints) and `results/sq*-flat-0x1-nohint.json`.
+`run.crossings()` counted a call: bytes, page asks, pages and puts of the page calls,
+parts relayed by broadcasts; "rate" is those bytes over the call. The hinted 1024 and
+2048 rows and the unhinted 4096 to 16,384 rows were measured again on 2026-11-15 between
+01:44 and 01:46, once each, after the relay began to write a relayed part straight into
+the far rank's L1 (they were 811.3, 3,081.0, 33,930.6, 115,029.1 and 1,607,016.8 us);
+the other rows are of the earlier relay. Results: `results/sq*-flat-0x1.json` (hints)
+and `results/sq*-flat-0x1-nohint.json`.
 
 | Cube | One card: layout, us, TFLOP/s | Two cards: placement, layout, us, TFLOP/s | Crossed a call, rate | Two / one |
 |---|---|---|---|---|
@@ -419,19 +423,20 @@ blocks relayed by broadcasts; "rate" is those bytes over the call. Results:
 | 256 | | none: the same plan, 20.4, 1.64 | nothing (all three held by island 0) | 1.53 |
 | 512 | 2d, 17.8, 15.07 | hints: cols on island 0 (11 x 2), 53.5, 5.02 | nothing | 3.01 |
 | 512 | | none: the same plan, 53.5, 5.02 | nothing (all three held by island 0) | 3.00 |
-| 1024 | 2d, 43.0, 49.96 | hints: 2d, 16 x 8 bands of 2 x 4 tiles, 811.3, 2.65 | 2.11 MB: 160 blocks; 2.60 GB/s | 18.9 |
+| 1024 | 2d, 43.0, 49.96 | hints: 2d, 16 x 8 bands of 2 x 4 tiles, 226.9, 9.46 | 2.10 MB: 48 relayed parts; 9.24 GB/s | 5.28 |
 | 1024 | | none: the same plan, 3,234.8, 0.66 | 7.37 MB: 320 asks, 2,560 pages, 160 blocks; 2.28 GB/s | 75.2 |
-| 2048 | 2d, 172.2, 99.77 | hints: 2d, 16 x 8 bands of 4 x 8 tiles, 3,081.0, 5.58 | 8.43 MB: 576 blocks; 2.73 GB/s | 17.9 |
+| 2048 | 2d, 172.2, 99.77 | hints: 2d, 16 x 8 bands of 4 x 8 tiles, 738.4, 23.27 | 8.39 MB: 96 relayed parts; 11.36 GB/s | 4.29 |
 | 2048 | | none: the same plan, 10,801.7, 1.59 | 29.4 MB: 768 asks, 10,240 pages, 576 blocks; 2.73 GB/s | 62.7 |
 | 4096 | 2d, 958.3, 143.4 | hints: none keep A's and Y's pages home (bands of 7 tile rows, the islands' edge at row 64) | | |
-| 4096 | | none: 2d, 19 x 11 bands of 7 x 12 tiles, 33,930.6, 4.05 | 104.7 MB: 2,877 asks, 34,048 pages, 2,464 blocks; 3.09 GB/s | 35.4 |
+| 4096 | | none: 2d, 19 x 11 bands of 7 x 12 tiles, 33,126.4, 4.15 | 105.0 MB: 2,877 asks, 34,048 pages, 12,544 puts, 528 relayed parts; 3.17 GB/s | 34.6 |
 | 8192 | 2d, 8,608.3, 127.7 | hints: none keep the pages home (bands of 13 tile rows, edge at 128) | | |
-| 8192 | | none: 2d, 20 x 11 bands of 13 x 24 tiles, 115,029.1, 9.56 | 433.0 MB: 3,910 asks, 75,520 pages, 19,711 blocks; 3.76 GB/s | 13.4 |
+| 8192 | | none: 2d, 20 x 11 bands of 13 x 24 tiles, 51,750.4, 21.25 | 431.9 MB: 3,910 asks, 75,520 pages, 3,584 puts, 4,223 relayed parts; 8.35 GB/s | 6.01 |
 | 16,384 | 2d, 87,944.5, 100.0 | hints: none keep the pages home (bands of 26 tile rows, edge at 256) | | |
-| 16,384 | | none: 2d, 20 x 11 bands of 26 x 48 tiles, 1,607,016.8, 5.47 | 5.95 GB: 28,266 asks, 1,003,520 pages, 275,968 blocks; 3.70 GB/s | 18.3 |
+| 16,384 | | none: 2d, 20 x 11 bands of 26 x 48 tiles, 592,515.7, 14.85 | 5.93 GB: 28,266 asks, 1,003,520 pages, 14,336 puts, 59,133 relayed parts; 10.01 GB/s | 6.74 |
 
 From 1024 cubed up every two-card point is bound by the links: what crosses, over the
-call, comes to 2.3 to 3.8 GB/s through one link and its link cores. With hints only W's blocks cross (each once, through the column broadcasts'
+call, comes to 3.2 to 11.4 GB/s through one link and its link cores (2.3 to 3.8 GB/s on
+the earlier relay). With hints only W's blocks cross (each once, through the column broadcasts'
 relay); without, A's pages that island 1's rows read from island 0 cross too, three to
 four times the bytes and three to four times the time. 128 to 512 cubed fit on island 0's
 cores: nothing crosses, and the default placement holds the small tensors on island 0 as
