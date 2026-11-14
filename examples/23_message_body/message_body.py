@@ -53,6 +53,11 @@ def parse():
     parser.add_argument(
         "--keep", action="store_true", help="also each body carried unchanged"
     )
+    parser.add_argument(
+        "--parts",
+        action="store_true",
+        help="the handler as an overlay part under the runtime's kernels",
+    )
     parser.add_argument("--repeat", type=int, default=1, help="runs of each case")
     parser.add_argument("--max-live", type=int, default=128)
     parser.add_argument("--queue-messages", type=int, default=128)
@@ -135,6 +140,15 @@ def run_once(session, args, body_bytes, change):
         handlers={"chain": WORDS["kHandlerChain"]},
     ).dynamic("chain", **options(args, body_bytes))
     # --8<-- [end:program]
+    if args.parts:  # the same handler as a part: kernels/parts/chain.cpp
+        program = km.Program(
+            "message_body_parts",
+            kernels=None,
+            args=lambda core: ([], [], [area.address]),
+            handlers={"chain": WORDS["kHandlerChain"]},
+        ).dynamic(
+            "chain", parts=HERE / "kernels" / "parts", **options(args, body_bytes)
+        )
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     count = args.count or cores
     words = [args.threads, args.hops, body_bytes, int(change)]
@@ -176,7 +190,8 @@ def check(args, case, rows, event, states):
         differ.append("state")
     if body_words and not (rows[last, :body_words] == body.astype(np.int64)).all():
         differ.append("body")
-    if not (rows[:, WORDS["kResRun"]] == sequence).all():
+    run_rows = rows[:ranks] if args.parts else rows  # a part never runs on a counter
+    if not (run_rows[:, WORDS["kResRun"]] == sequence).all():
         differ.append("run")
     if rows[ranks:, WORDS["kResArrivals"]].any():
         differ.append("counter tiles")
@@ -195,6 +210,7 @@ def check(args, case, rows, event, states):
         "hops": args.hops,
         "body_bytes": body_bytes,
         "change": change,
+        "parts": args.parts,
         "event": event.kind if event else None,
         "run_microseconds": microseconds,
         "hop_microseconds": (

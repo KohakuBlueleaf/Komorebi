@@ -60,6 +60,10 @@ all exact (every word of the final body checked).
 | 12 cores (14 with the counter tiles), 1200 hops | 1.974 to 1.978 µs a hop | 2.394 to 2.397 µs | 5.452 to 5.454 µs |
 | the grid, 118 ranks (120 cores), 1180 hops | 2.081 to 2.099 µs a hop | 2.532 to 2.541 µs | 5.564 to 5.599 µs |
 
+With `--parts` the handler is an overlay part under Komorebi's own kernels
+(`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
+in one run, 6.39 µs a hop against 5.45 compiled in.
+
 Moving a 4 KiB body costs a hop about 0.42 µs more on 12 cores and 0.45 µs more on the
 grid than the line alone. Changing all 1024 words on the three compute threads costs
 about 3.06 µs (a third of the body each).

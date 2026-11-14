@@ -283,6 +283,9 @@ send without a body sets it to 0. A body sent is a buffer of the program in L1 (
 with `shard_grid`, as the example's area) or a body that arrived, 64-byte aligned,
 `bytes` at most `body_bytes`; the compute threads that write it may each write a part,
 since the call waits until every thread has reached it.
+A handler that is an [overlay part](#handlers-as-overlays) takes bodies the same way:
+`packet.body(index)` follows the part's own order of the packet's messages (example 23's
+`--parts`: 6.39 µs a hop on 12 cores against 5.45 with the body in the compute kernel).
 
 **How a body travels.** Every queue position has a DRAM page of `body_bytes` beside its
 line (`cores * queue_messages * body_bytes` more DRAM: 60 MiB for 120 cores, 128
@@ -450,8 +453,7 @@ and all are `kWhereMessages*` in `km_core.hpp`.
   program; more than four handlers with the bodies in the program's compute kernel.
 - Dynamic handlers of two programs in one run: the program field of a message is 0.
 - A body larger than one page (4 KiB); a cast of a body to a group; an overlay sent as a
-  body (`overlay.send`) that the target copies into its slot. With handlers as overlay
-  parts, bodies have been neither compiled nor run.
+  body (`overlay.send`) that the target copies into its slot.
 - Priorities or ordering between messages: a program that needs an order sorts at the
   receiver.
 
