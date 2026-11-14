@@ -86,6 +86,23 @@ static uint32_t reset_run(
             }
             x280_fence_ow();
             at += padded / 4u;
+        } else if (kind == KMD_RESET_EACH) {
+            const uint32_t padded = (size + 15u) & ~15u;
+            if (
+                address % 4u != 0 || size % 4u != 0 || address > KMD_L1_BYTES ||
+                size > KMD_L1_BYTES - address || core >= value ||
+                value > KM_CORES_MAX || (uint64_t)padded * value > bytes - at * 4u
+            ) {
+                status = KMD_RESET_BAD_LIST;
+                break;
+            }
+            volatile uint32_t* to = (volatile uint32_t*)(l1 + address);
+            const uint32_t from = at + core * (padded / 4u);
+            for (uint32_t word = 0; word < size / 4u; word++) {
+                to[word] = list[from + word];
+            }
+            x280_fence_ow();
+            at += value * (padded / 4u);
         } else if (kind == KMD_RESET_WAIT) {
             if (address % 4u != 0 || address > KMD_L1_BYTES - 4u) {
                 status = KMD_RESET_BAD_LIST;
@@ -106,6 +123,20 @@ static uint32_t reset_run(
     noc_clear_tlb_2m(KMD_WIN_RESET);
     noc_clear_tlb_2m(KMD_WIN_RESET_REGISTER);
     return status;
+}
+
+/* Keeps the list of `bytes` at `offset` for the resets of a deadline (bytes 0: none).
+ */
+static inline uint32_t reset_keep(kmd_t* dispatcher, uint32_t offset, uint32_t bytes) {
+    if (
+        offset % 16u != 0 || bytes % 16u != 0 || offset > dispatcher->upload_bytes ||
+        bytes > dispatcher->upload_bytes - offset
+    ) {
+        return KMD_RESET_BAD_LIST;
+    }
+    dispatcher->reset_offset = offset;
+    dispatcher->reset_bytes = bytes;
+    return KMD_RESET_OK;
 }
 
 /* The host's reset command: runs the list, then PONG {status, the ticks it took}. */

@@ -345,7 +345,9 @@ def live(words, abi_headers=None):
 def inspect(block, abi_headers=None):
     """An inspect block (uint32 words: the header, then a record per core) as a dict:
     its kind, whether it is complete, what it answers, and per core what core_state
-    gives, its live words and its trace entries (None for a core it could not read)."""
+    gives, its live words and its trace entries (None for a core it could not read);
+    `reset`: the cores (count, and per core) a timeout reset because they did not leave.
+    """
     abi_headers = abi_headers or abi.headers()
     words = np.asarray(block, dtype=np.int64).ravel() & abi.M32
     header = [int(word) for word in words[: abi_headers["KMD_INSPECT_HEAD"] // 4]]
@@ -362,6 +364,7 @@ def inspect(block, abi_headers=None):
             for key in ("request", "first", "count", "done", "slot", "sequence")
         },
         "ticks": header[abi_headers["KMD_I_TICKS"]],
+        "reset": header[abi_headers["KMD_I_RESET"]],
     }
     record, head = abi_headers["KMD_INSPECT_RECORD"] // 4, len(header)
     state_at, live_at, trace_at = (
@@ -375,8 +378,9 @@ def inspect(block, abi_headers=None):
         core, flags = int(line[abi_headers["KMD_IR_CORE"]]), int(
             line[abi_headers["KMD_IR_FLAGS"]]
         )
+        reset = bool(flags & abi_headers["KMD_INSPECT_RESET"])
         if not flags & abi_headers["KMD_INSPECT_READ"]:
-            cores.append({"core": core, "read": False})
+            cores.append({"core": core, "read": False, "reset": reset})
             continue
         state = {core: line[state_at : state_at + abi_headers["kStateWords"]]}
         sequences = line[abi_headers["KMD_IR_SEQUENCES"] :][:entries]
@@ -407,6 +411,7 @@ def inspect(block, abi_headers=None):
                     abi_headers,
                 ),
                 "trace": trace,
+                "reset": reset,
             }
         )
     out["cores"] = cores

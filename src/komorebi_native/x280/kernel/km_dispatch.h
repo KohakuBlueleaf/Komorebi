@@ -119,6 +119,8 @@
 #define KMD_INSPECT_TIMEOUT 2u       /* a command's deadline: read before its abort */
 #define KMD_INSPECT_READ 1u          /* record flag: the core's words were read */
 #define KMD_INSPECT_TRACED 2u        /* record flag: its trace's entries were read */
+/* record flag: a timeout's core reset, the run going on */
+#define KMD_INSPECT_RESET 4u
 /* After a timeout's abort, the X280 timer ticks (20 ms) its group's cores have to leave
  * the command; then the run ends as at any other deadline. */
 #define KMD_GIVE_UP_TICKS 1000000u
@@ -132,6 +134,7 @@
 /* Host to kernel: reset core `first` (group of one) by the write list of a1 bytes at a0
  * in the upload region; PONG {KMD_RESET_*, ticks}. DROP's number: engine-only. */
 #define KMD_HANDLER_RESET 247u
+#define KMD_RESET_KEEP 0u /* its group count that keeps the list for the give-ups */
 /* A write list entry: four words {kind, address, bytes or mask, value}, then for a
  * WRITE its bytes, padded to 16. ASSERT and RELEASE write the soft-reset register. */
 #define KMD_RESET_END 0u
@@ -140,6 +143,8 @@
 /* BRISC out of reset, its firmware releases the others */
 #define KMD_RESET_RELEASE 3u
 #define KMD_RESET_WAIT 4u /* until (L1 word at address & mask) == value, 1 s */
+/* `bytes` to `address` from the part of core i of `value` parts (each padded to 16) */
+#define KMD_RESET_EACH 5u
 #define KMD_RESET_ENTRY 16u
 /* The Tensix soft-reset register and its RISC bits (blackhole tensix.h:
  * RISCV_DEBUG_REG_SOFT_RESET_0; RISCV_SOFT_RESET_0_BRISC, _TRISCS, _NCRISC). */
@@ -254,9 +259,10 @@ enum {
     KMD_I_DONE = 5, /* records written */
     KMD_I_SLOT = 6, /* a timeout's slot and sequence; a host's: the last sequence */
     KMD_I_SEQUENCE = 7,
-    KMD_I_START = 8, /* mtime, low word, at the start */
-    KMD_I_TICKS = 9, /* mtime ticks from the start to the last record */
-    KMD_IR_CORE = 0, /* a record's first line: the core, its coordinates, flags */
+    KMD_I_START = 8,  /* mtime, low word, at the start */
+    KMD_I_TICKS = 9,  /* mtime ticks from the start to the last record */
+    KMD_I_RESET = 10, /* a timeout's cores reset because they did not leave */
+    KMD_IR_CORE = 0,  /* a record's first line: the core, its coordinates, flags */
     KMD_IR_COORDINATES = 1,
     KMD_IR_FLAGS = 2,
     KMD_IR_MTIME = 3,     /* mtime, low word, as it was read */

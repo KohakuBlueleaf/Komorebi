@@ -173,6 +173,7 @@ typedef struct {
     uint32_t control_address;
     kmd_inspect_t inspect;
     uint32_t given_up; /* commands given up at their deadline, the run going on */
+    uint32_t reset_offset, reset_bytes; /* the kept reset list (bytes 0: none) */
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */

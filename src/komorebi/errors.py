@@ -147,11 +147,20 @@ class KernelFailed(KomorebiError):
 class CommandTimeout(KernelFailed):
     """A command's group missed its deadline: the command, slot, sequence and group, and
     the cores: after the stop, those that did not report and where each was waiting;
-    `given_up`: the dispatcher gave the command up and the run goes on, the cores are
-    the group as the inspect at the deadline read it (empty if it was overwritten)."""
+    `given_up`: the dispatcher gave it up, the run goes on, the cores as the deadline's
+    inspect read them; `recovered`: those it reset and loaded as they did not leave.
+    """
 
     def __init__(
-        self, handle, slot, sequence, group, cores, result=None, given_up=False
+        self,
+        handle,
+        slot,
+        sequence,
+        group,
+        cores,
+        result=None,
+        given_up=False,
+        recovered=(),
     ):
         named = "; ".join(describe_core(core) for core in cores) or "none named"
         first, count = group if group else (None, None)
@@ -160,12 +169,18 @@ class CommandTimeout(KernelFailed):
             if given_up
             else "timed out; not reported"
         )
+        back = (
+            f"; recovered (reset and loaded again): cores {list(recovered)}"
+            if recovered
+            else ""
+        )
         super().__init__(
             f"command {handle} {what}: slot {slot}, sequence {sequence}, "
-            f"group first {first} count {count}; cores: {named}",
+            f"group first {first} count {count}; cores: {named}{back}",
             result=result,
             cores=cores,
         )
+        self.recovered = list(recovered)
         self.handle = handle
         self.slot = slot
         self.sequence = sequence
