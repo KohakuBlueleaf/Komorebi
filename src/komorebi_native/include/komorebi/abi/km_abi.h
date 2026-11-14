@@ -49,6 +49,9 @@
 #define KM_TRANSFER_NONCE 7u
 #define KM_TRANSFER_BUFFER 8u /* L1: two chunks, then the word slot */
 #define KM_TRANSFER_CHUNK 9u  /* bytes, whole pages */
+/* A chunk of KM_TRANSFER_L1: a tensor in L1, one page a rank at `address` in that
+ * rank's own L1, moved as one write or read; the word slot at `buffer` */
+#define KM_TRANSFER_L1 0u
 /* a rank's slot: its sequence word (nonce, bytes, rank, the mark ^ nonce), then the
  * wall clock at its start and after its data, written once its data is done */
 #define KM_TRANSFER_WORD_BYTES 64u
