@@ -1,5 +1,5 @@
 // Linear writer (NoC1 by default): W's column broadcast a window of columns; other
-// islands' tiles put to them in chunks (one in flight), one sync, its own Y written.
+// islands' tiles put in chunks through the link cores' rings, one sync, its own Y.
 #include <stdint.h>
 
 #include "../dense.h"
@@ -161,6 +161,9 @@ void kernel_main() {
         stamps[kStampSettled] = 0;
         stamps[kStampUp] = 0;
         stamps[kStampDown] = 0;
+        for (uint32_t word = kStampFed; word <= kStampPieces; ++word) {
+            stamps[word] = 0;
+        }
         const uint32_t w = command.a1, y = command.a2, s = command.a3;
         const uint32_t k_whole = command.a4, n_whole = command.a5;
         const uint32_t m_tiles = plan(kPlMt), here = km::island();
@@ -176,8 +179,9 @@ void kernel_main() {
         };
         const Holding y_here = holding(y, here, m_tiles * n_whole);
         const auto y_matrix = TensorAccessor(y_args, y_here.address);
-        // this core's put not yet counted (its tiles still held)
+        // this core's pages put and not yet counted (their tiles already freed)
         uint32_t outstanding = 0, holder = here;
+        km::PutRun run;
         const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
         const uint32_t block_tiles = block_height * block_width;
         const auto settle = [&] {
@@ -187,7 +191,6 @@ void kernel_main() {
             if (!km::put_wait(writer, command, outstanding, holder)) {
                 return false;
             }
-            cb_pop_front(kCbSend, outstanding);
             outstanding = 0;
             return true;
         };
@@ -253,9 +256,17 @@ void kernel_main() {
                         if (count > 2 * chunk - ring_at) {
                             count = 2 * chunk - ring_at;  // to the buffer's end
                         }
-                        if (!settle() || !writer.wait_front(kCbSend, count)) {
+                        uint32_t clock = km::wall();
+                        const auto lap = [&](uint32_t word) {
+                            const uint32_t now = km::wall();
+                            stamps[word] += now - clock;
+                            clock = now;
+                        };
+                        if (!writer.wait_front(kCbSend, count)) {
                             return false;
                         }
+                        lap(kStampFed);
+                        // a run of `count` pages, its bytes into the rings at once
                         if (!km::put_pages(
                             writer,
                             command,
@@ -264,12 +275,23 @@ void kernel_main() {
                             kBf16Bytes,
                             sent.page(s_set, handed),
                             count,
-                            get_read_ptr(kCbSend)
+                            run
                         )) {
                             return false;
                         }
-                        outstanding = count;
+                        lap(kStampLine);
+                        if (!km::put_piece(
+                            writer, command, run, get_read_ptr(kCbSend), count
+                        )) {
+                            return false;
+                        }
+                        lap(kStampPiece);
+                        stamps[kStampTurn] += run.turn;
+                        stamps[kStampWrite] += run.write;
+                        stamps[kStampPieces] += run.piece;
+                        outstanding += count - run.waited;  // no rings: waited there
                         holder = to;
+                        cb_pop_front(kCbSend, count);
                         handed += count;
                         ring_at = (ring_at + count) % (2 * chunk);
                     }
@@ -282,7 +304,7 @@ void kernel_main() {
                         if (count > 2 * chunk - ring_at) {
                             count = 2 * chunk - ring_at;
                         }
-                        if (!settle() || !writer.wait_front(kCbSend, count)) {
+                        if (!writer.wait_front(kCbSend, count)) {
                             return false;
                         }
                         cb_pop_front(kCbSend, count);
