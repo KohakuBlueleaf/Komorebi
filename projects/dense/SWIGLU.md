@@ -6,36 +6,33 @@ with the matrix product's persistent kernels and one more handler, `LAYER`. A ca
 chain of dependent products with no DRAM round trip between them: a core's rows stay
 on its core through the call, so the intermediates never leave L1.
 
-## The thread program
+## What each core does
 
-```
-thread layer(i):                               # one thread per core over its partition of the rows
-    rows = partition(M tiles, group, i)             # space: the row tiles this core owns
-    W1, W3, W2 = resident                      # three LOAD commands, once per session
-    for m in rows:                             # command 1, time: row tiles
-        x = read_dram(X[m])
-        g[m] = silu(x @ W1)                    # held in L1
-    for m in rows:                             # command 2
-        x = read_dram(X[m])
-        h[m] = (x @ W3) * g[m]                 # the gate fused into the product, held
-    for m in rows:                             # command 3
-        write Y[m] = h[m] @ W2
-```
+W1, W3 and W2 are resident: three `LOAD` commands, once per session (`kernels/reader.cpp`
+reads each into `kCbW`, `kCbW3` or `kCbW2`). A call is then three `LAYER` commands
+(`swiglu_plan.commands`), each over the row tiles the core owns (`km::partition` of the
+row tiles over the group):
+
+1. `x W1` with `silu` on the product. The reader (`kernels/reader.cpp`, NoC0) reads
+   x's row from DRAM into `kCbA`; compute (`kernels/compute.cpp`, `layer`) runs
+   `matmul_block` over the row's K tiles into DST (fp32), `silu_tile` on DST, and packs
+   the block into a held buffer (`kCbHold0`).
+2. `x W3`, multiplied by the held `silu(x W1)`. The reader reads x's row again; compute
+   runs `matmul_block`, waits for the held tile, multiplies it into DST (DST to source
+   A, times the held tile) at HiFi4 whatever the program's fidelity, and packs into
+   the next held buffer (`kCbHold1`).
+3. `h W2`, with h the held result of command 2 as A: the reader reads nothing, compute
+   runs `matmul_block` and packs into `kCbOut`, and the writer (`kernels/writer.cpp`,
+   NoC1) writes the column blocks to Y's pages in DRAM.
+
+The held buffers are circular buffers that only compute uses: one command packs into
+them and the next command on the same core takes from them.
 
 There are no breakpoints: no thread waits for another, and every value a command takes
 from an earlier one was made on the same core. The rows of one core are the "row
 block" of the call: all of them are held between commands, which bounds the shapes
 (below). With `--gate-pass` the gate is a command of its own (four commands: x W1 and
 x W3 held, then silu(a) * b, then the output product).
-
-## How it maps onto the runtime
-
-| Thread program | Kernel | What it does |
-|---|---|---|
-| `read_dram(X[m])` | `kernels/reader.cpp` (NoC0) | x's row into `kCbA`; `LOAD` reads a W into `kCbW`, `kCbW3` or `kCbW2` |
-| `x @ W`, `silu`, `* g[m]` | `kernels/compute.cpp` | `matmul_block` over the row's K tiles into DST (fp32), `silu_tile` on DST, the multiply (DST to source A, times the held tile) at HiFi4 whatever the program's fidelity, pack to the held buffer |
-| `g[m]`, `h[m]` | held buffers `kCbHold0` to `kCbHold2` | circular buffers that only compute uses: packed by one command, taken by the next one on the same core |
-| `write Y[m]` | `kernels/writer.cpp` (NoC1) | the packed column block to Y's pages |
 
 | Handler | Arguments |
 |---|---|
