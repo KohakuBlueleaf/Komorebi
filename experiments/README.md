@@ -139,3 +139,7 @@ place to ask a question and to be wrong.
   weights read at 143, 360 and 360 GB/s against a ceiling of 503; parts-only products
   without the completion boundary at 458 GB/s; two chains on halves of the grid 1.12
   times one on all of it.
+- [host_push](host_push/README.md): reading a frame back by having the cores write it
+  over the NoC through the PCIe tile into the host's pinned memory channel, checked byte
+  for byte. 4 KiB to 20 MiB exact; 13.5 GB/s from one core and about 15 GB/s from 2 to
+  12 (the x8 link) against 1 to 2 MB/s for `Session.read_chunks`.
