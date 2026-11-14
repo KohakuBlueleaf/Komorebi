@@ -225,8 +225,8 @@ def main():
     report |= {"cards": cards, "stack": STACK}
     log("building the inputs")
     a_matrix, w_matrix = ref.inputs(m_rows, k_depth, n_columns, kind=args.inputs)
-    # two cards: the grid kernels with the link cores' services take 116.2 KB
-    options = {"links": 1, "kernel_bytes": 120 * 1024} if len(cards) > 1 else {}
+    # two cards: the grid kernels with the link cores' services take 126.2 KB
+    options = {"links": 1, "kernel_bytes": 128 * 1024} if len(cards) > 1 else {}
     with km.Session(cards=cards, log=log, **options) as session:
         graph = session.graph
         nocs = [one.nocs() for one in session.sessions]
