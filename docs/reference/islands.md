@@ -142,10 +142,16 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   their flat ranks. `run.reset_core(rank)` resets the core of one rank and loads its
   kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
   handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
-  is each island's `Run.recovery`. On two p150a cards with the map/collect example, each island's lists
-  take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores are left out: a reset link core would lose the
-  connection it holds open, so a give-up does not reset one and `reset_core` of a
-  link core is refused.
+  is each island's `Run.recovery`. On two p150a cards with the map/collect example,
+  each island's lists take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores
+  get no list, so a give-up does not reset one.
+- `run.reset_link(island, k)` resets link core k of `island` by the host
+  (`session.reset_link`): each of its connections closed at its router (the close
+  request, the router's teardown, the producer cursor set at the router's read
+  counter), the core reset and loaded again, then its OPEN with the far link core's
+  hello taken as heard. Returns `{island, core, by, seconds, reset_seconds,
+  open_seconds, parts}`. Between commands only: a line or ask in flight on that core
+  is lost and its command times out at its deadline.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
