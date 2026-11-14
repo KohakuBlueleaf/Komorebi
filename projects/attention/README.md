@@ -69,6 +69,7 @@ lengths, statistics for the backward, ragged lengths).
 ```
 python projects/attention/run.py --shape t1
 python projects/attention/run.py --shape long64 --calls 4
+python projects/attention/run.py --shape t1 --cards 0,1 [--far] --save o.npy   # two cards
 python projects/attention/bench.py --shape long64 --cuts            # time, power, profile
 python projects/attention/bench.py --shape wide128 --noc 1 --broadcast 5  # the broadcast's NoC, length
 python projects/attention/graph.py --shape short64 --rounds 40       # commands and graphs
@@ -76,6 +77,14 @@ python projects/attention/bench.py --shape causal64 --broadcast 5 --chunks 6 --c
 KMR_CARD=1 python -m pytest tests/hardware/test_attention_host.py
 python projects/attention/reference/ktt_bench.py --shape long64   # Kohaku-TT's env
 ```
+
+`--cards 0,1` runs the same kernels on a session of two cards: the two grids one below
+the other as one grid of every column but the last (an island's last core is its link
+core), broadcasts inside an island, one ATTEND on every flat rank; the job tables, the
+profile pages and Q, K, V, O are read and written by the page calls (`km::read_pages`,
+`km::write_pages`), so a page another island holds crosses. `--far` puts O on island 1
+alone. `--save` keeps O's pages: t1 on cards 0 and 1, with O split or on island 1, gave
+O equal to one card's bit for bit (2026-11-15).
 
 `--shape` names a preset of `plan.SHAPES` (B x H x S x D, K / V heads Hk): `t1` 1 x 1 x
 128 x 64, `t2` 1 x 4 x 512 x 64, `t3` 1 x 2 x 256 x 128 causal with Hk 1, `long64` 1 x 32

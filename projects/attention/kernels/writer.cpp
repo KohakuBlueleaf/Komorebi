@@ -112,10 +112,13 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    // O, K, V: bf16 tiles in DRAM, after the five sizes
+    // O, K, V: bf16 tiles in DRAM, after the five sizes; then the job tables and the
+    // profile pages
     using O = km::Tensor<5>;
     using K = km::Tensor<O::next_compile_time_args_offset()>;
     using V = km::Tensor<K::next_compile_time_args_offset()>;
+    using T = km::Tensor<V::next_compile_time_args_offset()>;
+    using P = km::Tensor<T::next_compile_time_args_offset()>;
     km::Writer writer;
     // The table copy's page: reserved once, used in place, never pushed.
     cb_reserve_back(kCbWriterJobs, 1);
@@ -124,13 +127,12 @@ void kernel_main() {
     writer.run([&](const km_command_t& command) {
         if (km::handler(command) == kHandlerProf) {
             const uint32_t profile_address = command.a0, zero_profile = command.a1;
-            const InterleavedAddrGen<true> pages = {
-                .bank_base_address = profile_address, .page_size = kProfBytes
-            };
             const uint32_t rank = writer.me() - km::first(command);
-            noc_async_write(
-                get_write_ptr(kCbProf), get_noc_addr(rank, pages), kProfBytes
-            );
+            if (!km::write_pages(
+                writer, command, P(profile_address), rank, 1, get_write_ptr(kCbProf)
+            )) {
+                return false;
+            }
             if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                 return false;
             }
@@ -148,8 +150,9 @@ void kernel_main() {
         const uint32_t mode = command.a5;
         if (!read_table(
             writer,
+            command,
             km::kStWriter,
-            job_tables,
+            T(job_tables),
             writer.me() - km::first(command),
             table
         )) {

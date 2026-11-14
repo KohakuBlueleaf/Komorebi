@@ -16,11 +16,12 @@ BROADCAST_FIELDS = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
 BROADCAST_ID = 0
 
 
-def bf16_tensor(session, values):
+def bf16_tensor(session, values, **placed):
     """A float array of bf16 values [..., rows, cols] as a bf16 tile tensor in DRAM,
-    flattened to [rows of all leading axes, cols] (the same page order)."""
+    flattened to [rows of all leading axes, cols] (the same page order); `placed`, on
+    a session of islands, its placement (split, group)."""
     values = np.asarray(values, dtype=np.float32).reshape(-1, values.shape[-1])
-    return session.tensor(values, "bfloat16", "tile")
+    return session.tensor(values, "bfloat16", "tile", **placed)
 
 
 def table_tensor(session, words):
@@ -68,6 +69,71 @@ def broadcast_words(nocs, plan, group, noc=0):
     }
 
 
+def island_plan(session, call, length=None, chunks=None):
+    """A plan over the islands of `session` as one grid: their grids one below the
+    other, every column but the last (an island's last core is a link core, not a
+    rank), broadcasts inside an island (lengths dividing its rows). Its jobs by flat
+    rank (none on the last column's ranks), and that grid's (columns, rows)."""
+    graph = session.graph
+    columns, rows = session.island(0).nocs().grid
+    for island in range(len(graph.islands)):
+        if graph.count(island) < rows * columns - 1:
+            raise ValueError(f"island {island}: {graph.count(island)} ranks")
+    grid = (columns - 1, rows * len(graph.islands))
+    lengths = [n for n in range(1, rows + 1) if rows % n == 0]
+    plan = pl.make(call, grid, length=length, chunks=chunks, lengths=lengths)
+    if rows % plan.length:
+        raise ValueError(f"broadcast length {plan.length}: not inside an island")
+    jobs = [[] for _ in range(graph.ranks)]
+    for index, core_jobs in enumerate(plan.jobs):
+        y, x = divmod(index, grid[0])
+        island = y // rows
+        jobs[graph.first(island) + (y % rows) * columns + x] = core_jobs
+    return pl.Plan(plan.dims, plan.r, plan.kb, plan.window, plan.length, jobs), grid
+
+
+def island_broadcast_words(session, plan, grid, noc=0):
+    """Each island's km::BroadcastArgs words by core (its ranks and link cores): the
+    broadcasts of `plan` down the columns of `grid` (island_plan's), the sender
+    first; a core in none of them is not in a broadcast."""
+    graph = session.graph
+    islands = [
+        (session.island(i).nocs(), graph.first(i), graph.count(i))
+        for i in range(len(graph.islands))
+    ]
+    buffer = (BROADCAST_ID, K["kCbKv"], plan.window, plan.block_pages())
+    group = layout.Group(0, graph.ranks)
+    by_island = [{} for _ in islands]
+    for x in range(grid[0]):
+        for top in range(0, grid[1], plan.length):
+            per_island = layout.island_broadcast_args(
+                islands, group, (x, top, 1, plan.length), "column", noc, buffer
+            )
+            for island, arguments in enumerate(per_island):
+                for core, words in arguments.items():
+                    if (
+                        core not in by_island[island]
+                        or words["rank"] != layout.BROADCAST_NONE
+                    ):
+                        by_island[island][core] = words
+    none = next(
+        words
+        for mine in by_island
+        for words in mine.values()
+        if words["rank"] == layout.BROADCAST_NONE
+    )
+    out = []
+    for island, mine in enumerate(by_island):
+        cores = len(islands[island][0].words)
+        out.append(
+            {
+                core: [mine.get(core, none)[field] for field in BROADCAST_FIELDS]
+                for core in range(cores)
+            }
+        )
+    return out
+
+
 def program(
     plan,
     tensors,
@@ -103,10 +169,13 @@ def program(
         compile_args={
             "reader": tile_sizes
             + [plan.window]
-            + [word for name in "qkv" for word in tensors[name].tensor_args()],
+            + [word for name in "qkv" for word in tensors[name].tensor_args()]
+            + tensors["tables"].tensor_args(),
             "writer": tile_sizes
             + [plan.window]
-            + [word for name in "okv" for word in tensors[name].tensor_args()],
+            + [word for name in "okv" for word in tensors[name].tensor_args()]
+            + tensors["tables"].tensor_args()
+            + tensors["prof"].tensor_args(),
             "compute": tile_sizes + [scale_bits, threshold_bits],
         },
         compute={
@@ -126,26 +195,41 @@ def program(
 
 class Attention:
     """A plan loaded on a session's grid with tensors q, k, v, o and the job tables:
-    ATTEND commands on the group of every core."""
+    ATTEND commands on the group of every core. On a session of islands (`grid`, the
+    plan's from island_plan), the group of every flat rank, the same kernels."""
 
     def __init__(
-        self, session, plan, tensors, scale, approx=False, deadline=2.0, wait=2.0, noc=0
+        self,
+        session,
+        plan,
+        tensors,
+        scale,
+        approx=False,
+        deadline=2.0,
+        wait=2.0,
+        noc=0,
+        grid=None,
     ):
-        nocs = session.nocs()
-        cores = len(nocs.words)
+        islands = hasattr(session, "graph")
+        cores = session.ranks if islands else len(session.nocs().words)
         if len(plan.jobs) != cores:
             raise ValueError(f"plan for {len(plan.jobs)} cores, grid has {cores}")
+        if "prof" not in tensors:  # the writer's profile pages: its tensor arguments
+            tensors = {**tensors, "prof": prof_tensor(session, cores)}
         self.plan, self.tensors, self.group = plan, tensors, (0, cores)
-        broadcasts = broadcast_words(nocs, plan, layout.Group(0, cores), noc)
-        persistent_program = program(
-            plan,
-            tensors,
-            scale,
-            approx,
-            broadcasts=broadcasts,
-            noc=noc,
-        )
-        self.run = session.load(persistent_program, deadline=deadline, wait=wait)
+        if islands:
+            loaded = [
+                program(plan, tensors, scale, approx, broadcasts=words, noc=noc)
+                for words in island_broadcast_words(session, plan, grid, noc)
+            ]
+        else:
+            broadcasts = broadcast_words(
+                session.nocs(), plan, layout.Group(0, cores), noc
+            )
+            loaded = program(
+                plan, tensors, scale, approx, broadcasts=broadcasts, noc=noc
+            )
+        self.run = session.load(loaded, deadline=deadline, wait=wait)
 
     def words(self, mode=K["kModeFull"], passes=1):
         tensors = self.tensors
@@ -166,12 +250,16 @@ class Attention:
         )
         events = self.run.wait(list(handles), timeout=timeout)
         host_s = time.perf_counter() - started
-        unfinished = [event for event in events if event.kind != "done"]
+        # over islands an event is its parts, one an island: the slowest part's time
+        parts = [(event,) if hasattr(event, "kind") else event for event in events]
+        unfinished = [part for event in parts for part in event if part.kind != "done"]
         if unfinished:
             raise km.KomorebiError(
                 f"{len(unfinished)} commands not done: {unfinished[0]}"
             )
-        return host_s, np.array([event.microseconds for event in events])
+        return host_s, np.array(
+            [max(part.microseconds for part in event) for event in parts]
+        )
 
     def profile(self, session, zero=True, timeout=10.0):
         """Every core's profile page since the last zeroing ([cores, kProfWords]
@@ -190,8 +278,13 @@ class Attention:
         `ok`: no kernel error, no give-up, every core's three kernels ended."""
         self.run.stop()
         states = self.run.state()
+        results = self.run.result()
+        kernels = [
+            (result or {}).get("error_name")
+            for result in (results if isinstance(results, list) else [results])
+        ]
         report = {
-            "kernel": self.run.result()["error_name"],
+            "kernel": kernels[0] if len(kernels) == 1 else kernels,
             "cores": len(states),
             "cores_ended": {
                 name: sum(state[name] != 0 for state in states)
@@ -207,5 +300,9 @@ class Attention:
             ),
         }
         ended = all(count == len(states) for count in report["cores_ended"].values())
-        report["ok"] = report["kernel"] == "none" and not report["gave_up"] and ended
+        report["ok"] = (
+            all(kernel == "none" for kernel in kernels)
+            and not report["gave_up"]
+            and ended
+        )
         return report

@@ -159,10 +159,11 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    // Q, K, V: bf16 tiles in DRAM, after the five sizes
+    // Q, K, V: bf16 tiles in DRAM, after the five sizes; then the job tables
     using Q = km::Tensor<5>;
     using K = km::Tensor<Q::next_compile_time_args_offset()>;
     using V = km::Tensor<K::next_compile_time_args_offset()>;
+    using T = km::Tensor<V::next_compile_time_args_offset()>;
     km::Reader reader;
     volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbProf));
     for (uint32_t word = 0; word < kProfWords; ++word) {
@@ -182,8 +183,9 @@ void kernel_main() {
         const uint32_t table = get_write_ptr(kCbJobs);
         if (!read_table(
             reader,
+            command,
             km::kStReader,
-            job_tables,
+            T(job_tables),
             reader.me() - km::first(command),
             table
         )) {

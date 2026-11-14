@@ -137,16 +137,21 @@ inline bool flushed(const km::Core& core, uint32_t word, uint32_t what) {
     return code == km::kGaveNone;
 }
 
-// Reads this core's job table page (page `rank` of the tables at `base`) to L1
+// Reads this core's job table page (page `rank` of the tables, km::read_pages) to L1
 // `dst`. False: the read gave up (recorded).
+template <typename Kernel, typename Tables>
 inline bool read_table(
-    const km::Core& core, uint32_t word, uint32_t base, uint32_t rank, uint32_t dst
+    const Kernel& core,
+    const km_command_t& command,
+    uint32_t word,
+    const Tables& tables,
+    uint32_t rank,
+    uint32_t dst
 ) {
-    const InterleavedAddrGen<true> pages = {
-        .bank_base_address = base, .page_size = kTableBytes
-    };
-    noc_async_read(get_noc_addr(rank, pages), dst, kTableBytes);
-    return flushed(core, word, km::kFlushReads);
+    return (
+        km::read_pages(core, command, tables, rank, 1, dst) &&
+        flushed(core, word, km::kFlushReads)
+    );
 }
 
 // Sender: K tiles [block_start, block_start + keys_in_block) of every head-dim tile

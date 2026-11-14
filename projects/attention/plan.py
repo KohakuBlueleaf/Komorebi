@@ -343,11 +343,18 @@ class Plan:
 
 
 def make(
-    call, grid, budget=L1_BUDGET, rows=None, block_keys=None, length=None, chunks=None
+    call,
+    grid,
+    budget=L1_BUDGET,
+    rows=None,
+    block_keys=None,
+    length=None,
+    chunks=None,
+    lengths=None,
 ):
     """The plan of dims `call` on a grid (columns, rows): rows per job and keys per
-    block fitted to `budget` (or as given), the broadcast length chosen (or as given),
-    causal chunks per head as given."""
+    block fitted to `budget` (or as given), the broadcast length chosen (among
+    `lengths`, or as given), causal chunks per head as given."""
     fit_rows, fit_block_keys = blocks(call, budget)
     rows, block_keys = rows or fit_rows, block_keys or fit_block_keys
     if rows == 0 or l1_bytes(call, rows, block_keys) > budget:
@@ -355,7 +362,7 @@ def make(
             f"buffers of {rows} rows, {block_keys} keys do not fit {budget} bytes"
         )
     length, jobs = choose_broadcasts(
-        call, rows, grid, [length] if length else None, chunks
+        call, rows, grid, [length] if length else lengths, chunks
     )
     return Plan(call, rows, block_keys, WINDOW, length, jobs)
 
