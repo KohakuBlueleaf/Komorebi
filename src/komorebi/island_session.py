@@ -14,6 +14,7 @@ import numpy as np
 
 from komorebi import abi, dram, formats, islands, native
 from komorebi import channel as channel_module
+from komorebi import programs as programs_module
 from komorebi import session as session_module
 from komorebi.errors import CardBusy, CommandTimeout, KomorebiError, WaitTimeout
 from komorebi.program import Program
@@ -1158,35 +1159,33 @@ class IslandSession:
             self._write_across(tensor.parts[island], island, low, rows)
 
     def load(self, program, **options):
-        """Loads `program` on every island in turn (its grid, then its dispatcher), or
-        a list of Programs, one an island in island order, with Session.load's
-        options; returns an IslandRun over flat ranks. Each Program brings its own
-        X280 threads."""
+        """Loads `program` on every island in turn, with Session.load's options; an
+        IslandRun over flat ranks. As on one card: a Program, or programs in the
+        runtime's form (a list, or {program: (first, count)} in flat ranks); or a list
+        of kernel-form Programs, one an island. Each brings its own X280 threads."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if self.split > 1:  # one launch on the card, a dispatcher an island
             return self._load_split(program, options)
-        programs = list(program) if isinstance(program, list | tuple) else [program]
-        if len(programs) == 1:
-            programs *= len(self.sessions)
-        if len(programs) != len(self.sessions) or not all(
-            isinstance(one, Program) for one in programs
-        ):
-            raise ValueError(
-                f"an island session loads one Program or a list of "
-                f"{len(self.sessions)}, one an island"
-            )
+        programs = self._island_loads(program)
         if self.ASKS_BY not in ("core", "host"):
             raise ValueError(f"ASKS_BY={self.ASKS_BY!r}: 'core' or 'host'")
-        if self.links:
+        if self.links and all(isinstance(one, Program) for one in programs):
             programs = self._linked(programs)
-        defines = [one.defines for one in programs]
+        owned = {}  # every Program the islands load, once: the island defines on each
+        for one in programs:
+            for each in (
+                one.programs if isinstance(one, programs_module.Plan) else [one]
+            ):
+                owned[id(each)] = each
+        owned = list(owned.values())
+        defines = [one.defines for one in owned]
         if len(self.sessions) > 1:  # a tensor's word may name its table entry
-            for one, own in zip(programs, defines):
+            for one, own in zip(owned, defines):
                 one.defines = {**own, "KM_TENSOR_TABLE": 1}
         if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
             asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
-            for one in programs:
+            for one in owned:
                 one.defines = {
                     **one.defines,
                     "KM_PAGE_LINKS": 1,
@@ -1218,7 +1217,7 @@ class IslandSession:
                 run.abort()
             raise
         finally:
-            for one, own in zip(programs, defines):
+            for one, own in zip(owned, defines):
                 one.defines = own
         self.run = IslandRun(
             self.graph,
@@ -1235,6 +1234,44 @@ class IslandSession:
                 raise
         return self.run
 
+    def _island_loads(self, spec):
+        """What each island's session loads for `spec`: a kernel-form Program on every
+        island, a list of them one an island, or (the runtime's form) each island's
+        part of the plan over flat ranks: its groups cut to its ranks, the same
+        program fields."""
+        count = len(self.sessions)
+        if isinstance(spec, Program) and spec.form() != "program":
+            return [spec] * count
+        kernel_form = isinstance(spec, list | tuple) and all(
+            isinstance(one, Program) and one.form() != "program" for one in spec
+        )
+        if kernel_form and spec:
+            if len(spec) != count:
+                raise ValueError(
+                    f"a list of kernel-form Programs is one an island: {count} here, "
+                    f"{len(spec)} given (several programs a run are in the runtime's "
+                    "form, km_program)"
+                )
+            return list(spec)
+        whole = programs_module.plan(spec, self.graph.ranks)  # checks it as one card
+        parts = []
+        for island in range(count):
+            first, ranks = self.graph.first(island), self.graph.count(island)
+            groups = []
+            for group in whole.groups:
+                low = max(group.first, first)
+                high = min(group.first + group.count, first + ranks)
+                if high > low:
+                    groups.append(
+                        programs_module.Group(low - first, high - low, group.programs)
+                    )
+            parts.append(
+                programs_module.Plan(
+                    whole.programs, tuple(groups), ranks, whole.owner, whole.switch
+                )
+            )
+        return parts
+
     @property
     def _forward(self):
         """KM_FORWARD over more than two islands: the link services forward (built only
@@ -1244,8 +1281,12 @@ class IslandSession:
     def _load_split(self, program, options):
         """load() on a card split into islands: one launch, the links wires (NoC
         writes to the far island's tiles), the services as on two cards."""
-        if not isinstance(program, Program):
-            raise ValueError("a card split into islands loads one Program")
+        if not isinstance(program, Program) or program.form() == "program":
+            raise ValueError(
+                "a card split into islands loads one Program of the kernel form: its "
+                "one launch builds no runtime's-form programs (km_program, a list or "
+                "a dict) yet"
+            )
         own = program.defines
         try:
             plans = None

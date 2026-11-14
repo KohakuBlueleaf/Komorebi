@@ -734,15 +734,16 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   (`km::read_pages`) and put (`km::write_pages`) are carried by every page CPU; over
   more than two islands an ask is forwarded but carried by one page CPU a link, and a
   put goes one link only. A copy across asks 16 KiB a line, one line a core in flight.
-- A dict of programs, X280 threads and ports, engines and uploads over islands;
-  tensors in L1.
+- A dict of programs switching groups over islands (`run.load`), engines and uploads
+  over islands; tensors in L1. Programs of the runtime's form load as on one card: a
+  list, or a dict of groups in flat ranks, is planned over every rank and each island
+  runs its part, the runtime's kernels built with the island's defines (example 19,
+  `--far`; a dict's groups cut at an island are built, not yet run on two cards).
 - A write of part of a page another island holds (example 09's writer gives up: the
-  page calls move whole pages), a tensor read by an address the kernel builds itself
-  (`InterleavedAddrGen`: profile pages, job tables, the raster and ray tracer
-  projects), and programs of the runtime's form (`km_program`, a list or dict of
-  programs) do not cross. An overlay of the kernel form is built with its kernel's
-  defines and compile arguments, so its `km::Tensor` crosses (examples 12 and 18,
-  `--far`).
+  page calls move whole pages) and a tensor read by an address the kernel builds itself
+  (`InterleavedAddrGen`: profile pages, job tables, the raster and ray tracer projects)
+  do not cross. An overlay of the kernel form is built with its kernel's defines and
+  compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
 - More than two cards: the mesh opens 1 x n; tried with two.
 - A split card: a copy across and a put over more than one link; more than one wire a
   pair with more than two islands; two cards each split (fabric links and wires in one
