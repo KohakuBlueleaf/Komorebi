@@ -66,7 +66,7 @@ in the holder's own entry), hops (8), zero (16). The table holds up to
 A core of card 1 holds the same table with `0xFF` and 0 in island 1's entry, its own, and
 next link 0 and hops 1 in island 0's. The host's values are in `komorebi.islands`: the graph of islands and links
 (`Graph`, `line`, `ring`), the rank of every core, `Graph.split` for a group,
-`islands.place` for a tensor's pages, and `ENTRY` for the layout. On one card the table
+`islands.place` for a tensor's pages by its hint, and `ENTRY` for the layout. On one card the table
 has one entry, `(0, cores, NO_LINK, 0)`, and every answer below is the one of a run
 without islands.
 
@@ -126,7 +126,11 @@ carries the dispatcher's command lines and the cores' asks; the others carry pag
 ([islands](../reference/islands.md#pages-across-a-link)).
 
 A kernel that reads a tensor's pages calls `km::read_pages` with the tensor's
-placement: the pages its island holds are read from its own DRAM, as on one card; for
+reference word, which the script passes as on one card (`tensor.address`) and which
+names the tensor's entry in a table every core holds: the session placed the tensor by
+the hint the script gave, in the kernel's own words (split along a dimension over a
+group of ranks, like another tensor, or a copy), and the entry says which island holds
+which part. The pages its island holds are read from its own DRAM, as on one card; for
 pages another island holds the core puts one ask line into its island's link core 0,
 which sends it on link 0 between commands, and the holder's link core pushes the pages
 into the asking core's L1 and counts them at its port, where the core waits. No host

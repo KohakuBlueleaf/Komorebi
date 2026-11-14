@@ -460,6 +460,7 @@ class Session:
         self.run = None
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
+        self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
         self._starting = None  # the Dispatch of a load before its Run exists
@@ -983,6 +984,7 @@ class Session:
         thread="card",
         island=None,
         link=None,
+        tensors=0,
         recover=True,
     ):
         """Launches `program` (or programs in the runtime's form: a list, every core
@@ -996,6 +998,7 @@ class Session:
             raise ValueError("link= is an island's (island= too)")
         self.link_plan = link
         self.link_area = link.area if link is not None else 0
+        self.tensor_table = tensors
         placed = None
         if not isinstance(program, Program) or program.form() == "program":
             grid = self.grid
@@ -1868,7 +1871,8 @@ class _Backend:
     def _island_rows(self, cores, columns):
         """Every core's island area in control_rows: island i of the load's graph,
         else island 0 of 1 with every core a rank (its header, then its table, then
-        the link area's address); on a split card each island's rows its own."""
+        the link area's and the tensor table's addresses); a split card's islands their
+        own rows."""
         abi_headers = abi.headers()
         graph, here = self.session.island or (islands.one(cores, columns), 0)
         parts = [(here, 0, cores)]
@@ -1892,6 +1896,9 @@ class _Backend:
                 mine[:, relay : relay + 3] = plan.relay
             mine[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = (
                 self.session.link_area
+            )
+            mine[:, at + abi_headers["KM_ISLAND_TENSORS"] // 4] = (
+                self.session.tensor_table
             )
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):

@@ -9,36 +9,30 @@
 
 void kernel_main() {
     constexpr auto output_args = TensorAccessorArgs<0>();
-    using First = km::Placement<output_args.next_compile_time_args_offset()>;
-    using Second = km::Placement<First::next_compile_time_args_offset()>;
     km::Writer writer;
     uint32_t counted = 0;  // COUNTs with a0 0 this core took
     writer.run([&](const km_command_t& command) {
         const uint32_t index = writer.me() - km::first(command);
         switch (km::handler(command)) {
             case kHandlerMap: {
-                const uint32_t output_address = command.a2;
+                const uint32_t output_tensor = command.a2;
                 const uint32_t first_page = command.a3;
                 if (!writer.wait_front(kCbOut, 1)) {
                     return false;  // nothing to report: the tile is stopping
                 }
-                const uint32_t placed = command.a8;
-                const auto output = TensorAccessor(output_args, output_address);
                 // a page another island holds is put there, written on return
-                const auto write = [&](const auto& placement) {
-                    return km::write_pages(
+                if (
+                    !km::write_pages(
                         writer,
                         command,
-                        placement,
-                        output,
-                        output_address,
+                        output_args,
+                        output_tensor,
                         first_page + index,
                         1,
                         get_read_ptr(kCbOut),
                         kPutPort
-                    );
-                };
-                if (!(placed == kInputSecond ? write(Second()) : write(First()))) {
+                    )
+                ) {
                     return false;
                 }
                 noc_async_writes_flushed();
