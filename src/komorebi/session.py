@@ -880,6 +880,7 @@ class Session:
         thread="card",
         island=None,
         link=None,
+        recover=True,
     ):
         """Launches `program` (or programs in the runtime's form: a list, every core
         holding each, or {program: (first, count)}) on every core, then the dispatcher,
@@ -1052,6 +1053,21 @@ class Session:
             run._fail_start(state)
         if placed is not None and placed.switch:
             _start_loads(run, placed)
+        if (
+            recover
+            and self.island is None
+            and not several
+            and not (placed is not None and placed.switch)
+        ):
+            if run.keep_resets():
+                self.log(
+                    f"reset list kept: {run.recovery['bytes']} B in "
+                    f"{run.recovery['seconds'] * 1e3:.1f} ms"
+                )
+            else:
+                self.log(f"no reset list: {run.recovery_refused}")
+        elif recover:
+            run.recovery_refused = "islands, several programs or program switches"
         self.log("ready")
         if works:
             shared = {name: _host_array(value) for name, value in owner.shared.items()}

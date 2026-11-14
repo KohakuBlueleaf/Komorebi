@@ -29,6 +29,8 @@ from komorebi.errors import (
 )
 from komorebi.program import Handler
 
+X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
+
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
 THREAD_POLL_S = 0.002  # one look at a thread while several are waited for
@@ -171,6 +173,10 @@ class Run:
         self._given_up = {}  # handle -> (its timeout event, the cores at the deadline)
         self._given_up_seen = 0  # the dispatcher's count of give-ups, as last read
         self.stalls = []  # the watcher's KMD_EVENT_STALL events: stage, req, ticks
+        # The dispatcher's kept reset list ({offset, bytes, seconds}), or why not
+        self.recovery, self.recovery_refused = None, "not asked for"
+        self._reserved = []  # (offset, bytes) of the upload region the run holds
+        self.recoveries = []  # give-ups whose cores the dispatcher reset: handle, text
         self.inspect_ticks = None  # mtime ticks the last inspect() took on core 0
         self._failure = None
         self._stopped = False
@@ -385,6 +391,80 @@ class Run:
             handler, self._group((first, count)), args, False, 0, program_field
         )
         return self.wait(handle, timeout)
+
+    def keep_resets(self, timeout=10.0):
+        """Hands the dispatcher every core's reset list (Session.load(recover=True)):
+        at a give-up it then resets and loads again each core that did not leave.
+        Sets `recovery`, or `recovery_refused` with the reason; True when kept."""
+        started = time.perf_counter()
+        launch = getattr(self.backend, "launch", None)
+        if launch is None:
+            self.recovery_refused = "the session's backend has no launch to reload"
+            return False
+        try:
+            writes = launch.reset_list(0, 0, every=True)
+        except (ValueError, RuntimeError) as error:  # semaphores, cores that differ
+            self.recovery_refused = str(error)
+            return False
+        ready = self.h["KMD_HOST_READY"] + control.offsets(self.h)["ready_bytes"]
+        if len(writes) > self.port.host_word(ready) or self._reserved:
+            self.recovery_refused = f"{len(writes)} bytes do not fit the upload region"
+            return False
+        self.port.upload(0, writes)
+        handle = self._queue_command(
+            self.h["KMD_HANDLER_RESET"], (0, 0), [0, len(writes)]
+        )
+        self._counts[-1] = 0  # the kernel's own command: no sequence number
+        event = self.wait(handle, timeout)
+        if event.kind != "pong" or event.auxiliary != self.h["KMD_RESET_OK"]:
+            self.recovery_refused = f"the dispatcher refused the list: {event}"
+            return False
+        self._reserved.append((0, len(writes)))
+        seconds = time.perf_counter() - started
+        self.recovery = {"offset": 0, "bytes": len(writes), "seconds": seconds}
+        self.recovery_refused = None
+        return True
+
+    def reset_core(self, core, timeout=10.0):
+        """Resets core `core` and loads its kernels again while the other cores run:
+        by the dispatcher from the kept list (`recovery`), else by the host. Returns
+        {core, by, seconds, x280_seconds}; KomorebiError if the core did not come back.
+        """
+        if not 0 <= core < self.cores:
+            raise ValueError(f"core {core}: the grid has {self.cores}")
+        started = time.perf_counter()
+        if self.recovery is None:
+            x, y = core % self.grid[0], core // self.grid[0]
+            parts = self.backend.launch.reset_core(x, y, min(timeout, 2.0))
+            if parts[1] < 0:
+                raise KomorebiError(f"core {core}: its firmware did not start again")
+            return {
+                "core": core,
+                "by": "host",
+                "seconds": time.perf_counter() - started,
+                "x280_seconds": None,
+            }
+        handle = self._queue_command(
+            self.h["KMD_HANDLER_RESET"],
+            (core, 1),
+            [self.recovery["offset"], self.recovery["bytes"]],
+        )
+        self._counts[-1] = 0  # the kernel's own command: no sequence number
+        event = self.wait(handle, timeout)
+        if event.kind != "pong" or event.auxiliary != self.h["KMD_RESET_OK"]:
+            raise KomorebiError(f"core {core}: the dispatcher's reset failed: {event}")
+        return {
+            "core": core,
+            "by": "dispatcher",
+            "seconds": time.perf_counter() - started,
+            "x280_seconds": event.ticks / X280_TICKS_S,
+        }
+
+    def given_up(self, handle):
+        """The CommandTimeout of a given-up command whose event is held (event() after
+        drain()), or None; its text names the cores reset and loaded again. Every such
+        give-up is also in `recoveries`, kept after wait() raised it."""
+        return self._given_up_error(handle) if handle in self._given_up else None
 
     def inspect(self, group=None, timeout=10.0):
         """While the run goes on: the dispatcher reads each core of `group` (default
@@ -684,6 +764,11 @@ class Run:
             and block["request"] == event.handle & M32
         )
         self._given_up[event.handle] = (event, block["cores"] if ours else [])
+        error = self._given_up_error(event.handle)
+        if error.recovered:
+            self.recoveries.append(
+                {"handle": event.handle, "cores": error.recovered, "text": str(error)}
+            )
         return True
 
     def _given_up_error(self, handle):
