@@ -8,6 +8,9 @@
 /* The regions, in the host's order. Each cluster has its own copy, in its own bank. */
 enum { REGION_COUNTS, REGION_PLAN, REGION_TOTALS, REGION_PEERS, REGION_COUNT };
 
+/* Built with BS_STARTED_BY_HOST: the result words, after them. */
+enum { REGION_RESULTS = REGION_COUNT };
+
 /* What the planning cores do in one call (step() below). */
 enum { PHASE_HELLO, PHASE_TOTALS, PHASE_SEND, PHASE_PLAN };
 
@@ -251,7 +254,10 @@ static uint32_t starts(void) {
 /* The command of step 1 or 3 for the whole Tensix group, field by field (a struct
  * assignment may call memset, which does not link). */
 static void build_command(
-    km_command_t* command, uint32_t handler, const uint32_t tables[BS_BLOCKS_MAX]
+    km_command_t* command,
+    uint32_t handler,
+    const uint32_t tables[BS_BLOCKS_MAX],
+    uint32_t output
 ) {
     uint32_t banks = 0;
     for (uint32_t block = 0; block < blocks(); block++) {
@@ -270,7 +276,7 @@ static void build_command(
     command->a4 = tables[0];
     command->a5 = tables[1];
     command->a6 = tables[2];
-    command->a7 = word(BS_WORD_OUTPUT_ADDRESS);
+    command->a7 = output;
     command->a8 = command->a9 = 0;
 }
 
@@ -293,16 +299,10 @@ static uint32_t run_command(const km_command_t* command) {
                                        : CODE_COMMAND; /* a timeout or a rejection */
 }
 
-int kmx_main(int core) {
-    (void)core;
-    if (kmx_cluster() != kmx_lead()) {
-        /* Clusters 2 and 3: run the lead's kmx_parallel_all calls until its kmx_main
-         * ends. */
-        const int error = kmx_serve();
-        return error != KMX_OK ? CODE_PARALLEL : push_failed ? CODE_PUSH : 0;
-    }
-    /* From here on: core 0 of the lead, cluster 1. Check the words and regions first.
-     */
+/* The rounds of count, plan and place into `output` (its word), the best times into
+ * `result_words`: 0, or a code (CODE_RING and CODE_COMMAND keep the words). */
+static uint32_t sort(uint32_t output, uint32_t result_words[BS_RESULT_WORDS]) {
+    /* Check the words and regions first. */
     const kmx_args* arguments = kmx_args_get();
     const uint32_t x280_cores = (
         arguments->nwords >= BS_WORDS ? word(BS_WORD_X280_CORES) : 0
@@ -345,7 +345,6 @@ int kmx_main(int core) {
         }
     }
 
-    uint32_t result_words[BS_RESULT_WORDS];
     for (uint32_t i = 0; i < BS_RESULT_WORDS; i++) {
         /* best times start at the most */
         result_words[i] = i < BS_RESULT_PLACED ? 0xFFFFFFFFu : 0;
@@ -355,11 +354,10 @@ int kmx_main(int core) {
         const uint64_t start = kmx_time();
         /* Step 1, COUNT on the Tensix group: submit the command, wait for its event. */
         kmx_progress(1 + 4 * round);
-        build_command(&command, BS_HANDLER_COUNT, counts_offsets);
+        build_command(&command, BS_HANDLER_COUNT, counts_offsets, output);
         uint32_t code = run_command(&command);
         if (code) {
-            kmx_result(code, result_words, BS_RESULT_WORDS);
-            return 0;
+            return code;
         }
         const uint64_t counted = kmx_time();
         /* Step 2, PLAN on the X280 cores: totals, (to the lead), starts, plan. */
@@ -381,11 +379,10 @@ int kmx_main(int core) {
         const uint64_t planned = kmx_time();
         /* Step 3, PLACE on the Tensix group, with the plan the cores wrote to DRAM. */
         kmx_progress(3 + 4 * round);
-        build_command(&command, BS_HANDLER_PLACE, plan_offsets);
+        build_command(&command, BS_HANDLER_PLACE, plan_offsets, output);
         code = run_command(&command);
         if (code) {
-            kmx_result(code, result_words, BS_RESULT_WORDS);
-            return 0;
+            return code;
         }
         const uint64_t placed = kmx_time();
         const uint32_t ticks[4] = {
@@ -399,6 +396,45 @@ int kmx_main(int core) {
         }
         result_words[BS_RESULT_ROUNDS] = round + 1;
     }
-    kmx_result(0, result_words, BS_RESULT_WORDS);
     return 0;
 }
+
+int kmx_main(int core) {
+    (void)core;
+    if (kmx_cluster() != kmx_lead()) {
+        /* Clusters 2 and 3: run the lead's kmx_parallel_all calls until its kmx_main
+         * ends. */
+        const int error = kmx_serve();
+        return error != KMX_OK ? CODE_PARALLEL : push_failed ? CODE_PUSH : 0;
+    }
+#if defined(BS_STARTED_BY_HOST)
+    return 0; /* the far island and the links run only once the load returns */
+#else
+    /* From here on: core 0 of the lead, cluster 1. */
+    uint32_t result_words[BS_RESULT_WORDS];
+    const uint32_t code = sort(word(BS_WORD_OUTPUT_ADDRESS), result_words);
+    if (code == 0 || code == CODE_RING || code == CODE_COMMAND) {
+        kmx_result(code, result_words, BS_RESULT_WORDS);
+        return 0;
+    }
+    return (int)code;
+#endif
+}
+
+#if defined(BS_STARTED_BY_HOST)
+/* The host's command BS_THREAD_SORT (islands): the rounds into the output a0 names, the
+ * result words into row a1 of region `results`, flushed for the host; the code. */
+uint32_t kmx_program(const km_command_t* command) {
+    uint64_t bytes = 0;
+    uint32_t* results = (uint32_t*)kmx_region(REGION_RESULTS, &bytes);
+    if (
+        kmx_handler(command) != BS_THREAD_SORT || results == 0 ||
+        bytes < 4ull * BS_RESULT_WORDS * (command->a1 + 1ull)
+    ) {
+        return CODE_BAD;
+    }
+    const uint32_t code = sort(command->a0, results + BS_RESULT_WORDS * command->a1);
+    kmx_flush(REGION_RESULTS);
+    return code;
+}
+#endif

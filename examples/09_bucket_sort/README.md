@@ -98,10 +98,13 @@ The steps of one round:
   buffer of two pages (index 0), a page ahead of the writer.
 - `writer.cpp`: COUNT counts in a word a bucket of its own L1 (buffer index 16), then
   writes its row of the counts. PLACE first reads its row of the plan, then writes each
-  key to its place as a 4-byte NoC write from a 16-byte slot (64 slots): the slot and
-  the place in DRAM share their low 4 address bits, the NoC's rule. A place outside the
-  output is never written. Each command is reported done only after its writes are
-  acknowledged, so the next reader of them, the thread or the host, may look at once.
+  key to its place with `km::put_bytes` (4 bytes) from a 16-byte slot (64 slots): the
+  slot and the place in DRAM share their low 4 address bits, the NoC's rule. A page
+  this island holds takes a NoC write; a page another island holds, a byte line its
+  link core 0 writes there ([Islands](../../docs/reference/islands.md#a-kernels-page-reads-and-writes)).
+  A place outside the output is never written. Each command is reported done only
+  after its writes are acknowledged (`km::put_wait` for PLACE), so the next reader of
+  them, the thread or the host, may look at once.
 - `compute.cpp`: takes every command and returns at once.
 
 ## What it needs
@@ -118,6 +121,22 @@ python bucket_sort.py --one-bucket --repeats 3
 ```
 
 A key count that does not divide by `--cores` gives some cores one key more.
+
+On two cards as the islands of one session, `islands.py` sorts with island 0's ranks
+and its thread (`--x280-cores` 1 or 4) twice: into an output island 0 holds, then into
+one island 1 holds, every key's word a byte put across. The thread is built with
+`BS_STARTED_BY_HOST`: it sorts on the host's command `sort` once both islands and
+their links run, not at its start. Both outputs are checked against numpy, and what
+crossed against one put line and one confirmation a key.
+
+```
+python islands.py --keys 65536 --buckets 4096
+```
+
+Two p150a cards, one page link, 2026-11-15, 65,536 keys, 4,096 buckets, island 0's 118
+ranks, 4 X280 cores, one run: both outputs exact; PLACE 0.125 ms into island 0's
+output, 112.9 ms into island 1's (65,536 byte lines across and as many confirmations
+back, 1.72 µs a key for the island); COUNT 0.055 ms and PLAN 5.86 ms in both.
 
 ## Measured
 
@@ -148,6 +167,7 @@ One run: the times of one round are not a statistic.
 | File | What it is |
 |---|---|
 | `bucket_sort.py` | the host script: the tensors, the program, the thread's words and regions, the numpy check, the JSON line |
+| `islands.py` | the same sort on two cards: island 0's ranks and thread, the output on either island |
 | `bucket_sort.h` | what the kernels and the thread share: the handlers, the table chunks and blocks, the thread's words and result words |
 | `kernels/reader.cpp` | the reader: the core's keys from DRAM into L1, a page at a time |
 | `kernels/writer.cpp` | the writer: COUNT and PLACE |

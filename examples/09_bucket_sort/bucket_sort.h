@@ -9,6 +9,10 @@
 #define BS_HANDLER_COUNT 1u
 #define BS_HANDLER_PLACE 2u
 
+/* The thread's own command, built with BS_STARTED_BY_HOST (islands): the rounds into
+ * the output a0 names, the result words to row a1 of region `results`. */
+#define BS_THREAD_SORT 1u
+
 /* The words of both commands: a0 keys_address, a1 key_count, a2 log2_buckets |
  * blocks << 8, a3 banks (8 bits per block), a4 to a6 tables, a7 output_address. */
 
