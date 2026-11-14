@@ -1,5 +1,5 @@
-// Linear reader, NoC0: X's row broadcast over this island's K a window of columns; in
-// its own window, the subblocks other islands put into S, to compute.
+// Linear reader (NoC0 by default): X's row broadcast over this island's K a window of
+// columns; in its own window, the subblocks other islands put into S, to compute.
 #include <stdint.h>
 
 #include "../dense.h"
@@ -74,6 +74,9 @@ void kernel_main() {
         bool waited = !exchange;
         if (included && mine.count != 0) {
             km::Broadcast broadcast(reader, command, kArgBroadcast);
+#if defined(LINEAR_VALID_SENT)
+            broadcast.valid_when_sent();
+#endif
             if (!broadcast.ok()) {
                 return;
             }
