@@ -141,5 +141,6 @@ nav:
       - examples/23_message_body/README.md
       - examples/24_thread_rank/README.md
       - examples/25_islands_threads/README.md
+      - examples/26_islands_sum/README.md
   - Releases:
       - releases/0.1.0.md

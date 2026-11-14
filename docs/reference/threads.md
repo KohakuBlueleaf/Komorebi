@@ -278,8 +278,8 @@ from island 0's thread to island 1's, one at a time, 10.61 µs; a HANG on ranks 
 `kmx_fetch` and `kmx_store` take a tensor another island holds as they take one of
 their own: `from` or `to` names the tensor (`KM_COPY_INTERLEAVED`, its bank address,
 its page bytes) and the range, never the island. The copy's cores find the tensor in
-the table of island tensors the load wrote (the ones made before the load, 16 at
-most) and move the pages another island holds through their island's link core 0: a
+the table of island tensors every core holds (32 entries at most; the host writes it
+again when a tensor is made while the run lives) and move the pages another island holds through their island's link core 0: a
 fetch asks for them a chunk at a time and writes them into the region, a store puts
 them from the chunk straight into the holder's DRAM
 ([islands](islands.md#pages-across-a-link)). The cache is handled as on one island: a

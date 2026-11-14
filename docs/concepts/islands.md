@@ -320,8 +320,7 @@ The far link core needs nothing.
   ranks over a link. Between two cards a kernel's ask and put use every page CPU of
   every link; over more than two islands an ask is forwarded but carried by one page CPU
   a link, and a put goes one link only (a put to an island two links away is refused).
-  A copy across knows only the tensors made before the load. More than 16 KiB in one
-  relay call goes as several asks; no run has sent that much in one call yet. Over more
+  More than 16 KiB in one relay call goes as several asks; no run has sent that much in one call yet. Over more
   than two islands the relay and the messages take one link a neighbour.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **More than two islands of a split card:** one wire a pair, at most three link cores
@@ -330,10 +329,12 @@ The far link core needs nothing.
   threads on a split card (a split card is for developing and checking island programs),
   and two cards each split into islands, which would make a line of four (fabric links
   and wires in one graph); forwarding has run over wires only.
-- **Programs that switch groups over islands, engines and uploads over islands,
-  tensors in L1.** A `Program`, a list or a dict of groups in flat ranks, and a list of
-  programs one an island, load as on one card; an island's X280 ports serve its own
-  ranks, and a thread of one island fetches and stores tensors the other holds.
+- **Engines and uploads over islands, tensors in L1.** A `Program`, a list or a dict
+  of groups in flat ranks, and a list of programs one an island, load as on one card,
+  and `run.load` of a program some group of each island it touches holds works over
+  flat ranks ([islands](../reference/islands.md#the-run)); an island's X280 ports
+  serve its own ranks, and a thread of one island fetches and stores tensors the other
+  holds.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.
 - **A link core reset by its dispatcher.** The dispatcher resets only ranks; a link core
   that hangs is named by its dispatcher and reset by the host (`run.reset_link`), as

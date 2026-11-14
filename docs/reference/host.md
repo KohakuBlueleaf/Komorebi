@@ -28,12 +28,12 @@ numpy arrays (see [Tensors](#tensors)).
 ## `Program`
 
 `km.Program(name, kernels, buffers=[], args=None, compile_args={}, compute={},
-defines={}, depth=4, handlers={}, opt={})` describes what the persistent kernel runs. It opens
+defines={}, depth=4, handlers={}, opt={}, noc={})` describes what the persistent kernel runs. It opens
 nothing.
 
 | Field | Meaning |
 |---|---|
-| `kernels` | a directory with `reader.cpp`, `compute.cpp` and `writer.cpp`, or a dict of the three paths. Each source defines `kernel_main` (the kernel form) or `km_program` (the runtime's form, [below](#several-programs-in-one-run)) |
+| `kernels` | a directory with `reader.cpp`, `compute.cpp` and `writer.cpp` (or `movement.cpp` and `compute.cpp`, [movement](movement.md)), or a dict of the paths. Each source defines `kernel_main` (the kernel form) or `km_program` (the runtime's form, [below](#several-programs-in-one-run)) |
 | `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a data type name (`"bfloat16"`, `"float32"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, `"bfloat8_b"`, `"bfloat4_b"`) |
 | `args` | `args(core) -> (reader, writer, compute)`: the program's own runtime arguments of each core, after the runtime's start-up arguments |
 | `compile_args` | `{"reader": [...], "writer": [...], "compute": [...]}` |
@@ -42,6 +42,7 @@ nothing.
 | `depth` | mailbox slots the cores scan and the dispatcher uses, 1 to 64 (`KM_RING_SLOTS`; [the cost of depth](../../experiments/dispatcher/README.md#ring-slots-and-depth)) |
 | `handlers` | `{name: number}`, or a header whose `constexpr uint32_t kHandlerName = n;` lines give them (`kHandlerBigStep` becomes `"big_step"`); numbers 1 to 239 |
 | `opt` | `{"reader": "Os", "writer": "Os"}`: an optimisation level per kernel, one of the runtime's `O0`, `O1`, `O2`, `O3`, `Os`, `Ofast`, `Oz` (anything else raises `ProgramError`); a kernel without one keeps the runtime's default, `O2` for the reader and writer and `O3` for the compute kernel (its three threads together). A set level also defines `KM_OPT_LEVEL` for that kernel, so that it is cached apart |
+| `noc` | `{"reader": 1, "writer": 0}`: the NoC each data-movement kernel uses, 0 or 1; without it the reader is on NoC 0 and the writer on NoC 1. Both on one NoC, or a name other than `reader` and `writer`, raises `ProgramError`; programs that share cores or switch groups give the same `noc` ([movement](movement.md#the-noc-of-each-cpu)) |
 
 `program.thread(cluster=1, sources, regions, words, host_fallback, deadline,
 prefetch="documented", handlers={})` adds an
@@ -181,10 +182,12 @@ The session sends each group a load of its own program before `session.load` ret
 ## `Session`
 
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`, or
+`km.Session(cards=[...], ...)` over several cards (below and [Islands](islands.md)).
 
-- `cards=[a, b, ...]` gives one session over them, each card's chip an island with flat
-  ranks ([Islands](islands.md)); `cards=[a]` is that session over one island, `card=a`
+- `cards=[a, b, ...]`, given alone (without `card` or `device`), gives one session over
+  them, each card's chip an island with flat ranks ([Islands](islands.md), which lists
+  that session's own arguments); `cards=[a]` is that session over one island, `card=a`
   the card's own session. `card=a, islands=n` (2 to 4) is that session over the one
   card split into n islands ([a card split into islands](islands.md#a-card-split-into-islands)).
 - `pll_mhz` is the X280 clock. The runtime's table is 15, 200, 800, 1000, 1250, 1350, 1500
@@ -260,9 +263,9 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`.
   above 0x100000 costs about 4 cycles more; a load whose slots would end there raises
   `km.SlowCodeError` unless `slow_code=True`.
 
-`session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
+`session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=0.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
-image=None, thread="card", island=None, recover=True)` returns a `Run`:
+image=None, thread="card", island=None, link=None, tensors=0, recover=True)` returns a `Run`:
 
 1. finds or builds the dispatcher image and the native module (see below), and
    checks that the image is there and X280 cluster 0 is idle (else `km.StartError`);
@@ -285,7 +288,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 |---|---|
 | `trace` | sequence numbers traced per core (0: no trace); 16 bytes of L1 each |
 | `deadline` | seconds a command may take from submit to its group's completion, waiting behind earlier commands included |
-| `wait`, `idle` | the cores' timeout on a wait for another core, and on a wait for the next command (the longest the host may stay silent) |
+| `wait`, `idle` | the cores' timeout on a wait for another core, and on a wait for the next command (the longest the host may stay silent); `idle` 0, the default, is no limit |
 | `kernel_idle` | the dispatcher's own idle timeout; 0 turns it off |
 | `host_depth`, `event_depth` | the command ring in the X280's memory and the event ring in host memory; powers of two, at most 64 and 128 |
 | `batch` | commands stored per batch: every line, then one fence |
@@ -293,6 +296,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `thread` | for a program with an X280 thread: `"card"` builds and starts it after READY, `"host"` runs its `host_fallback` instead |
 | `recover` | hand the dispatcher every core's reset list at load, so that a give-up resets and loads again each core that did not leave the command (default True). It costs the load about 4 ms and 68,864 bytes of the upload region for the map/collect example (the list grows with the kernels and their arguments). One list a group of cores with the same kernels (several programs: each core the list of its program); on islands each island's own, link cores left out. Not done for program switches, nor for a program with semaphores: `run.recovery_refused` says why |
 | `island` | `(graph, i)`: this card is island `i` of a `komorebi.islands.Graph` whose island `i` has every core a rank in core order. Every core's island area holds island `i`'s header and table, the dispatcher gets `i`'s first rank and count (`kmd_args.island`), and the run's groups are flat ranks of the whole graph (`Run.ranks`); a group's part on this card runs ([islands](runtime.md#islands)) |
+| `link`, `tensors` | an island's own: its `LinkPlan` (the link core and link area its commands across ride; needs `island`) and the L1 address of the tensor table its cores hold. The island sessions pass them; a program on one card never does |
 
 Event room. The dispatcher takes a command that ends in an event only while the
 unread events, one per busy slot and one more fit the event ring; it counts as read
@@ -689,17 +693,19 @@ the kernel's header; `reason_name` is the lower-case suffix):
 
 | `reason` | `reason_name` | The command |
 |---|---|---|
-| 1 | `handler` | has a handler from 240 to 251 (the session's own commands may carry 240 to 243) |
+| 1 | `handler` | has a handler above 239 that its source may not send: the host's own commands may carry 240 to 242, 245 and 248 (and `EXIT`), a work cluster's thread 240 and 245 |
 | 2 | `flags` | sets the reserved flag bit 0 |
 | 3 | `group` | has a group of 0 cores, or one that does not lie inside the cores |
 | 4 | `exited` | came after EXIT |
 | 9 | `queue` | is queued (`queued=True`) while the kernel's job queue holds 64 commands |
 | 13 | `program` | names a program its group's cores do not hold (named for the dispatcher's check; the host refuses such a command first) |
+| 14 | `thread` | goes from the host to a work cluster whose thread already has as many commands unanswered as it takes |
 
 `submit` and `submit_many` check handlers and groups before anything is queued, the
 host sets no reserved flag, and a stopped run submits nothing, so through this API a
-rejection other than 9 means that the host and the kernel were built from different
-headers.
+rejection other than 9 (a full job queue), 13 (a program the cores do not hold, where
+the host does not check) and 14 (a full thread) means that the host and the kernel
+were built from different headers.
 
 ## Builds
 
