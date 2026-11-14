@@ -15,6 +15,13 @@ from komorebi.layout import partition
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE.parents[1] / "examples" / "01_mapcollect" / "kernels"
+SPIN_KERNELS = {
+    "reader": HERE / "kernels" / "reader.cpp",
+    "writer": KERNELS / "writer.cpp",
+    "compute": HERE / "kernels" / "compute.cpp",
+}
+HANDLER_SPIN = 9  # kernels/spin.h
+SPIN_WHERE = {"reader": 1, "math": 2}
 TILE = 32
 STARTED = time.monotonic()
 
@@ -27,8 +34,9 @@ def log(message):
 def parse(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
-        "--step", type=int, default=1, help="1: by the host, 2: by the dispatcher"
+        "--step", type=int, default=1, help="1: the host, 2: the dispatcher, 3: stuck"
     )
+    parser.add_argument("--spin", default="reader", help="step 3: reader or math")
     parser.add_argument("--first", type=int, default=14, help="the group's first core")
     parser.add_argument("--core", type=int, default=15, help="the core reset")
     parser.add_argument("--tiles", type=int, default=120, help="input tiles of a MAP")
@@ -116,6 +124,8 @@ def main():
     generator = np.random.default_rng(args.seed)
     group = (args.first, 2)
     report = {"step": args.step, "group": list(group), "core": args.core}
+    if args.step == 3:
+        report["spin_where"] = args.spin
     with km.Session(log=log) as session:
         grid = session.grid
         cores = grid[0] * grid[1]
@@ -128,7 +138,7 @@ def main():
         output = session.tensor(zeros, "bfloat16", "tile")
         program = km.Program(
             "mapcollect",
-            kernels=KERNELS,
+            kernels=SPIN_KERNELS if args.step >= 3 else KERNELS,
             buffers=[
                 km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16),
                 km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
@@ -147,6 +157,13 @@ def main():
         before = maps.batch([group, everyone], args.maps)
         split = len(maps.done)
         x, y = args.core % grid[0], args.core // grid[0]
+        spin = None
+        if args.step == 3:
+            log(f"SPIN on core {args.core} ({args.spin})")
+            spin = run.submit(HANDLER_SPIN, group, [1, SPIN_WHERE[args.spin]])
+            time.sleep(0.5)
+            for core in run.inspect(group):
+                log(f"inspect of the stuck core's group: {brief(core)}")
         if args.step == 1:
             log(f"reset of core {args.core} ({x}, {y}) by the host")
             started = time.perf_counter()
@@ -160,6 +177,13 @@ def main():
         time.sleep(0.1)
         for core in run.inspect(group):
             log(f"inspect after the reset: {brief(core)}")
+        if spin is not None:
+            try:
+                run.wait(spin, timeout=10.0)
+                report["spin"] = "done"
+            except km.CommandTimeout as timeout:
+                report["spin"] = "given up" if timeout.given_up else "timeout"
+            log(f"SPIN: {report['spin']}")
         if not back:
             report["firmware"] = False
             log("the core's firmware did not report DONE")
