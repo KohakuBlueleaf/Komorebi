@@ -1,8 +1,9 @@
 """The session's recovery on two cards as islands, public calls only: a handler that
-never returns on one core of island 1 inside one group over every rank, its give-up,
-island 1's dispatcher resetting that core, then MAP commands on every rank that must
-be exact. Prints one JSON line; see README.md."""
+never returns on one core of island 1 (--step 1: in a group of island 1's ranks; 2: in
+one group over every rank), its give-up, island 1's dispatcher resetting that core, a
+MAP on the group that must be exact, a clean stop. One JSON line; see README.md."""
 
+import argparse
 import json
 import sys
 import time
@@ -39,15 +40,18 @@ def exact(got, values, group):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--step", type=int, choices=(1, 2), required=True)
+    step = parser.parse_args().step
     generator = np.random.default_rng(1)
-    report = {"cards": [0, 1]}
-    with km.Session(cards=[0, 1], log=log) as session:
+    report = {"cards": [0, 1], "step": step}
+    with km.Session(cards=[0, 1], log=log, kernel_bytes=84 * 1024) as session:
         ranks = session.ranks
         graph = session.graph
-        island, core = 1, 15  # rank 135: not a column leader, not core 0
+        island, core = 1, 15  # not a column leader, not core 0
         spinning = graph.first(island) + core
-        group = (0, ranks)
-        report.update({"ranks": ranks, "island": island, "core": core})
+        group = (graph.first(island), graph.count(island)) if step == 1 else (0, ranks)
+        report.update({"ranks": ranks, "group": group, "island": island, "core": core})
         values = generator.integers(-2, 3, (2 * ranks * TILE, TILE)).astype(np.float32)
         source = session.tensor(values, "bfloat16", "tile")
         output = session.tensor(
@@ -74,11 +78,17 @@ def main():
             for kept in run.recovery
         ]  # per island: lists, bytes, seconds
         log(f"loaded: recovery {report['recovery']}")
+        try:  # every core of island 1, its own numbers
+            report["inspect"] = len(run.inspect(island))
+        except km.KomorebiError as error:
+            report["inspect"] = str(error)
+        log(f"inspect of island {island}: {report['inspect']}")
         handler = run.program.handler("map")
         before = run.wait(run.submit(handler, group, map_words(source, output, group)))
         report["before"] = [event.kind for event in before]
         log(f"SPIN on rank {spinning} (island {island} core {core}), no host action")
-        spin = run.submit(HANDLER_SPIN, group, [spinning, SPIN_WHERE["reader"]])
+        where = [spinning - group[0], SPIN_WHERE["reader"]]  # its index in the group
+        spin = run.submit(HANDLER_SPIN, group, where)
         try:
             report["spin"] = [event.kind for event in run.wait(spin, timeout=15.0)]
         except km.CommandTimeout as timeout:
@@ -96,7 +106,13 @@ def main():
         report["after"] = [event.kind for event in after]
         log(f"MAP on {group} after: {report['after']}")
         log("stop")
-        results = run.stop()
+        try:
+            results = run.stop()
+        except km.KomorebiError as error:
+            report["stop"] = str(error)
+            print(json.dumps(report, default=str), flush=True)
+            sys.exit(1)
+        report["stop"] = "clean"
         report["kernel_errors"] = [result["error_name"] for result in results]
         (got,) = session.read_bf16(output)
     report["exact_after"] = exact(got.reshape(-1, TILE, TILE), values, group)
@@ -106,7 +122,9 @@ def main():
         and report.get("recovered") == [core]
         and [(entry["island"], entry["cores"]) for entry in report["recoveries"]]
         == [(island, [core])]
-        and report["after"] == ["done", "done"]
+        and report["after"] == ["done"] * step  # one part an island
+        and report["stop"] == "clean"
+        and isinstance(report["inspect"], int)
         and report["exact_after"]
     )
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
