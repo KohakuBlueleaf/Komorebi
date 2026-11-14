@@ -34,10 +34,15 @@ W blocks down columns.
 
 ## Which kernel runs a broadcast
 
-| NoC | Kernel | Sender | Direction of the multicast |
+| NoC | Kernel (by default) | Sender | Direction of the multicast |
 |---|---|---|---|
 | NoC0 | reader (RISCV_0) | top of a column, left end of a row | +y, +x |
 | NoC1 | writer (RISCV_1) | bottom of a column, right end of a row | -y, -x |
+
+A program that gives its kernels the other NoCs (`km.Program(noc=...)`,
+[Movement](movement.md#the-noc-of-each-cpu)) runs a NoC0 broadcast in its writer and a
+NoC1 broadcast in its reader; the words name the NoC, and a broadcast started on a
+kernel of the other NoC gives up at its start.
 
 Every core of a broadcast runs the broadcast in the same kernel, so a broadcast buffer has one
 producer per core. The sender sits where its NoC's direction starts; a multicast from
@@ -101,6 +106,32 @@ that returns false or 0 has recorded the give-up; the kernel leaves the body.
 | `cast(block, word)` | the same, and `word` rides in the VALID write. Without a buffer: the word alone, no `reserve` before it |
 | `arrive(block)` | waits for VALID >= `block + 1`; takes the block's word when it carries one |
 | `word()` | the word of the block cast or arrived last; 0 when that block carried none |
+
+## Valid when sent
+
+```c++
+km::Broadcast broadcast(reader, command, kArgBroadcast);
+broadcast.valid_when_sent();  // before the first cast of the command
+```
+
+By default the sender waits for every receiver's acknowledgement of a block before it
+multicasts the block's VALID. After `valid_when_sent()` the block's multicast and its
+VALID are one linked NoC transaction, the VALID its last request, with no wait between
+them; before the next block's multicast the sender waits for the last one's
+acknowledgements, so one transaction of the broadcast is in flight at a time. Word-only
+casts are unchanged. It is refused at build in dynamic NoC mode; the block and its
+VALID always go from the same CPU, on its one NoC, to the same rectangle.
+
+What it rests on: the chip's NoC documentation orders the two packets in transit (same
+source, rectangle and NoC, one static virtual channel) but states no order in which a
+receiver's L1 takes two writes to different addresses. tt-metal's matrix product and
+Kohaku-TT's kernel rely on it, and Komorebi offers it as an option; the acknowledged
+form is the one with a documented guarantee.
+
+Measured on the dense linear kernel (one p150a, single calls; the output after a loop
+of about 9 s checked, its sampled rows the same as the acknowledged form's): 4,480.4 us
+a call at 8192 cubed against 4,488.1, 34,522.4 at 16384 cubed against 34,544.8. The
+product is bound by compute, so the acknowledgement's round trip was not on its path.
 
 ## A word
 
