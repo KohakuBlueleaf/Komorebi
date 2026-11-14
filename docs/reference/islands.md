@@ -546,6 +546,9 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a record (the page, the offset and the bytes, 16 bytes of head and the bytes padded to 16) appended to the CPU's batch (2,048 bytes in its own words), `source` free on return; the batch is sent when the next record does not fit, when a record is for another island, or at `km::put_wait`: one put line, the batch as one ring piece onto a landing page in that island's DRAM, and one confirmation once that island's lead page CPU has written each record with one plain NoC write at its page's address plus the offset. One batch of a CPU is in flight at a time, so one CPU's records apply in the order it put them. A range of up to 2,000 bytes is one record (a longer one, several). Does not wait; the batch is sent only when full or at `km::put_wait`, so a command ends with it (a batch left by an earlier command is dropped). Across, the page CPUs need their rings and the range ends below 1 MiB of its page (else `bad_item` at `ask`). Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
 | `km::write_bytes(core, command, tensor, page, offset, bytes, source)` | `km::put_bytes`, then `km::put_wait(core, command)`: the bytes written on return |
 | `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there). False: gave up |
+| `km::read_bytes(core, command, tensor, page, offset, bytes, into)` | exactly `bytes` bytes at byte `offset` of page `page` land at L1 `into`, and nothing else of L1 is written; returns once they have. A page this island holds: one NoC read. A page another island holds: one get line (64 bytes); that island's page CPUs take these lines in turn, read the range from DRAM and write it into `into`: the words before `into`'s first 16-byte line and after its last, one inline word write each, then the 16-byte lines between as one write that adds 1 to the CPU's page port. Offset and bytes are multiples of 4 and `into` has the offset's low 6 bits (a read from DRAM has the same low 6 bits at both ends on Blackhole, and pages start 64-aligned); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Across, a link apart and a page a packet holds (else `bad_item` at `ask`). False: gave up |
+| `km::ask_bytes(core, command, tensor, page, offset, bytes, into, asked)` | the same, not waited for: a range asked across adds 1 to `asked`. Any number may be in flight, each into its own `into`; the island queues 32 lines at most, and an ask past them waits for a free line. `km::bytes_wait` before the CPU's next page call |
+| `km::bytes_wait(core, command, asked)` | waits until the CPU's NoC reads have landed and its page port has counted `asked` (then 0). False: gave up |
 | `km::Stream` | a stream over a `km::Tensor` reads and writes through these calls ([Movement](movement.md#a-stream-over-islands)) |
 
 A program loaded on one island (a card's own session, or an island session of one
@@ -572,6 +575,13 @@ p150a cards, one page link, 2026-11-15:
   confirmation a batch), PLACE 5.99 ms, 0.091 µs a key for the island, both exact.
   The same with a line of its own for every key (12 bytes inside the line) was
   112.9 ms.
+- `experiments/islands_bytes` (four links): island 0's 118 ranks each read 64 ranges,
+  each at a page and offset of its own, of a 1 MiB tensor island 1 holds (4,096-byte
+  pages), of 4, 64, 128 and 2,048 bytes, one in flight and 32: every word exact and
+  the 16 bytes either side untouched. Island 1 answers a range in 1.70 µs (4 bytes) to
+  1.95 µs (2,048 bytes) however many a rank keeps in flight, so at this load a rank
+  waits 190 to 220 µs a range; read from island 0's own DRAM, a range takes 0.48 to
+  0.54 µs one in flight and 0.18 to 0.30 µs with 32.
 
 - Example 11's `islands.py`: island 0's four cores copy 192 pages island 1 holds
   alone, exact, and READ them in 275.8 µs (1.43 GB/s); with `--write-across` they copy
@@ -785,10 +795,12 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   is sent. Example 16 `--cards 0,1 --phase live`: sum cut at the boundary, its island
   1 half switching to scale and widen and back 200 times, 600 commands exact, the load
   onto island 0 refused.
-- A write of part of a page another island holds (example 09's writer gives up: the
-  page calls move whole pages) and a tensor read by an address the kernel builds itself
+- A tensor read or written by an address the kernel builds itself
   (`InterleavedAddrGen`: profile pages, job tables, the raster and ray tracer projects)
-  do not cross. An overlay of the kernel form is built with its kernel's defines and
+  does not cross, and neither do its ranges of a page: the raster passes read the X280
+  thread's regions in one DRAM bank, and the ray tracer's packet streams have page bytes
+  that change with the handler and the stage, where a `km::Tensor` takes its page
+  bytes from its compile arguments. An overlay of the kernel form is built with its kernel's defines and
   compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
 - More than two cards: the mesh opens 1 x n; tried with two.
 - A split card: a copy across and a put over more than one link; more than one wire a
