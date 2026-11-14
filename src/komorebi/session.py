@@ -45,12 +45,13 @@ from komorebi.errors import (
     ProgramError,
     StartError,
 )
-from komorebi.program import KernelSizes, Program
+from komorebi.program import KernelSizes, Program, messages_header
 from komorebi.run import Run
 
 CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
 MESSAGES_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may take
+X280_QUEUES = "x280_queues"  # the region of the X280 ranks' queues in their thread
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
@@ -921,6 +922,7 @@ class Session:
             if on_card
             else {}
         )
+        ranks = _x280_ranks(program, owner, placed, on_card)
         depth = depth or program.depth
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
@@ -954,7 +956,9 @@ class Session:
                 state_tensor.address,
                 **thread_module.kernel_work_args(ends),
                 messages_handler=(
-                    program.messages.word() if program.messages is not None else 0
+                    program.messages.dispatcher_word()
+                    if program.messages is not None
+                    else 0
                 ),
                 programs=_held_fields(placed) if placed and placed.switch else [],
             )
@@ -962,9 +966,12 @@ class Session:
             plan, port_lines = _port_lines(owner, dispatch, rings)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
+            if ranks is not None:
+                ranks = _x280_words(self, program, dispatch, rings, regions, plan)
             descriptor = backend.describe(
-                program, sources, tag, depth, wait, idle, trace, port_lines, placed
-            )
+                program, sources, tag, depth, wait, idle, trace, port_lines, placed,
+                ranks,
+            )  # fmt: skip
             started = time.perf_counter()
             try:
                 elves, *build = descriptor.build()
@@ -1066,6 +1073,11 @@ class Session:
                             owner.x280_ports["noc"],
                         )
                         thread_run.write_ports()
+                    if ranks is not None and cluster == program.messages.x280_cluster:
+                        thread_run.ranks = _x280_line(
+                            program, dispatch, backend, ranks, wait, mhz
+                        )
+                        thread_run.write_ranks()
                     run.threads[cluster] = thread_run
                 for (
                     thread_run
@@ -1193,6 +1205,71 @@ def _port_lines(program, dispatch, rings):
     return plan, _PortLines(
         [int(core_tile) for core_tile in dispatch.core_table()[:cores]], lines
     )
+
+
+def _x280_ranks(program, owner, placed, on_card):
+    """The thread of the program's X280 ranks, its queues' region (X280_QUEUES) added;
+    None when the program has none."""
+    messages = program.messages
+    if messages is None or messages.x280_ranks == 0:
+        return None
+    work = owner.threads.get(messages.x280_cluster)
+    if placed is not None or work is None or not on_card:
+        raise ValueError(
+            f"{program.name}: X280 ranks need one program with its thread on cluster "
+            f"{messages.x280_cluster}, on the card"
+        )
+    size = messages.queue_region_bytes()
+    if work.regions.get(X280_QUEUES, size) != size:
+        raise ValueError(f"{program.name}: the thread's region {X280_QUEUES!r} is ours")
+    work.regions[X280_QUEUES] = size
+    return work
+
+
+def _x280_words(session, program, dispatch, rings, regions, plan):
+    """The X280 ranks' words of km::MessagesArgs (without the inbox): their queues'
+    bank address and DRAM tile, their cluster's tile, the cores' credit lines there."""
+    messages = program.messages
+    cluster = messages.x280_cluster
+    bank, queue = regions[thread_module.BANK_OF_CLUSTER[cluster]].address(
+        (cluster, X280_QUEUES)
+    )
+    x, y = session.device.dram_core(bank)
+    info = dispatch.work_info(cluster)
+    at = thread_module.ranks_at(rings[cluster][0], plan)
+    return {
+        "x280_queue": queue,
+        "x280_bank": int(x) | int(y) << 16,
+        "x280_tile": info["virtual_x"] | info["virtual_y"] << 16,
+        "x280_credits": (
+            info["lim_base"] + at + thread_module.layout()["KMX_RANKS_CREDITS"]
+        ),
+    }
+
+
+def _x280_line(program, dispatch, backend, words, wait, mhz):
+    """The X280 ranks' line and area for their thread (komorebi.thread.Ranks)."""
+    messages = program.messages
+    abi_headers, (constants, _) = abi.headers(), messages_header()
+    cores = dispatch.grid_x * dispatch.grid_y
+    ticks = thread_module.TIMER_HZ
+    line = {
+        "ranks": messages.x280_ranks,
+        "cores": cores,
+        "queue": words["x280_queue"],
+        "cap": messages.queue_messages,
+        "message_bytes": messages.message_bytes,
+        "quota": messages.quota(cores),
+        "counters": messages.counters,
+        "idle": max(1, round(messages.idle_cycles / (mhz * 1e6) * ticks)),
+        "inbox": backend.inbox.address,
+        "inbox_messages": constants["kMessagesInbox"],
+        "lines": dispatch.lim_base + abi_headers["KMD_LIM_MESSAGES"],
+        "lines_tile": dispatch.l2_x | dispatch.l2_y << 16,
+        "wait": round(wait * ticks),
+    }
+    tiles = [int(core_tile) for core_tile in dispatch.core_table()[:cores]]
+    return thread_module.Ranks(line, tiles)
 
 
 def _region_bytes(value):
@@ -1390,6 +1467,7 @@ class _Backend:
         self.control_offset = 0
         self.trace_tensor = None
         self.state_tensor = None
+        self.inbox = None  # the X280 ranks' messages to each core, in L1
         self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
@@ -1463,12 +1541,19 @@ class _Backend:
         self.control_rows[:, at : at + line] = header
         self.control_rows[:, at + line : at + line + len(table)] = table
 
-    def _dynamic(self, program, cores, depth, base):
+    def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
-        reader / writer and compute words; status lines in the kernel's LIM."""
+        reader / writer and compute words; status lines in the kernel's LIM; with the
+        X280 ranks' words `x280`, each core's inbox in L1 (zeroed)."""
         messages = program.messages
         if messages is None:
             return [], []
+        if x280 is not None:
+            constants, _ = messages_header()
+            words = constants["kMessagesInbox"] * messages.message_bytes // 4
+            self.inbox = _words(self.session, np.zeros((cores, words)), grid)
+            self.io.append(self.inbox)
+            x280 = x280 | {"inbox": self.inbox.address}
         abi_headers = abi.headers()
         messages.check(cores, MESSAGES_DRAM_BYTES, depth)
         page = 32 * messages.message_bytes  # kMessagesPageMessages messages a page
@@ -1484,7 +1569,9 @@ class _Backend:
             self.io.append(bodies)
             body = bodies.address
         lines = base + abi_headers["KMD_LIM_MESSAGES"]
-        return messages.args(queue.address, lines, body), messages.compute_args(cores)
+        return messages.args(queue.address, lines, body, x280), messages.compute_args(
+            cores
+        )
 
     def describe(
         self,
@@ -1497,9 +1584,11 @@ class _Backend:
         trace,
         port_lines=None,
         placed=None,
+        x280=None,
     ):
         """The program descriptor for every core, with the start-up arguments; with
-        `placed` (a programs.Plan) the runtime's kernels, per group of cores."""
+        `placed` (a programs.Plan) the runtime's kernels, per group of cores; `x280`:
+        the X280 ranks' words of a dynamic program."""
         abi_headers = abi.headers()
         port = self.port
         grid = (port.grid_x, port.grid_y)
@@ -1538,7 +1627,7 @@ class _Backend:
             "trace_cap": self.trace_cap,
         }
         messages_reader_writer_args, messages_compute_args = self._dynamic(
-            program, cores, depth, base
+            program, cores, depth, base, grid, x280
         )
         reader_args, writer_args, compute_args = [], [], []
         for core in range(cores):

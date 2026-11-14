@@ -280,6 +280,13 @@ enum {
 #define KMD_WIN_RESET 23u
 #define KMD_WIN_RESET_REGISTER 24u
 
+/* The X280 ranks of a dynamic program in messages_handler's bits 32 to 39: work cluster
+ * c's X280 cores 0 to count - 1 (count 1 to KM_X280_RANKS_MAX; 0: none). */
+#define KMD_X280_RANKS(cluster, count) \
+    (((uint64_t)(cluster) | (uint64_t)(count) << 4) << 32)
+#define KMD_X280_RANKS_CLUSTER(word) ((uint32_t)((word) >> 32) & 0xFu)
+#define KMD_X280_RANKS_COUNT(word) ((uint32_t)((word) >> 36) & 0xFu)
+
 /* The argument block's layout; the kernel rejects a block of another version. */
 #define KMD_ARGS_VERSION 3u
 /* Work clusters with a ring to the kernel (clusters 1 to 3). */
@@ -311,7 +318,9 @@ typedef struct {
     uint64_t work_event_depth; /* events per ring, a power of two, at most 1024 */
     uint64_t work_noc[KMD_WORK_CLUSTERS];      /* each cluster's tile: x | y << 16 */
     uint64_t work_noc_addr[KMD_WORK_CLUSTERS]; /* NoC address there of KMD_WORK_* */
-    uint64_t messages_handler; /* dynamic handlers, one per byte (dynamic.h); 0: none */
+    /* dynamic handlers, one per byte (dynamic.h), 0: none; bits 32 to 39 the X280
+     * ranks, KMD_X280_RANKS(cluster, count) */
+    uint64_t messages_handler;
     uint64_t version;          /* KMD_ARGS_VERSION */
     uint64_t programs; /* 1: KMD_LIM_PROGRAMS holds each core's program; 0: none */
 } kmd_args_t;
@@ -374,6 +383,10 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 #define KMD_WORK_IN(event_depth) \
     (KMD_WORK_EVENTS + (((event_depth) * 16u + 63u) & ~63u))
 #define KMD_WORK_IN_DEPTH 8u
+/* The run line of a dynamic run with X280 ranks on the cluster (KM_X280_RUN_*): one
+ * 16-byte store on its own 64-byte line after the command lines. */
+#define KMD_WORK_RUN(event_depth) (KMD_WORK_IN(event_depth) + KMD_WORK_IN_DEPTH * 64u)
+#define KMD_WORK_RUN_BYTES 64u
 
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u

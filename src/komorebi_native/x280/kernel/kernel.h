@@ -80,7 +80,10 @@ typedef struct {
     uint32_t slot, sequence, group, request, source; /* the RUN command */
     uint32_t end; /* 1 + the end command's slot while busy; 0 */
     uint32_t checks;
-    uint32_t first[2u * KM_CORES_MAX]; /* the first pass: sent, consumed per core */
+    /* the X280 ranks: their work cluster (0: none), how many; the RUN's handler */
+    uint32_t x280_cluster, x280_count, run_handler;
+    /* the first pass: sent, consumed per core (an X280 rank's at its core index) */
+    uint32_t first[2u * KM_CORES_MAX];
 } kmd_messages_t;
 
 /* Commands handed to a work cluster's thread (work_port.h), line n in slot n % depth;
@@ -100,6 +103,10 @@ typedef struct {
     uint64_t submitted[KMD_WORK_IN_DEPTH];
     uint64_t deadline[KMD_WORK_IN_DEPTH];
     uint64_t line[KMD_WORK_IN_DEPTH][8]; /* each line as the thread is to see it */
+    /* the run line of the X280 ranks (KM_X280_RUN_*), and whether it waits for the
+     * thread to serve */
+    uint32_t run_line[4];
+    uint32_t run_unstored;
 } kmd_thread_t;
 
 /* An inspect being read, a core a loop pass: the group, the next record, what it
