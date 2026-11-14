@@ -63,6 +63,22 @@ registers (reads only) and the cached Zero Device. On card 1, 2026-11-14:
 So reading 2,048 lines that fill every set of the one way, 128 KiB of contiguous
 addresses, removes every other line from the cluster's caches.
 
+`kmx_evict` does that with one load per line of the Zero Device from 0x0A02_0000, the
+second 128 KiB of it. `python evict.py time` times it on core 0 against the same loads
+of a 128 KiB pad in the cluster's own DRAM, 20 times each after the thread read 1 MiB
+of other lines (the cache full of clean lines), wrote them (full of dirty lines), or
+had just evicted (card 1, 2026-11-14, host load 4.9):
+
+| The cache before | `kmx_evict` (the Zero Device) | the pad in DRAM |
+|---|---|---|
+| clean lines | 21.4 to 21.8 µs | 100.1 to 101.0 µs |
+| dirty lines | 24.4 to 26.4 µs | 109.5 to 111.4 µs |
+| just evicted | 18.2 µs | 18.4 µs |
+
+The Zero Device answers from the cluster itself; the pad's lines come from DRAM. A
+sweep costs 10.4 ns a line, so eviction is cheaper from about 2,540 lines (159 KiB)
+on.
+
 ## Running it
 
 ```sh
@@ -71,6 +87,7 @@ python fetch.py --bytes 1048576 --cores 1 4 12 --repeats 5 --store 1048576
 python fetch.py --bytes 16777216 --cores 1 4 12 --repeats 3 --store 1048576
 python fetch.py --bytes 67108864 --cores 1 4 12 --repeats 3 --store 1048576
 python evict.py shape
+python evict.py time --repeats 20
 ```
 
 `fetch.py` writes the source as a DRAM tensor of 16 KiB pages whose pages in bank

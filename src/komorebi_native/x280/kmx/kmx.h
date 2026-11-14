@@ -57,6 +57,10 @@ void kmx_flush(int id);
 void kmx_invalidate_at(int id, uint64_t offset, uint64_t bytes);
 void kmx_flush_at(int id, uint64_t offset, uint64_t bytes);
 
+/* Any core: one cache way of the cached Zero Device read, so every line of the cluster's
+ * cache is replaced: dirty lines written back, every region's lines dropped. */
+void kmx_evict(void);
+
 /* Fills `command`: `handler` of `program` (kProgramName in a run of several programs,
  * else 0) on cores [first, first + count), arguments 0. */
 void kmx_command(

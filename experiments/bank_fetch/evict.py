@@ -1,6 +1,6 @@
-"""The cluster cache read from work cluster 1's thread (`shape`): its configuration,
-the ways enabled, every master's way mask and the Zero Device past the runtime's
-pinned span. One JSON line. Example: python evict.py shape"""
+"""Work cluster 1's thread reads the cluster cache's shape (`shape`: configuration,
+ways, way masks, the Zero Device past the pinned span) or times kmx_evict against the
+same reads of a pad in DRAM (`time`). One JSON line. Example: python evict.py shape"""
 
 import argparse
 import json
@@ -11,8 +11,11 @@ import komorebi as km
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE.parents[1] / "examples" / "08_parallel_thread" / "kernels"  # NOPs
-MODES = {"shape": 0}
+MODES = {"shape": 0, "time": 1}
 MASTERS = 38
+TICKS = 50  # kmx_time() ticks a microsecond
+PADS = ("zero_device", "dram")
+STATES = ("after_read", "after_write", "after_evict")  # the cache before the call
 T0 = time.monotonic()
 
 
@@ -53,17 +56,28 @@ def shape_report(words):
     }
 
 
+def time_report(words):
+    """Per pad and state of the cache, the best and worst eviction in microseconds."""
+    report = {}
+    for p, pad in enumerate(PADS):
+        for s, state in enumerate(STATES):
+            best, worst = words[2 * (3 * p + s) : 2 * (3 * p + s) + 2]
+            report[f"{pad}_{state}_us"] = [best / TICKS, worst / TICKS]
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("mode", choices=sorted(MODES))
+    parser.add_argument("--repeats", type=int, default=20)
     args = parser.parse_args()
     with km.Session(log=log) as session:
         program = km.Program("bank_evict", kernels=KERNELS)
         program.thread(
             cluster=1,
             sources=[HERE / "thread" / "evict.c"],
-            regions={"pad": 1 << 17},
-            words=[MODES[args.mode]],
+            regions={"pad": 1 << 17, "fill": 1 << 20},
+            words=[MODES[args.mode], args.repeats],
             deadline=10.0,
         )
         run = session.load(program)
@@ -73,7 +87,8 @@ def main():
         run.stop()
         log("stopped")
     report = {"mode": args.mode, "thread": [result.state, result.code, result.error]}
-    report.update(shape_report(list(result.words) + [0] * 48))
+    words = list(result.words) + [0] * 48
+    report.update(shape_report(words) if args.mode == "shape" else time_report(words))
     report["ok"] = result.ran and result.code == 0
     print(json.dumps(report), flush=True)
     return 0 if report["ok"] else 1

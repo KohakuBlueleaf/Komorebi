@@ -33,6 +33,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `void kmx_invalidate(int id)` | any | drops the cluster's cached lines of the region: before reading what the grid or the host wrote | - |
 | `void kmx_flush(int id)` | any | writes the region's cached lines back to DRAM: after writing what the grid or the host will read | - |
 | `void kmx_invalidate_at(int id, uint64_t offset, uint64_t bytes)`, `kmx_flush_at` | any | the same for the lines holding `bytes` of the region from `offset` | - |
+| `void kmx_evict(void)` | any | empties the cluster's cache: reads 128 KiB of the cached Zero Device, one line for each line of the cache's one way, so dirty lines are written back and every other line dropped; 21 to 26 µs on one core, against 10.4 ns a line for a sweep | - |
 | `int kmx_spawn(int core, void (*function)(int core, void* arg), void* arg)` | 0 | starts `function(core, arg)` on core 1, 2 or 3 and returns | `KMX_OK`; `KMX_FULL` while that core runs its last spawn; `KMX_BAD` for another core |
 | `int kmx_join(int core)` | 0 | waits until `core` returned from its last spawn (at once if none) | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_BAD` |
 | `int kmx_parallel(void (*function)(int core, void* arg), void* arg)` | 0, not nested | spawns `function` on cores 1 to 3, runs `function(0, arg)`, joins them | `KMX_OK`; `KMX_FULL` if a spawned core is busy (nothing started); `KMX_LATE` or `KMX_STOPPED`; `KMX_STOPPED` with error `parallel` from another core or inside a `kmx_parallel` |
