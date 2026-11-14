@@ -68,7 +68,7 @@ typedef struct {
     uint64_t check_value; /* what the host wrote at the start of that line */
     uint64_t flags;       /* KMX_FLAG_* */
     uint32_t cluster;     /* the work cluster the thread runs on, 1 to 3 */
-    uint32_t reserved;
+    uint32_t island;      /* its island | islands << 16; 0: island 0 of one */
     kmx_region_t region[KMX_REGIONS_MAX];
     uint32_t words[KMX_WORDS_MAX];
 } kmx_args;

@@ -303,8 +303,24 @@ KM_STATIC_ASSERT(
 #define KM_LIVE_TRACE 20u     /* live word: the trace's L1 address (0: none) */
 #define KM_LIVE_TRACE_CAP 21u /* live word: the sequences it holds */
 #define KM_TRACE_ENTRY 16u /* bytes of one sequence's trace entry (km::kTraceWords) */
+/* Islands: sets of cores that reach each other only through links, ranks flat and
+   contiguous by island. A header line {island, islands, its first rank, its ranks} */
+#define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
+/* then the island table: an entry per island {first rank u16, count u16, next link u8
+   (this island's own link number toward it), hops u8, 0 u16}; the host's, at load */
+#define KM_ISLANDS_MAX 16u
+#define KM_ISLAND_ENTRY_BYTES 8u
+#define KM_ISLAND_HEADER_BYTES 16u
+#define KM_ISLAND_NO_LINK 0xFFu /* next link of the holder's own entry */
+#define KM_ISLAND_HERE 0u       /* header words: this island (0: island 0 of one) */
+#define KM_ISLAND_COUNT 1u      /* islands in the table (0 read as 1) */
+#define KM_ISLAND_FIRST 2u      /* this island's first rank */
+#define KM_ISLAND_RANKS 3u      /* this island's ranks */
+#define KM_ISLANDS_BYTES                                                             \
+    ((KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES + 63u) / 64u * \
+     64u)
 /* KM_RING_SLOTS commands, the last part of the block */
-#define KM_CONTROL_RING (KM_CONTROL_LIVE + KM_LIVE_BYTES)
+#define KM_CONTROL_RING (KM_CONTROL_ISLANDS + KM_ISLANDS_BYTES)
 #define KM_CONTROL_BYTES (KM_CONTROL_RING + KM_RING_SLOTS * 64u)
 #define KM_X280_TO_TILE 0u /* word offsets of the KM_X280_TO line */
 #define KM_X280_TO_BOX 1u  /* LIM address of this core's mailbox line; 0: not served */
@@ -332,6 +348,13 @@ KM_STATIC_ASSERT(
     "abort words and live words: whole lines"
 );
 KM_STATIC_ASSERT(
+    KM_CONTROL_ISLANDS == KM_CONTROL_LIVE + KM_LIVE_BYTES &&
+        KM_CONTROL_ISLANDS % 64u == 0 && KM_ISLANDS_MAX >= 1u &&
+        KM_ISLANDS_MAX <= 32u &&
+        KM_CONTROL_ISLANDS + KM_ISLANDS_BYTES == KM_CONTROL_RING,
+    "the island area: whole lines after the live words; an island is a bit of a word"
+);
+KM_STATIC_ASSERT(
     KM_CONTROL_RING % 64u == 0 &&
         KM_CONTROL_RING + 64u * KM_RING_SLOTS == KM_CONTROL_BYTES,
     "the ring: whole lines, the last part of the block"
@@ -345,8 +368,8 @@ KM_STATIC_ASSERT(
 /* Host -> dispatcher: one command is one command, its number in `sequence` and the
    landing words. Handlers 252..254 are commands to the kernel and are not forwarded. */
 
-/* Dispatcher -> host: one 16-byte event per finished command, in a host-memory ring. */
-/* auxiliary = first core of the running group | sequence low 16 << 8 */
+/* Dispatcher -> host: one 16-byte event per finished command, in a host-memory ring.
+   DONE: auxiliary = first core (of its island's part, local) | sequence low 16 << 8 */
 #define KM_EVENT_DONE 0u
 /* auxiliary = slot | sequence low 16 << 8; cores: their state words */
 #define KM_EVENT_TIMEOUT 1u
@@ -363,8 +386,8 @@ typedef struct {
 
 KM_STATIC_ASSERT(sizeof(km_event_t) == 16, "an event is one 16-byte chunk");
 
-/* A DONE or TIMEOUT event's auxiliary: the first core or the slot in its low 8 bits,
-   the low 16 bits of the command's sequence number above them. */
+/* A DONE or TIMEOUT event's auxiliary: the first core (its island's local core) or the
+   slot in its low 8 bits, the low 16 bits of the command's sequence number above. */
 #define KM_EVENT_AUXILIARY_LOW 0xFFu
 #define KM_EVENT_SEQUENCE_SHIFT 8u
 #define KM_EVENT_SEQUENCE_MASK 0xFFFFu

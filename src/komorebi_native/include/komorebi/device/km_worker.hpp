@@ -255,6 +255,7 @@ namespace km {
                     : started + (static_cast<uint64_t>(arguments.idle_limit) << 10)
             );
             uint32_t passes = 0, gave = kGaveNone, sequence = 0;
+            const uint32_t rank = islands_at(arguments.control).first() + arguments.me;
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
             for (;;) {
                 invalidate_l1_cache();
@@ -262,7 +263,7 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
-                const Pass found = scan(ring, last, arguments.depth, arguments.me);
+                const Pass found = scan(ring, last, arguments.depth, rank);
                 passes++;
                 if (found.pick >= 0 && !found.partial) {
                     copy_command(&ring[found.pick], job);

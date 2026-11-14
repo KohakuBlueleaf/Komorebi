@@ -60,6 +60,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event)` | 0 | waits for the handle's event until `kmx_time()` passes `deadline`; other handles' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_poll(kmx_event* event)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
 | `int kmx_cluster(void)` | any | the work cluster the thread runs on | 1, 2 or 3 |
+| `int kmx_island(void)`, `int kmx_islands(void)` | any | the island the thread's cores are on, and the run's islands ([islands](runtime.md#islands)) | 0 and 1 on one island |
 | `uint64_t kmx_time(void)` | any | the 50 MHz timer (`KMX_TICKS_PER_SECOND`) | ticks |
 | `int kmx_stop_requested(void)` | any | true once the host asked for a stop or the thread's deadline passed (never once it serves commands) | 0 or 1 |
 | `void kmx_progress(uint32_t where)` | any | writes `where` and its time into the result block as a progress marker | - |

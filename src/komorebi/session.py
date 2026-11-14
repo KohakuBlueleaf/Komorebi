@@ -20,7 +20,17 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import abi, dram, formats, insn_check, layout, native, overlay, programs
+from komorebi import (
+    abi,
+    dram,
+    formats,
+    insn_check,
+    islands,
+    layout,
+    native,
+    overlay,
+    programs,
+)
 from komorebi import channel as channel_module
 from komorebi import state as device_state
 from komorebi import tensor as tensor_module
@@ -1414,6 +1424,7 @@ class _Backend:
         self.control_offset = (self.control_addr - base) // 4
         check_bases({"control block": self.control_addr})
         self.control_rows = np.zeros((cores, words), dtype=np.uint32)
+        self._island_rows(cores, grid[0])
         if port_lines is not None:
             rows = self.control_rows
             to_offset = (
@@ -1425,6 +1436,18 @@ class _Backend:
                 rows[core, to_offset + abi_headers["KM_X280_TO_BOX"]] = box
             self.control.write(rows)
         return self.control_addr
+
+    def _island_rows(self, cores, columns):
+        """Every core's island area in control_rows: one island, island 0 of 1 with
+        every core a rank (its header line, then its table)."""
+        abi_headers = abi.headers()
+        graph = islands.one(cores, columns)
+        table = np.frombuffer(graph.table(0), np.uint32)
+        header = [0, len(graph.islands), graph.first(0), graph.count(0)]
+        at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
+        line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
+        self.control_rows[:, at : at + line] = header
+        self.control_rows[:, at + line : at + line + len(table)] = table
 
     def _dynamic(self, program, cores, depth, base):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its

@@ -33,6 +33,10 @@ const kmx_args* kmx_args_get(void);
 /* The work cluster this thread runs on, 1 to 3 (the same image may run on several). */
 int kmx_cluster(void);
 
+/* The island this thread's cores are on, and the run's islands (0 and 1 on one). */
+int kmx_island(void);
+int kmx_islands(void);
+
 /* Region `id` of the DRAM bank, as memory, and its size; 0 for an unknown id. */
 void* kmx_region(int id, uint64_t* bytes);
 

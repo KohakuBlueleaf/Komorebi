@@ -136,6 +136,15 @@ int kmx_cluster(void) {
     return (int)kmx_args_get()->cluster;
 }
 
+int kmx_island(void) {
+    return (int)(kmx_args_get()->island & 0xFFFFu);
+}
+
+int kmx_islands(void) {
+    const uint32_t islands = kmx_args_get()->island >> 16;
+    return islands == 0 ? 1 : (int)islands;
+}
+
 void* kmx_region(int id, uint64_t* bytes) {
     const kmx_args* arguments = kmx_args_get();
     if (id < 0 || (uint32_t)id >= arguments->nregions) {

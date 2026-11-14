@@ -65,9 +65,10 @@ namespace km {
     constexpr uint32_t kMessagesHandlerShift = 16;
     constexpr uint32_t kMessagesProgramShift = 24;
     constexpr uint32_t kMessagesLaps = 0xFFFF;  // marks 1 to 65535; 0 is empty
-    // The word compute hands the writer: the destination core, the handler above it.
-    constexpr uint32_t kMessagesOutHandlerShift = 8;
-    constexpr uint32_t kMessagesOutDestination = 0xFF;
+    // The word compute hands the writer: the destination rank (16 bits, flat over the
+    // islands), the handler above it.
+    constexpr uint32_t kMessagesOutHandlerShift = 16;
+    constexpr uint32_t kMessagesOutDestination = 0xFFFF;
 
     // A body beside a message (MessagesArgs::body_bytes > 0): word 1 of the message is
     // its body's bytes (0: none); a packet holds at most kMessagesBodyPacket messages.
@@ -560,7 +561,10 @@ namespace km {
                 if (
                     candidate.sequence == sequence && KM_LANDED(&candidate) &&
                     handler(candidate) == KM_HANDLER_MESSAGES_END &&
-                    candidate.a0 == run && in_group(candidate, arguments.me)
+                    candidate.a0 == run &&
+                    in_group(
+                        candidate, islands_at(arguments.control).first() + arguments.me
+                    )
                 ) {
                     return true;
                 }
@@ -828,6 +832,7 @@ namespace km {
             .page_size = messages_arguments.body_bytes
         };
         const uint32_t store = get_write_ptr(kCbMessagesBins);
+        const uint32_t island_first = islands_at(arguments.control).first();
         uint32_t bin_destination[kMessagesBinsMax], bin_fill[kMessagesBinsMax];
         // A bin's body (its last message's; a body is sent at once): L1 address, bytes.
         uint32_t bin_body[kMessagesBinsMax], bin_body_bytes[kMessagesBinsMax];
@@ -1029,7 +1034,11 @@ namespace km {
                 ended = flush_all();
                 break;
             }
-            const uint32_t destination = outgoing_word & kMessagesOutDestination;
+            // this island's local core of the rank (a rank on another island goes to
+            // its link in a later version)
+            const uint32_t destination = (
+                (outgoing_word & kMessagesOutDestination) - island_first
+            );
             const uint32_t bin = destination % bins;
             if (
                 bin_destination[bin] != destination && bin_fill[bin] != 0 && !flush(bin)
