@@ -32,7 +32,10 @@ CODES = {
     0: "ok",
     1: "bad words or regions",
     2: "a kmx_parallel call was late or stopped",
+    3: "the fetch of the input failed",
 }
+FETCH_BANK = 7  # --fetch: the input's bank, which cluster 1 (bank 6) cannot read
+ROW = 16384  # --fetch: a page of the source; its bank's pages lie one after another
 TWELVE_REGIONS = (
     "in", "ref_map", "ref_heavy", "ref_pre", "map", "heavy", "pre", "sums",
 )  # fmt: skip
@@ -62,14 +65,16 @@ def exclusive_prefix(x):
     return result
 
 
-def program(data, repeats, rounds, deadline):
+def program(data, repeats, rounds, deadline, fetch=None):
     """The grid (every command a no-op) and the thread with its regions: each array
     rounded up to whole 128 KiB, the input 64 KiB more, so that every output starts
-    half a way from the input; map_aliased is written half a way in, on its way."""
+    half a way from the input; map_aliased is written half a way in, on its way.
+    `fetch` (bank, address): the input starts zero and the thread fetches it there."""
     thread_program = km.Program("parallel_thread", kernels=HERE / "kernels")
     size = -(-data.nbytes // WAY) * WAY
     padded = np.zeros((size + WAY // 2) // 4, np.uint32)
-    padded[: data.size] = data
+    if fetch is None:
+        padded[: data.size] = data
     regions = {name: size for name in REGIONS}
     regions.update({"in": padded, "map_aliased": size + WAY, "counters": 4096})
     thread_program.thread(
@@ -77,10 +82,23 @@ def program(data, repeats, rounds, deadline):
         sources=[HERE / "thread" / "parallel.c", HERE / "thread" / "vmap.c"],
         includes=[HERE / "thread"],
         regions=regions,
-        words=[data.size, repeats, rounds],
+        words=[data.size, repeats, rounds, *(fetch or ())],
         deadline=deadline,
     )
     return thread_program
+
+
+def fetch_source(session, data):
+    """The input in DRAM bank FETCH_BANK: a tensor of ROW-byte pages whose pages in that
+    bank hold it; returns the tensor (held while the thread runs) and (bank, address).
+    """
+    pages = -(-data.nbytes // ROW)
+    rows = np.zeros((8 * pages, ROW // 4), np.uint32)
+    mine = np.zeros(pages * ROW // 4, np.uint32)
+    mine[: data.size] = data
+    rows[FETCH_BANK::8] = mine.reshape(pages, -1)
+    tensor = session.tensor(rows, "uint32")
+    return tensor, (FETCH_BANK, tensor.address)
 
 
 def program_twelve(data, repeats, rounds, deadline):
@@ -198,6 +216,9 @@ def main():
     parser.add_argument(
         "--twelve", action="store_true", help="1 to 12 X280 cores, 3 clusters"
     )
+    parser.add_argument(
+        "--fetch", action="store_true", help="the input fetched from bank 7 first"
+    )
     args = parser.parse_args()
     generator = np.random.default_rng(args.seed)
     data = generator.integers(0, 1 << 32, args.words, dtype=np.uint64).astype(np.uint32)
@@ -207,7 +228,8 @@ def main():
         print(json.dumps(report), flush=True)
         sys.exit(0 if report["ok"] else 1)
     with km.Session(log=log) as session:
-        thread_program = program(data, args.repeats, args.rounds, deadline=30.0)
+        source, fetch = fetch_source(session, data) if args.fetch else (None, None)
+        thread_program = program(data, args.repeats, args.rounds, 30.0, fetch)
         run = session.load(thread_program)
         log("loaded")
         result = run.thread_result(timeout=40.0)
@@ -216,12 +238,13 @@ def main():
             f"at {result.where}"
         )
         run.stop()
+        del source  # the fetched input's tensor: needed until the thread returned
         got = {}
         for name in REGIONS[1:-1]:
             skip = WAY // 8 if name == "map_aliased" else 0  # written half a way in
             got[name] = run.thread.read(name).view(np.uint32)[skip : skip + data.size]
         log("regions read")
-    words = list(result.words) + [0] * (len(TIMES) + 2 * len(SUMS))
+    words = list(result.words) + [0] * (len(TIMES) + 2 * len(SUMS) + 1)
     report = {
         "words": args.words,
         "rounds": args.rounds,
@@ -233,6 +256,9 @@ def main():
         name: round(words[index] / TICKS_PER_MICROSECOND, 1)
         for index, name in enumerate(TIMES)
     }
+    if args.fetch:
+        fetched = words[len(TIMES) + 2 * len(SUMS)]
+        report["microseconds"]["fetch"] = round(fetched / TICKS_PER_MICROSECOND, 1)
     report["exact"] = check(data, args.rounds, got, words)
     microseconds = report["microseconds"]
     pairs = {"map": ("map_1", "map_4"), "vmap": ("vmap_1", "vmap_4")}

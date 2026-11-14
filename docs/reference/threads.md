@@ -317,6 +317,10 @@ if (kmx_fetch(0, 0, &from, bytes, 0, 4, kmx_time() + KMX_TICKS_PER_SECOND, &even
 - **What the cores do meanwhile.** The copy is a command: the cores take it in their
   turn behind earlier commands and run nothing else while they copy.
 
+[bank_fetch](../../experiments/bank_fetch/README.md) has the rates;
+[08_parallel_thread](../../examples/08_parallel_thread/README.md) `--fetch` runs its
+prefix sum on an input fetched from bank 7, which cluster 1 cannot read.
+
 ## The image
 
 | Rule | Value |

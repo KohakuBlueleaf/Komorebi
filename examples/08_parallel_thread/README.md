@@ -15,10 +15,12 @@ The grid takes no part: its kernels do nothing. The thread is
 `thread/parallel.c`, with the vector loop in `thread/vmap.c`.
 
     python parallel_thread.py [--words 262144] [--repeats 3] [--rounds 16] [--seed 1]
-                              [--twelve]
+                              [--twelve | --fetch]
 
 `--twelve` runs the map, the heavy map and the prefix sum on 1, 4, 8 and 12 cores of
-the three work clusters instead ([Twelve cores](#twelve-cores)).
+the three work clusters instead ([Twelve cores](#twelve-cores)). `--fetch` puts the
+input in DRAM bank 7, which cluster 1 cannot read, and the thread fetches it first
+([The input in another bank](#the-input-in-another-bank)).
 
 Prints one JSON line: the times in microseconds (`microseconds`, the best of `--repeats` runs,
 each from a cold cache), the thread's whole time (`thread_ms`), whether each output is
@@ -167,13 +169,37 @@ map still gains), and where the work only moves memory they gain little at any s
 heavy map, which computes, 2.0 times; a step that wants twelve cores should compute
 more per byte it moves, or find its input already in each bank.
 
+## The input in another bank
+
+With `--fetch` the host writes the input into bank 7 (the pages of a DRAM tensor with
+16 KiB pages that lie in bank 7, one after another), the thread's `in` starts zero, and
+before the patterns the thread copies it in through four Tensix cores of the grid:
+
+```c
+const kmx_dram from = {words[WORD_FETCH_ADDRESS], words[WORD_FETCH_BANK], 0, 0};
+kmx_fetch(REGION_INPUT, 0, &from, bytes, 0, FETCH_CORES, kmx_time() + KMX_TICKS_PER_SECOND, 0);
+```
+
+On a Blackhole p150a, card 1, X280 at 1000 MHz, AICLK 1350 MHz, 262,144 words (1 MiB),
+best of 3, host load 5.0 to 5.8, 2026-11-14; every output exact against numpy in both:
+
+| | input in bank 6 (the example's own) | input in bank 7, fetched first |
+|---|---|---|
+| the fetch (`kmx_fetch`, 4 cores, 1 MiB) | - | 0.49 ms |
+| prefix sum, two passes, 4 cores | 2.49 ms | 2.48 ms |
+| prefix sum with its input's way in | 2.49 ms | 2.97 ms |
+| the same input read by the X280 itself from bank 7 (loads over the NoC, 0.024 GB/s) | - | 44.1 ms |
+
+The fetch's 0.49 ms is mostly the two sweeps of the region's cache lines around the
+copy; the cores' copy of the MiB takes 0.02 ms ([bank_fetch](../../experiments/bank_fetch/README.md)).
+
 ## The thread
 
-| Words | `array length, repeats, rounds` (how many times the heavy map applies `mix`) |
+| Words | `array length, repeats, rounds` (how many times the heavy map applies `mix`), then with `--fetch` the input's bank and bank address |
 |---|---|
 | Regions | `in`, `map_1`, `map_4`, `map_quarters`, `map_aliased` (written 64 KiB in), `vmap_1`, `vmap_4`, `heavy_1`, `heavy_4`, `sequence`, `prefix_1`, `prefix_4`, `counters` |
-| Codes | 0 done; 1 bad words or regions; 2 a `kmx_parallel` call was late or stopped |
-| Result words | the 20 times of `TIMES` in `parallel_thread.py`, in timer ticks (50 per microsecond), then the four sums as 64-bit pairs |
+| Codes | 0 done; 1 bad words or regions; 2 a `kmx_parallel` call was late or stopped; 3 the fetch failed |
+| Result words | the 20 times of `TIMES` in `parallel_thread.py`, in timer ticks (50 per microsecond), then the four sums as 64-bit pairs, then the fetch's time (0 without `--fetch`) |
 | Progress | 1 to 8 the maps, 9 to 12 the reductions, 13 to 15 the prefix sums, 16 the flushes and invalidates, 17 the `kmx_parallel` calls |
 
 ## Files

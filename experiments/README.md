@@ -156,3 +156,8 @@ place to ask a question and to be wrong.
   Tensix core writes into the other card's L1 over tt-metal's 1-D fabric in slow
   dispatch, exact both ways; 10.03 GB/s a link a direction from one sending core, 40.1
   GB/s over four links, the same each way at once.
+- [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
+  bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
+  region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and
+  1.05 on twelve (63.8 GB/s, the bank's rate); the whole call 30.4 ms, bound by the two sweeps
+  of the region's cache lines; the X280's own loads 0.024 GB/s, `kmx_push` 2.20 GB/s.

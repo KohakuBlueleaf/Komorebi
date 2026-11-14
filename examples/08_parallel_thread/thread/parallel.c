@@ -23,7 +23,17 @@ enum {
     REGION_COUNT
 };
 
-enum { WORD_ARRAY_LENGTH, WORD_REPEATS, WORD_ROUNDS, WORD_COUNT };
+/* With the two fetch words, the input is first fetched from that range of another
+ * bank by FETCH_CORES Tensix cores (kmx_fetch), timed in RESULT_FETCH. */
+enum {
+    WORD_ARRAY_LENGTH,
+    WORD_REPEATS,
+    WORD_ROUNDS,
+    WORD_COUNT,
+    WORD_FETCH_BANK = WORD_COUNT,
+    WORD_FETCH_ADDRESS,
+    WORD_COUNT_FETCH
+};
 
 enum {
     TIME_MAP_1,
@@ -47,12 +57,14 @@ enum {
     TIME_FLUSH_4,
     TIME_PARALLEL,
     RESULT_SUMS,
-    RESULT_WORDS = RESULT_SUMS + 8
+    RESULT_FETCH = RESULT_SUMS + 8,
+    RESULT_WORDS
 };
 
 #define CHUNK 1024u /* words of one partition: 4 KiB, whole 64-byte lines */
 #define CHUNKS_MAX 4096u
 #define PARALLEL_CALLS 1000u
+#define FETCH_CORES 4u
 /* The cluster's L3 is one 128 KiB way: the aliased map writes this far into its
  * region, which then starts a whole number of ways from the input. */
 #define HALF_WAY_WORDS ((64u << 10) / 4u)
@@ -314,6 +326,29 @@ int kmx_main(int core) {
         if (regions[region] == 0 || bytes < needed) {
             return 1;
         }
+    }
+    result_words[RESULT_FETCH] = 0;
+    if (arguments->nwords >= WORD_COUNT_FETCH) {
+        const kmx_dram from = {
+            arguments->words[WORD_FETCH_ADDRESS],
+            arguments->words[WORD_FETCH_BANK],
+            0,
+            0
+        };
+        const uint64_t start = kmx_time();
+        if (kmx_fetch(
+            REGION_INPUT,
+            0,
+            &from,
+            (array_words * 4 + 63) & ~63ull,
+            0,
+            FETCH_CORES,
+            start + KMX_TICKS_PER_SECOND,
+            0
+        ) != KMX_OK) {
+            return 3;
+        }
+        result_words[RESULT_FETCH] = (uint32_t)(kmx_time() - start);
     }
     job_t job = {(const uint32_t*)regions[REGION_INPUT], 0, array_words, 1, 1, 0, 0, 0};
     for (int map_index = 0; map_index < 8; map_index++) {

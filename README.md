@@ -286,7 +286,7 @@ takes 3,158 µs where the best single overlay takes 4,222 µs.
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
-| X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
+| X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks; `kmx_fetch` / `kmx_store` of any bank through Tensix cores | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, an exit with a timeout | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
 
@@ -567,11 +567,12 @@ property of the model.
    queues in DRAM, also to a core's own queue; a message cannot ask for a DRAM fetch;
    there is no order between messages
    ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
-7. **A work cluster reading every DRAM bank.** Today the twelve X280 cores of the
-   three work clusters all run a program's threads, but a cluster reads only its own
-   bank (6 for cluster 1, 7 for clusters 2 and 3); data for the other bank is pushed
-   (`kmx_push`), so twelve cores gain over four only where the work computes more than
-   it moves.
+7. **A work cluster reading every DRAM bank at the cores' rate.** Today a thread reads
+   or writes any bank or tensor with `kmx_fetch` and `kmx_store`: Tensix cores of the
+   loaded run copy 64 MiB in 1.06 ms, but the blocking call takes 30 ms, two sweeps of
+   the region's cache lines around the copy
+   ([bank_fetch](experiments/bank_fetch/README.md)). The X280's own reads of another
+   bank stay at 0.024 GB/s, and the cores that copy run no other command meanwhile.
 8. **The X280's clock.** Today 1,000 MHz by default: at the 1,750 MHz opt-in the
    dispatcher trapped in 9 of 18 runs under full matrix load (the card lowers its core
    voltage), and in 0 of 23 at 1,000 MHz. The runtime offers no setting between the
