@@ -328,6 +328,24 @@ class Run:
             cores[first : first + count] = held == program_field
         return handle
 
+    def transfer(self, handler, group, args, timeout):
+        """A PUSH or PULL (the session's transfers) on `group` (first, count, program
+        field: the field its cores hold), waited for; returns its Event."""
+        first, count, program_field = group
+        handle = self._queue_command(
+            handler, self._group((first, count)), args, False, 0, program_field
+        )
+        return self.wait(handle, timeout)
+
+    def holds(self):
+        """[field] -> the cores that hold each program (bool arrays), or None when every
+        core holds the run's one program."""
+        return self._holds
+
+    def alive(self):
+        """Whether the run takes commands: not stopped, nothing failed."""
+        return self._failure is None and not self._stopped
+
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """Queues n commands at once: `handler` a name, a number or n numbers, `firsts`
         and `counts` the groups (n each, or one for all), `args` an [n, m] matrix of

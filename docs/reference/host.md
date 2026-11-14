@@ -181,7 +181,7 @@ The session sends each group a load of its own program before `session.load` ret
 ## `Session`
 
 `km.Session(card=None, device=None, pll_mhz=1000, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None)`.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
 
 - `pll_mhz` is the X280 clock (the runtime's steps: 200, 800, 1000, 1750). One PLL
   clocks all four X280 clusters, so the work clusters' threads run at it too. 1750 is an
@@ -198,6 +198,9 @@ grid_timeout=10.0, kernel_bytes=None)`.
   already names another card); `device` uses a device (the native module's `Device`)
   the caller opened and keeps. The session opens the card in slow dispatch, as a 1 x 1
   mesh through tt-metal's own API, with the program cache off.
+- `channel` is the session's region of the host channel: channel offsets `[0, channel)`,
+  a multiple of 64 KiB up to 1 GiB; `0` or `None` uses none. Reads and writes of DRAM
+  tensors go through it ([below](#the-host-channel)).
 - `tree` is the tt-metal tree for builds (default `TT_METAL_HOME`). `log(msg)` receives
   one line per step (launch, kernel started, runtime closed, read back).
 - As a context manager it stops a loaded run at the exit: with `run.stop()` on a normal
@@ -349,19 +352,56 @@ A part of one tensor is read the same way:
 |---|---|
 | `session.read(tensor, first=0, pages=None)` | `[pages]`: pages `first` .. `first + pages - 1` as one `[pages, page_bytes]` uint8 array (`pages=None`: to the end); a range outside the tensor raises `km.KomorebiError` naming its page count |
 | `session.read_chunks(tensor, chunk_bytes=2 << 20)` | a generator of `(first, pages)` over the whole tensor, each chunk at most `chunk_bytes` |
+| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them) into pages `first` .. `first + n - 1` of an interleaved DRAM tensor, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
 | `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]` |
 
-Reading back is slow: the card test reads a 300-page tensor (614,400 bytes) whole in
-0.29 s and in ten chunks in 0.30 s, about 2 MB per second (host load about 7). A long
-read is silent, and a job watcher that kills on silence cannot tell it from a hang. So
-read a large tensor with `read_chunks` and log a line per chunk, and check a large
-result by sample: the pages of a few rows or tiles, from `read` or `read_tiles_bf16`.
+Through the device API, reading back is slow: about 2 MB per second (a 20 MiB frame in
+10.1 s). With the host channel the cores move the pages instead, at the link's speed;
+the next section says when. Without it, read a large tensor with `read_chunks` and log a
+line per chunk (a job watcher that kills on silence cannot tell a long read from a
+hang), and check a large result by sample, from `read` or `read_tiles_bf16`.
+
+### The host channel
+
+When a card opens, the driver maps 1 GiB of pinned host memory that the cores reach
+through the PCIe tile. The session finds the mapping in `/proc/self/maps`, keeps the
+region `[0, channel)` of it and zeroes the region's last 64 KiB: one 64-byte sequence
+word a core. The rest holds data. Each transfer moves pages between an interleaved
+DRAM tensor and the region: up to 16 cores take a contiguous share each. Each core
+moves its share through two 16 KiB chunks of L1 with tt-metal's PCIe-aware calls
+(set, the writes or reads, the flush, clear), then writes its sequence word (a fresh
+nonce, its bytes, its rank). The host copies out only after every word arrived. A
+transfer larger than the region's data goes in rounds, one transfer at a time.
+
+| The session | A read (`read`, `read_chunks`) or a write (`write`, `tensor`) goes |
+|---|---|
+| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's loop ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms |
+| no run, 80 KiB or more | through a one-shot transfer kernel on row 0; its launch costs about 30 ms, as the device API's read of some 76 KiB does |
+| no run and less than 80 KiB, a page over 16 KiB, a tensor in L1, no channel | through the device API, as before |
+
+Every offset is checked twice before anything moves: on the host (`km.ChannelError`)
+and in the kernel, against the region and the core's L1. A core that refuses writes
+nothing. Card 1, a p150a at x8 16 GT/s, host seconds of a whole tensor (median of
+three, every byte compared; `experiments/host_push/framework.py`):
+
+| | 20 MiB frame read | 94 MB tensor read | 20 MiB write | 94 MB write |
+|---|---|---|---|---|
+| device API | 10.1 | 43.3 | 0.080 | 0.207 |
+| channel, no run | 0.030 | 0.050 | 0.047 | 0.041 |
+| channel, in a run | 0.0067 | 0.023 | 0.0055 | 0.026 |
+
+The channel falls back (reads through the device API, logged once at the open) when
+the driver did not map one (no hugepage), and with `device=`, where the session did not
+see the open. If the open logged the driver's warning that the channel's NoC address
+does not match, the cores' writes would not land in this process's mapping. The
+session then closes the device and raises `km.ChannelError`; `channel=0` opens without
+it. The hugepage file keeps its bytes between processes, so the words are zeroed at
+every open and each transfer checks them against a fresh nonce.
 
 `run.thread.read(name)` reads only the region's pages of the thread's bank (over
 4 MB, in 2 MB chunks with a log line each): a 1 MB region in 0.48 s, 5 MB in 3.8 s
 (`experiments/x280_threads/region_read.py`, host load about 4). The load still writes
-the regions' whole tensor, 8 MB per MB of regions: no call the host uses writes a page
-range.
+the regions' whole tensor, 8 MB per MB of regions.
 
 ## `Run`
 
@@ -497,6 +537,7 @@ All derive from `km.KomorebiError`.
 | `EngineRejected` | the kernel rejected a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `CommandRejected` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `handle`, `reason`, `reason_name`, `pc`, `node` |
 | `EngineTimeout` | `wait_engine` ran out, or a RUN or CANCEL was not answered; a `WaitTimeout` | `handle` |
+| `ChannelError` | the open logged the driver's warning about the host channel; a transfer does not fit the session's region or a core's L1; a core's sequence word did not arrive in time (with the kernel's status, without a run); a page range written without the channel | |
 | `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the runtime closes the device at the process's exit | |
 
 A card stays held by a process from its first device open until that process exits,
@@ -514,7 +555,7 @@ the kernel's header; `reason_name` is the lower-case suffix):
 
 | `reason` | `reason_name` | The command |
 |---|---|---|
-| 1 | `handler` | has a handler from 240 to 251 |
+| 1 | `handler` | has a handler from 240 to 251 (the session's own commands may carry 240 to 242) |
 | 2 | `flags` | sets the reserved flag bit 0 |
 | 3 | `group` | has a group of 0 cores, or one that does not lie inside the cores |
 | 4 | `exited` | came after EXIT |

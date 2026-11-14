@@ -6,9 +6,13 @@ Needs a tt-metal tree or the runtime package; `import komorebi` does not import 
 
 import atexit
 import contextlib
+import ctypes
 import os
 import re
+import secrets
 import signal
+import sys
+import threading
 import time
 import weakref
 from pathlib import Path
@@ -16,12 +20,14 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import abi, dram, insn_check, layout, native, overlay, programs
+from komorebi import abi, dram, formats, insn_check, layout, native, overlay, programs
+from komorebi import channel as channel_module
 from komorebi import state as device_state
 from komorebi import tensor as tensor_module
 from komorebi import thread as thread_module
 from komorebi.errors import (
     CardBusy,
+    ChannelError,
     GridTimeout,
     KernelSizeError,
     L1BudgetError,
@@ -69,6 +75,10 @@ KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 L1_FAST_CODE = 1 << 20
 SLOT_MARGIN = 1024  # kept free above the runtime's circular buffers
 TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
+# A transfer without a run launches its kernel from this many bytes on: a launch costs
+# about 30 ms, as the device API's read of some 76 KiB does (measured on a p150a).
+LAUNCH_MIN_BYTES = 80 << 10
+TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
 
 
@@ -330,6 +340,47 @@ def read_tensors(device, module, tensors, first=0, pages=None):
     ]
 
 
+def _echo(source, target, seen):
+    """Copies a pipe to a file descriptor as the bytes come, keeping them in `seen`."""
+    with contextlib.suppress(OSError):
+        while data := os.read(source, 1 << 16):
+            seen.append(data)
+            os.write(target, data)
+    os.close(source)
+
+
+@contextlib.contextmanager
+def _output_seen():
+    """While the block runs, this process's stdout and stderr (the descriptors, so the
+    runtime's own lines too) pass through pipes to where they went; yields the bytes."""
+    seen, threads, kept = [], [], []
+    flush = ctypes.CDLL(None).fflush
+    sys.stdout.flush()
+    sys.stderr.flush()
+    flush(None)
+    for fd in (1, 2):
+        source, sink = os.pipe()
+        kept.append(os.dup(fd))
+        os.dup2(sink, fd)
+        os.close(sink)
+        thread = threading.Thread(target=_echo, args=(source, kept[-1], seen))
+        thread.daemon = True
+        thread.start()
+        threads.append(thread)
+    try:
+        yield seen
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        flush(None)
+        for fd, saved in zip((1, 2), kept, strict=True):
+            os.dup2(saved, fd)
+        for thread in threads:
+            thread.join(timeout=5.0)
+        for saved in kept:
+            os.close(saved)
+
+
 def _read_uint32(tensor, device=None, module=None):
     """A row-major 32-bit tensor's words as int64: by banks when it is in DRAM and a
     module is given, else as one buffer read (which waits for the launched cores)."""
@@ -356,6 +407,7 @@ class Session:
         log=None,
         grid_timeout=10.0,
         kernel_bytes=None,
+        channel=channel_module.REGION_DEFAULT,
     ):
         self.card = card
         self.device = device
@@ -372,6 +424,12 @@ class Session:
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
         self._starting = None  # the Dispatch of a load before its Run exists
+        # the host channel: the region asked for, its bytes once mapped (else None)
+        self._region = channel_module.check_region(channel) if channel else None
+        self.channel = None
+        self._channel_said = False  # the fallback has been logged
+        self.transfer_cores = channel_module.CORES_DEFAULT  # cores of a transfer, most
+        self.transfer_cycles = None  # the last transfer's span on the cores
 
     def __enter__(self):
         if self.device is None:
@@ -407,10 +465,41 @@ class Session:
                 pid=holder,
             )
         self._module = self._module or native.load_module(self.tree)
-        self.device = self._module.Device(self._worker_l1)  # program cache off
+        if self._region is None:
+            self.device = self._module.Device(self._worker_l1)  # program cache off
+        else:
+            with _output_seen() as seen:  # the driver's warning, if it gives one
+                self.device = self._module.Device(self._worker_l1)
         _hook_exit()
         _LIVE.add(self)
         self._own_device = True
+        if self._region is not None:
+            self._open_channel(card, b"".join(seen).decode(errors="replace"))
+
+    def _open_channel(self, card, said):
+        """Maps the region of card `card`'s channel, or logs why reads go the device
+        API's way; ChannelError (the device closed) if the open logged the warning."""
+        warning = channel_module.warning_in(said)
+        if warning is not None:
+            self.close()
+            raise ChannelError(
+                f"the device open logged '{warning}': the cores' writes to the host "
+                "channel would not land in this process's mapping; close the other "
+                "process holding the card's memory, or open with channel=0"
+            )
+        with open("/proc/self/maps") as maps:
+            address, where = channel_module.find(maps.read(), card)
+        if address is None:
+            self.log(f"host channel not used ({where}): reads go through the device")
+            self._channel_said = True
+            return
+        self.channel = channel_module.view(address, self._region)
+        channel_module.words_view(
+            self.channel, self._region, abi.headers()["KM_CORES_MAX"]
+        )[:] = 0
+        self.log(
+            f"host channel {where}: a region of {self._region.bytes >> 20} MiB from 0"
+        )
 
     def close(self):
         """Stops a loaded run through the X280 runtime, then closes the device if the
@@ -466,12 +555,18 @@ class Session:
     def tensor(self, data, dtype, layout="row", shard_grid=None):
         """A tensor on the card holding `data` (anything np.asarray takes) as `dtype`
         ("bfloat16", "float32", "int32", "uint32", "uint16", "uint8") in `layout`
-        ("row": a page a row; "tile": 32 x 32 tiles); in DRAM, or (`shard_grid`
-        (x, y)) one row in each core's L1. Written before the grid starts."""
+        ("row" or "tile"); in DRAM, or one row in each core's L1 of `shard_grid`.
+        Written before the grid starts, or (DRAM, the host channel) while it runs."""
         self._module = self._module or native.load_module(self.tree)
-        return tensor_module.from_array(
-            self._module, self.device, data, dtype, layout, shard_grid
+        raw, shape = formats.to_bytes(data, dtype, layout)
+        tensor = tensor_module.empty(
+            self._module, self.device, shape, dtype, layout, shard_grid
         )
+        if self._transfer_way([tensor], 0, None) is None:
+            tensor.buffer.write(raw)
+        else:
+            self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        return tensor
 
     def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
         """A tensor as tensor() makes it, not written."""
@@ -501,25 +596,178 @@ class Session:
         return layout.nocs((grid_x, grid_y), table, noc0)
 
     def read(self, *tensors, first=0, pages=None):
-        """The raw pages of interleaved DRAM tensors ([pages, page_bytes] uint8 each),
-        under one DRAM barrier; with `first` or `pages`, only those pages of one tensor
-        (pages=None: to the end). It does not wait for idle cores, so it may run while
-        a program runs: read only what no kernel writes any more (after its event)."""
+        """The raw pages of interleaved DRAM tensors ([pages, page_bytes] uint8 each);
+        with `first` or `pages`, only those pages of one tensor (None: to the end). It
+        may run while a program runs: read only what no kernel writes any more (after
+        its event). Through the host channel when it is there (host.md, "Reads")."""
         if (first or pages is not None) and len(tensors) != 1:
             raise ValueError("a page range is read from one tensor")
         self._module = self._module or native.load_module(self.tree)
-        return read_tensors(self.device, self._module, tensors, first, pages)
+        way = self._transfer_way(tensors, first, pages)
+        if way is None:
+            return read_tensors(self.device, self._module, tensors, first, pages)
+        out = []
+        for tensor in tensors:
+            start, count = dram.page_range(first, pages, tensor.pages)
+            pages_out = np.empty((count, tensor.page_bytes), np.uint8)
+            page = tensor.aligned_page_bytes
+            for done, step in channel_module.rounds(count, page, self._region):
+                raw = self._push(tensor, start + done, step, way)
+                pages_out[done : done + step] = raw.reshape(step, page)[
+                    :, : tensor.page_bytes
+                ]
+            out.append(pages_out)
+        return out
 
     def read_chunks(self, tensor, chunk_bytes=2 << 20):
         """Yields (first, pages) over the whole tensor, each read() of at most
-        `chunk_bytes` (aligned pages), so that the caller can log every chunk."""
+        `chunk_bytes` (aligned pages), so that the caller can log every chunk. With the
+        host channel, the cores push a region's worth at a time."""
         total, aligned = tensor.pages, tensor.aligned_page_bytes
         per = chunk_bytes // aligned
         if per < 1:
             raise ValueError(f"chunk_bytes {chunk_bytes}: a page takes {aligned}")
-        for first in range(0, total, per):
-            (pages,) = self.read(tensor, first=first, pages=min(per, total - first))
-            yield first, pages
+        self._module = self._module or native.load_module(self.tree)
+        way = self._transfer_way([tensor], 0, None)
+        if way is None:
+            for first in range(0, total, per):
+                (pages,) = self.read(tensor, first=first, pages=min(per, total - first))
+                yield first, pages
+            return
+        for done, step in channel_module.rounds(total, aligned, self._region):
+            raw = self._push(tensor, done, step, way).reshape(step, aligned)
+            for at in range(0, step, per):
+                yield done + at, raw[at : at + per, : tensor.page_bytes].copy()
+
+    def write(self, tensor, pages, first=0):
+        """Writes `pages` ([n, page_bytes] uint8, as read() returns them) into pages
+        first .. first + n - 1 of an interleaved DRAM tensor, through the host channel
+        (also while a run is loaded); without it only a whole tensor, before a load."""
+        pages = np.ascontiguousarray(pages, np.uint8)
+        if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
+            raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
+        start, count = dram.page_range(first, len(pages), tensor.pages)
+        self._module = self._module or native.load_module(self.tree)
+        way = self._transfer_way([tensor], start, count)
+        if way is None:
+            if count != tensor.pages or (self.run is not None and not self.run.stopped):
+                raise ChannelError(
+                    "a page range, or a write while a run is loaded, goes through the "
+                    "host channel, which this session does not have"
+                )
+            tensor.buffer.write(pages.reshape(-1))
+            return
+        aligned = tensor.aligned_page_bytes
+        for done, step in channel_module.rounds(count, aligned, self._region):
+            rows = self.channel[: step * aligned].reshape(step, aligned)
+            rows[:, : tensor.page_bytes] = pages[done : done + step]
+            self._transfer(tensor, start + done, step, way, False)
+
+    def _transfer_way(self, tensors, first, pages):
+        """How a read of these pages goes: "run" (the live run's cores push them),
+        "launch" (the transfer kernel, from LAUNCH_MIN_BYTES on), None (the device)."""
+        if self.channel is None or any(not tensor.in_dram for tensor in tensors):
+            return None
+        largest = max(tensor.aligned_page_bytes for tensor in tensors)
+        run = self.run
+        if run is not None and not run.stopped:
+            transfer = getattr(run.backend, "transfer", None)
+            fits = transfer is not None and largest <= transfer.chunk
+            return "run" if fits and run.alive() else None
+        if self._starting is not None or largest > channel_module.CHUNK_DEFAULT:
+            return None
+        total = sum(
+            dram.page_range(first, pages, tensor.pages)[1] * tensor.aligned_page_bytes
+            for tensor in tensors
+        )
+        return "launch" if total >= LAUNCH_MIN_BYTES else None
+
+    def _push(self, tensor, first, pages, way):
+        """Pages first .. first + pages - 1 (one round: they fit the region's data)
+        pushed into the region; a view of their bytes, valid until the next transfer.
+        """
+        self._transfer(tensor, first, pages, way, True)
+        return self.channel[: pages * tensor.aligned_page_bytes]
+
+    def _transfer(self, tensor, first, pages, way, push):
+        """One round of a PUSH or PULL of pages first .. first + pages - 1, through
+        the live run ("run") or the transfer kernel ("launch"), checked first."""
+        page, region = tensor.aligned_page_bytes, self._region
+        nonce = secrets.randbits(32)
+        timeout = TRANSFER_WAIT_S + pages * page / 1e9
+        most = self.transfer_cores
+        if way == "run":
+            run = self.run
+            chunk = channel_module.chunk_bytes(page, run.backend.transfer.chunk)
+            wanted = channel_module.ranks(pages, page, chunk, most)
+            group = channel_module.transfer_group(run.holds(), run.cores, wanted)
+            buffer, count = run.backend.transfer.address, group[1]
+        else:
+            chunk = channel_module.chunk_bytes(page, channel_module.CHUNK_DEFAULT)
+            most = min(most, self.grid[0])
+            buffer, count = 0, channel_module.ranks(pages, page, chunk, most)
+        transfer = channel_module.Transfer(
+            tensor.address, page, first, pages, 0, region.words, region.bytes, nonce,
+            buffer, chunk,
+        )  # fmt: skip
+        channel_module.check(transfer, count, L1_BYTES)
+        words = channel_module.words_view(self.channel, region, count)
+        words[:] = 0
+        want = channel_module.sequence_words(nonce, pages, page, count)
+        if way == "run":
+            handler = abi.headers()["KM_HANDLER_PUSH" if push else "KM_HANDLER_PULL"]
+            run.transfer(handler, group, transfer.args(), timeout)
+            if not self._words_arrived(words, want, timeout):
+                raise ChannelError(self._words_missing(words, want, timeout))
+        else:
+            self._launch_transfer(transfer, count, push, words, want, timeout)
+        self.transfer_cycles = channel_module.cycles(words)
+
+    @staticmethod
+    def _words_arrived(words, want, timeout):
+        """Waits (bounded) until every rank's sequence word is the one expected."""
+        deadline = time.monotonic() + timeout
+        while not np.array_equal(words[:, :4], want):
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.0002)
+        return True
+
+    @staticmethod
+    def _words_missing(words, want, timeout):
+        seen = int(np.sum(np.all(words[:, :4] == want, axis=1)))
+        return (
+            f"{len(want) - seen} of {len(want)} cores' sequence words did not arrive "
+            f"in the host channel within {timeout:.1f} s"
+        )
+
+    def _launch_transfer(self, transfer, count, push, words, want, timeout):
+        """The transfer kernel on cores 0 .. count - 1 of row 0, one rank each, without
+        a run: waits for their words, then for the cores; their reports on a failure."""
+        report = self.empty((count, 16), "uint32", shard_grid=(count, 1))
+        cores = [(0, 0, count - 1, 0)]
+        launch = self._module.Launch(self.device)
+        args = [
+            (rank, 0, [report.address, int(push), rank, count, *transfer.args()])
+            for rank in range(count)
+        ]
+        include = abi.headers().abi.parents[2]
+        source = include.parent / "kernels" / "host_transfer.cpp"
+        launch.kernel(str(source), cores, 0, [], [], [str(include)], args, noc=0)
+        launch.cb(cores, 0, "uint32", 16, 2 * transfer.chunk + 64)
+        launch.run()
+        try:
+            arrived = self._words_arrived(words, want, timeout)
+        finally:
+            self.device.finish()
+        status = None if arrived else report.read()[:, 0].astype(np.int64) - 1
+        report.free()
+        if status is not None:
+            raise ChannelError(
+                f"{self._words_missing(words, want, timeout)}; the kernel's status "
+                f"{status.tolist()} (0 done, 1 refused, 2 reads and 3 writes not done "
+                "in time, 4 PCIe routing left, -1 not finished)"
+            )
 
     def read_bf16(self, *tensors):
         """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
@@ -1044,6 +1292,14 @@ class _ThreadRegions:
         return self.all.read(self.keys[name])
 
 
+class _TransferBuffer(NamedTuple):
+    """The L1 of a run's transfers on every core: two chunks and a word slot."""
+
+    address: int
+    chunk: int
+    bytes: int
+
+
 class _Backend:
     """The card side of a Run: the native port, the device tensors, the readback."""
 
@@ -1064,6 +1320,7 @@ class _Backend:
             ""  # the runtime's error message when an abort did not restore
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
+        self.transfer = None  # a _TransferBuffer when the session has the host channel
 
     def _control_blocks(self, cores, grid, port_lines=None, area_bytes=0):
         """Zeroed control blocks, one shard per core, padded so that the block can
@@ -1134,6 +1391,8 @@ class _Backend:
         table[0] = port.core_table()
         cores_tensor = _words(self.session, table)
         self.io = [self.control, cores_tensor]
+        if self.session.channel is not None:
+            self.transfer = self._transfer_buffer(cores, grid)
         if self.trace_cap:
             self.trace_tensor = _words(
                 self.session,
@@ -1214,6 +1473,23 @@ class _Backend:
                 **config,
             )
         return launch
+
+    def _transfer_buffer(self, cores, grid):
+        """The L1 every core moves a transfer's chunks through (a sharded tensor)."""
+        chunk = channel_module.CHUNK_DEFAULT
+        size = 2 * chunk + abi.headers()["KM_TRANSFER_WORD_BYTES"]
+        tensor = self.session.empty(
+            (cores, (size + NOC_ALIGN) // 4), "uint32", shard_grid=grid
+        )
+        self.io.append(tensor)
+        address = -(-tensor.address // NOC_ALIGN) * NOC_ALIGN
+        return _TransferBuffer(address, chunk, size + NOC_ALIGN)
+
+    def _transfer_rows(self):
+        """The L1 budget table's row of the transfer buffer, if the run has one."""
+        if self.transfer is None:
+            return []
+        return [("host transfer buffer", self.transfer.bytes)]
 
     def _cbs(self, buffers):
         """(index, format, page bytes, pages) of `buffers` and the runtime's own."""
@@ -1332,6 +1608,7 @@ class _Backend:
             (f"slots: {part}, {count} x {size:,} B", count * size)
             for part, (count, size) in built.slots.items()
         ]
+        rows += self._transfer_rows()
         table, fits = overlay.budget(session.l1()[1], rows)
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
@@ -1474,6 +1751,7 @@ class _Backend:
                 (f"slots: {part}, {count} x {size:,} B", count * size)
                 for part, (count, size) in made.slots.items()
             ]
+            rows += self._transfer_rows()
             table, fits = overlay.budget(session.l1()[1], rows)
             names = ", ".join(program.name for program in held)
             session.log(f"L1 budget of a core of {names}:\n{table}")
@@ -1498,6 +1776,7 @@ class _Backend:
                 (f"slots: {part}, {count} x {size:,} B", count * size)
                 for part, (count, size) in common.slots.items()
             ]
+            rows += self._transfer_rows()
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
             if not fits:
@@ -1589,8 +1868,9 @@ class _Backend:
         """The first STATE_DUMP_LINES lines of the kernel's state (uint64 words) from
         the first page of each bank: the one whose args and lim words name the LIM
         base is the bank the cluster's Memory Port reaches. None if no page does."""
-        banks = self.session._module.dram_banks(self.device)
-        (pages,) = self.session.read(self.state_tensor, first=0, pages=banks)
+        module = self.session._module
+        banks = module.dram_banks(self.device)
+        (pages,) = read_tensors(self.device, module, [self.state_tensor], 0, banks)
         words = np.asarray(pages, np.uint8)[:, : 64 * STATE_DUMP_LINES]
         words = np.ascontiguousarray(words).view("<u8")
         base = self.port.lim_base

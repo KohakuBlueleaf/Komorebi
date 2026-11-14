@@ -267,11 +267,11 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     words[5, :16] = np.arange(16)
     words[5, 2:4] = backend.port.lim_base  # args and lim: the kernel's bank
 
-    def read(tensor, first=0, pages=None):
-        asked.append((tensor, first, pages))
+    def read(device, module, tensors, first=0, pages=None):  # the device's read
+        asked.append((*tensors, first, pages))
         return [words.view(np.uint8)]
 
-    monkeypatch.setattr(sess, "read", read)
+    monkeypatch.setattr(session, "read_tensors", read)
     backend.state_tensor = "state"
     backend.log_state()
     assert asked == [("state", 0, 8)]
@@ -282,7 +282,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     words[5, 2] = 0  # no bank holds the kernel's lines
     backend.log_state()
     assert lines[-1] == "kernel state not found in DRAM (lines not flushed)"
-    monkeypatch.setattr(sess, "read", None)  # a failing read is logged, not raised
+    monkeypatch.setattr(session, "read_tensors", None)  # logged, not raised
     backend.log_state()
     assert lines[-1].startswith("kernel state not read (TypeError")
 

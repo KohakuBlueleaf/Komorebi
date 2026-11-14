@@ -80,6 +80,11 @@ class CardBusy(KomorebiError):
         self.pid = pid
 
 
+class ChannelError(KomorebiError):
+    """The host channel cannot be used as asked: the open logged the driver's warning
+    about its NoC address, or a transfer does not fit the session's region."""
+
+
 class StartError(KomorebiError):
     """The dispatcher did not report READY; `result` is its result block."""
 

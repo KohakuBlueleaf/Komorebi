@@ -9,6 +9,7 @@ import importlib
 from komorebi import _env
 from komorebi.errors import (
     CardBusy,
+    ChannelError,
     CommandRejected,
     CommandTimeout,
     EngineError,
@@ -36,6 +37,7 @@ __all__ = [
     "Buffer",
     "BufferPair",
     "CardBusy",
+    "ChannelError",
     "EngineError",
     "EngineRejected",
     "EngineTimeout",
