@@ -47,6 +47,11 @@ namespace km {
             return area_[KM_ISLAND_RANKS];
         }
 
+        // The link area's L1 address on this island's cores; 0: none (no links).
+        uint32_t link_area() const {
+            return area_[KM_ISLAND_LINK_AREA / 4];
+        }
+
         uint32_t entry_first(uint32_t island) const {
             return half(island, kIslandEntryFirst);
         }
