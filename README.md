@@ -42,8 +42,16 @@ the card's network between them.
 |---|---|
 | Computation | A program is a set of persistent kernels on every Tensix core. Each command they receive names a handler of code and a core group, and every core of the group works on its partition. |
 | Communication | Cores read and write DRAM, and send each other data through ports, reduces and broadcasts. A routed message goes to a core chosen at run time. Both data-movement CPUs of a core can carry one stream ([Movement](docs/reference/movement.md)). |
-| Code placement | The same kernels are loaded on every core in advance. A core loading a kernel body into itself ([overlay_probe](experiments/overlay_probe/README.md)) or into another core ([remote_load](experiments/remote_load/README.md)) works as an experiment; a thread that carries its own code is not built yet. |
+| Code placement | A program's kernels are loaded on every core when the run starts. Code that is not in them, an **overlay**, is built on the host and kept in DRAM; a core **loads** it into a **slot** of its own L1 when it is first needed, and **calls** it. A handler can name it, a message (its handler is loaded where the message arrives), a leader's cast, or the word of a pull's answer from an X280 core. A program can itself be an overlay under kernels the runtime owns: several programs share one run, each on its own group of cores or all on every core, and `run.load` gives a group another program while the run is live ([overlays](docs/reference/overlays.md)). |
 | Execution control | A dispatcher on one X280 cluster submits the commands and runs streams and graphs of them on the card. C threads on the other three X280 clusters run the irregular part of a program. |
+
+What is not there in code placement: the dynamic handlers of two programs in one run; a
+message that carries a body (a message names a handler, and the handler's code is loaded
+where the message arrives); an X280 core as a rank of a run (an
+[experiment](experiments/x280_rank/README.md)); a switch of program in a run where every
+core holds every program; a load issued by a cast, a pull or an X280 thread (the host
+issues `run.load`); a switch of a dynamic program; and what the old program kept in its
+buffers, which a switch loses.
 
 **Status: early development; 0.1.0 is a first release, for one card model.** Everything
 below runs on one P150A, from the two wheels on PyPI or from a clone against a tt-metal
@@ -75,7 +83,8 @@ triangles up (the rasterizer) and a third or less (the ray tracer).
 
 A kernel is loaded once on its core and stays there: `run` calls the function below for
 every command the core receives, and the command's handler says which piece of work it
-asks for. Two kernels show how cores talk to each other. A core's two data-movement
+asks for (code that is not in the kernel is an [overlay](docs/reference/overlays.md),
+loaded into a slot while the run lives). Two kernels show how cores talk to each other. A core's two data-movement
 CPUs run the roles of the easy layout, the reader and the writer; they are roles, not
 "the CPU that reads" and "the CPU that writes": either CPU can read, write and send to
 other cores. What differs is the NoC each uses, that a circular buffer has one CPU
@@ -447,6 +456,21 @@ ours in its faster form (`results/swiglu-<preset>-<form>-hifi2.json`, `-ktt-<rou
 | 4096 x 256 x 512 | 73.7 | 114 | 183.5 | 95 | 2.49 |
 | 16,384 x 256 x 512 | 180.2 | 137 | 542.1 | 109 | 3.01 |
 | 16,384 x 384 x 384 | 161.7 | 142 | 458.1 | 108 | 2.83 |
+
+### Code placement
+
+Overlays, programs in one run and handlers loaded where they are needed, each number
+from the page it links (the runs are on those pages; none was measured again for this
+table). One P150A, AICLK 1,350 MHz.
+
+| What | Number | Page |
+|---|---|---|
+| A held overlay called, against the same code compiled in | from a leader's cast to the last call done, 1.19 to 1.31 µs held against 1.00 to 1.13 µs compiled in, on a row, a column and the grid | [17_leader_overlay](examples/17_leader_overlay/README.md#measured) |
+| A load | `load()` of a reader part 0.88 µs; of a reader and compute parts, meeting, 1.82 to 1.88 µs; held, 0.07 µs | [17_leader_overlay](examples/17_leader_overlay/README.md#measured) |
+| A group changes program (`run.load`) | 2.3 to 2.6 µs (3,124 to 3,360 cycles), on 1 core and on 120 | [16_two_programs](examples/16_two_programs/README.md#numbers) |
+| A command to an X280 thread | 133.0 µs from the host one at a time against 132.6 µs for a grid command; in a graph on the X280, a round with the thread's command 19.3 µs against 11.2 µs with a second grid command | [13_thread_commands](examples/13_thread_commands/README.md#numbers) |
+| A message through handlers as parts | 10^6 messages on 120 cores in 10.76 ms with a slot for each handler against 10.83 ms with the handlers compiled in (94.2 and 93.6 million messages a second); 11.40 ms with one slot | [20_message_overlays](examples/20_message_overlays/README.md#measured) |
+| A thread splits the grid between two programs | 24 rounds in 974 µs on 12 cores and 1,023 µs on 120, against 1,001 and 1,070 µs for the best fixed split and 7,378 and 7,521 µs with the host feeding it | [19_thread_programs](examples/19_thread_programs/README.md#numbers) |
 
 The examples' own timings (commands per microsecond, broadcasts, forwards, streams, graphs and
 threads) are in each [example's README](examples/README.md).

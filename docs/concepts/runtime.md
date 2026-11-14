@@ -16,7 +16,9 @@ under the test feeder.
 
 Each program has one persistent kernel on every Tensix core it uses. The worker starts
 once and then serves work: it takes the next command, switches on the handler the command
-names, runs that handler and reports completion. [Dispatch](dispatch.md) is what sends
+names, runs that handler and reports completion. Code that is not in the kernels when the
+run starts is an [overlay](../reference/overlays.md): a core loads it into a slot of its own
+L1 while the run lives, and calls it. [Dispatch](dispatch.md) is what sends
 the commands, from the host, from its own engines or from an X280 thread
 ([threads reference](../reference/threads.md)). The [model](model.md) is what the
 handlers and breakpoints mean.
