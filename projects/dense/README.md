@@ -745,6 +745,91 @@ the plan has K blocks of one tile (the put buffer leaves little L1), so each pas
 about 22 ms where a quarter of a one-card call is 11 ms; at 4096 x 32768 x 4096 the island's plan is
 10 x 8 = 80 cores of 118 and its puts run at 8 GB/s.
 
+## One card against Kohaku-TT's one card
+
+The table above had Kohaku-TT's one card ahead at most shapes. Its source says which
+kernel ran: a bf16 `x @ w` goes to its own block matmul `ktt_gemm` only for M up to 256,
+N > K, or N = K >= 4096 with M from 1024 to 4096; everywhere else to TT-NN's
+`minimal_matmul`. So of the five shapes below, 4096 cubed and 4096 x 16384 x 16384 are
+`ktt_gemm`'s and the other three `minimal_matmul`'s.
+
+`ktt_gemm` is the form the linear kernel already has on one island: 11 x 10 cores, X
+multicast along core rows inside a panel and W down core columns, each on its own
+data-movement core and NoC, blocks of bm x bn tiles, K blocks of up to 16 tiles, fp32
+partials added by the packer in L1, the last K block reloading them, HiFi2, bf16 out,
+a block's Y written after the next block's first K block. Every piece is said with
+`km::Broadcast`, the grid plan and the tensor accessors, except two:
+
+- which data-movement core carries which stream. Kohaku-TT puts X and Y on RISCV_0 over
+  NoC 1 and W on RISCV_1 over NoC 0; a program here has no field for a data-movement
+  kernel's NoC (the reader is RISCV_0 on NoC 0, the writer RISCV_1 on NoC 1). Swapping
+  the streams between our reader and writer would give its NoCs and directions but not
+  its cores; the counters below show both feeds idle a third or more of a call, so that
+  placement is not what sets the time, and it was not done;
+- the VALID word after a block's multicast is sent rather than acknowledged:
+  `km::Broadcast::cast` always waits for the multicast's acknowledgements.
+
+What set our time was the plan and the compute, measured one change at a time (single
+calls, card 0, median of three):
+
+| Change | 8192 cubed | 16384 cubed |
+|---|---|---|
+| before (the picker's plans at 3bc7f8a8): 26 x 8 blocks, K block 2 / 13 x 16, K block 4 | 5,974.5 | 35,401.8 |
+| the plan's cost model: 13 x 12 blocks, K block 4 | 4,660.6 | |
+| K blocks of any size: K block 6 | 4,586.0 | 35,229.5 |
+| the partials added in L1 by every K block | **4,488.1** | **34,544.8** |
+
+- **The plan.** A K block now costs the larger of its compute (24.5 ns a tile product, 51
+  ns a subblock's turn) and its slower feed (4.75 us a block, then 203 ns a tile of the
+  larger of the X and W blocks, which one core reads and multicasts one after the other),
+  fitted to the plans measured (within 1 % at 13 x 12 and 13 x 16, K block 4, at 26 x 8,
+  K block 2 and at 4 x 44, K block 2; 9 % high at 7 x 24, K block 4). The old model gave
+  26 x 8 at K block 2 and 13 x 12 at K block 4 the same cost at 8192 cubed; with the feed
+  counted, 26 x 8 (26 tiles of X a K tile from one core) is fed, 13 x 12 is computed. On
+  one island any K block up to 16 is tried (the last of a call shorter): 13 x 12 takes K
+  block 6, the most L1 allows. Each core's broadcast wait counters (in the run report)
+  show it: at 13 x 12 the row and column senders wait for their receivers 30 to 64 % of
+  the call. On two islands the same model now keeps 4096 x 32768 x 4096's half on one
+  rectangle where it fits (15 x 8 on 8 x 9 cores, computed for 114 ranks and 1,361,264 B)
+  instead of two; the two-island plans are computed, not yet run.
+- **The partials.** `ktt_gemm` and our kernel popped the fp32 partials at every K
+  block's end so the next K block's packs could reserve them again: unpack waited there
+  for pack's last subblock, every K block. As in TT-NN's `minimal_matmul`, the partials of
+  a block are now reserved once, every K block's products are packed out of order onto
+  them (added in L1 from the second K block on), and after the last a pass copies them to
+  bf16 a subblock at a time. No file was copied from either project.
+- **Not the cause:** the subblock's shape (1 x 4, 4 x 1 and 2 x 2 within 0.7 % on one
+  plan) and the depth of Y's buffer (48 tiles against 2: 0.1 %).
+
+The five shapes at this head against Kohaku-TT's one card (its column of the table
+above), microseconds:
+
+| M x K x N | Plan (11 x 10 cores) | Ours, single | Kohaku-TT, single | Ours / Kohaku-TT |
+|---|---|---|---|---|
+| 4096 cubed | 13 x 12, K block 6 | 655.0 | 819.8 (`ktt_gemm`) | 0.80 |
+| 8192 cubed | 13 x 12, 2 x 2 blocks, K block 6 | 4,488.1 | 4,549.5 (`minimal_matmul`) | 0.99 |
+| 16384 cubed | 13 x 12, 4 x 4 blocks, K block 6 | 34,544.8 | 32,489.3 (`minimal_matmul`) | 1.06 |
+| 8192 x 65536 x 8192 | 13 x 12, 2 x 2 blocks, K block 6 | 33,411.5 | 34,544.0 (`minimal_matmul`) | 0.97 |
+| 4096 x 16384 x 16384 | 13 x 12, 1 x 4 blocks, K block 6 | 8,666.4 | 8,955.3 (`ktt_gemm`) | 0.97 |
+
+All exact to the same bound (relative RMS 3.96e-3 to 3.97e-3). 16384 cubed stays 6 %
+slower: a core makes 52 x 48 tiles (the 11 x 10 bands of 512 tiles), 4.7 % more than an
+even share, at 27.0 ns a product; 8192 x 65536 x 8192, the same tiles a core in 4 blocks
+instead of 16, gives 26.1 ns, so about 74 us go at each block's end. `minimal_matmul`'s
+8 x 8 blocks share the tiles more evenly; blocks that small are fed here, not computed
+(the broadcast's 4.75 us a block).
+
+**What only this model allows: the twelfth column.** Kohaku-TT's and TT-NN's grid on
+this card is 11 x 10, a column of Tensix cores runs their dispatcher; here the X280
+dispatches and all 12 x 10 compute. The powers of two above do not split into 12 column
+bands with a 4-tile subblock, so the picker leaves them on 11 columns; a shape that does,
+3840 x 32768 x 4608, with the same kernels and the picker on 12 columns (12 x 12 blocks,
+K block 7) and on 11 (12 x 14, K block 6): 3,943.0 against 4,589.3 us, 1.16x from the
+column (`--columns 11`).
+
+Measured on 2026-11-15 between 03:59 and 04:26; `python projects/dense/linear.py --dims
+M,K,N --cards 0 --seconds 0`; JSON in `results/one-card-*.json`.
+
 ## Files
 
 | File | What it is |

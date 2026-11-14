@@ -63,9 +63,8 @@ void kernel_main() {
             const bool own = to == here;
             const uint32_t out = own ? kCbYOut : kCbSend;
             for (uint32_t block = 0; ok && block < block_count; ++block) {
-                // K blocks over one: every K block's products packed into the fp32
-                // partials, reserved once a block, added in L1 from the second on;
-                // after the last, the partials to bf16 a subblock at a time
+                // over one K block: the partials reserved once, each K block added in
+                // L1 (from the second), then copied to bf16 a subblock at a time
                 const bool partial = k_blocks > 1;
                 pack_reconfig_data_format(partial ? kCbPart : out);
                 pack_reconfig_l1_acc(0);

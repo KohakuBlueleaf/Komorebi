@@ -194,11 +194,8 @@ class Piece:
         }
 
 
-# ns a K block of a bm x bn block takes a core: the compute's (a tile product, and each
-# subblock's turn of a K block), or the slower broadcast's feed (a block's fixed cost,
-# then its tiles read and multicast one after the other); fitted to the one-card single
-# calls measured (13 x 12 and 13 x 16 at K block 4 compute-bound, 27.7 ns a product;
-# 26 x 8 at 2, 7 x 24 at 4 and 4 x 44 at 2 fed).
+# A K block's ns on a core: its products and subblock turns, or its slower feed (a fixed
+# cost, then tiles read and multicast), fitted to the one-card calls (see the README).
 PRODUCT_NS = 24.5
 SUBBLOCK_NS = 51
 FEED_BLOCK_NS = 4_750
@@ -269,8 +266,7 @@ def island_pieces(
     """The pieces of the island's ranks: the old single rect (fitting_plan), or the
     whole grid, or two rectangles sharing one block, in bands of whole blocks: the
     cheapest by plan_ns (then the larger block, the larger K block). The K block is
-    `kb`, lower only when nothing fits; `every`: any K block up to `kb`, of any size
-    (the last K block of a call is shorter where it does not divide K)."""
+    `kb`, lower only when nothing fits; `every`: any K block size up to `kb`."""
     single = fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange)
     best = None
     if single is not None:
