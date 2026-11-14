@@ -665,6 +665,60 @@ namespace {
             return mesh_ != nullptr;
         }
 
+        // Link `link` from island `from` to `to`: (links found, the Ethernet channel a
+        // Tensix core connects through, the Ethernet core's NoC x and y on `from`).
+        std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> link(
+            uint32_t from, uint32_t to, uint32_t link
+        ) const {
+            namespace distributed = tt::tt_metal::distributed;
+            if (
+                !mesh_ || from >= islands_.size() || to >= islands_.size() || from == to
+            ) {
+                throw std::runtime_error("link: two different islands of an open mesh");
+            }
+            const auto source = (
+                mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, from))
+            );
+            const auto target = (
+                mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, to))
+            );
+            const auto links = (
+                tt::tt_fabric::get_forwarding_link_indices(source, target)
+            );
+            if (link >= links.size()) {
+                throw std::runtime_error(
+                    "link " + std::to_string(link) + ": " +
+                    std::to_string(links.size()) + " found"
+                );
+            }
+            // The connection's first argument is the channel; the descriptor is a
+            // scratch.
+            tt::tt_metal::ProgramDescriptor scratch;
+            std::vector<uint32_t> args;
+            tt::tt_fabric::append_fabric_connection_rt_args(
+                source,
+                target,
+                links[link],
+                scratch,
+                tt::tt_metal::CoreCoord{0, 0},
+                args
+            );
+            const auto eth = (
+                tt::tt_fabric::get_forwarding_eth_core(
+                    *mesh_, source, target, links[link]
+                )
+            );
+            const auto core = (
+                chip(*islands_[from])->ethernet_core_from_logical_core(eth)
+            );
+            return {
+                static_cast<uint32_t>(links.size()),
+                args.at(0),
+                static_cast<uint32_t>(core.x),
+                static_cast<uint32_t>(core.y)
+            };
+        }
+
     private:
         std::shared_ptr<MeshDevice> mesh_;
         std::vector<std::shared_ptr<MeshDevice>> islands_;
@@ -2185,6 +2239,12 @@ NB_MODULE(_km_host, m) {
         .def("chips", &Islands::chips)
         .def("device", &Islands::device, nb::arg("island"))
         .def(
+            "link",
+            &Islands::link,
+            nb::arg("source"),
+            nb::arg("target"),
+            nb::arg("link") = 0
+        ).def(
             "open_x280",
             [](Islands& islands) {
                 nb::gil_scoped_release release;
