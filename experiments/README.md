@@ -149,3 +149,8 @@ place to ask a question and to be wrong.
   about 580 cycles (127 a page with 8 in flight), texel x light on the vector unit 29
   times faster than in integers, and the real reads of Sponza and Bistro replayed:
   1.1 to 2.1 ms a frame over 120 cores with a table of 32 pages.
+- [two_cards](two_cards/README.md): two cards. One process a card runs example 01 on
+  both at once (under 1 % a command); two sessions in one process do not open. A
+  Tensix core writes into the other card's L1 over tt-metal's 1-D fabric in slow
+  dispatch, exact both ways; 10.03 GB/s a link a direction from one sending core, 40.1
+  GB/s over four links, the same each way at once.
