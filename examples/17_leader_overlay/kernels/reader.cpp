@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 #if !defined(LEADER_COMPILED)
@@ -105,11 +106,9 @@ inline uint32_t saturate(uint32_t value, uint32_t limit) {
 }
 
 void kernel_main() {
-    constexpr auto values_args = TensorAccessorArgs<0>();
-    constexpr uint32_t results_offset = values_args.next_compile_time_args_offset();
-    constexpr auto results_args = TensorAccessorArgs<results_offset>();
-    constexpr uint32_t records_offset = results_args.next_compile_time_args_offset();
-    constexpr auto records_args = TensorAccessorArgs<records_offset>();
+    using Values = km::Tensor<0>;
+    using Results = km::Tensor<Values::next_compile_time_args_offset()>;
+    using Records = km::Tensor<Results::next_compile_time_args_offset()>;
     km::Reader reader;
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerLead) {
@@ -119,7 +118,7 @@ void kernel_main() {
         if (!broadcast.ok() || !broadcast.included()) {
             return;
         }
-        const auto values = TensorAccessor(values_args, command.a0);
+        const Values values(command.a0);
         const uint32_t rounds = command.a1;
         const uint32_t first = command.a3;
         const bool timing = command.a5 != 0;
@@ -142,10 +141,17 @@ void kernel_main() {
             uint64_t begun = 0;
             if (broadcast.sender()) {
                 if (cast == 0 || index % kValuesPage == 0) {
-                    noc_async_read_page(
-                        index / kValuesPage, values, get_write_ptr(kCbValues)
-                    );
-                    if (!landed(reader, command, false)) {
+                    const uint32_t to = get_write_ptr(kCbValues);
+                    if (!km::read_pages(
+                        reader,
+                        command,
+                        values,
+                        index / kValuesPage,
+                        1,
+                        to,
+                        kAskPort
+                    ) ||
+                        !landed(reader, command, false)) {
                         return;
                     }
                     invalidate_l1_cache();
@@ -201,8 +207,18 @@ void kernel_main() {
         }
         row[kResultWrong + 2] = broadcast.blocks();
         const uint32_t rank = reader.me() - km::first(command);
-        const auto results = TensorAccessor(results_args, command.a2);
-        noc_async_write_page(command.a4 + rank, results, get_write_ptr(kCbResult));
+        const Results results(command.a2);
+        if (!km::write_pages(
+            reader,
+            command,
+            results,
+            command.a4 + rank,
+            1,
+            get_write_ptr(kCbResult),
+            kAskPort
+        )) {
+            return;
+        }
         if (timing) {
             for (
                 uint32_t word = kRecordWords * timed;
@@ -211,8 +227,18 @@ void kernel_main() {
             ) {
                 times[word] = 0;
             }
-            const auto records = TensorAccessor(records_args, command.a5);
-            noc_async_write_page(command.a6 + rank, records, get_write_ptr(kCbRecords));
+            const Records records(command.a5);
+            if (!km::write_pages(
+                reader,
+                command,
+                records,
+                command.a6 + rank,
+                1,
+                get_write_ptr(kCbRecords),
+                kAskPort
+            )) {
+                return;
+            }
         }
         landed(reader, command, true);
     });

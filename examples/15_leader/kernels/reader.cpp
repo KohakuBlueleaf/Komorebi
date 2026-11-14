@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "leader.h"
@@ -29,11 +30,9 @@ inline bool landed(const km::Reader& reader, const km_command_t& command, bool w
 }
 
 void kernel_main() {
-    constexpr auto values_args = TensorAccessorArgs<0>();
-    constexpr uint32_t tiles_offset = values_args.next_compile_time_args_offset();
-    constexpr auto tiles_args = TensorAccessorArgs<tiles_offset>();
-    constexpr uint32_t results_offset = tiles_args.next_compile_time_args_offset();
-    constexpr auto results_args = TensorAccessorArgs<results_offset>();
+    using Values = km::Tensor<0>;
+    using Tiles = km::Tensor<Values::next_compile_time_args_offset()>;
+    using Results = km::Tensor<Tiles::next_compile_time_args_offset()>;
     km::Reader reader;
     reader.run([&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
@@ -45,8 +44,8 @@ void kernel_main() {
         if (!broadcast.ok() || !broadcast.included()) {
             return;
         }
-        const auto values = TensorAccessor(values_args, command.a0);
-        const auto tiles = TensorAccessor(tiles_args, command.a5);
+        const Values values(command.a0);
+        const Tiles tiles(command.a5);
         const uint32_t casts = command.a1;
         const uint32_t first = command.a3;
         const auto page = (
@@ -60,10 +59,17 @@ void kernel_main() {
             const uint32_t index = first + cast;
             if (broadcast.sender()) {
                 if (cast == 0 || index % kValuesPage == 0) {
-                    noc_async_read_page(
-                        index / kValuesPage, values, get_write_ptr(kCbValues)
-                    );
-                    if (!landed(reader, command, false)) {
+                    const uint32_t to = get_write_ptr(kCbValues);
+                    if (!km::read_pages(
+                        reader,
+                        command,
+                        values,
+                        index / kValuesPage,
+                        1,
+                        to,
+                        kAskPort
+                    ) ||
+                        !landed(reader, command, false)) {
                         return;
                     }
                     invalidate_l1_cache();
@@ -74,7 +80,17 @@ void kernel_main() {
                     if (address == 0) {
                         return;
                     }
-                    noc_async_read_page(index % command.a6, tiles, address);
+                    if (!km::read_pages(
+                        reader,
+                        command,
+                        tiles,
+                        index % command.a6,
+                        1,
+                        address,
+                        kAskPort
+                    )) {
+                        return;
+                    }
                 }
                 if (!broadcast.cast(cast, choice_word(choice, index))) {
                     return;
@@ -99,9 +115,18 @@ void kernel_main() {
         row[1] = wrong;
         row[2] = first_wrong;
         row[3] = broadcast.blocks();
-        const auto results = TensorAccessor(results_args, command.a2);
+        const Results results(command.a2);
         const uint32_t rank = reader.me() - km::first(command);
-        noc_async_write_page(command.a4 + rank, results, get_write_ptr(kCbResult));
-        landed(reader, command, true);
+        if (km::write_pages(
+            reader,
+            command,
+            results,
+            command.a4 + rank,
+            1,
+            get_write_ptr(kCbResult),
+            kAskPort
+        )) {
+            landed(reader, command, true);
+        }
     });
 }

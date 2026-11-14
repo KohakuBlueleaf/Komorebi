@@ -4,15 +4,17 @@
 
 #include "../bucket_sort.h"
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 // Two 4 KiB pages of keys: while the writer reads one, the reader fills the other.
 constexpr uint32_t kCbKeys = 0;
+constexpr uint32_t kAskPort = 0;  // keys another island holds are counted here
 
 void kernel_main() {
-    // The keys tensor's layout (interleaved over the DRAM banks, 4 KiB pages), fixed
-    // when the host built the program.
-    constexpr auto keys_args = TensorAccessorArgs<0>();
+    // The keys tensor's layout (interleaved over the DRAM banks, 4 KiB pages) and
+    // where its pages live, fixed when the host built the program.
+    using Keys = km::Tensor<0>;
     km::Reader reader;
     // The runtime's loop: the body runs once per command whose group holds this core.
     reader.run([&](const km_command_t& command) {
@@ -31,7 +33,7 @@ void kernel_main() {
         if (partition.len == 0) {
             return;
         }
-        const auto keys = TensorAccessor(keys_args, keys_address);
+        const Keys keys(keys_address);
         const uint32_t first_page = partition.start / BS_KEYS_PER_PAGE;
         const uint32_t last_page = (
             (partition.start + partition.len - 1) / BS_KEYS_PER_PAGE
@@ -42,8 +44,13 @@ void kernel_main() {
             if (!reader.reserve(kCbKeys, 1)) {
                 return;
             }
-            // DRAM to L1 over NoC 0; the wait for it times out at the wait limit.
-            noc_async_read_page(page, keys, get_write_ptr(kCbKeys));
+            // DRAM to L1 over NoC 0 (another island's page: asked for and waited
+            // for); the wait for it times out at the wait limit.
+            if (!km::read_pages(
+                reader, command, keys, page, 1, get_write_ptr(kCbKeys), kAskPort
+            )) {
+                return;
+            }
             const uint32_t code = reader.poll(
                 [] {
                     return ncrisc_noc_reads_flushed(noc_index);

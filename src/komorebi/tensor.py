@@ -56,6 +56,11 @@ class Tensor:
         """The compile-time arguments of a TensorAccessor over this buffer."""
         return list(self.buffer.accessor_args())
 
+    def tensor_args(self):
+        """What km::Tensor reads (compile arguments): the accessor's; with the
+        tensor's reference word (`address`), what a kernel's page calls take."""
+        return self.accessor_args()
+
     def write(self, data):
         """Writes `data` (this shape) over the whole buffer, once the cores of a
         launched program are done."""

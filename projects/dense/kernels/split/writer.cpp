@@ -8,13 +8,9 @@
 #include "split.h"
 
 void kernel_main() {
-    constexpr auto y_args = TensorAccessorArgs<0>();
-    constexpr auto a_args = (
-        TensorAccessorArgs<y_args.next_compile_time_args_offset()>()
-    );
-    constexpr auto w_args = (
-        TensorAccessorArgs<a_args.next_compile_time_args_offset()>()
-    );
+    using Y = km::Tensor<0>;
+    using A = km::Tensor<Y::next_compile_time_args_offset()>;
+    using W = km::Tensor<A::next_compile_time_args_offset()>;
     km::Writer writer;
     const auto plan = [&](uint32_t word) {
         return writer.arg(word);
@@ -25,9 +21,7 @@ void kernel_main() {
         if (km::handler(command) != kHandlerSplit) {
             return true;
         }
-        const auto a_matrix = TensorAccessor(a_args, command.a0);
-        const auto w_matrix = TensorAccessor(w_args, command.a1);
-        if (!move_chunks(writer, command, a_matrix, w_matrix)) {
+        if (!move_chunks(writer, command, A(command.a0), W(command.a1))) {
             return false;
         }
         if (mode != kSplitFull) {
@@ -52,7 +46,7 @@ void kernel_main() {
         const uint32_t group_index = (writer.me() - km::first(command)) / group_size;
         const uint32_t first_row = group_index / blocks_per_row * block_height;
         const uint32_t first_column = group_index % blocks_per_row * block_width;
-        const auto y_matrix = TensorAccessor(y_args, y_address);
+        const Y y_matrix(y_address);
         const uint32_t source = get_read_ptr(kCbSplitOut);
         for (
             uint32_t tile_row = 0;
@@ -64,11 +58,17 @@ void kernel_main() {
                 tile_column < block_width && first_column + tile_column < n_tiles;
                 ++tile_column
             ) {
-                noc_async_write_page(
-                    (first_row + tile_row) * n_tiles + first_column + tile_column,
+                if (!km::write_pages(
+                    writer,
+                    command,
                     y_matrix,
-                    source + (tile_row * block_width + tile_column) * kTileBytes
-                );
+                    (first_row + tile_row) * n_tiles + first_column + tile_column,
+                    1,
+                    source + (tile_row * block_width + tile_column) * kTileBytes,
+                    kAskPort + 1
+                )) {
+                    return false;
+                }
             }
         }
         if (!flushed(writer, km::kStWriter, km::kFlushSent)) {

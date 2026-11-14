@@ -25,6 +25,12 @@ G = pl.G
 log = run.log
 
 
+def w_placement(session, far):
+    """B's placement: a copy on every island, or (`far`) held by island 0 alone (split
+    over its ranks), its pages read across by island 1's cores."""
+    return {"split": 0, "group": (0, session.graph.count(0))} if far else {"copy": True}
+
+
 def island_rows(a_tensor):
     """[(first row tile, row tiles)] of each island: its part of A's row tiles."""
     return list(a_tensor.placement.parts)
@@ -242,6 +248,11 @@ def main():
     parser.add_argument(
         "--b-moved", action="store_true", help="B moved into island 1 each call"
     )
+    parser.add_argument(
+        "--b-far",
+        action="store_true",
+        help="B on island 0 only, read by island 1's cores across the link",
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     dimensions = run.SHAPES[args.shape] if args.shape else (args.m, args.k, args.n)
@@ -253,6 +264,7 @@ def main():
     m_rows, k_depth, n_columns = dimensions
     report = {"shape": args.shape, "m": m_rows, "k": k_depth, "n": n_columns}
     report |= {"cards": cards, "links": args.links, "b_moved": args.b_moved}
+    report["b_far"] = args.b_far
     log("building the inputs")
     a_matrix, w_matrix = ref.inputs(m_rows, k_depth, n_columns, kind=args.inputs)
     log("inputs built")
@@ -263,7 +275,7 @@ def main():
         tensors = {}
         for name, value, placement in (
             ("a", a_matrix, {"split": 0}),
-            ("w", w_matrix, {"copy": True}),
+            ("w", w_matrix, w_placement(session, args.b_far)),
             ("y", y_matrix, {"split": 0}),
         ):
             tensors[name] = session.tensor(value, "bfloat16", "tile", **placement)

@@ -4,11 +4,12 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "grid.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    constexpr auto a_args = TensorAccessorArgs<0>();
+    using A = km::Tensor<0>;
     km::Reader reader;
     volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbGridProf));
     for (uint32_t word = 0; word < kGpWords; ++word) {
@@ -36,7 +37,7 @@ void kernel_main() {
         const uint32_t k_block_tiles = plan(kPlKb), k_blocks = plan(kPlNk);
         const uint32_t blocks_high = plan(kPlNbh), blocks_wide = plan(kPlNbw);
         const uint32_t first_row = core(kCoreM0);
-        const auto a_matrix = TensorAccessor(a_args, a_address);
+        const A a_matrix(a_address);
         uint32_t read = 0, broadcast_cycles = 0, step = 0;
         for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
             const uint32_t block_row = first_row + block / blocks_wide * block_height;
@@ -66,12 +67,17 @@ void kernel_main() {
                     ++tile_row
                 ) {
                     const uint32_t page = (block_row + tile_row) * k_tiles + k_start;
-                    for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
-                        noc_async_read_page(
-                            page + k_tile,
-                            a_matrix,
-                            base + (tile_row * k_block_tiles + k_tile) * kTileBytes
-                        );
+                    const uint32_t to = base + tile_row * k_block_tiles * kTileBytes;
+                    if (!km::read_pages(
+                        reader,
+                        command,
+                        a_matrix,
+                        page,
+                        k_length,
+                        to,
+                        kAskPortReader
+                    )) {
+                        return;
                     }
                 }
                 if (!flushed(reader, km::kStReader, km::kFlushReads)) {

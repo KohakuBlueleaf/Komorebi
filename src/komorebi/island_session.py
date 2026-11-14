@@ -171,6 +171,11 @@ class IslandTensor:
             raise KomorebiError("the islands' accessor arguments differ")
         return args[0]
 
+    def tensor_args(self):
+        """What km::Tensor reads (compile arguments): the accessor's; with the
+        tensor's reference word (`address`), what a kernel's page calls take."""
+        return self.accessor_args()
+
     def holders(self, first, pages):
         """[(island, first, pages, index)] of the pages first .. first + pages - 1:
         runs each held by one island at consecutive indices of its part (a copy:
@@ -1040,10 +1045,13 @@ class IslandSession:
         if self.links:
             programs = self._linked(programs)
         defines = [one.defines for one in programs]
+        if len(self.sessions) > 1:  # a tensor's word may name its table entry
+            for one, own in zip(programs, defines):
+                one.defines = {**own, "KM_TENSOR_TABLE": 1}
         if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
             asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
-            for one, own in zip(programs, defines):
-                one.defines = {**own, "KM_PAGE_LINKS": 1, **asks}
+            for one in programs:
+                one.defines = {**one.defines, "KM_PAGE_LINKS": 1, **asks}
         plans = self._links()
         tables = self._tables_for_load()
         runs = []
