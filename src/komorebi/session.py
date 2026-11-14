@@ -1288,7 +1288,9 @@ class Session:
                 states.append(_state_area(self))
                 base = first_row * self.grid[0]
                 plan = links[island] if links else None
-                line = plan.line(dispatch, dispatches[plan.far]) if plan else b""
+                line = b""
+                if plan:
+                    line = plan.line(dispatch, dispatches[plan.far], dispatches)
                 tags.append(
                     dispatch.prepare(
                         depth, host_depth, event_depth, start, deadline, kernel_idle,
@@ -1914,6 +1916,8 @@ class _Backend:
             if plan is not None:  # the relay's words after the table (km_relay.hpp)
                 relay = at + abi_headers["KM_ISLAND_RELAY"]
                 mine[:, relay : relay + 3] = plan.relay
+                for core, tile in getattr(plan, "relay_tiles", {}).items():
+                    self.control_rows[core, relay + 2] = tile
             mine[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = area
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):

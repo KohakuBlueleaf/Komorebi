@@ -92,14 +92,15 @@ class LinkPlan:
     def __init__(self, graph, island, far, core, area):
         self.graph, self.island, self.far = graph, island, far
         self.core, self.area = core, area
-        # the relay words of the island area (km_relay.hpp): this island's relay
-        # area, the far island's, the far link core 0's NoC tile x | y << 16
+        # the relay words of the island area (km_relay.hpp): relay areas here and
+        # far, the far link core's tile x | y << 16 (relay_tiles: each link core's)
         self.relay = [0, 0, 0]
+        self.relay_tiles = {}
 
-    def line(self, dispatch, far=None):
+    def line(self, dispatch, far=None, dispatches=None):
         """The dispatcher's link line and island table (KMD_LIM_LINK): the far island's
         dispatcher `far` (its tile and link block), else taken as this one's (two cards:
-        checked after load)."""
+        checked after load); more than two islands, every island's of `dispatches`."""
         far = far or dispatch
         headers = abi.headers()
         words = [0] * (headers["KMD_LINK_COUNT"] // 4)
@@ -111,6 +112,16 @@ class LinkPlan:
         words[headers["KMD_L_FAR"]] = self.far
         words[headers["KMD_L_FAR_TILE"]] = far.l2_x | far.l2_y << 16
         words[headers["KMD_L_FAR_BLOCK"]] = far.lim_base + headers["KMD_LIM_LINK"]
+        if len(self.graph.islands) > 2:
+            if len(self.graph.islands) > headers["KMD_L_TILES_MAX"] or not dispatches:
+                raise KomorebiError(
+                    f"commands across {len(self.graph.islands)} islands: at most "
+                    f"{headers['KMD_L_TILES_MAX']}, each island's dispatcher known"
+                )
+            for island, one in enumerate(dispatches):
+                at = headers["KMD_L_TILES"] + 2 * island
+                words[at] = one.l2_x | one.l2_y << 16
+                words[at + 1] = one.lim_base + headers["KMD_LIM_LINK"]
         table = headers["KMD_LINK_TABLE"] // 4
         for island in range(len(self.graph.islands)):
             threads = self.graph.thread_numbers(island)
@@ -590,11 +601,12 @@ class IslandSession:
             raise ValueError(f"links={links}: between two cards, or a split card")
         if self.split > 1 and len(self.cards) != 1:
             raise ValueError(f"islands={islands}: one card")
-        # two cards: every link found, at most `links` (set at the open); link 0 is
-        # always there (commands across ride it). A split card: `links` wires a pair
-        # (default 1)
+        # two cards: every link found, at most `links` (set at the open), link 0
+        # always (commands ride it); a split card: `links` wires a pair (default 1)
         self._links_asked = links or None
-        self.links = 1 if len(self.cards) == 2 else (links or 1) if self.split > 1 else 0
+        self.links = (
+            1 if len(self.cards) == 2 else (links or 1) if self.split > 1 else 0
+        )
         self.log = log or (lambda message: None)
         self._options = {
             "pll_mhz": pll_mhz,
@@ -941,7 +953,12 @@ class IslandSession:
             )
         finally:
             program.defines = own
-        self.run = IslandRun(self.graph, runs, linked=bool(self._regions))
+        self.run = IslandRun(
+            self.graph,
+            runs,
+            linked=bool(self._regions),
+            counts=self._crossings if self.links else None,
+        )
         if self.links:
             try:
                 self._hold_links()
@@ -957,33 +974,33 @@ class IslandSession:
         ends, and says hello to the far link core's same CPU (an OPEN a link core,
         waited together): no send goes out before the far side runs."""
         tables = [list(run.backend.port.core_table()) for run in self.run.runs]
-        if tables[0] != tables[1]:
+        if any(table != tables[0] for table in tables):
             raise KomorebiError(
                 "the islands' core tables differ: a link core that pushes a rank's "
                 "pages finds the far core in its own table"
             )
         waits = [
             (here, self._open_link(here, k))
-            for here in range(2)
-            for k in range(len(self.link_cores[1 - here]))
+            for here in range(len(self.graph.islands))
+            for k in range(len(self.link_cores[here]))
         ]
         self.wait_together(waits, timeout)
         self.log(f"page links held, hello both ways: link cores {self.link_cores}")
 
     def _open_link(self, here, k):
         """Queues the OPEN of link core k of island `here` (its CPUs' connections,
-        then a hello to the far link core k's same CPUs). Returns its handle."""
+        then a hello to the same CPUs of the far link core across, self.pair).
+        Returns its handle."""
         h = abi.headers()
-        there = 1 - here
+        there, first, far = self.pair(here, k)
         buffer, chunk = self.staging(here)
         links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
         words = [0] * 10
+        words[h["KM_PAGES_FIRST"]] = first
         words[h["KM_PAGES_TO_CORE"]] = chunk // 64 << 16
         words[h["KM_PAGES_COUNT"]] = self.port_address(there, h["KM_PAGES_HELLO_PORT"])
         words[h["KM_PAGES_COUNTER"]] = (
-            self.noc_of(there, self.link_cores[there][k])
-            | 1 << 16
-            | h["KM_PAGES_OPEN"] << 24
+            self.noc_of(there, far) | 1 << 16 | h["KM_PAGES_OPEN"] << 24
         )
         words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
         words[h["KM_PAGES_BUFFER"]] = buffer
@@ -1049,7 +1066,7 @@ class IslandSession:
         CPU writes its row into the island's counts tensor), waited for together."""
         h = abi.headers()
         waits = []
-        for island in range(2):
+        for island in range(len(self.graph.islands)):
             words = [0] * 10
             words[h["KM_PAGES_TO"]] = self._counts[island].address
             words[h["KM_PAGES_PAGE"]] = CROSS_PAGE
@@ -1061,17 +1078,31 @@ class IslandSession:
         self.wait_together(waits, timeout)
         fields = [h[f"KM_CROSS_{name.upper()}"] for name in Crossings.FIELDS[:-1]]
         rows = {}
-        for island in range(2):
+        for island in range(len(self.graph.islands)):
             (raw,) = self.sessions[island].read(self._counts[island])
             words = raw.view("<u4").astype(np.int64)
-            for link in range(self.links):
-                row = words[link]
+            for at in range(2 * len(self.link_cores[island])):
+                there, first, _ = self.pair(island, at // 2)
+                link = at - 2 * first  # its link toward `there`
+                if link >= self.links:
+                    continue
+                row = words[at]
                 low = h["KM_CROSS_BYTES"]
-                rows[(link, island, 1 - island)] = {
+                rows[(link, island, there)] = {
                     **dict(zip(Crossings.FIELDS, (int(row[f]) for f in fields))),
                     "bytes": int(row[low]) | int(row[low + 1]) << 32,
                 }
         return Crossings(rows)
+
+    def pair(self, island, k):
+        """Link core `k` of `island`: (the island its links go to, the first link core
+        toward it, the far island's link core across from this one). A neighbour's
+        links take ceil(links / 2) link cores in neighbour order, two CPUs a core."""
+        per = (self.links + 1) // 2
+        neighbours = self.graph.neighbours(island)
+        there = neighbours[k // per]
+        far = self.graph.neighbours(there).index(island) * per + k % per
+        return there, k // per * per, self.link_cores[there][far]
 
     def noc_of(self, island, core):
         """x | y << 8: the NoC place of local core `core` of `island` (core table)."""
@@ -1095,11 +1126,13 @@ class IslandSession:
             raise KomorebiError(f"island {island}: the run has no transfer buffer")
         return transfer.address, transfer.chunk
 
-    def send_pages(self, source, first, pages, to, core=None, counted=None, port=None):
-        """Queues a send of pages first .. of `source` by its holder's link cores into
-        the other island: the same pages of tensor `to`, or (`core`: a local core) L1
-        from address `to`. Each batch adds its pages to port `port` of core `counted`
-        (default `core`, else the first link core). Returns (island, handle)."""
+    def send_pages(
+        self, source, first, pages, to, core=None, counted=None, port=None, there=None
+    ):
+        """Sends pages first .. of `source` by its holder's link cores into island
+        `there` (default: its one neighbour): the same pages of tensor `to`, or (`core`:
+        a local core) L1 from address `to`; each batch adds its pages to port `port` of
+        `counted` (default `core`, else the link core across). (island, handle)."""
         h = abi.headers()
         if not self.links:
             raise KomorebiError(
@@ -1109,14 +1142,18 @@ class IslandSession:
         if len(holders) != 1:
             raise ValueError(f"pages {first} + {pages}: held by islands {holders}")
         here = holders[0][0]
-        there = 1 - here
+        if there is None:
+            if len(self.graph.neighbours(here)) != 1:
+                raise ValueError(f"island {here} has more neighbours: name `there`")
+            there = self.graph.neighbours(here)[0]
+        k, cores = self._toward(here, there)
         if core is None and (
             not isinstance(to, IslandTensor)
             or to.aligned_page_bytes != source.aligned_page_bytes
         ):
             raise ValueError("a tensor target has the source's aligned page bytes")
         counted = counted if counted is not None else core
-        counted = counted if counted is not None else self.link_cores[there][0]
+        counted = counted if counted is not None else self.pair(here, k)[2]
         port = h["KM_PORTS"] - 1 if port is None else port
         buffer, chunk = self.staging(here)
         links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
@@ -1135,9 +1172,18 @@ class IslandSession:
         words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
         words[h["KM_PAGES_BUFFER"]] = buffer
         handle = self.run.island(here)._queue_command(
-            h["KM_HANDLER_PAGES"], self.graph.link_group(here), words
+            h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, cores), words
         )
         return here, handle
+
+    def _toward(self, here, there):
+        """(first, count) of `here`'s link cores whose links go to island `there`."""
+        if there not in self.graph.neighbours(here):
+            raise ValueError(f"islands {here} and {there} are not neighbours")
+        if len(self.graph.neighbours(here)) == 1:
+            return 0, len(self.link_cores[here])
+        per = (self.links + 1) // 2
+        return self.graph.neighbours(here).index(there) * per, per
 
     def ask(self, tensor, first, pages, island, core, to, port):
         """Pages first .. of `tensor`, held by another island, into L1 address `to` of
@@ -1150,7 +1196,7 @@ class IslandSession:
         holder = tensor.holders(first, pages)[0][0]
         if holder == island:
             raise ValueError(f"pages {first} + {pages}: island {island} holds them")
-        return self.send_pages(tensor, first, pages, to, core, core, port)
+        return self.send_pages(tensor, first, pages, to, core, core, port, island)
 
     def ask_range(self, tensor, first, pages, group, to, port):
         """One ask for every rank of `group` (first rank, ranks; all on one island):
@@ -1191,7 +1237,9 @@ class IslandSession:
         words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
         words[h["KM_PAGES_BUFFER"]] = buffer
         handle = self.run.island(holder)._queue_command(
-            h["KM_HANDLER_PAGES"], self.graph.link_group(holder), words
+            h["KM_HANDLER_PAGES"],
+            self.graph.link_group(holder, *self._toward(holder, island)),
+            words,
         )
         return holder, handle
 
@@ -1271,10 +1319,10 @@ class IslandSession:
         started = time.perf_counter()
         waits, far = [], []
         for there, low, length in sends:
-            far.append(
-                (there, self.wait_pages(there, self.link_cores[there][0], length))
-            )
-            waits.append(self.send_pages(source, low, length, target))
+            here = source.holders(low, length)[0][0]
+            counted = self.pair(here, self._toward(here, there)[0])[2]
+            far.append((there, self.wait_pages(there, counted, length)))
+            waits.append(self.send_pages(source, low, length, target, there=there))
         # the senders first: a failure names the side that failed
         self.wait_together(waits + far, timeout)
         seconds = time.perf_counter() - started
@@ -1297,6 +1345,11 @@ class IslandSession:
             return programs
         if any(messages.x280_ranks for messages in dynamic):
             raise ValueError("X280 ranks over a link are not done yet")
+        if len(self.graph.islands) > 2:
+            raise ValueError(
+                f"messages over {len(self.graph.islands)} islands are not done yet: "
+                "a link's quiet test reads one far island (two islands)"
+            )
         entry = LINK_PREFIX + max(messages.message_bytes for messages in dynamic)
         size = (
             LINK_OUTBOX_AT + LINK_OUTBOX * entry + (LINK_INBOX + 1) * LINK_PACKET_BYTES
@@ -1338,7 +1391,7 @@ class IslandSession:
 
     def _link_words(self, island, message_bytes, token):
         """LinkArgs of island `island`'s cores: its link core 0, the far one's."""
-        far = 1 - island
+        far = self.graph.neighbours(island)[0]
         place = self.noc_of(far, self.link_cores[far][0])
         words = [
             self.link_cores[island][0],
@@ -1355,10 +1408,10 @@ class IslandSession:
         return words
 
     def _links(self):
-        """Each island's LinkPlan for commands across (two islands), else None each:
-        its link core 0, a link area on every core (zeroed: the asks' counts start at
-        0), at one address on both islands (a link core writes the far one's)."""
-        if len(self.sessions) != 2:
+        """Each island's LinkPlan (two islands, or a split card), else None each: its
+        link core 0, a link area on every core (zeroed: the asks' counts start at 0)
+        at one address on every island, each link core's far one for the relay."""
+        if len(self.sessions) != 2 and self.split == 1:
             return [None] * len(self.sessions)
         h = abi.headers()
         bytes_ = h["KM_LINK_AREA_BYTES"]
@@ -1367,7 +1420,7 @@ class IslandSession:
         self._counts = []
         relays = []
         for island, session in enumerate(self.sessions):
-            far = 1 - island
+            far = self.graph.neighbours(island)[0]
             columns, rows = session.grid
             if self.split > 1 and island:  # one card: island 0's areas
                 area, relay = self._link_areas[:2]
@@ -1397,12 +1450,11 @@ class IslandSession:
             )
             core = self.link_cores[island][0]
             plans.append(LinkPlan(self.graph, island, far, core, area.address))
-            place = self.noc_of(far, self.link_cores[far][0])
-            plans[-1].relay = [
-                relays[island],
-                0,
-                (place & 0xFF) | (place >> 8) << 16,
-            ]
+            for k, link_core in enumerate(self.link_cores[island]):
+                there, _, peer = self.pair(island, k)
+                place = self.noc_of(there, peer)
+                plans[-1].relay_tiles[link_core] = (place & 0xFF) | (place >> 8) << 16
+            plans[-1].relay = [relays[island], 0, plans[-1].relay_tiles[core]]
             self.log(
                 f"island {island}: commands across on link core {core}, channel "
                 f"{self.channels[island][0]}, area {area.address:#x}"
@@ -1517,7 +1569,9 @@ def _split_graph(columns, rows, parts, links):
     pairs = [
         islands.Link(a, b, links) for a in range(parts) for b in range(a + 1, parts)
     ]
-    taken = ((parts - 1) * links + 1) // 2
+    if parts > 2 and links != 1:
+        raise ValueError(f"{parts} islands: one wire a pair (links={links})")
+    taken = (parts - 1) * ((links + 1) // 2)
     parts_, link_cores = [], []
     for part in range(parts):
         start, length = (

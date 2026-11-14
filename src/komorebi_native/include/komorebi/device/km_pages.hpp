@@ -766,7 +766,9 @@ namespace km {
         auto* header = pages_header(area + KM_PUT_HEADERS);
         link_write(
             header,
-            link_noc(xy & 0xFFFFu, xy >> 16, area + KM_PUT_INBOX + taken % KM_ASK_SLOTS * 64),
+            link_noc(
+                xy & 0xFFFFu, xy >> 16, area + KM_PUT_INBOX + taken % KM_ASK_SLOTS * 64
+            ),
             64
         );
         uint32_t code = pages_packet(kernel, header, at, 64);
@@ -806,7 +808,9 @@ namespace km {
             const uint32_t asker = line[KM_ASK_CORE];
             auto* header = pages_header(area + KM_PUT_HEADERS + 64);
             link_increment(
-                header, link_noc(asker & 0xFFFFu, asker >> 16, line[KM_ASK_COUNT]), pages
+                header,
+                link_noc(asker & 0xFFFFu, asker >> 16, line[KM_ASK_COUNT]),
+                pages
             );
             code = pages_packet(kernel, header, 0, 0);
         }
@@ -841,17 +845,27 @@ namespace km {
         if (r.mode == KM_PAGES_WAIT) {
             code = cpu == 0 ? pages_wait(kernel, r) : kGaveNone;
         } else if ((r.mode == KM_PAGES_SEND || r.mode == KM_PAGES_RANGE) && links) {
-            code = pages_send(kernel, r, index, cpu);
+            // its index in the command's link cores (those toward one island)
+            code = pages_send(kernel, r, kernel.name(command) - first(command), cpu);
         } else if (r.mode == KM_PAGES_LINE && links) {
-            // link core 0's link 0 CPU, which holds its connection
-            code = cpu == 0 && index == 0 ? pages_line(kernel, command) : kGaveNone;
+            // the CPU that holds its pair's link 0
+            code = (
+                cpu == 0 && pages_held.link == 0
+                    ? pages_line(kernel, command)
+                    : kGaveNone
+            );
         } else if (r.mode == KM_PAGES_OPEN && links) {
-            code = pages_open(kernel, r, index, cpu);
+            // its index in its pair's link cores (an OPEN's first: the pair's first)
+            code = pages_open(kernel, r, index - r.first, cpu);
         } else if (r.mode == KM_PAGES_COUNTS && links) {
             code = pages_counts(kernel, r, index, cpu);
 #if defined(KM_LINKS) && defined(COMPILE_FOR_BRISC)  // the reader: link 0's CPU
         } else if (r.mode == KM_PAGES_MESSAGES && links) {
-            code = index == 0 && cpu == 0 ? link_messages(kernel, command) : kGaveNone;
+            code = (
+                cpu == 0 && pages_held.link == 0
+                    ? link_messages(kernel, command)
+                    : kGaveNone
+            );
 #elif defined(KM_LINKS)
         } else if (r.mode == KM_PAGES_MESSAGES && links) {
             code = kGaveNone;

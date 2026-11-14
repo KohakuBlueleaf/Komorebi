@@ -1,6 +1,5 @@
 // The relay: a core's pages into L1 of a rank of another island and 1 on its port, by
-// its island's link core toward that island to the far link core across, which puts
-// them there.
+// its link core toward that island to the far link core across, which puts them there.
 #pragma once
 
 #include <stdint.h>
@@ -123,8 +122,8 @@ namespace km {
         template <typename Kernel>
         static void turn(const Kernel& kernel) {
             const uint32_t area = relay_area();
-            if (area == 0 || pages_held.open == 0) {
-                return;
+            if (area == 0 || pages_held.open == 0 || pages_held.link != 0) {
+                return;  // the CPU that holds its pair's first link relays
             }
             Relay relay(area);
             invalidate_l1_cache();
@@ -202,7 +201,10 @@ namespace km {
         // inbox, the ask, one count, the done word; it places what lands meanwhile.
         template <typename Kernel>
         void send(const Kernel& kernel) {
-            const uint32_t lines = Islands(island_area()).ranks() * 2;
+            // a core's two lines at 2 me: its core of the card (a split card's island
+            // starts at its base)
+            const Islands view(island_area());
+            const uint32_t lines = (view.base() + view.ranks()) * 2;
             const uint32_t start = state(kRelayNext);
             uint32_t ask = 0;
             for (uint32_t n = 0; n < lines && ask == 0; n++) {

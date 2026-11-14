@@ -74,7 +74,7 @@ def program(source, output, threads):
         compile_args={
             # MAP's input placements (example 01's reader reads two): both the input
             "reader": source.accessor_args() + 2 * source.placement_args(),
-            "writer": output.accessor_args(),
+            "writer": output.accessor_args() + 2 * output.placement_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         handlers=KERNELS / "mapcollect.h",
@@ -350,7 +350,7 @@ def main():
             log(f"output: {report['wrong_tiles']} wrong of {ranks}")
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["ok"] = bool(
-        report["kernel_errors"] == ["none", "none"]
+        all(error == "none" for error in report["kernel_errors"])
         and report.get("wrong_tiles", 0) == 0
         and report.get("thread_map_all_us", 0) is not None
         and report.get("thread_ask_us", 0) is not None
