@@ -460,6 +460,7 @@ class Session:
         self.run = None
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
+        self.transfer_chunk = None  # a larger transfer chunk asked for, where it fits
         self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
@@ -658,29 +659,37 @@ class Session:
         grid_x, grid_y, table, noc0 = self._module.core_nocs(self.device)
         return layout.nocs((grid_x, grid_y), table, noc0)
 
-    def read(self, *tensors, first=0, pages=None):
+    def read(self, *tensors, first=0, pages=None, out=None):
         """The raw pages of tensors in DRAM or L1 ([pages, page_bytes] uint8 each);
-        with `first` or `pages`, only those pages of one tensor (None: to the end). It
-        may run while a program runs: read only what no kernel writes any more (after
-        its event). Through the host channel when it is there (host.md, "Reads")."""
-        if (first or pages is not None) and len(tensors) != 1:
-            raise ValueError("a page range is read from one tensor")
+        with `first` or `pages`, only those pages of one tensor (None: to the end); with
+        `out` (one tensor), into those rows. Through the host channel when it is there
+        (host.md, "Reads"); while a run runs, only what no kernel writes any more."""
+        if (first or pages is not None or out is not None) and len(tensors) != 1:
+            raise ValueError("a page range, or rows to fill, is read from one tensor")
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way(tensors, first, pages)
         if way is None:
-            return self._read_device(tensors, first, pages)
-        out = []
+            got = self._read_device(tensors, first, pages)
+            if out is None:
+                return got
+            out[:] = got[0]
+            return [out]
+        rows = []
         for tensor in tensors:
             start, count = dram.page_range(first, pages, tensor.pages)
-            pages_out = np.empty((count, tensor.page_bytes), np.uint8)
+            if out is not None and out.shape != (count, tensor.page_bytes):
+                raise ValueError(f"out is [{count}, {tensor.page_bytes}] uint8 rows")
+            pages_out = (
+                np.empty((count, tensor.page_bytes), np.uint8) if out is None else out
+            )
             page = tensor.aligned_page_bytes
             for done, step in channel_module.rounds(count, page, self._region):
                 raw = self._push(tensor, start + done, step, way)
                 pages_out[done : done + step] = raw.reshape(step, page)[
                     :, : tensor.page_bytes
                 ]
-            out.append(pages_out)
-        return out
+            rows.append(pages_out)
+        return rows
 
     def _read_device(self, tensors, first, pages):
         """read() through the device API: DRAM tensors by banks, an L1 tensor whole
@@ -2108,11 +2117,7 @@ class _Backend:
         program, keeps the default: it has slots to place."""
         page = self.session.largest_page
         held = placed.programs if placed else [program]
-        if (
-            page <= channel_module.CHUNK_DEFAULT
-            or (placed and placed.switch)
-            or any(each.overlays for each in held)
-        ):
+        if (placed and placed.switch) or any(each.overlays for each in held):
             return channel_module.CHUNK_DEFAULT
         buffers = max(
             sum(buffer.page_bytes * buffer.pages for buffer in each.buffers)
@@ -2120,6 +2125,12 @@ class _Backend:
         )
         buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
         spare = self.session.l1()[1] - buffers - self.control.nbytes // cores
+        asked = self.session.transfer_chunk  # a session over two cards: LINK_CHUNK
+        word = abi.headers()["KM_TRANSFER_WORD_BYTES"]
+        if asked and asked >= page and 2 * asked + word <= spare // 2:
+            return asked
+        if page <= channel_module.CHUNK_DEFAULT:
+            return channel_module.CHUNK_DEFAULT
         return (
             channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
         )

@@ -33,6 +33,21 @@ def parse():
         action="store_true",
         help="no crossing: ask cores of both islands which island holds pages",
     )
+    parser.add_argument(
+        "--ask",
+        type=int,
+        nargs="+",
+        metavar="MIB",
+        help="island 0's ranks read MIB of a tensor island 1 holds (km::read_pages)",
+    )
+    parser.add_argument(
+        "--put",
+        type=int,
+        nargs="+",
+        metavar="MIB",
+        help="island 0's ranks write MIB into a tensor island 1 holds (write_pages)",
+    )
+    parser.add_argument("--step", type=int, default=32, help="pages a call (L1)")
     return parser.parse_args()
 
 
@@ -40,6 +55,8 @@ def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     report = {"cards": cards, "links": args.links, "page": args.page}
+    if args.ask or args.put:
+        args.mib = max(args.ask or args.put)
     pages = args.mib * (1 << 20) // args.page
     data = np.random.default_rng(1).integers(
         0, 1 << 32, (pages, args.page // 4), dtype=np.uint64
@@ -50,17 +67,36 @@ def main():
         own = [(graph.first(i), graph.count(i)) for i in range(2)]
         report["link_cores"] = [list(cores) for cores in session.link_cores]
         report["channels"] = [list(channels) for channels in session.channels]
-        source = session.tensor(data, "uint32", group=own[0])
-        target = session.empty(data.shape, "uint32", group=own[1])
-        split = session.empty(data.shape, "uint32")
-        copy = session.empty(data.shape, "uint32", copy=True)
-        tensors = (source, target, split, copy)
+        moving = args.ask or args.put
+        # MOVE: ASK reads a source island 1 holds, PUT writes a target it holds
+        source = session.tensor(data, "uint32", group=own[1 if args.ask else 0])
+        # one target a size: ASK's on island 0, PUT's on island 1
+        targets = [
+            session.empty(data.shape, "uint32", group=own[0 if args.ask else 1])
+            for _ in moving or ()
+        ]
+        if moving:
+            tensors = (source, *targets)
+        else:
+            target = session.empty(data.shape, "uint32", group=own[1])
+            split = session.empty(data.shape, "uint32")
+            copy = session.empty(data.shape, "uint32", copy=True)
+            tensors = (source, target, split, copy)
         report["parts"] = [list(tensor.placement.parts) for tensor in tensors]
-        log(f"source {source.placement.parts}, target {target.placement.parts}")
+        log(f"source {source.placement.parts}, target {tensors[1].placement.parts}")
         program = km.Program(
             "pages",
             kernels=KERNELS,
             handlers=KERNELS / "pages.h",
+            buffers=[  # MOVE's: a call's pages
+                km.Buffer(
+                    index=0,
+                    format="bfloat16",
+                    page_bytes=args.step * args.page,
+                    pages=1,
+                )
+            ],
+            compile_args={"reader": source.accessor_args()},
         )
         run = session.load(program, deadline=2.0)
         log("loaded on both islands")
@@ -68,6 +104,20 @@ def main():
             report.update(where(session, program, tensors))
             run.stop()
             report["ok"] = report["wrong_answers"] == 0
+            print(json.dumps(report), flush=True)
+            sys.exit(0 if report["ok"] else 1)
+        if moving:
+            report.update(move(session, run, program, args, source, targets, data))
+            try:
+                results = run.stop()
+                report["kernel_errors"] = [result["error_name"] for result in results]
+            except km.KomorebiError as error:
+                report["kernel_errors"] = str(error)[:300]
+            log(f"stopped: {report['kernel_errors']}")
+            report["ok"] = bool(
+                report["kernel_errors"] == ["none", "none"]
+                and all(row["wrong_pages"] == 0 for row in report["rows"])
+            )
             print(json.dumps(report), flush=True)
             sys.exit(0 if report["ok"] else 1)
         timeout = 5.0 + pages * args.page / 1e9
@@ -97,6 +147,40 @@ def main():
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
+
+
+def move(session, run, program, args, source, targets, data):
+    """MOVE of each size by island 0's ranks (ASK: the source across, PUT: the
+    target), one command each (its event's ticks: submit to completion), what
+    crossed beside it; then each target's pages read back and compared."""
+    handler = program.handler("move")
+    mine = run.island(0)
+    group = (session.graph.first(0), session.graph.count(0))
+    name = "ASK" if args.ask else "PUT"
+    rows = []
+    for mib, target in zip(args.ask or args.put, targets):
+        pages = mib * (1 << 20) // args.page
+        words = [source.address, target.address, pages, args.step]
+        before = run.crossings()
+        event = mine.wait(mine.submit(handler, group, words), timeout=30.0)
+        moved = run.crossings() - before
+        seconds = event.ticks / 50e6  # the X280's mtime: 50 MHz
+        row = {
+            "mib": mib,
+            "ms": round(seconds * 1e3, 3),
+            "gb_s": round(pages * args.page / seconds / 1e9, 2),
+            "crossed": {f"{a}->{b}": moved.total(a, b) for a, b in ((0, 1), (1, 0))},
+        }
+        log(f"{name} {mib} MiB: {row['ms']} ms, {row['gb_s']} GB/s")
+        log(f"crossed:\n{moved}")
+        rows.append(row)
+    for row, target in zip(rows, targets):
+        pages = row["mib"] * (1 << 20) // args.page
+        (got,) = session.read(target, first=0, pages=pages)
+        got = got.view(np.uint32).reshape(pages, -1)
+        row["wrong_pages"] = int((got != data[:pages]).any(axis=1).sum())
+        log(f"{row['mib']} MiB read back: {row['wrong_pages']} pages wrong")
+    return {"mode": name.lower(), "group": list(group), "rows": rows}
 
 
 def where(session, program, tensors):

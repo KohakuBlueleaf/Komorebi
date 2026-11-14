@@ -27,7 +27,10 @@
 #include <tt-metalium/mesh_workload.hpp>
 #include <tt-metalium/tt_metal.hpp>
 
+#include "impl/context/metal_context.hpp"
 #include "impl/program/program_impl.hpp"
+
+#include <llrt/tt_cluster.hpp>
 
 #include "../kernels/link.h"
 
@@ -139,7 +142,40 @@ namespace {
         uint32_t from, to, link, index;  // the mesh columns, the link, the status page
         CoreCoord sender, receiver;      // logical; the receiver is a core of `to`
         bool second;                     // dual: the second link of its sender core
+        CoreCoord eth;                   // logical: the link's Ethernet core on `from`
     };
+
+    // `--place at:x,y;x,y;...`: the sending cores (logical) in pair order.
+    std::vector<CoreCoord> places_at(const std::string& place) {
+        std::vector<CoreCoord> out;
+        std::stringstream list(place.substr(3));
+        std::string item;
+        while (std::getline(list, item, ';')) {
+            const auto comma = item.find(',');
+            out.push_back(
+                CoreCoord{
+                    std::stoul(item.substr(0, comma)), std::stoul(item.substr(comma + 1))
+                }
+            );
+        }
+        return out;
+    }
+
+    // A core's NoC0 coordinates on `chip` from its translated ones.
+    std::pair<uint32_t, uint32_t> noc0_of(
+        tt::tt_metal::IDevice* chip, CoreCoord translated, tt::CoreType type
+    ) {
+        const auto& soc = (
+            tt::tt_metal::MetalContext::instance().get_cluster().get_soc_desc(chip->id())
+        );
+        const auto core = soc.translate_coord_to(
+            tt::umd::CoreCoord(
+                translated.x, translated.y, type, tt::CoordSystem::TRANSLATED
+            ),
+            tt::CoordSystem::NOC0
+        );
+        return {static_cast<uint32_t>(core.x), static_cast<uint32_t>(core.y)};
+    }
 
     // The logical Tensix core in rows 0 and 1 nearest at or right of the Ethernet
     // core's x, not yet taken.
@@ -322,6 +358,7 @@ int main(int argc, char** argv) {
             froms = {static_cast<uint32_t>(std::stoul(o.from))};
         }
         std::vector<std::set<CoreCoord>> used(n);
+        std::vector<uint32_t> at_taken(n, 0);  // --place at: the cores given out
         std::vector<Pair> pairs;
         std::vector<uint32_t> receivers_on(n, 0);
         for (const uint32_t from : froms) {
@@ -351,11 +388,20 @@ int main(int argc, char** argv) {
                     static_cast<uint32_t>(pairs.size()),
                     {},
                     {},
-                    false
+                    false,
+                    eth
                 };
                 if (o.dual && (l - o.first_link) % 2 == 1) {
                     pair.sender = pairs.back().sender;  // the first link's core
                     pair.second = true;
+                } else if (o.place.rfind("at:", 0) == 0) {
+                    const auto at = places_at(o.place);
+                    const uint32_t k = at_taken[from]++;
+                    if (k >= at.size()) {
+                        throw std::runtime_error("--place at: names too few cores");
+                    }
+                    pair.sender = at[k];
+                    used[from].insert(at[k]);
                 } else if (o.place == "under") {
                     pair.sender = under(chips[from], eth, grid, used[from]);
                 } else {
@@ -626,6 +672,14 @@ int main(int argc, char** argv) {
         }
         bool ok = true;
         uint64_t bytes = 0;
+        const auto& soc0 = (
+            tt::tt_metal::MetalContext::instance().get_cluster().get_soc_desc(
+                chips[0]->id()
+            )
+        );
+        const std::pair<uint32_t, uint32_t> noc_size{
+            static_cast<uint32_t>(soc0.grid_size.x), static_cast<uint32_t>(soc0.grid_size.y)
+        };
         std::ostringstream report;
         report << "{\"options\": {\"from\": \"" << o.from
                << "\", \"packets\": " << o.packets << ", \"payload\": " << o.payload
@@ -636,7 +690,8 @@ int main(int argc, char** argv) {
                << ", \"space_every\": " << o.space_every << ", \"place\": \"" << o.place
                << "\", \"rx_place\": \"" << o.rx_place << "\", \"noc\": " << o.noc
                << ", \"target\": \"" << o.target << "\", \"dual\": " << o.dual
-               << "}, \"expect\": " << expect << ", \"aiclk_mhz\": [" << clocks.str()
+               << "}, \"noc_size\": [" << noc_size.first << ", " << noc_size.second
+               << "], \"expect\": " << expect << ", \"aiclk_mhz\": [" << clocks.str()
                << "], \"pairs\": [";
         for (const auto& pair : pairs) {
             const uint32_t to = pair.to;
@@ -704,10 +759,24 @@ int main(int argc, char** argv) {
             );
             ok &= pair_ok;
             bytes += static_cast<uint64_t>(sent[kWordPackets]) * o.payload;
+            const auto sender_noc0 = noc0_of(
+                chips[pair.from],
+                chips[pair.from]->worker_core_from_logical_core(pair.sender),
+                tt::CoreType::TENSIX
+            );
+            const auto eth_noc0 = noc0_of(
+                chips[pair.from],
+                chips[pair.from]->ethernet_core_from_logical_core(pair.eth),
+                tt::CoreType::ETH
+            );
             report << (pair.index ? ", " : "") << "{\"from\": " << pair.from
                    << ", \"to\": " << to << ", \"link\": " << pair.link
                    << ", \"sender_core\": [" << pair.sender.x << ", " << pair.sender.y
-                   << "], \"ok\": " << (pair_ok ? "true" : "false")
+                   << "], \"sender_noc0\": [" << sender_noc0.first << ", "
+                   << sender_noc0.second << "], \"eth_noc0\": [" << eth_noc0.first
+                   << ", " << eth_noc0.second << "], \"sender_noc\": "
+                   << ((pair.second || (!o.dual && o.noc == 1)) ? 1 : 0)
+                   << ", \"ok\": " << (pair_ok ? "true" : "false")
                    << ", \"counted\": " << counted
                    << ", \"host_checked_words\": " << host_words
                    << ", \"host_wrong\": " << host_wrong
