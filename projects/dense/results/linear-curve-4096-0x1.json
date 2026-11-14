@@ -7,7 +7,7 @@
   1
  ],
  "links": 0,
- "upload_s": 1.236,
+ "upload_s": 1.229,
  "placements": {
   "x": [
    [
@@ -75,13 +75,13 @@
   },
   "kernel_sizes": {
    "text": {
-    "BRISC": 55884,
-    "NCRISC": 56416,
-    "TRISC0": 14456,
-    "TRISC1": 5388,
-    "TRISC2": 5784
+    "BRISC": 37400,
+    "NCRISC": 38400,
+    "TRISC0": 14420,
+    "TRISC1": 5360,
+    "TRISC2": 5668
    },
-   "total": 138944
+   "total": 94224
   },
   "crossed_bytes": {
    "blocks": 34078720,
@@ -90,16 +90,16 @@
   },
   "loop": {
    "single_microseconds": [
-    1662.04,
-    1668.66,
-    1661.64
+    1611.62,
+    1617.78,
+    1609.64
    ],
-   "reps": 1806,
-   "seconds": 2.984,
-   "microseconds_per_call": 1652.282,
+   "reps": 1862,
+   "seconds": 2.982,
+   "microseconds_per_call": 1601.243,
    "part_microseconds_median": [
-    1647.3,
-    1647.5
+    1596.3,
+    1596.24
    ],
    "crossed_a_call": {
     "messages": 0.0,
@@ -118,7 +118,7 @@
     ],
     "1": [
      1343,
-     1349.1,
+     1349.6,
      1350
     ]
    }
@@ -136,27 +136,27 @@
    {
     "cores": 118,
     "cycles": {
-     "put": 1192668,
-     "sync": 635893,
-     "own": 390035
+     "put": 1148186,
+     "sync": 609743,
+     "own": 392827
     },
     "microseconds_at_mhz": {
-     "put": 883.5,
-     "sync": 471.0,
-     "own": 288.9
+     "put": 850.5,
+     "sync": 451.7,
+     "own": 291.0
     }
    },
    {
     "cores": 118,
     "cycles": {
-     "put": 1189874,
-     "sync": 645768,
-     "own": 391096
+     "put": 1147691,
+     "sync": 610866,
+     "own": 390052
     },
     "microseconds_at_mhz": {
-     "put": 881.4,
-     "sync": 478.3,
-     "own": 289.7
+     "put": 850.1,
+     "sync": 452.5,
+     "own": 288.9
     }
    }
   ],
@@ -165,16 +165,16 @@
    "rms_rel": 0.004131498462141533,
    "rows": 256,
    "ok": true,
-   "readback_s": 0.595
+   "readback_s": 1.272
   },
-  "tflops": 83.18,
-  "crossed_gb_per_s": 20.63,
+  "tflops": 85.83,
+  "crossed_gb_per_s": 21.29,
   "ok": true
  },
  "ok": true,
  "load_avg": [
-  "3.45",
-  "3.30",
-  "3.63"
+  "4.04",
+  "4.84",
+  "4.73"
  ]
 }

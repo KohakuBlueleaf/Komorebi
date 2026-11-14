@@ -7,7 +7,7 @@
   1
  ],
  "links": 0,
- "upload_s": 7.14,
+ "upload_s": 2.461,
  "placements": {
   "x": [
    [
@@ -75,13 +75,13 @@
   },
   "kernel_sizes": {
    "text": {
-    "BRISC": 55884,
-    "NCRISC": 56416,
-    "TRISC0": 14456,
-    "TRISC1": 5388,
-    "TRISC2": 5784
+    "BRISC": 37400,
+    "NCRISC": 38400,
+    "TRISC0": 14420,
+    "TRISC1": 5360,
+    "TRISC2": 5668
    },
-   "total": 138944
+   "total": 94224
   },
   "crossed_bytes": {
    "blocks": 579600384,
@@ -90,16 +90,16 @@
   },
   "loop": {
    "single_microseconds": [
-    49478.3,
-    49249.6,
-    49403.94
+    48960.1,
+    49132.22,
+    49002.84
    ],
-   "reps": 61,
-   "seconds": 3.234,
-   "microseconds_per_call": 53022.822,
+   "reps": 62,
+   "seconds": 3.277,
+   "microseconds_per_call": 52854.202,
    "part_microseconds_median": [
-    53945.84,
-    54009.22
+    54111.869999999995,
+    54079.93
    ],
    "crossed_a_call": {
     "messages": 0.0,
@@ -113,12 +113,12 @@
    "aiclk_mhz": {
     "0": [
      1193,
-     1254.8,
+     1254.0,
      1350
     ],
     "1": [
-     1256,
-     1285.2,
+     1287,
+     1310.2,
      1350
     ]
    }
@@ -136,27 +136,27 @@
    {
     "cores": 118,
     "cycles": {
-     "put": 34736265,
-     "sync": 557434,
-     "own": 31171532
+     "put": 34045512,
+     "sync": 522872,
+     "own": 31122395
     },
     "microseconds_at_mhz": {
-     "put": 25730.6,
-     "sync": 412.9,
-     "own": 23090.0
+     "put": 25218.9,
+     "sync": 387.3,
+     "own": 23053.6
     }
    },
    {
     "cores": 118,
     "cycles": {
-     "put": 35754039,
-     "sync": 3365081,
-     "own": 31178906
+     "put": 36451264,
+     "sync": 3942772,
+     "own": 31195014
     },
     "microseconds_at_mhz": {
-     "put": 26484.5,
-     "sync": 2492.7,
-     "own": 23095.5
+     "put": 27000.9,
+     "sync": 2920.6,
+     "own": 23107.4
     }
    }
   ],
@@ -165,16 +165,16 @@
    "rms_rel": 0.004131212909706623,
    "rows": 256,
    "ok": true,
-   "readback_s": 3.355
+   "readback_s": 2.329
   },
-  "tflops": 165.89,
-  "crossed_gb_per_s": 10.94,
+  "tflops": 166.42,
+  "crossed_gb_per_s": 10.97,
   "ok": true
  },
  "ok": true,
  "load_avg": [
-  "11.14",
-  "5.17",
-  "4.22"
+  "4.11",
+  "4.34",
+  "4.54"
  ]
 }

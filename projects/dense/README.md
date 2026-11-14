@@ -519,7 +519,8 @@ the version described above, whose text on one card is 87,888 B (`--kernel-bytes
 
 The same script and kernels on card 0 and on cards 0 and 1, one run a point (three
 single calls, then calls back to back for about three seconds), on 2026-11-15 between
-01:33 and 01:42; every check passed (relative RMS 3.94e-3 to 3.97e-3 on one card,
+01:33 and 01:42, the two-card 4096 to 16384 rows between 01:52 and 01:55 after the page calls' port
+moved and the link cores got kernels of their own; every check passed (relative RMS 3.94e-3 to 3.97e-3 on one card,
 4.12e-3 to 4.14e-3 on two: the partial rounded to bf16 once).
 
 | Cube | One card, us per call (single) | TFLOP/s | Two cards, us per call (single) | TFLOP/s | Crossed a call, rate | One put, KiB | Puts / sync / own columns, us | Two / one (single) |
@@ -529,9 +530,9 @@ single calls, then calls back to back for about three seconds), on 2026-11-15 be
 | 512 | 19.3 (16.0) | 13.89 | 255.8 (266.0) | 1.05 | 0.5 MB, 2.09 GB/s | 4 | 113.9 / 130.8 / 5.1 | 0.08 (0.06) |
 | 1024 | 44.6 (41.3) | 48.19 | 309.1 (319.2) | 6.95 | 2.1 MB, 6.82 GB/s | 16 | 141.0 / 147.5 / 18.6 | 0.14 (0.13) |
 | 2048 | 170.6 (144.3) | 100.69 | 607.1 (615.5) | 28.30 | 9.2 MB, 15.13 GB/s | 56 | 318.9 / 207.9 / 75.2 | 0.28 (0.23) |
-| 4096 | 1,539.5 (664.6) | 89.28 | 1,652.3 (1,662.0) | 83.18 | 34.1 MB, 20.63 GB/s | 208 | 883.5 / 478.3 / 289.7 | 0.93 (0.40) |
-| 8192 | 12,463.3 (5,716.0) | 88.22 | 9,544.5 (9,538.7) | 115.20 | 146.0 MB, 15.30 GB/s | 360 | 5,732.0 / 779.9 / 3,036.3 | 1.31 (0.60) |
-| 16384 | 90,231.8 (75,169.4) | 97.48 | 53,022.8 (49,403.9) | 165.89 | 579.8 MB, 10.94 GB/s | 192 | 26,484.5 / 2,492.7 / 23,095.5 | 1.70 (1.52) |
+| 4096 | 1,539.5 (664.6) | 89.28 | 1,601.2 (1,611.6) | 85.83 | 34.1 MB, 21.29 GB/s | 208 | 850.5 / 452.5 / 291.0 | 0.96 (0.41) |
+| 8192 | 12,463.3 (5,716.0) | 88.22 | 8,478.3 (8,145.2) | 129.68 | 146.0 MB, 17.22 GB/s | 360 | 4,601.0 / 1,155.7 / 3,010.3 | 1.47 (0.70) |
+| 16384 | 90,231.8 (75,169.4) | 97.48 | 52,854.2 (49,002.8) | 166.42 | 579.8 MB, 10.97 GB/s | 192 | 27,000.9 / 2,920.6 / 23,107.4 | 1.71 (1.53) |
 
 "Two / one" is one card's time a call over two cards' (above 1: two cards are faster).
 Crossed is `run.crossings()` over the loop, both ways and every link, a call: its
@@ -542,18 +543,23 @@ the writers' wall clocks (T, the command's a6), the slowest core of the slower i
 in microseconds at 1,350 MHz: the puts (the other islands' columns made and put), the
 sync (the last puts counted, the barrier), the own columns.
 
-What bounds the two-card points, from those counters: from 2048 up the puts' pass is
-the longest and runs at the put path's rate, not the product's: 17, 73 and 290 MB put
-by an island in 0.88, 5.73 and 26.5 ms (19, 12.7 and 11 GB/s each way), against an own
-pass of the same work of 0.29, 3.04 and 23.1 ms; below 2048 a call is the puts' and
-the sync's latency (puts of 4 to 16 KiB, a 25 to 150 us sync). The 8192 plan has K
-blocks of one tile (its block buffer for the puts took the L1 of a larger K block),
-which makes its own pass about twice the quarter of a one-card call. The one-card
+What bounds the two-card points, from those counters: at 4096 and 8192 the puts' pass
+is the longest and runs at the put path's rate, not the product's: 17 and 73 MB put by
+an island in 0.85 and 4.6 ms (20 and 16 GB/s each way), against an own pass of the
+same work of 0.29 and 3.01 ms, and the sync then waits for the last puts to land; at
+16384 the puts nearly keep up (27.0 ms against 23.1) and the own pass bounds: the
+island's plan is a rect of 9 x 11 cores (99 of its 118 ranks; one card's is 10 x 12),
+so a quarter of the product takes 23.1 ms where a quarter of a one-card call is 18.8.
+Below 2048 a call is the puts' and the sync's latency (puts of 4 to 16 KiB, a 25 to
+150 us sync). The 8192 plan has K blocks of one tile (its block buffer for the puts
+took the L1 of a larger K block), which makes its own pass about twice the quarter of
+a one-card call. The one-card
 loops from 2048 up ran with the AI clock falling to 800 to 1,100 MHz; the two-card
 loops kept 1,350 MHz except at 16384 (1,193 / 1,256 at the least).
 
 Two cards open with the session's defaults (every link: 4, two link cores an island,
-118 ranks) and the script's own kernel buffer (144 KiB; the text is 138,944 B). The
+118 ranks) and the script's own kernel buffer (96 KiB: a rank's kernels carry only the
+page calls' client side, 94,224 B built off-card). The
 plan is the project's rule on the island's 118 ranks for M x K / 2 x N / 2 tiles, on
 the L1 the larger kernel buffer leaves less the extra buffers (`fitting_plan`), so the
 two-card plans differ from one card's. JSON lines:
