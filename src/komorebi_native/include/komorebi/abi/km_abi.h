@@ -91,9 +91,6 @@
 /* each CPU opens its connection, held until its kernel ends, and says hello to the far
  * link core's same CPU: port KM_PAGES_HELLO_PORT + c of both, 1 up, 2 both up */
 #define KM_PAGES_OPEN 2u
-/* link 0's CPU of link core 0 serves the messages of the RUN whose group word is a0
- * across its link until that RUN ends (km_link.hpp) */
-#define KM_PAGES_MESSAGES 3u
 #define KM_PAGES_HELLO_PORT 5u
 /* dispatcher -> link core 0 of its island: CPU 0 (link 0) sends the packet staged in
  * the link area, then its count line, into the other island's dispatcher */
@@ -102,6 +99,9 @@
  * rank r's pages first + r * pages on into L1 address KM_PAGES_TO of its core, counted
  * at its KM_PAGES_COUNT; the CPUs split the ranks */
 #define KM_PAGES_RANGE 4u
+/* link 0's CPU of link core 0 serves the messages of the RUN whose group word is a0
+ * across its link until that RUN ends (km_link.hpp) */
+#define KM_PAGES_MESSAGES 5u
 #define KM_PAGES_PACKET_MAX 4352u /* a fabric packet's largest payload */
 /* LINE's words: a0 the stage, a1 the packet's number (each line of the stage holds it
  * in word 0, the count line in word 1), a2 the far tile x | y << 16, a3 the far address
