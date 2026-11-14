@@ -70,8 +70,11 @@ typedef struct {
     uint32_t taken;  /* packets read from the inbox */
     uint32_t sent;   /* packets handed to the link core */
     uint32_t out_head, out_tail;
-    uint32_t stages;      /* bit s: stage s holds a packet in flight */
-    uint32_t busy;        /* bit e: crossing e in flight */
+    uint32_t stages;                       /* bit s: stage s holds a packet in flight */
+    uint32_t stage_number[KM_LINK_STAGES]; /* each stage's packet number */
+    uint32_t stage_to[KM_LINK_STAGES];     /* and the island it goes to */
+    uint32_t stage_ticket[KM_LINK_STAGES]; /* 1 + its command crossing's ticket */
+    uint32_t busy;                         /* bit e: crossing e in flight */
     uint32_t events_read; /* link ring events turned into DONE packets */
     /* counters */
     uint32_t crossed, received, answered, gave_up;
@@ -363,37 +366,39 @@ static void link_part(
     }
 }
 
-/* A LINE of stage `stage` lost on hung link core `k`: its command packet's crossing,
- * if still in flight, is named lost and ends at link_late's next look. */
-static void link_lost(kmd_t* dispatcher, uint32_t stage, uint32_t k, uint32_t ticks) {
+/* Stage `stage`'s LINE given up (lost on hung link core `lost` - 1, if not 0): its
+ * number taken again next, its command's crossing ended at link_late's next look. */
+static void link_lost(
+    kmd_t* dispatcher, uint32_t stage, uint32_t lost, uint32_t ticks
+) {
     kmd_link_t* link = link_state(dispatcher);
-    volatile const uint32_t*
-        crossing_line = (
-            (volatile const uint32_t*)(
-                link->window + KM_LINK_STAGE + stage * KM_LINK_STAGE_BYTES + 64u
-            )
-        );
-    x280_fence_ir();
-    const uint32_t kind = crossing_line[KMD_X_KIND] & 0xFFu;
-    const uint32_t ticket = crossing_line[KMD_X_TICKET];
-    const uint32_t index = ticket & 0xFFu;
-    if (kind != KMD_CROSS_COMMAND || index >= KMD_CROSSINGS) {
+    const uint32_t number = link->stage_number[stage];
+    const uint32_t to = link->stage_to[stage];
+    if (number != 0 && number - 1u < link->sent_to[to]) {
+        link->sent_to[to] = number - 1u; /* never landed: that island waits for it */
+    }
+    const uint32_t ticket = link->stage_ticket[stage];
+    link->stage_ticket[stage] = 0;
+    const uint32_t index = (ticket - 1u) & 0xFFu;
+    if (ticket == 0 || index >= KMD_CROSSINGS) {
         return; /* a DONE for the other island: its crossing ends at its deadline */
     }
     kmd_crossing_t* crossing = &link->crossing[index];
     if (
         !(link->busy & (1u << index)) || crossing->late ||
-        crossing->generation != ticket >> 8
+        crossing->generation != (ticket - 1u) >> 8
     ) {
         return;
     }
-    link_event(
-        dispatcher,
-        crossing->source == KMD_SRC_HOST ? crossing->request : 0u,
-        k,
-        KMD_LINK_LOST,
-        ticks
-    );
+    if (lost != 0) {
+        link_event(
+            dispatcher,
+            crossing->source == KMD_SRC_HOST ? crossing->request : 0u,
+            lost - 1u,
+            KMD_LINK_LOST,
+            ticks
+        );
+    }
     crossing->deadline = 0;
 }
 
@@ -408,8 +413,8 @@ static int link_freed(
         const uint32_t stage = link->slot_stage[slot] - 1u;
         link->stages &= ~(1u << stage);
         link->slot_stage[slot] = 0;
-        if (dispatcher->slot_lost[slot] != 0 && (status & 0xFFu) != KM_EVENT_DONE) {
-            link_lost(dispatcher, stage, dispatcher->slot_lost[slot] - 1u, ticks);
+        if ((status & 0xFFu) != KM_EVENT_DONE) {
+            link_lost(dispatcher, stage, dispatcher->slot_lost[slot], ticks);
         }
         return 1;
     }
@@ -618,6 +623,13 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
             KMD_TRACE_SUBMIT
         );
         link->stages |= 1u << stage;
+        link->stage_number[stage] = number;
+        link->stage_to[stage] = to;
+        link->stage_ticket[stage] = (
+            (link_word(&packet->line[8], KMD_X_KIND) & 0xFFu) == KMD_CROSS_COMMAND
+                ? link_word(&packet->line[8], KMD_X_TICKET) + 1u
+                : 0u
+        );
         link->slot_stage[slot] = (uint8_t)(stage + 1u);
         dispatcher->link_slots |= 1ull << slot;
     }
@@ -769,6 +781,16 @@ static void link_late(kmd_t* dispatcher, uint64_t now) {
             !(link->busy & (1u << index)) || crossing->late || now <= crossing->deadline
         ) {
             continue;
+        }
+        const uint32_t ticket = (index | crossing->generation << 8) + 1u;
+        uint32_t staged = 0;
+        for (uint32_t stage = 0; stage < KM_LINK_STAGES; stage++) {
+            staged |= (
+                (link->stages >> stage & 1u) && link->stage_ticket[stage] == ticket
+            );
+        }
+        if (staged) {
+            continue; /* its LINE's give-up ends it, naming the link (link_lost) */
         }
         crossing->late = 1;
         link->gave_up++;

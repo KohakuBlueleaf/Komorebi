@@ -112,6 +112,13 @@ def main():
         (got,) = session.read_bf16(output)
         report["wrong_before"] = wrong_ranks(got, values, group)[:8]
         log(f"before, wrong ranks: {report['wrong_before']}")
+        lines = []  # lines crossed each way so far: before the SPIN, after the reset
+
+        def crossed():
+            moved = run.crossings()
+            lines.append([moved.total(0, 1)["lines"], moved.total(1, 0)["lines"]])
+
+        crossed()
         session.write(output, np.zeros((output.pages, output.page_bytes), np.uint8))
         log("SPIN on island 0's link core 0 (CPU 0), then the command it holds up")
         link = graph.link_group(0, 0, 1)
@@ -146,11 +153,15 @@ def main():
             }
             log(f"host reset_link: {report['reset_link']}")
         report["links_hung_after"] = run.links_hung
+        crossed()
         session.write(output, np.zeros((output.pages, output.page_bytes), np.uint8))
         started = time.perf_counter()
         report["after"] = timeout_of(wait(submit()))[0]
         report["after_us"] = round((time.perf_counter() - started) * 1e6, 1)
         log(f"after: {report['after']} in {report['after_us']} us")
+        crossed()
+        report["lines_crossed"] = lines  # [0 -> 1, 1 -> 0] at each read
+        log(f"lines crossed (0->1, 1->0): {lines}")
         try:
             results = run.stop()
             report["stop"] = "clean"
