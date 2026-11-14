@@ -1,0 +1,840 @@
+{
+ "products": [
+  {
+   "shape": null,
+   "m": 1024,
+   "k": 4096,
+   "n": 4096,
+   "cards": [
+    0,
+    1
+   ],
+   "stack": "below",
+   "upload_s": 0.284,
+   "hints": {
+    "a": {
+     "split": 0,
+     "group": [
+      118,
+      2
+     ]
+    },
+    "w": {
+     "group": [
+      119,
+      119
+     ]
+    },
+    "y": {
+     "split": 0,
+     "group": [
+      118,
+      2
+     ]
+    }
+   },
+   "a_rows_by_island": [
+    [
+     0,
+     16
+    ],
+    [
+     16,
+     16
+    ]
+   ],
+   "plan": {
+    "mt": 32,
+    "kt": 128,
+    "nt": 128,
+    "rows": 16,
+    "cols": 11,
+    "pcm": 2,
+    "pcn": 12,
+    "bm": 2,
+    "bn": 12,
+    "kb": 16,
+    "sh": 1,
+    "sw": 4,
+    "wa": 2,
+    "ww": 2,
+    "layout": "2d",
+    "l1": 1033216,
+    "form": "grid",
+    "nk": 8,
+    "nbh": 1,
+    "nbw": 1,
+    "rect": [
+     0,
+     2,
+     11,
+     16
+    ]
+   },
+   "group": [
+    24,
+    190
+   ],
+   "single_microseconds": [
+    1899.14,
+    1900.24,
+    1887.2
+   ],
+   "loop": {
+    "reps": 158,
+    "seconds": 0.295,
+    "microseconds_per_call": 1866.684,
+    "island_microseconds_median": [
+     1858.52,
+     1858.51
+    ],
+    "aiclk_mhz": {
+     "0": [
+      1350,
+      1350.0,
+      1350
+     ],
+     "1": [
+      1343,
+      1346.2,
+      1350
+     ]
+    }
+   },
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 0.0,
+    "pages": 0.0,
+    "parts": 264.0,
+    "puts": 0.0,
+    "bytes": 34605824.0
+   },
+   "parts_by_link": {
+    "0 0->1": 88.0,
+    "0 1->0": 176.0
+   },
+   "run": {
+    "cores": 238,
+    "kernel": [
+     "none",
+     "none"
+    ],
+    "cores_ended": {
+     "reader_end": 238,
+     "writer_end": 238,
+     "compute_end": 238
+    },
+    "gave_up": [],
+    "broadcast_gave_up": []
+   },
+   "tflops": 18.41,
+   "sampled_row_tiles": [
+    7,
+    10,
+    15,
+    16,
+    20,
+    23,
+    26,
+    28
+   ],
+   "check": {
+    "max_rel": 0.005589928977464654,
+    "rms_rel": 0.0039620059610723495,
+    "rows": 256,
+    "ok": true
+   },
+   "ok": true,
+   "load_avg": [
+    "9.02",
+    "10.34",
+    "9.62"
+   ],
+   "run_name": "1024x4096x4096-hints"
+  },
+  {
+   "shape": null,
+   "m": 1024,
+   "k": 8192,
+   "n": 8192,
+   "cards": [
+    0,
+    1
+   ],
+   "stack": "below",
+   "upload_s": 0.665,
+   "hints": {
+    "a": {
+     "split": 0,
+     "group": [
+      118,
+      2
+     ]
+    },
+    "w": {
+     "group": [
+      119,
+      119
+     ]
+    },
+    "y": {
+     "split": 0,
+     "group": [
+      118,
+      2
+     ]
+    }
+   },
+   "a_rows_by_island": [
+    [
+     0,
+     16
+    ],
+    [
+     16,
+     16
+    ]
+   ],
+   "plan": {
+    "mt": 32,
+    "kt": 256,
+    "nt": 256,
+    "rows": 16,
+    "cols": 11,
+    "pcm": 2,
+    "pcn": 24,
+    "bm": 2,
+    "bn": 24,
+    "kb": 8,
+    "sh": 1,
+    "sw": 4,
+    "wa": 2,
+    "ww": 2,
+    "layout": "2d",
+    "l1": 1065984,
+    "form": "grid",
+    "nk": 32,
+    "nbh": 1,
+    "nbw": 1,
+    "rect": [
+     0,
+     2,
+     11,
+     16
+    ]
+   },
+   "group": [
+    24,
+    190
+   ],
+   "single_microseconds": [
+    7372.38,
+    7376.96,
+    7376.08
+   ],
+   "loop": {
+    "reps": 41,
+    "seconds": 0.301,
+    "microseconds_per_call": 7350.853,
+    "island_microseconds_median": [
+     7331.04,
+     7331.16
+    ],
+    "aiclk_mhz": {
+     "0": [
+      1350,
+      1350.0,
+      1350
+     ],
+     "1": [
+      1350,
+      1350.0,
+      1350
+     ]
+    }
+   },
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 0.0,
+    "pages": 0.0,
+    "parts": 1056.0,
+    "puts": 0.0,
+    "bytes": 138423296.0
+   },
+   "parts_by_link": {
+    "0 0->1": 352.0,
+    "0 1->0": 704.0
+   },
+   "run": {
+    "cores": 238,
+    "kernel": [
+     "none",
+     "none"
+    ],
+    "cores_ended": {
+     "reader_end": 238,
+     "writer_end": 238,
+     "compute_end": 238
+    },
+    "gave_up": [],
+    "broadcast_gave_up": []
+   },
+   "tflops": 18.7,
+   "sampled_row_tiles": [
+    7,
+    10,
+    15,
+    16,
+    20,
+    23,
+    26,
+    28
+   ],
+   "check": {
+    "max_rel": 0.006137632174733882,
+    "rms_rel": 0.0039643817009491975,
+    "rows": 256,
+    "ok": true
+   },
+   "ok": true,
+   "load_avg": [
+    "14.54",
+    "11.36",
+    "9.97"
+   ],
+   "run_name": "1024x8192x8192-hints"
+  },
+  {
+   "shape": null,
+   "m": 32,
+   "k": 4096,
+   "n": 4096,
+   "cards": [
+    0,
+    1
+   ],
+   "stack": "below",
+   "upload_s": 0.518,
+   "hints": {
+    "a": {},
+    "w": {},
+    "y": {}
+   },
+   "a_rows_by_island": [
+    [
+     0,
+     1
+    ],
+    [
+     1,
+     0
+    ]
+   ],
+   "plan": {
+    "mt": 1,
+    "kt": 128,
+    "nt": 128,
+    "rows": 1,
+    "cols": 132,
+    "pcm": 1,
+    "pcn": 1,
+    "bm": 1,
+    "bn": 1,
+    "kb": 16,
+    "sh": 1,
+    "sw": 1,
+    "wa": 2,
+    "ww": 2,
+    "layout": "cols",
+    "l1": 140288,
+    "form": "grid",
+    "nk": 8,
+    "nbh": 1,
+    "nbw": 1,
+    "rect": [
+     0,
+     0,
+     11,
+     12
+    ]
+   },
+   "group": [
+    0,
+    142
+   ],
+   "single_microseconds": [
+    8192.32,
+    8190.66,
+    8192.26
+   ],
+   "loop": {
+    "reps": 37,
+    "seconds": 0.304,
+    "microseconds_per_call": 8212.614,
+    "island_microseconds_median": [
+     4076.56,
+     7653.92
+    ],
+    "aiclk_mhz": {
+     "0": [
+      1350,
+      1350.0,
+      1350
+     ],
+     "1": [
+      1350,
+      1350.0,
+      1350
+     ]
+    }
+   },
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 3164.0,
+    "pages": 3662.0,
+    "parts": 0.0,
+    "puts": 36.0,
+    "bytes": 7703568.0
+   },
+   "parts_by_link": {
+    "0 0->1": 0.0,
+    "0 1->0": 0.0
+   },
+   "run": {
+    "cores": 238,
+    "kernel": [
+     "none",
+     "none"
+    ],
+    "cores_ended": {
+     "reader_end": 238,
+     "writer_end": 238,
+     "compute_end": 238
+    },
+    "gave_up": [],
+    "broadcast_gave_up": []
+   },
+   "tflops": 0.13,
+   "sampled_row_tiles": [
+    0
+   ],
+   "check": {
+    "max_rel": 0.005485418973027588,
+    "rms_rel": 0.0039613511507179495,
+    "rows": 32,
+    "ok": true
+   },
+   "ok": true,
+   "load_avg": [
+    "14.00",
+    "11.34",
+    "9.98"
+   ],
+   "run_name": "32x4096x4096"
+  },
+  {
+   "shape": null,
+   "m": 32,
+   "k": 8192,
+   "n": 8192,
+   "cards": [
+    0,
+    1
+   ],
+   "stack": "below",
+   "upload_s": 0.556,
+   "hints": {
+    "a": {},
+    "w": {},
+    "y": {}
+   },
+   "a_rows_by_island": [
+    [
+     0,
+     1
+    ],
+    [
+     1,
+     0
+    ]
+   ],
+   "plan": {
+    "mt": 1,
+    "kt": 256,
+    "nt": 256,
+    "rows": 1,
+    "cols": 132,
+    "pcm": 1,
+    "pcn": 2,
+    "bm": 1,
+    "bn": 2,
+    "kb": 16,
+    "sh": 1,
+    "sw": 2,
+    "wa": 2,
+    "ww": 2,
+    "layout": "cols",
+    "l1": 214016,
+    "form": "grid",
+    "nk": 16,
+    "nbh": 1,
+    "nbw": 1,
+    "rect": [
+     0,
+     0,
+     11,
+     12
+    ]
+   },
+   "group": [
+    0,
+    142
+   ],
+   "single_microseconds": [
+    51019.42,
+    51009.42,
+    51010.78
+   ],
+   "loop": {
+    "reps": 6,
+    "seconds": 0.307,
+    "microseconds_per_call": 51109.726,
+    "island_microseconds_median": [
+     49363.84,
+     11310.64
+    ],
+    "aiclk_mhz": {
+     "0": [
+      1350,
+      1350.0,
+      1350
+     ],
+     "1": [
+      1350,
+      1350.0,
+      1350
+     ]
+    }
+   },
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 15620.0,
+    "pages": 32172.0,
+    "parts": 0.0,
+    "puts": 72.0,
+    "bytes": 66890528.0
+   },
+   "parts_by_link": {
+    "0 0->1": 0.0,
+    "0 1->0": 0.0
+   },
+   "run": {
+    "cores": 238,
+    "kernel": [
+     "none",
+     "none"
+    ],
+    "cores_ended": {
+     "reader_end": 238,
+     "writer_end": 238,
+     "compute_end": 238
+    },
+    "gave_up": [],
+    "broadcast_gave_up": []
+   },
+   "tflops": 0.08,
+   "sampled_row_tiles": [
+    0
+   ],
+   "check": {
+    "max_rel": 0.006343117507380869,
+    "rms_rel": 0.003960292932602224,
+    "rows": 32,
+    "ok": true
+   },
+   "ok": true,
+   "load_avg": [
+    "12.34",
+    "11.13",
+    "9.94"
+   ],
+   "run_name": "32x8192x8192"
+  },
+  {
+   "shape": null,
+   "m": 1024,
+   "k": 4096,
+   "n": 4096,
+   "cards": [
+    0,
+    1
+   ],
+   "stack": "below",
+   "upload_s": 0.245,
+   "hints": {
+    "a": {},
+    "w": {},
+    "y": {}
+   },
+   "a_rows_by_island": [
+    [
+     0,
+     32
+    ],
+    [
+     32,
+     0
+    ]
+   ],
+   "plan": {
+    "mt": 32,
+    "kt": 128,
+    "nt": 128,
+    "rows": 16,
+    "cols": 11,
+    "pcm": 2,
+    "pcn": 12,
+    "bm": 2,
+    "bn": 12,
+    "kb": 16,
+    "sh": 1,
+    "sw": 4,
+    "wa": 2,
+    "ww": 2,
+    "layout": "2d",
+    "l1": 1033216,
+    "form": "grid",
+    "nk": 8,
+    "nbh": 1,
+    "nbw": 1,
+    "rect": [
+     0,
+     2,
+     11,
+     16
+    ]
+   },
+   "group": [
+    24,
+    190
+   ],
+   "single_microseconds": [
+    16103.74,
+    16130.18,
+    16142.54
+   ],
+   "loop": {
+    "reps": 19,
+    "seconds": 0.307,
+    "microseconds_per_call": 16179.428,
+    "island_microseconds_median": [
+     16140.7,
+     16143.54
+    ],
+    "aiclk_mhz": {
+     "0": [
+      1350,
+      1350.0,
+      1350
+     ],
+     "1": [
+      1350,
+      1350.0,
+      1350
+     ]
+    }
+   },
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 1565.0,
+    "pages": 21376.0,
+    "parts": 264.0,
+    "puts": 4096.0,
+    "bytes": 78631488.0
+   },
+   "parts_by_link": {
+    "0 0->1": 88.0,
+    "0 1->0": 176.0
+   },
+   "run": {
+    "cores": 238,
+    "kernel": [
+     "none",
+     "none"
+    ],
+    "cores_ended": {
+     "reader_end": 238,
+     "writer_end": 238,
+     "compute_end": 238
+    },
+    "gave_up": [],
+    "broadcast_gave_up": []
+   },
+   "tflops": 2.12,
+   "sampled_row_tiles": [
+    7,
+    10,
+    15,
+    16,
+    20,
+    23,
+    26,
+    28
+   ],
+   "check": {
+    "max_rel": 0.005589928977464654,
+    "rms_rel": 0.0039620059610723495,
+    "rows": 256,
+    "ok": true
+   },
+   "ok": true,
+   "load_avg": [
+    "11.28",
+    "10.94",
+    "9.89"
+   ],
+   "run_name": "1024x4096x4096"
+  },
+  {
+   "shape": null,
+   "m": 1024,
+   "k": 8192,
+   "n": 8192,
+   "cards": [
+    0,
+    1
+   ],
+   "stack": "below",
+   "upload_s": 1.332,
+   "hints": {
+    "a": {},
+    "w": {},
+    "y": {}
+   },
+   "a_rows_by_island": [
+    [
+     0,
+     32
+    ],
+    [
+     32,
+     0
+    ]
+   ],
+   "plan": {
+    "mt": 32,
+    "kt": 256,
+    "nt": 256,
+    "rows": 16,
+    "cols": 11,
+    "pcm": 2,
+    "pcn": 24,
+    "bm": 2,
+    "bn": 24,
+    "kb": 8,
+    "sh": 1,
+    "sw": 4,
+    "wa": 2,
+    "ww": 2,
+    "layout": "2d",
+    "l1": 1065984,
+    "form": "grid",
+    "nk": 32,
+    "nbh": 1,
+    "nbw": 1,
+    "rect": [
+     0,
+     2,
+     11,
+     16
+    ]
+   },
+   "group": [
+    24,
+    190
+   ],
+   "single_microseconds": [
+    34118.52,
+    34270.48,
+    34140.52
+   ],
+   "loop": {
+    "reps": 9,
+    "seconds": 0.309,
+    "microseconds_per_call": 34304.095,
+    "island_microseconds_median": [
+     34232.38,
+     34225.64
+    ],
+    "aiclk_mhz": {
+     "0": [
+      1350,
+      1350.0,
+      1350
+     ],
+     "1": [
+      1350,
+      1350.0,
+      1350
+     ]
+    }
+   },
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 2531.0,
+    "pages": 47360.0,
+    "parts": 1056.0,
+    "puts": 8192.0,
+    "bytes": 235873472.0
+   },
+   "parts_by_link": {
+    "0 0->1": 352.0,
+    "0 1->0": 704.0
+   },
+   "run": {
+    "cores": 238,
+    "kernel": [
+     "none",
+     "none"
+    ],
+    "cores_ended": {
+     "reader_end": 238,
+     "writer_end": 238,
+     "compute_end": 238
+    },
+    "gave_up": [],
+    "broadcast_gave_up": []
+   },
+   "tflops": 4.01,
+   "sampled_row_tiles": [
+    7,
+    10,
+    15,
+    16,
+    20,
+    23,
+    26,
+    28
+   ],
+   "check": {
+    "max_rel": 0.006137632174733882,
+    "rms_rel": 0.0039643817009491975,
+    "rows": 256,
+    "ok": true
+   },
+   "ok": true,
+   "load_avg": [
+    "10.44",
+    "10.78",
+    "9.86"
+   ],
+   "run_name": "1024x8192x8192"
+  }
+ ]
+}

@@ -634,6 +634,214 @@ again: 4096 cubed 23,342.2 us a call (67.6 MB crossed, 2.90 GB/s), 8192 110,614.
 (281.1 MB, 2.54 GB/s), 16384 473,437.4 us (1.210 GB, 2.56 GB/s); one card 1,475.2,
 8,906.5 and 90,030.6 us then. JSON lines: `results/linear-curve-<cube>-0x1-n.json`.
 
+## A linear layer on one card and two
+
+The two standard tensor-parallel forms of Y = X W (X is M x K, W is K x N), each taken
+by the linear kernels above from the placements alone (`--place` only says how the
+script places the tensors; the kernels read the tensor table):
+
+- **Output dim sharded** (`--place out`): W and Y split along N, X a copy on both
+  islands. Each island runs the one-card product on its half of N. Nothing crosses.
+- **Input dim sharded** (`--place in`): X and W split along K, Y a copy. Each island
+  runs the one-card product on its half of K and writes its partial of the whole M x N
+  output to its own DRAM; then one addition across the cards: the collectives'
+  all-reduce of Y (`run.all_reduce`), after the product.
+
+Decode is M = 32: one tile row, so one token is one row of it (up to 32 tokens a
+call). At M of at most two tile rows the plan picker gives the kernels the K split:
+groups of ranks inside an island, a block of Y a group, each rank a share of K read on
+both movers in batches of at most 16 pages, the parts summed into the group's first
+rank by a tree. Prefill is M = 1024 and 4096 with the grid plan.
+
+### The card's two ceilings
+
+`ceilings.py`, this framework's kernels on card 0: every rank reading its share of a
+W-sized tensor with both movers, nothing computed; and every rank's matrix unit on
+resident tiles, nothing read.
+
+| Ceiling | Measured |
+|---|---|
+| DRAM, 128 MiB read by 120 ranks | 495.6 GB/s (batches of 8 pages a mover; 490.2 at 4, 488.2 at 16), 62.0 GB/s a bank of 8 |
+| DRAM, 32 MiB (W of 4096 x 4096) | 486.3 GB/s, 69.0 us |
+| Matrix unit, 120 ranks, 8 x 8 x 8 tile blocks, HiFi2, fp32 accumulation | 4.70e9 tile products a second (34.44 cycles a tile product at 1,350 MHz) |
+
+A shape's hardware time is the larger of W's bytes at 495.6 GB/s and its tile products
+at 4.70e9 a second (on two cards: an island's half of each).
+
+```
+python projects/dense/ceilings.py --cards 0
+```
+
+### The account
+
+With `--account` the kernels stamp the wall clock at their phase edges (compiled out by
+default), and a call's time is a sum of named terms on its slowest core, the one whose
+command took longest. Terms marked **HW** are the hardware's (W's bytes at the DRAM
+ceiling, the matrix unit's cycles, Y's bytes); **OURS** is everything else, named.
+
+- *Way in and out* (OURS): the dispatcher's part less the slowest core's span: the
+  command reaching the ranks, the last rank's end reaching the dispatcher.
+- *W read*: the rank's slower mover reading its batches of W. HW = the island's W at
+  495.6 GB/s; OURS = the rest (a rate under the ceiling).
+- *Reduce in the island* (K split, OURS): the group's fp32 parts summed into its first
+  rank over the NoC, with the wait for the group's last mover.
+- *W free, W cast* (grid, OURS): the column's sender waiting for its receivers to free
+  the buffer, and multicasting the block down the column; *Y wait, Y written*: waiting
+  for compute's last subblocks, and Y's pages written (HW).
+- *Matrix unit* (grid, HW, beside): the slowest core's tile products at 34.44 cycles; it
+  overlaps the movers.
+- *Unaccounted*: the span less the writer's terms (its clock covers the span).
+
+The host's single synced call adds 250 to 300 us on one card and 300 to 450 us on two
+past the dispatcher's part (the host's event path, OURS, outside the call).
+
+### One card
+
+Card 0, the median of three single calls (the dispatcher's part), every check passed
+(relative RMS 3.94e-3 to 3.97e-3). Microseconds; GB/s is the island's W over W read.
+The terms are of the second call (so a way in and out can come out below 0 by the
+calls' spread).
+
+Decode, the K split (groups of S ranks, block width ow tiles):
+
+| M x K x N | Plan | Hardware | Measured | Way in and out | W read: HW + OURS (GB/s) | Reduce in the island | Y written |
+|---|---|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | S 8, ow 9 | 67.7 | 94.0 | 2.3 | 67.7 + 12.6 (418) | 11.0 | 0.5 |
+| 32 x 8192 x 8192 | S 6, ow 13 | 270.8 | 312.3 | 2.2 | 270.8 + 27.6 (450) | 11.0 | 0.6 |
+| 32 x 5120 x 17408 | S 5, ow 23 | 359.7 | 409.4 | 2.4 | 358.8 + 0 (497) | 47.2 | 0.9 |
+| 32 x 17408 x 5120 | S 6, ow 8 | 359.7 | 422.4 | 2.4 | 359.7 + 42.7 (443) | 17.2 | 0.4 |
+| 32 x 3840 x 15360 | S 2, ow 8 | 238.0 | 289.9 | 3.6 | 238.0 + 42.3 (421) | 5.6 | 0.4 |
+| 32 x 15360 x 3840 | S 8, ow 8 | 238.0 | 291.4 | -0.6 | 238.0 + 46.0 (415) | 7.5 | 0.4 |
+| 32 x 2560 x 9216 | S 5, ow 12 | 95.2 | 121.6 | 2.3 | 95.2 + 13.9 (433) | 9.6 | 0.6 |
+| 32 x 9216 x 2560 | S 12, ow 8 | 95.2 | 124.4 | 1.6 | 95.2 + 14.3 (431) | 12.8 | 0.4 |
+
+Decode is W's read, as it should be: 415 to 497 GB/s, the call 1.14 to 1.39 of the
+hardware time. What is ours: the read under the ceiling where a block's K rows lie on fewer
+banks or the ranks far from the banks finish last (the movers of equal work spread 26
+to 82 us at 4096 x 4096), and the group's reduce (5.6 to 47 us; 47 at ow 23, the widest
+block). 32 x 4096 x 4096 against the dense project's K split (92.4 us, W at 363 GB/s)
+and Kohaku-TT (81.0 us, 414 GB/s), both recorded in "Shapes against Kohaku-TT" above:
+our W read is as fast as Kohaku-TT's; the 13 us between are the reduce and the start.
+
+Prefill, the grid plan (rows x columns of cores; one block in flight a column sender):
+
+| M x K x N | Plan | Hardware: DRAM / matrix unit | Measured | Way in and out | W read: HW + OURS (GB/s) | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1024 x 4096 x 4096 | 8 x 12 | 67.7 / 111.6 | 382.4 | 11.3 | 67.7 + 209.7 (121) | 54.4 | 1.4 | 22.9 + 12.3 | 2.8 | 143.7 |
+| 1024 x 8192 x 8192 | 8 x 12 | 270.8 / 446.2 | 1,408.0 | 14.5 | 270.8 + 853.0 (119) | 217.3 | 5.4 | 20.5 + 22.7 | 3.9 | 574.7 |
+| 1024 x 5120 x 17408 | 8 x 12 | 359.7 / 592.6 | 1,864.6 | 4.7 | 359.7 + 1,080.4 (124) | 284.4 | 6.8 | 24.0 + 99.6 | 5.0 | 751.0 |
+| 1024 x 17408 x 5120 | 8 x 12 | 359.7 / 592.6 | 1,859.3 | 9.6 | 359.7 + 1,148.7 (118) | 293.2 | 6.6 | 19.0 + 19.2 | 3.3 | 777.2 |
+| 1024 x 3840 x 15360 | 8 x 12 | 238.0 / 392.2 | 1,289.4 | 17.9 | 238.0 + 689.0 (127) | 184.6 | 4.1 | 28.4 + 123.1 | 4.4 | 489.8 |
+| 1024 x 15360 x 3840 | 6 x 12 | 238.0 / 392.2 | 1,300.0 | -1.5 | 238.0 + 820.3 (111) | 174.5 | 20.7 | 38.2 + 4.0 | 5.8 | 734.7 |
+| 1024 x 2560 x 9216 | 8 x 12 | 95.2 / 156.9 | 536.1 | 2.4 | 95.2 + 298.1 (120) | 72.9 | 1.7 | 22.2 + 40.4 | 3.2 | 195.9 |
+| 1024 x 9216 x 2560 | 8 x 12 | 95.2 / 156.9 | 528.4 | 7.7 | 95.2 + 314.6 (115) | 81.9 | 3.0 | 12.7 + 10.8 | 2.4 | 205.7 |
+| 4096 x 4096 x 4096 | 10 x 11 | 67.7 / 446.2 | 656.7 | 2.5 | 67.7 + 242.9 (108) | 92.6 | 108.1 | 25.1 + 70.5 | 47.4 | 509.4 |
+| 4096 x 8192 x 8192 | 10 x 11 | 270.8 / 1,784.8 | 2,271.9 | 3.4 | 270.8 + 670.4 (143) | 922.8 | 226.6 | 22.9 + 106.5 | 48.5 | 2,037.6 |
+| 4096 x 5120 x 17408 | 10 x 12 | 359.7 / 2,370.5 | 2,960.2 | 11.3 | 359.7 + 516.3 (204) | 1,595.1 | 204.3 | 29.6 + 195.2 | 48.9 | 2,547.0 |
+| 4096 x 17408 x 5120 | 10 x 12 | 359.7 / 2,370.5 | 2,965.8 | 7.1 | 359.7 + 1,214.2 (113) | 490.1 | 720.8 | 33.0 + 37.5 | 103.3 | 2,720.1 |
+
+At M = 1024 the call is W's read by the column senders, one row of 12 cores, at 111 to
+127 GB/s, a quarter of the ceiling: each sender reads its block of W with one block in
+flight and then multicasts it down its column (W cast, not overlapped with the next
+read). That term is ours and the largest: at 1024 x 8192 x 8192 853 of 1,408 us. At
+M = 4096 the matrix unit is the floor (509 to 2,720 us on the slowest core) and the
+call is 1.09 to 1.29 of
+it: the multicast and the senders' waits for free buffers fill the rest. M = 4096 ran on
+the square shapes and the 5120 / 17408 pair only (the other pairs not run).
+
+### Two cards
+
+Cards 0 and 1, one island each (118 ranks: two cores of each card are link cores), one
+session; every check passed (4.12e-3 in the in form: each partial rounded to bf16 once),
+Y equal on both islands after the all-reduce, nothing crossed in the products.
+
+Output dim sharded (each island its half of N; "of one card" is the two-card call over
+the one-card call):
+
+| M x K x N | Hardware an island | Measured | Of one card | Way in and out | W read: HW + OURS (GB/s) | Reduce in the island / W cast | Y |
+|---|---|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | 33.9 | 53.8 | 0.57 | 2.4 | 33.9 + 7.2 (409) | 9.0 | 1.3 |
+| 32 x 8192 x 8192 | 135.4 | 172.8 | 0.55 | 2.3 | 135.4 + 21.9 (427) | 12.0 | 1.3 |
+| 32 x 5120 x 17408 | 179.8 | 223.1 | 0.54 | 2.4 | 179.8 + 25.8 (433) | 13.1 | 1.9 |
+| 32 x 3840 x 15360 | 119.0 | 152.3 | 0.53 | 1.1 | 119.0 + 16.7 (434) | 13.7 | 1.7 |
+| 32 x 2560 x 9216 | 47.6 | 68.0 | 0.56 | 2.5 | 47.6 + 7.8 (426) | 9.0 | 1.2 |
+| 1024 x 4096 x 4096 | 33.9 / 55.8 | 216.3 | 0.57 | 2.6 | 33.9 + 119.4 (109) | 31.3 (cast) | 16.2 + 4.4 |
+| 1024 x 8192 x 8192 | 135.4 / 223.1 | 734.3 | 0.52 | 2.6 | 135.4 + 441.3 (116) | 108.8 (cast) | 19.5 + 19.8 |
+| 1024 x 5120 x 17408 | 179.8 / 296.3 | 964.2 | 0.52 | 5.3 | 179.8 + 575.8 (118) | 141.7 (cast) | 21.4 + 32.3 |
+
+Each island takes its half of the one-card work in 0.52 to 0.57 of the one-card time:
+the terms over half the one-card hardware time are the same terms as on one card, each
+about halved (decode: W read under the ceiling 7 to 26 us, the reduce 9 to 14 us;
+prefill: the column senders' read at 109 to 118 GB/s). The islands' plans are an
+island's (118 ranks, 10 columns at prefill where one card has 12).
+
+Input dim sharded, the product (each island its partial of the whole Y) and then the
+all-reduce of Y (bf16) as a separate term:
+
+| M x K x N | Hardware an island | Product | Its W read: HW + OURS (GB/s) | All-reduce of Y, island 0 / 1 (Y's bytes) | Product + all-reduce | Of one card |
+|---|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | 33.9 | 52.5 | 33.9 + 6.3 (418) | 207.7 / 169.1 (262 KB) | 260.2 | 2.77 |
+| 32 x 8192 x 8192 | 135.4 | 176.2 | 135.4 + 24.9 (419) | 287.6 / 248.6 (524 KB) | 463.8 | 1.49 |
+| 32 x 17408 x 5120 | 179.8 | 217.2 | 179.8 + 6.2 (479) | 212.6 / 173.6 (328 KB) | 429.8 | 1.02 |
+| 32 x 15360 x 3840 | 119.0 | 159.7 | 119.0 + 21.2 (421) | 211.0 / 172.0 (246 KB) | 370.7 | 1.27 |
+| 32 x 9216 x 2560 | 47.6 | 68.5 | 47.6 + 9.1 (416) | 205.5 / 167.0 (164 KB) | 274.0 | 2.20 |
+| 1024 x 4096 x 4096 | 33.9 / 55.8 | 216.7 | 33.9 + 108.2 (118) | 1,623.5 / 1,584.3 (8.4 MB) | 1,840.2 | 4.81 |
+| 1024 x 8192 x 8192 | 135.4 / 223.1 | 735.6 | 135.4 + 430.4 (119) | 3,047.3 / 3,008.5 (16.8 MB) | 3,782.9 | 2.69 |
+| 1024 x 17408 x 5120 | 179.8 / 296.3 | 964.2 | 179.8 + 585.0 (117) | 1,960.8 / 1,920.8 (10.5 MB) | 2,925.0 | 1.57 |
+
+The product takes what the output-dim-sharded form takes (52.5 to 964 us, 0.51 to 0.57
+of one card). The all-reduce is the whole difference, and it is OURS: about 165 us
+fixed (its decode times barely move with Y's bytes), then 5.2 to 5.5 GB/s at prefill
+sizes: the bf16 adds are made by the ranks' movers in software (integer instructions), a
+few pages at a time, between the gathers. "Product + all-reduce" takes the slower
+island's.
+
+### The four cells: plain kernel and aware kernel
+
+The plain kernel knows nothing of islands: `flat.py` runs the dense project's grid
+kernels unchanged on one flat group of both cards' ranks (above), the tensors placed
+by hint (`--hints`) or by the session's default. The aware kernel is the linear kernel,
+which takes the form from the placements.
+
+| | One card | Two cards |
+|---|---|---|
+| Plain | the dense project's kernels on card 0: 32 x 4096 x 4096 92.4 (its K split); M = 1024: 5120 x 17408 2,091.9, 17408 x 5120 2,054.7, 3840 x 15360 1,399.6, 15360 x 3840 1,302.5, 2560 x 9216 528.5; 4096 cubed 664.9, 4096 x 8192 x 8192 2,959.6, 4096 x 5120 x 17408 8,184.1 | `flat.py`, exact, slow (below) |
+| Aware | the linear kernel on one island, the one-card tables above: 94.0; 1,864.6, 1,859.3, 1,289.4, 1,300.0, 536.1; 656.7, 2,271.9, 2,960.2 | the two forms above |
+
+On one card the aware kernel takes the plain kernel's time or less: it is the same
+kernel form on one island, and where the times differ the plans differ (the same plan,
+beside, gave the same time: "A linear layer written for islands" above). Awareness costs
+nothing on one island: the island's shard is the whole tensor and the kernel's island
+code is a range that is empty.
+
+The plain kernel on two cards (`flat.py --cards 0,1`, the grid plan over one tall grid of
+both islands; a column spanning the islands is a broadcast relayed between them):
+
+| M x K x N | Placement | Measured | Crossed a call | What crossed |
+|---|---|---|---|---|
+| 32 x 4096 x 4096 | hints | refused: with one row tile no split hint keeps X's and Y's pages home | | |
+| 32 x 4096 x 4096 | none | 8,192.3 | 7.7 MB (3,662 pages) | X's pages asked by island 1's rows, W's blocks relayed |
+| 32 x 8192 x 8192 | none | 51,010.8 | 66.9 MB | the same |
+| 1024 x 4096 x 4096 | hints | 1,899.1 | 34.6 MB | W's blocks up the columns that span the islands, once each |
+| 1024 x 4096 x 4096 | none | 16,130.2 | 78.6 MB | W's blocks and X's pages |
+| 1024 x 8192 x 8192 | hints | 7,376.1 | 138.4 MB | W's blocks |
+| 1024 x 8192 x 8192 | none | 34,140.5 | 235.9 MB | W's blocks and X's pages |
+
+It runs and is exact everywhere it can be placed; it is slow because W (and without
+hints X) crosses the link at 1 to 19 GB/s a call, where the aware kernel's forms cross
+nothing in the product.
+
+Measured on 2026-11-15 between 06:20 and 07:15, X280 at 1,350 MHz. JSON:
+`results/ceilings-0.json`, `results/linear-shapes-0.json` (one card),
+`results/linear-forms-0x1.json` (two cards, with the all-reduce's twenty calls),
+`results/flat-forms-0x1.json`.
+
+```
+python projects/dense/linear.py --shapes "32,4096,4096;1024,8192,8192" --cards 0 --account
+python projects/dense/linear.py --shapes "32,4096,4096:out;32,4096,4096:in" --cards 0,1 --account
+python projects/dense/flat.py --m 1024 --k 4096 --n 4096 --cards 0,1 --hints
+```
+
 ## Shapes, one card and two, against Kohaku-TT
 
 Y = X x W in bfloat16 over fifteen shapes, one card and two cards, ours and
@@ -858,6 +1066,7 @@ M,K,N --cards 0 --seconds 0`; JSON in `results/one-card-*.json`.
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `islands.py` | the grid form over the islands of a session, A and Y placed by island, W a copy on each |
 | `linear.py`, `kernels/linear/linear.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the linear layer written for islands: K split, the other islands' columns put whole, one sync, the own columns with theirs added |
+| `ceilings.py`, `kernels/ceilings/` | the card's two ceilings: DRAM read by every rank on both movers, the matrix unit on resident tiles |
 | `flat.py` | the grid form, kernels unchanged, on one flat group over the islands: one plan for the islands' grids one below the other, every tensor held once |
 | `results/` | the runs behind the results table |
 | `compare/shapes.py`, `compare/ktt_shapes.py` | the shapes of the comparison with Kohaku-TT on one card and two, their table, and Kohaku-TT's side of it |
