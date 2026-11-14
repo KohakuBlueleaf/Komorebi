@@ -146,6 +146,8 @@ namespace km {
     constexpr uint32_t kWhereClear = 49;
     // A message's body: too long, not aligned, or not written in time.
     constexpr uint32_t kWhereMessagesBody = 50;
+    // Pages across a link: a bound, a read, the router's room, its teardown, a count.
+    constexpr uint32_t kWherePages = 51;
 
     // What Core::flushed waits for: reads landed, writes sent from L1, writes or
     // atomics acknowledged.

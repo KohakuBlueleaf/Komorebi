@@ -59,6 +59,28 @@
 /* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
+/* host only, served on link cores (km_pages.hpp): each data-movement CPU of the group
+ * sends its share of DRAM pages over its own link, or the reader waits for a count */
+#define KM_HANDLER_PAGES 246u
+#define KM_PAGES_FROM 0u  /* send: the source's bank address (interleaved DRAM) */
+#define KM_PAGES_PAGE 1u  /* send: aligned page bytes, at most KM_PAGES_PACKET_MAX */
+#define KM_PAGES_FIRST 2u /* send: first page */
+#define KM_PAGES_PAGES 3u /* send: pages of all CPUs; wait: the count waited for */
+#define KM_PAGES_TO 4u    /* send: the target's bank address, or L1 of its first page */
+/* send: x | y << 8 of the target core (KM_PAGES_DRAM: DRAM), chunk / 64 << 16: the
+   L1 bytes of a CPU */
+#define KM_PAGES_TO_CORE 5u
+#define KM_PAGES_COUNT 6u /* L1 address of the count (wait: on this core) */
+/* x | y << 8 of the counted core, hops << 16, mode << 24 */
+#define KM_PAGES_COUNTER 7u
+/* byte k: Ethernet channel of link k; CPU c of link core r sends on link 2r + c */
+#define KM_PAGES_LINKS 8u
+#define KM_PAGES_BUFFER 9u    /* send: L1 of CPU c at buffer + c * chunk */
+#define KM_PAGES_DRAM 0xFFFFu /* page p into page p of the tensor at KM_PAGES_TO */
+#define KM_PAGES_NO_LINK 0xFFu
+#define KM_PAGES_SEND 0u
+#define KM_PAGES_WAIT 1u
+#define KM_PAGES_PACKET_MAX 4352u /* a fabric packet's largest payload */
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u

@@ -424,7 +424,13 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
                 (host || source >= KMD_SRC_WORK) &&
                 (handler == KM_HANDLER_LOAD || handler == KM_HANDLER_COPY)
             ) &&
-            !(host && (handler == KM_HANDLER_PUSH || handler == KM_HANDLER_PULL))
+            !(
+                host &&
+                (
+                    handler == KM_HANDLER_PUSH || handler == KM_HANDLER_PULL ||
+                    handler == KM_HANDLER_PAGES
+                )
+            )
         ) ||
         (!host && handler == KM_HANDLER_EXIT)
     ) {

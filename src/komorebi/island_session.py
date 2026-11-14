@@ -3,13 +3,14 @@ runtime over it, a dispatcher and the persistent grid on every island. Ranks are
 and contiguous by island; a command's group is split by island on the host, a tensor
 is placed by island. `Session(cards=[...])` with more than one card returns this."""
 
+import copy
 import os
 import time
 
 import numpy as np
 
+from komorebi import abi, dram, formats, islands, native
 from komorebi import channel as channel_module
-from komorebi import dram, formats, islands, native
 from komorebi import session as session_module
 from komorebi.errors import CardBusy, KomorebiError, WaitTimeout
 from komorebi.program import Program
@@ -280,9 +281,12 @@ class IslandRun:
 
 
 class IslandSession:
-    """Cards `cards` as islands of one 1 x n fabric mesh in this process: the X280
-    runtime once over the mesh, then per island a Session given its device. `links`
-    0: nothing crosses on the cards, every core is a rank. Use as a context manager."""
+    """Cards `cards` as islands of one 1 x n fabric mesh, the X280 runtime once over
+    it, per island a Session given its device. `links` 1 to 4 (two islands): links
+    pages cross on, a link core (the island's last cores, not ranks) a pair; 0: every
+    core is a rank. Use as a context manager."""
+
+    LINKS_MAX = 4  # a byte each in a PAGES command's link word
 
     def __init__(
         self,
@@ -298,9 +302,9 @@ class IslandSession:
         self.cards = tuple(int(card) for card in cards)
         if len(self.cards) < 2 or len(set(self.cards)) != len(self.cards):
             raise ValueError(f"cards {cards}: two or more different cards")
-        if links != 0:
+        if not 0 <= links <= self.LINKS_MAX or (links and len(self.cards) != 2):
             raise ValueError(
-                f"links={links}: only 0 (the link service is not built yet)"
+                f"links={links}: 0, or 1 to {self.LINKS_MAX} between two islands"
             )
         self.links = links
         self.log = log or (lambda message: None)
@@ -318,6 +322,8 @@ class IslandSession:
         self.sessions = ()
         self.graph = None
         self.run = None
+        self.link_cores = ()  # per island: the local cores (core table) of its links
+        self.channels = ()  # per island: the Ethernet channel of each link it sends on
 
     def __enter__(self):
         self.open()
@@ -378,15 +384,47 @@ class IslandSession:
                 )
                 for island, chip in enumerate(self.chips)
             )
-            parts = []
+            parts, taken = [], (self.links + 1) // 2
             for session in self.sessions:
                 columns, rows = session.grid
-                parts.append(islands.Island(tuple(range(columns * rows)), columns))
-            links = [islands.Link(i, i + 1) for i in range(len(parts) - 1)]
-            self.graph = islands.Graph(parts, links, reserve=self.links > 0)
+                cores = columns * rows
+                parts.append(islands.Island(tuple(range(cores - taken)), columns))
+            self.link_cores = tuple(
+                tuple(range(len(part.cores), len(part.cores) + taken)) for part in parts
+            )
+            links = [
+                islands.Link(i, i + 1, max(self.links, 1))
+                for i in range(len(parts) - 1)
+            ]
+            self.graph = islands.Graph(parts, links, reserve=False)
+            if self.links:
+                self._open_links(module)
         except BaseException:
             self.close()
             raise
+
+    def _open_links(self, module):
+        """The Ethernet channel of each link toward the other island, and the check
+        that a page's DRAM bank sits at the same NoC place on every island."""
+        channels = []
+        for island in range(2):
+            found = [self.mesh.link(island, 1 - island, k) for k in range(self.links)]
+            if found[0][0] < self.links:
+                raise KomorebiError(
+                    f"island {island}: {found[0][0]} links found, {self.links} asked"
+                )
+            channels.append(tuple(int(link[1]) for link in found))
+        self.channels = tuple(channels)
+        banks = []
+        for session in self.sessions:
+            count = module.dram_banks(session.device)
+            banks.append([tuple(session.device.dram_core(b)) for b in range(count)])
+        if any(other != banks[0] for other in banks[1:]):
+            raise KomorebiError(
+                "the islands' DRAM banks sit at different NoC places: a page sent "
+                "into the other island's DRAM would land in another bank"
+            )
+        self.log(f"page links: channels {self.channels}, link cores {self.link_cores}")
 
     def _island_log(self, island):
         return lambda message: self.log(f"island {island}: {message}")
@@ -491,6 +529,9 @@ class IslandSession:
             raise ValueError(
                 f"{program.name}: X280 threads over islands are not done yet"
             )
+        if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp)
+            program = copy.copy(program)
+            program.defines = {**program.defines, "KM_PAGE_LINKS": 1}
         runs = []
         try:
             for island, session in enumerate(self.sessions):
@@ -505,6 +546,119 @@ class IslandSession:
             raise
         self.run = IslandRun(self.graph, runs)
         return self.run
+
+    # Pages across a link
+
+    def noc_of(self, island, core):
+        """x | y << 8: the NoC place of local core `core` of `island` (core table)."""
+        columns = self.sessions[island].grid[0]
+        x, y = self.sessions[island].device.worker_core(core % columns, core // columns)
+        return int(x) | int(y) << 8
+
+    def port_address(self, island, port):
+        """The L1 address of port `port`'s count, the same on every core of `island`."""
+        h = abi.headers()
+        if not 0 <= port < h["KM_PORTS"]:
+            raise ValueError(f"port {port} of {h['KM_PORTS']}")
+        control = self.run.island(island).backend.control_addr
+        return control + h["KM_CONTROL_PORT"] + port * h["KM_PORT_STRIDE"]
+
+    def staging(self, island):
+        """The L1 every core of `island` moves transfers through: (address, bytes of a
+        chunk); two chunks. Pages asked from another island land there."""
+        transfer = self.run.island(island).backend.transfer
+        if transfer is None:
+            raise KomorebiError(f"island {island}: the run has no transfer buffer")
+        return transfer.address, transfer.chunk
+
+    def send_pages(self, source, first, pages, to, core=None, counted=None, port=None):
+        """Queues a send of pages first .. of `source` by its holder's link cores into
+        the other island: the same pages of tensor `to`, or (`core`: a local core) L1
+        from address `to`. Each batch adds its pages to port `port` of core `counted`
+        (default `core`, else the first link core). Returns (island, handle)."""
+        h = abi.headers()
+        if not self.links:
+            raise KomorebiError("no page links: open the session with links=1 to 4")
+        holders = source.holders(first, pages)
+        if len(holders) != 1:
+            raise ValueError(f"pages {first} + {pages}: held by islands {holders}")
+        here = holders[0][0]
+        there = 1 - here
+        if core is None and (
+            not isinstance(to, IslandTensor)
+            or to.aligned_page_bytes != source.aligned_page_bytes
+        ):
+            raise ValueError("a tensor target has the source's aligned page bytes")
+        counted = counted if counted is not None else core
+        counted = counted if counted is not None else self.link_cores[there][0]
+        port = h["KM_PORTS"] - 1 if port is None else port
+        buffer, chunk = self.staging(here)
+        links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
+        words = [0] * 10
+        words[h["KM_PAGES_FROM"]] = source.address
+        words[h["KM_PAGES_PAGE"]] = source.aligned_page_bytes
+        words[h["KM_PAGES_FIRST"]] = first
+        words[h["KM_PAGES_PAGES"]] = pages
+        words[h["KM_PAGES_TO"]] = to.address if core is None else to
+        target = h["KM_PAGES_DRAM"] if core is None else self.noc_of(there, core)
+        words[h["KM_PAGES_TO_CORE"]] = target | chunk // 64 << 16
+        words[h["KM_PAGES_COUNT"]] = self.port_address(there, port)
+        words[h["KM_PAGES_COUNTER"]] = (
+            self.noc_of(there, counted) | 1 << 16 | h["KM_PAGES_SEND"] << 24
+        )
+        words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
+        words[h["KM_PAGES_BUFFER"]] = buffer
+        cores = self.link_cores[here]
+        handle = self.run.island(here)._queue_command(
+            h["KM_HANDLER_PAGES"], (cores[0], len(cores)), words
+        )
+        return here, handle
+
+    def wait_pages(self, island, core, pages, port=None):
+        """Queues on local core `core` of `island` a wait (bounded) until port `port`'s
+        count has reached `pages`, which it then takes off. Returns the handle."""
+        h = abi.headers()
+        port = h["KM_PORTS"] - 1 if port is None else port
+        words = [0] * 10
+        words[h["KM_PAGES_PAGES"]] = pages
+        words[h["KM_PAGES_COUNT"]] = self.port_address(island, port)
+        words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_WAIT"] << 24
+        return self.run.island(island)._queue_command(
+            h["KM_HANDLER_PAGES"], (core, 1), words
+        )
+
+    def cross(self, source, target, first=0, pages=None, timeout=10.0):
+        """Writes pages first .. of `source` into the same pages of `target` where
+        the two are held by different islands: sent over the links, waited for on the
+        far island. Returns pages, bytes and seconds, the submit to the last count."""
+        start, count = dram.page_range(first, pages, source.pages)
+        sends = []
+        for here, low, length in source.holders(start, count):
+            for there, part, part_length in target.holders(low, length):
+                if there != here:
+                    sends.append((there, part, part_length))
+        started = time.perf_counter()
+        waits, far = [], []
+        for there, low, length in sends:
+            far.append(
+                (there, self.wait_pages(there, self.link_cores[there][0], length))
+            )
+            waits.append(self.send_pages(source, low, length, target))
+        waits += far  # the senders first: a failure names the side that failed
+        self.run._send()
+        deadline = time.monotonic() + timeout
+        for island, handle in waits:
+            try:
+                self.run.island(island).wait(handle, _left(deadline))
+            except KomorebiError as error:
+                raise _named(error, island) from None
+        seconds = time.perf_counter() - started
+        moved = sum(length for _, _, length in sends)
+        return {
+            "pages": moved,
+            "bytes": moved * source.aligned_page_bytes,
+            "seconds": seconds,
+        }
 
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'

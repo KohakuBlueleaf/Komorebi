@@ -23,8 +23,26 @@ namespace km {
 #if !defined(COMPILE_FOR_TRISC)
 #include "km_completion.hpp"
 #include "km_trace.hpp"
+#if defined(KM_PAGE_LINKS)
+#include "km_pages.hpp"
+#endif
 
 namespace km {
+
+    // A PAGES command, served on the link cores of a run built with KM_PAGE_LINKS.
+    inline bool pages(const km_command_t& command) {
+#if defined(KM_PAGE_LINKS)
+        return handler(command) == KM_HANDLER_PAGES;
+#else
+        return static_cast<void>(command), false;
+#endif
+    }
+#if !defined(KM_PAGE_LINKS)
+    template <typename Kernel>
+    inline bool pages_serve(const Kernel&, const km_command_t&, uint32_t, uint32_t) {
+        return true;
+    }
+#endif
 
     // A command the runtime serves (served()): the reader loads the runtime's service
     // overlay on first use and calls it (km_overlay.hpp).
@@ -55,7 +73,9 @@ namespace km {
                     return;
                 }
                 begin(*command);
-                if (served(*command)) {
+                if (pages(*command)) {
+                    pages_serve(*this, *command, 0, kStReader);
+                } else if (served(*command)) {
                     serve(*this, *command);
                 } else {
                     body(*command);
@@ -390,7 +410,9 @@ namespace km {
                 begin(command);
                 result_ = 0;
                 const bool report = (
-                    __builtin_expect(served(command), 0) || body(command)
+                    pages(command)
+                        ? pages_serve(*this, command, 1, kStWriter)
+                        : __builtin_expect(served(command), 0) || body(command)
                 );
                 const bool written = flushed(kFlushWrites, kStWriter);
                 trace_.timestamp(command.sequence, kTraceDone);
