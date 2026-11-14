@@ -32,10 +32,10 @@ LINK_TAIL = 0x20 + 2 * 16 * 256 + 16 * 16 + 3 * 16  # lines, island reports, 3 l
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
 LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
-# Two cards' kernel buffer: the largest page-link build (the linear layer's 98,592 B)
-# and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
-KERNEL_BYTES = 128 * 1024
-# A dynamic program with a message service a link (two cards): about 152,000 B.
+# Two cards' kernel buffer: the largest build, a dynamic program with a message service
+# a link (about 159,400 B), in steps of 16 KiB. kernel_bytes= overrides it.
+KERNEL_BYTES = 160 * 1024
+# Less than this: a dynamic program's messages on link 0's service alone.
 KERNEL_BYTES_SERVICES = 160 * 1024
 # The transfer buffer's chunk a session over two cards asks for: a page CPU passes
 # pages through its chunk, one L1 slot a read in flight (15 slots of 4 KiB and their

@@ -212,25 +212,31 @@ the other way (1,000 pipelined to one core).
 
 A dynamic run whose group is every rank of two islands (`Session(cards=...)`)
 forwards to a rank of the other island as to any rank: the kernels do not change. The
-writer flush puts a message for another island into link core 0's outbox; beside the
-RUN the session starts the message service on link core 0, on the CPU that holds link 0
-over the connection it opened at load. The service sends the outbox across, many
-messages to a packet (at most 4352 bytes) and one count a packet, and issues what landed
-from the far island to its ranks. Every wait is bounded and the link has credits, so a
-full far inbox holds the sender. The run ends when both islands are quiet: each service
-sends its island's quiet report across, and the dispatcher's quiet test counts link core
-0's line (sent: messages issued again here; consumed: messages sent across).
+writer flush puts a message for another island into the outbox of its link; beside the
+RUN the session starts a message service on the CPU that holds each link, over the
+connection it opened at load. A rank's messages take link `rank % links`, so one rank's
+stay in order. A service sends its outbox across, many messages to a packet (at most
+4352 bytes) and one count a packet, and issues what landed from the far island to its
+ranks. A message's body crosses in its message's packet, right after it (at most 4,224
+bytes for 64-byte messages), and is written into the rank's body page before the
+message. Every wait is bounded and the link has credits, so a full far inbox holds the
+sender. The run ends when both islands are quiet: link 0's service decides for its
+island over the run's cores and the other services' state lines, sends its island's
+quiet report across, and the dispatcher's quiet test counts link core 0's line (sent:
+messages issued again here; consumed: messages sent across, every link's).
 
 [05_forward](../../examples/05_forward/README.md) runs this on two Blackhole p150a cards,
 one link: 16 messages of 4 forwards over 234 message ranks of 238, exact against its
-replay, 27 of the 64 forwards across. Measured before the service moved onto the link
+replay, 27 of the 64 forwards across. Over four links, 10^6 forwards: 80.1 ms against
+302.0 ms on link 0 alone (one card: 11.77 ms), every link about 62,500 messages each
+way. Measured before the service moved onto the link
 cores (a link core of its own as a rank, one link,
 [link_service](../../experiments/link_service/README.md)): 6.5 µs a crossing for a single
 message, 4.7 µs in a run of 1000 round trips; about 4.7 million 64-byte messages a second
 each way when messages wait to be batched, 0.6 million a packet a message.
 
-While a run's messages are served, link 0's CPU serves nothing else: with `links=1` a
-dispatcher's command line or a page on link 0 waits until the run ends.
+While a run's messages are served, its links' CPUs serve nothing else: a dispatcher's
+command line or a page waits until the run ends.
 
 Over more than two islands the end of a run is decided once for the whole run, not a
 pair at a time. Every link core serves its link. Each island's link core 0 checks its
@@ -263,9 +269,9 @@ island:
 | `group.leaders()`, `group.leader(j)` | the first rank of each island part of the group | the group's first rank |
 | `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | pages into an arrival slot of `rank` on island `i`, one on its port | a local emit |
 
-A part for another island goes through the relay: the sender asks its island's link core
-0, whose link 0 CPU reads the pages between commands, sends them over link 0 to the far
-link core 0, and tells the sender they left; the far link core writes them into the
+A part for another island goes through the relay: the sender asks the CPU of its link
+(`rank % links` between two cards, else link 0's), which reads the pages between
+commands, sends them over its link to the far link core, and tells the sender they left; the far link core writes them into the
 rank's arrival slot and adds 1 to its port. The receiving core waits on its port as it
 does for a sender of its own island ([runtime](../reference/runtime.md#islands)).
 
@@ -309,8 +315,8 @@ The far link core needs nothing.
   every link; over more than two islands an ask is forwarded but carried by one page CPU
   a link, and a put goes one link only (a put to an island two links away is refused).
   A copy across knows only the tensors made before the load. More than 16 KiB in one
-  relay call goes as several asks; no run has sent that much in one call yet. The relay
-  goes through link core 0 alone.
+  relay call goes as several asks; no run has sent that much in one call yet. Over more
+  than two islands the relay and the messages take one link a neighbour.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **More than two islands of a split card:** one wire a pair, at most three link cores
   an island for messages, and fewer commands across in flight a dispatcher (three with

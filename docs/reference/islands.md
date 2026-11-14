@@ -94,13 +94,16 @@ written for islands runs on one card unchanged.
   serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
   holds each CPU's largest text over the two groups. A program with messages, a card
   split into islands and a program placed by overlays keep the services in every
-  kernel. The session opens with a kernel buffer of 128 KiB
-  (`island_session.KERNEL_BYTES`: the largest such build, the dense linear layer's
-  98,592 bytes, and at least 16 KiB more, in steps of 16 KiB); one card keeps the
-  runtime's 70,656 bytes. The
+  kernel. The session opens with a kernel buffer of 160 KiB
+  (`island_session.KERNEL_BYTES`: the largest such build, a dynamic program with a
+  message service on every link, example 23's 159,360 bytes, in steps of 16 KiB); it
+  costs every core 32 KiB of L1 more than 128 KiB did (1,367,936 bytes left for
+  circular buffers and L1 tensors against 1,400,704). One card keeps the runtime's
+  70,656 bytes. A program that sets its own buffer keeps it. The
   load checks each build against the buffer: one that does not fit raises
   `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
-  is launched. `kernel_bytes` sets another size at the open.
+  is launched. `kernel_bytes` sets another size at the open; with less than 160 KiB a
+  dynamic program's messages take link 0's service alone (logged).
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
   `session: ...`: the own words (`KM_OWN_ALL_BYTES`, 8,640 bytes: each data-movement
   CPU's scratch for an ask, a put line and a relay ask, the relay's done word, its put
@@ -203,7 +206,7 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   a PAGES command of mode `KM_PAGES_MESSAGES` (a0: the RUN's group word) to link core 0
   of each island; its link 0 CPU serves the run's messages until the RUN's end, and the
   dispatcher's quiet test counts that core's line. Between two cards with a kernel
-  buffer of 160 KiB or more (`kernel_bytes=163840`) every link has a service (link k:
+  buffer of 160 KiB or more (the default) every link has a service (link k:
   CPU k % 2 of link core k / 2, its own region, a second region on every core for the
   second CPUs; built with `KM_MESSAGE_SERVICES`): a rank's messages take link
   `rank % links`, so one rank's stay in order; with less, link 0's alone (logged).
@@ -749,7 +752,7 @@ pages, took 160.7 µs more from two links away than from island 0's own DRAM, ag
 41.6 µs from one link away in the mesh of three. The end of a dynamic run over islands
 (example 05, island 0's part, which holds the end): 146.6 µs over two islands, 166.1 over
 three in a line, 216.9 over four. The kernels with forwarding built in, beside the 128 KiB
-buffer a session takes by default: example 01's 99,280 B, example 05's 123,216 B (over two
+buffer a session took by default then: example 01's 99,280 B, example 05's 123,216 B (over two
 cards, without forwarding: 92,576 B and 109,360 B, built off the card).
 
 A NOP on one island of the split card costs what it costs on the whole card; a group

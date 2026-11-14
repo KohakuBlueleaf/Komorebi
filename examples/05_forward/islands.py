@@ -61,7 +61,7 @@ def parse():
         "--kernel-bytes",
         type=int,
         default=None,
-        help="the session's kernel buffer (163840 or more: a message service a link)",
+        help="kernel buffer bytes (default 163840; less: link 0's service alone)",
     )
     parser.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
