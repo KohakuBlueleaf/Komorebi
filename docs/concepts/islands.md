@@ -119,8 +119,8 @@ once needs tt-metal's mux cores.
 The host's graph models this: a link that is used takes a core on each island it joins
 out of that island's ranks (a link core), and ranks and thread numbers are counted
 without it. A session over two cards takes each island's last `(links + 1) // 2` cores
-(one with `links=0`), both data-movement CPUs of a link core holding a link each, from
-the load to the run's end; a command names them as link cores, first
+(one for one or two links), both data-movement CPUs of a link core holding a link each,
+from the load to the run's end; a command names them as link cores, first
 `KM_GROUP_LINK_BASE` (0xFE00) + k, never as ranks. Link 0, on link core 0's first CPU,
 carries the dispatcher's command lines and the cores' asks; the others carry pages
 ([islands](../reference/islands.md#pages-across-a-link)).
@@ -166,7 +166,7 @@ the other way (1,000 pipelined to one core).
 
 ## Messages across a link
 
-A dynamic run whose group is every rank of two islands (`Session(cards=..., links=1)`)
+A dynamic run whose group is every rank of two islands (`Session(cards=...)`)
 forwards to a rank of the other island as to any rank: the kernels do not change. The
 writer flush puts a message for another island into link core 0's outbox; beside the
 RUN the session starts the message service on link core 0, on the CPU that holds link 0

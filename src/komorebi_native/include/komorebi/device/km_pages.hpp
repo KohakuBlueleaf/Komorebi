@@ -150,6 +150,21 @@ namespace km {
         return static_cast<int32_t>(NOC_STATUS_READ_REG(noc_index, reg) - mark) >= 0;
     }
 
+    // What this CPU sent across, counted in its row of the link area at `area` (0: not
+    // counted): `n` more of word `field`, `bytes` more bytes.
+    inline void cross_count(uint32_t area, uint32_t field, uint32_t n, uint32_t bytes) {
+        if (area == 0) {
+            return;
+        }
+        volatile tt_l1_ptr uint32_t* row = (
+            l1(area + KM_LINK_CROSS + (pages_held.link & 1u) * KM_CROSS_ROW)
+        );
+        row[field] += n;
+        const uint32_t low = row[KM_CROSS_BYTES];
+        row[KM_CROSS_BYTES] = low + bytes;
+        row[KM_CROSS_BYTES + 1] += low + bytes < low ? 1u : 0u;
+    }
+
     // The far NoC address of target page `p` (`k` pages after the request's first).
     inline uint64_t pages_target(
         const PagesRequest& r,
@@ -282,7 +297,7 @@ namespace km {
         for (uint32_t k = 0; k < ahead; k++) {
             read(k);
         }
-        uint32_t batch = 0;
+        uint32_t batch = 0, sent = 0;
         for (uint32_t k = 0; k < total; k++) {
             const uint32_t s = k % slots;
             const uint32_t slot = area + kPagesSlots + s * r.page;
@@ -333,6 +348,7 @@ namespace km {
                 reinterpret_cast<uint32_t>(header), sizeof(PACKET_HEADER_TYPE)
             );
             sent_mark[s] = noc_nonposted_writes_num_issued[noc_index];
+            sent++;
             if (ahead < total) {  // the slot again, once its packet left L1
                 if (!wait([&] {
                     return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, sent_mark[s]);
@@ -344,6 +360,12 @@ namespace km {
         }
         const uint32_t sending = code;
         noc_async_read_set_trid(0);
+        cross_count(
+            islands_at(kernel.args().control).link_area(),
+            KM_CROSS_PAGES,
+            sent,
+            sent * r.page
+        );
         // The slots and headers are free for the next command once sent and read.
         if (!wait([] {
             return ncrisc_noc_nonposted_writes_sent(noc_index);
@@ -534,11 +556,42 @@ namespace km {
             packet(0, a[KM_LINE_PACKET], at, KM_LINK_PACKET_BYTES) &&
             packet(1, a[KM_LINE_COUNT], at + KM_LINK_PACKET_BYTES, 64)
         ) {
+            cross_count(area, KM_CROSS_LINES, 1, KM_LINK_PACKET_BYTES + 64);
             wait([] {
                 return ncrisc_noc_nonposted_writes_sent(noc_index);
             });
         }
         return code;
+    }
+
+    // COUNTS: CPU `cpu` of link core `rank` writes its row of what crossed into page
+    // 2 rank + cpu of the DRAM tensor at r.to, then waits for the write. kGave* code.
+    template <typename Kernel>
+    inline uint32_t pages_counts(
+        const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
+    ) {
+        if constexpr (noc_mode == DM_DYNAMIC_NOC) {
+            return kGaveBadTransfer;
+        }
+        const uint32_t area = islands_at(kernel.args().control).link_area();
+        if (area == 0 || r.page < KM_CROSS_ROW || r.page % 64 != 0) {
+            return kGaveBadTransfer;
+        }
+        const InterleavedAddrGen<true> to = {
+            .bank_base_address = r.to, .page_size = r.page
+        };
+        noc_async_write(
+            area + KM_LINK_CROSS + cpu * KM_CROSS_ROW,
+            to.get_noc_addr(2 * rank + cpu),
+            KM_CROSS_ROW
+        );
+        return kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
     }
 
     // At the kernel's end: the held connection's teardown, bounded (the router must
@@ -656,6 +709,7 @@ namespace km {
         );
         if (code == kGaveNone) {
             words[KM_ASK_TAKEN / 4] = taken + 1;
+            cross_count(area, KM_CROSS_ASKS, 1, 64);
         }
         return code;
     }
@@ -962,6 +1016,8 @@ namespace km {
             code = cpu == 0 && index == 0 ? pages_line(kernel, command) : kGaveNone;
         } else if (r.mode == KM_PAGES_OPEN && links) {
             code = pages_open(kernel, r, index, cpu);
+        } else if (r.mode == KM_PAGES_COUNTS && links) {
+            code = pages_counts(kernel, r, index, cpu);
 #if defined(KM_LINKS) && defined(COMPILE_FOR_BRISC)  // the reader: link 0's CPU
         } else if (r.mode == KM_PAGES_MESSAGES && links) {
             code = index == 0 && cpu == 0 ? link_messages(kernel, command) : kGaveNone;
