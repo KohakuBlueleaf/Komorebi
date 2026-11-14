@@ -560,9 +560,9 @@ class IslandRun:
 
 class IslandSession:
     """Cards as islands of one 1 x n fabric mesh, the X280 runtime once over it, a
-    Session an island (one card: its own; `islands` 2 to 4: it split into islands of
-    whole rows). Two cards use every link found between them (`links`: at most that
-    many), a link core (the last cores) a pair. A context manager."""
+    Session an island (one card: its own; `islands` 2 to 4: it split into rows). Two
+    cards use every link found (`links`: at most that many), a link core a pair. A
+    context manager. `host_reaches`: see the islands reference (a test)."""
 
     LINKS_MAX = 4  # a byte each in a PAGES command's link word
     # How a core's ask for pages another island holds reaches the holder: "core" (its
@@ -583,6 +583,7 @@ class IslandSession:
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
         slow_code=False,
+        host_reaches=None,
     ):
         self.cards = tuple(int(card) for card in cards)
         if not self.cards or len(set(self.cards)) != len(self.cards):
@@ -597,6 +598,13 @@ class IslandSession:
         self._links_asked = links or None
         self.links = 1 if len(self.cards) == 2 else 0
         self.split = islands or 1  # the islands one card is split into
+        if host_reaches is not None and (
+            len(self.cards) != 2 or not set(host_reaches) < {0, 1} or not host_reaches
+        ):
+            raise ValueError(
+                f"host_reaches={host_reaches}: one island of a session over two cards"
+            )
+        self.host_reaches = None if host_reaches is None else tuple(host_reaches)
         if self.split > 1 and (len(self.cards) != 1 or links):
             raise ValueError(f"islands={islands}: one card, without links")
         self.log = log or (lambda message: None)
@@ -766,7 +774,11 @@ class IslandSession:
         channel."""
         raw, shape = formats.to_bytes(data, dtype, layout)
         tensor = self.empty(shape, dtype, layout, split, group, like, copy)
-        self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        try:
+            self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        except BaseException:
+            tensor.free()
+            raise
         return tensor
 
     def empty(
@@ -941,9 +953,66 @@ class IslandSession:
                 (got,) = self.sessions[island].read(part, first=low, pages=high - low)
                 rows[mine] = got
 
-            self._each_island(gather, self._spans(tensor, start, count, reading=True))
+            spans = self._spans(tensor, start, count, reading=True)
+            direct, far = self._reached(spans)
+            self._each_island(gather, direct)
+            for island, at, low, high in far:
+                rows[_rows(at[low:high] - start)] = self._read_across(
+                    tensor.parts[island], island, low, high - low
+                )
             out.append(rows)
         return out
+
+    def _reached(self, spans):
+        """The spans whose island the host reaches through its own channel, and the
+        others (host_reaches)."""
+        if self.host_reaches is None:
+            return spans, []
+        direct = [span for span in spans if span[0] in self.host_reaches]
+        return direct, [span for span in spans if span[0] not in self.host_reaches]
+
+    def _staging(self, part, island):
+        """A buffer like `part` on the island the host reaches, for a part of island
+        `island` crossing the page path; KomorebiError without a run with links."""
+        if self.run is None or self.run.stopped or not self.links:
+            raise KomorebiError(
+                f"host_reaches={list(self.host_reaches)}: island {island}'s part "
+                "crosses by the page path, which runs in a loaded run with links: "
+                "write or read it after the load"
+            )
+        via = self.host_reaches[0]
+        return via, self.sessions[via].empty(part.shape, part.dtype, part.layout)
+
+    def _read_across(self, part, island, first, pages, timeout=30.0):
+        """Pages first .. of island `island`'s part, sent by its link cores into a
+        buffer of the island the host reaches, then read through that one's channel."""
+        via, staging = self._staging(part, island)
+        try:
+            sent = self._send(
+                island, part.address, part.aligned_page_bytes, first, pages,
+                staging.address,
+            )  # fmt: skip
+            landed = self.wait_pages(via, self.link_cores[via][0], pages)
+            self.wait_together([sent, (via, landed)], timeout)
+            (got,) = self.sessions[via].read(staging, first=first, pages=pages)
+        finally:
+            staging.free()
+        return got
+
+    def _write_across(self, part, island, first, rows, timeout=30.0):
+        """`rows` into pages first .. of island `island`'s part: written through the
+        reached island's channel into a buffer there, sent by its link cores."""
+        via, staging = self._staging(part, island)
+        try:
+            self.sessions[via].write(staging, rows, first)
+            sent = self._send(
+                via, staging.address, part.aligned_page_bytes, first, len(rows),
+                part.address,
+            )  # fmt: skip
+            landed = self.wait_pages(island, self.link_cores[island][0], len(rows))
+            self.wait_together([sent, (island, landed)], timeout)
+        finally:
+            staging.free()
 
     def _spans(self, tensor, start, count, reading=False):
         """[(island, its part's pages in order, first index, end index)] of the part
@@ -1009,7 +1078,11 @@ class IslandSession:
             mine = pages[_rows(at[low:high] - start)]
             self.sessions[island].write(tensor.parts[island], mine, low)
 
-        self._each_island(scatter, self._spans(tensor, start, count))
+        direct, far = self._reached(self._spans(tensor, start, count))
+        self._each_island(scatter, direct)
+        for island, at, low, high in far:
+            rows = pages[_rows(at[low:high] - start)]
+            self._write_across(tensor.parts[island], island, low, rows)
 
     def load(self, program, **options):
         """Loads `program` on every island in turn (its grid, then its dispatcher), or
@@ -1233,7 +1306,6 @@ class IslandSession:
         the other island: the same pages of tensor `to`, or (`core`: a local core) L1
         from address `to`. Each batch adds its pages to port `port` of core `counted`
         (default `core`, else the first link core). Returns (island, handle)."""
-        h = abi.headers()
         if not self.links:
             raise KomorebiError(
                 "no page links: pages cross in a session over two cards"
@@ -1255,17 +1327,38 @@ class IslandSession:
                 f"pages {first} + {pages}: island {there} does not hold them at the "
                 f"indices island {here} does ({index} on)"
             )
+        return self._send(
+            here,
+            source.addresses[here],
+            source.aligned_page_bytes,
+            index,
+            pages,
+            to.addresses[there] if core is None else to,
+            core,
+            counted,
+            port,
+        )
+
+    def _send(
+        self, here, start, page, first, pages, to, core=None, counted=None, port=None
+    ):
+        """Queues the send by island `here`'s link cores of pages first .. of the DRAM
+        buffer at `start` (aligned `page` bytes) into the other island: the same pages
+        of the buffer at `to`, or (`core`) L1 `to` of that core on. send_pages' counts.
+        """
+        h = abi.headers()
+        there = 1 - here
         counted = counted if counted is not None else core
         counted = counted if counted is not None else self.link_cores[there][0]
         port = h["KM_PORTS"] - 1 if port is None else port
         buffer, chunk = self.staging(here)
         links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
         words = [0] * 10
-        words[h["KM_PAGES_FROM"]] = source.addresses[here]
-        words[h["KM_PAGES_PAGE"]] = source.aligned_page_bytes
-        words[h["KM_PAGES_FIRST"]] = index
+        words[h["KM_PAGES_FROM"]] = start
+        words[h["KM_PAGES_PAGE"]] = page
+        words[h["KM_PAGES_FIRST"]] = first
         words[h["KM_PAGES_PAGES"]] = pages
-        words[h["KM_PAGES_TO"]] = to.addresses[there] if core is None else to
+        words[h["KM_PAGES_TO"]] = to
         target = h["KM_PAGES_DRAM"] if core is None else self.noc_of(there, core)
         words[h["KM_PAGES_TO_CORE"]] = target | chunk // 64 << 16
         words[h["KM_PAGES_COUNT"]] = self.port_address(there, port)

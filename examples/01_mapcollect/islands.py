@@ -60,6 +60,13 @@ def parse():
         help="the input's hint: the group that splits it (default every rank)",
     )
     parser.add_argument(
+        "--host-reaches",
+        type=int,
+        default=None,
+        metavar="ISLAND",
+        help="the host's channel to that island only: the other's parts cross a link",
+    )
+    parser.add_argument(
         "--io-mib",
         default="64",
         metavar="MIB,...",
@@ -131,7 +138,10 @@ def open_session(args, cards):
         (card,) = cards
         return km.Session(card=card, islands=args.islands, log=log)
     # the page calls over islands take the kernels past the runtime's 69 KiB buffer
-    return km.Session(cards=cards, log=log, kernel_bytes=96 * 1024)
+    reaches = None if args.host_reaches is None else [args.host_reaches]
+    return km.Session(
+        cards=cards, log=log, kernel_bytes=96 * 1024, host_reaches=reaches
+    )
 
 
 def main():
@@ -157,10 +167,13 @@ def main():
         if args.group is not None:
             hint["group"] = tuple(int(value) for value in args.group.split(","))
         report["hint"] = hint
-        source = session.tensor(matrix, "bfloat16", "tile", **hint)
-        output = session.tensor(
-            np.zeros((ranks * TILE, TILE), np.float32), "bfloat16", "tile"
-        )
+        zeros = np.zeros((ranks * TILE, TILE), np.float32)
+        if args.host_reaches is None:
+            source = session.tensor(matrix, "bfloat16", "tile", **hint)
+            output = session.tensor(zeros, "bfloat16", "tile")
+        else:  # a part that crosses a link is written once the run is loaded
+            source = session.empty(matrix.shape, "bfloat16", "tile", **hint)
+            output = session.empty(zeros.shape, "bfloat16", "tile")
         report["source_parts"] = list(source.placement.parts)
         report["source_part_pages"] = [
             source.placement.part_pages(i) for i in range(len(session.sessions))
@@ -169,9 +182,6 @@ def main():
             f"input {hint or 'no hint'}: steps {report['source_parts']}, pages "
             f"{report['source_part_pages']}, word {source.address:#x}"
         )
-        (back,) = session.read_bf16(source)
-        report["source_read_exact"] = bool(np.array_equal(back, matrix))
-        log(f"input read back from every island: {report['source_read_exact']}")
         far = source
         if args.across:
             far = session.tensor(
@@ -212,6 +222,13 @@ def main():
         )
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
+        if args.host_reaches is not None:
+            for tensor, data in ((source, matrix), (output, zeros)):
+                raw, _ = formats.to_bytes(data, "bfloat16", "tile")
+                session.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        (back,) = session.read_bf16(source)
+        report["source_read_exact"] = bool(np.array_equal(back, matrix))
+        log(f"input read back from every island: {report['source_read_exact']}")
         report["io"] = io_rates(session, moved, generator)
         report["channel"] = channel_rates(session, generator)
         if args.across:
@@ -224,6 +241,8 @@ def main():
             report.update(commands(session, run, args, source, output, ranks))
         if args.hang:
             report.update(hang(session, run, source, ranks, matrix))
+        if args.host_reaches is not None:  # island 1's part crosses: in the run
+            (got,) = session.read_bf16(output)
         log("stopping")
         try:
             results = run.stop()
@@ -232,7 +251,8 @@ def main():
         except km.KomorebiError as error:
             report["stop_error"] = str(error)
         log(f"stopped: {report.get('kernel_errors', report.get('stop_error'))}")
-        (got,) = session.read_bf16(output)
+        if args.host_reaches is None:
+            (got,) = session.read_bf16(output)
         log("output read back from every island")
         report.update(check(exact, got, report["map_groups"], report["per_rank"]))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
