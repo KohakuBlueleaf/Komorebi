@@ -1,7 +1,7 @@
 """Two programs in one run, sum and scale, on disjoint groups and combined, every result
 checked; the price of the runtime's form; a group that switches program on the live run
-(with widen, a third program of other buffers and formats). One JSON line. Example:
-python two_programs.py"""
+(with widen, a third program of other buffers and formats); --cards 0,1: the same on
+two cards, groups over flat ranks. One JSON line. Example: python two_programs.py"""
 
 import argparse
 import json
@@ -42,6 +42,7 @@ def parse():
         "--switches", type=int, default=200, help="live: loads into the part"
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--cards", default="", help="e.g. 0,1: a session of islands")
     return parser.parse_args()
 
 
@@ -203,8 +204,7 @@ def checked_phase(session, args, cores, combined):
     generator = np.random.default_rng(args.seed)
     checked = Checked(session, cores, args.rounds, generator)
     sum_program, scale_program = programs(checked.inputs, checked.sums, checked.doubled)
-    grid = session.grid
-    every = grid[0] * grid[1]
+    every = ranks_of(session)
     split = max(1, cores * 11 // 15)
     # --8<-- [start:load]
     if combined:
@@ -324,17 +324,20 @@ def switch(session, args, cores):
     return out, parts
 
 
-def live_groups(cores):
+def live_groups(cores, boundary=0):
     """{name: group} of the live phase on `cores` (at least 2), and the part of sum's
-    group that switches: half of sum's cores; scale and widen share the rest."""
-    held = max(1, cores // 2)
+    group that switches: half of sum's cores; scale and widen share the rest. With an
+    island `boundary`, sum is cut at it and its part is the far island's half, where
+    scale and widen have their groups (a part switches only to a program its island's
+    groups hold)."""
+    held = max(1, cores // 2) if not boundary else boundary + (cores - boundary) // 2
     others = cores - held
     wide = max(1, others // 5)
     groups = {"sum": (0, held)}
     if others - wide > 0:
         groups["scale"] = (held, others - wide)
     groups["widen"] = (cores - wide, wide)
-    part = max(1, held // 2)
+    part = max(1, held // 2) if not boundary else held - boundary
     return groups, (held - part, part)
 
 
@@ -348,15 +351,26 @@ def live(session, args, cores):
     checked = Checked(session, cores, block, generator)
     made = programs(checked.inputs, checked.sums, checked.doubled, wide=checked.wide)
     by_name = {program.name: program for program in made}
-    groups, part = live_groups(cores)
+    boundary = session.graph.first(1) if hasattr(session, "graph") else 0
+    groups, part = live_groups(cores, boundary)
     # --8<-- [start:live]
     run = session.load({by_name[name]: group for name, group in groups.items()})
     run.load(by_name["widen"], group=part)  # part's cores now hold widen
     # --8<-- [end:live]
+    out_refused = None
+    if boundary:  # widen has no group on island 0: a load there is refused
+        try:
+            run.load(by_name["widen"], group=(0, 1))
+            out_refused = False
+        except km.ProgramError as error:
+            out_refused = "no group on this island" in str(error)
     run.wait(run.load(by_name["sum"], group=part), 10.0)
     others = [name for name in groups if name != "sum"]
     rest = (0, part[0])  # the sum cores that never switch
     out = {"switches": 0, "commands": 0, "refused": 0, "refused_other": 0, "wrong": 0}
+    if out_refused is not None:
+        out["load_refused"] = out_refused
+        out["wrong"] += not out_refused
     refused = []
 
     def send(name, group):
@@ -382,10 +396,10 @@ def live(session, args, cores):
                 out["switches"] += 2
             run.drain(timeout=60.0)
             for handle in refused:
-                event = run.event(handle)
+                event = event_of(run, handle)
                 right = event.kind == "rejected" and event.auxiliary == REJECT_PROGRAM
                 out["refused" if right else "refused_other"] += 1
-            kinds = {run.event(handle).kind for handle in handles}
+            kinds = {event_of(run, handle).kind for handle in handles}
             out["wrong"] += checked.wrong() + (kinds != {"done"})
             run.forget([*handles, *refused])
             refused.clear()
@@ -431,15 +445,35 @@ def load_time(session, args, cores):
     return out
 
 
+def ranks_of(session):
+    """Every core of the grid; on a session of islands, every flat rank."""
+    if hasattr(session, "graph"):
+        return session.ranks
+    grid = session.grid
+    return grid[0] * grid[1]
+
+
+def event_of(run, handle):
+    """A command's event; over islands (a part an island) the first part not done,
+    else the first."""
+    event = run.event(handle)
+    if hasattr(event, "kind"):  # one Event (a NamedTuple), not a tuple of parts
+        return event
+    return next((part for part in event if part.kind != "done"), event[0])
+
+
 def main():
     args = parse()
     report = {"phase": args.phase}
-    with km.Session(log=log) as session:
-        grid = session.grid
-        cores = args.cores or grid[0] * grid[1]
-        log(f"device open, grid {grid}; commands to {cores} cores")
+    cards = [int(card) for card in args.cards.split(",")] if args.cards else []
+    opened = {"cards": cards, "links": 1} if len(cards) > 1 else {}
+    with km.Session(log=log, **opened) as session:
+        card = session.sessions[0].card if opened else session.card
+        cores = args.cores or ranks_of(session)
+        log(f"device open; commands to {cores} cores, cards {cards or 'one'}")
         report["cores"] = cores
-        report["aiclk_mhz"] = [aiclk_mhz(session.card)]
+        report["cards"] = cards
+        report["aiclk_mhz"] = [aiclk_mhz(card)]
         if args.phase in ("disjoint", "all"):
             report["disjoint"] = checked_phase(session, args, cores, False)
         if args.phase in ("combined", "all"):
@@ -452,7 +486,7 @@ def main():
             report["live"] = live(session, args, cores)
         if args.phase in ("load", "all"):
             report["load_cycles"] = load_time(session, args, cores)
-        report["aiclk_mhz"].append(aiclk_mhz(session.card))
+        report["aiclk_mhz"].append(aiclk_mhz(card))
     wrong = sum(
         report[key]["wrong"]
         for key in ("disjoint", "combined", "live")

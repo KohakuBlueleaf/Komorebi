@@ -1125,7 +1125,19 @@ class Session:
                     if program.messages is not None
                     else 0
                 ),
-                programs=_held_fields(placed) if placed and placed.switch else [],
+                programs=(
+                    _held_fields(
+                        placed,
+                        _link_kernels(
+                            self.island,
+                            program,
+                            None,
+                            dispatch.grid_x * dispatch.grid_y,
+                        )[1],
+                    )
+                    if placed and placed.switch
+                    else []
+                ),
                 island=_island_word(self.island),
                 link=list(link.line(dispatch)) if link is not None else [],
             )
@@ -1216,7 +1228,7 @@ class Session:
         if state != abi.headers()["KMD_STATE_READY"]:
             run._fail_start(state)
         if placed is not None and placed.switch:
-            _start_loads(run, placed)
+            _start_loads(run, placed, part=self.island is not None)
         if recover and not (placed is not None and placed.switch):
             # an island's link cores keep their held connection: no reset list
             exclude = ()
@@ -1535,21 +1547,29 @@ def _group_recipes(kernels, count):
     return out
 
 
-def _held_fields(placed):
+def _held_fields(placed, links=0):
     """A byte per core for the dispatcher's table: the program field it holds, 0xFF
-    none."""
-    out = [0xFF] * placed.cores
+    none. An island's `links` link cores, after its ranks, run the runtime's link
+    kernels whatever program is loaded: they hold field 0, the field the session's
+    own commands to them carry."""
+    out = [0xFF] * placed.cores + [0] * links
     for group in placed.groups:
         for program_field in group.programs:
             out[group.first : group.first + group.count] = [program_field] * group.count
     return out
 
 
-def _start_loads(run, placed):
+def _start_loads(run, placed, part=False):
     """In a run whose groups switch, each group loads its program first: the compute
-    parts set the hardware up for its formats (the runtime's kernels do not)."""
+    parts set the hardware up for its formats (the runtime's kernels do not); `part`:
+    the run is an island's, its groups a part of the flat ones."""
+    first = run.island_first  # the run takes flat ranks; an island's are a part
     handles = [
-        run.load(placed.programs[group.programs[0]], (group.first, group.count))
+        run.load(
+            placed.programs[group.programs[0]],
+            (first + group.first, group.count),
+            part=part,
+        )
         for group in placed.groups
         if group.programs
     ]
@@ -2504,6 +2524,14 @@ class _Backend:
                 for key, (row, _) in placed_records.items()
             },
             "refused": refused,
+            # an island's part of a plan: programs none of its groups holds, whose
+            # parts were not built here (a part is built against kernels that carry
+            # its own buffers' formats, a group's that holds it)
+            "unheld": {
+                program.program_field: program.name
+                for index, program in enumerate(placed.programs)
+                if not any(index in group.programs for group in placed.groups)
+            },
         }
 
     def load_programs(self, placed, descriptor):

@@ -382,10 +382,9 @@ class Run:
                 f"handler {handler} of {name}: {where} does not hold {name}"
             )
 
-    def load(self, program, group):
-        """Makes the cores of `group` (first, count) hold `program`, one of the dict
-        given to session.load: its overlay and its buffers, set up again. A command,
-        after every earlier one on those cores; their program's buffers are lost."""
+    def load_field(self, program):
+        """The program field a load of `program` gives its cores; ProgramError with the
+        reason when this run cannot load it (before anything is sent)."""
         if self._switch is None:
             raise ProgramError(
                 "run.load needs a run loaded with {program: group, ...}: its groups "
@@ -394,10 +393,32 @@ class Run:
         if self._switch["refused"]:
             raise ProgramError(f"run.load: {self._switch['refused']}")
         program_field = self.program_field(program)
+        unheld = self._switch.get("unheld", {})
+        if program_field in unheld:
+            raise ProgramError(
+                f"run.load: {unheld[program_field]} has no group on this island, so "
+                "its parts were not built here (a part is built against the kernels "
+                "of a group that holds it, its buffers' formats); give it a group on "
+                "every island it is to be loaded on"
+            )
+        return program_field
+
+    def load(self, program, group, part=False):
+        """Makes the cores of `group` (first, count) hold `program`, one of the dict
+        given to session.load: its overlay and its buffers, set up again. A command,
+        after every earlier one on those cores; their program's buffers are lost
+        (`part`: an island's part of a flat group, as submit's)."""
+        program_field = self.load_field(program)
         first, count = self._group(group)
         record = self._switch["records"][program_field]
+        flags = self._flag_part if part else 0
         handle = self._queue_command(
-            self.h["KM_HANDLER_LOAD"], (first, count), [record], False, 0, program_field
+            self.h["KM_HANDLER_LOAD"],
+            (first, count),
+            [record],
+            False,
+            flags,
+            program_field,
         )
         low, high = self._part(first, count)
         for held, cores in enumerate(self._holds or ()):
