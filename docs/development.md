@@ -46,6 +46,7 @@ except by code that is asked to.
 ```
 python -m pytest tests/core                     # CPU tests
 python -m pytest tests/projects                 # the programs' CPU tests
+KMR_SIZES=1 python -m pytest tests/projects/test_kernel_sizes.py   # kernel sizes
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
@@ -81,6 +82,13 @@ The CPU tests of a program under `projects/` live in
 `tests/projects/test_<project>_*.py`, not in `tests/core`, which is the framework's
 suite. They run as a step of their own, with a budget of 5 s for all programs
 together (about 1 s each).
+
+`tests/projects/test_kernel_sizes.py` checks that every program's kernels fit the
+session's kernel buffer with 1 KiB to spare, without a card: it builds the kernels on
+a mock device (tt-metal's Blackhole P150 cluster descriptor) with the runtime's
+compiler, so it needs `TT_METAL_HOME` set to a built tree and `clang++-20`, builds the
+native module and compiles each program (a few minutes the first time), and runs only
+with `KMR_SIZES=1`. The continuous-integration workflow has no tree and skips it.
 
 The continuous-integration workflow runs ruff, black, the CPU tests and the
 programs' CPU tests.
