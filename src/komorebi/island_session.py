@@ -1120,7 +1120,8 @@ class IslandSession:
 
     def _check_links(self, runs, plans):
         """Every island's dispatcher has the tile and LIM base its link line took for
-        the far one's (its own)."""
+        the far one's (its own); the control blocks are at one address (what crosses
+        through the relay lands at its sender's addresses)."""
         if plans[0] is None:
             return
         ports = [run.backend.port for run in runs]
@@ -1129,6 +1130,9 @@ class IslandSession:
             raise KomorebiError(
                 f"the islands' dispatchers differ in tile or LIM base: {sorted(seen)}"
             )
+        controls = sorted({run.backend.control.address for run in runs})
+        if len(controls) != 1:
+            raise KomorebiError(f"the islands' control blocks differ: {controls}")
 
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'
