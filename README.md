@@ -288,7 +288,7 @@ takes 3,158 µs where the best single overlay takes 4,222 µs.
 | X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks; `kmx_fetch` / `kmx_fetch_clean` / `kmx_store` of any bank through Tensix cores | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, an exit with a timeout | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
-| Recovery without a card reset: `run.inspect` of a running core, the give-up of one command at its deadline, the reset and reload of one core by the host and by the dispatcher (by itself at a give-up), the watch on the dispatcher's own loop | implemented; the session does not yet hand the dispatcher the reset lists by itself | [recovery](docs/guides/recovery.md) | [01_mapcollect](examples/01_mapcollect/) (`give_up.py`) |
+| Recovery without a card reset: `run.inspect` of a running core, the give-up of one command at its deadline, the reset and reload of one core by the host and by the dispatcher (by itself at a give-up), the watch on the dispatcher's own loop | implemented; the session hands the dispatcher the reset lists at load (`recover=True`) | [recovery](docs/guides/recovery.md) | [01_mapcollect](examples/01_mapcollect/) (`give_up.py`) |
 | Islands: two cards as one session, each card's chip an island with its own grid and dispatcher; one flat group of 240 cores from the host, a tensor split over the islands, inspect and time-outs by island | implemented over two P150A cards; nothing crosses between the cards inside a run | [islands](docs/concepts/islands.md) | [01_mapcollect](examples/01_mapcollect/) (`islands.py`) |
 
 ## Measured
@@ -561,10 +561,11 @@ property of the model.
    is written for Komorebi; nothing loads an operation's kernels as they are.
 4. **Host transfers at the link's speed, everywhere.** Today reads and writes go
    through the host channel (a 20 MiB frame read in 30 ms without a run, 7 ms inside
-   one) for interleaved DRAM tensors, on each card. Tensors in L1, reads under 80 KiB
-   without a run, pages the L1 or the channel cannot hold and a session without the
-   channel still go through the device API at about 2 MB per second
-   ([host](docs/reference/host.md#the-host-channel)).
+   one) for interleaved DRAM tensors and tensors in L1 (15 MiB over 120 cores read in
+   5 ms inside a run), on each card. Reads under 80 KiB without a run, pages the L1 or
+   the channel cannot hold, an L1 tensor on a core that holds no program in the run and
+   a session without the channel still go through the device API at about 2 MB per
+   second ([host](docs/reference/host.md#the-host-channel)).
 5. **Starting without tt-metal's launch.** Today the session opens the card in slow
    dispatch and tt-metal launches the kernels once, core by core. Everything after that
    (commands, programs, overlays) is Komorebi's own and runs from the card.

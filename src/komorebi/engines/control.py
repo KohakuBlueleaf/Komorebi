@@ -204,6 +204,7 @@ class Engines:
             self.region = Region(
                 port.host_word(ready_address + self.header_offsets["ready_bytes"])
             )
+            self.region.used = sorted(self.run._reserved)  # the kept reset list
         return self.region
 
     def upload(self, content, kind=None):

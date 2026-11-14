@@ -21,7 +21,7 @@ SPIN_KERNELS = {
     "compute": HERE / "kernels" / "compute.cpp",
 }
 HANDLER_SPIN = 9  # kernels/spin.h
-SPIN_WHERE = {"reader": 1, "math": 2}
+SPIN_WHERE = {"reader": 1, "math": 2, "units": 3}
 TILE = 32
 STARTED = time.monotonic()
 
@@ -37,7 +37,7 @@ def parse(argv=None):
         "--step",
         type=int,
         default=1,
-        help="1: the host, 2: the dispatcher, 3: stuck, 5: the give-up resets",
+        help="1: host, 2: dispatcher, 3: stuck, 4: units, 5: the give-up resets",
     )
     parser.add_argument("--spin", default="reader", help="step 3: reader or math")
     parser.add_argument("--first", type=int, default=14, help="the group's first core")
@@ -163,6 +163,8 @@ def main():
         report["spin_where"] = args.spin
     if args.step == 5:
         report["spin_where"] = ["reader", "math"]
+    if args.step == 4:
+        report["spin_where"] = ["units"]
     with km.Session(log=log) as session:
         grid = session.grid
         cores = grid[0] * grid[1]
@@ -195,7 +197,7 @@ def main():
         split = len(maps.done)
         x, y = args.core % grid[0], args.core // grid[0]
         spin = None
-        if args.step == 5:
+        if args.step in (4, 5):
             back = keep_list(run, report)
             for where in report["spin_where"] if back else ():
                 back = spin_given_up(run, group, args.core, where, report) and back
@@ -215,7 +217,7 @@ def main():
             report["parts_s"] = [round(part, 4) for part in parts]
             log(f"reset done: {report['reset_s']} s, parts {report['parts_s']}")
             back = parts[1] >= 0
-        elif args.step != 5:
+        elif args.step not in (4, 5):
             back = dispatcher_reset(run, args.core, x, y, report)
         time.sleep(0.1)
         for core in run.inspect(group):

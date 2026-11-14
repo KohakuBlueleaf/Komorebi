@@ -641,7 +641,7 @@ class Session:
         return layout.nocs((grid_x, grid_y), table, noc0)
 
     def read(self, *tensors, first=0, pages=None):
-        """The raw pages of interleaved DRAM tensors ([pages, page_bytes] uint8 each);
+        """The raw pages of tensors in DRAM or L1 ([pages, page_bytes] uint8 each);
         with `first` or `pages`, only those pages of one tensor (None: to the end). It
         may run while a program runs: read only what no kernel writes any more (after
         its event). Through the host channel when it is there (host.md, "Reads")."""
@@ -650,7 +650,7 @@ class Session:
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way(tensors, first, pages)
         if way is None:
-            return read_tensors(self.device, self._module, tensors, first, pages)
+            return self._read_device(tensors, first, pages)
         out = []
         for tensor in tensors:
             start, count = dram.page_range(first, pages, tensor.pages)
@@ -662,6 +662,27 @@ class Session:
                     :, : tensor.page_bytes
                 ]
             out.append(pages_out)
+        return out
+
+    def _read_device(self, tensors, first, pages):
+        """read() through the device API: DRAM tensors by banks, an L1 tensor whole
+        (which waits for launched cores: not while a run is loaded)."""
+        in_l1 = [tensor for tensor in tensors if not tensor.in_dram]
+        if in_l1 and self.run is not None and not self.run.stopped:
+            raise ChannelError(
+                "an L1 tensor is read while a run is loaded through the host channel, "
+                "which this session cannot use for it"
+            )
+        in_dram = [tensor for tensor in tensors if tensor.in_dram]
+        banked = iter(read_tensors(self.device, self._module, in_dram, first, pages))
+        out = []
+        for tensor in tensors:
+            if tensor.in_dram:
+                out.append(next(banked))
+                continue
+            start, count = dram.page_range(first, pages, tensor.pages)
+            rows = tensor.read_bytes().reshape(tensor.pages, tensor.page_bytes)
+            out.append(rows[start : start + count].copy())
         return out
 
     def read_chunks(self, tensor, chunk_bytes=2 << 20):
@@ -686,7 +707,7 @@ class Session:
 
     def write(self, tensor, pages, first=0):
         """Writes `pages` ([n, page_bytes] uint8, as read() returns them) into pages
-        first .. first + n - 1 of an interleaved DRAM tensor, through the host channel
+        first .. first + n - 1 of a tensor in DRAM or L1, through the host channel
         (also while a run is loaded); without it only a whole tensor, before a load."""
         pages = np.ascontiguousarray(pages, np.uint8)
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
@@ -710,17 +731,26 @@ class Session:
 
     def _transfer_way(self, tensors, first, pages):
         """How a read of these pages goes: "run" (the live run's cores push them),
-        "launch" (the transfer kernel, from LAUNCH_MIN_BYTES on), None (the device)."""
+        "launch" (the transfer kernel, from LAUNCH_MIN_BYTES on), None (the device).
+        An L1 tensor's pages are moved by the cores that hold them."""
         self._map_channel()
-        if self.channel is None or any(not tensor.in_dram for tensor in tensors):
+        if self.channel is None:
             return None
-        largest = max(tensor.aligned_page_bytes for tensor in tensors)
-        if largest > self._region.data:
+        if max(tensor.aligned_page_bytes for tensor in tensors) > self._region.data:
             return None
+        largest = max(
+            (tensor.aligned_page_bytes for tensor in tensors if tensor.in_dram),
+            default=0,
+        )
         run = self.run
         if run is not None and not run.stopped:
             transfer = getattr(run.backend, "transfer", None)
             fits = transfer is not None and largest <= transfer.chunk
+            fits = fits and all(
+                self._l1_ranks(tensor, 0, tensor.pages) is not None
+                for tensor in tensors
+                if not tensor.in_dram
+            )
             return "run" if fits and run.alive() else None
         if self._starting is not None:
             return None
@@ -741,9 +771,18 @@ class Session:
         self._transfer(tensor, first, pages, way, True)
         return self.channel[: pages * tensor.aligned_page_bytes]
 
+    def _l1_ranks(self, tensor, first, pages):
+        """channel.l1_ranks of an L1 tensor's pages in the live run."""
+        return channel_module.l1_ranks(
+            first, pages, tensor.shard_grid[0], self.grid[0], self.run.holds()
+        )
+
     def _transfer(self, tensor, first, pages, way, push):
         """One round of a PUSH or PULL of pages first .. first + pages - 1, through
         the live run ("run") or the transfer kernel ("launch"), checked first."""
+        if not tensor.in_dram:
+            self._transfer_l1(tensor, first, pages, way, push)
+            return
         page, region = tensor.aligned_page_bytes, self._region
         nonce = secrets.randbits(32)
         timeout = TRANSFER_WAIT_S + pages * page / 1e9
@@ -778,6 +817,44 @@ class Session:
             self._launch_transfer(transfer, count, push, words, want, timeout)
         self.transfer_cycles = channel_module.cycles(words)
 
+    def _transfer_l1(self, tensor, first, pages, way, push):
+        """One round of an L1 tensor: each core holding one of the pages moves it
+        between its L1 and the region, as one rank of a command a run of consecutive
+        ranks (one program held) or of one launch over those cores."""
+        page, region = tensor.aligned_page_bytes, self._region
+        timeout = TRANSFER_WAIT_S + pages * page / 1e9
+        h = abi.headers()
+        if way != "run":
+            transfer = channel_module.Transfer(
+                tensor.address, page, first, pages, 0, region.words, region.bytes,
+                secrets.randbits(32), 0, h["KM_TRANSFER_L1"],
+            )  # fmt: skip
+            channel_module.check(transfer, pages, L1_BYTES)
+            words = channel_module.words_view(self.channel, region, pages)
+            words[:] = 0
+            want = channel_module.sequence_words(transfer.nonce, pages, page, pages)
+            self._launch_transfer(transfer, pages, push, words, want, timeout, tensor)
+            self.transfer_cycles = channel_module.cycles(words)
+            return
+        run = self.run
+        handler = h["KM_HANDLER_PUSH" if push else "KM_HANDLER_PULL"]
+        here = self.island[0].first(self.island[1]) if self.island else 0
+        self.transfer_cycles = 0
+        for at, count, rank, field in self._l1_ranks(tensor, first, pages):
+            transfer = channel_module.Transfer(
+                tensor.address, page, at, count, (at - first) * page, region.words,
+                region.bytes, secrets.randbits(32), run.backend.transfer.address,
+                h["KM_TRANSFER_L1"],
+            )  # fmt: skip
+            channel_module.check(transfer, count, L1_BYTES)
+            words = channel_module.words_view(self.channel, region, count)
+            words[:] = 0
+            want = channel_module.sequence_words(transfer.nonce, count, page, count)
+            run.transfer(handler, (rank + here, count, field), transfer.args(), timeout)
+            if not self._words_arrived(words, want, timeout):
+                raise ChannelError(self._words_missing(words, want, timeout))
+            self.transfer_cycles += channel_module.cycles(words)
+
     @staticmethod
     def _words_arrived(words, want, timeout):
         """Waits (bounded) until every rank's sequence word is the one expected."""
@@ -796,15 +873,21 @@ class Session:
             f"in the host channel within {timeout:.1f} s"
         )
 
-    def _launch_transfer(self, transfer, count, push, words, want, timeout):
-        """The transfer kernel on cores 0 .. count - 1 of row 0, one rank each, without
-        a run: waits for their words, then for the cores; their reports on a failure."""
-        report = self.empty((count, 16), "uint32", shard_grid=(count, 1))
-        cores = [(0, 0, count - 1, 0)]
+    def _launch_transfer(self, transfer, count, push, words, want, timeout, l1=None):
+        """The transfer kernel without a run, one rank a core: cores 0 .. count - 1 of
+        row 0, or the cores holding the pages of L1 tensor `l1`; waits for their
+        words, then for the cores; their reports on a failure."""
+        if l1 is None:
+            grid, places = (count, 1), [(rank, 0) for rank in range(count)]
+            cores = [(0, 0, count - 1, 0)]
+        else:
+            grid = l1.shard_grid
+            places, cores = channel_module.l1_cores(transfer.first, count, grid[0])
+        report = self.empty((grid[0] * grid[1], 16), "uint32", shard_grid=grid)
         launch = self._module.Launch(self.device)
         args = [
-            (rank, 0, [report.address, int(push), rank, count, *transfer.args()])
-            for rank in range(count)
+            (x, y, [report.address, int(push), rank, count, *transfer.args()])
+            for rank, (x, y) in enumerate(places)
         ]
         include = abi.headers().abi.parents[2]
         source = include.parent / "kernels" / "host_transfer.cpp"
@@ -815,7 +898,10 @@ class Session:
             arrived = self._words_arrived(words, want, timeout)
         finally:
             self.device.finish()
-        status = None if arrived else report.read()[:, 0].astype(np.int64) - 1
+        status = None
+        if not arrived:
+            rows = report.read()[:, 0].astype(np.int64) - 1
+            status = rows[[y * grid[0] + x for x, y in places]]
         report.free()
         if status is not None:
             raise ChannelError(
@@ -880,6 +966,7 @@ class Session:
         thread="card",
         island=None,
         link=None,
+        recover=True,
     ):
         """Launches `program` (or programs in the runtime's form: a list, every core
         holding each, or {program: (first, count)}) on every core, then the dispatcher,
@@ -1052,6 +1139,21 @@ class Session:
             run._fail_start(state)
         if placed is not None and placed.switch:
             _start_loads(run, placed)
+        if (
+            recover
+            and self.island is None
+            and not several
+            and not (placed is not None and placed.switch)
+        ):
+            if run.keep_resets():
+                self.log(
+                    f"reset list kept: {run.recovery['bytes']} B in "
+                    f"{run.recovery['seconds'] * 1e3:.1f} ms"
+                )
+            else:
+                self.log(f"no reset list: {run.recovery_refused}")
+        elif recover:
+            run.recovery_refused = "islands, several programs or program switches"
         self.log("ready")
         if works:
             shared = {name: _host_array(value) for name, value in owner.shared.items()}

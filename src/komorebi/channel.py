@@ -146,14 +146,20 @@ class Transfer(NamedTuple):
 
 
 def fits(transfer, count, l1_bytes):
-    """The kernel's bounds (km::transfer_fits) on the host, before anything is sent."""
+    """The kernel's bounds (km::transfer_fits) on the host, before anything is sent;
+    an L1 tensor's floor (the firmware's L1) is the kernel's alone."""
     h = abi.headers()
     t, word = transfer, h["KM_TRANSFER_WORD_BYTES"]
     end = t.offset + t.pages * t.page
     words_end = t.words + count * word
     ok = 1 <= count <= h["KM_CORES_MAX"] and t.pages >= 1
     ok = ok and t.page >= 16 and t.page % 16 == 0
-    ok = ok and t.chunk >= t.page and t.chunk % t.page == 0
+    if t.chunk == h["KM_TRANSFER_L1"]:
+        ok = ok and t.pages == count and t.address % 16 == 0
+        ok = ok and t.address + t.page <= l1_bytes
+        ok = ok and (t.address + t.page <= t.buffer or t.buffer + word <= t.address)
+    else:
+        ok = ok and t.chunk >= t.page and t.chunk % t.page == 0
     ok = ok and t.offset % 16 == 0 and t.region % 16 == 0 and t.buffer % 16 == 0
     ok = ok and t.region <= h["KM_CHANNEL_BYTES"] and end <= t.region
     ok = ok and t.buffer + 2 * t.chunk + word <= l1_bytes
@@ -195,6 +201,41 @@ def cycles(words):
     return int(
         (wall[:, 2] | wall[:, 3] << 32).max() - (wall[:, 0] | wall[:, 1] << 32).min()
     )
+
+
+def l1_ranks(first, pages, width, grid_x, holds=None):
+    """[(page, count, rank, field)] of pages first .. first + pages - 1 of an L1 tensor
+    `width` cores wide (page p on core (p % width, p // width)) on a grid `grid_x` wide:
+    runs of pages on consecutive ranks whose cores hold one program; None if one holds
+    none (`holds` None: every core holds field 0)."""
+    out = []
+    for page in range(first, first + pages):
+        rank = page // width * grid_x + page % width
+        field = 0
+        if holds is not None:
+            fields = [i for i, held in enumerate(holds) if held[rank]]
+            if not fields:
+                return None
+            field = fields[0]
+        last = out[-1] if out else None
+        if last and last[2] + last[1] == rank and last[3] == field:
+            out[-1] = (last[0], last[1] + 1, last[2], field)
+        else:
+            out.append((page, 1, rank, field))
+    return out
+
+
+def l1_cores(first, pages, width):
+    """The cores of pages first .. first + pages - 1 of an L1 tensor `width` cores
+    wide, as (x, y) in page order and as rectangles (x0, y0, x1, y1), one a row."""
+    places = [(page % width, page // width) for page in range(first, first + pages)]
+    rects = []
+    for x, y in places:
+        if rects and rects[-1][3] == y and rects[-1][2] + 1 == x:
+            rects[-1] = (rects[-1][0], y, x, y)
+        else:
+            rects.append((x, y, x, y))
+    return places, rects
 
 
 def transfer_group(holds, cores, count):

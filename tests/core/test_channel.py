@@ -100,6 +100,25 @@ def test_a_transfer_group_holds_one_program():
     assert ch.transfer_group([holds[1]], 7, 4) == (2, 2, 0)
 
 
+def test_an_l1_tensors_pages_go_to_the_ranks_that_hold_them():
+    assert ch.l1_ranks(0, 12, 12, 12) == [(0, 12, 0, 0)]  # the grid's width: one run
+    assert ch.l1_ranks(2, 4, 3, 12) == [(2, 1, 2, 0), (3, 3, 12, 0)]  # a row each
+    holds = [np.arange(24) < 13, np.arange(24) >= 13]
+    assert ch.l1_ranks(0, 6, 3, 12, holds) == [
+        (0, 3, 0, 0),
+        (3, 1, 12, 0),
+        (4, 2, 13, 1),
+    ]
+    assert ch.l1_ranks(0, 6, 3, 12, [holds[0]]) is None  # core 13 holds no program
+    assert ch.l1_cores(2, 4, 3) == (
+        [(2, 0), (0, 1), (1, 1), (2, 1)],
+        [(2, 0, 2, 0), (0, 1, 2, 1)],
+    )
+    l1 = transfer(4, address=0x80000, chunk=0)  # one page a rank, apart from the slot
+    assert ch.fits(l1, 4, L1) and not ch.fits(l1, 3, L1)
+    assert not ch.fits(l1._replace(address=0x40000 - PAGE + 16), 4, L1)
+
+
 def routed(pages, page=PAGE, run=None, channel=True):
     """The way a read of `pages` pages takes in a session that is not opened."""
     session = Session(channel=REGION.bytes)

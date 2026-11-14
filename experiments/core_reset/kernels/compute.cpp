@@ -51,6 +51,25 @@ void kernel_main() {
                     }
                 }));
             }
+            if (
+                compute.me() - km::first(command) == spinning_rank &&
+                spin_where == kSpinUnits
+            ) {
+                // The units kept busy for ever: unpack from the input's pages, the
+                // vector unit's add, pack into the output's pages, no buffer handshake.
+                for (;;) {
+                    tile_regs_acquire();
+                    copy_init(kCbIn);
+                    copy_tile(kCbIn, 0, 0);
+                    copy_tile(kCbIn, 0, 1);
+                    add_binary_tile_init();
+                    add_binary_tile(0, 1, 0);
+                    tile_regs_commit();
+                    tile_regs_wait();
+                    pack_tile(0, kCbOut);
+                    tile_regs_release();
+                }
+            }
             return;
         }
         if (km::handler(command) != kHandlerMap) {

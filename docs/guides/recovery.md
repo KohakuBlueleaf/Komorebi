@@ -32,9 +32,11 @@ A step is tried only when the one before it was not enough.
    once no kernel of the group runs the command. `run.wait` raises `km.CommandTimeout`
    with `given_up` True, and the run goes on.
 3. **The reset of the cores that did not leave.** A core still in the command 20 ms after
-   the abort, in a wait that polls nothing, is reset and loaded again by the dispatcher,
-   if the dispatcher holds the write list for it (below). `CommandTimeout.recovered` names
-   those cores. Without the list, that core ends the run with `KMD_ERROR_DEADLINE`.
+   the abort, in a wait that polls nothing, is reset and loaded again by the dispatcher
+   from the write list the session handed it at load (`session.load(...,
+   recover=True)`, the default). `CommandTimeout.recovered` names those cores. Without
+   the list (`run.recovery` is None, `run.recovery_refused` says why), that core ends the
+   run with `KMD_ERROR_DEADLINE`.
 4. **The card reset.** What none of these reaches, below.
 
 ## Steps
@@ -95,40 +97,31 @@ A step is tried only when the one before it was not enough.
    same cores runs as usual. `run.state()` after the stop lists, per core, the first
    give-up of each kernel: `deadline` with the where code of the wait.
 
-4. **Reset one core yourself.** The host can put one core of a loaded run in reset, write
-   what the open writes for it (firmware, its tables, the boot jump), wait for its
-   firmware and load its kernels again, while the other cores keep running theirs. It
-   takes the core's grid position, and a limit in seconds for the firmware:
+4. **Reset one core yourself.** `run.reset_core(core)` puts one core of a loaded run in
+   reset, writes what the open writes for it (firmware, its tables, the boot jump), waits
+   for its firmware and loads its kernels again, while the other cores keep running
+   theirs:
 
     ```python
-    x, y = core % session.grid[0], core // session.grid[0]
-    reset, firmware, load = run.backend.launch.reset_core(x, y, 2.0)
-    back = firmware >= 0  # -1: the firmware never came back within the limit
+    reset = run.reset_core(15)
+    print(reset["by"], reset["seconds"])  # "dispatcher" 0.0018
     ```
 
-    The three numbers are the seconds of the reset, of the wait for the firmware and of the
-    reload. A core with no kernels of the program is refused (`ValueError`). This is the
-    experiment's way, [`experiments/core_reset/ladder.py`](../../experiments/core_reset/ladder.py)
-    (`--step 1`), and it is used on an idle core of a run; `run.backend` is not a
-    public name yet.
+    With the list kept at load the dispatcher does it (1.6 ms on the X280); without it
+    the host does (about 65 ms). `km.KomorebiError` if the core did not come back.
+    Commands already in that core's ring are lost: use it on a core with nothing in
+    flight, or one stuck in a command.
 
-5. **Let the dispatcher do it.** The dispatcher resets a core by its own command
-   (`KMD_HANDLER_RESET`), with a list of the writes the host made for the core (kernels,
-   tables) in its upload region. The host builds the list and uploads it:
-
-    ```python
-    writes = run.backend.launch.reset_list(x, y)
-    run.backend.port.upload(0, writes)
-    ```
-
-    `reset_list(0, 0, every=True)` builds one list for every core, which the dispatcher
-    keeps; at the end of the wait of any later give-up it then resets each core of the
-    group still in the command and loads it again, and the run goes on. The list is refused
-    for a core with semaphores, and the kept one when cores differ in kernels. The command
-    that hands it over is sent through the run's own queue in the experiment (`keep_list`
-    and `dispatcher_reset` in `ladder.py`, steps 2 and 5); the session does not do it for
-    you yet, so a program that does not is in step 3 of the ladder without its list: a core
-    that does not leave ends the run.
+5. **Let the dispatcher do it.** `session.load` hands the dispatcher one write list for
+   every core (`run.keep_resets()`; the firmware, its tables, the kernels and each core's
+   arguments), held at the start of the upload region for the run: 68,864 bytes and
+   about 4 ms of the load for the map/collect example. At the end of the wait of any
+   give-up the dispatcher resets each core of the group still in the command and loads
+   it again, and the run goes on; `run.recoveries` keeps each such give-up's text. The
+   list is refused for a program with semaphores, for cores that differ in kernels, and
+   is not made for islands, several programs or program switches: `run.recovery` is
+   then None and `run.recovery_refused` says why. `session.load(..., recover=False)`
+   leaves it out.
 
 6. **The dispatcher's own loop.** Core 2 of the dispatcher's cluster watches the loop on
    core 0. A loop that makes no pass for 100 ms is reported to the host (`run.stalls`,

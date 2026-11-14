@@ -256,7 +256,7 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
-image=None, thread="card", island=None)` returns a `Run`:
+image=None, thread="card", island=None, recover=True)` returns a `Run`:
 
 1. finds or builds the dispatcher image and the native module (see below), and
    checks that the image is there and X280 cluster 0 is idle (else `km.StartError`);
@@ -266,7 +266,9 @@ image=None, thread="card", island=None)` returns a `Run`:
    running;
 4. starts the dispatcher and waits (with `start` seconds as its timeout) for every column of
    the grid to report READY; otherwise `km.StartError`, which carries the kernel's
-   result block.
+   result block;
+5. with `recover`, hands the dispatcher every core's reset list (`run.keep_resets()`,
+   below).
 
 From the launch on, every failure path reads the grid back. When the dispatcher
 is not there to stop the grid (it never started, or it ended before it could reach the
@@ -283,6 +285,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `batch` | commands stored per batch: every line, then one fence |
 | `settle_microseconds` | the host's pause between a fence and its next store into the card |
 | `thread` | for a program with an X280 thread: `"card"` builds and starts it after READY, `"host"` runs its `host_fallback` instead |
+| `recover` | hand the dispatcher every core's reset list at load, so that a give-up resets and loads again each core that did not leave the command (default True). It costs the load about 4 ms and 68,864 bytes of the upload region for the map/collect example (the list grows with the kernels and their arguments). Not done for islands, several programs or program switches, nor for a program with semaphores: `run.recovery_refused` says why |
 | `island` | `(graph, i)`: this card is island `i` of a `komorebi.islands.Graph` whose island `i` has every core a rank in core order. Every core's island area holds island `i`'s header and table, the dispatcher gets `i`'s first rank and count (`kmd_args.island`), and the run's groups are flat ranks of the whole graph (`Run.ranks`); a group's part on this card runs ([islands](runtime.md#islands)) |
 
 Event room. The dispatcher takes a command that ends in an event only while the
@@ -347,13 +350,16 @@ are rounded to nearest, ties to even; `komorebi.formats` has the conversions
 own.
 
 Reading tensors while a run is loaded. `session.read(*tensors)` returns the raw pages
-of interleaved DRAM tensors (`[pages, page_bytes]` uint8 each) and
+of tensors in DRAM or L1 (`[pages, page_bytes]` uint8 each; an L1 tensor's page is
+one core's row) and
 `session.read_bf16(*tensors)` bfloat16 tile tensors as float32 arrays. Page p of such a
 tensor lies in DRAM bank p % banks, so the native module reads each bank's pages in one
 go, after one DRAM barrier for all the tensors of the call. These reads do not wait for
 the cores to be idle, so they work while a run is loaded; read then only what no kernel
-writes any more (an output whose command's event has arrived). The control blocks live
-in L1 and are read with `Tensor.read()` after the stop.
+writes any more (an output whose command's event has arrived). An L1 tensor is read
+this way only through the host channel (next section); without it `session.read` reads
+it whole through the device API, which waits for the cores, so not while a run is
+loaded (`km.ChannelError`).
 
 A part of one tensor is read the same way:
 
@@ -361,7 +367,7 @@ A part of one tensor is read the same way:
 |---|---|
 | `session.read(tensor, first=0, pages=None)` | `[pages]`: pages `first` .. `first + pages - 1` as one `[pages, page_bytes]` uint8 array (`pages=None`: to the end); a range outside the tensor raises `km.KomorebiError` naming its page count |
 | `session.read_chunks(tensor, chunk_bytes=2 << 20)` | a generator of `(first, pages)` over the whole tensor, each chunk at most `chunk_bytes` |
-| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them) into pages `first` .. `first + n - 1` of an interleaved DRAM tensor, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
+| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them) into pages `first` .. `first + n - 1` of a tensor in DRAM or L1, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
 | `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]` |
 
 Through the device API, reading back is slow: about 2 MB per second (a 20 MiB frame in
@@ -375,19 +381,21 @@ hang), and check a large result by sample, from `read` or `read_tiles_bf16`.
 When a card opens, the driver maps 1 GiB of pinned host memory that the cores reach
 through the PCIe tile. The session finds the mapping in `/proc/self/maps`, keeps the
 region `[0, channel)` of it and zeroes the region's last 64 KiB: one 64-byte sequence
-word a core. The rest holds data. Each transfer moves pages between an interleaved
-DRAM tensor and the region: up to 16 cores take a contiguous share each. Each core
-moves its share through two chunks of L1 (16 KiB each, or a page each when pages are
-larger) with tt-metal's PCIe-aware calls
-(set, the writes or reads, the flush, clear), then writes its sequence word (a fresh
-nonce, its bytes, its rank). The host copies out only after every word arrived. A
-transfer larger than the region's data goes in rounds, one transfer at a time.
+word a core. The rest holds data. Each transfer moves pages between a tensor and the
+region. For an interleaved DRAM tensor up to 16 cores take a contiguous share each and
+move it through two chunks of L1 (16 KiB each, or a page each when pages are larger).
+For a tensor in L1 each core that holds a page moves it between its own L1 and the
+region in one write or read: no DRAM, no chunks. Every move uses tt-metal's PCIe-aware
+calls (set, the writes or reads, the flush, clear); then the core writes its sequence
+word (a fresh nonce, its bytes, its rank). The host copies out only after every word
+arrived. A transfer larger than the region's data goes in rounds, one transfer at a
+time.
 
 | The session | A read (`read`, `read_chunks`) or a write (`write`, `tensor`) goes |
 |---|---|
-| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's service overlay ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms |
-| no run, 80 KiB or more | through a one-shot transfer kernel on row 0; its launch costs about 30 ms, as the device API's read of some 76 KiB does |
-| no run and less than 80 KiB, a tensor in L1, no channel | through the device API, as before |
+| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's service overlay ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms. An L1 tensor takes one command for each run of its cores that are consecutive in core order and hold one program (one for a tensor as wide as the grid, one a row for a narrower one); if one of its cores holds no program it goes through the device API |
+| no run, 80 KiB or more | through a one-shot transfer kernel: on row 0 for a DRAM tensor, on the cores that hold the pages for an L1 tensor; its launch costs about 30 ms, as the device API's read of some 76 KiB does |
+| no run and less than 80 KiB, no channel | through the device API, as before |
 
 A page over 16 KiB is its own chunk, so it goes through the channel too, in a launch
 when two pages fit a core's L1 and in a run when the run's transfer buffer holds one.
@@ -397,15 +405,14 @@ buffers (a run with overlays, or whose groups switch program, keeps 16 KiB chunk
 tensor with larger pages made after the load, or a page too large for the L1 or for
 the region's data, is read through the device API.
 
-What still goes through the device API, and why: a tensor in L1, because the channel
-moves pages between host memory and an interleaved DRAM tensor with the cores' DRAM
-reads and writes, and an L1 tensor is a row in each core's own memory, not pages of
-a bank; and a read of less than 80 KiB without a run, because a launch costs more than
-the device API's read.
+What still goes through the device API, and why: a read of less than 80 KiB without
+a run, because a launch costs more than the device API's read; and an L1 tensor in a
+run where one of its cores holds no program, because no core would serve its page.
 
 Every offset is checked twice before anything moves: on the host (`km.ChannelError`)
-and in the kernel, against the region and the core's L1. A core that refuses writes
-nothing. Card 1, a p150a at x8 16 GT/s, host seconds of a whole tensor (median of
+and in the kernel, against the region and the core's L1; an L1 tensor's page must also
+lie above the firmware's part of L1 and apart from the core's word slot (that floor is
+the kernel's check alone). A core that refuses writes nothing. Card 1, a p150a at x8 16 GT/s, host seconds of a whole tensor (median of
 three, every byte compared; `experiments/host_push/framework.py`):
 
 | | 20 MiB frame read | 94 MB tensor read | 20 MiB write | 94 MB write |
@@ -413,6 +420,12 @@ three, every byte compared; `experiments/host_push/framework.py`):
 | device API | 10.1 | 43.3 | 0.080 | 0.207 |
 | channel, no run | 0.030 | 0.050 | 0.047 | 0.041 |
 | channel, in a run | 0.0067 | 0.023 | 0.0055 | 0.026 |
+
+An L1 tensor of 128 KiB a core on all 120 cores (15 MiB), card 1, AICLK 1350 MHz, host
+load 4, one measurement each, every byte compared (`experiments/host_push/l1_tensor.py`):
+inside a run written in 2.8 ms and read in 5.1 ms (5.5 and 3.1 GB/s for the host; 1.09
+and 1.05 ms on the cores, 14.4 and 15.0 GB/s); without a run read in 0.11 s, the
+launch's cost. The device API reads at about 2 MB per second (above).
 
 The session takes the channel's address from the driver's own record of the card's
 host memory and checks it against the process's mappings (1 GiB, read-write, a file
@@ -446,6 +459,10 @@ the regions' whole tensor, 8 MB per MB of regions.
 | `event(handle)` | `Event(handle, kind, auxiliary, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `rejected`; `auxiliary` is the first core of the group that ran the command (done; for a queued command, the one the kernel chose), the slot (timeout) or the reason (rejected): the low 8 bits of the event's auxiliary, whose next 16 bits, the low bits of the command's sequence number, `sequence(handle)` reads (layout: the kernel README, "Sources"); `ticks` is submit to completion in the X280's 50 MHz timer, `microseconds` the same in microseconds; for a command submitted with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `microseconds` then hold it too), else None |
 | `sequence(handle)`, `group(handle)` | the sequence number the kernel gave the command (the trace's index), from its done or timeout event (None before it, and for a rejected command); its group, whose first core for a queued command comes from its done event (None before it) |
 | `inspect(group=None, timeout=10.0)` | while the run goes on: the dispatcher reads each core of `group` (default every core), one core per pass of its loop, and the call returns a list with a dict per core ([inspecting a run](#inspecting-a-run)). It is the kernel's own command: it takes no slot and no sequence number |
+| `keep_resets(timeout=10.0)` | hands the dispatcher every core's reset list (what `load(recover=True)` does): firmware, its tables and the cores' kernels and arguments, held at the start of the upload region for the run. Returns True and sets `recovery` (`offset`, `bytes`, `seconds`), or False and sets `recovery_refused` (semaphores, cores that differ in kernels, no room) |
+| `reset_core(core, timeout=10.0)` | resets core `core` and loads its kernels again while the other cores run theirs: by the dispatcher from the kept list (1.6 ms on the X280), else by the host (about 65 ms). Returns `{core, by, seconds, x280_seconds}`; `KomorebiError` if the core did not come back. Commands in the core's ring are lost: use it on a core with no command in flight, or one stuck in one |
+| `recoveries`, `given_up(handle)` | every give-up whose cores the dispatcher reset, as `{handle, cores, text}`, `text` being the `CommandTimeout`'s (it ends `recovered (reset and loaded again): cores [...]`); `given_up(handle)` is the `CommandTimeout` of a given-up command whose event is still held (read with `event()` after `drain()`) |
+| `stalls` | the watch's events on the dispatcher's own loop: `{stage, req, ticks}`, stage `stalled`, `back` or `lost` ([the watch](../concepts/dispatch.md#the-watch)) |
 | `forget(handles)` | releases what the run keeps for handles whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps groups and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
@@ -485,9 +502,10 @@ it up and keep the run ([runtime](runtime.md#giving-up-one-command)). It reads t
 group, tells its cores to leave the command, and sends `timeout` once none runs it.
 `wait` then raises `CommandTimeout` with `given_up` True, and its `cores` are the group
 as that read found them. The run goes on: the next command on those cores runs as
-usual. A command whose core is still in it 20 ms later (a loop that polls nothing), and
-a command the dispatcher does not give up (a thread's own, a dynamic run's), end the
-run as before.
+usual. A core still in the command 20 ms later (a loop that polls nothing) is reset and
+loaded again by the dispatcher when the run holds the reset list (`recover`), and
+`CommandTimeout.recovered` names it; without the list it ends the run, as does a
+command the dispatcher does not give up (a thread's own, a dynamic run's).
 
 ### A command's block
 
