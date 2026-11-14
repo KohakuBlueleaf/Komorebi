@@ -431,6 +431,9 @@ class Session:
         self._region = channel_module.check_region(channel) if channel else None
         self.channel = None
         self._channel_said = False  # the fallback has been logged
+        # a given device's channel is mapped at the first transfer (open() maps its own)
+        self._channel_mapped = device is None
+        self.largest_page = 0  # bytes of the largest page of a DRAM tensor made so far
         self.transfer_cores = channel_module.CORES_DEFAULT  # cores of a transfer, most
         self.transfer_cycles = None  # the last transfer's span on the cores
 
@@ -478,6 +481,15 @@ class Session:
         self._own_device = True
         if self._region is not None:
             self._open_channel(b"".join(seen).decode(errors="replace"))
+
+    def _map_channel(self):
+        """A session given its device maps the channel at its first transfer. It did
+        not see the open, so the driver's warning is unknown to it: a transfer whose
+        sequence words do not arrive raises ChannelError."""
+        if self._channel_mapped or self._region is None:
+            return
+        self._channel_mapped = True
+        self._open_channel("")
 
     def _open_channel(self, said):
         """Maps the region of the card's channel, or logs why reads go the device API's
@@ -567,6 +579,7 @@ class Session:
         tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid
         )
+        self._note_page(tensor)
         if self._transfer_way([tensor], 0, None) is None:
             tensor.buffer.write(raw)
         else:
@@ -576,9 +589,17 @@ class Session:
     def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
         """A tensor as tensor() makes it, not written."""
         self._module = self._module or native.load_module(self.tree)
-        return tensor_module.empty(
+        tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid, address
         )
+        self._note_page(tensor)
+        return tensor
+
+    def _note_page(self, tensor):
+        """Keeps the largest page of a DRAM tensor: a load sizes the run's transfer
+        buffer by it."""
+        if tensor.in_dram:
+            self.largest_page = max(self.largest_page, tensor.aligned_page_bytes)
 
     def launch(self):
         """An empty native Launch on the open device, for a host-side runner that
@@ -671,16 +692,23 @@ class Session:
     def _transfer_way(self, tensors, first, pages):
         """How a read of these pages goes: "run" (the live run's cores push them),
         "launch" (the transfer kernel, from LAUNCH_MIN_BYTES on), None (the device)."""
+        self._map_channel()
         if self.channel is None or any(not tensor.in_dram for tensor in tensors):
             return None
         largest = max(tensor.aligned_page_bytes for tensor in tensors)
+        if largest > self._region.data:
+            return None
         run = self.run
         if run is not None and not run.stopped:
             transfer = getattr(run.backend, "transfer", None)
             fits = transfer is not None and largest <= transfer.chunk
             return "run" if fits and run.alive() else None
-        if self._starting is not None or largest > channel_module.CHUNK_DEFAULT:
+        if self._starting is not None:
             return None
+        if largest > channel_module.CHUNK_DEFAULT and (
+            channel_module.chunk_for(largest, self.l1()[1]) is None
+        ):
+            return None  # two pages do not fit a core's L1
         total = sum(
             dram.page_range(first, pages, tensor.pages)[1] * tensor.aligned_page_bytes
             for tensor in tensors
@@ -1441,7 +1469,9 @@ class _Backend:
         cores_tensor = _words(self.session, table)
         self.io = [self.control, cores_tensor]
         if self.session.channel is not None or program.threads:
-            self.transfer = self._transfer_buffer(cores, grid)  # threads' copies too
+            # also the threads' copies
+            chunk = self._transfer_chunk(program, placed, cores)
+            self.transfer = self._transfer_buffer(cores, grid, chunk)
         if self.trace_cap:
             self.trace_tensor = _words(
                 self.session,
@@ -1523,9 +1553,31 @@ class _Backend:
             )
         return launch
 
-    def _transfer_buffer(self, cores, grid):
+    def _transfer_chunk(self, program, placed, cores):
+        """The chunk of the run's transfer buffer: CHUNK_DEFAULT, or the largest page
+        of the session's DRAM tensors when two of them take at most half of what a core
+        has left after its buffers. A run with overlays, or whose groups switch
+        program, keeps the default: it has slots to place."""
+        page = self.session.largest_page
+        held = placed.programs if placed else [program]
+        if (
+            page <= channel_module.CHUNK_DEFAULT
+            or (placed and placed.switch)
+            or any(each.overlays for each in held)
+        ):
+            return channel_module.CHUNK_DEFAULT
+        buffers = max(
+            sum(buffer.page_bytes * buffer.pages for buffer in each.buffers)
+            for each in held
+        )
+        buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
+        spare = self.session.l1()[1] - buffers - self.control.nbytes // cores
+        return (
+            channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
+        )
+
+    def _transfer_buffer(self, cores, grid, chunk):
         """The L1 every core moves a transfer's chunks through (a sharded tensor)."""
-        chunk = channel_module.CHUNK_DEFAULT
         size = 2 * chunk + abi.headers()["KM_TRANSFER_WORD_BYTES"]
         tensor = self.session.empty(
             (cores, (size + NOC_ALIGN) // 4), "uint32", shard_grid=grid
