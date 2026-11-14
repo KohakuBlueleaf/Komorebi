@@ -144,14 +144,23 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
   is each island's `Run.recovery`. On two p150a cards with the map/collect example,
   each island's lists take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores
-  get no list, so a give-up does not reset one.
+  get no list, so a give-up does not reset one: a link core still in a given-up
+  command is named instead (`KMD_EVENT_LINK`, `run.links_hung`), see below.
 - `run.reset_link(island, k)` resets link core k of `island` by the host
   (`session.reset_link`): each of its connections closed at its router (the close
   request, the router's teardown, the producer cursor set at the router's read
   counter), the core reset and loaded again, then its OPEN with the far link core's
-  hello taken as heard. Returns `{island, core, by, seconds, reset_seconds,
-  open_seconds, parts}`. Between commands only: a line or ask in flight on that core
-  is lost and its command times out at its deadline.
+  hello taken as heard; on link core 0 its ask and put queues drop the lines not yet
+  taken (the tail set to the taken count, those lines cleared) while it is in reset.
+  Returns `{island, core, by, seconds, reset_seconds, open_seconds, parts}`.
+- A link core that does not leave a given-up command (the runtime's PAGES commands on
+  link cores are given up at their deadline too) is left to the host: its dispatcher
+  posts `KMD_EVENT_LINK` (`Run.link_events`: `link`, `what`, `req`, `ticks`), the
+  time-out's `links` holds `(k, "hung")`, and every other command whose traffic the
+  core held is given up at once, its `links` `(k, "lost")`: a group that has the core,
+  a crossing whose line was staged on it (the line's packet number is taken again by
+  the next packet), or, on link core 0, a command whose cores wait for an ask or put.
+  `run.links_hung` lists `(island, k)` until `run.reset_link(island, k)`.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.

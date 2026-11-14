@@ -227,6 +227,23 @@ namespace {
         return true;
     }
 
+    // Core `where` in reset: each queue of `drops` (tail, taken, lines, count) drops
+    // its untaken lines: tail = taken, words 0 and 15 of its 64-byte lines cleared.
+    void drop_lines(const tt_cxy_pair& where, const std::vector<uint32_t>& drops) {
+        const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+        for (size_t at = 0; at < drops.size(); at += 4) {
+            uint32_t taken = 0;
+            cluster.read_core(&taken, sizeof(taken), where, drops[at + 1]);
+            cluster.write_core(&taken, sizeof(taken), where, drops[at]);
+            const uint32_t zero = 0;
+            for (uint32_t line = 0; line < drops[at + 3]; line++) {
+                const uint64_t base = drops[at + 2] + 64ull * line;
+                cluster.write_core(&zero, sizeof(zero), where, base);
+                cluster.write_core(&zero, sizeof(zero), where, base + 60);
+            }
+        }
+    }
+
     // The grid (x, y), then per core in core order its translated NoC address (the
     // core table's) and its NoC0 coordinates, as x | y << 16 words; no X280 needed.
     std::tuple<uint32_t, uint32_t, std::vector<uint32_t>, std::vector<uint32_t>>
@@ -1290,17 +1307,21 @@ namespace {
             );
         }
 
-        // Resets core (x, y), its connections on `channels` closed; restarts, reloads.
+        // Resets core (x, y): `channels` closed, `drops` emptied; restarts, reloads.
         // Seconds of reset, firmware (-1: not ready, -2: not closed), load.
         std::array<double, 3> reset_core(
             uint32_t x,
             uint32_t y,
             double timeout_s,
-            const std::vector<uint32_t>& channels = {}
+            const std::vector<uint32_t>& channels = {},
+            const std::vector<uint32_t>& drops = {}
         ) {
             namespace tm = tt::tt_metal;
             if (!workload_) {
                 throw std::runtime_error("reset_core: the program was not launched");
+            }
+            if (drops.size() % 4 != 0) {
+                throw std::invalid_argument("reset_core: drops come in fours");
             }
             auto& context = tm::MetalContext::instance();
             const auto& hal = context.hal();
@@ -1334,6 +1355,7 @@ namespace {
                 lap(0);
                 return {took[0], -2.0, 0.0};
             }
+            drop_lines(where, drops);
             lap(0);
             auto& builds = (
                 tm::BuildEnvManager::get_instance(tm::extract_context_id(dev))
@@ -3075,7 +3097,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("x"),
             nb::arg("y"),
             nb::arg("timeout_s"),
-            nb::arg("channels") = std::vector<uint32_t>{}
+            nb::arg("channels") = std::vector<uint32_t>{},
+            nb::arg("drops") = std::vector<uint32_t>{}
         ).def("reset_groups", &Launch::reset_groups).def(
             "reset_list",
             &Launch::reset_list,

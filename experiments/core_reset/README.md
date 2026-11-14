@@ -43,6 +43,8 @@ p150a, the map/collect example on all 120 cores; MAP commands on the group and o
 | The same through the session's public calls (`recover.py`): the give-up's reset, then `run.reset_core(15)` | yes | 1.59 ms on the X280 for `reset_core` | `recoveries` names core 15; every MAP after exact |
 | Two cards as islands (`islands.py --step 1`): handler that never returns in island 1's core 15, group of island 1's 119 ranks | yes, by island 1's dispatcher | the command's deadline plus the give-up's wait | the timeout starts `island 1:` and names core 15 as recovered; the MAP after exact; `run.stop()` clean |
 | The same in one group over both islands' 238 ranks (`islands.py --step 2`) | yes, by island 1's dispatcher | the same | island 0's part done; the timeout names island 1 and its core 15 (rank 134); the MAP after on 238 ranks exact; `run.stop()` clean |
+| A handler that never returns on island 0's link core 0 while island 0's ranks read pages island 1 holds (`links.py --step 1`) | no: the dispatcher names it (`link core 0: did not leave the command`), the MAP waiting on it is given up as lost; the host calls `run.reset_link(0, 0)` | the deadline plus 20.2 ms; the lost MAP 2.9 ms later; reset 103.8 ms, open 0.3 ms | the MAP across before and after exact; `run.stop()` clean |
+| The same while island 0 crosses a MAP to island 1's ranks (`links.py --step 2`) | the same; the crossing whose line was on the core is given up as lost and its packet number taken again | the deadline plus 20.3 ms; the lost crossing 79 us later; reset 102.1 ms, open 0.3 ms | the crossed MAP before and after exact; lines crossed each way 1, 1, then 2; `run.stop()` clean |
 | 4. A compute unit left running | not run yet: it may need a card reset | | |
 
 ## What a reset has to write
@@ -96,6 +98,8 @@ On card 0 with tt-metal's environment set, one step a run:
     python experiments/core_reset/recover.py   # the session's own recovery, public calls
     python experiments/core_reset/islands.py --step 1   # two cards: island 1's ranks
     python experiments/core_reset/islands.py --step 2   # two cards: one group over both
+    python experiments/core_reset/links.py --step 1     # two cards: a link core hangs, the host resets it
+    python experiments/core_reset/links.py --step 2     # the same with a crossed command
 
 It prints progress lines and one JSON line: the reset's times, the MAP commands before
 and after (on the core's group (14, 2) and on all 120 cores), whether each is exact,
