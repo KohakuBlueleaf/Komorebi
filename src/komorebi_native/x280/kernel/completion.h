@@ -204,6 +204,7 @@ static inline void sources_wake(kmd_t* dispatcher) {
 static int link_freed(
     kmd_t* dispatcher, uint32_t slot, uint32_t status, uint32_t ticks, uint64_t now
 );
+static inline void link_gave(kmd_t* dispatcher, uint32_t source);
 
 /* Sweeps busy slots' ack lines (8-byte loads); a slot showing its sequence is freed:
  * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */

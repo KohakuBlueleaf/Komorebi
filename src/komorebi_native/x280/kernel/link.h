@@ -239,6 +239,15 @@ static inline void link_queue(
     link->out_tail++;
 }
 
+/* A TIMEOUT that gives a command up goes to `source`: the host's count of give-ups
+ * (KMD_H_GIVEN_UP) grows by one first, so that the host goes on past exactly the
+ * TIMEOUTs it is sent of commands given up. */
+static inline void link_gave(kmd_t* dispatcher, uint32_t source) {
+    if (source == KMD_SRC_HOST) {
+        dispatcher->x280_cores[KMD_H_GIVEN_UP] = ++dispatcher->given_up;
+    }
+}
+
 /* A crossing's part came back (or the local part ended): its status and ticks; the
  * last part sends the crossing's event unless its TIMEOUT went out. */
 static void link_part(
@@ -285,6 +294,7 @@ static void link_part(
         }
     } else if ((out & 0xFFu) == KM_EVENT_TIMEOUT) {
         out = (out & 0xFFFFu) | sequence << 8;
+        link_gave(dispatcher, crossing->source);
     }
     ring_push(ring, crossing->request, out, took);
     dispatcher->last_event_mtime = now;
@@ -630,6 +640,7 @@ static void link_late(kmd_t* dispatcher, uint64_t now) {
         }
         crossing->late = 1;
         link->gave_up++;
+        link_gave(dispatcher, crossing->source);
         kmd_ring_t* ring = &dispatcher->ring[crossing->source];
         ring->busy_count--;
         const uint32_t auxiliary = (

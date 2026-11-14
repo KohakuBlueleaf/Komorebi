@@ -257,7 +257,11 @@ packet as its own command and sends DONE back (ticket, status, completion words)
 ticket's event comes once every part is back: `ticks` is the whole command's, a result
 (`KM_FLAG_RESULT`) is the leader's. A part not back by the command's deadline gives the
 command up: `KM_EVENT_TIMEOUT` with `KM_EVENT_ISLAND` (0x80) + that island in the low 8
-bits of `auxiliary`, and the run goes on.
+bits of `auxiliary`, and the run goes on. For a command from the host the dispatcher
+counts that TIMEOUT once among its give-ups, so the host's run goes on past it as past
+any command given up; a part run for the other island counts nothing there. A line that
+would cross may not be EXCLUSIVE (reason 2, `flags`); the host's own split of a group
+over islands marks its lines `KM_FLAG_PART` and does not cross ([islands](islands.md#the-run)).
 
 Measured (`examples/25_islands_threads --links 4`, two cards, 2026-11-14): a NOP
 submitted to island 0's ring, 2,000 pipelined, 2.98 µs to island 0's 118 ranks and

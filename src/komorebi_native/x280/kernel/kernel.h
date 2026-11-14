@@ -176,7 +176,7 @@ typedef struct {
     /* inspect: the control block's address on every core, the inspect being read */
     uint32_t control_address;
     kmd_inspect_t inspect;
-    uint32_t given_up; /* commands given up at their deadline, the run going on */
+    uint32_t given_up; /* the host's commands given up at their deadline (link_gave) */
     /* commands across islands (link.h): the host's link line had its mark; bit k:
      * slot k is a crossing's local part or a LINK command; the island's first thread */
     uint32_t link_on, thread_first;

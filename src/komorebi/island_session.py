@@ -163,9 +163,10 @@ class IslandRun:
         self._grow(1)
         ticket = self._next
         for island, _first, _count in parts:
-            try:  # the flat group word unchanged: the dispatcher cuts its part
+            try:  # the flat group word unchanged, marked a part: the dispatcher cuts
+                # its part and does not cross the line (the other parts went as well)
                 handle = self.runs[island].submit(
-                    handler, group, args, exclusive=exclusive, result=result
+                    handler, group, args, exclusive=exclusive, result=result, part=True
                 )
             except KomorebiError as error:
                 raise _named(error, island) from None
@@ -213,13 +214,14 @@ class IslandRun:
             if not mine.any():
                 continue
             named = handler if scalar else handlers[mine]
-            try:  # the flat group words unchanged: the dispatcher cuts its part
+            try:  # the flat group words unchanged, marked parts (as in submit)
                 handles = run.submit_many(
                     named,
                     first[mine],
                     count[mine],
                     None if args is None else args[mine],
                     exclusive,
+                    part=True,
                 )
             except KomorebiError as error:
                 raise _named(error, island) from None
