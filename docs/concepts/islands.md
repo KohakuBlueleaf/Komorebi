@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, a card split into islands, the links between islands and what they carry, messages across a link, acting by island, and what is not built.
+summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, a card split into islands, a line of islands and what is forwarded through those between, the links between islands and what they carry, messages across a link and the end of a run over islands, acting by island, and what is not built.
 tags:
   - concepts
   - islands
@@ -89,9 +89,21 @@ each island's last cores, serving what a link core serves between two cards (com
 across, a core's own page ask and put, the relay, messages). Only the transport differs:
 where a link core between cards hands a packet to an Ethernet router, on one card it
 writes the far tile over the NoC (`km_transport.hpp`, chosen by the build), each count
-or word after the writes before it, as a router keeps them. So every island of a split
-card is one link from every other, and the island table's next link names the link
-core toward each. The calls and the numbers are in
+or word after the writes before it, as a router keeps them. The island table's next
+link names the link core toward each island. A split card's tensors are held by
+island, as over two cards: a page another island holds is asked for across
+(`card_dram=True` keeps one copy in the card's DRAM, every page local, for kernels that
+read a tensor by its bank address).
+
+Three or more cards in a row are a line, not a mesh, and a split card is one too with
+`km.Session(card=0, islands=n, line=True)`: only neighbouring islands are joined, so
+island 0 reaches island 2 through island 1. A link core that receives what is not for
+its island sends it on by its island's next link toward the target, to the island's
+link core toward it, which sends it across; no other core of the island between does
+anything. What is forwarded: a command's line and its DONE, an ask and its pages, a
+relay part (a reduce's fold, a broadcast's blocks), and a message (queued again in the
+outbox of the link core toward its rank). A put goes one link only. Each island
+between adds 2.3 to 3.9 µs to a command and its DONE. The calls and the numbers are in
 [islands](../reference/islands.md#a-card-split-into-islands).
 
 ## What a kernel sees
@@ -210,6 +222,18 @@ each way when messages wait to be batched, 0.6 million a packet a message.
 While a run's messages are served, link 0's CPU serves nothing else: with `links=1` a
 dispatcher's command line or a page on link 0 waits until the run ends.
 
+Over more than two islands the end of a run is decided once for the whole run, not a
+pair at a time. Every link core serves its link. Each island's link core 0 checks its
+island quiet (the run's cores idle, every link core empty, the counts balanced) and
+reports {quiet, received across, sent across, round} toward island 0, which holds the
+group's first rank, forwarded like any line. When two successive rounds show every
+island quiet and the sum sent across equal to the sum received across, with the same
+counts, island 0 sends the verdict to every link core, and each island's link core 0
+shows its line idle; each dispatcher then ends its part. Every wait is bounded. Example
+05 on card 0 as three and four islands in a line ran exact against its replay, each
+link's messages equal to the replayed crossings (56 and 75); island 0's part took 166.1
+µs and 216.9 µs, against 146.6 µs over two islands.
+
 ## Acting by island
 
 A program written for one island runs on several unchanged: a reduce whose group spans
@@ -269,18 +293,18 @@ The far link core needs nothing.
 
 ## What is not built
 
-- **Over a link:** a reduce or a broadcast over more than two islands (a part crosses
-  one link, to the far island, not the next link of the table), a dynamic run on part of
-  the ranks of two islands, X280 ranks over a link. A kernel's own ask and put of pages,
-  and a thread's copy across, are built for two islands, their pages split over every
-  page link; a copy across knows only the tensors made before the load. More than 16 KiB
+- **Over a link:** a dynamic run on part of the ranks, X280 ranks over a link. A
+  kernel's own put of pages goes one link only, and a thread's copy across is built for
+  two islands; their pages split over every page link (a forwarded ask: one page CPU a
+  link). A copy across knows only the tensors made before the load. More than 16 KiB
   in one relay call goes as several asks; no run has sent that much in one call yet.
   Blocks cross at the relay's pace, one ask a way at a time from link core 0 alone.
 - **A rate in the table**, so `km::rate` of another island is 0.
-- **More than two islands of a split card:** one wire a pair, messages (a dynamic run)
-  refused (a link's quiet test reads one far island), and fewer commands across in
-  flight a dispatcher (three with three islands, two with four, eight with two). Two
-  cards each split (fabric links and wires in one graph) are not built.
+- **More than two islands of a split card:** one wire a pair, at most three link cores
+  an island for messages, and fewer commands across in flight a dispatcher (three with
+  three islands, two with four, eight with two). X280 threads on a split card. Two cards
+  each split (fabric links and wires in one graph, the line 0-1-2-3) are not built, so
+  forwarding has run over wires only.
 - **A dict of programs, X280 threads and ports, engines and uploads over islands,
   tensors in L1.** A list of programs, one an island, loads; a thread of one island
   fetches and stores tensors the other holds.

@@ -38,6 +38,11 @@ def parse():
         default=0,
         help="split the one card of --cards into this many islands (2 to 4)",
     )
+    parser.add_argument(
+        "--line",
+        action="store_true",
+        help="--islands joined in a line (neighbours only), not each to each",
+    )
     parser.add_argument("--nop-rounds", type=int, default=3)
     parser.add_argument("--nop-jobs", type=int, default=20000, help="per round")
     parser.add_argument("--map-rounds", type=int, default=3)
@@ -75,7 +80,10 @@ def parse():
     parser.add_argument(
         "--across",
         action="store_true",
-        help="MAP on island 0 reading an input island 1 holds",
+        help="MAP on island 0 reading an input island --far holds",
+    )
+    parser.add_argument(
+        "--far", type=int, default=1, help="--across: the island that holds the input"
     )
     parser.add_argument(
         "--per-rank", type=int, default=2, help="--across: input tiles a rank, 1 to 4"
@@ -136,7 +144,7 @@ def open_session(args, cards):
     """Two or more cards as islands, or one card split into `--islands` islands."""
     if args.islands:
         (card,) = cards
-        return km.Session(card=card, islands=args.islands, log=log)
+        return km.Session(card=card, islands=args.islands, line=args.line, log=log)
     # the page calls over islands take the kernels past the runtime's 69 KiB buffer
     reaches = None if args.host_reaches is None else [args.host_reaches]
     return km.Session(
@@ -185,9 +193,9 @@ def main():
         far = source
         if args.across:
             far = session.tensor(
-                matrix, "bfloat16", "tile", group=tuple(report["islands"][1])
+                matrix, "bfloat16", "tile", group=tuple(report["islands"][args.far])
             )
-            log(f"input held by island 1 alone: {list(far.placement.parts)}")
+            log(f"input held by island {args.far} alone: {list(far.placement.parts)}")
         held = output
         if args.put:
             held = session.tensor(
@@ -222,6 +230,10 @@ def main():
         )
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
+        sizes = getattr(run.program, "sizes", None)
+        if sizes is not None:  # its kernels against the session's kernel buffer
+            report["kernel_bytes"] = {"total": sizes.total, "buffer": sizes.limit}
+            report["kernel_bytes"].update(sizes.text)
         if args.host_reaches is not None:
             for tensor, data in ((source, matrix), (output, zeros)):
                 raw, _ = formats.to_bytes(data, "bfloat16", "tile")
@@ -230,7 +242,8 @@ def main():
         report["source_read_exact"] = bool(np.array_equal(back, matrix))
         log(f"input read back from every island: {report['source_read_exact']}")
         report["io"] = io_rates(session, moved, generator)
-        report["channel"] = channel_rates(session, generator)
+        if not args.islands:  # a split card: one channel, the card's
+            report["channel"] = channel_rates(session, generator)
         if args.across:
             report["per_rank"] = args.per_rank
             report.update(across(session, run, args, source, far, output, exact))
@@ -427,9 +440,9 @@ def hang(session, run, source, ranks, matrix):
 
 
 def across(session, run, args, local, far, output, exact):
-    """Rounds of one MAP on island 0's ranks (its own run: island 0 starts at rank 0)
-    reading `local`, then `far` (island 1 holds it; the reader asks for it itself);
-    what crossed checked against the rounds' asks and pages; the last round checked
+    """Rounds of one MAP on island 0's ranks reading `local`, then `far` (island --far
+    holds it, asked for); what crossed checked against the asks and pages on each link
+    of the way, forwarded through the islands between; the last round checked
     (--reset-link: checked, that island's link core 0 reset, read across again)."""
     graph = session.graph
     group = (graph.first(0), graph.count(0))
@@ -438,6 +451,11 @@ def across(session, run, args, local, far, output, exact):
     if not 1 <= per <= 4:
         raise ValueError(f"--per-rank {per}: 1 to 4 (the input holds 2 tiles a rank)")
     out = {"map_groups": [list(group)], "links": session.links, "rounds_wrong": []}
+    way = [0]  # the islands from island 0 to the holder, a link apart
+    while way[-1] != args.far:
+        way.append(graph.next_island(way[-1], args.far))
+    there = list(zip(way, way[1:]))
+    out["way"] = way
 
     def one_round(name, source, number):
         words = map_words(source, output, [group], per)[0].tolist()
@@ -462,18 +480,24 @@ def across(session, run, args, local, far, output, exact):
         log(f"MAP on {group} reading {name}: {spent} us a round, {tile_bytes:,} B")
         log(f"crossed while reading {name}:\n{moved}")
         out[f"crossed_{name}"] = {
-            f"{a}->{b}": moved.total(a, b) for a, b in ((0, 1), (1, 0))
+            f"{a}->{b}": moved.total(a, b)
+            for a, b in there + [(b, a) for a, b in there]
         }
-    # each rank asks once a round for its tiles; island 1 sends them
+    # each rank asks once a round for its tiles, each ask crossing every link of the
+    # way; the holder sends them, each page crossing every link back
     asks, pages = args.map_rounds * count, args.map_rounds * per * count
-    went, came = out["crossed_across"]["0->1"], out["crossed_across"]["1->0"]
+    went = [out["crossed_across"][f"{a}->{b}"] for a, b in there]
+    came = [out["crossed_across"][f"{b}->{a}"] for a, b in there]
     out["crossings_agree"] = (
-        went["asks"] == asks
-        and came["pages"] == pages
-        and came["bytes"] == pages * far.aligned_page_bytes
-        and not any(out["crossed_local"][way]["asks"] for way in ("0->1", "1->0"))
+        all(one["asks"] == asks for one in went)
+        and all(one["pages"] == pages for one in came)
+        and all(one["bytes"] == pages * far.aligned_page_bytes for one in came)
+        and not any(row["asks"] for row in out["crossed_local"].values())
     )
-    log(f"asks {went['asks']} of {asks}, pages {came['pages']} of {pages}")
+    log(
+        f"asks {[one['asks'] for one in went]} of {asks}, pages "
+        f"{[one['pages'] for one in came]} of {pages}"
+    )
     if args.reset_link >= 0:
         (got,) = session.read_bf16(output)
         out["before_reset"] = check(exact, got, [group], per)

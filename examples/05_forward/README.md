@@ -122,8 +122,15 @@ island 0 and 7 from island 1 on link 0, the replay's 22 forwards across.
 
 Card 0 split into two islands (`--cards 0 --islands 2`, the wire between them), the same
 16 messages of 4 forwards: both parts done (145.1 and 99.9 µs), exact against the replay
-over 114 message ranks; 23 forwards crossed. Messages over more than two islands are not
-built (the session refuses them).
+over 114 message ranks; 23 forwards crossed.
+
+Card 0 as three and as four islands in a line (`--cards 0 --islands 3 --line`, then
+`--islands 4`), 2026-11-15: every part done (166.1, 134.3 and 110.2 µs; 216.9, 184.3,
+147.1 and 115.6 µs), exact against the replay over 110 and 106 message ranks; the
+messages counted on each link, both ways, were the replay's link crossings (56 and 75:
+a forward two islands away crosses two links, through the island between). The run
+ends by one rule for every island
+([islands](../../docs/concepts/islands.md#messages-across-a-link)).
 
 ## Files
 

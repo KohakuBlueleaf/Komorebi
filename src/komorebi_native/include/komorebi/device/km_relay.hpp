@@ -31,7 +31,8 @@ namespace km {
     constexpr uint32_t kRelaySent = 1;
     constexpr uint32_t kRelayTaken = 2;
     constexpr uint32_t kRelayFailed = 3;
-    constexpr uint32_t kRelayNext = 4;  // the ask line the next scan starts at
+    constexpr uint32_t kRelayNext = 4;    // the ask line the next scan starts at
+    constexpr uint32_t kRelayOnward = 5;  // the token of the ask sent on (0: none)
     constexpr uint32_t kRelayNoPort = 0xFFFFFFFFu;
 #if !defined(KM_WIRE)
     // Two cards: link core 0 writes an ask's bytes straight into the far rank's L1, a
@@ -237,9 +238,12 @@ namespace km {
         // The next valid ask line after the last served, round robin; 0: none landed.
         uint32_t next_ask() const {
             // a core's two lines at 2 me: its core of the card (a split card's island
-            // starts at its base)
+            // starts at its base), the island's link cores' too (an ask sent on)
             const Islands view(island_area());
-            const uint32_t lines = (view.base() + view.ranks()) * 2;
+            const uint32_t cores = view.base() + view.ranks() + KM_FORWARD_PARTS;
+            const uint32_t lines = (
+                cores * 2 < KM_RELAY_ASKS ? cores * 2 : KM_RELAY_ASKS
+            );
             const uint32_t start = state(kRelayNext);
             uint32_t ask = 0;
             for (uint32_t n = 0; n < lines && ask == 0; n++) {
@@ -416,6 +420,9 @@ namespace km {
                 if (l1(area_ + KM_RELAY_LANDED)[0] != state(kRelayTaken)) {
                     place(kernel);
                 }
+#if defined(KM_FORWARD)
+                forward_turn();
+#endif
                 return l1(area_ + KM_RELAY_CREDIT)[0] == state(kRelaySent);
             });
             for (uint32_t off = 0; ok && off < bytes; off += KM_RELAY_CHUNK) {
@@ -467,8 +474,50 @@ namespace km {
             noc_async_write_barrier();
         }
 
+        // The landed ask for a rank further on, asked of the link core toward it (its
+        // relay sends it on, then its done word here). False: none to ask.
+        template <typename Kernel>
+        bool onward(const Kernel& kernel, const Islands& view, uint32_t island) {
+            const uint32_t me = kernel.args().me;
+            const uint32_t toward = view.link(island);
+            const uint32_t line = me * 2;
+            if (
+                view.count() <= 2 || toward == KM_ISLAND_NO_LINK ||
+                toward == me - view.base() - view.ranks() || line >= KM_RELAY_ASKS
+            ) {
+                return false;
+            }
+            const uint32_t core = view.base() + view.ranks() + toward;
+            const volatile tt_l1_ptr uint32_t* a = l1(area_ + KM_RELAY_INBOX);
+            volatile tt_l1_ptr uint32_t* d = l1(area_ + KM_RELAY_DESC);
+            const uint32_t token = (state(kRelayTaken) + 1) << 1 | 1;
+            for (uint32_t w = 0; w < 16; w++) {
+                d[w] = 0;
+            }
+            d[kAskSource] = me;
+            d[kAskAddress] = area_ + KM_RELAY_INBOX + 64;
+            d[kAskBytes] = a[kAskBytes];
+            d[kAskRank] = a[kAskRank];
+            d[kAskTo] = a[kAskTo];
+            d[kAskPort] = a[kAskPort];
+            d[kAskSlot] = 0;
+            d[kAskValid] = token;
+            l1(area_ + KM_RELAY_DONE)[0] = 0;
+            const uint32_t ask = area_ + KM_RELAY_ASK + line * 64;
+            noc_async_write(area_ + KM_RELAY_DESC, kernel.core_noc(core, ask), 48);
+            noc_async_write_barrier();
+            noc_async_write(
+                area_ + KM_RELAY_DESC + 48, kernel.core_noc(core, ask + 48), 16
+            );
+            noc_async_write_barrier();
+            noc_semaphore_inc(kernel.core_noc(core, area_ + KM_RELAY_ASKED), 1);
+            noc_async_atomic_barrier();
+            state(kRelayOnward) = token;
+            return true;
+        }
+
         // The landed ask: its pages into the rank's L1, its port bumped, the credit
-        // (this side's taken count) back across.
+        // back; a rank further on: sent on, the credit back once that is done.
         template <typename Kernel>
         void place(const Kernel& kernel) {
             const Islands view(island_area());
@@ -476,11 +525,29 @@ namespace km {
             const uint32_t core = a[kAskRank] - view.offset();  // its core of the card
             const uint32_t bytes = a[kAskBytes];
             const uint32_t port_index = a[kAskPort];
+            const bool here = a[kAskRank] - view.first() < view.ranks();
             const bool fits = (
-                a[kAskRank] - view.first() < view.ranks() && bytes <= KM_RELAY_MAX &&
+                here && bytes <= KM_RELAY_MAX &&
                 (port_index < KM_PORTS || port_index == kRelayNoPort)
             );
-            if (fits) {
+            bool sent_on = false;  // a rank further on: sent on and taken there
+#if defined(KM_FORWARD)
+            if (state(kRelayOnward) != 0) {
+                if (l1(area_ + KM_RELAY_DONE)[0] != state(kRelayOnward)) {
+                    return;  // not taken there yet
+                }
+                state(kRelayOnward) = 0;
+                sent_on = true;
+            } else if (
+                !here && bytes <= KM_RELAY_MAX &&
+                onward(kernel, view, view.island_of(a[kAskRank]))
+            ) {
+                return;
+            }
+#endif
+            if (sent_on) {
+                // its credit back below, nothing placed here
+            } else if (fits) {
                 noc_async_write(
                     area_ + KM_RELAY_INBOX + 64, kernel.core_noc(core, a[kAskTo]), bytes
                 );

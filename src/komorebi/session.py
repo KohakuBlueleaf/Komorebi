@@ -1276,11 +1276,12 @@ class Session:
         settle_microseconds=1.0,
         image=None,
         links=None,
+        tensors=0,
     ):
         """This card split into the islands of `graph` (whole rows, ranks then link
         cores): `program` launched once, island i's dispatcher on X280 cluster i,
-        `links` each island's LinkPlan or None. A Run an island over flat ranks;
-        Session.load's options, no X280 threads."""
+        `links` each island's LinkPlan or None, `tensors` the tensor table's address.
+        A Run an island over flat ranks; Session.load's options, no X280 threads."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if not isinstance(program, Program) or program.form() == "program":
@@ -1296,6 +1297,7 @@ class Session:
             )
         rows = _split_rows(graph, self.grid)
         self.link_plans, self.link_plan, self.link_area = links, None, 0
+        self.tensor_table = tensors
         image = Path(image) if image else native.image_path(self.tree)
         if not image.is_file() or image.stat().st_size == 0:
             raise StartError(f"dispatcher image {image}: missing or empty")
@@ -1956,6 +1958,9 @@ class _Backend:
             mine[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = area
             mine[:, at + abi_headers["KM_ISLAND_TENSORS"] // 4] = (
                 self.session.tensor_table
+            )
+            mine[:, at + abi_headers["KM_ISLAND_FORWARD"] // 4] = getattr(
+                plan, "forward", 0
             )
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):

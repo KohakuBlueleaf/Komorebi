@@ -1,7 +1,7 @@
-"""The forward example over two cards (`Session(cards=[0, 1])`): the same kernels, one
-dynamic run over every rank of both islands, a forward to the other island crossing
-through the link cores; every message rank's totals and the messages that crossed
-against the numpy replay. Prints one JSON line. See README.md."""
+"""The forward example over two cards (`Session(cards=[0, 1])`) or a split card: the
+same kernels, one dynamic run over every rank of every island, a forward to another
+island crossing through the link cores; every message rank's totals and the messages
+that crossed each link against the numpy replay. One JSON line. See README.md."""
 
 import argparse
 import json
@@ -41,6 +41,9 @@ def parse():
     parser.add_argument(
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
+    parser.add_argument(
+        "--line", action="store_true", help="the islands in a line (neighbours only)"
+    )
     parser.add_argument("--messages", type=int, default=16)
     parser.add_argument("--forwards", type=int, default=4, help="forwards per message")
     parser.add_argument(
@@ -64,12 +67,11 @@ def message_ranks(session, counters):
 
 def open_session(args, cards):
     """Two cards joined by a link, or one card split into `--islands` islands joined
-    by wires (the session's default kernel buffer). The message service on the link
-    core makes the kernels 83.8 KB: past the default of two cards."""
+    by wires (`--line`: neighbours only); the session's default kernel buffer."""
     if args.islands:
         (card,) = cards
-        return km.Session(card=card, islands=args.islands, log=log)
-    return km.Session(cards=cards, links=1, kernel_bytes=84 * 1024, log=log)
+        return km.Session(card=card, islands=args.islands, line=args.line, log=log)
+    return km.Session(cards=cards, links=1, log=log)
 
 
 def results_areas(session):
@@ -160,8 +162,10 @@ def main():
         if done:  # link 0 serves other commands again once the RUN has ended
             moved = run.crossings() - before
             log(f"crossed:\n{moved}")
-            report["messages_crossed"] = [
-                moved.total(a, 1 - a)["messages"] for a in (0, 1)
+            report["messages_crossed"] = [  # each link, both ways
+                moved.total(a, b)["messages"]
+                for a in range(islands)
+                for b in session.graph.neighbours(a)
             ]
         try:
             results_end = run.stop() if done else None
@@ -224,8 +228,8 @@ def check(args, session, rows):
     )
     split = np.cumsum([0, *ranks])
     across = 0
-    if one is None:  # forwards whose next rank is on the other island, replayed
-        across = crossings(args.messages, args.forwards, workers, split)
+    if one is None:  # forwards whose next rank is on another island, replayed
+        across = crossings(args.messages, args.forwards, workers, split, args.line)
     return {
         "message_ranks": ranks,
         "exact": exact,
@@ -239,8 +243,9 @@ def check(args, session, rows):
     }
 
 
-def crossings(messages, forwards, count, split):
-    """How many of the replay's forwards go from one island to the other."""
+def crossings(messages, forwards, count, split, line=False):
+    """The links the replay's forwards cross: one a forward to another island; in a
+    line, the islands apart (each link between is crossed)."""
     state = (np.arange(messages, dtype=np.uint64) + 1) * 0x9E3779B1 & 0xFFFFFFFF
     state[state == 0] = 1
     core = replay.first_rank(messages, count)
@@ -248,12 +253,11 @@ def crossings(messages, forwards, count, split):
     for _hop in range(forwards):
         state = replay.xorshift(state)
         after = state % count
-        total += int(
-            (
-                np.searchsorted(split, core, "right")
-                != np.searchsorted(split, after, "right")
-            ).sum()
+        apart = np.abs(
+            np.searchsorted(split, core, "right").astype(np.int64)
+            - np.searchsorted(split, after, "right")
         )
+        total += int((apart if line else apart != 0).sum())
         core = after
     return total
 
