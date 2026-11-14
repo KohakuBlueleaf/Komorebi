@@ -99,6 +99,14 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   `(first, count)` in its own core numbers (default all), as `Run.inspect` does.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`.
+- A dynamic program (`Program.dynamic`) on two islands with `links` set: each core
+  gets the message service's arguments and `KM_LINKS`, and its messages cross. Its RUN
+  takes every rank (`(0, session.ranks)`; another group raises `ValueError`; so does
+  `submit_many` of a dynamic handler and X280 ranks). Before the RUN the session queues
+  a PAGES command of mode `KM_PAGES_MESSAGES` (a0: the RUN's group word) to link core 0
+  of each island; its link 0 CPU serves the run's messages until the RUN's end, and the
+  dispatcher's quiet test counts that core's line. The service grows the kernels: the
+  forward example opens its session with `kernel_bytes=84 * 1024`.
 
 ## Tensors
 
@@ -211,10 +219,10 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
 ## Not yet
 
-- Links: no message crosses between islands inside a run; `forward` to another
-  island's rank, `collect` and `broadcast` over islands need the link service. Pages
-  cross on the host's command (`send_pages`, `ask`, `ask_range`), not yet on a
-  kernel's own request.
+- Links: a dynamic run's messages cross only in a RUN of every rank;
+  `collect` and `broadcast` over islands are not built, and while the run's messages
+  are served link 0 carries nothing else. Pages cross on the host's command
+  (`send_pages`, `ask`, `ask_range`), not yet on a kernel's own request.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.
