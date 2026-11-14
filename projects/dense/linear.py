@@ -36,6 +36,8 @@ L1_RUNTIME = 17_024 + 21_568
 # two cards (a rank's kernels: the page calls' client side) 94,224 B.
 KERNEL_BYTES = {"one": 88 * 1024, "two": 96 * 1024}
 log = run.log
+# (height, width) of every piece's subblock in place of the plan's (--subblock)
+SUBBLOCK = None
 # Placements by hint (X, W, Y): "k", W sharded (split along K, Y along N); "rows", W
 # replicated (X and Y split along M, W a copy: Kohaku-TT's default form).
 PLACES = {
@@ -190,14 +192,27 @@ class Piece:
         }
 
 
-# ns a tile product a core: the compute's own, or the broadcasts' feed over the block's
-# intensity bm bn / (bm + bn); fitted to the one-card plans measured
-TILE_NS = 37
-FED_NS = 225
+# ns a K block of a bm x bn block takes a core: the compute's (a tile product, and each
+# subblock's turn of a K block), or the slower broadcast's feed (a block's fixed cost,
+# then its tiles read and multicast one after the other); fitted to the one-card single
+# calls measured (13 x 12 and 13 x 16 at K block 4 compute-bound, 27.7 ns a product;
+# 26 x 8 at 2, 7 x 24 at 4 and 4 x 44 at 2 fed).
+PRODUCT_NS = 24.5
+SUBBLOCK_NS = 51
+FEED_BLOCK_NS = 4_750
+FEED_TILE_NS = 203
 
 
-def block_ns(bm, bn):
-    return max(TILE_NS, FED_NS * (bm + bn) / (bm * bn))
+def k_block_ns(bm, bn, kb):
+    sh, sw = pl.subblock(bm, bn)
+    compute = bm * bn * kb * PRODUCT_NS + bm * bn // (sh * sw) * SUBBLOCK_NS
+    feed = FEED_BLOCK_NS + max(bm, bn) * kb * FEED_TILE_NS
+    return max(compute, feed)
+
+
+def plan_ns(plan):
+    """A core's time for its blocks of `plan` by k_block_ns."""
+    return plan.nbh * plan.nbw * plan.nk * k_block_ns(plan.bm, plan.bn, plan.kb)
 
 
 def piece_plan(m_tiles, k_tiles, n_tiles, rect_size, block):
@@ -251,18 +266,19 @@ def island_pieces(
 ):
     """The pieces of the island's ranks: the old single rect (fitting_plan), or the
     whole grid, or two rectangles sharing one block, in bands of whole blocks: the
-    cheapest by block_ns (then the larger block, the larger K block). The K block is
-    `kb`, lower only when nothing fits; `every`: any K block up to `kb`."""
+    cheapest by plan_ns (then the larger block, the larger K block). The K block is
+    `kb`, lower only when nothing fits; `every`: any K block up to `kb`, of any size
+    (the last K block of a call is shorter where it does not divide K)."""
     single = fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange)
     best = None
     if single is not None:
-        blocks = single.nbh * single.nbw
-        cost = blocks * single.bm * single.bn * block_ns(single.bm, single.bn)
+        cost = plan_ns(single)
         best = ((cost, -single.bm * single.bn, -single.kb), [Piece(single)])
     rects = two_rects(grid, ranks)
     if not rects or single is None or single.layout != "2d":
         return None if best is None else best[1]
-    for k_block in [value for value in pl.K_BLOCKS if value <= kb] or [1]:
+    k_blocks = range(kb, 0, -1) if every else pl.K_BLOCKS
+    for k_block in [value for value in k_blocks if value <= kb] or [1]:
         found = False
         for bm in range(1, m_tiles + 1):
             for bn in range(1, n_tiles + 1):
@@ -279,9 +295,8 @@ def island_pieces(
                         form, a, b, m_tiles, k_tiles, n_tiles, (bm, bn, k_block)
                     ):
                         found = True
-                        blocks = max(p.plan.nbh * p.plan.nbw for p in pieces)
                         cost = (
-                            blocks * bm * bn * block_ns(bm, bn),
+                            max(plan_ns(p.plan) for p in pieces),
                             -bm * bn,
                             -k_block,
                         )
@@ -469,6 +484,14 @@ class Linear:
         )
         if self.pieces is None:
             raise SystemExit(f"no grid plan fits L1 and {ranks} ranks: {dimensions}")
+        if SUBBLOCK is not None:  # the script's --subblock, in every piece
+            sh, sw = SUBBLOCK
+            if any(p.plan.bm % sh or p.plan.bn % sw for p in self.pieces):
+                raise SystemExit(f"subblock {sh} x {sw} of {self.pieces[0].plan}")
+            self.pieces = [
+                dataclasses.replace(p, plan=dataclasses.replace(p.plan, sh=sh, sw=sw))
+                for p in self.pieces
+            ]
         self.plan = self.pieces[0].plan  # the block, K block and buffers of all
         for name in ("kCbRow", "kCbCol", "kCbPart"):
             assert L[name] == G[name], name
@@ -679,6 +702,16 @@ class Linear:
                 for area in state["broadcasts"]
                 if area["gave_up"]
             ][:8],
+            # each core's AICLK cycles waited in the row and the column broadcast since
+            # the load (a sender for its receivers, a receiver for VALID), and blocks
+            "broadcast_waits": [
+                [state["core"]]
+                + [
+                    [area["wait_cycles"], area["blocks"]]
+                    for area in state["broadcasts"][:2]
+                ]
+                for state in states
+            ],
         }
 
 
@@ -862,6 +895,9 @@ def main():
     parser.add_argument(
         "--beside", action="store_true", help="then the project's grid kernels"
     )
+    parser.add_argument(
+        "--subblock", default=None, help="HxW: the subblock in place of the plan's"
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     if args.dims:
@@ -877,6 +913,9 @@ def main():
     if any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
+    if args.subblock:
+        global SUBBLOCK
+        SUBBLOCK = tuple(int(value) for value in args.subblock.split("x"))
     report = {"m": dimensions[0], "k": dimensions[1], "n": dimensions[2]}
     report |= {"cards": cards, "links": args.links, "place": args.place}
     log("building the inputs")
