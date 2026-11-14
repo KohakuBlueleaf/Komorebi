@@ -1,7 +1,7 @@
-"""The forward example over two cards joined by a link (`Session(cards=..., links=1)`):
-the same program and kernels, one dynamic run over every rank of both islands, so a
-forward to a rank of the other island crosses through the islands' link cores; every
-message rank's totals against the numpy replay. Prints one JSON line. See README.md."""
+"""The forward example over two cards (`Session(cards=[0, 1])`): the same kernels, one
+dynamic run over every rank of both islands, a forward to the other island crossing
+through the link cores; every message rank's totals and the messages that crossed
+against the numpy replay. Prints one JSON line. See README.md."""
 
 import argparse
 import json
@@ -69,8 +69,7 @@ def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     report = {"cards": cards, "messages": args.messages, "forwards": args.forwards}
-    # The message service on the link core makes the kernels 83.8 KB: past the default.
-    with km.Session(cards=cards, links=1, kernel_bytes=84 * 1024, log=log) as session:
+    with km.Session(cards=cards, log=log) as session:
         islands = len(session.sessions)
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)] for i in range(islands)
@@ -115,6 +114,7 @@ def main():
             0,  # no stall
             0,  # no probe
         ]
+        before = run.crossings()
         start = time.perf_counter()
         ticket = run.submit("forward", (0, session.ranks), words, exclusive=True)
         try:
@@ -132,6 +132,12 @@ def main():
         ]
         log(f"events {report['events']}, {report['run_microseconds']} us")
         done = report["events"] == ["done"] * islands
+        if done:  # link 0 serves other commands again once the RUN has ended
+            moved = run.crossings() - before
+            log(f"crossed:\n{moved}")
+            report["messages_crossed"] = [
+                moved.total(a, 1 - a)["messages"] for a in (0, 1)
+            ]
         try:
             results_end = run.stop() if done else None
             if results_end is not None:
@@ -149,8 +155,12 @@ def main():
         ]
         report.update(check(args, session, rows))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
+    report["crossings_agree"] = (
+        sum(report.get("messages_crossed", [-1])) == report["crossings_replayed"]
+    )
     report["ok"] = bool(
         report["exact"]
+        and report["crossings_agree"]
         and report["events"] == ["done"] * len(cards)
         and report.get("kernel_errors") == ["none"] * len(cards)
     )

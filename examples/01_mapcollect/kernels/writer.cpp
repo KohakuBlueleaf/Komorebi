@@ -1,10 +1,10 @@
 // Map/collect writer: MAP stores the core's tile at output page a3 first_page + rank;
-// STALL reports for all but a0 stalled_rank; HANG waits on purpose; COUNT counts.
+// STALL reports for every core but a0 stalled_rank; HANG waits on purpose; COUNT
+// counts.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_placement.hpp"
-#include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/km_ask.hpp"
 #include "mapcollect.h"
 
 void kernel_main() {
@@ -20,19 +20,21 @@ void kernel_main() {
                 if (!writer.wait_front(kCbOut, 1)) {
                     return false;  // nothing to report: the tile is stopping
                 }
-                const km::PageAt at = km::page_at(output_tensor, first_page + index);
-                if (at.island != km::island()) {  // its page on another island
-                    writer.gave_up(
-                        km::kStWriter,
-                        km::kGaveBadItem,
-                        km::kWhereData,
-                        km::slot(command),
-                        command.sequence
-                    );
+                // a page another island holds is put there, written on return
+                if (
+                    !km::write_pages(
+                        writer,
+                        command,
+                        output_args,
+                        output_tensor,
+                        first_page + index,
+                        1,
+                        get_read_ptr(kCbOut),
+                        kPutPort
+                    )
+                ) {
                     return false;
                 }
-                const auto output = TensorAccessor(output_args, at.address);
-                noc_async_write_page(at.index, output, get_read_ptr(kCbOut));
                 noc_async_writes_flushed();
                 cb_pop_front(kCbOut, 1);
                 return true;

@@ -119,8 +119,8 @@ once needs tt-metal's mux cores.
 The host's graph models this: a link that is used takes a core on each island it joins
 out of that island's ranks (a link core), and ranks and thread numbers are counted
 without it. A session over two cards takes each island's last `(links + 1) // 2` cores
-(one with `links=0`), both data-movement CPUs of a link core holding a link each, from
-the load to the run's end; a command names them as link cores, first
+(one for one or two links), both data-movement CPUs of a link core holding a link each,
+from the load to the run's end; a command names them as link cores, first
 `KM_GROUP_LINK_BASE` (0xFE00) + k, never as ranks. Link 0, on link core 0's first CPU,
 carries the dispatcher's command lines and the cores' asks; the others carry pages
 ([islands](../reference/islands.md#pages-across-a-link)).
@@ -136,6 +136,14 @@ which sends it on link 0 between commands, and the holder's link core pushes the
 into the asking core's L1 and counts them at its port, where the core waits. No host
 takes part. On one island the call is the local read, so a kernel written for one
 island runs unchanged on two.
+
+Writing is the same the other way: `km::write_pages` writes the pages its island holds
+as the local page write does, and for pages another island holds puts one line into
+its island's link core 0, whose page CPU reads them from the core's L1 and sends them
+straight into the holder's DRAM; the far link core counts them once written and only
+then adds them to the core's port. A thread's `kmx_fetch` and `kmx_store` name a
+tensor and a range, never an island: the copy they submit looks the tensor up in a
+table the load wrote and asks for, or puts, the pages another island holds.
 
 What a link carries, measured. Two Blackhole p150a cards joined by four Ethernet links,
 one process holding both with tt-metal's 1-D fabric in slow dispatch, AICLK 1350 MHz.
@@ -170,7 +178,7 @@ the other way (1,000 pipelined to one core).
 
 ## Messages across a link
 
-A dynamic run whose group is every rank of two islands (`Session(cards=..., links=1)`)
+A dynamic run whose group is every rank of two islands (`Session(cards=...)`)
 forwards to a rank of the other island as to any rank: the kernels do not change. The
 writer flush puts a message for another island into link core 0's outbox; beside the
 RUN the session starts the message service on link core 0, on the CPU that holds link 0
@@ -196,12 +204,18 @@ dispatcher's command line or a page on link 0 waits until the run ends.
 
 A program written for one island runs on several unchanged: a reduce whose group spans
 islands folds inside each island first, as a group of its own, and each island's first
-rank then sends its fold once to the group's rank 0. A program written for islands says
-so in its own words, and each word has an answer on one island:
+rank then sends its fold once to the group's rank 0. A broadcast whose group spans
+islands is the inverse: the sender casts in its own island's part and sends each block
+once to the first core of the next island's part, which casts it in that part; that
+core's kernel calls `arrive` as any receiver does. A command over islands completes with
+the result word of the part that holds the group's first rank, as on one island. A
+program written for islands says so in its own words, and each word has an answer on one
+island:
 
 | Call | What it does | On one island |
 |---|---|---|
 | `km::reduce_*(..., km::local)` | the reduce stays inside this core's island | the whole group |
+| `km::Broadcast(..., km::local)` | the broadcast stays inside this core's island: each part's first core sends | the same broadcast |
 | `group.leaders()`, `group.leader(j)` | the first rank of each island part of the group | the group's first rank |
 | `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | pages into an arrival slot of `rank` on island `i`, one on its port | a local emit |
 
@@ -222,17 +236,26 @@ median of 20 commands from submit to the event on the host, every total exact:
 The rows of example 02 asked for a result word (one more pass over the total at the
 root); those of example 26 did not.
 
+[03_broadcast](../../examples/03_broadcast/README.md#over-two-cards), kernels unchanged,
+one flat group of 238 ranks, a 6 x 4 rectangle, 8 blocks of 2 tiles a broadcast, the
+median of 8 commands, every core's checksum exact: 705.7 µs with its 6 column broadcasts
+across the islands (the rows inside), 535.5 µs with its 4 row broadcasts across (the
+columns inside), against 186.1 µs on card 0 alone. Each block that crosses costs two
+relay asks and a marker back, one ask a way at a time.
+
 ## What is not built
 
-- **Over a link:** a broadcast (`km::Broadcast`) whose group spans islands, a reduce
-  over more than two islands (a part crosses one link), a part of more than 16 KiB, a
-  dynamic run on part of the ranks of two islands, X280 ranks over a link. A kernel's own ask for
-  pages is built for two islands, its pages on one link. A command that crosses
-  completes with the result word of the first part back, not of
-  the group's rank 0.
+- **Over a link:** a reduce or a broadcast over more than two islands (a part crosses
+  one link, to the far island, not the next link of the table), a dynamic run on part of
+  the ranks of two islands, X280 ranks over a link. A kernel's own ask and put of pages,
+  and a thread's copy across, are built for two islands, their pages on one link; a copy
+  across knows only the tensors made before the load. More than 16 KiB in one relay call
+  goes as several asks; no run has sent that much in one call yet. Blocks cross at the
+  relay's pace, one ask a way at a time from link core 0 alone.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **A link between the islands of one card.** A split card runs, but nothing crosses
   between its islands inside a run.
 - **A dict of programs, X280 threads and ports, engines and uploads over islands,
-  tensors in L1.** A list of programs, one an island, loads.
+  tensors in L1.** A list of programs, one an island, loads; a thread of one island
+  fetches and stores tensors the other holds.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.

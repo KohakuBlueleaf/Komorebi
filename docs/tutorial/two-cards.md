@@ -39,24 +39,27 @@ of that example. Run it with `--whole` and both cards visible and free: the comm
 then one group of every rank. The lines below are the ones of the file that this lesson
 talks about.
 
-The session takes the cards as a list. Every card is opened in one mesh, one X280 runtime
-is opened over it, and each card gets a session of its own, a dispatcher and its grid. The
-number of ranks is the cores of all of them:
+The session takes the cards as a list, and nothing else. Every card is opened in one mesh,
+one X280 runtime is opened over it, and each card gets a session of its own, a dispatcher
+and its grid. The session uses every link between the two cards (four on two p150a), and
+each card gives the last of its cores to the links: a link core carries what crosses, and
+is not a rank. The kernel buffer is sized for the link services the kernels carry. The
+number of ranks is the cores of both cards less their link cores:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:99:99"
---8<-- "examples/01_mapcollect/islands.py:108:108"
+--8<-- "examples/01_mapcollect/islands.py:97:97"
+--8<-- "examples/01_mapcollect/islands.py:106:106"
 ```
 
 `session.graph` is the host's picture of the islands: `graph.first(i)` is island `i`'s
-first rank and `graph.count(i)` its number of ranks, 0 and 120 for island 0, 120 and 120
-for island 1 here.
+first rank and `graph.count(i)` its number of ranks, 0 and 118 for island 0, 118 and 118
+for island 1 with four links (two link cores a card).
 
 The tensors come next. The input has two tiles for each rank of both cards; the output has
 one:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:115:119"
+--8<-- "examples/01_mapcollect/islands.py:113:117"
 ```
 
 A tensor is one tensor of the whole shape on every card, at the same address, and its
@@ -67,14 +70,14 @@ is zeros on this one. `session.read_bf16(source)` assembles the whole tensor fro
 that holds each page:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:122:122"
+--8<-- "examples/01_mapcollect/islands.py:120:120"
 ```
 
 The program is loaded on every card, one after the other, and each card's cores get the
 island table that tells them where the ranks are:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:139:139"
+--8<-- "examples/01_mapcollect/islands.py:144:144"
 ```
 
 A command for a group of every rank:
@@ -150,17 +153,18 @@ The numbers depend on the machine, as in every lesson. The NOP on one card costs
 costs on a card opened alone, and a command over both cards costs the host two commands'
 work, once for each card.
 
-With `--hang` the same script hangs a command on card 1 and asks the card what its core was
-doing, with the card named in the call:
+With `--hang` the same script hangs a command on a rank of card 1 and asks what that rank
+was doing, by its flat rank as everywhere else:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:190:190"
+--8<-- "examples/01_mapcollect/islands.py:232:232"
 ```
 
-`run.inspect(1, (10, 1))` is the dispatcher of island 1 reading its core 10, in that
-island's own core numbers. In the recorded run the inspect named the reader waiting for a
-port arrival, the deadline gave the command up, the time-out named island 1 and its cores,
-the run went on, and 16 pages of island 1 read inside the run were exact. The way to read
+`run.inspect((rank, 1))` has island 1's dispatcher read the core of that rank; the answer
+names it `rank 128 (island 1, core 10)`, the card and the core added as information. In
+the recorded run the inspect named the reader waiting for a port arrival, the deadline
+gave the command up, the time-out named island 1 and its ranks, the run went on, and 16
+pages of island 1 read inside the run were exact. The way to read
 such a time-out is [Recover from a command that does not return](../guides/recovery.md).
 
 ## Common mistakes

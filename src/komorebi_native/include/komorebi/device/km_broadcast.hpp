@@ -6,6 +6,8 @@
 
 #include "km_core.hpp"
 #include "km_command.hpp"
+#include "km_group.hpp"
+#include "km_relay.hpp"
 #include "km_worker.hpp"
 
 namespace km {
@@ -13,6 +15,16 @@ namespace km {
     constexpr uint32_t kBroadcastNone = 0xFF;  // rank of a core that is not in the broadcast
     constexpr uint32_t kBroadcastWindowMax = 8;
     constexpr uint32_t kBroadcastBlocksMax = 32767;
+    constexpr uint32_t kBroadcastNoNext = 0xFFFFFFFFu;  // no part after this one
+
+    // Built with the link cores serving (KM_PAGE_LINKS): parts fed by the relay.
+    inline bool broadcast_across() {
+#if defined(KM_PAGE_LINKS)
+        return true;
+#else
+        return false;
+#endif
+    }
 
     // A broadcast's start-up arguments: kBroadcastArgs program words from the index the
     // program gives. The host computes and checks them (komorebi.layout).
@@ -29,6 +41,11 @@ namespace km {
         uint32_t cb;         // broadcast buffer: window * pages pages
         uint32_t window;     // B: blocks in flight, 1 to kBroadcastWindowMax
         uint32_t pages;      // P: pages per block; window and pages 0: no buffer
+        // Over islands, one broadcast a part: the next part's first flat rank, where
+        // each block goes through the relay (kBroadcastNoNext: none)
+        uint32_t next;
+        uint32_t fed;  // fed by the relay: its row in the feeder's DONE-BY table, 0: no
+        uint32_t from;  // the flat rank of the core that feeds it
     };
 
     constexpr uint32_t kBroadcastArgs = sizeof(BroadcastArgs) / 4;
@@ -63,6 +80,24 @@ namespace km {
             Broadcast(static_cast<const Core&>(writer), kStWriter, command, arg0) {
         }
 
+        // Scope km::local: the broadcast stays in this island; a part's first core
+        // sends as the sender does.
+        Broadcast(
+            const Reader& reader, const km_command_t& command, uint32_t arg0, Local
+        ) :
+            Broadcast(
+                static_cast<const Core&>(reader), kStReader, command, arg0, true
+            ) {
+        }
+
+        Broadcast(
+            const Writer& writer, const km_command_t& command, uint32_t arg0, Local
+        ) :
+            Broadcast(
+                static_cast<const Core&>(writer), kStWriter, command, arg0, true
+            ) {
+        }
+
         // False: the arguments, the command or the buffer did not fit (recorded).
         bool ok() const {
             return ok_;
@@ -72,8 +107,9 @@ namespace km {
             return args_.rank;
         }
 
+        // The sender fills each block; a part's first core fed by the relay receives.
         bool sender() const {
-            return args_.rank == 0;
+            return args_.rank == 0 && args_.fed == 0;
         }
 
         bool included() const {
@@ -143,6 +179,11 @@ namespace km {
             if (!in_order(block)) {
                 return false;
             }
+            if (broadcast_across()) {
+                if (args_.fed != 0) {
+                    return arrive_fed(block);
+                }
+            }
             volatile tt_l1_ptr uint32_t* valid = area_word(KM_BROADCAST_VALID);
             uint32_t marker = 0;
             uint32_t word = 0;
@@ -210,8 +251,13 @@ namespace km {
             if (args_.pages != 0 && !drain()) {
                 return false;
             }
+            if (broadcast_across()) {
+                if (args_.fed != 0 && !marked_back()) {
+                    return false;
+                }
+            }
             if (
-                sender() && block_count_ != 0
+                caster() && block_count_ != 0
             ) {  // no block multicast: no receiver markers
                 if (
                     word_blocks_ != 0 &&
@@ -222,7 +268,7 @@ namespace km {
                 if (args_.pages != 0 && !wait_done(block_count_, block_count_)) {
                     return false;
                 }
-                for (uint32_t receiver = 1; receiver <= args_.receivers; receiver++) {
+                for (uint32_t receiver = 1; receiver <= rows(); receiver++) {
                     volatile tt_l1_ptr uint32_t* done = (
                         area_word(KM_BROADCAST_DONE + 16 * receiver)
                     );
@@ -241,24 +287,46 @@ namespace km {
         // Sender: cast(block) and cast(block, word); `carries` says which.
         bool send(uint32_t block, uint32_t word, bool carries) {
             const bool tiles = args_.pages != 0;
-            if (tiles ? !reserved_ : !carries) {
+            if (args_.fed != 0 || (tiles ? !reserved_ : !carries)) {
                 fail(kGaveBadBroadcast, kWhereBroadcastBegin, block);
                 return false;
             }
             if (!in_order(block)) {
                 return false;
             }
+            if (
+                tiles && !flushed(kFlushReads, kWhereBroadcastDone, block)
+            ) {  // the block's reads have landed
+                return false;
+            }
+            if (!spread(block, word, carries)) {
+                return false;
+            }
             if (tiles) {
-                if (!flushed(
-                    kFlushReads, kWhereBroadcastDone, block
-                )) {  // the block's reads have landed
+                cb_push_back(args_.cb, args_.pages);
+                reserved_ = false;
+            }
+            received_ = carries ? word : 0;
+            block_count_++;
+            return true;
+        }
+
+        // The sender, or a part's first core with the block in its slot: once every
+        // receiver (and the next part) freed the slot, multicast, VALID, then the
+        // relay.
+        bool spread(uint32_t block, uint32_t word, bool carries) {
+            const bool tiles = args_.pages != 0;
+            if (
+                tiles && block >= args_.window &&
+                !wait_done(block - args_.window + 1, block)
+            ) {
+                return false;
+            }
+            if (word_blocks_ != 0) {  // every receiver took the last word
+                if (!wait_done(word_blocks_, block, KM_BROADCAST_ARRIVED)) {
                     return false;
                 }
-                if (
-                    block >= args_.window && !wait_done(block - args_.window + 1, block)
-                ) {
-                    return false;
-                }
+                word_blocks_ = 0;
             }
             if (args_.receivers != 0) {
                 if (tiles) {
@@ -272,12 +340,6 @@ namespace km {
                 )) {  // the block landed before its VALID; the last VALID left
                     return false;
                 }
-                if (word_blocks_ != 0) {  // every receiver took the last word
-                    if (!wait_done(word_blocks_, block, KM_BROADCAST_ARRIVED)) {
-                        return false;
-                    }
-                    word_blocks_ = 0;
-                }
                 volatile tt_l1_ptr uint32_t* out = area_word(KM_BROADCAST_OUT);
                 out[KM_BROADCAST_WORD] = word;
                 out[KM_BROADCAST_CARRIES] = carries ? 1 : 0;
@@ -288,16 +350,152 @@ namespace km {
                     16,
                     args_.receivers
                 );
-                if (carries) {
-                    word_blocks_ = block + 1;
+            }
+            if (broadcast_across()) {
+                if (
+                    args_.next != kBroadcastNoNext && !relay_block(block, word, carries)
+                ) {
+                    return false;
                 }
             }
-            if (tiles) {
-                cb_push_back(args_.cb, args_.pages);
-                reserved_ = false;
+            if (carries && rows() != 0) {
+                word_blocks_ = block + 1;
             }
-            received_ = carries ? word : 0;
+            return true;
+        }
+
+        // The block into the next part's first core's slot, then its VALID line there;
+        // markers that cross carry sequence 0 (each island numbers its commands).
+        bool relay_block(uint32_t block, uint32_t word, bool carries) {
+            uint32_t code = kGaveNone;
+            if (args_.pages != 0) {
+                code = (
+                    relay_put(
+                        core_,
+                        sequence_,
+                        slot(block),
+                        block_bytes_,
+                        args_.next,
+                        slot(block),
+                        kRelayNoPort
+                    )
+                );
+            }
+            volatile tt_l1_ptr uint32_t* line = area_word(KM_BROADCAST_DONE);
+            line[0] = broadcast_marker(0, block + 1);
+            line[KM_BROADCAST_WORD] = word;
+            line[KM_BROADCAST_CARRIES] = carries ? 1 : 0;
+            if (code == kGaveNone) {
+                code = (
+                    relay_put(
+                        core_,
+                        sequence_,
+                        area_ + KM_BROADCAST_DONE,
+                        16,
+                        args_.next,
+                        area_ + KM_BROADCAST_VALID,
+                        kRelayNoPort
+                    )
+                );
+            }
+            if (code != kGaveNone) {
+                fail(code, kWhereBroadcastDone, block);
+                return false;
+            }
+            return true;
+        }
+
+        // A part's first core: its VALID line from the relay (the block landed before
+        // it), then it spreads the block in its part as the sender does.
+        bool arrive_fed(uint32_t block) {
+            volatile tt_l1_ptr uint32_t* valid = area_word(KM_BROADCAST_VALID);
+            uint32_t marker = 0;
+            uint32_t word = 0;
+            uint32_t carries = 0;
+            const uint64_t started = wall64();
+            const uint32_t code = core_.poll_at(
+                kWhereBroadcastValid,
+                [&] {
+                    marker_freed();
+                    invalidate_l1_cache();
+                    marker = valid[0];
+                    if (!broadcast_reached(marker, 0, block + 1)) {
+                        return false;
+                    }
+                    word = valid[KM_BROADCAST_WORD];
+                    carries = valid[KM_BROADCAST_CARRIES];
+                    return valid[0] == marker;
+                },
+                core_.args().wait_limit
+            );
+            add_wait(wall64() - started);
+            if (code != kGaveNone) {
+                fail(code, kWhereBroadcastValid, block);
+                return false;
+            }
+            // A line overtaken by the next carried no word: the sender waits for ours.
+            const bool carried = (
+                carries != 0 && (marker & 0xFFFFu) == ((block + 1) & 0xFFFFu)
+            );
+            received_ = carried ? word : 0;
+            if (carried) {
+                took_ = block + 1;
+                if (!marked_back()) {
+                    return false;
+                }
+            }
+            const bool tiles = args_.pages != 0;
+            if (tiles) {
+                if (!wait_free(args_.pages, block)) {
+                    return false;
+                }
+                if (
+                    get_write_ptr(args_.cb) != slot(block) ||
+                    !item_fits(args_.cb, get_write_ptr(args_.cb), args_.pages)
+                ) {
+                    fail(kGaveBadItem, kWhereBroadcastFree, block);
+                    return false;
+                }
+            }
+            if (!spread(block, received_, carried)) {
+                return false;
+            }
+            if (tiles) {
+                cb_reserve_back(args_.cb, args_.pages);
+                core_.produce(args_.cb);
+                cb_push_back(args_.cb, args_.pages);
+            }
             block_count_++;
+            return true;
+        }
+
+        // A part's first core: its row in the feeder's table (blocks its compute
+        // popped, the last word taken), through the relay when either moved on.
+        bool marked_back() {
+            const uint32_t popped_blocks = args_.pages != 0 ? popped() : 0;
+            if (popped_blocks == marked_ && took_ == took_marked_) {
+                return true;
+            }
+            volatile tt_l1_ptr uint32_t* line = area_word(KM_BROADCAST_DONE);
+            line[0] = broadcast_marker(0, popped_blocks);
+            line[KM_BROADCAST_ARRIVED] = broadcast_marker(0, took_);
+            const uint32_t code = (
+                relay_put(
+                    core_,
+                    sequence_,
+                    area_ + KM_BROADCAST_DONE,
+                    16,
+                    args_.from,
+                    area_ + KM_BROADCAST_DONE + 16 * args_.fed,
+                    kRelayNoPort
+                )
+            );
+            if (code != kGaveNone) {
+                fail(code, kWhereBroadcastFree, popped_blocks);
+                return false;
+            }
+            marked_ = popped_blocks;
+            took_marked_ = took_;
             return true;
         }
 
@@ -356,7 +554,11 @@ namespace km {
         }
 
         Broadcast(
-            const Core& core, uint32_t word, const km_command_t& command, uint32_t arg0
+            const Core& core,
+            uint32_t word,
+            const km_command_t& command,
+            uint32_t arg0,
+            bool local = false
         ) :
             core_(core),
             word_(word),
@@ -365,6 +567,10 @@ namespace km {
             uint32_t* words = &args_.broadcast;
             for (uint32_t i = 0; i < kBroadcastArgs; i++) {
                 words[i] = core.arg(arg0 + i);
+            }
+            if (local) {  // the part's first core sends: no relay either way
+                args_.next = kBroadcastNoNext;
+                args_.fed = 0;
             }
             area_ = (
                 core.args().control + KM_CONTROL_BROADCAST +
@@ -382,6 +588,17 @@ namespace km {
             }
             if (!included()) {
                 return true;
+            }
+            if (
+                rows() >= KM_BROADCAST_RANKS || (args_.fed != 0 && args_.rank != 0) ||
+                args_.fed >= KM_BROADCAST_RANKS ||
+                (
+                    !broadcast_across() &&
+                    (args_.fed != 0 || args_.next != kBroadcastNoNext)
+                )
+            ) {
+                fail(kGaveBadBroadcast, kWhereBroadcastBegin, 0);
+                return false;
             }
             if (args_.window == 0 && args_.pages == 0) {  // no buffer: words alone
                 if (
@@ -417,6 +634,16 @@ namespace km {
                 return false;
             }
             return true;
+        }
+
+        // The sender or a part's first core.
+        bool caster() const {
+            return args_.rank == 0;
+        }
+
+        // DONE-BY rows in use: the receivers, then the next part's first core.
+        uint32_t rows() const {
+            return args_.receivers + (args_.next != kBroadcastNoNext ? 1 : 0);
         }
 
         volatile tt_l1_ptr uint32_t* area_word(uint32_t offset) const {
@@ -457,6 +684,12 @@ namespace km {
 
         // Receiver: a DONE marker to the sender when compute popped more blocks.
         void marker_freed() {
+            if (broadcast_across()) {
+                if (args_.fed != 0) {
+                    marked_back();
+                    return;
+                }
+            }
             if (sender() || args_.pages == 0) {
                 return;
             }
@@ -481,7 +714,7 @@ namespace km {
         }
 
         // Sender: waits (with a timeout) until every receiver's DONE word (or the word
-        // `word` of its slot) counts `blocks`.
+        // `word` of its slot) counts `blocks`; the next part's row after them.
         bool wait_done(uint32_t blocks, uint32_t block, uint32_t word = 0) {
             uint32_t receiver = 1;
             const uint64_t started = wall64();
@@ -489,16 +722,16 @@ namespace km {
                 kWhereBroadcastDone,
                 [&] {
                     while (
-                        receiver <= args_.receivers &&
+                        receiver <= rows() &&
                         broadcast_reached(
                             area_word(KM_BROADCAST_DONE + 16 * receiver)[word],
-                            sequence_,
+                            receiver > args_.receivers ? 0 : sequence_,
                             blocks
                         )
                     ) {
                         receiver++;
                     }
-                    return receiver > args_.receivers;
+                    return receiver > rows();
                 },
                 core_.args().wait_limit
             );
@@ -609,6 +842,8 @@ namespace km {
         bool reserved_ = false;
         uint32_t marked_ = 0;
         uint32_t word_blocks_ = 0;  // sender: blocks up to the last word cast, 0: taken
+        uint32_t took_ = 0;  // a fed first core: blocks up to the last word taken
+        uint32_t took_marked_ = 0;  // ... and as its row in the feeder's table says
         uint32_t received_ = 0;
         bool ok_ = false;
     };

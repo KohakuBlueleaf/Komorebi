@@ -59,8 +59,9 @@ A step is tried only when the one before it was not enough.
     "read": False, "reset": False}`. The inspect does not stop anything: the dispatcher
     reads one core a pass of its loop beside the commands in flight. Only one inspect runs
     at a time; one that finds its block overwritten by the deadline's raises
-    `km.KomorebiError`, and can be made again. Over several cards it is
-    `run.inspect(island, cores)`, in the island's own core numbers.
+    `km.KomorebiError`, and can be made again. Over several cards the group is in flat
+    ranks, `run.inspect((128, 1))`, and each core's dict also has its `rank` and
+    `island`.
 
 2. **Read the time-out.** `run.wait(handle)` raises:
 
@@ -87,7 +88,9 @@ A step is tried only when the one before it was not enough.
     recorded`. The `recovered` part is there only when the dispatcher reset cores. A time-out
     that was not given up says `timed out; not reported` and lists the cores that did not
     report: the run is stopped and read back, and cannot be used again. On islands, the text
-    starts `island i:` and `error.island` is i; the cores are that island's own.
+    starts `island i:`, `error.island` is i, `<handle>` is the ticket, and the cores are
+    named by flat rank (`ranks: rank 128 (island 1, core 10) reader waits in port`;
+    `recovered (reset and loaded again): ranks [128]`).
 
     A `km.WaitTimeout` is another thing: the host stopped waiting, the run is loaded, and
     the message ends with what the dispatcher was doing, including whether core 0 still runs
@@ -125,9 +128,9 @@ A step is tried only when the one before it was not enough.
    leaves them out.
 
     On several cards each island's dispatcher holds its own island's lists, and the
-    give-up's text starts `island i:`; `run.reset_core(island, core)` and
-    `run.recoveries` (with the island) are the calls
-    ([islands](../reference/islands.md#the-run)). Link cores get no list: a reset
+    give-up's text starts `island i:` and names flat ranks, `rank 128 (island 1, core
+    10)`; `run.reset_core(rank)` and `run.recoveries` (with each give-up's ranks) are
+    the calls ([islands](../reference/islands.md#the-run)). Link cores get no list: a reset
     link core would lose the connection it holds open, so a give-up on one still ends
     the run.
 

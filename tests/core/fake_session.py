@@ -69,8 +69,9 @@ class FakeDispatch(FakePort):
         words[CONSTANTS["KMD_R_STATE"]] = CONSTANTS["KMD_STATE_READY"]
         words[CONSTANTS["KMD_R_WHERE"]] = CONSTANTS["KMD_WHERE_LOOP"]
         before, after = self.markers
-        x280_cores = "core 0 phase=0x2 trap(mcause=0x7)"
-        out = {"running": True, "failed": "", "x280_cores": x280_cores, "words": words}
+        states = "core 0 phase=0x2 trap(mcause=0x7)"
+        out = {"running": True, "failed": "", "x280_states": states, "words": words}
+        out["x280_cores"] = [0] * 16
         return out | {"marker_before": before, "marker_after": after}
 
 

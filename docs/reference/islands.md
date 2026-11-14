@@ -22,20 +22,24 @@ host values (the graph of islands, ranks, the split of a group, placement) are i
 ```python
 import komorebi as km
 
-with km.Session(cards=[0, 1]) as session:  # one session, 238 ranks
+with km.Session(cards=[0, 1]) as session:  # every link, 236 ranks
     source = session.tensor(array, "bfloat16", "tile")  # split along dimension 0
     run = session.load(program)  # on every island
-    ticket = run.submit("map", group=(0, 238), args=[...])
+    ticket = run.submit("map", group=(0, session.ranks), args=[...])
     parts = run.wait(ticket, timeout=5.0)  # one event per island
+    before = run.crossings()
+    ...  # more commands
+    print(run.crossings() - before)  # what they sent over each link
     run.stop()
     (result,) = session.read_bf16(output)  # assembled from every island
 ```
 
 ## The session
 
-`km.Session(cards=[a, b, ...], links=0, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)` returns an
-`IslandSession`.
+`km.Session(cards=[a, b, ...])` returns an `IslandSession`; nothing else is needed.
+Its other arguments, `links=None, islands=None, pll_mhz=None, tree=None, log=None,
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False`, are
+optional limits and choices.
 With one card it has the same calls over one island: no mesh and no fabric, the card's
 own `Session` as `session.island(0)`, the graph `islands.one`, every page of every
 tensor on the card, and each load the card's run as it is without islands. A program
@@ -48,28 +52,42 @@ written for islands runs on one card unchanged.
   set to them) and must not be held by another process.
 - **Ranks.** Flat and contiguous by island, in island order: island i holds ranks
   `session.graph.first(i)` to `first(i) + count(i) - 1`, its cores in core order.
-  `session.ranks` is the total (238 on two cards with one link core an island, 236
-  with `links=4`), at most 65,024: a group's first
+  `session.ranks` is the total, at most 65,024 (below), a group's first
   below `KM_GROUP_LINK_BASE` (0xFE00), where link cores' names start (0xFF00 on: X280
   threads).
 - **Close.** Every island's run is stopped through the X280 runtime, the islands'
   sessions are closed, then the mesh, and the fabric is set off. A grid that did not
   return keeps the mesh open, as a card's session keeps its device.
-- `links` 1 to 4 (two islands; 0, the default, is 1): the links the session uses.
-  Each island's last `(links + 1) // 2` cores are its link cores
+- **Links.** Two cards use every link the fabric found between them (four on two
+  p150a cards; `session.links`); `links` 1 to 4 is an optional limit. Each island's
+  last `(links + 1) // 2` cores are its link cores
   (`session.link_cores`, `graph.link_cores`), not ranks; both data-movement CPUs of a
   link core send, each on its own link (`session.channels`: the Ethernet channel of
   each). Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
   dispatcher's command and DONE lines (commands across), and pages only when it is
   the one link; links 1 on carry pages. The session checks that a DRAM bank sits at
   the same NoC place on both islands, and that both islands' core tables are the
-  same. One card is an island of one: no link cores.
+  same. One card is an island of one: no link cores. The ranks an island has, on a
+  card of 120 Tensix cores:
+
+  | Links | Link cores an island | Ranks an island | Ranks on two cards |
+  |---|---|---|---|
+  | 1 or 2 | 1 | 119 | 238 |
+  | 3 or 4 (the default on two p150a) | 2 | 118 | 236 |
+
+- **Kernel buffer.** The kernels of a run over two cards carry the link cores'
+  services, so the session opens with a kernel buffer of 112 KiB
+  (`island_session.KERNEL_BYTES`: the largest such build, 90,112 bytes, and at least
+  16 KiB more, in steps of 16 KiB); one card keeps the runtime's 70,656 bytes. The
+  load checks each build against the buffer: one that does not fit raises
+  `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
+  is launched. `kernel_bytes` sets another size at the open.
 - A link core is named outside the ranks: a command's group with first
   `KM_GROUP_LINK_BASE + k` and count n names link cores k to k + n - 1 of the island
   that takes it (`graph.link_group(island, k, n)`). Such a group is never cut by
   island and never crosses; on a core, its rank is its link-core index less k. A link
-  core is in no group of ranks. A timed-out command to link cores names them (its
-  island's own core numbers), as for ranks.
+  core is in no group of ranks. A timed-out command to link cores names them as
+  `link core k (island i, core c)`.
 
 ## The run
 
@@ -104,36 +122,72 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   the one timeout.
   A ticket completes when every part has; its result is the tuple of its parts' events
   in island order. `run.drain`, `run.stop` and `run.abort` act on every island within
-  one timeout; `run.state()` lists every rank in flat order, `run.result()` every
-  island's result block.
-- An error from an island names it: the message starts `island i:` and the exception
-  carries `error.island`; the cores a timeout lists (where each waited, those reset
-  and loaded again) are that island's own core numbers. A `WaitTimeout`'s `pending`
+  one timeout; `run.state()` lists every rank in flat order, each with its `rank` and
+  `island`, `run.result()` every island's result block.
+- The run is addressed and reported by flat rank. An error from an island starts
+  `island i:` and carries `error.island`; a `CommandTimeout` (a time-out or a give-up)
+  names its ticket, and the cores it lists, where each waited and those reset and
+  loaded again (`recovered`), by flat rank with the island and core as information:
+  `rank 128 (island 1, core 10) reader waits in port`. A `WaitTimeout`'s `pending`
   lists tickets.
-- `run.inspect(island, cores=None)` asks island `island`'s dispatcher to read its cores
-  `(first, count)` in its own core numbers (default all), as `Run.inspect` does.
+- `run.inspect(ranks=None)` reads what each rank of `ranks` (first, count; default
+  every rank) is doing while the run goes on, each island's part asked of its own
+  dispatcher, as `Run.inspect` does; each core's dict also holds its `rank` and
+  `island`.
 - Recovery (`load(..., recover=True)`, the default; [recovery](../guides/recovery.md)):
   each island's dispatcher gets its own island's reset lists at load, one list a kernel
   group, so a list of programs works too (a core gets the list of the program it
   holds). A command given up on island i resets and loads again that island's cores
   still in it; the `CommandTimeout` starts `island i:` and its `recovered` lists
-  island i's core numbers. `run.reset_core(island, core)` resets one core of island
-  `island` (its own core number); `run.recoveries` lists every recovered give-up as
-  `{island, ticket, handle, cores, text}`; `run.recovery` is each island's
-  `Run.recovery`. On two p150a cards with the map/collect example, each island's lists
+  their flat ranks. `run.reset_core(rank)` resets the core of one rank and loads its
+  kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
+  handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
+  is each island's `Run.recovery`. On two p150a cards with the map/collect example, each island's lists
   take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores are left out: a reset link core would lose the
   connection it holds open, so a give-up does not reset one and `reset_core` of a
   link core is refused.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
-- `run.island(i)` is island i's own `Run`.
-- A dynamic program (`Program.dynamic`) on two islands with `links` set: each core
+- `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
+  and `reset_core` take that island's own core numbers.
+- A dynamic program (`Program.dynamic`) on two islands: each core
   gets the message service's arguments and `KM_LINKS`, and its messages cross. Its RUN
   takes every rank (`(0, session.ranks)`; another group raises `ValueError`; so does
   `submit_many` of a dynamic handler and X280 ranks). Before the RUN the session queues
   a PAGES command of mode `KM_PAGES_MESSAGES` (a0: the RUN's group word) to link core 0
   of each island; its link 0 CPU serves the run's messages until the RUN's end, and the
-  dispatcher's quiet test counts that core's line. The service grows the kernels: the
-  forward example opens its session with `kernel_bytes=84 * 1024`.
+  dispatcher's quiet test counts that core's line. The service grows the kernels (the
+  forward example's to 97,008 bytes), inside the kernel buffer of two cards.
+
+## What crossed
+
+`run.crossings()` reads, by link and direction, what the run sent over the links since
+its start: a `Crossings` whose `rows[(link, source, target)]` hold the counts island
+`source` sent to `target` on its link `link`:
+
+| Field | Counted for |
+|---|---|
+| `messages` | a dynamic run's messages to a rank of the other island |
+| `lines` | the dispatcher's command lines (commands across), 192 bytes each |
+| `asks` | ask lines of `km::read_pages` for pages the other island holds, 64 bytes each |
+| `pages` | pages sent: the answers to asks, puts, `send_pages`, `cross`, `ask`, `ask_range` |
+| `parts` | parts relayed by `km::to_island(i).put` |
+| `bytes` | every payload byte of the above |
+
+`after - before` is what crossed between two reads, so a command is bracketed by a
+read before and one after it; `total(source, target)` sums the links. Each CPU of a
+link core counts what it sends in plain counters of its link area (`KM_LINK_CROSS`,
+`km_abi.h`); no other core counts anything. A read is one `PAGES` command of mode
+`KM_PAGES_COUNTS` to each island's link cores, whose CPUs copy their counters into a
+small DRAM tensor the host reads: it waits behind a command a link core runs, so while
+a dynamic run's messages are served, link 0's counts are read after its RUN. On one
+island, `crossings()` has no row.
+
+Measured on two Blackhole p150a cards, every link (4), 2026-11-14:
+[05_forward](../../examples/05_forward/README.md) (16 messages of 4 forwards over 232
+message ranks) sent 15 messages from island 0 and 7 from island 1, the replay's 22
+forwards across, 80 bytes each; example 01's MAP on island 0's 118 ranks reading an
+input island 1 holds sent 118 asks a round on link 0 and got 236 pages a round back on
+link 1 (2,048 bytes each), and nothing crossed while it read its own DRAM.
 
 ## Tensors
 
@@ -247,6 +301,31 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   answered. The asker waits on its port, bounded; a miss gives the command up at
   `ask` with the island asked in the word's top byte. 32 lines are in flight an
   island.
+- A kernel writes a tensor's pages wherever they live with the counterpart, in the
+  same header: `km::write_pages(core, command, args, tensor, first, pages, from,
+  port)`, from the reader or the writer, page k from L1 `from` + k aligned pages. The
+  pages its island holds are written as `noc_async_write_page` writes them, at their
+  index in its part (the caller's write barrier waits for them); on one island that is
+  all the call does. Each run another island holds at consecutive indices of its part
+  is one put line (the same 64 bytes, `KM_PUT_*` in `km_abi.h`) into its own island's
+  link core 0, reserved and written as an ask line is. That island's page CPU sends the
+  line to the far link core 0, then reads the pages from the asking core's L1 and
+  sends them straight into the holder's DRAM; each batch's last packet adds its pages,
+  once all the batch carried are written (the router flushes its writes before the
+  add), to the far link core 0's count of pages landed. When the line's pages have all
+  landed, the far page CPU adds them to the asker's port and sends back the count of
+  puts confirmed. The call waits on its port, bounded, so `from` is free when it
+  returns; a miss gives the command up at `ask` with the island in the word's top
+  byte. 32 put lines are in flight an island.
+- A copy (`KM_HANDLER_COPY`, what `kmx_fetch` and `kmx_store` submit) that names a
+  tensor by its reference word finds where its pages are in the tensor table. A copy
+  with a side whose pages another island holds moves a chunk at a time: this island's
+  pages read or written as the copy does, at their index in its part, each run the
+  other island holds one ask line (a fetch) or put line (a store) from the chunk,
+  waited for on the core's last port before the chunk goes on. A thread's source names
+  the tensor and the range only. Pages that cross are at most one packet (4,352
+  bytes). On one island, or for a tensor named by a bank address, the copy is what it
+  was.
 - `IslandSession.ASKS_BY` is `"core"` (the call asks itself) by default; with
   `"host"` (the define `KM_ASKS_BY_HOST`) the call only waits on the port, and the host
   sends: `session.ask(tensor, first, pages, island, core, to, port)` has the holder's
@@ -260,9 +339,9 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   while the host waits on that island, so two sides that wait on each other are
   waited together.
 - Example 01's MAP on island 0's 118 ranks reading an input island 1 holds alone
-  (`islands.py --across 4`, 2026-11-14, every tile exact; the rows after the first
-  pushed each rank's two tiles into its transfer buffer, the first into its input
-  buffer):
+  (`islands.py --across`, four links, 2026-11-14, every tile exact; the rows after
+  the first pushed each rank's two tiles into its transfer buffer, the first into its
+  input buffer):
 
   | Ask | µs a round | Reading its own DRAM |
   |---|---|---|
@@ -271,6 +350,22 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   | One `ask_range` a round, 1 ms an island in `wait_together` | 1,340.4 | 171.2 |
   | 118 asks a round (one a rank), connections held | 3,009.1 | 170.5 |
   | 118 asks a round, a connection opened and closed by each command | 3,132.5 | 169.9 |
+
+- Example 01's MAP on one flat group of all 236 ranks over both islands, kernels
+  unchanged, storing with `km::write_pages` (`islands.py --put`, four links,
+  2026-11-14, every tile exact): 532.8 µs a round into an output island 0 holds alone
+  (island 1's 118 ranks put theirs across), 343.2 µs into the output split over the
+  islands (each rank's page in its own island's DRAM).
+- `kmx_fetch` and `kmx_store` of island 0's work cluster 1 thread on 16 cores, of a
+  tensor of 4 KiB pages each island holds (`experiments/bank_fetch/islands.py`, four
+  links, 2026-11-14, every word checked, best of 3 for a fetch):
+
+  | Call | 1 MiB | 64 MiB |
+  |---|---|---|
+  | `kmx_fetch`, island 0's tensor | 51 µs | 1.30 ms, 51.6 GB/s |
+  | `kmx_fetch`, island 1's tensor | 204 µs | 11.0 ms, 6.10 GB/s |
+  | `kmx_store`, into island 0's tensor | 47 µs | 1.30 ms |
+  | `kmx_store`, into island 1's tensor | 197 µs | 10.7 ms |
 
 ## A card split into islands
 
@@ -295,8 +390,8 @@ islands is developed and checked with one card. One device and one open; the gra
   cores each), 3 of 4, 3 and 3 rows (48, 36, 36), 4 of 3, 3, 2 and 2 rows (36, 36,
   24, 24).
 - **Commands.** As on two cards: the host sends a flat group's word to each island it
-  touches, and each dispatcher runs its part. `run.inspect(island, cores)` takes the
-  card's core numbers; a give-up names its island and the run goes on.
+  touches, and each dispatcher runs its part. `run.inspect(ranks)` takes flat ranks as
+  on two cards; a give-up names its ranks and island and the run goes on.
 - **Stop.** Each island stops alone: the host waits for its rows and reads its cores'
   control blocks from L1, since a buffer read would wait for the whole launch.
 - **Tensors.** One tensor in the card's DRAM, every page local to every island: its
@@ -358,8 +453,11 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 - Links: a dynamic run's messages cross only in a RUN of every rank;
   `collect` and `broadcast` over islands are not built, and while the run's messages
   are served link 0 carries nothing else (a core's ask waits too). A kernel's own ask
-  (`km::read_pages`) is answered by one page CPU, on one link; asks of more than two
-  islands are not built.
+  (`km::read_pages`), its put (`km::write_pages`) and a copy across are carried by one
+  page CPU, on one link; asks and puts of more than two islands are not built. Put
+  lines and their confirmations are not counted in `crossings()` (their pages are,
+  under `pages`). A copy across knows the island tensors made before the load (16 at
+  most).
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.
