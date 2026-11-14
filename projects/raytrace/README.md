@@ -13,7 +13,7 @@ apart: [What is exact](#what-is-exact)), with the scene's tree in L1 or read fro
 as treelets. Against the V100 running the reference's frame, the card's frame takes
 2.8 to 3.7 times as long on the four public views (V100 / card 0.27 to 0.35: Sponza
 360 ms close and 349 overview against 102 and 96, Bistro interior 597 and 524 against
-211 and 154) and 9 to 14 times as long on the generated scenes (0.07 to 0.11). That is
+211 and 154) and 9 to 14 times as long on the generated scenes (0.07 to 0.12). That is
 below half of the V100 on every scene, and it stays so: the bounce trace's rays leave a
 packet's lanes at different nodes, about 6 of 32 lanes are alive at an inner node of
 it, and most box tests serve few rays. [What bounds it, and what was tried](#what-bounds-it-and-what-was-tried) lists what
@@ -206,30 +206,30 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
 ### The whole frame on the card
 
 Tiny scene, 1024 x 1024 pixels, 32,768 packets on the 120 cores, tree in L1;
-2026-11-13 11:35, AICLK 1350 MHz, X280 1000 MHz, host load average 3.7;
+2026-11-14 11:15, AICLK 1350 MHz, X280 1000 MHz, host load average 3.2;
 `python -m projects.raytrace.frame --scene tiny --reps 200 --json frame.json`. Median
 of 200 frames in one load; image 0 of 1,048,576 pixels differing. Card power 72.3 W
-mean over the 4.6 s of commands (66.2 W idle before), 1.68 J per frame.
+mean over the 4.4 s of commands (64.9 W idle before), 1.57 J per frame.
 
 | command | card ms | cycles per packet: load, compute, write |
 |---|---|---|
-| GEN | 0.542 | 130, 966, 1194 |
-| TRACE primary | 3.399 | 1140, 6676, 1539 |
-| SHADE1 | 2.232 | 2006, 4988, 2907 |
-| TRACE shadow | 2.225 | 1139, 4762, 564 |
-| TRACE bounce | 8.791 | 1140, 16213, 1539 |
-| SHADE2 | 1.565 | 2640, 1551, 2399 |
-| TRACE second shadow | 3.882 | 1139, 7501, 564 |
+| GEN | 0.550 | 130, 1001, 1194 |
+| TRACE primary | 3.263 | 1140, 6694, 1526 |
+| SHADE1 | 2.227 | 2006, 4965, 2907 |
+| TRACE shadow | 2.160 | 1140, 4698, 548 |
+| TRACE bounce | 8.169 | 1140, 16257, 1526 |
+| SHADE2 | 1.563 | 2640, 1545, 2398 |
+| TRACE second shadow | 3.738 | 1140, 7398, 548 |
 | IMAGE | 0.566 | 1295, 181, 340 |
-| frame | 23.20 | |
+| frame | 22.24 | |
 
 | | card | C++ 96 threads | V100 | card / V100 |
 |---|---|---|---|---|
-| frame ms | 23.20 | 20.59 | 2.59 | 0.11 |
-| Mray/s, all rays over the frame | 108.8 | 122.57 | 972.85 | 0.11 |
-| primary Mray/s (GEN + trace) | 266.1 | 166.90 | 1251.88 | 0.21 |
-| bounce Mray/s (trace) | 74.9 | 104.47 | 582.57 | 0.13 |
-| J per frame | 1.68 (card) | n/a | 0.50 (GPU board) | |
+| frame ms | 22.24 | 20.59 | 2.59 | 0.12 |
+| Mray/s, all rays over the frame | 113.4 | 122.57 | 972.85 | 0.12 |
+| primary Mray/s (GEN + trace) | 275.0 | 166.90 | 1251.88 | 0.22 |
+| bounce Mray/s (trace) | 80.6 | 104.47 | 582.57 | 0.14 |
+| J per frame | 1.57 (card) | n/a | 0.50 (GPU board) | |
 
 C++ and V100: the benchmark run of the next table ([`results/reference-bench.json`](results/reference-bench.json)).
 The C++ and V100 frame is the reference's five stages, ray generation and shading
@@ -246,7 +246,7 @@ Reading it against the V100: below half everywhere, from three parts of the fram
   instead ([below](#the-whole-frame-on-larger-scenes)).
 - The traces: as below (box tests, bounce coherence). In this row the shadow and bounce
   commands also walk every packet of the frame, with the lanes of missed pixels empty
-  (rays stay on their core): the second shadow trace takes 3.88 ms for 158,779 rays,
+  (rays stay on their core): the second shadow trace takes 3.74 ms for 158,779 rays,
   against 1.60 ms when `run.py` packs them. With treelets, SORT puts each core's rays
   into full packets, valid rays first (the rows below).
 - Shading arithmetic: SHADE1 computes for 4,988 cycles per packet (the table); its
@@ -268,7 +268,7 @@ C++ and V100 number in this README.
 
 | scene | treelets | GEN | primary | SHADE1 | shadow | SORT bounce | bounce | UNSORT bounce | SHADE2 | SORT shadow 2 | shadow 2 | UNSORT shadow 2 | IMAGE | frame ms | Mray/s | C++ ms | V100 ms | V100 / card | W | ties | pixels differing |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| tiny | (L1) | 0.54 | 3.40 | 2.23 | 2.23 | - | 8.79 | - | 1.57 | - | 3.88 | - | 0.57 | 23.20 | 108.7 | 20.59 | 2.59 | 0.112 | 63.0 | 0 | 0 |
+| tiny | (L1) | 0.55 | 3.26 | 2.23 | 2.16 | - | 8.17 | - | 1.56 | - | 3.74 | - | 0.57 | 22.24 | 113.4 | 20.59 | 2.59 | 0.116 | 68.0 | 0 | 0 |
 | 10^4 | 16 | 0.55 | 8.19 | 2.22 | 4.83 | 4.91 | 20.99 | 3.39 | 1.57 | 4.85 | 4.57 | 1.27 | 0.57 | 57.91 | 44.5 | 26.44 | 4.16 | 0.072 | 63.0 | 0 | 0 |
 | 10^5 | 128 | 0.55 | 11.57 | 2.22 | 7.34 | 4.94 | 34.48 | 3.45 | 1.57 | 4.85 | 8.72 | 1.26 | 0.56 | 81.51 | 32.9 | 35.47 | 6.57 | 0.081 | 63.0 | 0 | 0 |
 | 10^6 | 1024 | 0.55 | 17.42 | 2.23 | 11.44 | 4.95 | 83.44 | 3.34 | 1.57 | 4.85 | 22.58 | 1.28 | 0.57 | 154.21 | 18.5 | 53.66 | 11.61 | 0.075 | 63.0 | 1 | 0 |
@@ -388,7 +388,7 @@ bytes.
 | 0 | 23.52 | 26.08 | 0 | 0 |
 | 1 | 23.62 | 25.43 | 0 | 0 |
 
-The frame as a graph takes the time of its commands (23.20 ms above) plus about 0.3
+The frame as a graph takes the time of its commands (22.24 ms above) plus about 0.3
 ms; host-fed adds about 2 ms of host round trips over the eight commands.
 
 ### The four traces alone

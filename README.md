@@ -358,7 +358,7 @@ rays into the cores' ranges by the frame before's costs; its plan time counts in
 
 | Scene | Frame | Card frame, ms | of which the X280 plan | Card W | C++ all threads, ms | V100, ms | V100 / card | Pixels differing from numpy |
 |---|---|---|---|---|---|---|---|---|
-| tiny (tree in L1) | cold and warm | 23.20 | - | 63.0 | 20.59 | 2.59 | 0.11 | 0 |
+| tiny (tree in L1) | cold and warm | 22.24 | - | 68.0 | 20.59 | 2.59 | 0.12 | 0 |
 | 10^4 | cold | 57.91 | - | 63.0 | 26.44 | 4.16 | 0.07 | 0 |
 | 10^4 | warm | 70.63 | 5.27 | 61.0 | 26.44 | 4.16 | 0.06 | 0 |
 | 10^5 | cold | 81.51 | - | 63.0 | 35.47 | 6.57 | 0.08 | 0 |
