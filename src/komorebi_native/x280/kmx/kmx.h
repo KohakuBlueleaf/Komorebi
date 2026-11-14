@@ -135,13 +135,18 @@ int kmx_port_open(void);
 #define KMX_PULL_REPLAY 2u /* each core gets the ranges the log holds for it */
 #define KMX_PULL_NONE 0xFFFFFFFFu
 
-/* `log`: the log's region id (each cluster its own copy, KMX_PULL_LOG_BYTES). `pick`,
- * when set, gives core's index-th range (or KMX_PULL_NONE) instead of the counter. */
+/* `log`: the log's region id (each cluster its own copy, KMX_PULL_LOG_BYTES). `pick`
+ * or `pick_word` (one at most): core's index-th range instead of the counter. */
 typedef struct {
     uint32_t units, per, mode, log;
-    uint32_t (*pick)(int core, uint32_t index, uint64_t arg);
+    uint32_t (*pick)(int core, uint32_t index, uint64_t arg); /* the range or NONE */
     uint64_t arg;
+    uint64_t (*pick_word)(int core, uint32_t index, uint64_t arg); /* KMX_PULL_WORD */
 } kmx_pull;
+
+/* pick_word's answer: the range (or KMX_PULL_NONE) and the core's word with it. */
+#define KMX_PULL_WORD(range, word) \
+    ((uint64_t)(uint32_t)(range) | (uint64_t)(uint32_t)(word) << 32)
 
 /* A log region: a count per core, then `per_core` range numbers per core. */
 #define KMX_PULL_LOG_BYTES(per_core) (4u * KMX_PORTS_CORES * (1u + (per_core)))

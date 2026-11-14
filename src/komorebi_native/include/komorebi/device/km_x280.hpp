@@ -111,6 +111,14 @@ namespace km {
         // The pull: the next range of units the X280 core hands this core, `first` and
         // the count; 0 when none is left or a wait gave up (pull_gave_up(), recorded).
         uint32_t next(uint32_t& first) {
+            uint32_t word;
+            return next(first, word);
+        }
+
+        // The same, and the word the X280 core's pick_word gave with the range (0 from
+        // the counter, the log or a pick without a word).
+        uint32_t next(uint32_t& first, uint32_t& word) {
+            word = 0;
             if (pull_ == 0) {
                 pull_ = ask(KM_PULL_ASK, 0, 0);
             }
@@ -127,6 +135,7 @@ namespace km {
             // asked now, answered while this range runs: one ask in flight
             pull_ = ask(KM_PULL_ASK, 0, 0);
             first = message.w[0];
+            word = message.w[2];
             return message.w[1];
         }
 

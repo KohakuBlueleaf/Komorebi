@@ -132,6 +132,7 @@ if (port.told(message)) { ... }   // the X280 core's newest tell, if newer; neve
 | `wait_answer(sequence, message)` | timed | the same, waiting; false: gave up (recorded) |
 | `call(first_word, second_word, third_word, message)` | timed | `ask`, then `wait_answer` |
 | `next(first)` | timed | the next range of a pull (`kmx_pull_run`): its count and `first`, 0 when none is left or a wait gave up (`pull_gave_up()`); asks for the range after it before returning |
+| `next(first, word)` | timed | the same, and the word the X280 core's `pick_word` gave with the range (0 for other pulls and when none is left) |
 
 **Latest wins.** A tell overwrites the line it lands in: a side that looks less often
 than the other tells sees only the newest, and tells in between are lost. Ask and
@@ -145,7 +146,23 @@ writes; `KM_X280_TO` (`+ 0x30`): the X280 core's tile (`x | y << 16`) and the ma
 address in its local memory, written by the host at the load (0: no X280 core). The core
 writes its ask to the mailbox at `KM_BOX_ASK` (`+ 0x00`) and its tell at `KM_BOX_TELL`
 (`+ 0x10`) on its kernel's NoC. Each line has one writer; no atomics. A pull's ask is
-`{KM_PULL_ASK, 0, 0}`, answered `{first, count, pulls so far}` (count 0: none left).
+`{KM_PULL_ASK, 0, 0}`, answered `{first, count, word}` (count 0: none left).
+
+**A word with the range.** With `pick_word` ([the pull's word](threads.md#the-pulls-word))
+the X280 core answers each range with a word the core reads beside it, here the
+overlay to run on the range (`examples/18_thread_split`):
+
+```c++
+uint32_t first = 0, word = 0;
+while (const uint32_t count = port.next(first, word)) {
+    km::Overlay overlay(reader, word);  // the overlay the X280 core named
+    if (!overlay.load()) {  // nothing moves when a slot holds it
+        return;
+    }
+    overlay.call(Range{first, count});
+    port.tell(kinds(first, count), word, count);  // what the X280 core decides from
+}
+```
 
 **When a side does not answer.** Every wait times out at the wait limit and sees the
 stop flag. A give-up commands `where` = `kWhereX280Answer` (37), `kWhereX280Tell` (38)

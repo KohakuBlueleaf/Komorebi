@@ -49,7 +49,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_port_told(int core, kmx_message* message)` | the same | `core`'s newest tell, if newer than the last one looked at (latest wins) | `KMX_OK` and `message`; `KMX_NONE`; `KMX_BAD` |
 | `int kmx_port_run(const km_command_t* command, void (*function)(int cluster, int x280_core, uint64_t arg), uint64_t arg, kmx_event* event)` | the lead's 0, not nested | submits `command`, runs `function(cluster, x280_core, arg)` on every X280 core as `kmx_parallel_all` does, ends the serve at the command's event | `KMX_OK` and `event` once every `function` returned; `KMX_FULL` (nothing submitted, or 32 events kept); `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ports; error `parallel` elsewhere |
 | `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `function` | whether the command still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
-| `int kmx_pull_run(const km_command_t* command, const kmx_pull* settings, kmx_event* event)` | the lead's 0, not nested | submits `command` and serves its pulls on every X280 core until its event: units 0 to `settings->units - 1` in ranges of `settings->per`, by `settings->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `settings->log`) or `settings->pick` | as `kmx_port_run`; `KMX_BAD` also for a bad mode, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
+| `int kmx_pull_run(const km_command_t* command, const kmx_pull* settings, kmx_event* event)` | the lead's 0, not nested | submits `command` and serves its pulls on every X280 core until its event: units 0 to `settings->units - 1` in ranges of `settings->per`, by `settings->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `settings->log`), `settings->pick` (the range) or `settings->pick_word` (the range and a word the core gets with it, [the pull's word](#the-pulls-word)) | as `kmx_port_run`; `KMX_BAD` also for a bad mode, both `pick` and `pick_word` set, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
 | `int kmx_submit(const km_command_t* command, uint32_t* handle)` | 0 | stores `command` as the next command of the ring | `KMX_OK` and the handle (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
 | `int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event)` | 0 | waits for the handle's event until `kmx_time()` passes `deadline`; other handles' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_poll(kmx_event* event)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
@@ -79,6 +79,24 @@ in timer ticks, or the result word of a `KM_FLAG_RESULT` command).
 
 Return codes (`kmx_layout.h`): `KMX_OK` 0, `KMX_FULL` 1, `KMX_STOPPED` 2,
 `KMX_LATE` 3, `KMX_NONE` 4, `KMX_BAD` 5.
+
+### The pull's word
+
+`kmx_pull`'s `pick_word(core, index, arg)` gives core's `index`-th range and a 32-bit
+word for it, `KMX_PULL_WORD(range, word)`; the core gets the word with the range from
+`port.next(first, word)` ([X280 ports](ports.md#x280-ports)). It runs on the X280 core
+that serves the core, so it may read what the core told it (`kmx_port_told`) and
+decide from that, as `examples/18_thread_split` picks an overlay. The word is 0 with
+the counter, a log, a replay, `pick`, and when no range is left. A pull without a word
+costs what it did: `examples/10_x280_ports --pull` 0.66 to 0.70 µs a pull both ways.
+
+```c
+static uint64_t pick_word(int core, uint32_t index, uint64_t ranges) {
+    const uint32_t range = index < ranges ? index : KMX_PULL_NONE;
+    return KMX_PULL_WORD(range, choose(core)); /* choose: from kmx_port_told */
+}
+const kmx_pull pull = {units, per, KMX_PULL_COUNT, 0, 0, ranges, pick_word};
+```
 
 ## Commands to a thread
 
@@ -119,7 +137,9 @@ stays taken until the thread answers, and that late answer sends no event.
 **The limits.** A thread holds 8 unanswered commands (`KMD_WORK_IN_DEPTH`). With all 8
 taken, a further command from the stream engine, the graph engine or another thread is
 rejected busy (reason 11) and sent again after the dispatcher's wake; one from the host
-is rejected with reason 14, `thread` (`KMD_REJECT_THREAD`). A command to a thread is
+is rejected with reason 14, `thread` (`KMD_REJECT_THREAD`), and the run goes on: the 8
+are answered and later commands are taken (measured with one 0.2 s command and 7 behind
+it). A command to a thread is
 never exclusive or queued (reason 2, `flags`), and a cluster without a thread rejects it
 with reason 3 (`group`).
 
@@ -131,8 +151,18 @@ the thread answers no other command, so the dispatcher keeps up to 8 more as abo
 At depth: a command to the thread's own cluster, or to a thread that is waiting for
 this one, is answered only after the call returns, so its wait ends at that command's
 deadline with its timeout event (or at `kmx_wait`'s own deadline with `KMX_LATE`), never
-in a deadlock. An event the call does not wait for stays in the thread's ring (64
-events) until a later `kmx_wait` or `kmx_poll` takes it.
+in a deadlock. `kmx_parallel` inside `kmx_program` works as in `kmx_main` (cores 1 to
+3 serve spawns until the run stops).
+
+**Events nobody waited for.** The event of a command `kmx_program` submitted and did not
+wait for is taken from the ring by the serve loop between commands (and while an answer
+waits for room) and kept for a later `kmx_poll` or `kmx_wait`: the newest 32
+(`KMX_STASH`), older ones dropped. A program that needs every event takes them inside
+the call that submitted the commands (`kmx_wait` each, or `kmx_poll` until `KMX_NONE`).
+Measured: 200 commands never waited for, over 20 calls, each with a command from the host
+between them; every one answered, and `kmx_poll` then took 32
+(`tests/hardware/thread/open_points_case.py`). Without this a ring full of unread
+events stopped the thread's commands and its answer queued behind them.
 
 **What the host sees.** `run.submit(handler, cluster=c, args=..., result=True)` returns
 a handle; `run.wait` and `run.event` give its `Event` as for a core group. A rejection
@@ -164,7 +194,7 @@ The thread's block in the cluster's local memory (LIM), bytes from its base:
 | `0x380` | 4 x 64 | spawn lines, one per core, core `core`'s at `+ 64 * core`: 64-bit words `gen`, `fn`, `arg` (core 0), `done` (that core); core 0's word 0 ends the service | cores |
 | `0x480` | 64 | `kmx_ring_descriptor`, zero for no ring | host, before the start |
 | `0x4C0` | 64 | `kmx_peers`: a value for this load (`nonce`), the lead, the mask of clusters running the image, the offset `all` of the `kmx_parallel_all` lines, then each cluster's tile and its bank's DRAM tile (`x \| y << 16`, indexed by cluster); zero: no peers | host, before the start |
-| `0x500` | 64 | `kmx_ports`: `at` (LIM offset of the ports area, 0: no ports), `control` (the cores' control block address), `cores` (table entries), `flags` (`KMX_PORTS_NOC1` 1), `state` (`kmx_port_run`'s: `n << 1` while run `n` serves, `\| 1` once it ended), `next`, `lost`, `pull`, `pick`, `arg` (`kmx_pull_run`'s, written by the lead) | host, before the start; `state` the lead |
+| `0x500` | 64 | `kmx_ports`: `at` (LIM offset of the ports area, 0: no ports), `control` (the cores' control block address), `cores` (table entries), `flags` (`KMX_PORTS_NOC1` 1), `state` (`kmx_port_run`'s: `n << 1` while run `n` serves, `\| 1` once it ended), `next`, `lost`, `pull` (units, per, mode and log, 1 when `pick` is a `pick_word`), `pick`, `arg` (`kmx_pull_run`'s, written by the lead) | host, before the start; `state` the lead |
 | `all` | 4 x 64 | after the block the host writes (and the ring's events): the call line the lead writes into each other cluster (32-bit words `nonce`, `gen`, `fn`, `arg`, `exit`), and in the lead's, cluster `cluster`'s done line at `+ 64 * cluster` (`nonce`, the last `gen` done; 0: it serves) | the lead; the others |
 
 The ports area at `at` (after the `kmx_parallel_all` lines, written by the host before any

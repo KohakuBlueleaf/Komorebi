@@ -1021,9 +1021,8 @@ static void pull_part(int cluster, int x280_core, uint64_t arg) {
     const uint32_t units = ports_line->pull[0];
     const uint32_t per = ports_line->pull[1];
     const uint32_t mode = ports_line->pull[2] & 0xFFu;
-    uint32_t (*pick)(
-        int, uint32_t, uint64_t
-    ) = ((uint32_t (*)(int, uint32_t, uint64_t))(uintptr_t)ports_line->pick);
+    const uint64_t pick_address = ports_line->pick;
+    const uint32_t with_word = ports_line->pull[3];
     const uint64_t pick_argument = ports_line->arg;
     const uint64_t ranges = ((uint64_t)units + per - 1u) / per;
     volatile uint32_t* next = (volatile uint32_t*)(lim() + KMX_PULL_AT(next));
@@ -1058,6 +1057,7 @@ static void pull_part(int cluster, int x280_core, uint64_t arg) {
                 continue;
             }
             uint64_t range_index = KMX_PULL_NONE;
+            uint32_t word = 0;
             if (message.w[0] != KM_PULL_ASK) {
             } else if (mode == KMX_PULL_REPLAY) {
                 range_index = (
@@ -1065,12 +1065,27 @@ static void pull_part(int cluster, int x280_core, uint64_t arg) {
                         ? lists[core * capacity + given[served]]
                         : KMX_PULL_NONE
                 );
-            } else if (pick != 0) {
-                range_index = pick(core, given[served], pick_argument);
+            } else if (pick_address != 0 && with_word) {
+                const uint64_t picked = (
+                    (
+                        (uint64_t (*)(int, uint32_t, uint64_t))(uintptr_t) pick_address
+                    )(core, given[served], pick_argument)
+                );
+                range_index = (uint32_t)picked;
+                word = (uint32_t)(picked >> 32);
+            } else if (pick_address != 0) {
+                range_index = (
+                    (
+                        (uint32_t (*)(int, uint32_t, uint64_t))(uintptr_t) pick_address
+                    )(core, given[served], pick_argument)
+                );
             } else {
                 range_index = (uint64_t)x280_amoadd_w(next, 1u) * groups + place;
             }
             uint32_t first = 0, count = 0;
+            if (range_index == KMX_PULL_NONE) {
+                word = 0;
+            }
             if (range_index < ranges) {
                 first = (uint32_t)range_index * per;
                 count = units - first < per ? units - first : per;
@@ -1081,7 +1096,7 @@ static void pull_part(int cluster, int x280_core, uint64_t arg) {
                 }
                 given[served]++;
             }
-            kmx_port_answer(core, message.sequence, first, count, given[served]);
+            kmx_port_answer(core, message.sequence, first, count, count ? word : 0);
         }
     }
     for (int served = 0; served < served_count && mode == KMX_PULL_LOG; served++) {
@@ -1104,7 +1119,13 @@ static void pull_line(volatile uint8_t* block, const kmx_pull* settings) {
     words[offsetof(kmx_ports, pull) / 4] = settings->units;
     words[offsetof(kmx_ports, pull) / 4 + 1] = settings->per;
     words[offsetof(kmx_ports, pull) / 4 + 2] = settings->mode | settings->log << 8;
-    put64(words + offsetof(kmx_ports, pick) / 4, (uint64_t)(uintptr_t)settings->pick);
+    words[offsetof(kmx_ports, pull) / 4 + 3] = settings->pick_word != 0;
+    put64(
+        words + offsetof(kmx_ports, pick) / 4,
+        settings->pick_word != 0
+            ? (uint64_t)(uintptr_t)settings->pick_word
+            : (uint64_t)(uintptr_t)settings->pick
+    );
     put64(words + offsetof(kmx_ports, arg) / 4, settings->arg);
 }
 
@@ -1118,7 +1139,7 @@ int kmx_pull_run(
     uint64_t bytes = 0;
     if (
         settings->mode > KMX_PULL_REPLAY || settings->log > 255u ||
-        settings->per == 0 ||
+        settings->per == 0 || (settings->pick != 0 && settings->pick_word != 0) ||
         (
             settings->mode != KMX_PULL_COUNT &&
             (
@@ -1186,11 +1207,27 @@ void kmx_result(uint32_t code, const void* words, uint32_t word_count) {
 #pragma weak kmx_main
 #pragma weak kmx_program
 
-/* Answers the dispatcher's line `number` with `word`, waiting while the ring is full:
- * KMX_OK, or why it ended (a stop, the deadline). */
+/* Between commands: the events of commands kmx_program submitted and did not wait for
+ * are set aside for kmx_poll / kmx_wait; past KMX_STASH the oldest is dropped. */
+static void keep_events(void) {
+    kmx_event event;
+    while (kmx_ring_take(&g_ring, &event)) {
+        if (g_ring.stashed == KMX_STASH) {
+            for (uint32_t position = 1; position < KMX_STASH; position++) {
+                g_ring.stash[position - 1] = g_ring.stash[position];
+            }
+            g_ring.stashed--;
+        }
+        g_ring.stash[g_ring.stashed++] = event;
+    }
+}
+
+/* Answers the dispatcher's line `number` with `word`, waiting while the ring is full
+ * (its events kept meanwhile): KMX_OK, or why it ended (a stop, the deadline). */
 static int answer(uint32_t number, uint32_t word) {
     int status = kmx_ring_answer(&g_ring, number, word);
     for (uint32_t tries = 1; status == KMX_FULL; tries++) {
+        keep_events(); /* a ring stalled on unread events frees as they are taken */
         const int end = tries % KMX_RING_SPINS == 0 ? must_end(0) : KMX_OK;
         if (end != KMX_OK) {
             return end;
@@ -1216,8 +1253,10 @@ static int serve_commands(void) {
         km_command_t command;
         if (kmx_ring_command(&g_ring, &command)) {
             status = answer(command.sequence, kmx_program(&command));
+            keep_events();
             spins = 0;
         } else if (spins % KMX_POLL_EVERY == 0) {
+            keep_events();
             status = must_end(0);
         }
     }

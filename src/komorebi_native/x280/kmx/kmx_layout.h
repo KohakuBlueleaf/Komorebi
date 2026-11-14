@@ -107,7 +107,7 @@ typedef struct {
     uint32_t state;   /* kmx_port_run's: n << 1 while run n serves, | 1 once it ended */
     uint32_t next;    /* kmx_pull_run: the cluster's counter, zeroed by the lead */
     uint32_t lost;    /* kmx_pull_run: ranges a full log could not keep */
-    uint32_t pull[4]; /* kmx_pull_run: units, per pull, mode | log region << 8, 0 */
+    uint32_t pull[4]; /* kmx_pull_run: units, per, mode | log << 8, pick is pick_word */
     uint64_t pick, arg; /* kmx_pull_run: the pick function (0: the counter), its arg */
 } kmx_ports;
 
