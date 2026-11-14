@@ -108,8 +108,16 @@ without it. A session over two cards takes each island's last `(links + 1) // 2`
 (one with `links=0`), both data-movement CPUs of a link core holding a link each, from
 the load to the run's end; a command names them as link cores, first
 `KM_GROUP_LINK_BASE` (0xFE00) + k, never as ranks. Link 0, on link core 0's first CPU,
-carries the dispatcher's command lines; the others carry pages
+carries the dispatcher's command lines and the cores' asks; the others carry pages
 ([islands](../reference/islands.md#pages-across-a-link)).
+
+A kernel that reads a tensor's pages calls `km::read_pages` with the tensor's
+placement: the pages its island holds are read from its own DRAM, as on one card; for
+pages another island holds the core puts one ask line into its island's link core 0,
+which sends it on link 0 between commands, and the holder's link core pushes the pages
+into the asking core's L1 and counts them at its port, where the core waits. No host
+takes part. On one island the call is the local read, so a kernel written for one
+island runs unchanged on two.
 
 What a link carries, measured. Two Blackhole p150a cards joined by four Ethernet links,
 one process holding both with tt-metal's 1-D fabric in slow dispatch, AICLK 1350 MHz.
@@ -200,9 +208,9 @@ one-island row of example 26 did not.
 
 - **Over a link:** a broadcast (`km::Broadcast`) whose group spans islands, a reduce
   over more than two islands (a part crosses one link), a part of more than 16 KiB, a
-  dynamic run on part of the ranks of two islands, X280 ranks over a link, and a
-  kernel's own ask for a page another island holds (the host asks for it today). A
-  command that crosses completes with the result word of the first part back, not of
+  dynamic run on part of the ranks of two islands, X280 ranks over a link. A kernel's own ask for
+  pages is built for two islands, its pages on one link. A command that crosses
+  completes with the result word of the first part back, not of
   the group's rank 0.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **A card split into islands.** The host's graph describes it (`islands.split_card`);

@@ -19,31 +19,30 @@ packet's lanes at different nodes, about 6 of 32 lanes are alive at an inner nod
 it, and most box tests serve few rays. [What bounds it, and what was tried](#what-bounds-it-and-what-was-tried) lists what
 was measured against that, with its numbers.
 
-## The thread program
+## What each core does
 
 A pass (primary, shadow, bounce or shadow at the bounce hit) is one command of the
 handler `TRACE` sent to every core of the grid. Each core walks the packets its
 directory entry names, 32 rays to a packet, one ray per lane of the vector unit:
 
-```
-thread trace(core, mode):                       # one per core of the grid
-    first, count = directory[core]
-    for page in first .. first + count - 1:     # a packet: 8 x 4 pixels of one tile
-        rays = packets[page]                    # origin, direction, 1 / direction, tmax
-        stack = [root]
-        while stack:
-            node = pop(stack)
-            alive = lanes whose entry distance into node <= their best   # 32 lanes at once
-            if no lane alive: continue
-            if node is a leaf:
-                hit = triangle test of node's triangle on the alive lanes
-                best, tri, u, v = the closer hit (equal t: the lower triangle index)
-                if mode == any: a lane with a hit leaves the walk
-            else:
-                push both children that some alive lane enters, nearer on top
-                (by the packet's direction signs and the node's order word)
-        hits[page] = t, tri, u, v, boxes and triangles tested, cycles   # per lane
-```
+1. `kernels/reader.cpp` (NoC0): reads the core's directory entry (its first packet
+   page and page count) from DRAM, then each of its packet pages (origin, direction,
+   1 / direction and tmax of the 32 rays) and hands it to compute.
+2. `kernels/compute.cpp` (`trace_list`): loads the packet's rays into the vector unit
+   (`walk::load_packet`) and walks the tree in L1 with `walk::packet`
+   (`kernels/walk.hpp`), depth first from the root, one stack of node indexes for
+   the whole packet. At each node it keeps the lanes whose entry distance into the node
+   is within their best distance so far, and goes on to the next entry of the stack when
+   no lane is left. At a leaf it tests the leaf's triangle on the lanes still in
+   (`rt::tri_test`, `kernels/sfpu.hpp`): a closer hit replaces the lane's best distance,
+   triangle, u and v, and at an equal distance the lower triangle index is kept. In
+   the any-hit mode a hit sets the lane's best distance to -1, so the lane is in at no
+   later node. At an inner node it box-tests both children and pushes them, the nearer
+   on top (by the packet's direction signs and the node's order word).
+3. `kernels/compute.cpp`: when the stack is empty, packs each lane's distance,
+   triangle, u, v, the counts of boxes and triangles tested and the packet's cycles
+   into a hit page (`walk::store_hits`).
+4. `kernels/writer.cpp` (NoC1): writes the hit pages to DRAM, and the profile page.
 
 `LOAD` before it copies the tree image (nodes, an order word per node, triangle
 records) from DRAM into every core's L1 once. A scene whose tree does not fit in L1
@@ -70,8 +69,8 @@ word took 3,400.
 | a1 to a9 | `input_address`, `output_address`, `order_address`, `profile_address`, `unsort_vectors`, the key's corner (a6 to a8) and `key_word` (a9) | SORT, UNSORT: stream in, stream out, order pages, profile, vectors to put back (0: SORT), the key's low corner and scale |
 
 The frame is eight commands in one load (`frame.py`), each core keeping the packets
-of its tiles from the first command to the last. The other stages are threads of the
-same form: per packet, their input pages into the vector unit, the stage, their
+of its tiles from the first command to the last. The other stages
+work the same way: per packet, their input pages into the vector unit, the stage, their
 output pages; a packet is 8 x 4 pixels, lane `l` at `(l % 8, l / 8)` from the pixel in
 its header (the lane offsets are a constant page, not computed per lane).
 

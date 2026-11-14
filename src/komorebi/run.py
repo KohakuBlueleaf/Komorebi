@@ -155,6 +155,7 @@ class Run:
             constants["KM_FLAG_QUEUE"],
         )
         self._flag_exclusive = constants["KM_FLAG_EXCLUSIVE"]
+        self._flag_part = constants["KM_FLAG_PART"]
         # a group from this first core on names a work cluster's thread
         self._cluster_base = constants["KM_GROUP_CLUSTER_BASE"]
         self._work_clusters = constants["KMD_WORK_CLUSTERS"]
@@ -232,11 +233,14 @@ class Run:
         queued=False,
         cluster=None,
         block=None,
+        part=False,
     ):
         """Queues a command for handler `handler` on cores [first, first + count)
         (default every core), or on work cluster `cluster`'s X280 thread; returns its
         handle. `result`: the event carries the result word; `queued`: the kernel picks
-        the cores; `block`: bytes or an array its handlers read (a7, a8)."""
+        the cores; `block`: bytes or an array its handlers read (a7, a8); `part`: the
+        line is this island's part of a group split over islands (IslandRun), run here
+        and never crossed."""
         started = time.perf_counter()
         program_field = 0
         if cluster is not None:
@@ -262,8 +266,10 @@ class Run:
         kept = None
         if block is not None:
             args, kept = self._block_words(block, args, cluster)
-        flags = (self._flag_result if result else 0) | (
-            self._flag_queue if queued else 0
+        flags = (
+            (self._flag_result if result else 0)
+            | (self._flag_queue if queued else 0)
+            | (self._flag_part if part else 0)
         )
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
@@ -501,10 +507,13 @@ class Run:
         """Whether the run takes commands: not stopped, nothing failed."""
         return self._failure is None and not self._stopped
 
-    def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
+    def submit_many(
+        self, handler, firsts, counts, args=None, exclusive=False, part=False
+    ):
         """Queues n commands at once: `handler` a name, a number or n numbers, `firsts`
         and `counts` the groups (n each, or one for all), `args` an [n, m] matrix of
-        32-bit words (m <= 10) or None. Returns the handles as a range."""
+        32-bit words (m <= 10) or None; `part` as for submit. Returns the handles as a
+        range."""
         started = time.perf_counter()
         self._check_alive()
         program_field = 0
@@ -565,6 +574,8 @@ class Run:
         self._next += shape[0]
         if exclusive:
             words[:, self._hdr] |= self._flag_exclusive << 8
+        if part:
+            words[:, self._hdr] |= self._flag_part << 8
         self._send_block(words, first, count, np.zeros(shape[0], np.uint8))
         self.submit_s += time.perf_counter() - started
         return range(start, self._next)

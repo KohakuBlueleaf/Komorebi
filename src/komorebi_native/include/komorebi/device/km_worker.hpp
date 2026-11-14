@@ -45,6 +45,10 @@ namespace km {
     }
 
     template <typename Kernel>
+    inline void pages_serve(const Kernel&, uint32_t, uint32_t) {
+    }
+
+    template <typename Kernel>
     inline void pages_end(const Kernel&) {
     }
 #endif
@@ -286,15 +290,17 @@ namespace km {
             const uint32_t island_first = view.first();
             const uint32_t link = KM_GROUP_LINK_BASE + (arguments.me - view.ranks());
             // a link core is in no group of ranks: its name is its link name
-            const uint32_t rank = (
-                link_core(view, arguments.me) ? link : island_first + arguments.me
-            );
+            const bool serves = link_core(view, arguments.me);
+            const uint32_t rank = serves ? link : island_first + arguments.me;
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
             // link core 0 relays between commands (km_relay.hpp)
             const bool relays = (
                 link_core(view, arguments.me) && link == KM_GROUP_LINK_BASE
             );
             for (;;) {
+                if (serves) {  // a link core's services between commands
+                    pages_serve(*this, 0, kStReader);
+                }
                 invalidate_l1_cache();
                 if (stop()) {
                     gave = kGaveStop;
@@ -403,11 +409,15 @@ namespace km {
         template <typename Body>
         void run(Body body) {
             const Args& arguments = args();
+            const bool serves = link_core(islands_at(arguments.control), arguments.me);
             uint32_t end = kEndExit;
             for (;;) {
                 const uint32_t code = poll_at(
                     kWhereWriter,
-                    [] {
+                    [&] {
+                        if (serves) {  // a link core's services between commands
+                            pages_serve(*this, 1, kStWriter);
+                        }
                         return cb_pages_available_at_front(kCbTokenWriter, 1);
                     },
                     arguments.idle_limit,

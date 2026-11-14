@@ -186,8 +186,9 @@ place to ask a question and to be wrong.
 - [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
   bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and
-  1.05 on twelve (63.8 GB/s, the bank's rate); the whole call 30.4 ms, bound by the two sweeps
-  of the region's cache lines; the X280's own loads 0.024 GB/s, `kmx_push` 2.20 GB/s.
+  1.05 on twelve (63.8 GB/s, the bank's rate); the whole call 1.08 ms on four, the
+  cluster's cache emptied first (`kmx_evict`, about 20 µs: one 128 KiB way, proven to
+  leave no stale line); the X280's own loads 0.024 GB/s, `kmx_push` 2.20 GB/s.
 - [core_reset](core_reset/README.md): whether one Tensix core of a run comes back
   without a card reset. A core whose handler never returns is reset and loaded again by
   the dispatcher at the command's give-up (1.6 to 1.7 ms of its loop), from a list the

@@ -132,7 +132,9 @@ group's rank 0, one more arrival at rank 0 (by owner: the slot after its island'
 tree: the round after its island's). The part crosses through the relay: the sender asks
 its island's link core 0, which sends the pages over link 0 to the far link core 0, which
 writes them into rank 0's arrival slot and bumps its port. The kernels do not change.
-The commands go to island 0's dispatcher, which sends island 1's part across.
+The commands go to island 0's dispatcher, which sends island 1's part across. The link
+cores' services make the kernels larger than the runtime's default buffer, so the script
+opens the session with `kernel_bytes=76 * 1024`.
 
 ```
 python islands.py --rounds 20

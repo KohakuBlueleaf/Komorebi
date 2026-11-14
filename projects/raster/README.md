@@ -8,24 +8,26 @@ SETUP, below; the host runs the middle pass between them); and the whole frame o
 driven by a thread on the X280 cores beside the dispatcher, which runs that
 pass itself (below). Every scene's image is bit-exact against the reference.
 
-## The thread program
+## What each core does (host-binned)
 
-```
-host:    records = setup(scene); lists = bin(records)        # the reference's own functions
-         assign tiles to cores; write per core, to DRAM: its tile list (tile id, count, then the
-         triangle records in triangle order, 128 bytes each: a, b, c of three edges, top-left bits,
-         the 1/z plane, three colour planes, the pixel box, the triangle number)
-card:    one command FILL(frame) to the group of all worker cores
-core:    for each of my tiles:
-             depth = 0; colour = background                  # four planes of 32 x 32 float32
-             for each triangle record, in order:             # reader streams the list from DRAM
-                 inside = edges and box, per pixel           # all 1,024 pixels of the tile are lanes
-                 w      = 1/z plane, per pixel
-                 win    = inside and w > depth               # strict: the lower index keeps a tie
-                 depth  = where(win, w, depth)
-                 colour = where(win, colour planes, colour)  # same value as shading the winner last
-             writer: the tile's colour and depth to the frame in DRAM
-```
+1. The host (`run.py`, `lists.py`): runs the reference's own `raster.setup(scene)` and
+   binning, assigns tiles to cores, and writes to DRAM for each core a directory page
+   and its tile list: the tile ids, a count, then the triangle records in triangle
+   order, 128 bytes each (a, b, c of three edges, top-left bits, the 1/z plane, three
+   colour planes, the pixel box, the triangle number; `lists.pack_records`).
+2. The card (`card.py`): one command `FILL` to the group of all worker cores.
+3. Each core, for each of its tiles:
+   - `kernels/reader.cpp`: reads the core's directory page, then streams the list
+     pages from DRAM into the input buffer.
+   - `kernels/compute.cpp` and `kernels/fill.hpp` (the pack thread): `init_tile` sets
+     the tile's planes of 32 x 32 float32 to depth 0, the background colour and no
+     triangle; then
+     for each triangle record, in order, `row` takes the 32 pixels of each row as the
+     lanes of the vector unit, tests them against the three edges and the box, computes
+     the 1/z plane, and where a pixel is inside and its 1/z is greater than the stored
+     depth it stores the new depth, the triangle number and the colour planes. The comparison is strict, so
+     the lower triangle index keeps a tie.
+   - `kernels/writer.cpp`: sends the tile's finished planes to the frame in DRAM.
 
 A fifth plane holds the winner's triangle number (as a float, -1 where empty), so the
 frame carries the same `tri` image as the reference.
@@ -179,28 +181,31 @@ The per-triangle stages run on the same 120 cores as a program of their own
 (`kernels/setup_reader.cpp`, `setup_compute.cpp`, `setup_writer.cpp`; host side
 `passes.py`, driver `card_passes.py`), two passes over the triangles:
 
-```
-upload:  the mesh de-indexed, 32 triangles a block: 18 vectors (x, y, z and colour of three
-         corners) already in the order of the vector unit's register window, 2,304 bytes
-COUNT    core c, its contiguous partition of the blocks:
-             vector unit: camera space, screen (1/z by the exact reciprocal), area, box
-             pack thread, per triangle: keep rule; a triangle across the near distance is
-                 clipped and its pieces go through the vector unit at its place
-             entries and rows of every tile it touches += 1, += its rows there;
-             in L1, per tile, how many of its entries start and end in each 2-row group
-         writes its two counters (1,024 words each) to DRAM
-host:    tile costs from the counters; the tiles above a third of a core's mean load
-HIST     core c writes those tiles' start and end counts (64 bytes a tile)
-host:    their bands: cut where the rows' estimated cost reaches j / k of the tile's, each
-         band's entries = those starting before its last row less those ending before its
-         first; items (tiles and bands) to cores; each core's list (header, records, end
-         slot, as the fill reads it) laid out with headers, end slots and the directory
-         written; the slot of every (core, item) = the item's header + 1 + the records of
-         lower cores
-SETUP    core c, the same partition again: the same steps plus edges, 1/area and the 12 planes;
-         every kept record goes once to each item it reaches, at that item's next slot
-FILL     as above, over the lists in place
-```
+1. Upload (host, `passes.mesh_blocks`): the mesh de-indexed, 32 triangles a block, 18
+   vectors a block (x, y, z and colour of three corners) already in the order of the
+   vector unit's register window, 2,304 bytes.
+2. `COUNT` (`kernels/setup_reader.cpp`, `setup_compute.cpp`, `setup_writer.cpp`): each
+   core takes a contiguous partition of the blocks. The vector unit computes camera
+   space, screen position (1/z by the exact reciprocal), area and box; the pack thread
+   applies the keep rule, and a triangle across the near distance is clipped and its
+   pieces go through the vector unit at its place. The writer counts, per tile a kept
+   triangle touches, one entry and the rows it covers there, and keeps in L1, per tile,
+   how many entries start and end in each 2-row group; at the end it writes its two
+   counters (1,024 words each) to DRAM.
+3. Host (`passes.middle`, `passes.heavy_tiles`): tile costs from the counters; a tile
+   above a third of a core's mean load is cut into bands.
+4. `HIST`: each core writes the start and end counts of those tiles (64 bytes a tile).
+5. Host (`passes.cuts`, `passes.items_of`): cuts the bands where the rows' estimated cost
+   reaches j / k of the tile's; a band's entries are those starting before its last row
+   less those ending before its first; assigns the items (tiles and bands) to cores;
+   lays out each core's list (header, records, end slot, as the fill reads it) and
+   writes the headers, end slots and the directory; the slot of every (core, item) is
+   the item's header plus 1 plus the records of the lower cores.
+6. `SETUP`: the same partition of the blocks again, with the same steps and also the
+   edges, 1/area and the 12 plane coefficients (1/z and three colour channels, three
+   each); every kept record goes once to each item it reaches, at that item's next
+   slot.
+7. `FILL`, as above, over the lists in place.
 
 The float32 operations are the reference's, in its order, one rounding each, on the
 vector unit with 32 triangles as lanes; the box's ceil and floor clamp first and then
@@ -268,24 +273,28 @@ file, each in a namespace of its own and without its entry, and calls one or the
 by the command's handler). A thread on work cluster 1 (`thread/frame.c`, the middle pass in
 `thread/middle.c`, plain C) drives the frame; the host uploads the mesh once per scene,
 gives the camera with the load, waits for the thread's result and reads the image back
-(`card_thread.py`):
+(`card_thread.py`). `frame_once` in `thread/frame.c` submits each command and waits for
+its event before the next:
 
-```
-thread frame(camera):                                    # X280, work cluster 1
-    submit COUNT; wait                                    # counters to a tensor
-    submit SUM; wait              # cores: totals per tile, entries before each core
-    take totals                                          # drop the cache's lines of them
-    tile costs (four cores), tiles to cut
-    if any: write their list; submit HIST; wait; submit HSUM; wait; take their totals
-    bands and items; items by falling cost (four cores sort quarters, merged);
-    each to the least loaded core (a heap); list layout and base slots as words
-    give the items region                                # 37 KB written back
-    submit PLACE; wait            # cores: directory pages, list headers, end slots
-    submit SETUP; wait            # each core its next slots from the prefixes, then
-                                 # each record to its slot
-    submit FILL; wait
-    result: what it found, each part's time
-```
+1. `COUNT`: the counters of every core go to a tensor.
+2. `SUM`: the cores total the counters per tile and compute, for each core, its entries
+   before it. The thread drops its cache's lines of the totals (`kmx_invalidate`) and
+   reads them.
+3. Tile costs, on the four cores of the cluster (`costs_part`), and the tiles to cut
+   (`rm_pick`). If there are any: the thread writes their list and submits `HIST` and
+   `HSUM`, then reads their totals.
+4. The middle pass (`thread/middle.c`): bands and items (`rm_items`); the items by
+   falling cost, sorted in quarters on the four cores and merged (`rm_sort`,
+   `rm_merge`); each item to the least loaded core, from a heap (`rm_owners`); the lists'
+   layout and base slots as words (`rm_compact`, `rm_base`); the thread writes the items
+   region back (`kmx_flush`, 37 KB).
+5. `PLACE`: the cores write the directory pages, list headers and end slots from those
+   words.
+6. `SETUP`: each core makes its next slots from the prefixes, then sends each record to
+   its slot.
+7. `FILL`. The thread submits it, (when the frame balances by block ranges) prepares the next
+   frame's ranges while the grid fills, and waits.
+8. The result: what the thread found and each part's time.
 
 The counting and the prefix sums are a reduction over the cores, so the cores do them:
 SUM gives each core of 64 a slice of 16 tiles, reads every core's counters for it,

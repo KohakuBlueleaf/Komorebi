@@ -109,6 +109,21 @@ static uint32_t hang(const km_command_t* command) {
     return set_deadline(command->a4) == KMX_OK ? word : BAD;
 }
 
+/* COUNTS: a0 first, a1 count, a2 rounds; example 01's COUNT (a0 0) on flat ranks
+ * [first, first + count), one after the other. Its word: the ticks of all, or BAD. */
+static uint32_t counts(const km_command_t* command) {
+    km_command_t counting;
+    kmx_event event;
+    kmx_command(&counting, 0, kCount, command->a0, command->a1);
+    const uint64_t started = kmx_time();
+    for (uint32_t round = 0; round < command->a2; round++) {
+        if (run(&counting, &event) != KMX_OK || event.kind != KM_EVENT_DONE) {
+            return BAD;
+        }
+    }
+    return (uint32_t)(kmx_time() - started);
+}
+
 uint32_t kmx_program(const km_command_t* command) {
     switch (kmx_handler(command)) {
         case kHandlerMaps:
@@ -119,6 +134,8 @@ uint32_t kmx_program(const km_command_t* command) {
             return fold(command->a0);
         case kHandlerHang:
             return hang(command);
+        case kHandlerCounts:
+            return counts(command);
     }
     return BAD;
 }
