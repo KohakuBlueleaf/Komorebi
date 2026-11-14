@@ -111,6 +111,52 @@ namespace km {
 #endif
     }
 
+#if !defined(KM_WIRE)
+    // Pages a packet carries to as many addresses (a scatter write), at most; a counted
+    // packet at most kCountedPages (the fabric's fused scatter and increment).
+    constexpr uint32_t kPacketPages = NOC_SCATTER_WRITE_MAX_CHUNKS;
+    constexpr uint32_t kCountedPages = NOC_SCATTER_WRITE_ATOMIC_INC_FUSED_WRITE_CHUNKS;
+
+    // The header's command: `count` pages of `page` bytes, one after another in the
+    // payload, page i into to[i] (2 to kPacketPages pages).
+    inline void link_scatter_write(
+        LinkHeaderAt header, const uint64_t* to, uint32_t count, uint32_t page
+    ) {
+        const uint16_t sizes[kPacketPages - 1] = {
+            static_cast<uint16_t>(page),
+            static_cast<uint16_t>(page),
+            static_cast<uint16_t>(page)
+        };
+        header->to_noc_unicast_scatter_write(
+            tt::tt_fabric::NocUnicastScatterCommandHeader(
+                to, sizes, static_cast<uint8_t>(count)
+            ),
+            count * page
+        );
+    }
+
+    // Two pages of `page` bytes into to[0] and to[1], then `add` on the word at
+    // `counter` once they have landed.
+    inline void link_scatter_counted(
+        LinkHeaderAt header,
+        const uint64_t* to,
+        uint64_t counter,
+        uint16_t add,
+        uint32_t page
+    ) {
+        header->to_noc_fused_unicast_scatter_write_atomic_inc(
+            tt::tt_fabric::NocUnicastScatterAtomicIncFusedCommandHeader(
+                {to[0], to[1]}, counter, {static_cast<uint16_t>(page)}, add, true
+            ),
+            2 * page
+        );
+    }
+#else
+    // The wire writes a packet to one address: a page a packet where they differ.
+    constexpr uint32_t kPacketPages = 1;
+    constexpr uint32_t kCountedPages = 1;
+#endif
+
     // The word `word` into `to`, no payload.
     inline void link_inline(LinkHeaderAt header, uint64_t to, uint32_t word) {
 #if defined(KM_WIRE)
@@ -182,6 +228,13 @@ namespace km {
 
         bool space() const {
             return true;
+        }
+
+        void ready() {
+        }
+
+        bool send_across_stateful(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+            return send_across(header, from, bytes);
         }
 
         // The packet across: `bytes` from L1 `from` (0: none) as the header says; a
@@ -292,6 +345,24 @@ namespace km {
             );
             return true;
         }
+
+        // The NoC command buffers set once for send_stateful's packets (tt-metal's
+        // stateful send): call before a run of them and again after any other write,
+        // inline write or atomic of this CPU, which set the same buffers.
+        void ready() {
+            edm().template setup_stateful_send_cmd_bufs<false>();
+        }
+
+        // As send_across, on the buffers ready() set: the payload's write, the
+        // header's and the router's credit, each a write of the addresses alone
+        // (measured, one link at 4352 bytes: 139 ns a packet against send_across's
+        // 150, the router's own bound).
+        bool send_across_stateful(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+            edm().template send_current_slot_stateful_non_blocking<false>(
+                from, bytes, reinterpret_cast<uint32_t>(header)
+            );
+            return true;
+        }
 #endif
 
         // The packet: across, or on toward the island a route names (forward_send).
@@ -302,6 +373,19 @@ namespace km {
             }
 #endif
             return send_across(header, from, bytes);
+        }
+
+        // As send, the packets across on the buffers ready() set; a forwarded one as
+        // send does, the buffers then set again.
+        bool send_stateful(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+#if defined(KM_FORWARD)
+            if (forward_held.route != 0 && forward_needed()) {
+                const bool sent = forward_send(header, from, bytes);
+                ready();
+                return sent;
+            }
+#endif
+            return send_across_stateful(header, from, bytes);
         }
 
         // The connection's words in the CPU's L1 (its chunk): teardown, cursor.
@@ -441,7 +525,7 @@ namespace km {
         const uint32_t k = forward_index(view);
         const uint32_t j = to < view.count() ? view.link(to) : KM_ISLAND_NO_LINK;
         if (
-            j == KM_ISLAND_NO_LINK || to == view.here() || bytes > KM_PAGES_PACKET_MAX
+            j == KM_ISLAND_NO_LINK || to == view.here() || bytes > KM_FORWARD_PAYLOAD
         ) {
             return kForwardBad;
         }

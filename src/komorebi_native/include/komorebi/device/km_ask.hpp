@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "km_pages.hpp"
 #include "km_placement.hpp"
 #include "km_port.hpp"
 #include "km_transfer.hpp"
@@ -128,8 +129,9 @@ namespace km {
     // address `address` (`bytes` aligned page bytes), held by island `holder`, and L1
     // `at` of this core (`dram`, KM_ASK_DRAM's: bank address `at` of this island's
     // DRAM, from its page `dram_first`), counted at port `port`, for command (`slot`,
-    // `sequence`): a line reserved on link core 0 with a local atomic. False: gave up
-    // (recorded).
+    // `sequence`): a line reserved on link core 0 with a local atomic. A put from L1,
+    // when the page CPUs have rings: its pages written into them here after the line
+    // (pages_into_rings; `at` free on return). False: gave up (recorded).
     template <typename Kernel>
     inline bool ask_line_at(
         const Kernel& core,
@@ -158,7 +160,7 @@ namespace km {
         if (
             area == 0 || hops == 0 || (queue.cursors && hops != 1) ||
             port >= KM_PORT_SLOTS || bytes == 0 || bytes % 16 != 0 ||
-            bytes > KM_PAGES_PACKET_MAX || at % 16 != 0
+            bytes > view.packet() || at % 16 != 0
         ) {
             // another island (a put: a link apart, not forwarded), whole packets
             return give_up(kGaveBadItem);
@@ -196,7 +198,8 @@ namespace km {
         }
         const uint32_t number = returned[0];
         // the line is free once link core 0 (each page CPU) took the one KM_ASK_SLOTS
-        // before
+        // before, and a put line once the far island confirmed it (its pages count at
+        // the same word there)
         volatile tt_l1_ptr uint32_t* taken = l1(area + queue.read);
         const auto oldest = [&] {
             const uint32_t cpus = (
@@ -207,6 +210,10 @@ namespace km {
             uint32_t behind = 0;
             for (uint32_t j = 0; j < cpus && j < KM_PAGE_CPUS; j++) {
                 behind = number - taken[j] > behind ? number - taken[j] : behind;
+            }
+            const uint32_t done = taken[(KM_PUT_DONE - KM_PUT_TAKEN) / 4];
+            if (queue.cursors && number - done > behind) {
+                behind = number - done;
             }
             return behind;
         };
@@ -237,6 +244,19 @@ namespace km {
         if (code != kGaveNone) {
             return give_up(code);
         }
+        // a put from L1 into the page CPUs' rings, when they have them
+        const uint32_t build = (
+            area + KM_PUT_BUILD + (core.role() == kRoleWriter ? KM_PUT_BUILD_BYTES : 0)
+        );
+        bool ring = false;
+        PutRings rings{};
+        if (queue.cursors && dram == 0) {
+            code = put_rings_read(core, link, area, build, rings);
+            if (code != kGaveNone) {
+                return give_up(code);
+            }
+            ring = rings.slots != 0;
+        }
         volatile tt_l1_ptr uint32_t* line = l1(area + queue.own);
         for (uint32_t w = 0; w < 16; w++) {
             line[w] = 0;
@@ -255,6 +275,7 @@ namespace km {
         line[KM_ASK_FROM] = view.here();
         line[KM_ASK_DRAM] = dram;
         line[KM_ASK_DRAM_FIRST] = dram_first;
+        line[KM_ASK_RING] = ring ? 1 : 0;
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
         noc_async_write(
@@ -269,6 +290,22 @@ namespace km {
             },
             limit
         );
+        if (code == kGaveNone && ring) {
+            code = pages_into_rings(
+                core,
+                area,
+                build,
+                area + queue.returned,
+                number,
+                view.hops(holder),
+                address,
+                bytes,
+                first,
+                pages,
+                at,
+                rings
+            );
+        }
         return code == kGaveNone || give_up(code);
     }
 

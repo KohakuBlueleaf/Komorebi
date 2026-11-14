@@ -59,6 +59,17 @@ def parse():
     parser.add_argument(
         "--chunk", type=int, default=0, help="KiB of a link CPU's L1 (0: the default)"
     )
+    parser.add_argument(
+        "--packet", type=int, help="payload bytes a packet (default: the session's)"
+    )
+    parser.add_argument(
+        "--soak",
+        choices=("ask", "put"),
+        help="island 0's ranks ask (or put) --step pages a call over --mib, in rounds,"
+        " until --calls calls or --seconds; every asked page checked on the core",
+    )
+    parser.add_argument("--calls", type=int, default=3_000_000, help="the soak's")
+    parser.add_argument("--seconds", type=float, default=100.0, help="the soak's most")
     return parser.parse_args()
 
 
@@ -73,7 +84,13 @@ def main():
         0, 1 << 32, (pages, args.page // 4), dtype=np.uint64
     )
     data = data.astype(np.uint32)
-    with km.Session(cards=cards, links=args.links, log=log) as session:
+    if args.soak:  # the pattern a soak's core checks: word 0 the page, the last ~page
+        data[:, 0] = np.arange(pages, dtype=np.uint32)
+        data[:, -1] = ~np.arange(pages, dtype=np.uint32)
+    with km.Session(
+        cards=cards, links=args.links, log=log, packet=args.packet
+    ) as session:
+        report["packet"] = session.packet
         if args.chunk:
             for one in session.sessions:
                 one.transfer_chunk = args.chunk * 1024
@@ -81,6 +98,11 @@ def main():
         own = [(graph.first(i), graph.count(i)) for i in range(2)]
         report["link_cores"] = [list(cores) for cores in session.link_cores]
         report["channels"] = [list(channels) for channels in session.channels]
+        if args.soak:
+            report.update(soak(session, args, data, own, log))
+            report["wall_s"] = round(time.monotonic() - STARTED, 1)
+            print(json.dumps(report), flush=True)
+            sys.exit(0 if report["ok"] else 1)
         moving = args.ask or args.put
         # MOVE: ASK reads a source island 1 holds, PUT writes a target it holds
         source = session.tensor(data, "uint32", group=own[1 if args.ask else 0])
@@ -190,6 +212,8 @@ def move(session, run, program, args, source, targets, data):
     crossed beside it; then each target's pages read back and compared."""
     handler = program.handler("move")
     mine = run.island(0)
+    _, chunk = session.staging(0)
+    log(f"link CPUs' L1: {chunk:,} B a CPU")
     group = (session.graph.first(0), session.graph.count(0))
     name = "ASK" if args.ask else "PUT"
     rows = []
@@ -215,7 +239,113 @@ def move(session, run, program, args, source, targets, data):
         got = got.view(np.uint32).reshape(pages, -1)
         row["wrong_pages"] = int((got != data[:pages]).any(axis=1).sum())
         log(f"{row['mib']} MiB read back: {row['wrong_pages']} pages wrong")
-    return {"mode": name.lower(), "group": list(group), "rows": rows}
+    return {"mode": name.lower(), "group": list(group), "chunk": chunk, "rows": rows}
+
+
+def soak(session, args, data, own, log):
+    """SOAK commands by island 0's ranks, rounds each, until --calls calls or
+    --seconds: asks of --step pages from island 1 (each page checked on the core), or
+    puts into island 1 (its target read back at the end); each rank's report."""
+    pages = data.shape[0]
+    asks = args.soak == "ask"
+    source = session.tensor(data, "uint32", group=own[1 if asks else 0])
+    target = session.empty(data.shape, "uint32", group=own[1])
+    reports = session.empty(data.shape, "uint32", group=own[0])
+    program = km.Program(
+        "pages",
+        kernels=KERNELS,
+        handlers=KERNELS / "pages.h",
+        buffers=[
+            km.Buffer(
+                index=0, format="bfloat16", page_bytes=args.step * args.page, pages=1
+            )
+        ],
+        compile_args={"reader": source.accessor_args()},
+    )
+    run = session.load(program, deadline=2.0)
+    handler = program.handler("soak")
+    mine = run.island(0)
+    group = own[0]
+    ranks = group[1]
+    per_round = sum(
+        -(-(pages // ranks + (r < pages % ranks)) // args.step) for r in range(ranks)
+    )
+    log(
+        f"SOAK {args.soak}: {pages} pages of {args.page} B, {args.step} a call, "
+        f"{per_round} calls a round over {ranks} ranks"
+    )
+    out = {"mode": f"soak-{args.soak}", "calls": 0, "commands": 0, "error": None}
+    out["reports_bad"], out["pages_bad"] = [], 0
+
+    def reported():
+        """Each rank's report of the command just run: the bad ones kept."""
+        (got,) = session.read(reports, first=0, pages=ranks)
+        rows = [row[:8].tolist() for row in got.view(np.uint32).reshape(ranks, -1)]
+        bad = [
+            row
+            for row in rows
+            if row[0] != 0x534F414B
+            or row[2] != 0
+            or row[4] != 0xFFFFFFFF
+            or row[5] != 0xFFFFFFFF
+        ]
+        out["reports_bad"] += bad[: 8 - len(out["reports_bad"])]
+        out["pages_bad"] += int(sum(row[2] for row in rows if row[0] == 0x534F414B))
+        return not bad
+
+    rounds, started = 1, time.monotonic()
+    while out["calls"] < args.calls and time.monotonic() - started < args.seconds:
+        words = [
+            source.address,
+            target.address,
+            pages,
+            args.step,
+            rounds,
+            reports.address,
+            args.page,
+        ]
+        begun = time.monotonic()
+        try:
+            mine.wait(mine.submit(handler, group, words), timeout=60.0)
+        except km.KomorebiError as error:
+            out["error"] = str(error)[:600]
+            log(f"SOAK command {out['commands']} failed: {out['error']}")
+            reported()
+            break
+        took = time.monotonic() - begun
+        if not reported():
+            log(f"SOAK command {out['commands']}: a rank reports a bad page")
+            break
+        out["calls"] += per_round * rounds
+        out["commands"] += 1
+        log(f"SOAK: {rounds} rounds in {took:.2f} s, {out['calls']:,} calls")
+        # a command near a second: a core's wait limit (about 2.4 s) ends a longer one
+        rounds = max(1, min(int(rounds * 1.0 / max(took, 1e-3)), rounds * 8))
+    out["seconds"] = round(time.monotonic() - started, 1)
+    log(f"reports: {len(out['reports_bad'])} ranks with a bad page or a failure")
+    if not asks:
+        (back,) = session.read(target)
+        back = back.view(np.uint32).reshape(data.shape)
+        out["wrong_pages"] = int((back != data).any(axis=1).sum())
+        log(f"target read back: {out['wrong_pages']} pages wrong")
+    try:
+        results = run.stop()
+        out["kernel_errors"] = [result["error_name"] for result in results]
+    except km.KomorebiError as error:
+        out["kernel_errors"] = str(error)[:300]
+    out["ok"] = bool(
+        out["error"] is None
+        and not out["reports_bad"]
+        and out["pages_bad"] == 0
+        and out.get("wrong_pages", 0) == 0
+        and out["kernel_errors"] == ["none", "none"]
+        and out["calls"] >= args.calls
+    )
+    log(
+        f"SOAK {args.soak}: {out['calls']:,} calls in {out['seconds']} s, "
+        f"ok {out['ok']}"
+    )
+    return out
 
 
 def shapes(session, args, source, targets, data):

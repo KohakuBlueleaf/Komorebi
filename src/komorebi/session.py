@@ -1949,7 +1949,7 @@ class _Backend:
             area = plan.area if plans else self.session.link_area
             table = np.frombuffer(graph.table(here), np.uint32)
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
-            header.append(base)
+            header += [base, getattr(self.session, "packet", 0)]
             mine = self.control_rows[base : base + count]
             mine[:, at : at + len(header)] = header
             mine[:, at + line : at + line + len(table)] = table

@@ -40,7 +40,9 @@ namespace km {
     constexpr uint32_t kLinkNone = 0xFFFFFFFF;
     constexpr uint32_t kLinkOutboxMin = kMessagesPacket * 2;
     constexpr uint32_t kLinkInboxMax = 16;
-    constexpr uint32_t kLinkPacketBytes = 4352;  // the fabric's largest payload
+    // A message packet's bytes: tt-metal's default packet, within every island packet
+    // the session allows (island_session.LINK_PACKET_BYTES, its least).
+    constexpr uint32_t kLinkPacketBytes = 4352;
 
     // The region, from its address: 16-byte words, each with one writer.
     constexpr uint32_t kLinkOutTail = 0x00;  // outbox positions reserved (atomic adds)

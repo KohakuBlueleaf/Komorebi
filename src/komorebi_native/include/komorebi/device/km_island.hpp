@@ -52,6 +52,11 @@ namespace km {
             return area_[KM_ISLAND_BASE];
         }
 
+        // The payload bytes of a packet on this island's links; 0: no links.
+        uint32_t packet() const {
+            return area_[KM_ISLAND_PACKET];
+        }
+
         // The flat rank of core 0 (first - base, modulo 2^32): rank = this + core.
         uint32_t offset() const {
             return first() - base();

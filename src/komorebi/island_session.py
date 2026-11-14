@@ -38,6 +38,11 @@ KERNEL_BYTES = 128 * 1024
 # headers); a run with no room for it keeps the default.
 LINK_CHUNK = 64 * 1024
 CROSS_PAGE = 64  # bytes of a link CPU's row of what crossed, as COUNTS writes it
+# The payload bytes of a packet on the links, the routers told so at the open (the
+# kernels read it from the island area). Measured, one link from L1 slots: 31.3 GB/s
+# at 4352 bytes (tt-metal's default), 40.2 at 8192, 33.2 at 15232 (the routers'
+# largest, KM_PACKET_LARGEST: four router slots starve the link). packet= overrides it.
+PACKET_BYTES = 8192
 
 
 def _rows(indices):
@@ -635,6 +640,7 @@ class IslandSession:
         host_reaches=None,
         card_dram=False,
         line=False,
+        packet=None,
     ):
         self.cards = tuple(int(card) for card in cards)
         if not self.cards or len(set(self.cards)) != len(self.cards):
@@ -660,6 +666,13 @@ class IslandSession:
                 f"host_reaches={host_reaches}: one island of a session over two cards"
             )
         self.host_reaches = None if host_reaches is None else tuple(host_reaches)
+        self.packet = PACKET_BYTES if packet is None else int(packet)
+        largest = abi.headers()["KM_PACKET_LARGEST"]
+        if not LINK_PACKET_BYTES <= self.packet <= largest or self.packet % 64 != 0:
+            raise ValueError(
+                f"packet={packet}: {LINK_PACKET_BYTES} to {largest} bytes (a message "
+                "packet's to the routers' largest), whole 64-byte lines"
+            )
         if self.split == 1 and links and len(self.cards) != 2:
             raise ValueError(f"links={links}: between two cards, or a split card")
         if self.split > 1 and len(self.cards) != 1:
@@ -720,6 +733,7 @@ class IslandSession:
                 **self._options,
             )
             session.open()
+            session.packet = self.packet
             self.chips, self.sessions = [self.cards[0]], (session,) * self.split
             columns, rows = session.grid
             self.graph = islands.one(columns * rows, columns)
@@ -728,6 +742,7 @@ class IslandSession:
                     columns, rows, self.split, self.links, self.line
                 )
                 self.link_cores = self.graph.link_cores
+                self._forward_packet()
                 self.channels = ((0,) * self.links,) * self.split  # no router: a wire
                 session_module._LIVE.add(self)
                 shape = "in a line" if self.line else "each joined to each"
@@ -755,7 +770,8 @@ class IslandSession:
                 )
         module = native.load_module(self.tree)
         self.log(f"opening cards {listed} as one 1 x {len(self.cards)} fabric mesh")
-        self.mesh = module.Islands(len(self.cards), self._worker_l1)
+        self.log(f"routers told: packets of {self.packet} bytes")
+        self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
         session_module._hook_exit()
         session_module._LIVE.add(self)
         try:
@@ -778,6 +794,7 @@ class IslandSession:
             for island, session in enumerate(self.sessions):
                 session.transfer_chunk = LINK_CHUNK
                 session.l1_held = lambda island=island: self._held_l1(island)
+                session.packet = self.packet
             if len(self.chips) == 2:
                 found = int(self.mesh.link(0, 1, 0)[0])
                 most = min(found, self.LINKS_MAX)
@@ -795,11 +812,22 @@ class IslandSession:
             ]
             self.graph = islands.Graph(parts, links, link_cores=link_cores)
             self.link_cores = self.graph.link_cores
+            self._forward_packet()
             if self.links:
                 self._open_links(module)
         except BaseException:
             self.close()
             raise
+
+    def _forward_packet(self):
+        """More than two islands: the kernels' packets no larger than a forward slot's
+        payload (KM_FORWARD_PAYLOAD; the routers may carry larger ones)."""
+        most = abi.headers()["KM_FORWARD_PAYLOAD"]
+        if len(self.graph.islands) > 2 and self.packet > most:
+            self.log(f"packets of {most} bytes: a forward slot's, over the islands")
+            self.packet = most
+            for session in self.sessions:
+                session.packet = most
 
     def _open_links(self, module):
         """The Ethernet channel of each link toward the other island, and the check
