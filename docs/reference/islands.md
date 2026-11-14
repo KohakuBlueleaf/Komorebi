@@ -300,6 +300,21 @@ its part's bank address and the page's index there, and `km::island_of(tensor, p
 the island; a word that is not an entry (a bank address) answers this island, the word
 and the page, so a kernel written this way runs unchanged on one card. A copy's page
 answers the core's own island. `tensor.accessor_args()` is the same on every island.
+A part's fourth word is its bytes in each bank (an interleaved buffer's pages over the
+8 banks, rounded up, times the aligned page bytes), the bound of `km::SizedTensor`.
+
+`session.bank_range(island, bank, address, bytes)` names `bytes` of one DRAM bank of
+one island from bank address `address` (a multiple of 64), such as an X280 thread's
+region (`run.island(i).threads[cluster].regions.address(name)` gives its bank and
+address): it takes an entry of the table as a tensor does and returns an object whose
+`address` is its word and whose `free()` frees the entry (the bank's bytes stay);
+`bank` is kept beside it. Its entry is the holder island, the bank, the bytes and the kind 2
+(`KM_TENSOR_BANK`), then the holder's part with the bank address; under
+`km::page_at` it names no island's pages. A kernel on any island reads and writes it by
+that word with `km::BankRange`. A session of one island, or a split card's one DRAM,
+makes no entry: the word is the bank address itself. `kmx_fetch` and `kmx_store` do
+not take the word (a copy reads a word as an interleaved tensor's); an X280 thread
+names its own region by its bank and address as before.
 
 `session.write(tensor, pages, first=0)` scatters each island's pages into its part
 through that island's own host channel, and `session.read` and `session.read_bf16`
@@ -574,6 +589,8 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::read_bytes(core, command, tensor, page, offset, bytes, into)` | exactly `bytes` bytes at byte `offset` of page `page` land at L1 `into`, and nothing else of L1 is written; returns once they have. A page this island holds: one NoC read. A page another island holds: one get line (64 bytes); that island's page CPUs take these lines in turn, read the range from DRAM and write it into `into`: the words before `into`'s first 16-byte line and after its last, one inline word write each, then the 16-byte lines between as one write that adds 1 to the CPU's page port. Offset and bytes are multiples of 4 and `into` has the offset's low 6 bits (a read from DRAM has the same low 6 bits at both ends on Blackhole, and pages start 64-aligned); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Across, a link apart and a page a packet holds (else `bad_item` at `ask`). False: gave up |
 | `km::ask_bytes(core, command, tensor, page, offset, bytes, into, asked)` | the same, not waited for: a range asked across adds 1 to `asked`. Any number may be in flight, each into its own `into`; the island queues 32 lines at most, and an ask past them waits for a free line. `km::bytes_wait` before the CPU's next page call |
 | `km::bytes_wait(core, command, asked)` | waits until the CPU's NoC reads have landed and its page port has counted `asked` (then 0). False: gave up |
+| `km::SizedTensor(word, page_bytes)` | an interleaved session tensor (its reference word) in pages of `page_bytes` given at run time, such as a command's; every call above takes it as it takes a `km::Tensor`. Page `i` lies in bank `i` % 8 at `i` / 8 x `page_bytes`. Over islands the tensor is a copy (each island its own part) or held whole by one island (a `group` of one island's ranks); refused (`bad_item` at `ask`): a tensor split over islands, `page_bytes` not a multiple of 64, a page past its part's bytes in each bank. A page call across takes pages a packet holds; a byte call across goes as the range's own place in its bank, so its page may be larger than a packet. Built for one island it is the bank address and each call compiles to the NoC call written by hand with `InterleavedAddrGen`, unchecked |
+| `km::BankRange(word, bank, page_bytes)` | a range of one DRAM bank (the word of `session.bank_range`) in pages of `page_bytes` (a multiple of 64): page `q` at its bank address + `q` x `page_bytes`; every call above takes it. Over islands the bank and address come from the entry (a word that names no entry is a bank address in `bank` here); a page past the range's bytes is refused (`bad_item` at `ask`). Across, a page call is one line a page. Built for one island the word is the bank address in `bank`, read with `get_noc_addr_from_bank_id` |
 | `km::Stream` | a stream over a `km::Tensor` reads and writes through these calls ([Movement](movement.md#a-stream-over-islands)) |
 
 A program loaded on one island (a card's own session, or an island session of one
@@ -607,6 +624,15 @@ p150a cards, one page link, 2026-11-15:
   1.95 µs (2,048 bytes) however many a rank keeps in flight, so at this load a rank
   waits 190 to 220 µs a range; read from island 0's own DRAM, a range takes 0.48 to
   0.54 µs one in flight and 0.18 to 0.30 µs with 32.
+- `experiments/islands_bytes/forms.py` (four links): a 1 MiB tensor island 1 holds,
+  read and written by all 236 ranks of both islands with `km::SizedTensor`: two pages
+  a rank in pages of 1,024 and of 192 bytes (`km::read_pages`, then `km::write_pages`
+  xor a mark, 0.51 and 0.50 ms a command), and four 128-byte items a rank of pages of
+  8,192 bytes (`km::ask_bytes`, `km::put_bytes`, 0.92 ms); and 32 KiB of bank 6 of
+  island 0 (`session.bank_range`, `km::BankRange` in 64-byte pages) of which each rank
+  reads two pages and 40 bytes and writes the pages back (1.29 ms). Every word the
+  cores checked was exact (183,608), and so was every word of both tensors read back
+  by the host, the other banks of the range's tensor unchanged.
 
 - Example 11's `islands.py`: island 0's four cores copy 192 pages island 1 holds
   alone, exact, and READ them in 275.8 µs (1.43 GB/s); with `--write-across` they copy
@@ -822,10 +848,10 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   onto island 0 refused.
 - A tensor read or written by an address the kernel builds itself
   (`InterleavedAddrGen`: profile pages, job tables, the raster and ray tracer projects)
-  does not cross, and neither do its ranges of a page: the raster passes read the X280
-  thread's regions in one DRAM bank, and the ray tracer's packet streams have page bytes
-  that change with the handler and the stage, where a `km::Tensor` takes its page
-  bytes from its compile arguments. An overlay of the kernel form is built with its kernel's defines and
+  does not cross, and neither do its ranges of a page. The raster passes' reads of the
+  X280 thread's regions in one DRAM bank can be named by `km::BankRange`, and the ray
+  tracer's packet streams, whose page bytes change with the handler and the stage, by
+  `km::SizedTensor`; neither project uses them yet. An overlay of the kernel form is built with its kernel's defines and
   compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
 - More than two cards: the mesh opens 1 x n; tried with two.
 - A split card: a copy across and a put over more than one link; more than one wire a
