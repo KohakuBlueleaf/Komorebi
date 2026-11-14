@@ -93,7 +93,7 @@ static inline int messages_quiet(kmd_t* dispatcher) {
 static inline void messages_turn(kmd_t* dispatcher) {
     kmd_messages_t* run = &dispatcher->messages;
     if (
-        !(dispatcher->busy & (1u << run->slot)) ||
+        !(dispatcher->busy & (1ull << run->slot)) ||
         dispatcher->slot_sequence[run->slot] != run->sequence
     ) {
         run->active = 0; /* the RUN completed or ended otherwise: nothing to end */

@@ -186,7 +186,7 @@ reset is needed.
 
 ## Control block
 
-Two broadcast areas of 0x140 bytes from `KM_CONTROL_BROADCAST` (0xA00), in 16-byte slots: VALID
+Two broadcast areas of 0x140 bytes from `KM_CONTROL_BROADCAST` (0x1A80), in 16-byte slots: VALID
 (the marker, the word at `KM_BROADCAST_WORD`, 1 at `KM_BROADCAST_CARRIES` when the cast
 carries one), the source slot of this core's outgoing writes, the first give-up (where |
 broadcast << 8, block, sequence number), statistics (blocks, wait cycles), and the

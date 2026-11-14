@@ -57,7 +57,7 @@ def parse():
         nargs="*",
         default=["host:full:x:1", "stream:full:x:1", "thread:full:x:1"],
         help="way:mode:flag:window[:chains], way host|stream|thread, mode "
-        "full|parts, flag x (exclusive) or - (none), window 1 to 8",
+        "full|parts, flag x (exclusive) or - (none), window 1 to 32",
     )
     parser.add_argument("--no-check", action="store_true")
     parser.add_argument("--pause", type=float, default=1.0, help="x a case's time")
@@ -80,8 +80,8 @@ def case_of(text):
         "window": int(window),
         "chains": int(chains[0]) if chains else 1,
     }
-    if not 1 <= case["window"] <= 8 or case["chains"] not in (1, 2):
-        raise SystemExit(f"case {text}: window 1 to 8, chains 1 or 2")
+    if not 1 <= case["window"] <= 32 or case["chains"] not in (1, 2):
+        raise SystemExit(f"case {text}: window 1 to 32, chains 1 or 2")
     if way != "thread" and case["chains"] != 1:
         raise SystemExit(f"case {text}: two chains are the thread's")
     if way == "host" and case["window"] != 1:
@@ -104,7 +104,7 @@ def activation(seed, salt):
 class Chain:
     """The loaded program, its tensors and the three ways of driving the chain."""
 
-    def __init__(self, session, plan, weights, buffers, deadline):
+    def __init__(self, session, plan, weights, buffers, deadline, depth):
         self.session, self.plan, self.weights = session, plan, weights
         self.cores = plan.cores()
         self.pairs = buffers
@@ -122,7 +122,7 @@ class Chain:
             words=[pl.S["kHandlerSplit"], REDUCE],
             handlers={"chain": 1},
         )
-        self.run = session.load(program, deadline=deadline, wait=1.0)
+        self.run = session.load(program, deadline=deadline, wait=1.0, depth=depth)
         self.slot = 0
 
     def words(self, mode, index, pair, layers):
@@ -285,8 +285,11 @@ def main():
         )
         deadline = round(longest * SECONDS_PER_PRODUCT + 1.0, 3)
         report["deadline_s"] = deadline
-        chain = Chain(session, plan, weights, buffers, deadline)
-        log(f"loaded on {plan.cores()} cores, deadline {deadline} s")
+        # ring slots: the program's 4, or the largest window
+        depth = max(4, *(case["window"] for case in args.cases))
+        report["depth"] = depth
+        chain = Chain(session, plan, weights, buffers, deadline, depth)
+        log(f"loaded on {plan.cores()} cores, depth {depth}, deadline {deadline} s")
         results, ok = [], True
         try:
             for number, way in enumerate(checks):

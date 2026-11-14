@@ -149,7 +149,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   `KM_QUEUE_JOBS` (64) jobs of every source in arrival order, and answered with its
   `KM_EVENT_DONE` once it has run; a full queue rejects the host's (reason 9) and the
   engine's and a work cluster's (reason 11, below). The queue submits into the same
-  completion slots as every command: at most the program's depth (16 at most) commands of
+  completion slots as every command: at most the program's depth (64 at most) commands of
   all sources are in flight at once over the whole grid, queued ones included. Each
   pass ends with the queue's turn: of the first `KM_QUEUE_LOOK` (16) jobs
   as they are at its start, each that finds a free slot and room is submitted, the group
@@ -263,7 +263,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   the kernel ends with `KMD_ERROR_ENGINE`. Core 1 returns before core 0 does. The stop flag goes to the grid only while a slot is busy or before EXIT was submitted. The state
   and error words in the host buffer, the result block and the core block in LIM
   (`KMD_LIM_CORES`: each core's progress marker, the engine's state and counts) then
-  hold the outcome. `KMD_H_ABANDONED` counts the commands in flight (`KMD_R_BUSY`) and
+  hold the outcome. `KMD_H_ABANDONED` counts the commands in flight (busy slots 0 to 31 in
+  `KMD_R_BUSY`, 32 to 63 in the core block's `KMD_H_BUSY_HIGH`) and
   the jobs still queued at the finish: none of them gets its `KM_EVENT_DONE`.
 - **Abort.** The runtime's stop is the abort: core 0 looks for it every 1,024 passes
   (tens of microseconds), the poll that also checks deadlines, and finishes as

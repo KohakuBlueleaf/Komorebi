@@ -192,7 +192,7 @@ the program's own.
 | `ready_slot`, `ready_base` | the leader's READY word at the dispatcher |
 | `tag` | per-process random tag, 16 bits; check-ins carry it |
 | `workers` | cores 0 to `workers - 1` run commands (the group of an EXIT) |
-| `depth` | ring slots scanned, 1 to 16 (0: 16) |
+| `depth` | ring slots scanned, 1 to 64 (`KM_RING_SLOTS`; 0: 64) |
 | `row` | cores per grid row for completion; 0: one level always |
 | `wait_limit` | timeout of a wait for another core, in 1024-cycle units |
 | `idle_limit` | timeout of a wait for the next command, in 1024-cycle units; 0: none |
@@ -281,45 +281,47 @@ How each kernel left is one byte of `kStEnds` (reader, writer, compute):
 
 ### State words
 
-48 words from `KM_CONTROL_STATE`, read back after the stop (`komorebi.state`). Counters
-saturate.
+144 words (`KM_STATE_WORDS`, 2 per ring slot and 16) from `KM_CONTROL_STATE`, read
+back after the stop (`komorebi.state`). Counters saturate. The words after the two
+per-slot parts are counted from `kStReader` (128).
 
 | Word | Meaning |
 |---|---|
-| 0 to 15 (`kStLast`) | last sequence consumed, per ring slot |
-| 16 to 31 (`kStReported`) | last sequence this core reported, per slot |
-| 32, 33 / 34, 35 / 36, 37 | gave-up word and its sequence: reader / writer / compute |
-| 38 `kStRuns`, 41 `kStCompleted`, 42 `kStSeen` | commands the reader took, the writer finished, compute took |
-| 39 `kStPasses`, 40 `kStNextCycles` | ring passes and cycles / 16 spent waiting for commands |
-| 43 `kStWrong` | bytes unpack, math, pack: job copies that did not match the token |
-| 44 `kStEnds` | how each kernel left |
-| 45 `kStMagic` | `0x4B000000 \| tag << 8 \| me`: the reader started with this tag |
-| 46 `kStSlotWrong` | commands not run: found in a slot their header does not name |
-| 47 `kStTraceDropped` | commands past the trace's capacity |
+| 0 to 63 (`kStLast`) | last sequence consumed, per ring slot |
+| 64 to 127 (`kStReported`) | last sequence this core reported, per slot |
+| 128, 129 / 130, 131 / 132, 133 | gave-up word and its sequence: reader (`kStReader`) / writer / compute |
+| 134 `kStRuns`, 137 `kStCompleted`, 138 `kStSeen` | commands the reader took, the writer finished, compute took |
+| 135 `kStPasses`, 136 `kStNextCycles` | ring passes and cycles / 16 spent waiting for commands |
+| 139 `kStWrong` | bytes unpack, math, pack: job copies that did not match the token |
+| 140 `kStEnds` | how each kernel left |
+| 141 `kStMagic` | `0x4B000000 \| tag << 8 \| me`: the reader started with this tag |
+| 142 `kStSlotWrong` | commands not run: found in a slot their header does not name |
+| 143 `kStTraceDropped` | commands past the trace's capacity |
 
 ## Control block
 
 Every core has one control block in L1, at the same address everywhere (`args().control`,
 a multiple of 16). Offsets are in bytes, and every offset has a static assert in
-`km_abi.h`.
+`km_abi.h`. The ring, DONE and state parts follow `KM_RING_SLOTS` (64); every offset
+after them is derived from the one before.
 
 | Offset | Name | Contents |
 |---|---|---|
-| 0x000 | `KM_CONTROL_RING` | 16 ring slots of one command each (64 bytes) |
-| 0x400 | `KM_CONTROL_RESERVED` | reserved, 16 bytes |
-| 0x410 | `KM_CONTROL_STOP` | stop flag: nonzero makes every wait give up |
-| 0x440 | `KM_CONTROL_DONE` | 16 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned, word 2 (`kDoneReader`) the last whose reader body returned |
-| 0x540 | `KM_CONTROL_BOOT` | start-up check-ins at a leader, one 16-byte slot per rank |
-| 0x640 | `KM_CONTROL_STATE` | 48 state words |
-| 0x700 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
-| 0x740 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
-| 0x780 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
-| 0x980 | `KM_CONTROL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
-| 0xA00 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
-| 0xC80 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
-| 0xD40 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
-| 0x1580 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
-| 0x15C0 | `KM_CONTROL_BYTES` | size of the block |
+| 0x000 | `KM_CONTROL_RING` | 64 ring slots of one command each (64 bytes) |
+| 0x1000 | `KM_CONTROL_RESERVED` | reserved, 16 bytes |
+| 0x1010 | `KM_CONTROL_STOP` | stop flag: nonzero makes every wait give up |
+| 0x1040 | `KM_CONTROL_DONE` | 64 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned, word 2 (`kDoneReader`) the last whose reader body returned |
+| 0x1440 | `KM_CONTROL_BOOT` | start-up check-ins at a leader, one 16-byte slot per rank |
+| 0x1540 | `KM_CONTROL_STATE` | 144 state words |
+| 0x1780 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
+| 0x17C0 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
+| 0x1800 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
+| 0x1A00 | `KM_CONTROL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
+| 0x1A80 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
+| 0x1D00 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
+| 0x1DC0 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
+| 0x2600 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
+| 0x2640 | `KM_CONTROL_BYTES` | size of the control block |
 
 Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing

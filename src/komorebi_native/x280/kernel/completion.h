@@ -20,7 +20,7 @@ static inline volatile const uint64_t* slot_ack(
 /* The lowest free slot, or KM_RING_SLOTS if every slot in use is busy. */
 static inline uint32_t slot_free(const kmd_t* dispatcher) {
     for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
-        if (!(dispatcher->busy & (1u << slot))) {
+        if (!(dispatcher->busy & (1ull << slot))) {
             return slot;
         }
     }
@@ -78,8 +78,8 @@ static inline void slot_take(
     dispatcher->ring[source].busy_count++;
     dispatcher->slot_submitted[slot] = now;
     dispatcher->slot_deadline[slot] = now + ticks;
-    dispatcher->busy |= 1u << slot;
-    dispatcher->result_busy |= result ? 1u << slot : 0u;
+    dispatcher->busy |= 1ull << slot;
+    dispatcher->result_busy |= result ? 1ull << slot : 0u;
     if (++dispatcher->busy_count > dispatcher->max_busy) {
         dispatcher->max_busy = dispatcher->busy_count;
     }
@@ -146,7 +146,7 @@ static inline uint32_t slots_overlap(
         const uint32_t busy_first = busy_group & 0xFFFFu;
         const uint32_t busy_end = busy_first + (busy_group >> 16);
         if (
-            (dispatcher->busy & (1u << slot)) && busy_first < first + count &&
+            (dispatcher->busy & (1ull << slot)) && busy_first < first + count &&
             first < busy_end && busy_end > end
         ) {
             end = busy_end;
@@ -186,7 +186,7 @@ KMD_HOT void slots_sweep(kmd_t* dispatcher) {
     x280_fence_ir();
     uint64_t now = 0;
     for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
-        if (!(dispatcher->busy & (1u << slot))) {
+        if (!(dispatcher->busy & (1ull << slot))) {
             continue;
         }
         const uint64_t line = *slot_ack(dispatcher, slot);
@@ -197,13 +197,13 @@ KMD_HOT void slots_sweep(kmd_t* dispatcher) {
             now = x280_mtime();
         }
         uint32_t ticks = (uint32_t)(now - dispatcher->slot_submitted[slot]);
-        const uint32_t result = dispatcher->result_busy & (1u << slot);
+        const uint64_t result = dispatcher->result_busy & (1ull << slot);
         if (result) {
-            dispatcher->result_busy &= ~(1u << slot);
+            dispatcher->result_busy &= ~(1ull << slot);
             dispatcher->last_result = ticks = (uint32_t)(line >> 32);
             dispatcher->results++;
         }
-        dispatcher->busy &= ~(1u << slot);
+        dispatcher->busy &= ~(1ull << slot);
         dispatcher->busy_count--;
         trace(dispatcher, KMD_TRACE_FREE, slot, dispatcher->slot_request[slot]);
         kmd_ring_t* ring = &dispatcher->ring[dispatcher->slot_source[slot]];
@@ -237,7 +237,7 @@ static inline uint32_t slots_late(const kmd_t* dispatcher, uint64_t now) {
     uint32_t late = KM_RING_SLOTS;
     for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
         if (
-            (dispatcher->busy & (1u << slot)) &&
+            (dispatcher->busy & (1ull << slot)) &&
             now > dispatcher->slot_deadline[slot] &&
             (
                 late == KM_RING_SLOTS ||

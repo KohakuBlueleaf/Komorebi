@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "kmsim/sim.hpp"
+#include "komorebi/abi/km_abi.h"
 
 // The kernels under test, built with kernel_main renamed to these.
 void kmsim_reader_main();
@@ -25,7 +26,7 @@ void kmsim_pack_main();
 
 namespace kmsim {
 
-    constexpr uint32_t kL1Bytes = 0x10000;    // one core's L1 image
+    constexpr uint32_t kL1Bytes = 0x14000;    // one core's L1 image
     constexpr uint32_t kControlOff = 0x1000;  // the control block in every image
     constexpr uint32_t kDram = 0xFFFFu;       // Chunk::dst of a DRAM write
     constexpr int64_t kDrop = -1;             // a delay that drops the chunk
@@ -33,9 +34,10 @@ namespace kmsim {
 
     // Dispatcher image: ack word j, READY word g (16 bytes apart), the hello mailbox.
     constexpr uint32_t kDispAck = 0x100;
-    constexpr uint32_t kDispReady = 0x300;
-    constexpr uint32_t kDispMailbox = 0x500;
-    constexpr uint32_t kDispLines = 0x600;  // status lines of a dynamic run, 16 bytes
+    constexpr uint32_t kDispReady = kDispAck + 16 * KM_RING_SLOTS;
+    constexpr uint32_t kDispMailbox = kDispReady + 0x100;
+    constexpr uint32_t kDispLines = kDispMailbox +
+        0x100;  // a dynamic run's status lines
 
     // DRAM: core table, the input tiles and the output pages of each ring slot.
     constexpr uint32_t kDramBytes = 4u << 20;

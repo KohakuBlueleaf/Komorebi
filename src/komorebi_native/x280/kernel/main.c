@@ -245,7 +245,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
                 0,
                 dispatcher->sequence,
                 request,
-                dispatcher->busy
+                (uint32_t)dispatcher->busy
             );
         }
         return KMD_FINISH;
@@ -560,7 +560,7 @@ static void loop(kmd_t* dispatcher) {
                 0,
                 dispatcher->sequence,
                 0,
-                dispatcher->busy
+                (uint32_t)dispatcher->busy
             );
             return;
         }
@@ -616,7 +616,7 @@ static void finish(kmd_t* dispatcher) {
     uint32_t abandoned = dispatcher
                              ->queued; /* no DONE event for these: dropped or cut off */
     for (uint32_t slot = 0; slot < KM_RING_SLOTS; slot++) {
-        abandoned += (dispatcher->busy >> slot) & 1u;
+        abandoned += (uint32_t)(dispatcher->busy >> slot) & 1u;
     }
     abandoned += work_abandoned(dispatcher);
     dispatcher->x280_cores[KMD_H_ABANDONED] = abandoned;
@@ -770,7 +770,7 @@ static __attribute__((noinline)) void run(uint64_t core) {
     dispatcher->upload_bytes = (uint32_t)arguments->upload_bytes;
     dispatcher->panels = (uint32_t)arguments->panels;
     dispatcher->depth = (uint32_t)arguments->depth;
-    dispatcher->full = (1u << dispatcher->depth) - 1u;
+    dispatcher->full = ~0ull >> (64u - dispatcher->depth);
     dispatcher->cores = (uint32_t)arguments->cores;
     dispatcher->messages.handler = (uint32_t)arguments->messages_handler;
     dispatcher->programs = (uint32_t)arguments->programs;

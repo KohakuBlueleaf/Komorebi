@@ -43,7 +43,8 @@ static inline void result_finish(kmd_t* dispatcher, uint64_t now) {
     );
     result_word(dispatcher, KMD_R_COMMANDS, dispatcher->commands);
     result_word(dispatcher, KMD_R_EVENTS, dispatcher->ring[KMD_SRC_HOST].pushed);
-    result_word(dispatcher, KMD_R_BUSY, dispatcher->busy);
+    result_word(dispatcher, KMD_R_BUSY, (uint32_t)dispatcher->busy);
+    dispatcher->x280_cores[KMD_H_BUSY_HIGH] = (uint32_t)(dispatcher->busy >> 32);
     result_word(dispatcher, KMD_R_MAX_BUSY, dispatcher->max_busy);
     result_word(dispatcher, KMD_R_REJECTED, dispatcher->rejected);
     result_word(dispatcher, KMD_R_HELD, dispatcher->held);

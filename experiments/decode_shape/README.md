@@ -48,7 +48,8 @@ python examples/11_movement/movement.py --pattern A AB AAAB --cores 12
 A case is `way:mode:flag:window[:chains]`: way `host`, `stream` or `thread`; mode
 `full` (the product) or `parts` (the dense page's parts-only cut: each core's part
 read and computed, no reduce, nothing written); flag `x` (`KM_FLAG_EXCLUSIVE`) or `-`
-(none); window, the commands in flight (1: each waited for before the next); chains 1,
+(none); window, the commands in flight, 1 to 32 (1: each waited for before the next;
+the run's ring depth is the largest window, at least 4); chains 1,
 or 2 on two groups of the `half` plan (7,1,16,5: 56 cores each, cores 0 to 55 and 56
 to 111). `--plan row` (2,1,16,5, 16 cores) is the first rung for anything new. Each
 case runs under the power and clock samplers and is followed by a pause as long as it
@@ -121,7 +122,16 @@ runs them. Own time of a parts-only product: 79.8 µs, 558.6 µs a layer.
 | parts, flag, 1 | stream | 19.18 | 599.3 | 391.9 |
 | parts, no flag, 4 | stream | 16.44 | 513.7 | 457.3 |
 | parts, no flag, 8 | stream | 16.42 | 513.2 | 457.7 |
+| parts, no flag, 16 | stream | 16.44 | 513.6 | 457.3 |
+| parts, no flag, 32 | stream | 16.61 | 518.9 | 452.6 |
 | parts, flag, 1 | X280 thread | 18.51 | 578.4 | 406.1 |
+
+The rows for windows 4 and 8 ran at the program's ring depth of 4, so no more than 4
+commands were in flight; windows 16 and 32 ran at depth 32 (`decode.py` loads at the
+largest window), beside window 4 at that depth: 17.16 ms a token, 536.3 µs a layer,
+438 GB/s (2026-11-14, card clock 1,343 to 1,350 MHz, host load 5 to 6;
+`results/windows-l32.json`). At depth 32, windows 16 and 32 come back to what window 4
+gives at depth 4, and no further: the chain stays bound by the weight read.
 
 In a waited chain the flag costs nothing (652.3 against 651.1 µs a layer); our
 reading is that the 16 µs the dense page measures back to back are the wait for the

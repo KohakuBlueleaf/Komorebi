@@ -255,6 +255,8 @@ def core_state(state, core, abi_headers=None):
     """One core's state words as a dict."""
     abi_headers = abi_headers or abi.headers()
     words = [int(word) for word in state[core]]
+    slots = abi_headers["KM_RING_SLOTS"]
+    last, reported = abi_headers["kStLast"], abi_headers["kStReported"]
     magic, ends, wrong = (
         words[abi_headers["kStMagic"]],
         words[abi_headers["kStEnds"]],
@@ -291,8 +293,8 @@ def core_state(state, core, abi_headers=None):
             words[abi_headers["kStComputeSequence"]],
             abi_headers,
         ),
-        "last": words[abi_headers["kStLast"] : abi_headers["kStLast"] + 16],
-        "reported": words[abi_headers["kStReported"] : abi_headers["kStReported"] + 16],
+        "last": words[last : last + slots],
+        "reported": words[reported : reported + slots],
     }
 
 

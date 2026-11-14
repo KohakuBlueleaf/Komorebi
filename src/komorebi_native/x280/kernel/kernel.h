@@ -127,14 +127,15 @@ typedef struct {
     volatile uint8_t* ering; /* the engine's ring area in DRAM */
     kmd_queue_t* queue;      /* the job queue, in the state area */
     /* completion table */
-    uint32_t depth, full, busy, busy_count, cores;
+    uint32_t depth, busy_count, cores;
+    uint64_t full, busy;                   /* bit k: slot k */
     uint32_t sequence;                     /* last sequence number submitted */
     uint32_t exited;                       /* an EXIT command was submitted */
     uint32_t slot_sequence[KM_RING_SLOTS]; /* last sequence: the ack word once free */
     uint32_t slot_request[KM_RING_SLOTS];
     uint32_t slot_group[KM_RING_SLOTS];
     uint8_t slot_source[KM_RING_SLOTS]; /* the source the command came from */
-    uint32_t result_busy; /* busy slots whose command has KM_FLAG_RESULT */
+    uint64_t result_busy; /* busy slots whose command has KM_FLAG_RESULT */
     uint32_t last_result; /* the latest KM_FLAG_RESULT command's result (0: none yet) */
     uint32_t results;     /* KM_FLAG_RESULT commands completed */
     uint64_t slot_submitted[KM_RING_SLOTS];

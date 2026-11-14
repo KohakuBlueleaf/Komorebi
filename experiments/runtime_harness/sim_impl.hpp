@@ -351,7 +351,8 @@ namespace kmsim {
                     q.src < n &&
                     (
                         (
-                            at >= KM_CONTROL_DONE && at < KM_CONTROL_DONE + 16 * 16 &&
+                            at >= KM_CONTROL_DONE &&
+                            at < KM_CONTROL_DONE + 16 * KM_RING_SLOTS &&
                             (at - KM_CONTROL_DONE) % 16 == 0
                         ) ||
                         (

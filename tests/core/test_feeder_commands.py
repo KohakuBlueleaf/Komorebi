@@ -43,7 +43,7 @@ def test_command_fields_follow_the_abi_header():
 
 
 def test_constants_come_from_the_headers():
-    assert CONSTANTS["KM_RING_SLOTS"] == 16 and CONSTANTS["KM_CONTROL_BYTES"] == 0x15C0
+    assert CONSTANTS["KM_RING_SLOTS"] == 64 and CONSTANTS["KM_CONTROL_BYTES"] == 0x2640
     assert CONSTANTS["KM_READY"] == 0xFFFFFFFF and CONSTANTS["KM_HANDLER_EXIT"] == 255
     assert CONSTANTS["KM_HANDLER_USER_MAX"] == 239 and "KM_FLAG_ACK" not in CONSTANTS
     assert (
@@ -189,7 +189,7 @@ def test_state_words_are_distinct_and_fit():
     words.pop("kStateMagic")
     taken = []
     for name, offset in words.items():
-        size = 16 if name in ("kStLast", "kStReported") else 1
+        size = CONSTANTS["KM_RING_SLOTS"] if name in ("kStLast", "kStReported") else 1
         taken += range(offset, offset + size)
     assert len(taken) == len(set(taken)) == CONSTANTS["kStateWords"]
     assert max(taken) < CONSTANTS["kStateWords"]

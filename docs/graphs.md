@@ -266,7 +266,7 @@ the check, rejects a kept graph when `kept` graphs are kept already and that is 
 then runs the graph against a model of the kernel. Each pass: completions due are
 swept in slot order; a command still busy `deadline_passes` passes after its submit ends
 the graph (the lowest slot's); a cancel in `cancel_pass`; one executor step. Commands
-take the lowest free of 16 slots; an exclusive command waits while a busy group overlaps
+take the lowest free of 16 slots (the model's depth); an exclusive command waits while a busy group overlaps
 it; a queued command is submitted when a slot is free and the allocator finds room, else
 it is busy (the kernel's queue accepts it earlier; only the timing differs). `delay`
 and `result` are as for streams. `engine` is the executor to drive: `Executor()` in

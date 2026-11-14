@@ -35,7 +35,7 @@ Longer runs are run by hand: `experiments/feeder_runs/`.
 | `--jobs N`, `--handler map\|nop\|align` | N commands of one handler. |
 | `--groups fixed\|random\|pair\|overlap`, `--first`, `--count`, `--group-list f:c,...` | How groups are chosen. |
 | `--tiles T`, `--out-pages`, `--out-tensors` | MAP input tiles per job (job j reads tiles j to j + T - 1) and output space. |
-| `--depth D` | Ring slots in use (1 to 16). |
+| `--depth D` | Ring slots in use (1 to 64). |
 | `--wait S`, `--deadline S` | A core's timeout on a wait for another core; the feeder's per-command deadline. |
 | `--stall J --stall-rank M` | Job J: rank M waits for the stop flag. |
 | `--late J --late-rank M --late-cycles C` | Job J: rank M reports C cycles late. |

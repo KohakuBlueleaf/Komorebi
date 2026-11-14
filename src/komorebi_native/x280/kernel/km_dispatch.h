@@ -144,7 +144,7 @@ enum {
     KMD_R_HOST_COMMANDS = 7, /* commands taken from the host ring */
     KMD_R_COMMANDS = 8,      /* commands submitted to the grid */
     KMD_R_EVENTS = 9,        /* events pushed to the host */
-    KMD_R_BUSY = 10,         /* busy slots when the kernel finished (bit j = slot j) */
+    KMD_R_BUSY = 10,         /* busy slots 0 to 31 at the finish (KMD_H_BUSY_HIGH) */
     KMD_R_MAX_BUSY = 11,     /* most slots busy at once */
     KMD_R_CONTROL = 12,      /* control block address from the hello */
     KMD_R_TICKS_LO = 13,     /* ticks from the first command taken to the finish */
@@ -188,7 +188,8 @@ enum {
     KMD_H_ABANDONED = 13,       /* core 0: commands in flight or queued at the finish */
     KMD_H_TRAP_CAUSE = 14,      /* core 1, after a trap: mcause */
     KMD_H_TRAP_PC = 15,         /* core 1, after a trap: mepc, low word */
-    KMD_H_WORDS = 16
+    KMD_H_BUSY_HIGH = 16,       /* core 0: busy slots 32 to 63 at the finish */
+    KMD_H_WORDS = 17
 };
 
 /* The engine's state (KMD_H_ENGINE). */

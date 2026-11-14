@@ -196,7 +196,7 @@ def test_program_reads_handlers_and_checks_its_parts(tmp_path):
     with pytest.raises(ValueError, match="handler"):
         Program("q", kernels=tmp_path, handlers={"bad": 240})
     with pytest.raises(ValueError, match="depth"):
-        Program("q", kernels=tmp_path, depth=17)
+        Program("q", kernels=tmp_path, depth=65)
     with pytest.raises(ValueError, match="compile_args"):
         Program("q", kernels=tmp_path, compile_args={"feeder": []})
 

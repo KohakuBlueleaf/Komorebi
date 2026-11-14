@@ -11,7 +11,9 @@
 #define KM_STATIC_ASSERT(c, msg) _Static_assert(c, msg)
 #endif
 
-#define KM_RING_SLOTS 16u /* D: mailbox slots, 64 bytes each */
+/* Command slots of every core's ring, 64 bytes each: the most commands in flight. The
+   control block, the dispatcher's tables and the state words follow it. */
+#define KM_RING_SLOTS 64u
 #define KM_CORES_MAX 128u
 #define KM_HANDLER_NOP 0u
 #define KM_HANDLER_EXIT 255u /* every core leaves its kernels */
@@ -90,22 +92,42 @@ KM_STATIC_ASSERT(
 /* Control block in L1: the same address on every core. Offsets in bytes. */
 #define KM_CONTROL_RING 0x000u /* KM_RING_SLOTS commands */
 /* reserved, 16 bytes; not written in this version */
-#define KM_CONTROL_RESERVED 0x400u
-#define KM_CONTROL_STOP 0x410u /* nonzero: every wait gives up */
+#define KM_CONTROL_RESERVED (KM_CONTROL_RING + KM_RING_SLOTS * 64u)
+/* nonzero: every wait gives up */
+#define KM_CONTROL_STOP (KM_CONTROL_RESERVED + 0x10u)
 /* KM_RING_SLOTS counters, 16 bytes apart: cores done */
-#define KM_CONTROL_DONE 0x440u
-#define KM_CONTROL_BOOT 0x540u /* start-up check-in area (column groups, as today) */
-/* per core: last sequence consumed per slot, gave-up code, where code */
-#define KM_CONTROL_STATE 0x640u
+#define KM_CONTROL_DONE (KM_CONTROL_STOP + 0x30u)
+/* start-up check-in area (column groups, as today) */
+#define KM_CONTROL_BOOT (KM_CONTROL_DONE + KM_RING_SLOTS * 16u)
+/* per core: last sequence consumed and reported per slot, gave-up codes, counters */
+#define KM_CONTROL_STATE (KM_CONTROL_BOOT + 0x100u)
+#define KM_STATE_WORDS (2u * KM_RING_SLOTS + 16u) /* km::kStateWords */
 /* the command being run, for the compute and writer kernels */
-#define KM_CONTROL_JOB 0x700u
-#define KM_CONTROL_OUT 0x740u /* scratch for outgoing 4-byte NoC writes */
+#define KM_CONTROL_JOB (KM_CONTROL_STATE + 4u * KM_STATE_WORDS)
+/* scratch for outgoing 4-byte NoC writes */
+#define KM_CONTROL_OUT (KM_CONTROL_JOB + 0x40u)
 /* core index -> NoC x | y << 16, KM_CORES_MAX words */
-#define KM_CONTROL_CORES 0x780u
+#define KM_CONTROL_CORES (KM_CONTROL_OUT + 0x40u)
 /* KM_PORTS port slots of 16 bytes: count (bumped by senders), then the count a wait
    wants (nonzero only while waiting, or after the wait gave up) */
-#define KM_CONTROL_PORT 0x980u
-#define KM_CONTROL_BROADCAST 0xA00u /* KM_BROADCASTS areas, KM_BROADCAST_BYTES each */
+#define KM_CONTROL_PORT (KM_CONTROL_CORES + 4u * KM_CORES_MAX)
+
+KM_STATIC_ASSERT(
+    KM_RING_SLOTS >= 1u && KM_RING_SLOTS <= 64u,
+    "a slot is one bit of the dispatcher's 64-bit masks and fits the header's byte"
+);
+KM_STATIC_ASSERT(
+    KM_CONTROL_RESERVED == KM_CONTROL_RING + 64u * KM_RING_SLOTS &&
+        KM_CONTROL_BOOT == KM_CONTROL_DONE + 16u * KM_RING_SLOTS &&
+        KM_CONTROL_JOB == KM_CONTROL_STATE + 4u * KM_STATE_WORDS,
+    "the ring, the DONE counters and the state words follow the slot count"
+);
+KM_STATIC_ASSERT(
+    KM_CONTROL_DONE % 16u == 0 && KM_CONTROL_BOOT % 16u == 0 &&
+        KM_CONTROL_STATE % 16u == 0 && KM_CONTROL_JOB % 64u == 0 &&
+        KM_CONTROL_OUT % 16u == 0 && KM_CONTROL_CORES % 16u == 0,
+    "16-byte slots, the job copy on a line"
+);
 
 /* Ports: the receiving side of a value sent to one core. */
 #define KM_PORTS 8u
@@ -114,6 +136,8 @@ KM_STATIC_ASSERT(
 #define KM_PORT_WANT 1u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
+/* KM_BROADCASTS areas, KM_BROADCAST_BYTES each */
+#define KM_CONTROL_BROADCAST (KM_CONTROL_PORT + KM_PORTS * KM_PORT_STRIDE)
 
 KM_STATIC_ASSERT(
     KM_CONTROL_PORT == KM_CONTROL_CORES + 4u * KM_CORES_MAX, "ports after cores"
@@ -167,11 +191,7 @@ KM_STATIC_ASSERT(
 );
 
 /* routed messages: queue counters, idle words, status */
-#define KM_CONTROL_MESSAGES 0xC80u
-#define KM_CONTROL_TAILS 0xD40u /* routed messages: a counter tile's tail lines */
-/* X280 port: the lines shared with the serving X280 core */
-#define KM_CONTROL_X280 0x1580u
-#define KM_CONTROL_BYTES 0x15C0u
+#define KM_CONTROL_MESSAGES (KM_CONTROL_BROADCAST + KM_BROADCASTS * KM_BROADCAST_BYTES)
 
 /* Routed messages: offsets in KM_CONTROL_MESSAGES, one 16-byte slot per word. */
 /* reader: its tail as last read from its counter tile */
@@ -194,6 +214,8 @@ KM_STATIC_ASSERT(
 #define KM_TAILS_WRITER 0x20u /* writer: the same */
 #define KM_TAILS_LINE 0x30u   /* + 16 c: group core c's tail, the atomic adds' target */
 #define KM_TAILS_BYTES (KM_TAILS_LINE + 16u * KM_CORES_MAX)
+/* routed messages: a counter tile's tail lines */
+#define KM_CONTROL_TAILS (KM_CONTROL_MESSAGES + KM_MESSAGES_BYTES)
 #define KM_COUNTERS_MAX 4u
 /* the submitter ends a dynamic run with this command to its group; a0 = run's sequence
  */
@@ -226,11 +248,7 @@ KM_STATIC_ASSERT(
 KM_STATIC_ASSERT(
     KM_CONTROL_MESSAGES + KM_MESSAGES_BYTES == KM_CONTROL_TAILS, "dynamic area ends"
 );
-KM_STATIC_ASSERT(
-    KM_CONTROL_TAILS + KM_TAILS_BYTES <= KM_CONTROL_BYTES &&
-        KM_CONTROL_BYTES % 64u == 0,
-    "tails"
-);
+KM_STATIC_ASSERT(KM_CONTROL_TAILS % 16u == 0, "tails");
 KM_STATIC_ASSERT(
     KM_CONTROL_MESSAGES % 16u == 0 && KM_MESSAGES_RETURNED + 16u <= KM_MESSAGES_BYTES,
     "slots"
@@ -250,6 +268,9 @@ KM_STATIC_ASSERT(
 /* the host's, at load: X280 core tile x | y << 16, mailbox */
 #define KM_X280_TO 0x30u
 #define KM_X280_BYTES 0x40u
+/* X280 port: the lines shared with the serving X280 core, on a 64-byte line */
+#define KM_CONTROL_X280 ((KM_CONTROL_TAILS + KM_TAILS_BYTES + 63u) / 64u * 64u)
+#define KM_CONTROL_BYTES (KM_CONTROL_X280 + KM_X280_BYTES)
 #define KM_X280_TO_TILE 0u /* word offsets of the KM_X280_TO line */
 #define KM_X280_TO_BOX 1u  /* LIM address of this core's mailbox line; 0: not served */
 /* A core's mailbox line in its X280 core's LIM (64 bytes, the core writes it). */

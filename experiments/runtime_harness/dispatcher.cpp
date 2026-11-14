@@ -251,10 +251,13 @@ namespace kmsim {
             ) {
                 s.cb[id] = Cb{s.base + off, page, pages};
             };
-            cb(km::kCbTokenCompute, 0x2000, km::kTokenBytes, 1);
-            cb(km::kCbTokenWriter, 0x2040, km::kTokenBytes, 1);
-            cb(0, 0x3000, kTileBytes, 16);
-            cb(16, 0xB000, kTileBytes, 2);
+            static_assert(
+                kControlOff + KM_CONTROL_BYTES <= 0x3F00, "after the control block"
+            );
+            cb(km::kCbTokenCompute, 0x3F00, km::kTokenBytes, 1);
+            cb(km::kCbTokenWriter, 0x3F40, km::kTokenBytes, 1);
+            cb(0, 0x4000, kTileBytes, 16);
+            cb(16, 0x10000, kTileBytes, 2);
             for (const CbSpec& x : cfg.cbs) {
                 cb(x.id, x.off, x.page, x.pages);
             }

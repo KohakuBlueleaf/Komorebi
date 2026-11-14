@@ -26,25 +26,26 @@ namespace km {
 
     // State words (32-bit, from KM_CONTROL_STATE). A gave-up word is code | where << 8
     // | slot << 16; its sequence number is in the next word. Counters saturate.
-    constexpr uint32_t kStLast = 0;       // 16 words: last sequence consumed, per slot
-    constexpr uint32_t kStReported = 16;  // 16 words: last sequence reported, per slot
-    constexpr uint32_t kStReader = 32;    // reader gave-up word
-    constexpr uint32_t kStReaderSequence = 33;   // its sequence number
-    constexpr uint32_t kStWriter = 34;           // writer gave-up word
-    constexpr uint32_t kStWriterSequence = 35;   // its sequence number
-    constexpr uint32_t kStCompute = 36;          // compute gave-up word
-    constexpr uint32_t kStComputeSequence = 37;  // its sequence number
-    constexpr uint32_t kStRuns = 38;             // commands the reader took
-    constexpr uint32_t kStPasses = 39;           // ring passes in next(), all calls
-    constexpr uint32_t kStNextCycles = 40;       // cycles in next(), all calls, / 16
-    constexpr uint32_t kStCompleted = 41;        // commands the writer finished
-    constexpr uint32_t kStSeen = 42;             // commands compute took
-    constexpr uint32_t kStWrong = 43;      // bytes unpack, math, pack: bad job copies
-    constexpr uint32_t kStEnds = 44;       // bytes reader, writer, compute: kEnd*
-    constexpr uint32_t kStMagic = 45;      // kStateMagic | tag << 8 | me
-    constexpr uint32_t kStSlotWrong = 46;  // commands not run: header slot not theirs
-    constexpr uint32_t kStTraceDropped = 47;  // commands beyond the trace's capacity
-    constexpr uint32_t kStateWords = 48;
+    constexpr uint32_t kStLast = 0;  // KM_RING_SLOTS words: last sequence consumed
+    constexpr uint32_t kStReported = KM_RING_SLOTS;  // last sequence reported, per slot
+    constexpr uint32_t kStReader = 2 * KM_RING_SLOTS;       // reader gave-up word
+    constexpr uint32_t kStReaderSequence = kStReader + 1;   // its sequence number
+    constexpr uint32_t kStWriter = kStReader + 2;           // writer gave-up word
+    constexpr uint32_t kStWriterSequence = kStReader + 3;   // its sequence number
+    constexpr uint32_t kStCompute = kStReader + 4;          // compute gave-up word
+    constexpr uint32_t kStComputeSequence = kStReader + 5;  // its sequence number
+    constexpr uint32_t kStRuns = kStReader + 6;             // commands the reader took
+    constexpr uint32_t kStPasses = kStReader + 7;  // ring passes in next(), all calls
+    constexpr uint32_t kStNextCycles = kStReader + 8;  // cycles in next(), all, / 16
+    constexpr uint32_t kStCompleted = kStReader + 9;   // commands the writer finished
+    constexpr uint32_t kStSeen = kStReader + 10;       // commands compute took
+    constexpr uint32_t kStWrong = kStReader + 11;      // unpack, math, pack: bad copies
+    constexpr uint32_t kStEnds = kStReader + 12;       // reader, writer, compute: kEnd*
+    constexpr uint32_t kStMagic = kStReader + 13;      // kStateMagic | tag << 8 | me
+    constexpr uint32_t kStSlotWrong = kStReader + 14;  // not run: slot not theirs
+    constexpr uint32_t kStTraceDropped = kStReader + 15;  // past the trace's capacity
+    constexpr uint32_t kStateWords = kStReader + 16;
+    static_assert(kStateWords == KM_STATE_WORDS, "the control block's state words");
     constexpr uint32_t kStateMagic = 0x4B000000;
 
     // Gave-up codes, where codes and how a kernel left.

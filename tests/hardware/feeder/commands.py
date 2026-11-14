@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from komorebi import abi
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 INCLUDE = ROOT / "src" / "komorebi_native" / "include"
@@ -47,7 +49,8 @@ def struct_fields(path, name):
     return fields
 
 
-CONSTANTS = constants(ABI_H, CORE_HPP, FEEDER_H)
+# the ABI's and the device's constants as the package reads them, then the feeder's
+CONSTANTS = {**abi.headers().constants, **constants(FEEDER_H)}
 K = CONSTANTS  # the name examples/02_merge_tree and examples/03_broadcast still import
 COMMAND_FIELDS = struct_fields(ABI_H, "km_command_t")
 ARG_FIELDS = struct_fields(CORE_HPP, "Args")

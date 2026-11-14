@@ -9,7 +9,7 @@
 
 /* The graphs' parts of the state area: core 1's runs after its engine state, core 0's
  * table after the engine's ring. */
-#define KMD_STATE_GRAPH 0x3400u
+#define KMD_STATE_GRAPH 0x3640u
 #define KMD_STATE_GTABLE 0x5A00u
 /* Kernel to engine: {request table entry, ticks command}: run that entry's graph. */
 #define KMD_EVENT_GRAPH_RUN 0x18u

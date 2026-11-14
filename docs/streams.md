@@ -19,9 +19,10 @@ Terms, defined on [the Tensix runtime](concepts/runtime.md) and
 to the grid; a *handler* is the number of the code a command runs (1 to 239 belong to
 the program); a *group* is a contiguous range of cores `[first, first + count)` out of
 the grid's cores (119 on the card this is developed on; the simulator's `core_count`); the
-group's *leader* reports its completion with one word. The kernel keeps 16 *completion
-slots*: a command occupies one from submit until its group's acknowledgement is swept up,
-so at most 16 commands are in flight. The kernel loop runs in *passes*, described
+group's *leader* reports its completion with one word. The kernel keeps the program's
+depth of *completion slots* (up to 64; the simulator models 16): a command occupies one
+from submit until its group's acknowledgement is swept up, so at most that many commands
+are in flight. The kernel loop runs in *passes*, described
 [below](#the-kernel-pass-and-the-job-queue).
 
 The code is `komorebi.engines.stream`; the shared definitions are in
@@ -245,8 +246,8 @@ A command takes the lowest free completion slot. The group allocator returns the
 The queue holds at most 64 waiting jobs, shared by every stream and by queued jobs from
 the host; an `ENQUEUE` into a full queue waits (the kernel rejects the engine's job with
 reason 11 and wakes it when there is room), and a queued command from the host into a
-full queue is rejected with reason 9. Queued jobs run in the same 16 completion slots as
-every other command, so at most 16 commands of all sources are in flight over the grid,
+full queue is rejected with reason 9. Queued jobs run in the same completion slots as
+every other command, so at most depth commands of all sources are in flight over the grid,
 whatever their group sizes. Each pass
 the queue looks at the first 16 waiting jobs in order and submits each that finds a free
 slot and room. A job that does not fit does not block those behind it, but once 1,024

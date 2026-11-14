@@ -55,3 +55,36 @@ clock it set.
 | one submitting stream beside three looping ones | `stream-bench --n 1000 --submitters 1 --streams 3 --group 1` | free to next submit 23.9 microseconds (median) | 12.8 |
 | a stream that only computes | `stream-bench --n 0 --compute 1000000` | 7.6 million micro-ops a second (the same with `--compute 100000`) | 18 million (rounds not recorded) |
 | `stream-bench` before the engine moved to core 1 (one loop) | an earlier kernel | not re-measured | `bench` as above: 0.669 and 0.675 microseconds per command while the stream interpreter shared core 0's loop; 34 ns with no stream; 316 ns with one submitting stream, 525 ns with four; 3.1 microseconds with one looping stream, 11.7 with four |
+
+## Ring slots and depth
+
+How much a command costs with the ring and DONE tables compiled for 16, 32 and 64
+slots (`KM_RING_SLOTS` in `km_abi.h`, the dispatcher image and the runtime rebuilt for
+each), and with 4, 16 and 48 of them in use (the program's `depth`). One p150a, AICLK
+1,350 MHz, X280 at 1000 MHz, host load 4 to 7, 2026-11-14. Microseconds per command
+from the kernel's first command to its last event: `bench` host-fed (`bench --n 100000
+--depth D --group G --batch 64 --host-depth 64`, groups of 2 and 12 cores and the whole
+grid), and `examples/01_mapcollect` with NOP jobs (`--handler nop --jobs 10000 --count C
+--depth D --no-check`) and with its random MAP groups (`--jobs 1000 --groups random
+--depth D`, the most commands in flight in brackets).
+
+| depth | what | table 16 | table 32 | table 64 |
+|---|---|---|---|---|
+| 4 | `bench`, 2 / 12 / all cores | 1.181 / 1.181 / 1.223 | 1.184 / 1.185 / 1.223 | 1.186 / 1.187 / 1.224 |
+| 4 | example 01 NOP, 2 / 12 / 120 cores | 1.350 / 1.358 / 1.360 | 1.353 / 1.350 / 1.357 | 1.356 / 1.354 / 1.361 |
+| 4 | example 01 random MAP | 1.817 [4] | 1.737 [4] | 1.764 [4] |
+| 16 | `bench` | 1.228 / 1.229 / 1.272 | 1.240 / 1.239 / 1.281 | 1.264 / 1.488 / 1.290 |
+| 16 | example 01 NOP | 1.413 / 1.430 / 1.441 | 1.414 / 1.430 / 1.455 | 1.426 / 1.433 / 1.466 |
+| 16 | example 01 random MAP | 1.766 [12] | 1.787 [12] | 1.798 [11] |
+| 48 | `bench` | | | 1.432 / 1.464 / 1.466 |
+| 48 | example 01 NOP | | | 1.644 / 1.635 / 1.645 |
+| 48 | example 01 random MAP | | | 2.138 [30] |
+
+At 4 in flight the 64-slot table costs under 0.5 % more than the 16-slot one (the
+random rows move by 4 % between runs either way), so the table has 64 slots. What a
+command costs grows with the depth in use, not with the table: the dispatcher's sweep
+and the cores' scan go over `depth` slots, about 7 % more per NOP command at 16 and
+21 % at 48. NOP commands never have more than 3 in flight (the dispatcher is the
+bound); MAP jobs reach 30 at depth 48. `bench --preload --n 63` gives the same order,
+0.03 to 0.06 microseconds above `bench`. The `bench` 12-core row at table 64, depth 16
+(1.488) is one run against 1.264 and 1.290 beside it.

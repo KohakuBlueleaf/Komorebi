@@ -82,7 +82,6 @@ PAIRS = {
     "QUEUE_JOBS": "KM_QUEUE_JOBS",
     "QUEUE_LOOK": "KM_QUEUE_LOOK",
     "QUEUE_PASSES": "KM_QUEUE_PASSES",
-    "RING_SLOTS": "KM_RING_SLOTS",
     "HANDLER_USER_MAX": "KM_HANDLER_USER_MAX",
     "FLAG_EXCLUSIVE": "KM_FLAG_EXCLUSIVE",
     "FLAG_RESULT": "KM_FLAG_RESULT",
@@ -98,6 +97,7 @@ PAIRS = {
 def test_constants_opcodes_and_error_reasons_match_the_header():
     for name, header_name in PAIRS.items():
         assert getattr(stream_module, name) == HEADER_CONSTANTS[header_name], name
+    assert HEADER_CONSTANTS["KM_RING_SLOTS"] >= stream_module.RING_SLOTS
     for code, (name, _, _) in stream_module.OPS.items():
         assert HEADER_CONSTANTS[f"KM_OP_{name}"] == code
     assert HEADER_CONSTANTS["KM_OP_INVALID"] == 0 and len(stream_module.OPS) == 21
