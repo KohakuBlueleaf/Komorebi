@@ -1,6 +1,6 @@
 """The merge tree over two cards (`Session(cards=..., links=1)`), its kernels unchanged:
 MERGE on one flat group over both islands folds inside each island, then crosses once;
-every round's total and result word against numpy, beside the same on one island's
+every command done and the total against numpy, beside the same on one island's
 ranks. Prints one JSON line. See README.md."""
 
 import argparse
@@ -9,7 +9,7 @@ import sys
 import time
 
 import numpy as np
-from merge import CONSTANTS, TILE, checksum, program
+from merge import CONSTANTS, TILE, program
 
 import komorebi as km
 
@@ -97,10 +97,10 @@ def main():
             try:
                 for _ in range(args.rounds):
                     start = time.perf_counter()
-                    handle = island0.submit("merge", group, words, result=True)
-                    event = island0.wait(handle, timeout=5.0)  # the event, released
+                    handle = island0.submit("merge", group, words)
+                    event = island0.wait(handle, timeout=5.0)
                     times.append((time.perf_counter() - start) * 1e6)
-                    bad += event is None or event.result != checksum(want)
+                    bad += event.kind != "done"
                 error = None
             except km.KomorebiError as caught:
                 error = str(caught)
@@ -109,7 +109,7 @@ def main():
                 "group": list(group),
                 "rounds": len(times),
                 "us_a_round": round(float(np.median(times)), 2) if times else None,
-                "results_bad": bad,
+                "not_done": bad,
                 "error": error,
             }
             log(f"{name}: {results[name]}")
@@ -125,7 +125,7 @@ def main():
             results[name]["exact"] = bool(np.array_equal(mine, want.astype(np.float32)))
             results[name]["max_error"] = float(np.abs(mine - want).max())
     report["ok"] = all(
-        case["exact"] and not case["results_bad"] and case["error"] is None
+        case["exact"] and not case["not_done"] and case["error"] is None
         for case in report["cases"].values()
     ) and set(report.get("kernel_errors", ["?"])) == {"none"}
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
