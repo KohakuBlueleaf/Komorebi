@@ -10,14 +10,20 @@ tags:
 # Islands
 
 Status: implemented over two Blackhole p150a cards, each card's chip an island, and
-over one card split into islands. A group that spans islands runs as one part on each,
-every core sees its flat rank in the whole group, and a program written for one card
-(one `Program`, as example 01's) runs on two as it does on one. Nothing crosses between
-islands inside a run yet: no message, page or command goes over a link from a kernel.
-The calls are in [islands](../reference/islands.md), the kernel side in the
-[runtime reference](../reference/runtime.md#islands).
+over one card split into two to four islands. A group that spans islands runs as one
+part on each, every core sees its flat rank in the whole group, and a program written
+for one card (one `Program`, as example 01's) runs on two as it does on one. Commands,
+pages (asks, puts, copies), messages and the parts of a reduce or a broadcast cross
+between islands over the links, sent from kernels, from a dispatcher and from an X280
+thread's commands and copies; what is not built is under
+[What is not built](#what-is-not-built). One card is one island is the way to run, and
+the recommendation. A card split into islands is for developing and checking island
+programs. X280 threads on a split card are not supported, and two cards as a line of
+four islands is not in this release. The calls are in [islands](../reference/islands.md),
+the kernel side in the [runtime reference](../reference/runtime.md#islands), recovery
+in [how reset works](reset.md).
 
-An **island** is a set of cores that reach the others only through links. Today it is one
+An **island** is a set of cores that reach the others only through links. It is one
 card's chip: its own Tensix grid, its own dispatcher on its own X280 cluster 0, its own
 DRAM banks; or rows of one card split into islands (below). Cores inside an island
 reach each other by the NoC, as on a card opened alone. A core of one island reaches a core of another only over a link, which is slower
@@ -80,9 +86,10 @@ cards at hand, and to exercise more than two islands (it is not faster: its isla
 share one card). Each island's ranks run on a contiguous range of the card's cores from
 its base (core = base + rank - the island's first rank), and island i's dispatcher runs
 on X280 cluster i of that card. The limits: at most four islands (one a cluster), each
-island past the first takes a work cluster away (a split card runs no X280 threads), and
-each island is whole rows of the grid, since a dispatcher sends commands over its own
-rows.
+island past the first takes a work cluster away (X280 threads on a split card are not
+supported, and the session refuses them), a split card keeps no reset lists (a core
+that does not leave a given-up command ends the run), and each island is whole rows of
+the grid, since a dispatcher sends commands over its own rows.
 
 Every pair of islands of a split card is joined by a **wire**: link cores taken from
 each island's last cores, serving what a link core serves between two cards (commands
@@ -123,7 +130,8 @@ ask: no call sends anything.
 
 `km::local_part(view, command)` is the part of a command's group on this island in local
 cores, which a completion uses. On an X280 thread, `kmx_island()` and `kmx_islands()`
-answer the same as `km::island()` and `km::islands()`; no thread runs on two cards yet.
+answer the same as `km::island()` and `km::islands()`; a thread runs on one island's X280
+and reaches the others through commands and copies across.
 
 The answers come from the table and from nothing else. `km::rate` is 0 for another island
 because the table holds no rate, not because the link has none (below).
@@ -132,11 +140,11 @@ because the table holds no rate, not because the link has none (below).
 
 Two p150a cards are joined by four Ethernet links. A core that sends over a link holds a
 connection to the router that tt-metal's fabric starts on that link's Ethernet core. The
-sending core sits in the Tensix row next to the Ethernet row, under the
-link's Ethernet tile: on these cards, cores 8 to 11 of row 0 under the Ethernet tiles at
-x 24 to 27, one for each of the four links. A router has one channel for a core of its own
-card, so one core at a time holds a link's connection; sharing a link between cores at
-once needs tt-metal's mux cores.
+sending core's place makes no difference to the rate: a corner, a middle row and the row
+under the Ethernet tiles sent the same
+([link_rate](../../experiments/link_rate/README.md#6-where-the-sender-sits)). A router has
+one channel for a core of its own card, so one core at a time holds a link's connection;
+sharing a link between cores at once needs tt-metal's mux cores.
 
 The host's graph models this: a link that is used takes a core on each island it joins
 out of that island's ranks (a link core), and ranks and thread numbers are counted
@@ -172,7 +180,9 @@ one process holding both with tt-metal's 1-D fabric in slow dispatch, AICLK 1350
 The rate is payload bytes over the receiver's span from its first counted packet to its
 last; every packet was checked exact; each row ran once. The senders are experiment
 kernels, one sending core a link ([link_rate](../../experiments/link_rate/README.md),
-[two_cards](../../experiments/two_cards/README.md)), not a call a program can make yet.
+[two_cards](../../experiments/two_cards/README.md)), not a call of a program: a program
+sends pages with the page calls, whose rates are in
+[islands](../reference/islands.md#pages-across-a-link).
 
 | What | GB/s |
 |---|---|
@@ -283,7 +293,8 @@ Each island's dispatcher holds its own island's reset lists. A command given up 
 island i resets and loads again that island's cores still in it, or whose kernels
 ended at a wait's own limit; the time-out says `island i:` and names them by flat
 rank and the island's own core number, and the run goes on on both islands
-([recovery](../guides/recovery.md)). A link core is recovered by the host, not by
+([recovery](../guides/recovery.md); how each step is done and what it costs,
+[how reset works](reset.md)). A link core is recovered by the host, not by
 the dispatcher: a link core that does not leave a given-up command is named in the
 time-out (`link core k`), the commands whose traffic it held are given up at once
 naming it, and `run.links_hung` lists it. `run.reset_link(island, k)` then closes its
@@ -293,22 +304,26 @@ The far link core needs nothing.
 
 ## What is not built
 
-- **Over a link:** a dynamic run on part of the ranks, X280 ranks over a link. A
-  kernel's own put of pages goes one link only, and a thread's copy across is built for
-  two islands; their pages split over every page link (a forwarded ask: one page CPU a
-  link). A copy across knows only the tensors made before the load. More than 16 KiB
-  in one relay call goes as several asks; no run has sent that much in one call yet.
-  Blocks cross at the relay's pace, one ask a way at a time from link core 0 alone.
+- **Over a link:** a dynamic run on part of the ranks (its RUN takes every rank), X280
+  ranks over a link. Between two cards a kernel's ask and put use every page CPU of
+  every link; over more than two islands an ask is forwarded but carried by one page CPU
+  a link, and a put goes one link only (a put to an island two links away is refused).
+  A copy across knows only the tensors made before the load. More than 16 KiB in one
+  relay call goes as several asks; no run has sent that much in one call yet. The relay
+  goes through link core 0 alone.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **More than two islands of a split card:** one wire a pair, at most three link cores
   an island for messages, and fewer commands across in flight a dispatcher (three with
-  three islands, two with four, eight with two). X280 threads on a split card. Two cards
-  each split (fabric links and wires in one graph, the line 0-1-2-3) are not built, so
-  forwarding has run over wires only.
-- **A dict of programs, X280 threads and ports, engines and uploads over islands,
-  tensors in L1.** A list of programs, one an island, loads; a thread of one island
-  fetches and stores tensors the other holds.
+  three islands, two with four, eight with two). Not in this release, by decision: X280
+  threads on a split card (a split card is for developing and checking island programs),
+  and two cards each split into islands, which would make a line of four (fabric links
+  and wires in one graph); forwarding has run over wires only.
+- **Programs that switch groups over islands, engines and uploads over islands,
+  tensors in L1.** A `Program`, a list or a dict of groups in flat ranks, and a list of
+  programs one an island, load as on one card; an island's X280 ports serve its own
+  ranks, and a thread of one island fetches and stores tensors the other holds.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.
-- **A link core reset by its dispatcher.** A give-up resets only ranks; a link core
-  that hangs is named by its dispatcher and reset by the host (`run.reset_link`).
-  Its lost traffic is given up and named, not sent again.
+- **A link core reset by its dispatcher.** The dispatcher resets only ranks; a link core
+  that hangs is named by its dispatcher and reset by the host (`run.reset_link`), as
+  [how reset works](reset.md#4-reset-a-link-core-from-the-host) says. Its lost traffic
+  is given up and named, not sent again.

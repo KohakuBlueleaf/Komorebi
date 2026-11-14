@@ -21,7 +21,7 @@ namespace km {
     // A queue of lines in link core 0's link area (offsets): the count its island's
     // cores reserve lines with, the count it took (`cursors`: a count each page CPU
     // took, the page CPUs in the eighth word), its lines; and the asking CPU's own
-    // line and its two answer words, on its own core.
+    // line and its two answer words, in its own core's own words (KM_OWN_*).
     struct AskQueue {
         uint32_t tail;
         uint32_t taken;
@@ -39,29 +39,40 @@ namespace km {
             KM_ASK_TAIL,
             KM_ASK_TAKEN,
             KM_ASK_LINES,
-            KM_ASK_OWN,
-            KM_ASK_RETURNED,
-            KM_ASK_READ,
+            KM_OWN_LINE,
+            KM_OWN_RETURNED,
+            KM_OWN_READ,
             false
         };
     }
 
     constexpr AskQueue ask_puts(uint32_t role) {
-        const uint32_t own = KM_PUT_OWN + (role == kRoleWriter ? 0 : KM_PUT_OWN_BYTES);
+        const uint32_t own = role == kRoleWriter ? KM_OWN_CPU_BYTES : 0;
         return {
-            KM_PUT_TAIL, KM_PUT_TAKEN, KM_PUT_LINES, own, own + 0x40, own + 0x50, true
+            KM_PUT_TAIL,
+            KM_PUT_TAKEN,
+            KM_PUT_LINES,
+            own + KM_OWN_LINE,
+            own + KM_OWN_RETURNED,
+            own + KM_OWN_READ,
+            true
         };
     }
 
-    // The get queue of CPU `role`: the writer's own line and answer words at its
-    // area's ask lines, which only link core 0 holds lines in.
+    // The get queue of CPU `role`: the writer's own block after the reader's.
     constexpr AskQueue ask_gets(uint32_t role) {
         if (role != kRoleWriter) {
             return ask_gets();
         }
-        constexpr uint32_t own = KM_ASK_LINES;
+        constexpr uint32_t own = KM_OWN_CPU_BYTES;
         return {
-            KM_ASK_TAIL, KM_ASK_TAKEN, KM_ASK_LINES, own, own + 0x40, own + 0x50, false
+            KM_ASK_TAIL,
+            KM_ASK_TAKEN,
+            KM_ASK_LINES,
+            own + KM_OWN_LINE,
+            own + KM_OWN_RETURNED,
+            own + KM_OWN_READ,
+            false
         };
     }
 
@@ -148,6 +159,7 @@ namespace km {
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
+        const uint32_t mine = view.own_words();
         const uint32_t named = slot | holder << 8;
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
         const auto give_up = [&](uint32_t code) {
@@ -156,7 +168,7 @@ namespace km {
         };
         const uint32_t hops = view.hops(holder);
         if (
-            area == 0 || hops == 0 || (queue.cursors && hops != 1) ||
+            area == 0 || mine == 0 || hops == 0 || (queue.cursors && hops != 1) ||
             port >= KM_PORT_SLOTS || bytes == 0 || bytes % 16 != 0 ||
             bytes > KM_PAGES_PACKET_MAX || at % 16 != 0
         ) {
@@ -166,7 +178,7 @@ namespace km {
         // the link core toward the holder: the table's next link after the ranks
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
-        volatile tt_l1_ptr uint32_t* returned = l1(area + queue.returned);
+        volatile tt_l1_ptr uint32_t* returned = l1(mine + queue.returned);
         returned[0] = kAskNoAnswer;
         invalidate_l1_cache();  // a fence: the store lands before the answer can
         noc_fast_atomic_increment<noc_mode, true>(
@@ -178,7 +190,7 @@ namespace km {
             31,
             false,
             false,
-            area + queue.returned
+            mine + queue.returned
         );
         uint32_t code = core.poll_at(
             kWhereAsk,
@@ -197,7 +209,7 @@ namespace km {
         const uint32_t number = returned[0];
         // the line is free once link core 0 (each page CPU) took the one KM_ASK_SLOTS
         // before
-        volatile tt_l1_ptr uint32_t* taken = l1(area + queue.read);
+        volatile tt_l1_ptr uint32_t* taken = l1(mine + queue.read);
         const auto oldest = [&] {
             const uint32_t cpus = (
                 queue.cursors && taken[(KM_PUT_CPUS - KM_PUT_TAKEN) / 4] != 0
@@ -226,7 +238,7 @@ namespace km {
                 }
                 noc_async_read(
                     core.core_noc(link, area + queue.taken),
-                    area + queue.read,
+                    mine + queue.read,
                     queue.cursors ? 32 : 16
                 );
                 reading = true;
@@ -237,7 +249,7 @@ namespace km {
         if (code != kGaveNone) {
             return give_up(code);
         }
-        volatile tt_l1_ptr uint32_t* line = l1(area + queue.own);
+        volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
         for (uint32_t w = 0; w < 16; w++) {
             line[w] = 0;
         }
@@ -258,7 +270,7 @@ namespace km {
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
         noc_async_write(
-            area + queue.own,
+            mine + queue.own,
             core.core_noc(link, area + queue.lines + number % KM_ASK_SLOTS * 64),
             64
         );

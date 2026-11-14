@@ -46,7 +46,9 @@ void kernel_main() {
         const uint32_t last_k_block_tiles = mine.count - (k_blocks - 1) * k_block_tiles;
         // the other islands that put here: sender j's tiles join at K block j
         const uint32_t x = command.a0;
-        const uint32_t senders = senders_to(x, w, y, here, m_tiles, k_whole, n_whole);
+        const uint32_t senders = (
+            LINEAR_EXCHANGES ? senders_to(x, w, y, here, m_tiles, k_whole, n_whole) : 0
+        );
         if (!included || mine.count == 0) {
             return;
         }
@@ -57,10 +59,13 @@ void kernel_main() {
         uint32_t taken = 0;
         for (uint32_t turn = 1; ok && turn <= islands; ++turn) {
             const uint32_t to = island_at(here, turn);
-            if (window(x, y, here, to, m_tiles, k_whole, n_whole).count == 0) {
+            if (
+                window(x, y, here, to, m_tiles, k_whole, n_whole).count == 0 ||
+                (!LINEAR_EXCHANGES && to != here)
+            ) {
                 continue;
             }
-            const bool own = to == here;
+            const bool own = !LINEAR_EXCHANGES || to == here;
             const uint32_t out = own ? kCbYOut : kCbSend;
             for (uint32_t block = 0; ok && block < block_count; ++block) {
                 // over one K block: the partials reserved once, each K block added in

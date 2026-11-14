@@ -10,6 +10,13 @@
 // LINEAR, reference words a0 X ([M, K] tiles), a1 W ([K, N]), a2 Y ([M, N]), a3 S (a
 // copy: tiles put here, below), a6 T (0: none; a 64 B row a rank); a4 K, a5 N tiles.
 constexpr uint32_t kHandlerLinear = 1;
+// Built for a plan that exchanges nothing (LINEAR_OWN): each island its own window
+// only, no puts and no sync in the build.
+#if defined(LINEAR_OWN)
+#define LINEAR_EXCHANGES false
+#else
+#define LINEAR_EXCHANGES true
+#endif
 
 // Buffers: the grid plan's (row and column broadcasts, bf16 output subblocks, fp32
 // partial sums), then a block of the columns put across, the subblocks put here.

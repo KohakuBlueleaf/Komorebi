@@ -497,6 +497,7 @@ class Session:
         self.run = None
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
+        self.link_plan = None  # Session.load's `link`
         self.transfer_chunk = None  # a larger transfer chunk asked for, where it fits
         self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
         # the owner's L1 on every core of this session's card, kept at the top (an
@@ -1174,6 +1175,8 @@ class Session:
                 backend.load_programs(placed, descriptor)
             else:
                 backend.load_overlays(program, descriptor)
+            if backend.apart_links:  # after every other write: a transfer's buffer
+                link.clear(self)  # starts at the link cores' buffers' base too
             self.log("launch")
             # From here the grid may run: an interrupt is delivered when the launch
             # call returns, after the kernels started.
@@ -1354,7 +1357,12 @@ class Session:
                     line = plan.line(dispatch, dispatches[plan.far], dispatches)
                 tags.append(
                     dispatch.prepare(
-                        depth, host_depth, event_depth, start, deadline, kernel_idle,
+                        depth,
+                        host_depth,
+                        event_depth,
+                        start,
+                        deadline,
+                        kernel_idle,
                         states[-1].address,
                         messages_handler=(
                             program.messages.dispatcher_word()
@@ -1362,7 +1370,9 @@ class Session:
                             else 0
                         ),
                         island=_island_word((graph, island)) | base << 32,
-                        link=list(line), first_row=first_row, rows=count,
+                        link=list(line),
+                        first_row=first_row,
+                        rows=count,
                     )  # fmt: skip
                 )
                 check_bases(lim_bases(dispatch.lim_base))
@@ -1893,6 +1903,7 @@ class _Backend:
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
         self.transfer = None  # a _TransferBuffer: with the host channel, or threads
+        self.apart_links = 0  # link cores holding the link area alone (_apart_links)
         # a split card: (graph, dispatches, tags, [(first row, rows)], the islands whose
         # cores returned) of the one launch; `rows` this backend's island's
         self.split = None
@@ -1989,6 +2000,7 @@ class _Backend:
             mine[:, at + abi_headers["KM_ISLAND_FORWARD"] // 4] = getattr(
                 plan, "forward", 0
             )
+            mine[:, at + abi_headers["KM_ISLAND_OWN"] // 4] = getattr(plan, "own", 0)
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
@@ -2120,18 +2132,27 @@ class _Backend:
         all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
         include = [str(abi.headers().abi.parents[2])]
         defines = [(name, str(value)) for name, value in program.defines.items()]
+        defines += self._one_island()
         if program.messages is not None:
             defines += program.messages.defines()
         ranks, links = _link_kernels(self.session.island, program, self.split, cores)
         if "KM_PAGE_LINKS" in program.defines and not links:
             defines.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
+        held = programs.rectangles(0, ranks, grid[0]) if links else all_cores
+        apart = self._apart_links(links)
         self.cb_indices = set()  # every buffer index of the launch, the slots' apart
         for index, fmt, page, pages in self._cbs(program.buffers):
-            launch.cb(all_cores, index, fmt, page, page * pages)
+            launch.cb(held if apart else all_cores, index, fmt, page, page * pages)
             self.cb_indices.add(index)
+        if apart:  # the link cores: their link area and relay first, then the tokens
+            served, size = programs.rectangles(ranks, links, grid[0]), apart
+            runtime = self._runtime_cbs()
+            index = min(set(range(32)) - {cb[0] for cb in runtime})
+            launch.cb(served, index, "uint32", 64, size)
+            for index, fmt, page, pages in runtime:
+                launch.cb(served, index, fmt, page, page * pages)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
         kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
-        held = programs.rectangles(0, ranks, grid[0]) if links else all_cores
         for kernel, args, processor, config in kernels:
             launch.kernel(
                 str(sources[kernel]),
@@ -2162,6 +2183,29 @@ class _Backend:
                     **(compute_config({}) if kernel == "compute" else {}),
                 )
         return launch
+
+    def _one_island(self):
+        """KM_ONE_ISLAND for a load that is no island of several (a card of its own,
+        not split): its kernels take the island table's one entry as known
+        (km_island.hpp), the code of several islands left out."""
+        if self.session.island is not None or self.split is not None:
+            return []
+        return [("KM_ONE_ISLAND", "1")]
+
+    def _apart_links(self, links):
+        """The bytes of the link area and relay at the link cores' buffers' base when
+        the load's link plan keeps them there (its link cores run their own kernels,
+        `links` of them), else 0; the rank cores' buffers are then launched apart."""
+        plan = self.session.link_plan
+        if plan is None or getattr(plan, "apart", None) is None:
+            return 0
+        if not links:
+            raise ProgramError(
+                "the link plan keeps the link area on the link cores alone, but they "
+                "run the program's kernels"
+            )
+        self.apart_links = links
+        return 4 * len(plan.apart[1])
 
     def _split_owners(self, common, grid):
         """A split card's per-core (island's first core, start-up words, LIM base) and
@@ -2306,6 +2350,7 @@ class _Backend:
                     ("KM_PROGRAM_SWITCH", "1"),
                 ]
             defines += island
+            defines += self._one_island()
             first = held[0] if held else None
             if placed.switch and first is None:
                 first = placed.programs[0]  # one build for every group's kernels
@@ -2387,6 +2432,9 @@ class _Backend:
         )
         grid = (self.port.grid_x, self.port.grid_y)
         cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
+        if self.apart_links:  # the link cores hold their link area there: no slots
+            ranks = grid[0] * grid[1] - self.apart_links
+            cores = programs.rectangles(0, ranks, grid[0])
         descriptor.cb(cores, index, "uint32", size, size, first=True)
         # a switch's buffers of every program field move up with the rest
         if getattr(self, "switch_layouts", None):
@@ -2443,6 +2491,8 @@ class _Backend:
         )
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         self.control_rows[:, at : at + len(area)] = area
+        if self.apart_links:  # no slots there: no overlay to load
+            self.control_rows[-self.apart_links :, at : at + len(area)] = 0
         self.control.write(self.control_rows)
         session.log(
             f"overlays {[*program.overlays, 'service']} built and placed: slots from "
