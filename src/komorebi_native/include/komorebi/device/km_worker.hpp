@@ -42,6 +42,10 @@ namespace km {
     inline bool pages_serve(const Kernel&, const km_command_t&, uint32_t, uint32_t) {
         return true;
     }
+
+    template <typename Kernel>
+    inline void pages_end(const Kernel&) {
+    }
 #endif
 
     // A command the runtime serves (served()): the reader loads the runtime's service
@@ -69,6 +73,7 @@ namespace km {
             }
             while (const km_command_t* command = next()) {
                 if (handler(*command) == KM_HANDLER_EXIT) {
+                    pages_end(*this);
                     put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
@@ -85,6 +90,7 @@ namespace km {
                 )[kDoneReader] = command->sequence;
                 finish(*command, kStReader);  // a failed clear stops the tile
             }
+            pages_end(*this);
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
@@ -275,8 +281,10 @@ namespace km {
                     : started + (static_cast<uint64_t>(arguments.idle_limit) << 10)
             );
             uint32_t passes = 0, gave = kGaveNone, sequence = 0;
-            const uint32_t island_first = islands_at(arguments.control).first();
+            const Islands view = islands_at(arguments.control);
+            const uint32_t island_first = view.first();
             const uint32_t rank = island_first + arguments.me;
+            const uint32_t link = KM_GROUP_LINK_BASE + (arguments.me - view.ranks());
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
             for (;;) {
                 invalidate_l1_cache();
@@ -284,7 +292,7 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
-                const Pass found = scan(ring, last, arguments.depth, rank);
+                const Pass found = scan(ring, last, arguments.depth, rank, link);
                 passes++;
                 if (found.pick >= 0 && !found.partial) {
                     copy_command(&ring[found.pick], job);
@@ -428,6 +436,7 @@ namespace km {
                 add_sat(state() + kStCompleted, 1);
                 finish(command, kStWriter);
             }
+            pages_end(*this);
             flushed(kFlushWrites, kStWriter);  // the last acknowledgement has landed
             trace_.flush(arguments.me, *this);
             put_byte(state(), kStEnds, kEndWriter, end);

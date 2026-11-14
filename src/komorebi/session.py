@@ -1114,15 +1114,19 @@ def _recipe_group(recipe):
 
 def _island(island, grid):
     """Session.load's `island` (graph, i) checked: island i's ranks are this card's
-    cores in core order (no link cores), so rank first + c is core c."""
+    first cores in core order, its link cores the rest in order, so rank first + c is
+    core c and link core k is core ranks + k (the dispatcher's mapping)."""
     if island is None:
         return None
     graph, here = island
     cores = grid[0] * grid[1]
     if not 0 <= here < len(graph.islands):
         raise ValueError(f"island {here} of {len(graph.islands)}")
-    if graph.rank_cores[here] != tuple(range(cores)):
-        raise ValueError(f"island {here}: its ranks are not the {cores} cores in order")
+    if graph.rank_cores[here] + graph.link_cores[here] != tuple(range(cores)):
+        raise ValueError(
+            f"island {here}: its ranks, then its link cores, are not the {cores} "
+            "cores in order"
+        )
     return graph, here
 
 

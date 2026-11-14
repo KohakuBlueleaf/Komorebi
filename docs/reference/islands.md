@@ -43,16 +43,22 @@ returns an `IslandSession`; with one card it is the card's `Session` as before.
   set to them) and must not be held by another process.
 - **Ranks.** Flat and contiguous by island, in island order: island i holds ranks
   `session.graph.first(i)` to `first(i) + count(i) - 1`, its cores in core order.
-  `session.ranks` is the total (240 on two cards).
+  `session.ranks` is the total (240 on two cards), at most 65,024: a group's first
+  below `KM_GROUP_LINK_BASE` (0xFE00), where link cores' names start (0xFF00 on: X280
+  threads).
 - **Close.** Every island's run is stopped through the X280 runtime, the islands'
   sessions are closed, then the mesh, and the fabric is set off. A grid that did not
   return keeps the mesh open, as a card's session keeps its device.
 - `links` 0: no core is taken for a link, every core is a rank. `links` 1 to 4 (two
   islands): pages cross on that many links. Each island's last `(links + 1) // 2`
-  cores are its link cores (`session.link_cores`), not ranks; both data-movement CPUs
-  of a link core send, each on its own link (`session.channels`: the Ethernet channel
-  of each). The session checks that a DRAM bank sits at the same NoC place on both
-  islands.
+  cores are its link cores (`session.link_cores`, `graph.link_cores`), not ranks; both
+  data-movement CPUs of a link core send, each on its own link (`session.channels`:
+  the Ethernet channel of each). The session checks that a DRAM bank sits at the same
+  NoC place on both islands.
+- A link core is named outside the ranks: a command's group with first
+  `KM_GROUP_LINK_BASE + k` and count n names link cores k to k + n - 1 of the island
+  that takes it (`graph.link_group(island, k, n)`). Such a group is never cut by
+  island and never crosses; on a core, its rank is its link-core index less k.
 
 ## The run
 
@@ -96,8 +102,7 @@ A kernel asks where a page lives with `km::island_of(placement, page)`
 (`km_placement.hpp`): the session writes a tensor's placement as compile arguments
 after its accessor's (`tensor.placement_args()`: the islands, copy, then each
 island's first page and pages), which `km::Placement<offset>()` reads; a copy's page
-answers the core's own island. Each island's session writes its island number into
-its cores' island table (`km::island()`). On both islands' cores, for four tensors
+answers the core's own island (`km::island()`, from the island table). On both islands' cores, for four tensors
 (all on island 0, all on island 1, split, a copy): 40 answers, all as
 `islands.island_of` gives them (`experiments/islands_pages/pages.py --where`).
 
@@ -108,10 +113,16 @@ the island that holds it (a copy: into every island).
 ## Pages across a link
 
 With `links`, the run's kernels are built with `KM_PAGE_LINKS` and the link cores
-serve the runtime's `PAGES` command (`km_pages.hpp`): each CPU reads its share of the
-pages from its island's DRAM and sends a page a packet with plain writes, straight
-into the other island's DRAM or a core's L1; the last packet of every 64 also adds
-that batch's pages to a count in a core's port.
+serve the runtime's `PAGES` command (`KM_HANDLER_PAGES`, 248, `km_pages.hpp`): each
+CPU reads its share of the pages from its island's DRAM and sends a page a packet with
+plain writes, straight into the other island's DRAM or a core's L1; the last packet of
+every 64 also adds that batch's pages to a count in a core's port.
+
+- At the load, each link CPU of both islands opens the connection to its link and
+  holds it until its kernel ends; a send never opens or closes one. It then says
+  hello to the same CPU of the far link core, one word into that core's port 5 or 6,
+  and the load returns once both sides have heard each other (bounded), so no page is
+  sent before the far side runs.
 
 - `session.cross(source, target, first=0, pages=None, timeout=10.0)` writes the pages
   of `source` into the same pages of `target` where another island holds them, and
@@ -136,9 +147,11 @@ that batch's pages to a count in a core's port.
   waited together.
 - Example 01's MAP on island 0's 118 ranks reading an input island 1 holds alone
   (`islands.py --across 4`, each rank's two tiles asked into its transfer buffer):
-  every tile exact, 3,132 µs a round of 118 asks against 170 µs reading its own DRAM.
-  A rank's ask is one command of two pages, and each command opens and closes its
-  connection: the cost is the command's, not the link's.
+  every tile exact, 3,009 µs a round of 118 asks against 171 µs reading its own DRAM
+  (2026-11-14, connections held). With a connection opened and closed by each command
+  it was 3,132 µs: holding them saves 4 %. The cost is the 118 `PAGES` commands a
+  round, one a rank, each a whole command on the holder's two link cores, not the
+  link.
 
 ## Measured
 

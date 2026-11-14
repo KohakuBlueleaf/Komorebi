@@ -7,7 +7,8 @@ a tensor held by the other, straight into the other island's DRAM, exact, and ho
 ## The page sender
 
 A session with `links` 1 to 4 takes the last `(links + 1) // 2` cores of each island
-as link cores. They are not ranks. Both data-movement CPUs of a link core send, each on
+as link cores. They are not ranks: a command names them by first `KM_GROUP_LINK_BASE`
+(0xFE00) + k (`graph.link_group`). Both data-movement CPUs of a link core send, each on
 its own link: CPU c of link core r sends on link 2r + c. The run's kernels are built
 with the define `KM_PAGE_LINKS`, which adds the runtime's `PAGES` command
 (`KM_HANDLER_PAGES`, `km_pages.hpp`) to the reader and writer loops. A run of a session
@@ -20,8 +21,9 @@ count, and the Ethernet channel of each link. Each CPU takes its share of the pa
 reads them from DRAM into slots of its L1 (its half of the run's transfer buffer, 16
 KiB: three slots of 4096 B), and sends each page as one packet with a plain write. The
 last packet of every 64 is a fused write and add of that batch's pages to the count.
-A slot is read again once its packet has left L1. Each command opens its connection
-and closes it at the end, so a link never has two senders at once. A `PAGES` wait on
+A slot is read again once its packet has left L1. Each CPU opens its connection once,
+at the load (a `PAGES` open, then a hello both ways with the far link core's same
+CPU), and holds it until its kernel ends, so a link never has two senders at once. A `PAGES` wait on
 the other island waits, bounded, until the count has reached the pages sent, then
 takes them off it.
 
@@ -46,7 +48,8 @@ The time is the host's, from the submit of both commands to the wait's event. Th
 quarter of what one CPU sends from L1 alone (28.9 GB/s, `experiments/link_rate`). With
 three slots a CPU has at most three DRAM reads in flight, so the read latency sets the
 rate; more L1 a CPU, more reads in flight, is the next step. (Both rows ran before the
-writer took the `WHERE` handler below, which the page sender does not use.)
+writer took the `WHERE` handler below, which the page sender does not use, and before
+the connections were held: each command then opened and closed its own.)
 
 ## Which island holds a page, asked on a core
 

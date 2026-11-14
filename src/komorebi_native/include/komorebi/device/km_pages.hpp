@@ -1,8 +1,11 @@
-// Pages across a link (KM_HANDLER_PAGES): each data-movement CPU of a link core sends
-// its share of DRAM pages over its own link, a count a batch; or a count is waited for.
+// Pages across a link (KM_HANDLER_PAGES): each data-movement CPU of a link core holds
+// a connection to its link, from its open to its kernel's end, and sends its share of
+// DRAM pages over it, a count a batch; or a count is waited for.
 #pragma once
 
 #include <stdint.h>
+
+#include <new>
 
 #include "api/dataflow/dataflow_api.h"
 #include "hostdev/fabric_edm_packet_header.hpp"
@@ -25,6 +28,7 @@ namespace km {
         kPagesHeaders + kPagesSlotsMax * kPagesHeaderStride
     );
     constexpr uint32_t kPagesBatch = 64;  // packets a count
+    constexpr uint32_t kPagesHelloEvery = 4096;  // hello polls between two hellos
 
     struct PagesRequest {
         uint32_t from;
@@ -109,6 +113,31 @@ namespace km {
         );
     }
 
+    // This CPU's held connection: open from its PAGES open to its kernel's end (a
+    // kernel's .bss starts zero), its L1 at `area`. One sender a connection.
+    struct PagesHeld {
+        uint32_t open;
+        uint32_t area;
+    };
+    inline PagesHeld pages_held;
+    alignas(8) inline uint8_t
+        pages_sender_bytes[sizeof(tt::tt_fabric::WorkerToFabricEdmSender)];
+
+    inline tt::tt_fabric::WorkerToFabricEdmSender& pages_sender() {
+        return *reinterpret_cast<tt::tt_fabric::WorkerToFabricEdmSender*>(
+            pages_sender_bytes
+        );
+    }
+
+    // The links a request names (bytes before the first KM_PAGES_NO_LINK, at most 4).
+    inline uint32_t pages_links(const PagesRequest& r) {
+        uint32_t links = 0;
+        while (links < 4 && ((r.links >> 8 * links) & 0xFFu) != KM_PAGES_NO_LINK) {
+            links++;
+        }
+        return links;
+    }
+
     // Whether the NoC counter at `reg` has reached `mark` (counts wrap).
     inline bool noc_reached(uint32_t reg, uint32_t mark) {
         return static_cast<int32_t>(NOC_STATUS_READ_REG(noc_index, reg) - mark) >= 0;
@@ -142,8 +171,9 @@ namespace km {
         );
     }
 
-    // CPU `cpu` of rank `rank` sends its share on link 2 rank + cpu, reads run ahead
-    // in the slots; each batch's last packet adds its pages to the count. kGave* code.
+    // CPU `cpu` of link core `rank` sends its share on link 2 rank + cpu over its held
+    // connection, reads run ahead in the slots; each batch's last packet adds its
+    // pages to the count. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_send(
         const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
@@ -151,10 +181,7 @@ namespace km {
         if constexpr (noc_mode == DM_DYNAMIC_NOC) {
             return kGaveBadTransfer;  // the counters below are the dedicated mode's
         }
-        uint32_t cpus = 0;
-        while (cpus < 4 && ((r.links >> 8 * cpus) & 0xFFu) != KM_PAGES_NO_LINK) {
-            cpus++;
-        }
+        const uint32_t cpus = pages_links(r);
         const uint32_t link = 2 * rank + cpu;
         if (link >= cpus) {
             return kGaveNone;  // no link of this CPU: no share
@@ -167,7 +194,8 @@ namespace km {
         if (
             slots == 0 || r.page % 16 != 0 || r.page > KM_PAGES_PACKET_MAX ||
             area % 16 != 0 || r.chunk % 64 != 0 || r.hops == 0 ||
-            static_cast<uint64_t>(r.buffer) + 2ull * r.chunk > MEM_L1_SIZE
+            static_cast<uint64_t>(r.buffer) + 2ull * r.chunk > MEM_L1_SIZE ||
+            pages_held.open == 0 || pages_held.area != area
         ) {
             return kGaveBadTransfer;
         }
@@ -212,9 +240,7 @@ namespace km {
             reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(words)
                 ->to_chip_unicast(static_cast<uint8_t>(r.hops));
         }
-        l1(area + kPagesTeardown)[0] = 0;
-        auto sender = pages_connection((r.links >> 8 * link) & 0xFFu, area);
-        sender.open();
+        auto& sender = pages_sender();
         uint32_t read_mark[kPagesSlotsMax];
         uint32_t sent_mark[kPagesSlotsMax];
         const auto read = [&](uint32_t k) {
@@ -280,11 +306,126 @@ namespace km {
             }
         }
         const uint32_t sending = code;
-        // The teardown, also after a failed bound: the router must not keep this core.
+        // The slots and headers are free for the next command once sent and read.
+        if (!wait([] {
+            return ncrisc_noc_nonposted_writes_sent(noc_index);
+        }) || !wait([] {
+            return ncrisc_noc_reads_flushed(noc_index);
+        })) {
+            return code;
+        }
+        return sending;
+    }
+
+    // CPU `cpu` of link core `rank` opens the connection of link 2 rank + cpu and
+    // holds it, then says hello to the same CPU of the far link core, bounded: its
+    // word there 1 (up) until the far word here is not 0, then 2; done when both say
+    // 2, so that no request goes out before the far side runs. kGave* code.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t pages_open(
+        const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
+    ) {
+        if constexpr (noc_mode == DM_DYNAMIC_NOC) {
+            return kGaveBadTransfer;
+        }
+        const uint32_t link = 2 * rank + cpu;
+        if (link >= pages_links(r)) {
+            return kGaveNone;  // no link of this CPU
+        }
+        const uint32_t area = r.buffer + cpu * r.chunk;
+        if (
+            pages_held.open != 0 || area % 16 != 0 || r.chunk % 64 != 0 ||
+            r.chunk <= kPagesSlots || r.hops == 0 ||
+            static_cast<uint64_t>(r.buffer) + 2ull * r.chunk > MEM_L1_SIZE
+        ) {
+            return kGaveBadTransfer;  // one open a kernel: one sender a connection
+        }
+        l1(area + kPagesTeardown)[0] = 0;
+        auto& sender = *new (pages_sender_bytes) tt::tt_fabric::WorkerToFabricEdmSender(
+            pages_connection((r.links >> 8 * link) & 0xFFu, area)
+        );
+        sender.open();
+        pages_held = {1, area};
+        auto* header = (
+            reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(
+                area + kPagesHeaders
+            )
+        );
+        for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
+            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(header)[w] = 0;
+        }
+        header->to_chip_unicast(static_cast<uint8_t>(r.hops));
+        const uint64_t far = (
+            safe_get_noc_addr(
+                r.counter & 0xFFu,
+                r.counter >> 8,
+                r.count + cpu * KM_PORT_STRIDE,
+                tt::tt_fabric::edm_to_local_chip_noc
+            )
+        );
+        volatile tt_l1_ptr uint32_t* here = l1(
+            kernel.args().control + KM_CONTROL_PORT +
+            (KM_PAGES_HELLO_PORT + cpu) * KM_PORT_STRIDE
+        );
+        uint32_t said = 0, polls = 0;
+        uint32_t code = kernel.poll_at(
+            kWherePages,
+            [&] {
+                invalidate_l1_cache();
+                const uint32_t heard = here[0];
+                const uint32_t say = heard != 0 ? 2 : 1;
+                if (
+                    (say != said || ++polls % kPagesHelloEvery == 0) &&
+                    ncrisc_noc_nonposted_writes_sent(noc_index) &&
+                    sender.edm_has_space_for_packet<1>()
+                ) {
+                    header->to_noc_unicast_inline_write(
+                        tt::tt_fabric::NocUnicastInlineWriteCommandHeader{far, say}
+                    );
+                    sender.send_payload_flush_non_blocking_from_address(
+                        reinterpret_cast<uint32_t>(header), sizeof(PACKET_HEADER_TYPE)
+                    );
+                    said = say;
+                }
+                return heard == 2 && said == 2;
+            },
+            kernel.args().wait_limit
+        );
+        const uint32_t sent = kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_writes_sent(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+        return code != kGaveNone ? code : sent;
+    }
+
+    // At the kernel's end: the held connection's teardown, bounded (the router must
+    // not keep this core).
+    template <typename Kernel>
+    __attribute__((noinline)) void pages_end(const Kernel& kernel) {
+        if (pages_held.open == 0) {
+            return;
+        }
+        const uint32_t area = pages_held.area;
+        pages_held.open = 0;
+        const auto wait = [&](auto ready) {
+            return (
+                kernel.poll_at(
+                    kWherePages,
+                    [&] {
+                        invalidate_l1_cache();
+                        return ready();
+                    },
+                    kernel.args().wait_limit
+                ) == kGaveNone
+            );
+        };
         wait([] {
             return ncrisc_noc_nonposted_writes_sent(noc_index);
         });
-        sender.close_start();
+        pages_sender().close_start();
         const bool closed = wait([] {
             return ncrisc_noc_nonposted_writes_flushed(noc_index);
         });
@@ -293,12 +434,6 @@ namespace km {
         })) {
             l1(area + kPagesTeardown)[0] = 0;
         }
-        if (!wait([] {
-            return ncrisc_noc_reads_flushed(noc_index);
-        })) {
-            return code;
-        }
-        return sending != kGaveNone ? sending : code;
     }
 
     // The reader waits until the count at r.count reaches r.pages, then takes that
@@ -327,11 +462,16 @@ namespace km {
         const Kernel& kernel, const km_command_t& command, uint32_t cpu, uint32_t word
     ) {
         const PagesRequest r = pages_of(command);
+        // this link core's index: its name in a group of link cores, less the base
+        const uint32_t index = kernel.name(command) - KM_GROUP_LINK_BASE;
+        const bool links = KM_GROUP_IS_LINK(first(command));
         uint32_t code = kGaveNone;
         if (r.mode == KM_PAGES_WAIT) {
             code = cpu == 0 ? pages_wait(kernel, r) : kGaveNone;
-        } else if (r.mode == KM_PAGES_SEND) {
-            code = pages_send(kernel, r, kernel.me() - first(command), cpu);
+        } else if (r.mode == KM_PAGES_SEND && links) {
+            code = pages_send(kernel, r, index, cpu);
+        } else if (r.mode == KM_PAGES_OPEN && links) {
+            code = pages_open(kernel, r, index, cpu);
         } else {
             code = kGaveBadTransfer;
         }

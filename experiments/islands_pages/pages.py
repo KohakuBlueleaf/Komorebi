@@ -116,8 +116,9 @@ def where(session, program, tensors):
                 pages |= {start, start + length - 1} if length else set()
             for core in cores:
                 for page in sorted(pages):
+                    rank = session.graph.first(island) + core  # groups are flat
                     event = run.wait(
-                        run.submit(handler, (core, 1), [index, page], result=True)
+                        run.submit(handler, (rank, 1), [index, page], result=True)
                     )
                     want = islands.island_of(tensor.placement, page, island)
                     asked.append([island, core, index, page, event.result, want])

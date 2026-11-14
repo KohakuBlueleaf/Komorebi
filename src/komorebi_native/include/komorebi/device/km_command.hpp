@@ -134,11 +134,16 @@ namespace km {
         bool partial;            // a newer command was seen that has not fully landed
     };
 
-    // One pass over slots [0, depth): newer commands not for `me` are consumed; the
-    // landed EXIT or own command with the smallest sequence is picked (from a copy).
+    // One pass over slots [0, depth): newer commands not for `me` (a group of link
+    // cores: not for `link`) are consumed; the landed EXIT or own command with the
+    // smallest sequence is picked (from a copy).
     template <typename Word>
     inline Pass scan(
-        const volatile km_command_t* ring, Word* last, uint32_t depth, uint32_t me
+        const volatile km_command_t* ring,
+        Word* last,
+        uint32_t depth,
+        uint32_t me,
+        uint32_t link = 0
     ) {
         Pass found = {-1, 0, false};
         for (uint32_t slot_index = 0; slot_index < depth; slot_index++) {
@@ -152,7 +157,8 @@ namespace km {
                 found.partial = true;
                 continue;
             }
-            if (handler(command) != KM_HANDLER_EXIT && !in_group(command, me)) {
+            const uint32_t name = KM_GROUP_IS_LINK(first(command)) ? link : me;
+            if (handler(command) != KM_HANDLER_EXIT && !in_group(command, name)) {
                 last[slot_index] = sequence;
                 continue;
             }

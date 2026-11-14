@@ -393,19 +393,18 @@ class IslandSession:
                 )
                 for island, chip in enumerate(self.chips)
             )
-            parts, taken = [], (self.links + 1) // 2
+            parts, taken, link_cores = [], (self.links + 1) // 2, []
             for session in self.sessions:
                 columns, rows = session.grid
                 cores = columns * rows
-                parts.append(islands.Island(tuple(range(cores - taken)), columns))
-            self.link_cores = tuple(
-                tuple(range(len(part.cores), len(part.cores) + taken)) for part in parts
-            )
+                parts.append(islands.Island(tuple(range(cores)), columns))
+                link_cores.append(tuple(range(cores - taken, cores)))
             links = [
                 islands.Link(i, i + 1, max(self.links, 1))
                 for i in range(len(parts) - 1)
             ]
-            self.graph = islands.Graph(parts, links, reserve=False)
+            self.graph = islands.Graph(parts, links, link_cores=link_cores)
+            self.link_cores = self.graph.link_cores
             if self.links:
                 self._open_links(module)
         except BaseException:
@@ -556,9 +555,43 @@ class IslandSession:
         finally:
             program.defines = defines
         self.run = IslandRun(self.graph, runs)
+        if self.links:
+            try:
+                self._hold_links()
+            except BaseException:
+                self.run.abort()
+                raise
         return self.run
 
     # Pages across a link
+
+    def _hold_links(self, timeout=10.0):
+        """Each link CPU of both islands opens its connection, held until its kernel
+        ends, and says hello to the far link core's same CPU (an OPEN a link core,
+        waited together): no send goes out before the far side runs."""
+        h = abi.headers()
+        waits = []
+        for here in range(2):
+            there = 1 - here
+            buffer, chunk = self.staging(here)
+            links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
+            for k, far in enumerate(self.link_cores[there]):
+                words = [0] * 10
+                words[h["KM_PAGES_TO_CORE"]] = chunk // 64 << 16
+                words[h["KM_PAGES_COUNT"]] = self.port_address(
+                    there, h["KM_PAGES_HELLO_PORT"]
+                )
+                words[h["KM_PAGES_COUNTER"]] = (
+                    self.noc_of(there, far) | 1 << 16 | h["KM_PAGES_OPEN"] << 24
+                )
+                words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
+                words[h["KM_PAGES_BUFFER"]] = buffer
+                handle = self.run.island(here)._queue_command(
+                    h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, 1), words
+                )
+                waits.append((here, handle))
+        self.wait_together(waits, timeout)
+        self.log(f"page links held, hello both ways: link cores {self.link_cores}")
 
     def noc_of(self, island, core):
         """x | y << 8: the NoC place of local core `core` of `island` (core table)."""
@@ -619,9 +652,8 @@ class IslandSession:
         )
         words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
         words[h["KM_PAGES_BUFFER"]] = buffer
-        cores = self.link_cores[here]
         handle = self.run.island(here)._queue_command(
-            h["KM_HANDLER_PAGES"], (cores[0], len(cores)), words
+            h["KM_HANDLER_PAGES"], self.graph.link_group(here), words
         )
         return here, handle
 
@@ -646,8 +678,18 @@ class IslandSession:
         words[h["KM_PAGES_COUNT"]] = self.port_address(island, port)
         words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_WAIT"] << 24
         return self.run.island(island)._queue_command(
-            h["KM_HANDLER_PAGES"], (core, 1), words
+            h["KM_HANDLER_PAGES"], self.core_group(island, core), words
         )
+
+    def core_group(self, island, core):
+        """The group of local core `core` alone in a command to `island`: a link core
+        by its name (Graph.link_group), a rank's core by its flat rank."""
+        if core in self.link_cores[island]:
+            k = self.link_cores[island].index(core)
+            return self.graph.link_group(island, k, 1)
+        if core not in self.graph.rank_cores[island]:
+            raise ValueError(f"island {island} has no core {core}")
+        return self.graph.first(island) + self.graph.rank_cores[island].index(core), 1
 
     def wait_together(self, waits, timeout=10.0):
         """Waits, within one `timeout`, for [(island, handle)] of the islands' own runs,
