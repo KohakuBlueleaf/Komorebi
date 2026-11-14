@@ -69,8 +69,8 @@ def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     report = {"cards": cards, "messages": args.messages, "forwards": args.forwards}
-    # The message service on the link core makes the kernels 78.6 KB: past the default.
-    with km.Session(cards=cards, links=1, kernel_bytes=80 * 1024, log=log) as session:
+    # The message service on the link core makes the kernels 83.8 KB: past the default.
+    with km.Session(cards=cards, links=1, kernel_bytes=84 * 1024, log=log) as session:
         islands = len(session.sessions)
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)] for i in range(islands)

@@ -36,6 +36,9 @@ def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
     parser.add_argument(
+        "--links", type=int, default=0, help="the session's page links (0: link 0)"
+    )
+    parser.add_argument(
         "--steps", default="nop,map,ask,hang", help="of nop, map, ask, hang"
     )
     parser.add_argument("--nop-jobs", type=int, default=2000, help="per round")
@@ -104,9 +107,9 @@ def main():
     steps = args.steps.split(",")
     cards = [int(card) for card in args.cards.split(",")]
     threads = any(step in steps for step in ("map", "ask", "hang"))
-    report = {"cards": cards, "steps": steps}
+    report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
-    with km.Session(cards=cards, log=log) as session:
+    with km.Session(cards=cards, links=args.links, log=log) as session:
         ranks = session.ranks
         graph = session.graph
         own = [(graph.first(i), graph.count(i)) for i in range(2)]
@@ -151,7 +154,7 @@ def main():
             report["ask_word"] = word
             log(f"thread to thread: {report['thread_ask_us']} us a FOLD ({word:#x})")
         if "hang" in steps:
-            group, hung = (100, 40), 30  # rank 130: island 1's core 10
+            group, hung = (100, 40), 30  # rank 130: one of island 1's
             word = ask_thread(first, "hang", [*group, hung, 300000, 2000000])
             report["hang_word"] = word
             report["hang_named_island"] = word == (

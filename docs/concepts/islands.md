@@ -102,12 +102,14 @@ x 24 to 27, one for each of the four links. A router has one channel for a core 
 card, so one core at a time holds a link's connection; sharing a link between cores at
 once needs tt-metal's mux cores.
 
-The host's graph models this: a link that is used takes one core on each island it joins
-out of that island's ranks (a link core), spread over rows and columns, and ranks and
-thread numbers are counted without it. `Session(cards=[...], links=...)` takes only
-`links=0` today: no core is taken for a link, every core is a rank (240 on two cards),
-because the link service that would use the core does not exist. The graph joins each
-neighbouring pair of islands with one link.
+The host's graph models this: a link that is used takes a core on each island it joins
+out of that island's ranks (a link core), and ranks and thread numbers are counted
+without it. A session over two cards takes each island's last `(links + 1) // 2` cores
+(one with `links=0`), both data-movement CPUs of a link core holding a link each, from
+the load to the run's end; a command names them as link cores, first
+`KM_GROUP_LINK_BASE` (0xFE00) + k, never as ranks. Link 0, on link core 0's first CPU,
+carries the dispatcher's command lines; the others carry pages
+([islands](../reference/islands.md#pages-across-a-link)).
 
 What a link carries, measured. Two Blackhole p150a cards joined by four Ethernet links,
 one process holding both with tt-metal's 1-D fabric in slow dispatch, AICLK 1350 MHz.
@@ -142,10 +144,9 @@ the other way (1,000 pipelined to one core).
 
 ## What is not built
 
-- **Links in a run.** `forward` to a rank of another island, `collect` and `broadcast`
-  over islands, a read of a page that another island holds, and a command from a thread of
-  one island to another's cores. All need the link service: a core that holds the
-  connection and a program on it.
+- **Messages over a link.** `forward` to a rank of another island, `collect` and
+  `broadcast` over islands, and a kernel's own ask for a page another island holds (the
+  host asks for it today).
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **A card split into islands.** The host's graph describes it (`islands.split_card`);
   nothing runs on it.

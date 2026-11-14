@@ -71,6 +71,21 @@ class L1LayoutError(L1BudgetError):
         self.table = table
 
 
+class SlowCodeError(ProgramError):
+    """A program's kernels and overlay slots would reach above `line` of L1, where a
+    taken branch costs about 4 cycles more; nothing was loaded."""
+
+    def __init__(self, base, size, line):
+        super().__init__(
+            f"its overlay slots ({size:,} B from {base:#x}, above the kernel buffer) "
+            f"would end at {base + size:#x}, above {line:#x} of L1, where every taken "
+            "branch costs about 4 cycles more. Fewer or smaller slots "
+            "(Program.slots(count=..., bytes=...)) or a smaller kernel buffer; "
+            "Session(slow_code=True) loads it anyway."
+        )
+        self.end = base + size
+
+
 class CardBusy(KomorebiError):
     """Another live process holds the card's chip lock; opening it would wait for that
     process to exit. `pid` is the holder."""

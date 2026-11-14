@@ -539,7 +539,10 @@ rasterizer, a ray tracer) fits.
   loads when it is first needed.
 - **A core's L1 holds its kernels, its buffers and its overlay slots.** A program that
   does not fit is refused at load with the budget table; the answer is smaller buffers,
-  or code moved into overlays.
+  or code moved into overlays. Code runs from below 1 MB of L1 (a taken branch to code
+  above it costs about 4 cycles more): the kernels and slots sit at the bottom, the
+  buffers above them, and a load whose code would reach past 1 MB raises
+  `SlowCodeError` unless the session allows it (`slow_code=True`).
 - **One card's grid.** Up to 128 cores in at most two multicast panels; one harvesting
   pattern has been run. Two cards run as two such grids (240 ranks on the two P150A).
 
@@ -561,10 +564,11 @@ property of the model.
    is written for Komorebi; nothing loads an operation's kernels as they are.
 4. **Host transfers at the link's speed, everywhere.** Today reads and writes go
    through the host channel (a 20 MiB frame read in 30 ms without a run, 7 ms inside
-   one) for interleaved DRAM tensors, on each card. Tensors in L1, reads under 80 KiB
-   without a run, pages the L1 or the channel cannot hold and a session without the
-   channel still go through the device API at about 2 MB per second
-   ([host](docs/reference/host.md#the-host-channel)).
+   one) for interleaved DRAM tensors and tensors in L1 (15 MiB over 120 cores read in
+   5 ms inside a run), on each card. Reads under 80 KiB without a run, pages the L1 or
+   the channel cannot hold, an L1 tensor on a core that holds no program in the run and
+   a session without the channel still go through the device API at about 2 MB per
+   second ([host](docs/reference/host.md#the-host-channel)).
 5. **Starting without tt-metal's launch.** Today the session opens the card in slow
    dispatch and tt-metal launches the kernels once, core by core. Everything after that
    (commands, programs, overlays) is Komorebi's own and runs from the card.

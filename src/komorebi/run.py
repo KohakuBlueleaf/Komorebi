@@ -111,6 +111,7 @@ class Run:
         switch=None,
         ranks=None,
         island_first=0,
+        island_ranks=None,
     ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
@@ -122,6 +123,9 @@ class Run:
         # groups are in flat ranks, of all islands (one island: rank = core)
         self.ranks = ranks or self.cores
         self.island_first = island_first  # rank island_first + c is core c
+        # link core k (group first KM_GROUP_LINK_BASE + k) is core island_ranks + k
+        self.island_ranks = self.cores if island_ranks is None else island_ranks
+        self._link_base = self.h["KM_GROUP_LINK_BASE"]
         self.program = program
         # the run's programs by program field; holds[field]: the cores holding it
         self.programs = list(programs or ([program] if program is not None else []))
@@ -586,9 +590,12 @@ class Run:
 
     def _part(self, first, count):
         """The cores [low, high) of flat group (first, count) on this island (numbers
-        or arrays; low == high: none)."""
-        low = np.clip(first - self.island_first, 0, self.cores)
-        high = np.clip(first + count - self.island_first, low, self.cores)
+        or arrays; low == high: none); a group of link cores, its link cores."""
+        link = (first >= self._link_base) & (first < self._cluster_base)
+        first = np.where(link, first - self._link_base + self.island_ranks, first)
+        island_first = np.where(link, 0, self.island_first)
+        low = np.clip(first - island_first, 0, self.cores)
+        high = np.clip(first + count - island_first, low, self.cores)
         return low, high
 
     def _group(self, group):

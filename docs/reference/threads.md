@@ -240,26 +240,33 @@ to any of them, and to any flat group, with `kmx_submit` as on one island:
 
 ```c
 kmx_command(&question, 0, kHandlerFold, KM_GROUP_CLUSTER(KMX_THREAD(1, 1)), 1);
-kmx_command(&map, 0, kHandlerMap, 0, 240); /* both islands' ranks */
+kmx_command(&map, 0, kHandlerMap, 0, 238); /* both islands' ranks (119 each) */
 ```
 
 The dispatcher splits the group by the island table. It runs its own part and sends the
 other island's part to that island's dispatcher as a command packet: the 64-B command
 line unchanged and a 64-B crossing line (the origin island, the origin ticket, the time
-left, a sequence). The packet goes through the island's link core into the other
-dispatcher's link inbox, one inbox a link, written only by that link's core (whole
-lines, its count word last; nothing atomic crosses). The other dispatcher runs the
+left, a sequence). The dispatcher stages the packet in the link area of the island's
+link core 0 (the core after its ranks) and gives that core a `PAGES` line
+(`KM_PAGES_LINE`, group `KM_GROUP_LINK_BASE`); its CPU that holds link 0's connection,
+opened at the load, sends it into the other dispatcher's link inbox, one inbox a link,
+written only by that link's core (whole lines, its count word last; nothing atomic
+crosses). The same CPU serves page commands in turn when link 0 is the session's only
+link ([islands](islands.md#pages-across-a-link)). The other dispatcher runs the
 packet as its own command and sends DONE back (ticket, status, completion words). The
 ticket's event comes once every part is back: `ticks` is the whole command's, a result
 (`KM_FLAG_RESULT`) is the leader's. A part not back by the command's deadline gives the
 command up: `KM_EVENT_TIMEOUT` with `KM_EVENT_ISLAND` (0x80) + that island in the low 8
 bits of `auxiliary`, and the run goes on.
 
-Measured (`examples/25_islands_threads`, two cards): a NOP submitted to island 0's
-ring, 2,000 pipelined, 3.08 µs to island 0's 120 ranks and 4.36 µs to island 1's;
-example 01's MAP from island 0's thread, one at a time, 6.00 µs on island 0's ranks and
-15.41 µs on all 240, every tile exact; a FOLD with its result from island 0's thread to
-island 1's, one at a time, 10.69 µs.
+Measured (`examples/25_islands_threads --links 4`, two cards, 2026-11-14): a NOP
+submitted to island 0's ring, 2,000 pipelined, 2.98 µs to island 0's 118 ranks and
+3.94 µs to island 1's; example 01's MAP from island 0's thread, one at a time, 6.05 µs
+on island 0's ranks and 13.11 µs on all 236, every tile exact; a FOLD with its result
+from island 0's thread to island 1's, one at a time, 10.61 µs; a HANG on ranks 100 to
+139 gave the command up naming island 1, and a MAP on all ranks after it was exact.
+(With the link core a rank of its own, opened on its first packet: 3.08, 4.36, 6.00,
+15.41 on 240 ranks and 10.69 µs.)
 
 Not done: a `kmx_push` larger than one packet does not cross (one command line and its
 crossing line are a packet); runs of more than two islands (one link, no routing); a

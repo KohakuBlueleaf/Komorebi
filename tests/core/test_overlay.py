@@ -7,7 +7,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from komorebi import OverlayError, Program, overlay, session
+from komorebi import OverlayError, Program, SlowCodeError, overlay, session
 
 BASE = overlay.LINK_BASE
 PERSISTENT = overlay.Persistent(
@@ -166,8 +166,10 @@ def test_the_budget_table_says_whether_it_fits():
     assert not overlay.budget(500, [("slots", 512)])[1]
 
 
-def test_slots_go_just_under_the_line_where_code_runs_slower():
+def test_slots_are_the_first_buffer_and_end_below_the_line():
     line = session.L1_FAST_CODE
-    assert session.slot_address(4800, floor=0x20000) == line - 4800
-    assert session.slot_address(4801, floor=0x20000) == line - 4864
-    assert session.slot_address(line, floor=0x20000) is None
+    used = {0, 1, 2, 30}
+    assert session.slot_area(0x1B480, 4801, used, False) == (0x1B480, 4864, 29)
+    with pytest.raises(SlowCodeError):
+        session.slot_area(line - 4800, 4801, used, False)
+    assert session.slot_area(line - 4800, 4801, used, True)[1] == 4864
