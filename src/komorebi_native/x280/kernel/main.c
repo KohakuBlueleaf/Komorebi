@@ -335,7 +335,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     } else if (
         (
             handler > KM_HANDLER_USER_MAX && handler != KM_HANDLER_EXIT &&
-            !(host && handler == KM_HANDLER_LOAD)
+            !((host || source >= KMD_SRC_WORK) && handler == KM_HANDLER_LOAD)
         ) ||
         (!host && handler == KM_HANDLER_EXIT)
     ) {

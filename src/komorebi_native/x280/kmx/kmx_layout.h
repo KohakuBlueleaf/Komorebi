@@ -146,7 +146,10 @@ typedef struct {
     uint32_t command_depth;
     uint32_t event_depth;
     uint32_t flags; /* KMX_RING_* */
-    uint32_t reserved[5];
+    uint32_t reserved[2];
+    /* kmx_load: field p's record in DRAM at records + p * record_step, p < programs
+     * (programs 0: the run's groups do not switch) */
+    uint32_t records, record_step, programs;
 } kmx_ring_descriptor;
 
 /* Return codes of the calls that can fail. */
@@ -166,6 +169,8 @@ typedef struct {
 /* The kernel's wake (handle 0): room again after a rejection with auxiliary 11.
  * kmx_wait passes it over; kmx_poll returns it. */
 #define KMX_EVENT_WAKE 0x12u
+/* The rejection's auxiliary for a command that cannot go now (the dispatcher's 11). */
+#define KMX_REJECT_BUSY 11u
 
 /* States, in the result block. */
 #define KMX_STATE_BOOT 1u    /* start-up, before kmx_main */

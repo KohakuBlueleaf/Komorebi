@@ -197,6 +197,20 @@ class RingPlacement(NamedTuple):
     remote: int | None = None
 
 
+def load_records(switch):
+    """(record of program field 0, step, programs) for kmx_load, from a Run's switch
+    ({"records": {field: DRAM address}, "refused": why}); None: no switch."""
+    if not switch or switch["refused"] or not switch["records"]:
+        return None
+    records = switch["records"]
+    step = records[1] - records[0] if len(records) > 1 else 0
+    if sorted(records) != list(range(len(records))) or any(
+        address != records[0] + field * step for field, address in records.items()
+    ):
+        raise ValueError(f"program records {records}: not one step apart")
+    return records[0], step, len(records)
+
+
 class Peers(NamedTuple):
     """The clusters running one image in a program: `nonce` (this load's), `lead`
     (the lowest), `tiles` and `banks`: {cluster: NoC tile x | y << 16} of each cluster
@@ -341,10 +355,11 @@ def args_block(
     table=None,
     peers=None,
     ports=None,
+    records=None,
 ):
     """The thread's LIM block (KMX_LIM_BYTES, a remote ring's events zeroed): argument
-    block, check line at bank address `base`, region table (`table`: [(bank address,
-    bytes)], else place() from `base`), lines of `ring` (RingPlacement), `peers` (Peers;
+    block, check line at `base`, region table (`table`, else place()), the lines of
+    `ring` (RingPlacement; `records` from load_records into it), `peers` (Peers;
     kmx_parallel_all lines after) and `ports` (Ports; area after, see ports_area)."""
     constants = layout()
     if table is None:
@@ -385,7 +400,8 @@ def args_block(
             ring.event_depth,
             flags,
             tile,
-            *[0] * 4,
+            0,
+            *(records or (0, 0, 0)),
         )
         block[constants["KMX_LIM_RING"] : constants["KMX_LIM_RING"] + 64] = line
         if ring.remote is not None:
@@ -504,6 +520,7 @@ class ThreadRun:
         self.ring = None  # RingPlacement of the command ring, when the kernel has one
         self.peers = None  # Peers: the clusters running the same image
         self.ports = None  # Ports: the program's X280 ports, when it declares them
+        self.records = None  # load_records(): the programs kmx_load can load
 
     def write_ports(self):
         """Writes the ports area into the cluster's LIM (Ports; before any start)."""
@@ -527,6 +544,7 @@ class ThreadRun:
             table=table,
             peers=self.peers,
             ports=self.ports,
+            records=self.records,
         )
         self.port.work_start(self.thread.cluster, str(self.image), block)
         self.running = True

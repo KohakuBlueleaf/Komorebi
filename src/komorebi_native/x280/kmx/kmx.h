@@ -54,6 +54,16 @@ void kmx_command(
     uint32_t count
 );
 
+/* Core 0: cores [first, first + count) hold `program` once KMX_OK (sent again after a
+ * busy rejection, by `deadline`); KMX_BAD: refused (`event`, may be 0) or no record. */
+int kmx_load(
+    uint32_t program,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+);
+
 /* The command ring to the dispatcher (core 0; KMX_STOPPED without a ring).
  * submit: KMX_OK and the handle, or KMX_FULL when no slot is free. */
 int kmx_submit(const km_command_t* command, uint32_t* handle);

@@ -233,6 +233,82 @@ static int ended(int end) {
     return end;
 }
 
+/* Core 0: KMX_OK at the dispatcher's next wake, the other events set aside for
+ * kmx_poll; KMX_FULL with KMX_STASH set aside, or a stop or `deadline` (an error). */
+static int wake(uint64_t deadline) {
+    for (uint32_t spins = 1;; spins++) {
+        kmx_event event;
+        if (g_ring.stashed == KMX_STASH) {
+            return KMX_FULL;
+        }
+        if (kmx_ring_take(&g_ring, &event)) {
+            if (event.kind == KMX_EVENT_WAKE) {
+                return KMX_OK;
+            }
+            g_ring.stash[g_ring.stashed++] = event;
+        } else if (spins % KMX_RING_SPINS == 0) {
+            const int end = must_end(0);
+            if (end != KMX_OK || x280_mtime() > deadline) {
+                return ended(end != KMX_OK ? end : KMX_LATE);
+            }
+        }
+    }
+}
+
+int kmx_load(
+    uint32_t program,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+) {
+    const volatile kmx_ring_descriptor*
+        descriptor = ((const volatile kmx_ring_descriptor*)(lim() + KMX_LIM_RING));
+    kmx_event own;
+    event = event != 0 ? event : &own;
+    int status = ring_core();
+    if (status != KMX_OK) {
+        return status;
+    }
+    if (program >= descriptor->programs) {
+        return KMX_BAD;
+    }
+    km_command_t command;
+    kmx_command(&command, program, KM_HANDLER_LOAD, first, count);
+    command.a0 = descriptor->records + program * descriptor->record_step;
+    for (;;) {
+        uint32_t handle = 0;
+        for (uint32_t spins = 1;; spins++) {
+            status = kmx_ring_submit(&g_ring, &command, &handle);
+            if (status != KMX_FULL) {
+                break;
+            }
+            if (spins % KMX_RING_SPINS == 0) {
+                const int end = must_end(0);
+                if (end != KMX_OK || x280_mtime() > deadline) {
+                    return ended(end != KMX_OK ? end : KMX_LATE);
+                }
+            }
+        }
+        if (status == KMX_OK) {
+            status = kmx_wait(handle, deadline, event);
+        }
+        if (status != KMX_OK) {
+            return status;
+        }
+        if (event->kind == KM_EVENT_DONE) {
+            return KMX_OK;
+        }
+        if (event->kind != KM_EVENT_REJECTED || event->auxiliary != KMX_REJECT_BUSY) {
+            return KMX_BAD; /* refused, or its deadline's timeout event */
+        }
+        status = wake(deadline);
+        if (status != KMX_OK) {
+            return status;
+        }
+    }
+}
+
 /* Core 0: the spawns started on each core (as its line's GEN word holds), and the
  * cores kmx_spawn started that no join has seen finish (one bit per core). */
 static uint64_t g_spawned[4] __attribute__((section(".data"))) = {0, 0, 0, 0};

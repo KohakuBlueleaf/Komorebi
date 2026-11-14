@@ -48,7 +48,26 @@ def test_ring_calls_against_a_fake_kernel(tmp_path):
 
 
 def test_the_threads_wake_is_the_kernels():
-    assert CONSTANTS["KMX_EVENT_WAKE"] == thread_module.abi.headers()["KMD_EVENT_WAKE"]
+    headers = thread_module.abi.headers()
+    assert CONSTANTS["KMX_EVENT_WAKE"] == headers["KMD_EVENT_WAKE"]
+    assert CONSTANTS["KMX_REJECT_BUSY"] == headers["KMD_REJECT_BUSY"]
+
+
+def test_each_programs_record_reaches_the_ring_line_for_kmx_load():
+    switch = {"records": {0: 0x1000, 1: 0x1240, 2: 0x1480}, "refused": None}
+    records = thread_module.load_records(switch)
+    assert records == (0x1000, 0x240, 3)
+    ring = thread_module.RingPlacement(0x1000, 0x2040, 0x3000, 0x4000, 16, 64)
+    block = thread_module.args_block(
+        a_thread(), base=0, check_value=1, ring=ring, records=records
+    )
+    assert struct.unpack_from("<3I", block, CONSTANTS["KMX_LIM_RING"] + 52) == records
+    assert thread_module.load_records(None) is None
+    assert thread_module.load_records({**switch, "refused": "kernels differ"}) is None
+    with pytest.raises(ValueError, match="not one step apart"):
+        thread_module.load_records(
+            {"records": {0: 0x1000, 1: 0x1240, 2: 0x1500}, "refused": None}
+        )
 
 
 def test_the_lines_the_kernel_hands_a_thread_follow_its_events_on_both_sides():

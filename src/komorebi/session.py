@@ -721,6 +721,10 @@ class Session:
         if works:
             shared = {name: _host_array(value) for name, value in owner.shared.items()}
             peers = _peers(self, dispatch, images) if on_card else {}
+            switch = getattr(backend, "switch", None)
+            records = thread_module.load_records(switch) if on_card else None
+            if records is not None:  # a thread may load: reason 13 is the judge
+                run.check_programs = False
             try:
                 for work in works:
                     cluster = work.cluster
@@ -731,6 +735,7 @@ class Session:
                     )  # fmt: skip
                     thread_run.ring = rings[cluster][0] if on_card else None
                     thread_run.peers = peers.get(cluster)
+                    thread_run.records = records
                     if plan is not None:
                         thread_run.ports = thread_module.Ports(
                             backend.control_addr,

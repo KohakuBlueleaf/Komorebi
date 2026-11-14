@@ -84,7 +84,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
 - **Rejected commands.** A bad command is consumed and answered with `KM_EVENT_REJECTED`, its
   reason (`KMD_REJECT_*`) in the status's auxiliary; the session goes on. Reasons: 1 a handler
   from 240 to 249, which this kernel does not serve (`KM_HANDLER_LOAD`, 240, from the host
-  excepted, below); 2 flag bit 0 set; 3 a group outside
+  or a work cluster excepted, below); 2 flag bit 0 set; 3 a group outside
   the grid (`count == 0 || first > cores || count > cores - first`, with no sum that
   could wrap; with `KM_FLAG_QUEUE` only the count is checked); 4 any command after EXIT; 5 a
   range of the upload region that is not whole lines inside it; 6 `KM_HANDLER_RUN` while
@@ -101,13 +101,16 @@ These rules are part of the protocol; a host that relies on anything else is wro
   makes it a pair of 64-bit masks per program field (`holds`); `take()` checks every
   command but NOP and EXIT against it (`program_held`: the group's bits, at most a few
   instructions; a run without the table, `programs` 0, skips the check). A
-  `KM_HANDLER_LOAD` from the host (a group switches program: its program field the new
-  program, `a0` the program's record in DRAM) is exclusive: it waits until the job queue
-  is empty and no slot in flight shares a core with its group, never rejected for a
-  busy group; it moves the group's bits to its program field when it is submitted (the
+  `KM_HANDLER_LOAD` from the host or a work cluster's thread (a group switches program:
+  its program field the new program, `a0` the program's record in DRAM) is exclusive:
+  it goes only when the job queue is empty and no slot in flight shares a core with its
+  group; the host's waits in its ring, never rejected for a busy group, a thread's is
+  rejected busy (11) with the wake owed, as its other commands (`kmx_load` sends it
+  again). It moves the group's bits to its program field when it is submitted (the
   cores take their commands in order, so a later command for the new program finds it
-  held). A load with a program field of 64 or more, a queued one, or one in a run
-  without the table is rejected with 13; from a stream, a graph or a work cluster with 1.
+  held), whichever source sent it. A load with a program field of 64 or more, a queued
+  one, or one in a run without the table is rejected with 13; from a stream or a graph
+  with 1.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
   word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
