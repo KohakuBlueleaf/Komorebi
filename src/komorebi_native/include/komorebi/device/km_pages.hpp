@@ -25,10 +25,13 @@ namespace km {
         kPagesHeaders + kPagesSlotsMax * kPagesHeaderStride
     );
     constexpr uint32_t kPagesBatch = 64;  // packets a count
-    // A share of this many pages or more is a bulk one: several pages a read, and on
-    // link 0 too where it is a page CPU. A smaller one goes a page a read (measured:
-    // example 01's one page a line crossed a fifth slower four pages a read).
+    // A line of this many pages or more is a bulk one: on link 0 too where it is a
+    // page CPU.
     constexpr uint32_t kPagesBulk = 64;
+    // A CPU's share of this many pages or more reads several a transaction (a block
+    // of the banks); a smaller one a page a read (measured: example 01's one page a
+    // line crossed a fifth slower four pages a read).
+    constexpr uint32_t kPagesBulkShare = 32;
     constexpr uint32_t kPagesHelloEvery = 4096;  // hello polls between two hellos
 
     struct PagesRequest {
@@ -204,7 +207,7 @@ namespace km {
                                    : kPagesSlotsDefault
         );
         const uint32_t mine = range ? share.len * r.pages : share.len;
-        if (shape == 0 && mine >= kPagesBulk) {
+        if (shape == 0 && mine >= kPagesBulkShare) {
             per_read = slots_fit >= 3 * 16 ? 16 : slots_fit >= 2 * 4 ? 4 : 1;
             asked = per_read == 1 ? kPagesSlotsDefault : kPagesSlotsMax;
         }
