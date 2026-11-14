@@ -366,6 +366,60 @@ are computed from the crossed B.
 The integer case above (7680 x 64 x 128, 120 row tiles each) is bit for bit on two
 cards and on one (by rank, the first version).
 
+## A linear layer written for islands
+
+`linear.py` and `kernels/linear/` are one set of kernels for Y = X x W that runs
+unchanged on one island or several: one program, one LINEAR command a call on every
+rank of the session, X, W and Y placed by the session's default (split along the
+leading dimension over the ranks), W never copied. The script places and submits; it
+never names an island, and the kernels hold no island count. Every decision comes
+from W's placement as a kernel reads it (`km::Placement`, the part the core's own
+island holds) and from `km::island()`, `km::islands()` and the command's group:
+
+- **Each island computes with the part of W it holds**: whole rows of W's [K, N]
+  tiles, K tiles k0 to k0 + k. Its ranks run the grid form above over that K (the
+  project's plan and its two broadcasts, both inside the island), for every tile of Y.
+- **X through `km::read_pages`**: the row broadcast's sender reads each row of an X
+  block where it lives; a row another island holds is asked of it.
+- **The output follows from what the part covers.** All of K: the island's product is
+  Y, written where Y's pages are (a page held by another island would need a write
+  across, which these kernels do not have: they give up). Part of K: the island's
+  fp32 partial sums of all of Y go into P (a scratch tensor at one address on every
+  island); a barrier (a binary tree of `km::emit` inside the island, its leader to the
+  other leaders through `km::to_island(i).put`, the tree back down) says every
+  island's are written; then each core takes its share (`km::partition` of the Y pages
+  its island holds over the island's ranks): its island's partial sums of them read
+  here, every other island's asked (`km::ask_pages`, the page path), added in fp32 and
+  written as Y.
+
+The reduce over islands is not used for the sums: its relay carries at most 16 KiB a
+send, from one leader a command, where a call's partial sums are the whole of Y
+(64 MiB an island at 8192 cubed). Here the sums travel as pages asked of their holder
+(the page path's packets) and the relay carries only the barrier's 32-byte tokens.
+
+On one island every part is the whole: W's part is all of K, so the kernels run the
+grid form and write Y, and nothing is asked. Beside the project's own grid kernels
+(`kernels/grid`), the same plan in the same session (card 0, `--beside`):
+
+| Cube | Kernels | Text, B (BRISC / NCRISC / TRISC 0, 1, 2) | Kernel buffer, B | Single call, us | Loop, us per call | TFLOP/s | AICLK min / mean, MHz |
+|---|---|---|---|---|---|---|---|
+| 1024 | linear | 26,348 / 26,340 / 13,288, 5,588, 6,264 | 78,848 | 40.4 to 41.6 | 43.76 | 49.07 | 1343 / 1349 |
+| 8192 | linear | 26,348 / 26,340 / 13,288, 5,588, 6,264 | 78,848 | 5,757 to 5,805 | 12,506.7 | 87.91 | 800 / 1048 |
+| 8192 | grid (the project's) | 20,168 / 18,796 / 11,976, 4,436, 5,540 | 61,936 | 5,780 to 5,807 | 12,802.5 | 85.88 | 800 / 1020 |
+
+```
+python projects/dense/linear.py --cube 8192 --cards 0 --kernel-bytes 81920 --beside
+```
+
+Measured on 2026-11-14 at 23:30 and 23:34, one run each (three single calls, then
+calls back to back for about three seconds; at 8192 the grid kernels after a
+three-second cool-down); X280 at 1,350 MHz. Both checks passed (relative RMS 3.96e-3 to
+3.97e-3, largest 5.3e-3 to 6.5e-3). The 8192 loops ran with the AI clock falling to
+800 MHz (the slow mode of the results above; the best loop there is 8,608.3 us); in
+the single calls the two sets of kernels take the same time. The linear kernels need
+`--kernel-bytes 81920` (their text is 78,848 B against the default 70,656). JSON lines:
+`results/linear-<cube>-0.json`.
+
 ## Files
 
 | File | What it is |
@@ -378,6 +432,7 @@ cards and on one (by rank, the first version).
 | `kernels/split/split.h`, `chunks.hpp`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the K split: arguments, the K chunks as two streams on both movers, chunks and arrivals, the part and the sum, chunks and sending and Y |
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `islands.py` | the grid form over the islands of a session, A and Y placed by island, W a copy on each |
+| `linear.py`, `kernels/linear/linear.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the linear layer written for islands: W's part, X read where it lives, Y or the partial sums, their sum |
 | `results/` | the runs behind the results table |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
 | `bench_ttnn.py` | TT-NN's product and SwiGLU on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |
