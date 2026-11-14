@@ -66,7 +66,12 @@ A Komorebi install and a card prepared as in [Running on a card](../../docs/inst
 ```
 python thread_programs.py --cores 12   # one row
 python thread_programs.py              # the whole grid
+python thread_programs.py --far --splits 2   # two cards: island 0 runs, island 1 holds
 ```
+
+With `--far` the same two programs load on both islands of cards 0 and 1 (each island
+runs its part of the plan), island 0's ranks and thread do the rounds and every page
+they read and write is held by island 1.
 
 `--rounds` (24), `--splits` (the fixed splits tried, 8), `--seed`. Each job is a load of
 its own. The script exits non-zero if a result is wrong.
