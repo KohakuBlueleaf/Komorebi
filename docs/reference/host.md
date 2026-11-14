@@ -180,19 +180,24 @@ The session sends each group a load of its own program before `session.load` ret
 
 ## `Session`
 
-`km.Session(card=None, device=None, pll_mhz=1000, tree=None, log=None,
+`km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
 
-- `pll_mhz` is the X280 clock (the runtime's steps: 200, 800, 1000, 1750). One PLL
-  clocks all four X280 clusters, so the work clusters' threads run at it too. 1750 is an
-  opt-in: it loses loads when the Tensix grid is under full matrix load (the card lowers
-  its core voltage; the dispatcher trapped in 9 of 18 such runs, and in 0 of 23 at
-  1000 MHz); safe use is the caller's claim. A host-fed command at depth 16 costs 1.228
-  microseconds at 1000 MHz and 0.726 at 1750, one after the other on one card
-  (`experiments/dispatcher/measure.py bench --n 100000 --depth 16 --group 1
-  --batch 64 --host-depth 64 --pll 1000`, then `--pll 1750`). Before the session sets
-  the clock, the runtime that opens the cluster leaves it at its safe 200 MHz; 1750
-  was never the card's own choice. The session's log names the clock it set.
+- `pll_mhz` is the X280 clock. The runtime's table is 15, 200, 800, 1000, 1250, 1350, 1500
+  and 1750 MHz; a runtime built before 1250, 1350 and 1500 were added has 15, 200, 800,
+  1000 and 1750. One PLL clocks all four X280 clusters, so the work
+  clusters' threads run at it too. Not given, the session uses 1350. A runtime that does
+  not offer 1350 answers "no PLL solution" before it touches the clock; the session
+  then uses 1000 and logs that once, and `session.pll_mhz` names the clock in use after
+  the first `load`. A clock that was given and is not offered is an error whose text
+  lists the clocks the runtime offers. 1750 is an opt-in: it loses loads when the Tensix
+  grid is under full matrix load (the card lowers its core voltage; the dispatcher
+  trapped in 9 of 18 such runs), and it is never the default; safe use is the caller's
+  claim. A host-fed command at depth 16 costs 1.228 microseconds at 1000 MHz and 0.726
+  at 1750, one after the other on one card (`experiments/dispatcher/measure.py bench
+  --n 100000 --depth 16 --group 1 --batch 64 --host-depth 64 --pll 1000`, then `--pll
+  1750`). Before the session sets the clock, the runtime that opens the cluster leaves
+  it at its safe 200 MHz. The session's log names the clock it set.
 
 - `card` selects the card through `TT_VISIBLE_DEVICES` (an error if that variable
   already names another card); `device` uses a device (the native module's `Device`)
