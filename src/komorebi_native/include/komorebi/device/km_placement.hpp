@@ -105,4 +105,64 @@ namespace km {
         return page_at(tensor, page).island;
     }
 
+    // A page of km::SizedTensor or km::BankRange: on island `island`, index `index` of
+    // the DRAM pages at bank address `address`, `pages` from it there (0: refused).
+    struct DramRun {
+        uint32_t island;
+        uint32_t address;
+        uint32_t index;
+        uint32_t pages;
+    };
+
+    // Page `page` of `bytes` (64s) of the interleaved tensor of word `tensor`, and of
+    // `most` how many follow it there: a copy here, else the one island holding it all.
+    inline DramRun sized_page_at(
+        uint32_t tensor, uint32_t bytes, uint32_t page, uint32_t most
+    ) {
+        const Islands view(island_area());
+        const volatile uint32_t* entry = tensor_entry(view, tensor);
+        if (entry == nullptr) {
+            // a bank address: every page here
+            return {view.here(), tensor, page, most};
+        }
+        const volatile uint32_t* parts = entry + KM_TENSOR_HEADER_BYTES / 4;
+        uint32_t holder = entry[3] == 1u ? view.here() : view.count();
+        for (uint32_t island = 0; entry[3] == 0 && island < view.count(); island++) {
+            const volatile uint32_t* part = parts + island * kPartWords;
+            if (part[1] == 0 && part[2] == entry[1]) {
+                holder = island;  // its part has every step: the whole tensor
+            }
+        }
+        if (holder >= view.count() || bytes == 0 || bytes % 64 != 0) {
+            return {view.here(), 0, page, 0};  // split over islands, or not whole lines
+        }
+        const volatile uint32_t* part = parts + holder * kPartWords;
+        // the pages of `bytes` its part's bytes in each bank hold, over all the banks
+        const uint32_t end = part[KM_TENSOR_PART_BANK_BYTES] / bytes * NUM_DRAM_BANKS;
+        const uint32_t left = page < end ? end - page : 0;
+        return {holder, part[0], page, left < most ? left : most};
+    }
+
+    // Page `page` of `bytes` (64s) of the range of one bank word `range` names: index
+    // its bank at its bank address; a bank address: in bank `bank` here.
+    inline DramRun bank_page_at(
+        uint32_t range, uint32_t bank, uint32_t bytes, uint32_t page
+    ) {
+        const Islands view(island_area());
+        const volatile uint32_t* entry = tensor_entry(view, range);
+        if (entry == nullptr) {
+            return {view.here(), range + page * bytes, bank, 1};
+        }
+        const uint32_t holder = entry[0];
+        if (
+            entry[3] != KM_TENSOR_BANK || holder >= view.count() || bytes == 0 ||
+            bytes % 64 != 0 || page >= entry[2] / bytes
+        ) {
+            return {view.here(), 0, bank, 0};
+        }
+        const volatile uint32_t*
+            part = (entry + KM_TENSOR_HEADER_BYTES / 4 + holder * kPartWords);
+        return {holder, part[0] + page * bytes, entry[1], 1};
+    }
+
 }  // namespace km

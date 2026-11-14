@@ -1720,4 +1720,476 @@ namespace km {
         return true;
     }
 
+    // Records in this CPU's batch for island `holder`: bytes `offset` on of page
+    // `index` (`page` bytes) at bank address `address`, L1 `source`'s. False: gave up.
+    template <typename Kernel>
+    inline bool put_records(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t holder,
+        uint32_t address,
+        uint32_t index,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t source
+    ) {
+        const uint32_t own = islands_at(core.args().control).own_words();
+        const uint32_t batch = put_batch(own, core.role() == kRoleWriter ? 1 : 0);
+        if (batch == 0 || offset + bytes > (1u << KM_BATCH_SPAN_SHIFT)) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                kGaveBadItem,
+                kWhereAsk,
+                slot(command) | holder << 8,
+                command.sequence
+            );
+            return false;
+        }
+        volatile tt_l1_ptr uint32_t* head = l1(batch);
+        if (  // an earlier command's, or none yet
+            head[KM_BATCH_SEQUENCE] != command.sequence ||
+            head[KM_BATCH_USED] < KM_BATCH_HEAD
+        ) {
+            head[KM_BATCH_USED] = KM_BATCH_HEAD;
+            head[KM_BATCH_RECORDS] = 0;
+            head[KM_BATCH_SEQUENCE] = command.sequence;
+        }
+        // a record's bytes at most: a batch's, less its header, the record's and the
+        // offset's low 4 bits
+        constexpr uint32_t most = KM_PUT_BATCH_BYTES - 3 * KM_BATCH_HEAD;
+        for (uint32_t done = 0; done < bytes;) {
+            const uint32_t to = offset + done;
+            const uint32_t n = bytes - done < most ? bytes - done : most;
+            const uint32_t size = KM_BATCH_HEAD + (to % 16 + n + 15) / 16 * 16;
+            if (
+                head[KM_BATCH_RECORDS] != 0 &&
+                (
+                    head[KM_BATCH_HOLDER] != holder ||
+                    head[KM_BATCH_USED] + size > KM_PUT_BATCH_BYTES
+                ) &&
+                !put_batch_send(core, slot(command), command.sequence, batch)
+            ) {
+                return false;
+            }
+            head[KM_BATCH_HOLDER] = holder;
+            const uint32_t record = batch + head[KM_BATCH_USED];
+            l1(record)[0] = address;
+            l1(record)[1] = index;
+            l1(record)[2] = page;
+            l1(record)[3] = to | n << KM_BATCH_SPAN_SHIFT;
+            volatile tt_l1_ptr uint32_t* into = l1(record + KM_BATCH_HEAD + to % 16);
+            const volatile tt_l1_ptr uint32_t* from = l1(source + done);
+            for (uint32_t w = 0; w < n / 4; w++) {
+                into[w] = from[w];
+            }
+            head[KM_BATCH_USED] = head[KM_BATCH_USED] + size;
+            head[KM_BATCH_RECORDS] = head[KM_BATCH_RECORDS] + 1;
+            done += n;
+        }
+        return true;
+    }
+
+    // Built for one island (no tensor table): SizedTensor's and BankRange's words are
+    // bank addresses and every page is here.
+#if defined(KM_TENSOR_TABLE)
+    constexpr bool kDramLocal = false;
+#else
+    constexpr bool kDramLocal = true;
+#endif
+
+    // An interleaved DRAM tensor (word `word`: its reference word) read and written in
+    // pages of `page_bytes` (64s), as long as its entry's bytes in each bank allow.
+    struct SizedTensor {
+        using DramForm = void;
+        uint32_t word;
+        uint32_t bytes;
+
+        SizedTensor(uint32_t word, uint32_t page_bytes) :
+            word(word), bytes(page_bytes) {
+        }
+
+        uint32_t page_bytes() const {
+            return bytes;
+        }
+
+        // Built for one island: page `page` plus `offset`, as a kernel names it.
+        uint64_t local(uint32_t page, uint32_t offset) const {
+            const InterleavedAddrGen<true> pages = {
+                .bank_base_address = word, .page_size = bytes
+            };
+            return pages.get_noc_addr(page, offset);
+        }
+
+        DramRun place(uint32_t page, uint32_t most) const {
+            return sized_page_at(word, bytes, page, most);
+        }
+    };
+
+    // A range of DRAM bank `bank` (word `word`: its entry, or a bank address there)
+    // in pages of `page_bytes` (64s); an entry's bank and bank address are its own.
+    struct BankRange {
+        using DramForm = void;
+        uint32_t word;
+        uint32_t bank;
+        uint32_t bytes;
+
+        BankRange(uint32_t word, uint32_t bank, uint32_t page_bytes) :
+            word(word), bank(bank), bytes(page_bytes) {
+        }
+
+        uint32_t page_bytes() const {
+            return bytes;
+        }
+
+        // Built for one island: page `page` plus `offset` in the bank.
+        uint64_t local(uint32_t page, uint32_t offset) const {
+            return get_noc_addr_from_bank_id<true>(bank, word + page * bytes + offset);
+        }
+
+        DramRun place(uint32_t page, uint32_t) const {
+            return bank_page_at(word, bank, bytes, page);
+        }
+    };
+
+    // A page the entry of a SizedTensor or BankRange refuses: recorded, false.
+    template <typename Kernel>
+    inline bool dram_refused(const Kernel& core, uint32_t slot, uint32_t sequence) {
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveBadItem,
+            kWhereAsk,
+            slot,
+            sequence
+        );
+        return false;
+    }
+
+    // The bank and bank address of byte `offset` of index `index` of the DRAM pages
+    // of `page` bytes at bank address `address` (DramRun's).
+    struct DramSpot {
+        uint32_t bank;
+        uint32_t address;
+    };
+
+    inline DramSpot dram_spot(
+        const DramRun& at, uint32_t index, uint32_t page, uint32_t offset
+    ) {
+        return {
+            index % NUM_DRAM_BANKS, at.address + index / NUM_DRAM_BANKS * page + offset
+        };
+    }
+
+    // Pages first .. of `form` into L1 `to`: here a read a page, another island's
+    // runs a get line each, waited for. One island: the reads alone. False: gave up.
+    template <typename Kernel, typename Form, typename = typename Form::DramForm>
+    inline bool read_pages_at(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        const Form& form,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t to
+    ) {
+        const uint32_t bytes = form.page_bytes();
+        if constexpr (kDramLocal) {
+            for (uint32_t k = 0; k < pages; k++) {
+                noc_async_read(form.local(first + k, 0), to + k * bytes, bytes);
+            }
+            return true;
+        } else {
+            const uint32_t here = island();
+            const uint32_t port = pages_port(core);
+            invalidate_l1_cache();  // the table may have grown since the last read
+            uint32_t asked = 0, holder = here;
+            for (uint32_t k = 0; k < pages;) {
+                const DramRun at = form.place(first + k, pages - k);
+                if (at.pages == 0) {
+                    return dram_refused(core, slot, sequence);
+                }
+                if (at.island == here) {
+                    const InterleavedAddrGen<true> place = {
+                        .bank_base_address = at.address, .page_size = bytes
+                    };
+                    for (uint32_t m = 0; m < at.pages; m++) {
+                        noc_async_read(
+                            place.get_noc_addr(at.index + m),
+                            to + (k + m) * bytes,
+                            bytes
+                        );
+                    }
+                } else {
+                    if (!ask_line_at(
+                        core,
+                        slot,
+                        sequence,
+                        ask_gets(core.role()),
+                        at.island,
+                        at.address,
+                        bytes,
+                        at.index,
+                        at.pages,
+                        to + k * bytes,
+                        port
+                    )) {
+                        return false;
+                    }
+                    asked += at.pages;
+                    holder = at.island;
+                }
+                k += at.pages;
+            }
+            return asked == 0 || ask_wait(core, slot, sequence, port, asked, holder);
+        }
+    }
+
+    // read_pages_at of `form` for `command`.
+    template <typename Kernel, typename Form, typename = typename Form::DramForm>
+    inline bool read_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        const Form& form,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t to
+    ) {
+        return (
+            read_pages_at(core, slot(command), command.sequence, form, first, pages, to)
+        );
+    }
+
+    // Pages first .. of `form` from L1 `from`: here a write a page, another island's
+    // runs a put line each, waited for. `from` free on return. False: gave up.
+    template <typename Kernel, typename Form, typename = typename Form::DramForm>
+    inline bool write_pages_at(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        const Form& form,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t from
+    ) {
+        const uint32_t bytes = form.page_bytes();
+        if constexpr (kDramLocal) {
+            for (uint32_t k = 0; k < pages; k++) {
+                noc_async_write(from + k * bytes, form.local(first + k, 0), bytes);
+            }
+            return true;
+        } else {
+            const uint32_t here = island();
+            const uint32_t port = pages_port(core);
+            invalidate_l1_cache();  // the table may have grown since the last read
+            uint32_t put = 0, holder = here;
+            for (uint32_t k = 0; k < pages;) {
+                const DramRun at = form.place(first + k, pages - k);
+                if (at.pages == 0) {
+                    return dram_refused(core, slot, sequence);
+                }
+                if (at.island == here) {
+                    const InterleavedAddrGen<true> place = {
+                        .bank_base_address = at.address, .page_size = bytes
+                    };
+                    for (uint32_t m = 0; m < at.pages; m++) {
+                        noc_async_write(
+                            from + (k + m) * bytes,
+                            place.get_noc_addr(at.index + m),
+                            bytes
+                        );
+                    }
+                } else {
+                    if (!ask_line_at(
+                        core,
+                        slot,
+                        sequence,
+                        ask_puts(core.role()),
+                        at.island,
+                        at.address,
+                        bytes,
+                        at.index,
+                        at.pages,
+                        from + k * bytes,
+                        port
+                    )) {
+                        return false;
+                    }
+                    put += at.pages;
+                    holder = at.island;
+                }
+                k += at.pages;
+            }
+            return put == 0 || ask_wait(core, slot, sequence, port, put, holder);
+        }
+    }
+
+    // write_pages_at of `form` for `command`.
+    template <typename Kernel, typename Form, typename = typename Form::DramForm>
+    inline bool write_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        const Form& form,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t from
+    ) {
+        return (
+            write_pages_at(
+                core, slot(command), command.sequence, form, first, pages, from
+            )
+        );
+    }
+
+    // `bytes` at `offset` of page `page` of `form` into L1 `into`, not waited for
+    // (bytes_wait): here a NoC read, else a get line, `asked` + 1. False: gave up.
+    template <typename Kernel, typename Form, typename = typename Form::DramForm>
+    inline bool ask_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Form& form,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t into,
+        uint32_t& asked
+    ) {
+        if constexpr (kDramLocal) {
+            noc_async_read(form.local(page, offset), into, bytes);
+            return true;
+        } else {
+            if (!bytes_fit(core, command, form.page_bytes(), offset, bytes, into)) {
+                return false;
+            }
+            invalidate_l1_cache();  // the table may have grown since the last read
+            const DramRun at = form.place(page, 1);
+            if (at.pages == 0) {
+                return dram_refused(core, slot(command), command.sequence);
+            }
+            const DramSpot spot = dram_spot(at, at.index, form.page_bytes(), offset);
+            if (at.island == island()) {
+                noc_async_read(
+                    get_noc_addr_from_bank_id<true>(spot.bank, spot.address),
+                    into,
+                    bytes
+                );
+                return true;
+            }
+            // the range as a page of its own from its 64-byte line, index its bank
+            const uint32_t low = spot.address % 64;
+            if (!ask_bytes_line(
+                core,
+                slot(command),
+                command.sequence,
+                at.island,
+                spot.address - low,
+                (low + bytes + 15) / 16 * 16,
+                spot.bank,
+                low,
+                bytes,
+                into
+            )) {
+                return false;
+            }
+            asked++;
+            return true;
+        }
+    }
+
+    // ask_bytes of `form`, then bytes_wait: the bytes in L1 `into` on return.
+    template <typename Kernel, typename Form, typename = typename Form::DramForm>
+    inline bool read_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Form& form,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t into
+    ) {
+        uint32_t asked = 0;
+        return (
+            ask_bytes(core, command, form, page, offset, bytes, into, asked) &&
+            bytes_wait(core, command, asked)
+        );
+    }
+
+    // Bytes `offset` on of page `page` of `form` become L1 `source`'s, unwaited
+    // (put_wait): here a NoC write, else records in this CPU's batch. False: gave up.
+    template <typename Kernel, typename Form, typename = typename Form::DramForm>
+    inline bool put_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Form& form,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t source
+    ) {
+        if constexpr (kDramLocal) {
+            noc_async_write(source, form.local(page, offset), bytes);
+            return true;
+        } else {
+            // multiples of 4 inside the page, `source` with the offset's low 4 bits
+            const uint32_t page_bytes = form.page_bytes();
+            if (
+                bytes == 0 || (offset | bytes) % 4 != 0 || offset >= page_bytes ||
+                bytes > page_bytes - offset || (source ^ offset) % 16 != 0
+            ) {
+                core.gave_up(
+                    core.role() == kRoleWriter ? kStWriter : kStReader,
+                    kGaveBadTransfer,
+                    kWhereAsk,
+                    slot(command),
+                    command.sequence
+                );
+                return false;
+            }
+            invalidate_l1_cache();  // the table may have grown since the last read
+            const DramRun at = form.place(page, 1);
+            if (at.pages == 0) {
+                return dram_refused(core, slot(command), command.sequence);
+            }
+            const DramSpot spot = dram_spot(at, at.index, page_bytes, 0);
+            if (at.island == island()) {
+                noc_async_write(
+                    source,
+                    get_noc_addr_from_bank_id<true>(spot.bank, spot.address + offset),
+                    bytes
+                );
+                return true;
+            }
+            // the page's start in its bank as index `bank` of pages at that address
+            return (
+                put_records(
+                    core,
+                    command,
+                    at.island,
+                    spot.address,
+                    spot.bank,
+                    page_bytes,
+                    offset,
+                    bytes,
+                    source
+                )
+            );
+        }
+    }
+
+    // put_bytes of `form`, then put_wait: the bytes written on return.
+    template <typename Kernel, typename Form, typename = typename Form::DramForm>
+    inline bool write_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Form& form,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t source
+    ) {
+        return (
+            put_bytes(core, command, form, page, offset, bytes, source) &&
+            put_wait(core, command)
+        );
+    }
+
 }  // namespace km

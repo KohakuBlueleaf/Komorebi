@@ -187,6 +187,9 @@ place to ask a question and to be wrong.
   of a page the other island holds (`km::read_bytes`) lands exactly those bytes. 118
   ranks, 64 ranges each of 4 to 2,048 bytes at their own offsets: every word exact,
   nothing beside them written; the other island answers one in 1.7 to 1.95 µs.
+  `forms.py`: a tensor in pages of the command's size (`km::SizedTensor`) and a range
+  of one DRAM bank (`km::BankRange`), read and written by the ranks of both islands:
+  183,608 words checked on the cores and both tensors read back, every word exact.
 - [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
   bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and
