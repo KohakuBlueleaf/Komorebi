@@ -6,6 +6,8 @@
 // MAP: a0 input_address, a1 tiles (T), a2 output_address, a3 first_page (of rank 0), a6
 // first_tile; rank a5 slow_rank holds its output tile a4 slow_cycles cycles (a test).
 constexpr uint32_t kHandlerMap = 1;
+// MAP's a7 across: kAcrossLocal, or port + 1: another island sent the tiles to L1 a8.
+constexpr uint32_t kAcrossLocal = 0;
 // STALL: rank a0 stalled_rank waits for the stop flag and does not report; the others
 // report.
 constexpr uint32_t kHandlerStall = 2;

@@ -59,6 +59,32 @@
 /* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
+/* host only, served on link cores (km_pages.hpp): each data-movement CPU of the group
+ * sends its share of DRAM pages over its own link, or the reader waits for a count */
+#define KM_HANDLER_PAGES 248u
+#define KM_PAGES_FROM 0u  /* send: the source's bank address (interleaved DRAM) */
+#define KM_PAGES_PAGE 1u  /* send: aligned page bytes, at most KM_PAGES_PACKET_MAX */
+#define KM_PAGES_FIRST 2u /* send: first page */
+#define KM_PAGES_PAGES 3u /* send: pages of all CPUs; wait: the count waited for */
+#define KM_PAGES_TO 4u    /* send: the target's bank address, or L1 of its first page */
+/* send: x | y << 8 of the target core (KM_PAGES_DRAM: DRAM), chunk / 64 << 16: the
+   L1 bytes of a CPU */
+#define KM_PAGES_TO_CORE 5u
+#define KM_PAGES_COUNT 6u /* L1 address of the count (wait: here; open: far hello) */
+/* x | y << 8 of the counted core (open: the far link core), hops << 16, mode << 24 */
+#define KM_PAGES_COUNTER 7u
+/* byte k: Ethernet channel of link k; CPU c of link core r sends on link 2r + c */
+#define KM_PAGES_LINKS 8u
+#define KM_PAGES_BUFFER 9u    /* send: L1 of CPU c at buffer + c * chunk */
+#define KM_PAGES_DRAM 0xFFFFu /* page p into page p of the tensor at KM_PAGES_TO */
+#define KM_PAGES_NO_LINK 0xFFu
+#define KM_PAGES_SEND 0u
+#define KM_PAGES_WAIT 1u
+/* each CPU opens its connection, held until its kernel ends, and says hello to the far
+ * link core's same CPU: port KM_PAGES_HELLO_PORT + c of both, 1 up, 2 both up */
+#define KM_PAGES_OPEN 2u
+#define KM_PAGES_HELLO_PORT 5u
+#define KM_PAGES_PACKET_MAX 4352u /* a fabric packet's largest payload */
 /* dispatcher -> its island's link core only: the writer sends the packet staged in its
  * link area over the fabric into the other island's dispatcher (the reader skips it) */
 #define KM_HANDLER_LINK 246u
@@ -88,6 +114,13 @@
    KM_GROUP_CLUSTER_BASE + c, count 1. No core has such a first. */
 #define KM_GROUP_CLUSTER_BASE 0xFF00u
 #define KM_GROUP_CLUSTER(c) ((KM_GROUP_CLUSTER_BASE + (uint32_t)(c)) | 1u << 16)
+/* A command to link cores k to k + n - 1 of the island that takes it: first is
+   KM_GROUP_LINK_BASE + k, count n; never cut by island, never crossing. A rank is
+   below KM_GROUP_LINK_BASE; a link core's rank in it is its link-core index - k. */
+#define KM_GROUP_LINK_BASE 0xFE00u
+#define KM_GROUP_IS_LINK(first) \
+    ((uint32_t)(first) - KM_GROUP_LINK_BASE < \
+     KM_GROUP_CLUSTER_BASE - KM_GROUP_LINK_BASE)
 /* Whether a group (first, count) names a work cluster's thread, cluster 1 to 3. */
 #define KM_GROUP_IS_CLUSTER(first, count) \
     ((count) == 1u && (uint32_t)(first) - (KM_GROUP_CLUSTER_BASE + 1u) < 3u)

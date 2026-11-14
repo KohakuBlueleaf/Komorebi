@@ -178,6 +178,11 @@ place to ask a question and to be wrong.
   to 10.6 GB/s. Packets for a DRAM bank or a core's L1 with no kernel running there
   land exact at the same rate. Two CPUs of one core each run a link. The sender's own
   per-packet work, not the link, sets the rate.
+- [islands_pages](islands_pages/README.md): a tensor held by one island written into
+  a tensor held by the other by the session's link cores, a page a packet straight
+  into the other island's DRAM: 64 MiB over four links (two cores, both CPUs of each)
+  in 2.09 ms, 32.1 GB/s, every page exact. Three L1 slots a CPU leave the DRAM reads'
+  latency in charge.
 - [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
   bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and

@@ -146,6 +146,8 @@ namespace km {
     constexpr uint32_t kWhereClear = 49;
     // A message's body: too long, not aligned, or not written in time.
     constexpr uint32_t kWhereMessagesBody = 50;
+    // Pages across a link: a bound, a read, the router's room, its teardown, a count.
+    constexpr uint32_t kWherePages = 51;
 
     // What Core::flushed waits for: reads landed, writes sent from L1, writes or
     // atomics acknowledged.
@@ -584,6 +586,12 @@ namespace km {
         // This core's flat rank: its island's first rank plus its index (args().me).
         uint32_t me() const {
             return island_first_ + args_.me;
+        }
+
+        // This core's name in `command`'s group (km::name_in): its rank in the group
+        // is this less the group's first, in a group of link cores too.
+        uint32_t name(const km_command_t& command) const {
+            return name_in(islands_at(args_.control), args_.me, command);
         }
 
         // This island's core index of flat rank `rank` (for the core table).

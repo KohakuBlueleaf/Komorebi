@@ -98,6 +98,39 @@ namespace km {
         return true;
     }
 
+    // Reader: waits until the port has counted `wanted` (pages another island sent
+    // count there), then clears it. False: gave up; the port keeps the count wanted.
+    inline bool port_wait(
+        const Reader& reader,
+        const km_command_t& command,
+        uint32_t port,
+        uint32_t wanted
+    ) {
+        const uint32_t named = slot(command) | port << 8;
+        if (port >= KM_PORTS) {
+            reader.gave_up(
+                kStReader, kGaveBadItem, kWherePort, named, command.sequence
+            );
+            return false;
+        }
+        volatile tt_l1_ptr uint32_t* words = port_words(reader, port);
+        words[KM_PORT_WANT] = wanted;
+        const uint32_t code = reader.poll_at(
+            kWherePort,
+            [&] {
+                return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
+            },
+            reader.args().wait_limit
+        );
+        if (code != kGaveNone) {
+            reader.gave_up(kStReader, code, kWherePort, named, command.sequence);
+            return false;
+        }
+        words[KM_PORT_COUNT] = 0;
+        words[KM_PORT_WANT] = 0;
+        return true;
+    }
+
     // Reader: waits until the port has counted `wanted` arrivals, clears it, hands all
     // S pages to compute. False: gave up; the port keeps `wanted`: the missing count.
     inline bool arrive(

@@ -120,12 +120,27 @@ namespace km {
     };
 
     inline Part local_part(const Islands& view, const km_command_t& command) {
+        if (KM_GROUP_IS_LINK(first(command))) {  // link cores: the cores after the ranks
+            return {view.ranks() + first(command) - KM_GROUP_LINK_BASE, count(command)};
+        }
         const uint32_t low = view.first();
         const uint32_t high = view.ranks() == 0 ? 0xFFFFFFFFu : low + view.ranks();
         const uint32_t start = first(command) > low ? first(command) : low;
         uint32_t end = first(command) + count(command);
         end = end < high ? end : high;
         return {start - low, end > start ? end - start : 0};
+    }
+
+    // The name local core `me` has in `command`'s group: in a group of link cores,
+    // KM_GROUP_LINK_BASE + its link-core index (a rank core's is in no such group);
+    // else its flat rank. Its rank in the group: this less the group's first.
+    inline uint32_t name_in(
+        const Islands& view, uint32_t me, const km_command_t& command
+    ) {
+        return (
+            KM_GROUP_IS_LINK(first(command)) ? KM_GROUP_LINK_BASE + (me - view.ranks())
+                                             : view.first() + me
+        );
     }
 
     // Where rank `rank` runs: its island; on this island its local core (the core

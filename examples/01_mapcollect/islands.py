@@ -13,7 +13,7 @@ import numpy as np
 from mapcollect import rank_sums
 
 import komorebi as km
-from komorebi import formats
+from komorebi import formats, islands
 from komorebi.errors import describe_core
 
 HERE = Path(__file__).resolve().parent
@@ -42,6 +42,13 @@ def parse():
     )
     parser.add_argument(
         "--hang", action="store_true", help="a HANG on island 1 must name island 1"
+    )
+    parser.add_argument(
+        "--across",
+        type=int,
+        default=0,
+        metavar="LINKS",
+        help="MAP on island 0 reading an input island 1 holds, over LINKS links",
     )
     return parser.parse_args()
 
@@ -82,7 +89,7 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     report = {"cards": cards}
     generator = np.random.default_rng(1)
-    with km.Session(cards=cards, log=log) as session:
+    with km.Session(cards=cards, links=args.across, log=log) as session:
         ranks = session.ranks
         report["ranks"] = ranks
         report["islands"] = [
@@ -116,7 +123,12 @@ def main():
         )
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
-        report.update(commands(session, run, args, source, output, ranks, exact))
+        if args.across:
+            far = session.tensor(exact, "bfloat16", "tile", like=report["islands"][1])
+            log(f"input held by island 1 alone: {list(far.placement.parts)}")
+            report.update(across(session, run, args, source, far, output))
+        else:
+            report.update(commands(session, run, args, source, output, ranks, exact))
         log("stopping")
         try:
             results = run.stop()
@@ -206,6 +218,47 @@ def commands(session, run, args, source, output, ranks, exact):
             np.array_equal(got, rows[ranks : ranks + 16])
         )
         log(f"16 pages of island 1 read in the run: {out['read_island1_in_run_exact']}")
+    return out
+
+
+ACROSS_PORT = 1  # the port island 0's ranks count the tiles island 1 sent at
+
+
+def across(session, run, args, local, far, output):
+    """Rounds of one MAP on island 0's ranks (its own run: island 0 starts at rank 0)
+    reading `local` (their own DRAM), then `far` (island 1 holds it): each rank's tiles
+    asked of island 1's link cores, sent into the rank's L1. The last round is checked.
+    """
+    graph = session.graph
+    group = (graph.first(0), graph.count(0))
+    handler = run.program.handler("map")
+    landing, _ = session.staging(0)
+    first, count = group
+    port = ACROSS_PORT
+
+    def one_round(source, asked):
+        words = map_words(source, output, [group])[0].tolist()
+        asks = []
+        started = time.perf_counter()
+        if asked:
+            words += [port + 1, landing]
+            for rank in range(count):
+                low, length = islands.partition(2 * count, rank, count)
+                core = graph.core_of(first + rank)[1]
+                asks.append(
+                    session.ask(far, 2 * first + low, length, 0, core, landing, port)[1]
+                )
+        mapped = run.island(0).submit(handler, group, words)
+        session.wait_together([(0, mapped)] + [(1, ask) for ask in asks])
+        return (time.perf_counter() - started) * 1e6
+
+    out = {"map_groups": [list(group)], "across_links": args.across}
+    tile_bytes = 2 * count * 2048
+    for name, source, asked in (("local", local, False), ("across", far, True)):
+        spent = median([one_round(source, asked) for _ in range(args.map_rounds)])
+        out[f"map_{name}_us"] = spent
+        out[f"map_{name}_gb_s"] = round(tile_bytes / spent / 1e3, 3)
+        log(f"MAP on {group} reading {name}: {spent} us a round, {tile_bytes:,} B")
     return out
 
 
