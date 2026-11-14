@@ -140,7 +140,7 @@ def plan(nocs, rect, along):
 
 # --8<-- [start:program]
 def program(tensors, arguments_of, compiled):
-    """Three kernels of today's form; four overlays and 3 reader slots, 1 compute
+    """Three kernels of the kernel form; four overlays and 3 reader slots, 1 compute
     slot, or (compiled) the four operations in the kernels."""
     values, results, times = tensors
     tile = dict(format="bfloat16", page_bytes=2048, pages=2)

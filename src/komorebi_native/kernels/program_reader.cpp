@@ -9,7 +9,11 @@
 void kernel_main() {
     km::Reader reader;
     reader.run([&](const km_command_t& command) {
-        if (km::handler(command) - 1u >= KM_HANDLER_USER_MAX) {
+        if (km::handler(command) == KM_HANDLER_LOAD) {
+            if (!km::program_switch(reader, command)) {
+                return;  // the give-up path
+            }
+        } else if (km::handler(command) - 1u >= KM_HANDLER_USER_MAX) {
             return;  // NOP: no program's
         }
         km::Overlay program(reader, km::program_overlay(km::program(command)));

@@ -26,7 +26,9 @@
 #define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_command_t */
 /* status line of core c in a dynamic run at + c * 16 */
 #define KMD_LIM_MESSAGES 0x1800u
-#define KMD_LIM_BYTES 0x2000u
+/* program field each core holds, a byte per core (0xFF: none), if args programs */
+#define KMD_LIM_PROGRAMS 0x2000u
+#define KMD_LIM_BYTES 0x2080u
 /* upload region: args upload_bytes, not zeroed */
 #define KMD_LIM_UPLOAD KMD_LIM_BYTES
 #define KMD_READY_MAX 16u
@@ -69,7 +71,7 @@
 
 /* Reasons of a KM_EVENT_REJECTED event (its auxiliary): the command was consumed, not
  * run. */
-#define KMD_REJECT_HANDLER 1u /* handler 240 to 249 */
+#define KMD_REJECT_HANDLER 1u /* handler 240 to 249 (240 from the host excepted) */
 #define KMD_REJECT_FLAGS 2u   /* reserved flag bit 0 set */
 #define KMD_REJECT_GROUP 3u   /* count 0, or the group does not lie inside the cores */
 #define KMD_REJECT_EXITED 4u  /* a command after EXIT */
@@ -202,7 +204,7 @@ enum {
 #define KMD_WIN_WORK 19u /* work cluster c's ring area: KMD_WIN_WORK + c - 1 */
 
 /* The argument block's layout; the kernel rejects a block of another version. */
-#define KMD_ARGS_VERSION 2u
+#define KMD_ARGS_VERSION 3u
 /* Work clusters with a ring to the kernel (clusters 1 to 3). */
 #define KMD_WORK_CLUSTERS 3u
 
@@ -234,6 +236,7 @@ typedef struct {
     uint64_t work_noc_addr[KMD_WORK_CLUSTERS]; /* NoC address there of KMD_WORK_* */
     uint64_t messages_handler; /* dynamic handlers, one per byte (dynamic.h); 0: none */
     uint64_t version;          /* KMD_ARGS_VERSION */
+    uint64_t programs; /* 1: KMD_LIM_PROGRAMS holds each core's program; 0: none */
 } kmd_args_t;
 
 /* The ready block: the host waits for `mark` (its buffer is zeroed before the run), as
@@ -298,7 +301,7 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u
 
-KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 240, "kmd_args_t is 240 bytes");
+KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 248, "kmd_args_t is 248 bytes");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, work_cmds) == 152, "work_cmds at 152");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, version) == 232, "version at 232");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, upload_bytes) == 144, "upload_bytes at 144");

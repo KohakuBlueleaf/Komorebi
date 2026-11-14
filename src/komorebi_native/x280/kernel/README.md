@@ -83,16 +83,31 @@ These rules are part of the protocol; a host that relies on anything else is wro
   both reads give its number.
 - **Rejected commands.** A bad command is consumed and answered with `KM_EVENT_REJECTED`, its
   reason (`KMD_REJECT_*`) in the status's auxiliary; the session goes on. Reasons: 1 a handler
-  from 240 to 249, which this kernel does not serve; 2 flag bit 0 set; 3 a group outside
+  from 240 to 249, which this kernel does not serve (`KM_HANDLER_LOAD`, 240, from the host
+  excepted, below); 2 flag bit 0 set; 3 a group outside
   the grid (`count == 0 || first > cores || count > cores - first`, with no sum that
   could wrap; with `KM_FLAG_QUEUE` only the count is checked); 4 any command after EXIT; 5 a
   range of the upload region that is not whole lines inside it; 6 `KM_HANDLER_RUN` while
   four streams run; 7 `KM_HANDLER_CANCEL` of a req no running stream has; 8
   `KM_HANDLER_DEADLINE` of 0; 9 a `KM_FLAG_QUEUE` command while the queue is full (the host
   may retry it); 11 a work cluster's command that would wait; 12 a `KM_FLAG_QUEUE` command
-  of the program's dynamic handler. Reason 13 (`KMD_REJECT_PROGRAM`, a group whose cores do
-  not hold the command's program) is named, not used yet: the host refuses such a command
-  before it sends it. A rejected command's event has ticks 0.
+  of the program's dynamic handler; 13 (`KMD_REJECT_PROGRAM`) a command, from any source,
+  whose group has a core that does not hold its program (a queued one: unless every core
+  holds it), in a run with the program table (below), and a bad `KM_HANDLER_LOAD`. A
+  rejected command's event has ticks 0.
+- **The program table.** With `programs` 1 in the argument block (`KMD_ARGS_VERSION` 3),
+  LIM at `KMD_LIM_PROGRAMS` holds a byte per core: the program field it holds (0xFF none;
+  the layout grew by these 128 bytes: `KMD_LIM_BYTES` is 0x2080). At the start the kernel
+  makes it a pair of 64-bit masks per program field (`holds`); `take()` checks every
+  command but NOP and EXIT against it (`program_held`: the group's bits, at most a few
+  instructions; a run without the table, `programs` 0, skips the check). A
+  `KM_HANDLER_LOAD` from the host (a group switches program: its program field the new
+  program, `a0` the program's record in DRAM) is exclusive: it waits until the job queue
+  is empty and no slot in flight shares a core with its group, never rejected for a
+  busy group; it moves the group's bits to its program field when it is submitted (the
+  cores take their commands in order, so a later command for the new program finds it
+  held). A load with a program field of 64 or more, a queued one, or one in a run
+  without the table is rejected with 13; from a stream, a graph or a work cluster with 1.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
   word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
@@ -217,8 +232,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   second one from the host waits until the first and its end command have completed;
   from the engine or a work cluster it is rejected busy (reason 11) with the wake. Each
   core of the run writes its 16-byte status line `{run, state, sent, consumed}` into
-  LIM at `KMD_LIM_MESSAGES` + 16 x core (the layout grew by these 2 KiB: `KMD_LIM_BYTES` is
-  0x2000). While the run is in flight, every pass of core 0 reads the group's lines;
+  LIM at `KMD_LIM_MESSAGES` + 16 x core (the layout grew by these 2 KiB, to 0x2000). While the run is in flight, every pass of core 0 reads the group's lines;
   once two passes, the second after the first, find every line idle and unchanged and
   the sums of sent and consumed equal, core 0 submits the end command
   (`KM_HANDLER_MESSAGES_END`, a0 the run's sequence) to the group in a free slot under the

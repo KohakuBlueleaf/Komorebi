@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include "internal/circular_buffer_init.h"
 #include "km_worker.hpp"
 
 #if defined(TRISC_MATH)
@@ -59,13 +60,30 @@ namespace km {
     // The table: (DRAM address in every bank, bytes) of part p of overlay n at
     // kOverlayTable + 8 * (kOverlayParts * n + p); bytes 0: no such part.
     constexpr uint32_t kOverlayTable = kOverlayUsed + 4 * kOverlaysMax;
-    constexpr uint32_t kOverlayAreaBytes = (
+    // A load of a program (KM_HANDLER_LOAD), after the table: the switch line (the
+    // program field held, its buffers, the reader's go, each follower's arrival).
+    constexpr uint32_t kOverlaySwitch = (
         kOverlayTable + 8 * kOverlayParts * kOverlaysMax
     );
+    constexpr uint32_t kSwitchHolding = 0;  // the program field held (host, reader)
+    constexpr uint32_t kSwitchMask = 1;     // its buffer indices, a bit each
+    constexpr uint32_t kSwitchGo = 2;       // the load's sequence: buffers set up
+    constexpr uint32_t kSwitchArrived = 4;  // per follower: the load's sequence
+    constexpr uint32_t kSwitchNone = 0xFFFFFFFFu;
+    // The program's record, read by the reader from DRAM: its buffer mask and field,
+    // its table entries, then (address, bytes, pages, page bytes) per buffer index.
+    constexpr uint32_t kOverlayRecord = kOverlaySwitch + 64;
+    constexpr uint32_t kRecordMask = 0;
+    constexpr uint32_t kRecordField = 1;
+    constexpr uint32_t kRecordTable = 2;
+    constexpr uint32_t kRecordBuffers = 16;
+    constexpr uint32_t kRecordBytes = 4 * (kRecordBuffers + 4 * 32);
+    constexpr uint32_t kOverlayAreaBytes = kOverlayRecord + kRecordBytes;
     static_assert(
         kOverlayEpoch < kOverlayMet &&
             kOverlayPark + 8 * kOverlayFollowers <= kOverlayUsed &&
-            kOverlayTable % 64 == 0 && KM_CONTROL_BYTES % 64 == 0,
+            kOverlayTable % 64 == 0 && KM_CONTROL_BYTES % 64 == 0 &&
+            kOverlayRecord % 64 == 0 && kRecordBytes % 64 == 0,
         "the overlay area's lines do not overlap and end before its table"
     );
 
@@ -279,6 +297,42 @@ namespace km {
         return slot;
     }
 
+    inline volatile tt_l1_ptr uint32_t* program_line(uint32_t control) {
+        return l1(control + kOverlayArea + kOverlaySwitch);
+    }
+
+    // The new program's buffers as the firmware's set-up reads them (the record's).
+    inline uint32_t tt_l1_ptr* program_buffers(uint32_t control) {
+        return (
+            reinterpret_cast<uint32_t tt_l1_ptr*>(
+                control + kOverlayArea + kOverlayRecord + 4 * kRecordBuffers
+            )
+        );
+    }
+
+    // A follower's part of a load (`follower` 0 the writer, 1 to 3 compute): marks its
+    // arrival, its earlier commands done, and parks until the reader's go.
+    inline bool program_follow(
+        uint32_t control, uint32_t follower, uint32_t sequence, uint32_t limit
+    ) {
+        volatile tt_l1_ptr uint32_t* line = program_line(control);
+        line[kSwitchArrived + follower] = sequence;
+        const uint32_t code = poll_stop(
+            l1(control + KM_CONTROL_STOP),
+            [&] {
+                return line[kSwitchGo] == sequence;
+            },
+            limit,
+            0
+        );
+        if (code != kGaveNone) {
+            const uint32_t word = follower == 0 ? kStWriter : kStCompute;
+            command_gave_up(control, word, code, kWhereProgramSwitch, 0, sequence);
+            return false;
+        }
+        return true;
+    }
+
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
@@ -298,6 +352,122 @@ namespace km {
             config = (reinterpret_cast<volatile tt_reg_ptr uint32_t*>(TENSIX_CFG_BASE));
         config[RISCV_IC_INVALIDATE_InvalidateAll_ADDR32] = mask;
         (void)config[RISCV_IC_INVALIDATE_InvalidateAll_ADDR32];
+    }
+
+    // Whether each buffer in `mask` is where `buffers` puts it: the start's load of
+    // the program the cores already hold checks the host's layout against the live one.
+    inline bool program_layout_live(const uint32_t tt_l1_ptr* buffers, uint32_t mask) {
+        for (uint32_t cb = 0; cb < 32; cb++) {
+            const LocalCBInterface& live = get_local_cb_interface(cb);
+            const uint32_t* words = buffers + 4 * cb;
+            if (
+                ((mask >> cb) & 1u) != 0 &&
+                (live.fifo_size != words[1] || live.fifo_limit != words[0] + words[1])
+            ) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // A load of a program (KM_HANDLER_LOAD) on the reader, all five cores parked: every
+    // buffer of either program empty, counters zeroed, its own set-up, the table, go.
+    template <typename Kernel>
+    bool program_switch(Kernel& reader, const km_command_t& command) {
+        const uint32_t control = reader.args().control;
+        const uint32_t limit = reader.args().wait_limit;
+        volatile tt_l1_ptr uint32_t* line = program_line(control);
+        volatile tt_l1_ptr uint32_t* record = (
+            l1(control + kOverlayArea + kOverlayRecord)
+        );
+        const uint32_t field = program(command);
+        // the followers first: the last load's record is theirs until they arrive
+        uint32_t code = reader.poll(
+            [&] {
+                for (uint32_t f = 0; f < kOverlayFollowers; f++) {
+                    if (line[kSwitchArrived + f] != command.sequence) {
+                        return false;
+                    }
+                }
+                return true;
+            },
+            limit
+        );
+        noc_async_read(
+            get_noc_addr_from_bank_id<true>(reader.me() % kOverlayBanks, command.a0),
+            control + kOverlayArea + kOverlayRecord,
+            kRecordBytes
+        );
+        noc_async_read_barrier();
+        invalidate_l1_cache();
+        const uint32_t mask = record[kRecordMask], both = mask | line[kSwitchMask];
+        if (code == kGaveNone && record[kRecordField] != field) {
+            code = kGaveOverlay;
+        }
+        if (
+            code == kGaveNone && line[kSwitchHolding] == field &&
+            !program_layout_live(program_buffers(control), mask)
+        ) {
+            code = kGaveOverlay;
+        }
+        if (code == kGaveNone) {
+            code = reader.poll(
+                [&] {
+                    for (uint32_t cb = 0; cb < 32; cb++) {
+                        if (
+                            ((both >> cb) & 1u) != 0 &&
+                            (
+                                (
+                                    *get_cb_tiles_received_ptr(cb) ^
+                                    *get_cb_tiles_acked_ptr(cb)
+                                ) &
+                                0xFFFFu
+                            ) != 0
+                        ) {
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+                limit
+            );
+        }
+        if (code != kGaveNone) {
+            reader.gave_up(
+                kStReader, code, kWhereProgramSwitch, slot(command), command.sequence
+            );
+            return false;
+        }
+        for (uint32_t cb = 0; cb < 32; cb++) {
+            if (((both >> cb) & 1u) != 0) {
+                *get_cb_tiles_received_ptr(cb) = 0;
+                *get_cb_tiles_acked_ptr(cb) = 0;
+            }
+        }
+        setup_local_cb_read_write_interfaces<true, true, false>(
+            program_buffers(control), 0, mask
+        );
+        const uint32_t held = line[kSwitchHolding];
+        for (uint32_t part = 0; part < kOverlayParts; part++) {
+            if (held != kSwitchNone) {
+                volatile tt_l1_ptr uint32_t* old = (
+                    overlay_entry(control, program_overlay(held), part)
+                );
+                old[0] = old[1] = 0;
+            }
+            volatile tt_l1_ptr uint32_t* entry = (
+                overlay_entry(control, program_overlay(field), part)
+            );
+            entry[0] = record[kRecordTable + 2 * part];
+            entry[1] = record[kRecordTable + 2 * part + 1];
+        }
+        line[kSwitchHolding] = field;
+        line[kSwitchMask] = mask;
+        volatile tt_l1_ptr uint32_t* epoch = overlay_epoch(control);
+        *epoch = (*epoch + 1) &
+            kOverlayEpochMask;  // the table changed: every check again
+        line[kSwitchGo] = command.sequence;
+        return true;
     }
 #endif
 

@@ -37,6 +37,10 @@ namespace km {
 }  // namespace km
 
 #if defined(KM_PROGRAM_PART)
+#if defined(COMPILE_FOR_TRISC) && defined(KM_PROGRAM_SETUP_IN)
+#include "api/compute/compute_kernel_hw_startup.h"
+#endif
+
 namespace km {
 
     // A program's part: 1 completes the command (the writer's), 0 does not.
@@ -61,10 +65,17 @@ namespace km {
 
 }  // namespace km
 
-// The function the entry calls (KM_OVERLAY_FUNCTION): the program's km_program.
+// The function the entry calls (KM_OVERLAY_FUNCTION): the program's km_program; for a
+// load of the program, a compute part's hardware start-up on the program's formats.
 static uint32_t km_program_part(
     KM_OVERLAY_KERNEL& kernel, const km_command_t& command
 ) {
+    if (km::handler(command) == KM_HANDLER_LOAD) {
+#if defined(COMPILE_FOR_TRISC) && defined(KM_PROGRAM_SETUP_IN)
+        compute_kernel_hw_startup(KM_PROGRAM_SETUP_IN, KM_PROGRAM_SETUP_OUT);
+#endif
+        return 1;
+    }
     return km::program_result<KM_OVERLAY_KERNEL>(km_program, kernel, command);
 }
 #endif

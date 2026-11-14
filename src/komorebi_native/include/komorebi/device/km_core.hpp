@@ -107,6 +107,7 @@ namespace km {
     constexpr uint32_t kWhereOverlayFind = 36;  // the table or the slots
     constexpr uint32_t kWhereOverlayLoad = 37;  // the read of a part from DRAM
     constexpr uint32_t kWhereOverlayMeet = 38;  // the reader and a follower meet for a load
+    constexpr uint32_t kWhereProgramSwitch = 39;  // a load of a program: its buffers
     static_assert(
         kWhereOverlayFind == kWhereMessagesCounter + 1 && kWhereOverlayMeet < 40,
         "overlay where codes: 36 to 38, after the dynamic ones"
@@ -115,6 +116,7 @@ namespace km {
     // program) that is not the program's; a handler's part did not load.
     constexpr uint32_t kWhereMessagesHandler = 40;
     constexpr uint32_t kWhereMessagesLoad = 41;
+    constexpr uint32_t kWhereProgramStart = 42;  // compute: no start-up for the program
     static_assert(
         kWhereMessagesGap == kWhereEmit + 1 &&
             kWhereMessagesCounter == kWhereMessagesGap + 16 &&

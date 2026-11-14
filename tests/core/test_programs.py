@@ -109,9 +109,11 @@ def test_the_plan_of_disjoint_groups_and_of_combined_programs(tmp_path):
     assert [(g.first, g.count, g.programs) for g in combined.groups] == [
         (0, 120, (0, 1))
     ]
-    today = km.Program("today", kernels=sources(tmp_path / "today", "kernel"))
+    kernel_form = km.Program(
+        "kernel_form", kernels=sources(tmp_path / "kernel_form", "kernel")
+    )
     with pytest.raises(ProgramError, match="runtime's form"):
-        programs.plan([first, today], 120)
+        programs.plan([first, kernel_form], 120)
 
 
 def test_programs_that_share_cores_share_one_l1_layout(tmp_path):
@@ -202,3 +204,87 @@ def test_each_group_gets_its_own_kernels_whatever_order_the_runtime_lists_them(
         assert recipes["trisc0"].elf.parent.parent.name == f"compute{number}"
     with pytest.raises(ProgramError, match="no group number"):
         session_module._group_recipes(rows, 2)
+
+
+def switching_run(tmp_path, refused=None):
+    first, second = made(tmp_path, "first"), made(tmp_path, "second")
+    plan = programs.plan({first: (0, 88), second: (88, 32)}, 120)
+    port = FakePort()
+    port.programs = [0] * 88 + [1] * 32
+    switch = {"records": {0: 0x1000, 1: 0x1240}, "refused": refused}
+    run = Run(
+        FakeBackend(port),
+        GRID,
+        first,
+        programs=plan.programs,
+        holds=plan.holds(),
+        switch=switch,
+    )
+    return run, port, first, second
+
+
+def test_a_load_is_a_command_naming_the_program_and_its_record(tmp_path):
+    run, port, first, second = switching_run(tmp_path)
+    assert programs.plan({first: (0, 88), second: (88, 32)}, 120).switch
+    assert not programs.plan([first, second], 120).switch
+    run.wait(run.load(second, (60, 28)))
+    words = port.ring[1]
+    assert words[1] == CONSTANTS["KM_HANDLER_LOAD"] | 1 << 24
+    assert words[2] == 60 | 28 << 16 and words[3] == 0x1240
+    assert port.programs[59:61] == [0, 1] and port.programs[87] == 1
+    run.wait(run.submit(second.handler("one"), (60, 40)))  # the host's own check
+    with pytest.raises(ValueError, match="does not hold first"):
+        run.submit(first.handler("one"), (50, 20))
+    together = Run(FakeBackend(FakePort()), GRID, first)
+    with pytest.raises(ProgramError, match="can switch program"):
+        together.load(first, (0, 4))
+    stuck, *_ = switching_run(tmp_path / "again", refused="kernels differ")
+    with pytest.raises(ProgramError, match="kernels differ"):
+        stuck.load(second, (0, 4))
+
+
+def test_the_dispatchers_table_refuses_with_reason_13(tmp_path):
+    run, port, first, second = switching_run(tmp_path)
+    run._holds = None  # past the host's check: the dispatcher's own
+    handles = [
+        run.submit(second.handler("one"), (80, 10)),
+        run.submit(0, (80, 10)),  # NOP: any core
+        run.submit(first.handler("one"), (0, 88)),
+        run.submit(first.handler("one"), 4, queued=True),
+        run.load(second, (0, 60)),
+        run.submit(second.handler("one"), (0, 60)),
+        run.submit(first.handler("one"), (59, 2)),
+    ]
+    rejected = []
+    for handle in handles:
+        try:
+            run.wait(handle)
+        except km.CommandRejected as error:
+            rejected.append((handle, error.reason_name))
+    assert rejected == [(1, "program"), (4, "program"), (7, "program")]
+    port.programs = None
+    with pytest.raises(km.CommandRejected, match="program"):
+        run.wait(run.load(second, (0, 4)))
+
+
+def test_each_program_has_room_for_its_own_layout_after_the_runtimes(tmp_path):
+    runtime = [(29, "uint32", 64, 1), (30, "uint32", 64, 1)]
+    _, start = programs.buffer_layout(runtime, 0x10010)
+    assert start == 0x10040 + 128
+    cbs = [(0, "bfloat16", 2048, 2), (16, "uint32", 48, 1), (17, "float32", 16, 3)]
+    layout, end = programs.buffer_layout(cbs, start)
+    assert layout == {
+        0: (start, 4096, 2, 2048),
+        16: (start + 4096, 48, 1, 48),
+        17: (start + 4096 + 64, 48, 3, 16),
+    }
+    assert end == start + 4096 + 64 + 48
+    words = programs.record_words(3, layout, [(0x2000, 768)] + [(0, 0)] * 4)
+    c = overlay.constants()
+    assert words[c["kRecordMask"]] == 1 | 1 << 16 | 1 << 17
+    assert words[c["kRecordField"]] == 3 and list(words[2:4]) == [0x2000, 768]
+    at = c["kRecordBuffers"] + 4 * 17
+    assert list(words[at : at + 4]) == [start + 4160, 48, 3, 16]
+    wide = made(tmp_path, "wide", buffers=[km.Buffer(40, "uint32", 64, 1)])
+    with pytest.raises(ProgramError, match="below 32"):
+        programs.plan({wide: (0, 10)}, 120)

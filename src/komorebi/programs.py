@@ -15,6 +15,8 @@ from komorebi.program import Program
 # Below these buffer indices a buffer is an input, from them on an output (tt-metal's
 # convention): the compute kernel's start-up takes the first of each.
 OUTPUT_BUFFERS = 16
+CB_ALIGN = 64  # tt-metal starts each core's circular buffer on this boundary
+SWITCH_BUFFERS = 32  # a load sets up buffers 0 to 31 (a record's mask is a word)
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class Plan:
     groups: tuple
     cores: int
     owner: object = None  # the program that declares the X280 threads and ports
+    switch: bool = False  # a dict: a group can change program on the live run
 
     def threads_owner(self):
         """The program whose X280 threads and ports the run starts: the one that
@@ -115,9 +118,21 @@ def plan(spec, cores):
                 f"{', '.join(p.name for p in held)}: programs that share cores take no "
                 "per-core args"
             )
+    for program in programs if ranges is not None else ():
+        if any(buffer.index >= SWITCH_BUFFERS for buffer in program.buffers):
+            raise ProgramError(
+                f"{program.name}: in a run whose groups switch program, buffer "
+                f"indices are below {SWITCH_BUFFERS}"
+            )
     for index, program in enumerate(programs):
         program.program_field = index
-    return Plan(tuple(programs), tuple(groups), cores, owners[0] if owners else None)
+    return Plan(
+        tuple(programs),
+        tuple(groups),
+        cores,
+        owners[0] if owners else None,
+        ranges is not None,
+    )
 
 
 def check(program, count):
@@ -130,7 +145,7 @@ def check(program, count):
             )
         raise ProgramError(f"{program.name}: its sources define kernel_main")
     if program.messages is not None:
-        raise ProgramError(f"{program.name}: a dynamic handler needs today's form")
+        raise ProgramError(f"{program.name}: a dynamic handler needs the kernel form")
     if program.overlays:
         raise ProgramError(
             f"{program.name}: overlays of a program in the runtime's form are not "
@@ -201,14 +216,22 @@ def start_buffers(buffers):
     return (inputs[0] if inputs else 0), (outputs[0] if outputs else OUTPUT_BUFFERS)
 
 
-def program_overlay(program):
-    """The overlay that holds `program` (its number from its program field)."""
+def program_overlay(program, switch=False):
+    """The overlay that holds `program` (its number from its program field); with
+    `switch`, its compute parts run the hardware start-up on its buffers at a load."""
     sources = {kernel: Path(path) for kernel, path in program.sources().items()}
+    defines = dict(program.defines)
+    if switch:
+        cb_in, cb_out = start_buffers(program.buffers)
+        defines |= {
+            "KM_PROGRAM_SETUP_IN": str(cb_in),
+            "KM_PROGRAM_SETUP_OUT": str(cb_out),
+        }
     return overlay.Overlay(
         program.name,
         overlay.constants()["kOverlaysMax"] - 1 - program.program_field,
         sources,
-        dict(program.defines),
+        defines,
         program=True,
         compile_args={
             kernel: program.kernel_compile_args(kernel) for kernel in overlay.KERNELS
@@ -234,3 +257,33 @@ def rectangles(first, count, row):
     else:
         out.append((0, y0, row - 1, y1))
     return out
+
+
+def buffer_layout(buffers, base):
+    """{index: (address, bytes, pages, page bytes)} of circular buffers `buffers`
+    ((index, format, page bytes, pages), in creation order) as tt-metal places them on
+    a core from `base`, each on a CB_ALIGN boundary; and the end of the last."""
+    out, at = {}, base
+    for index, _, page, pages in buffers:
+        at = -(-at // CB_ALIGN) * CB_ALIGN
+        out[index] = (at, page * pages, pages, page)
+        at += page * pages
+    return out, at
+
+
+def record_words(program_field, layout, table):
+    """A program's record (km_overlay.hpp): its buffers' mask, its field, its table
+    entries [(address, bytes)] per part, then each buffer's four words at its index."""
+    c = overlay.constants()
+    words = np.zeros(c["kRecordBytes"] // 4, np.uint32)
+    words[c["kRecordMask"]] = sum(1 << index for index in layout)
+    words[c["kRecordField"]] = program_field
+    for part, (address, size) in enumerate(table):
+        words[c["kRecordTable"] + 2 * part : c["kRecordTable"] + 2 * part + 2] = (
+            address,
+            size,
+        )
+    for index, four in layout.items():
+        at = c["kRecordBuffers"] + 4 * index
+        words[at : at + 4] = four
+    return words

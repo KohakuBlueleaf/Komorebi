@@ -38,7 +38,7 @@ def parse():
 
 # --8<-- [start:program]
 def program(slots):
-    """Three kernels of today's form; two overlays, `slots` slots each kernel."""
+    """Three kernels of the kernel form; two overlays, `slots` slots each kernel."""
     tile = dict(format="bfloat16", page_bytes=TILE_BYTES, pages=2)
     made = km.Program(
         "overlays",

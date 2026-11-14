@@ -83,7 +83,7 @@ def results(units):
 
 # --8<-- [start:program]
 def program(args, words):
-    """Three kernels of today's form, three overlays, the thread, every core's port."""
+    """Three kernel-form kernels, three overlays, the thread, every core's port."""
     tile = dict(format="bfloat16", page_bytes=C["TS_TILE_BYTES"], pages=2)
     made = km.Program(
         "thread_split",

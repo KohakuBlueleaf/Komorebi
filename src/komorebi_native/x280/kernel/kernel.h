@@ -22,6 +22,7 @@
 /* The loop's hot path stays inlined: an outlined call saves registers on the stack,
  * which is uncached LIM (a load costs about 17 ns). */
 #define KMD_HOT static inline __attribute__((always_inline))
+#define KMD_PROGRAMS_MAX 64u /* program fields 0 to 63 */
 
 /* A command source: its ring of 64-byte command lines, numbered from 1 in slot i %
  * depth, and its ring of 16-byte events; each word has one writer (README.md). */
@@ -147,6 +148,9 @@ typedef struct {
     kmd_messages_t messages;
     kmd_thread_t thread[KMD_WORK_CLUSTERS]; /* commands to work cluster c at c - 1 */
     uint32_t thread_busy; /* lines handed to threads and not answered, all clusters */
+    /* programs (args programs): the cores holding each program field, a bit per core */
+    uint32_t programs;
+    uint64_t holds[KMD_PROGRAMS_MAX][2];
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */

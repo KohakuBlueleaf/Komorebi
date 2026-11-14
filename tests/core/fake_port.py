@@ -49,6 +49,7 @@ class FakePort:
         self.waits = 0  # calls of wait()
         self.results = {}  # command number -> the leader's result word (KM_FLAG_RESULT)
         self.handlers = {}  # handler -> handler(req, words): commands a test serves
+        self.programs = None  # the dispatcher's table: the program field per core
 
     # The native port's interface ---------------------------------------------
 
@@ -205,6 +206,10 @@ class FakePort:
                 first, count
             ):
                 return  # held, and every command behind it
+            elif handler == CONSTANTS["KM_HANDLER_LOAD"] and self._overlaps_busy(
+                first, count
+            ):
+                return  # a load is exclusive
             free = [j for j in range(self.depth) if j not in self.busy]
             if not free:
                 return
@@ -223,6 +228,8 @@ class FakePort:
             self.submitted.append(
                 (req, self.sequence, free[0], handler, (first, count))
             )
+            if handler == CONSTANTS["KM_HANDLER_LOAD"]:
+                self.programs[first : first + count] = [words[1] >> 24] * count
             self.consumed = req
 
     def _overlaps_busy(self, first, count):
@@ -239,10 +246,12 @@ class FakePort:
         """The README's reasons a command is consumed with KM_EVENT_REJECTED, or 0."""
         if self.exited:
             return CONSTANTS["KMD_REJECT_EXITED"]
+        load = handler == CONSTANTS["KM_HANDLER_LOAD"]
         if (
             CONSTANTS["KM_HANDLER_USER_MAX"]
             < handler
             < CONSTANTS["KM_HANDLER_DEADLINE"]
+            and not load
         ):
             return CONSTANTS["KMD_REJECT_HANDLER"]
         if flags & 1:
@@ -253,6 +262,24 @@ class FakePort:
             count == 0 or first + count > self.cores
         ):
             return CONSTANTS["KMD_REJECT_GROUP"]
+        return self._program_rejection(handler, flags, first, count, load)
+
+    def _program_rejection(self, handler, flags, first, count, load):
+        """Reason 13 from the dispatcher's table: a group with a core that does not
+        hold the command's program (queued: any core), a load where there is none."""
+        if load and (self.programs is None or flags & CONSTANTS["KM_FLAG_QUEUE"]):
+            return CONSTANTS["KMD_REJECT_PROGRAM"]
+        if (
+            self.programs is None
+            or load
+            or handler in (0, CONSTANTS["KM_HANDLER_EXIT"])
+        ):
+            return 0
+        program = self.ring[self.consumed + 1][1] >> 24
+        if flags & CONSTANTS["KM_FLAG_QUEUE"]:
+            first, count = 0, self.cores
+        if any(held != program for held in self.programs[first : first + count]):
+            return CONSTANTS["KMD_REJECT_PROGRAM"]
         return 0
 
     def _complete(self):

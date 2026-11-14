@@ -24,7 +24,7 @@ MOVEMENT_KERNELS = ("movement", "compute")
 # The runtime's KernelBuildOptLevel names; a kernel without one keeps the runtime's
 # default (O2 for the reader and writer, O3 for the compute kernel).
 OPT_LEVELS = ("O0", "O1", "O2", "O3", "Os", "Ofast", "Oz")
-# The two forms of a kernel source: today's kernel (it defines kernel_main) or a
+# The two forms of a kernel source: the kernel form (it defines kernel_main) or a
 # program's function in the runtime's form (it defines km_program).
 KERNEL_MAIN = re.compile(r"\bkernel_main\s*\(")
 KM_PROGRAM = re.compile(r"\bkm_program\s*\(")
@@ -105,14 +105,14 @@ class Handler(int):
 
 def source_form(path):
     """ "program" when the source defines km_program (comments aside), else "kernel"
-    (today's form); ProgramError when it defines km_program and kernel_main."""
+    (the kernel form); ProgramError when it defines km_program and kernel_main."""
     text = COMMENTS.sub("", Path(path).read_text())
     if not KM_PROGRAM.search(text):
         return "kernel"
     if KERNEL_MAIN.search(text):
         raise ProgramError(
-            f"{path}: defines kernel_main and km_program; a source is today's kernel "
-            "(kernel_main) or a program's function (km_program), not both"
+            f"{path}: defines kernel_main and km_program; a source is of the kernel "
+            "form (kernel_main) or a program's function (km_program), not both"
         )
     return "program"
 
@@ -361,15 +361,16 @@ class Program:
         return Handler(int(handler), self)
 
     def form(self):
-        """ "kernel" (today's form: kernel_main) or "program" (the runtime's form: each
-        source defines km_program, the runtime kernel_main). ProgramError if mixed."""
+        """ "kernel" (the kernel form: kernel_main) or "program" (the runtime's form:
+        each source defines km_program, the runtime kernel_main). ProgramError if
+        mixed."""
         paths = self.sources()
         forms = {kernel: source_form(path) for kernel, path in paths.items()}
         if len(set(forms.values())) != 1:
             named = ", ".join(f"{kernel} {forms[kernel]}" for kernel in sorted(forms))
             raise ProgramError(
                 f"{self.name}: its sources mix the two forms ({named}): every source "
-                "defines kernel_main (today's kernels) or every one km_program"
+                "defines kernel_main (the kernel form) or every one km_program"
             )
         form = forms["reader"]
         if form == "program" and self.movement():

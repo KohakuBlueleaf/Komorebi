@@ -83,8 +83,8 @@ def test_two_links_that_differ_are_refused():
 
 @pytest.fixture
 def kernels(tmp_path):
-    """A program folder: today's three kernels, a header with handler and overlay
-    numbers, and two overlays (one with reader and compute parts)."""
+    """A program folder: three kernels of the kernel form, a header with handler and
+    overlay numbers, and two overlays (one with reader and compute parts)."""
     for name in ("reader", "writer", "compute"):
         (tmp_path / f"{name}.cpp").write_text("")
     (tmp_path / "parts.h").write_text(

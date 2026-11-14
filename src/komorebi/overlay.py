@@ -199,6 +199,21 @@ class Recipe:
             tuple(defines),
         )
 
+    def provided(self):
+        """The PROVIDE lines of the kernel's link script: symbols such as the
+        instruction buffer, which the kernel's ELF lacks when it never used them."""
+        scripts = [Path(word[2:]) for word in self.lflags if word.startswith("-T")]
+        lines = []
+        for script in scripts:
+            if not script.is_absolute():
+                script = self.elf.parent / script
+            lines += [
+                line.strip()
+                for line in script.read_text().splitlines()
+                if line.strip().startswith("PROVIDE(")
+            ]
+        return "".join(f"{line}\n" for line in lines)
+
     def tool(self, name):
         """A binutils program beside the compiler (readelf, objcopy, gcc-nm)."""
         return self.compiler[0][: -len("g++")] + name
@@ -415,7 +430,8 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
         cwd=scratch,
     )
     digest = hashlib.sha256(preprocessed.read_bytes() + recipe_key.encode())
-    digest.update(recipe.elf.read_bytes() + SCRIPT.encode())
+    provided = recipe.provided()
+    digest.update(recipe.elf.read_bytes() + (SCRIPT + provided).encode())
     work = Path(cache) / f"{stem}-{digest.hexdigest()[:16]}"
     work.mkdir(exist_ok=True)
     obj = work / "part.o"
@@ -429,7 +445,7 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
     links = []
     for base in (LINK_BASE, LINK_BASE + ALIGN):
         script, elf = work / f"part-{base:x}.ld", work / f"part-{base:x}.elf"
-        script.write_text(SCRIPT.format(base=base, length=LINK_LENGTH))
+        script.write_text(SCRIPT.format(base=base, length=LINK_LENGTH) + provided)
         if not elf.is_file():
             run(recipe.link_command(obj, script, elf), cwd=work)
         links.append(linked_facts(recipe, elf, base, undefined))
@@ -525,7 +541,7 @@ def area_words(built, placed, image_address, image_page_bytes, slot_base):
     c = constants()
     words = np.zeros(c["kOverlayAreaBytes"] // 4, np.uint32)
     numbers = [number for number, _ in built.images]
-    words[c["kOverlayCount"]] = max(numbers) + 1
+    words[c["kOverlayCount"]] = max(numbers) + 1 if numbers else 0
     at = slot_base
     for index, part in enumerate(PARTS):
         count, size = built.slots.get(part, (0, 0))

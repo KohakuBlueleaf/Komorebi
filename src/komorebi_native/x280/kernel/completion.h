@@ -95,6 +95,46 @@ static inline int group_outside(
     return count == 0 || first > dispatcher->cores || count > dispatcher->cores - first;
 }
 
+/* Bits [low, high) of a 64-bit word, for low <= high <= 64. */
+static inline uint64_t bits_between(uint32_t low, uint32_t high) {
+    const uint64_t below_high = high >= 64u ? ~0ull : (1ull << high) - 1u;
+    return below_high & ~(low >= 64u ? ~0ull : (1ull << low) - 1u);
+}
+
+/* Cores [first, first + count) as two 64-bit words; the group lies inside the grid. */
+static inline void group_bits(uint32_t first, uint32_t count, uint64_t bits[2]) {
+    const uint32_t end = first + count;
+    bits[0] = bits_between(first < 64u ? first : 64u, end < 64u ? end : 64u);
+    bits[1] = bits_between(first > 64u ? first - 64u : 0u, end > 64u ? end - 64u : 0u);
+}
+
+/* Whether every core of [first, first + count) holds program field `program`. */
+static inline int program_held(
+    const kmd_t* dispatcher, uint32_t program, uint32_t first, uint32_t count
+) {
+    if (program >= KMD_PROGRAMS_MAX) {
+        return 0;
+    }
+    uint64_t bits[2];
+    group_bits(first, count, bits);
+    const uint64_t* holds = dispatcher->holds[program];
+    return ((bits[0] & ~holds[0]) | (bits[1] & ~holds[1])) == 0;
+}
+
+/* A load: cores [first, first + count) hold program field `program` and no other. */
+static inline void program_move(
+    kmd_t* dispatcher, uint32_t program, uint32_t first, uint32_t count
+) {
+    uint64_t bits[2];
+    group_bits(first, count, bits);
+    for (uint32_t other = 0; other < KMD_PROGRAMS_MAX; other++) {
+        dispatcher->holds[other][0] &= ~bits[0];
+        dispatcher->holds[other][1] &= ~bits[1];
+    }
+    dispatcher->holds[program][0] |= bits[0];
+    dispatcher->holds[program][1] |= bits[1];
+}
+
 /* The end (last core + 1) of a busy slot's group that shares a core with cores [first,
  * first + count), the furthest if several; 0 if none. Groups lie inside the grid. */
 static inline uint32_t slots_overlap(

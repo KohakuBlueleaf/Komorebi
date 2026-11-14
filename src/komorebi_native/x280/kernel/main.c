@@ -77,7 +77,8 @@ static int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
         (arguments->state_ddr & 63u) == 0 && (arguments->host_noc_addr & 63u) == 0 &&
         (arguments->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE &&
-        work_args_valid(arguments) && dynamic_valid(arguments->messages_handler)
+        work_args_valid(arguments) && dynamic_valid(arguments->messages_handler) &&
+        arguments->programs <= 1u
     );
 }
 
@@ -332,7 +333,10 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     if (handler == KM_HANDLER_DEADLINE) {
         reject = KMD_REJECT_DEADLINE;
     } else if (
-        (handler > KM_HANDLER_USER_MAX && handler != KM_HANDLER_EXIT) ||
+        (
+            handler > KM_HANDLER_USER_MAX && handler != KM_HANDLER_EXIT &&
+            !(host && handler == KM_HANDLER_LOAD)
+        ) ||
         (!host && handler == KM_HANDLER_EXIT)
     ) {
         reject = KMD_REJECT_HANDLER;
@@ -347,6 +351,24 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         reject = KMD_REJECT_GROUP;
     } else if (queued && KM_IS_DYNAMIC(dispatcher->messages.handler, handler)) {
         reject = KMD_REJECT_MESSAGES;
+    } else if (
+        dispatcher->programs && handler != KM_HANDLER_NOP &&
+        handler != KM_HANDLER_EXIT &&
+        (
+            handler == KM_HANDLER_LOAD
+                ? (header >> 24) >= KMD_PROGRAMS_MAX || queued
+                : !program_held(
+                    dispatcher,
+                    header >> 24,
+                    queued ? 0 : first,
+                    queued ? dispatcher->cores : count
+                )
+        )
+    ) {
+        reject = KMD_REJECT_PROGRAM; /* a queued command: every core holds its program
+                                      */
+    } else if (handler == KM_HANDLER_LOAD && !dispatcher->programs) {
+        reject = KMD_REJECT_PROGRAM; /* a run without the table */
     }
     if (reject != 0) {
         ring_consumed(ring);
@@ -386,7 +408,11 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
             (flags & KM_FLAG_EXCLUSIVE) &&
             (ring->before || slots_overlap(dispatcher, first, count))
         ) ||
-        messages_held(dispatcher, handler)
+        messages_held(dispatcher, handler) ||
+        (
+            handler == KM_HANDLER_LOAD &&
+            (dispatcher->queued || slots_overlap(dispatcher, first, count))
+        )
     ) {
         return KMD_HELD; /* exclusive: every job queued before it placed, no overlap */
     }
@@ -399,6 +425,11 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         dispatcher, line, slot, request, source, now, ring->t_command, KMD_TRACE_SUBMIT
     );
     messages_submitted(dispatcher, line, slot, request, source);
+    if (handler == KM_HANDLER_LOAD) {
+        program_move(
+            dispatcher, header >> 24, first, count
+        ); /* the cores take it in order */
+    }
     ring_consumed(ring);
     dispatcher->exited = handler == KM_HANDLER_EXIT;
     return KMD_TAKEN;
@@ -741,6 +772,16 @@ static __attribute__((noinline)) void run(uint64_t core) {
     dispatcher->full = (1u << dispatcher->depth) - 1u;
     dispatcher->cores = (uint32_t)arguments->cores;
     dispatcher->messages.handler = (uint32_t)arguments->messages_handler;
+    dispatcher->programs = (uint32_t)arguments->programs;
+    for (uint32_t program = 0; program < KMD_PROGRAMS_MAX; program++) {
+        dispatcher->holds[program][0] = dispatcher->holds[program][1] = 0;
+    }
+    for (uint32_t core = 0; dispatcher->programs && core < dispatcher->cores; core++) {
+        const uint32_t program = dispatcher->lim[KMD_LIM_PROGRAMS + core];
+        if (program < KMD_PROGRAMS_MAX) {
+            dispatcher->holds[program][core >> 6] |= 1ull << (core & 63u);
+        }
+    }
     dispatcher->ering = (volatile uint8_t*)dispatcher + KMD_STATE_RING;
     dispatcher->queue = (kmd_queue_t*)((uint8_t*)dispatcher + KMD_STATE_QUEUE);
     kmd_ring_t* host_ring = &dispatcher->ring[KMD_SRC_HOST];

@@ -60,6 +60,9 @@ KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B)
 KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
 GROUP_DEFINE = "-DKM_PROGRAM_GROUP"  # a group's runtime kernels are built apart
 GROUP_LINE = re.compile(r"^#define KM_PROGRAM_GROUP (\d+)$", re.M)
+# a name the compiler gives a source file's own symbol (trisck.cc.4c8b3e06): the
+# build's hash, which no part refers to
+UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
 KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 # A loop runs from L1 at or above this address about 4 cycles slower an iteration than
 # from below it: an overlay's slots are placed just under it when they fit.
@@ -635,6 +638,7 @@ class Session:
                 messages_handler=(
                     program.messages.word() if program.messages is not None else 0
                 ),
+                programs=_held_fields(placed) if placed and placed.switch else [],
             )
             check_bases(lim_bases(dispatch.lim_base))
             plan, port_lines = _port_lines(owner, dispatch, rings)
@@ -705,11 +709,14 @@ class Session:
             programs=placed.programs if placed is not None else None,
             holds=placed.holds() if placed is not None else None,
             thread_program=owner,
+            switch=getattr(backend, "switch", None),
         )
         self.run = run
         self._starting = None
         if state != abi.headers()["KMD_STATE_READY"]:
             run._fail_start(state)
+        if placed is not None and placed.switch:
+            _start_loads(run, placed)
         self.log("ready")
         if works:
             shared = {name: _host_array(value) for name, value in owner.shared.items()}
@@ -770,6 +777,52 @@ def _group_recipes(kernels, count):
                 raise ProgramError(f"{recipe.elf}: no group number in its build")
             out[number][recipe.target] = recipe
     return out
+
+
+def _held_fields(placed):
+    """A byte per core for the dispatcher's table: the program field it holds, 0xFF
+    none."""
+    out = [0xFF] * placed.cores
+    for group in placed.groups:
+        for program_field in group.programs:
+            out[group.first : group.first + group.count] = [program_field] * group.count
+    return out
+
+
+def _start_loads(run, placed):
+    """In a run whose groups switch, each group loads its program first: the compute
+    parts set the hardware up for its formats (the runtime's kernels do not)."""
+    handles = [
+        run.load(placed.programs[group.programs[0]], (group.first, group.count))
+        for group in placed.groups
+        if group.programs
+    ]
+    run.wait(handles, timeout=10.0)
+
+
+def _common_slots(placed, declared, built):
+    """The slots of a run whose groups switch: per part, the declared count (else one a
+    program, at most kOverlaySlotsMax) of the largest part any program has there."""
+    most = overlay.constants()["kOverlaySlotsMax"]
+    slots = {}
+    for made in built:
+        for part, (_, size) in (made.slots if made else {}).items():
+            slots[part] = max(slots.get(part, 0), size)
+    count = declared.count
+    out = {}
+    for part, size in slots.items():
+        kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
+        wanted = count.get(kernel) if isinstance(count, dict) else count
+        out[part] = (wanted or min(len(placed.programs), most), size)
+    return overlay.Built({}, out)
+
+
+def _program_cbs(buffers):
+    """(index, format, page bytes, pages) of a program's buffers."""
+    return [
+        (buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
+        for buffer in buffers
+    ]
 
 
 def _peers(session, dispatch, images):
@@ -1159,13 +1212,12 @@ class _Backend:
 
     def _cbs(self, buffers):
         """(index, format, page bytes, pages) of `buffers` and the runtime's own."""
+        return _program_cbs(buffers) + self._runtime_cbs()
+
+    def _runtime_cbs(self):
         abi_headers = abi.headers()
         token_bytes = abi_headers["kTokenBytes"]
         cbs = [
-            (buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
-            for buffer in buffers
-        ]
-        cbs += [
             (abi_headers["kCbTokenCompute"], "uint32", token_bytes, 1),
             (abi_headers["kCbTokenWriter"], "uint32", token_bytes, 1),
         ]
@@ -1173,18 +1225,43 @@ class _Backend:
             cbs.append((abi_headers["kCbTrace"], "uint32", self.trace_cap * 16, 1))
         return cbs
 
+    def _switch_layouts(self, placed):
+        """In a run whose groups switch: each program's buffers placed after the
+        runtime's own ({field: layout}), and the end of the largest."""
+        _, kernel_free, l1_bytes = self.session._module.kernel_buffer(self.device)
+        _, start = programs.buffer_layout(self._runtime_cbs(), l1_bytes - kernel_free)
+        self.switch_layouts, end = {}, start
+        for program in placed.programs:
+            layout, last = programs.buffer_layout(_program_cbs(program.buffers), start)
+            self.switch_layouts[program.program_field] = layout
+            end = max(end, last)
+        self.switch_base = l1_bytes - kernel_free
+        return end
+
     def _describe_groups(self, launch, placed, sources, args, grid):
         """The runtime's kernels and each group's buffers on its cores: a group's
         kernels are built apart (KM_PROGRAM_GROUP), with its buffers and options."""
         include = [str(abi.headers().abi.parents[2])]
         free = self.session.l1()[1]
         self.group_buffers = []
+        align = programs.CB_ALIGN
+        if placed.switch:  # the runtime's buffers first, then room for the largest
+            reserve = -(-self._switch_layouts(placed) // align) * align
+            self.switch_reserve = reserve - self.switch_base
         for number, group in enumerate(placed.groups):
             held = [placed.programs[index] for index in group.programs]
             buffers = programs.joint_buffers(held, free)
             self.group_buffers.append(buffers)
             cores = programs.rectangles(group.first, group.count, grid[0])
-            for index, fmt, page, pages in self._cbs(buffers):
+            cbs = self._cbs(buffers)
+            if placed.switch:
+                cbs = self._runtime_cbs() + _program_cbs(buffers)
+                _, end = programs.buffer_layout(cbs, self.switch_base)
+                pad = reserve - -(-end // align) * align
+                if pad > 0:
+                    index = min(set(range(32)) - {cb[0] for cb in cbs})
+                    cbs.append((index, "uint32", pad, 1))
+            for index, fmt, page, pages in cbs:
                 launch.cb(cores, index, fmt, page, page * pages)
             cb_in, cb_out = programs.start_buffers(buffers)
             defines = [
@@ -1192,7 +1269,14 @@ class _Backend:
                 ("KM_PROGRAM_CB_IN", str(cb_in)),
                 ("KM_PROGRAM_CB_OUT", str(cb_out)),
             ]
+            if placed.switch:  # the kernels do not depend on the group's buffers
+                defines = [
+                    ("KM_PROGRAM_GROUP", str(number)),
+                    ("KM_PROGRAM_SWITCH", "1"),
+                ]
             first = held[0] if held else None
+            if placed.switch and first is None:
+                first = placed.programs[0]  # one build for every group's kernels
             mine = range(group.first, group.first + group.count)
             for processor, kernel in enumerate(("reader", "writer", "compute")):
                 config = (
@@ -1272,6 +1356,62 @@ class _Backend:
             f"({time.perf_counter() - started:.2f} s)"
         )
 
+    def _switch_line(self, area, placed, group):
+        """A group's switch line in its overlay area: the program field it holds and
+        its buffers (none for a group without one); every number in the table."""
+        c = overlay.constants()
+        area[c["kOverlayCount"]] = c["kOverlaysMax"]
+        line = c["kOverlaySwitch"] // 4
+        area[line + c["kSwitchHolding"]] = c["kSwitchNone"]
+        area[line + c["kSwitchMask"]] = 0
+        if group.programs:
+            program_field = group.programs[0]
+            area[line + c["kSwitchHolding"]] = program_field
+            area[line + c["kSwitchMask"]] = sum(
+                1 << index for index in self.switch_layouts[program_field]
+            )
+
+    def _switch_records(self, placed, image, placed_rows, symbols):
+        """Each program's record in DRAM (its table entries and buffers), and why a
+        group cannot switch, if the groups' kernels differ: self.switch for the Run."""
+        c = overlay.constants()
+        records = {}
+        for program in placed.programs:
+            number = c["kOverlaysMax"] - 1 - program.program_field
+            table = []
+            for part in overlay.PARTS:
+                row, size = placed_rows.get((number, part), (None, 0))
+                address = image.address + row * image.aligned_page_bytes if size else 0
+                table.append((address, size))
+            words = programs.record_words(
+                program.program_field, self.switch_layouts[program.program_field], table
+            )
+            records[(program.program_field, "record")] = words.tobytes()
+        rows, placed_records = overlay.dram_rows(overlay.Built(records, {}))
+        tensor = _words(self.session, rows)
+        self.io.append(tensor)
+        refused = None
+        differ = sorted(
+            (target, name)
+            for each in symbols[1:]
+            for target, names in each.items()
+            for name in names.keys() | symbols[0].get(target, {}).keys()
+            if names.get(name) != symbols[0].get(target, {}).get(name)
+        )
+        if differ:
+            refused = (
+                "the groups' runtime kernels differ (compute options or opt levels; "
+                f"{differ[0][0]}'s {differ[0][1]}, {len(differ)} symbols), so a "
+                "program's parts would not fit another group's kernels"
+            )
+        self.switch = {
+            "records": {
+                key[0]: tensor.address + row * tensor.aligned_page_bytes
+                for key, (row, _) in placed_records.items()
+            },
+            "refused": refused,
+        }
+
     def load_programs(self, placed, descriptor):
         """Builds each program as an overlay against its group's runtime kernels, puts
         the parts in every DRAM bank, places the slots (refused, with the L1 budget
@@ -1282,15 +1422,31 @@ class _Backend:
         grid = (self.port.grid_x, self.port.grid_y)
         cores = grid[0] * grid[1]
         declared = placed.programs[0].overlay_slots
-        built = []
+        built, symbols, largest = [], [], 0
         for number, group in enumerate(placed.groups):
             recipes = by_group[number]
+            if placed.switch:  # a part runs on any group's kernels: the same globals
+                symbols.append(
+                    {
+                        target: {
+                            name: value
+                            for name, (value, _, binding) in overlay.elf_symbols(
+                                recipe, recipe.elf
+                            ).items()
+                            if binding != "LOCAL" and not UNIT_SYMBOL.search(name)
+                        }
+                        for target, recipe in recipes.items()
+                    }
+                )
             held = [placed.programs[index] for index in group.programs]
             if not held:
                 built.append(None)
                 continue
             made = overlay.build_overlays(
-                [programs.program_overlay(program) for program in held],
+                [
+                    programs.program_overlay(program, switch=placed.switch)
+                    for program in held
+                ],
                 declared,
                 recipes,
                 native.cache_directory() / "overlays",
@@ -1304,6 +1460,7 @@ class _Backend:
                 for buffer in self.group_buffers[number]
             )
             buffers += 2 * abi_headers["kTokenBytes"] + self.trace_cap * 16
+            largest = max(largest, buffers)
             rows = [
                 ("circular buffers", buffers),
                 ("control block and overlay area", self.control.nbytes // cores),
@@ -1321,12 +1478,37 @@ class _Backend:
         for made in built:
             if made is not None:
                 images.update(made.images)
+        if placed.switch:  # one set of slots, every program's parts fit any core's
+            common = _common_slots(placed, declared, built)
+            built = [
+                overlay.Built(made.images if made else {}, common.slots)
+                for made in built
+            ]
+            buffers = largest = self.switch_reserve  # the runtime's buffers included
+            rows = [
+                ("circular buffers (the largest program)", buffers),
+                ("control block and overlay area", self.control.nbytes // cores),
+            ]
+            rows += [
+                (f"slots: {part}, {count} x {size:,} B", count * size)
+                for part, (count, size) in common.slots.items()
+            ]
+            table, fits = overlay.budget(session.l1()[1], rows)
+            session.log(f"L1 budget of a core:\n{table}")
+            if not fits:
+                raise L1BudgetError(", ".join(p.name for p in placed.programs), table)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
         image = _words(session, image_rows)
         slot_bytes = max(made.slot_bytes for made in built if made is not None)
-        slots = session.empty(
-            (cores, (slot_bytes + overlay.ALIGN) // 4), "uint32", shard_grid=grid
-        )
+        words = (slot_bytes + overlay.ALIGN) // 4
+        floor = L1_BYTES - session.l1()[1] + largest + SLOT_MARGIN
+        at = slot_address(4 * words, floor)
+        try:
+            slots = session.empty((cores, words), "uint32", shard_grid=grid, address=at)
+        except RuntimeError:  # the place is taken: where the allocator puts them
+            slots = session.empty((cores, words), "uint32", shard_grid=grid)
+        if slots.address + slot_bytes > L1_FAST_CODE:
+            session.log("slots above 1 MB of L1: their code runs slower")
         self.io += [image, slots]
         slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
@@ -1337,9 +1519,13 @@ class _Backend:
             area = overlay.area_words(
                 made, mine, image.address, image.aligned_page_bytes, slot_base
             )
+            if placed.switch:
+                self._switch_line(area, placed, group)
             rows = slice(group.first, group.first + group.count)
             self.control_rows[rows, at : at + len(area)] = area
         self.control.write(self.control_rows)
+        if placed.switch:
+            self._switch_records(placed, image, placed_rows, symbols)
         session.log(
             f"programs {[program.name for program in placed.programs]} built and "
             f"placed: slots from {slot_base:#x}, {image.nbytes:,} B of DRAM "

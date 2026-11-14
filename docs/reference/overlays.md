@@ -220,23 +220,66 @@ and the same on the writer (which completes the command unless the program's
   programs, a command to a program the tile does not hold loads its five parts.
 - **The compute start-up.** The runtime's compute kernel calls
   `compute_kernel_hw_startup(in, out)` once, on the group's first buffer below index 16 and
-  its first from 16 on (0 and 16 when there is none). A part that uses other buffers
-  calls the compute API's own `*_init` calls for them, as any compute code does.
+  its first from 16 on (0 and 16 when there is none); in a run loaded with a dict, each
+  load of a program runs it instead, on that program's buffers. A part that uses other
+  buffers calls the compute API's own `*_init` calls for them, as any compute code does.
 - **Each group apart.** With `{program: group}`, each group's runtime kernels are built
-  apart, on its cores, with its buffers and compute options, and its overlay table holds
-  only its own programs: a core that does not hold a program gives up (`overlay_find`) on
-  a command for it.
+  apart, on its cores, with its buffers, and its overlay table holds only the program it
+  holds; the dispatcher refuses a command for another (reason 13), and a core that still
+  got one would give up (`overlay_find`).
 
 What it costs ([16_two_programs](../../examples/16_two_programs/README.md)), cycles from
 the reader taking a command to its completion, medians, one command at a time:
 
-| Command | today's form | runtime's form |
+| Command | the kernel form | the runtime's form |
 |---|---|---|
 | empty, 1 core | 596 | 724 |
 | empty, 120 cores | 811 | 941 |
 | a sum of 16 tiles, 1 core | 5,233 | 6,274 |
 | the first command after a change of program (five parts loaded), 1 core | | 2,919 |
 | the same, 120 cores | | 3,971 |
+
+## A group switches program
+
+In a run loaded with a dict, `run.load(program, group=)` ([host](host.md#a-group-switches-program))
+is a command with the reserved handler 240 (`KM_HANDLER_LOAD`): its program field names
+the new program, its word `a0` the program's record in DRAM (in every bank, as the parts
+are: the program field, its five overlay table entries, and per buffer index its
+address, size, pages and page size). The rule: code loads on demand, the L1 layout
+changes only by this command. On each core of the group:
+
+1. The writer and the three compute cores mark their arrival on the switch line and park.
+2. The reader waits for the four, then reads the record (the last load's record is theirs
+   until they arrive), and waits until every buffer of the old and the new program is
+   empty (pages received equal pages acknowledged).
+3. It zeroes those buffers' counters and sets up its own view of the new buffers
+   (`setup_local_cb_read_write_interfaces`), clears the old program's table entries,
+   writes the new ones, steps the epoch (a slot's records are checked again) and lets
+   the four go.
+4. Each of the four sets up its own view (the writer reads and writes, unpack reads,
+   pack writes) of the new buffers; the runtime's own buffers (indices 29 to 31) are not
+   in the mask and stay as they are.
+5. The command goes on as any command for the new program: its parts are loaded if the
+   tile does not hold them, and called; the compute parts run
+   `compute_kernel_hw_startup` on the program's first input and output buffers, so the
+   unpacker and packer take its data formats.
+
+A load to the program a core already holds sets its buffers up again (empty) and checks
+the host's layout against the live one: the session's start-up loads do this, and a
+mismatch gives up with where 39 (`ProgramSwitch`). A data command for a program whose
+load did not run on a core gives up on compute with where 42 (`ProgramStart`).
+
+What it costs, cycles from the reader taking the load to its completion (medians,
+[16_two_programs](../../examples/16_two_programs/README.md), `--phase load`):
+
+| Load | 1 core | 120 cores |
+|---|---|---|
+| to another program (buffers set up, its parts held in their slots) | 3,124 | 3,360 |
+| to the program held (buffers set up, parts held) | 3,249 | 3,475 |
+
+That is 2.3 to 2.6 µs at 1,350 MHz, beside `overlay_costs`' 0.68 µs for setting up the
+buffers alone and 7 to 95 µs for loading five parts on 120 cores: a load command costs the
+meeting of the five cores and the wait for their buffers to empty, not the code.
 
 The experiments these numbers stand beside are
 [overlay_costs](../../experiments/overlay_costs/README.md),

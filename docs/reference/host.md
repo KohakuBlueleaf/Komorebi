@@ -33,7 +33,7 @@ nothing.
 
 | Field | Meaning |
 |---|---|
-| `kernels` | a directory with `reader.cpp`, `compute.cpp` and `writer.cpp`, or a dict of the three paths. Each source defines `kernel_main` (today's kernels) or `km_program` (the runtime's form, [below](#several-programs-in-one-run)) |
+| `kernels` | a directory with `reader.cpp`, `compute.cpp` and `writer.cpp`, or a dict of the three paths. Each source defines `kernel_main` (the kernel form) or `km_program` (the runtime's form, [below](#several-programs-in-one-run)) |
 | `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a data type name (`"bfloat16"`, `"float32"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, `"bfloat8_b"`, `"bfloat4_b"`) |
 | `args` | `args(core) -> (reader, writer, compute)`: the program's own runtime arguments of each core, after the runtime's start-up arguments |
 | `compile_args` | `{"reader": [...], "writer": [...], "compute": [...]}` |
@@ -97,8 +97,8 @@ void km_program(km::Reader& reader, const km_command_t& command) {
 and the same with `km::Writer&` (it may return `bool`: false sends no completion, the way a
 writer body's false does) and `km::Compute&`. The host tells the forms apart from the
 sources: one that defines `km_program` (comments aside) is in the runtime's form, any
-other is today's kernel. A program whose sources mix the forms, or a source that defines
-both, raises `ProgramError`. The runtime owns `kernel_main` and the loop; each program is
+other is in the kernel form (`kernel_main`). A program whose sources mix the forms, or a
+source that defines both, raises `ProgramError`. The runtime owns `kernel_main` and the loop; each program is
 an [overlay](overlays.md#a-program-as-an-overlay) under them.
 
 ```python
@@ -109,7 +109,7 @@ run.submit(tracer.handler("trace"), group=(0, 88), args=[...])
 
 | `session.load(...)` | What the cores hold |
 |---|---|
-| `program` | today's kernels as before; a program in the runtime's form, the runtime's kernels with that program |
+| `program` | the kernel form: its kernels as before; a program in the runtime's form, the runtime's kernels with that program |
 | `{program: (first, count), ...}` | each group its own program and buffers (disjoint groups; a core outside them holds no program) |
 | `[program, ...]` | every core every program, in one L1 layout: buffer indices disjoint, or an index both declare declared identically (then one shared buffer); otherwise `km.L1LayoutError` with the L1 budget table |
 
@@ -130,8 +130,45 @@ cluster=c)` names a handler of that program's thread.
 The host refuses (`ValueError`, before anything is sent) a command whose group has a core
 that does not hold its program, a queued one unless every core holds it, and a handler of
 a program the run does not hold; a stream's or graph's upload is checked the same way for
-its commands with a fixed group (a group from registers is not checked). The dispatcher
-has the rejection reason for it, 13 (`program`), not yet used.
+its commands with a fixed group (a group from registers is not checked). In a run
+loaded with a dict the dispatcher refuses the same commands from any source (a stream, a
+graph, an X280 thread, a group from registers): `CommandRejected`, reason 13 (`program`),
+and the run goes on. `run.check_programs = False` leaves the refusal to the dispatcher.
+
+#### A group switches program
+
+In a run loaded with a dict, a group of cores can change program while the run is live:
+
+```python
+run = session.load({tracer: (0, 88), expert: (88, 32)})
+handle = run.load(expert, group=(60, 28))  # those cores now hold expert
+run.submit(expert.handler("refine"), group=(60, 28), args=[...])
+```
+
+`run.load(program, group=(first, count))` is a command (reserved handler 240, from the
+host only) like any other: it returns a handle, completes with an event and has the
+run's deadline. `program` is one of the dict's: its parts are built and in DRAM, so no
+code moves from the host. The cores of the group take it after their earlier commands;
+the dispatcher holds it until no command in flight shares a core with it and the job
+queue is empty (it is exclusive, never refused for a busy group). From then on the
+host and the dispatcher refuse commands for the program those cores held, and take
+commands for `program`.
+
+- **What is lost.** The cores' buffers are set up again for `program` (its indices, sizes
+  and formats; the runtime's own buffers stay): whatever the old program kept in its
+  buffers is gone. A load waits until every buffer of either program is empty.
+- **What must fit.** A core holds one program's buffers at a time: the session reserves,
+  on every core, room for the largest buffer layout among the dict's programs, beside
+  the slots for every program's parts; `km.L1BudgetError` with the L1 budget table when
+  it does not fit. Buffer indices are below 32.
+- **One build of the runtime's kernels.** A program's parts run on any group's kernels,
+  so the groups' runtime kernels must be the same build: programs of a dict share
+  compute options and `opt` levels (else `run.load` raises `ProgramError` and says
+  which symbol differs). A run loaded with one program or with a list has no `load`.
+
+The session sends each group a load of its own program before `session.load` returns
+(the compute cores' hardware start-up on that program's formats). What it costs: the
+[example](../../examples/16_two_programs/README.md) and [overlays](overlays.md#a-group-switches-program).
 
 ## `Session`
 
@@ -323,6 +360,7 @@ range.
 | Call | What it does |
 |---|---|
 | `submit(handler, group=None, args=(), exclusive=False, result=False, queued=False, cluster=None)` | queues one command and returns its handle (1, 2, ...). `handler` is a name or a number (`0` is NOP) of the run's first program, or a `km.Handler` of any of its programs; `group` is `(first, count)`, default every core; `args` up to ten 32-bit words. Groups and handlers are checked here. With `exclusive` (`KM_FLAG_EXCLUSIVE`), the dispatcher submits the command only once every queued command sent before it has left the kernel's job queue and no command in flight has a group that overlaps it; the host stores it as soon as the ring has room, like any other command (below, "Exclusive commands"). With `result` (`KM_FLAG_RESULT`), its done event carries the group leader's 32-bit result word. With `queued` (`KM_FLAG_QUEUE`), `group` is a count: the kernel gives the command the lowest first core whose group overlaps no busy one, and waits until there is one (nothing is rejected for a full grid); `group(handle)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). The kernel's job queue holds 64 commands waiting for room; one more is rejected (`CommandRejected`, reason 9), so with at most 64 queued commands unfinished none is rejected. Queued commands share the program's `depth` completion slots with every other command: at most `depth` (16 at most) run at once over the whole grid. A queued command cannot be exclusive. With `cluster` (1 to 3) the command goes to that work cluster's X280 thread instead of a group: `handler` is a name among the thread's `handlers` or a number, and `group`, `exclusive` and `queued` are refused (`ValueError`, as are a cluster outside 1 to 3 and one without a thread). Its event is a group's; a full thread rejects it (`CommandRejected`, reason 14, `thread`), and a timeout is returned as its event without ending the run ([commands to a thread](threads.md#commands-to-a-thread)) |
+| `load(program, group)` | a run loaded with a dict: the cores of `group` hold `program` from this command on (its overlay entry and its buffers, set up again); returns the handle ([a group switches program](#a-group-switches-program)). `ProgramError` in a run that cannot switch |
 | `submit_many(handler, firsts, counts, args=None, exclusive=False)` | queues n commands at once and returns their handles as a `range`. `handler`, `firsts` and `counts` are one value or n each; `args` is an `[n, m]` integer matrix (m at most 10) or None. Checked as `submit` checks, all before any is queued |
 | `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a [graph](../graphs.md) host-fed: its executor on the host, its commands through this run; returns `HostfedResult(status, error, registers, runs, commands, events)` |
 | `wait(handles, timeout=10.0)` | stores queued commands up to the handles in batches, reads events until each handle has one; returns the `Event` (or a list) and forgets those handles. The stores and the event reads run in the native module with the GIL released |

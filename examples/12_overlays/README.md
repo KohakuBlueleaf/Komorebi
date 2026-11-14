@@ -9,7 +9,7 @@ tile:
 - the three compute cores multiply each tile by a scalar on the vector unit;
 - the writer writes the tiles to DRAM.
 
-The kernels are of today's form; each one names the overlay a command asks for, loads it
+The kernels are of the kernel form (`kernel_main`); each one names the overlay a command asks for, loads it
 and calls it.
 
 | Handler | Arguments | What a core does |

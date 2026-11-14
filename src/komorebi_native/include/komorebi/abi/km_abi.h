@@ -24,6 +24,9 @@
 #define KM_HANDLER_RUN 251u
 /* host -> dispatcher only: a0 = request id of the stream to cancel */
 #define KM_HANDLER_CANCEL 250u
+/* host only: the group's cores hold the program in header bits 24 to 31 from now on;
+ * a0 = the DRAM address of its record (its table entries and buffers) */
+#define KM_HANDLER_LOAD 240u
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u

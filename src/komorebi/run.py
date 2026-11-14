@@ -22,6 +22,7 @@ from komorebi.errors import (
     CommandTimeout,
     KernelFailed,
     KomorebiError,
+    ProgramError,
     StartError,
     ThreadFailed,
     WaitTimeout,
@@ -105,6 +106,7 @@ class Run:
         programs=None,
         holds=None,
         thread_program=None,
+        switch=None,
     ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
@@ -118,6 +120,8 @@ class Run:
         self.programs = list(programs or ([program] if program is not None else []))
         self._holds = holds
         self.thread_program = thread_program or program  # owns the X280 threads
+        self._switch = switch  # {"records": {field: DRAM address}, "refused": why}
+        self.check_programs = True  # False: the dispatcher alone refuses (reason 13)
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -294,7 +298,7 @@ class Run:
     def _check_holds(self, program_field, handler, first, count, queued=None):
         """Refuses a command whose group's cores do not hold its program (a queued
         one: every core, since the kernel picks them)."""
-        if self._holds is None or handler == self._nop:
+        if self._holds is None or handler == self._nop or not self.check_programs:
             return
         if not self._holds[program_field][first : first + count].all():
             name = self.programs[program_field].name
@@ -302,6 +306,27 @@ class Run:
             raise ValueError(
                 f"handler {handler} of {name}: {where} does not hold {name}"
             )
+
+    def load(self, program, group):
+        """Makes the cores of `group` (first, count) hold `program`, one of the dict
+        given to session.load: its overlay and its buffers, set up again. A command,
+        after every earlier one on those cores; their program's buffers are lost."""
+        if self._switch is None:
+            raise ProgramError(
+                "run.load needs a run loaded with {program: group, ...}: its groups "
+                "can switch program"
+            )
+        if self._switch["refused"]:
+            raise ProgramError(f"run.load: {self._switch['refused']}")
+        program_field = self.program_field(program)
+        first, count = self._group(group)
+        record = self._switch["records"][program_field]
+        handle = self._queue_command(
+            self.h["KM_HANDLER_LOAD"], (first, count), [record], False, 0, program_field
+        )
+        for held, cores in enumerate(self._holds or ()):
+            cores[first : first + count] = held == program_field
+        return handle
 
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """Queues n commands at once: `handler` a name, a number or n numbers, `firsts`
@@ -346,7 +371,7 @@ class Run:
                 f"group ({int(first[i])}, {int(count[i])}) is not inside {self.cores} "
                 "cores"
             )
-        if self._holds is not None:
+        if self._holds is not None and self.check_programs:
             missing = np.concatenate([[0], np.cumsum(~self._holds[program_field])])
             bad = (missing[first + count] - missing[first] > 0) & (
                 handlers != self._nop
