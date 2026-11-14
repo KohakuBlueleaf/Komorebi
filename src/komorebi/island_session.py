@@ -905,6 +905,8 @@ class IslandSession:
                 most = min(found, self.LINKS_MAX)
                 self.links = min(self._links_asked or most, most)
                 self.log(f"links: {self.links} of {found} found")
+                for session in self.sessions:  # a relay ask's link: its rank's modulo
+                    session.relay_links = self.links
             parts, taken, link_cores = [], (self.links + 1) // 2, []
             for session in self.sessions:
                 columns, rows = session.grid

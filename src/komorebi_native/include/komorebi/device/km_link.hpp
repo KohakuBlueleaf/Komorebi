@@ -564,7 +564,7 @@ namespace km {
                     link.region + kLinkHeaders + which * kLinkHeaderBytes
                 )
             );
-            if (!sender().send(made, source, bytes)) {
+            if (!sender().send_one(made, source, bytes)) {
                 return false;
             }
             const bool sent = noc_timeout(core, [] {

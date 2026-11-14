@@ -462,6 +462,9 @@ namespace km {
                     [&] {
                         if (serves) {  // a link core's services between commands
                             link_serve(*this, 1, kStWriter);
+#if defined(KM_LINK_SERVICES) && !defined(KM_WIRE)  // the wire's: link 0's alone
+                            Relay::turn(*this);     // its link's relay asks, if any
+#endif
                         }
                         return cb_pages_available_at_front(kCbTokenWriter, 1);
                     },

@@ -734,7 +734,7 @@ namespace km {
             })) {
                 return false;
             }
-            return sender.send(made, from, n);
+            return sender.send_one(made, from, n);
         };
         // counted here when this core's link is the first it crosses, else where it
         // crosses (forward_on)

@@ -2015,6 +2015,7 @@ class _Backend:
             table = np.frombuffer(graph.table(here), np.uint32)
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
             header += [base, getattr(self.session, "packet", 0)]
+            header += [getattr(self.session, "relay_links", 0)]
             mine = self.control_rows[base : base + count]
             mine[:, at : at + len(header)] = header
             mine[:, at + line : at + line + len(table)] = table

@@ -70,7 +70,12 @@ written for islands runs on one card unchanged.
   link core send, each on its own link (`session.channels`: the Ethernet channel of
   each). Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
   dispatcher's command and DONE lines (commands across), and pages only when it is
-  the one link; links 1 on carry pages. The session checks that a DRAM bank sits at
+  the one link; links 1 on carry pages. A relay ask (a core's bytes into a rank's
+  L1 on the other card, `relay_put`) takes link `rank % links` of its sending rank,
+  always the same link for one rank, so what a rank sends stays in order; that link's
+  CPU serves it between commands (the island header's `KM_ISLAND_LINKS`). Every
+  packet of a line, a message, a relay ask or a forward leaves by the send the pages
+  use (`LinkSender::send_stateful`; a header alone by `send`). The session checks that a DRAM bank sits at
   the same NoC place on both islands, and that both islands' core tables are the
   same. One card is an island of one: no link cores. The ranks an island has, on a
   card of 120 Tensix cores:

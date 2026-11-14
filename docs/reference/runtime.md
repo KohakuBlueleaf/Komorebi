@@ -450,9 +450,10 @@ The calls that act by island (`km_group.hpp`, `km_port.hpp`):
 
 The relay (`km_relay.hpp`): the sender stages an ask (its core, the pages' L1 address,
 bytes, the rank, the L1 address there, the port or `kRelayNoPort`) in its CPU's block of
-its own words (`KM_OWN_*`) and writes it into the relay area of its island's link core 0,
-one ask line a core and NoC (`KM_RELAY_ASKS`, so every core's reader and writer can ask
-at once), and adds 1 to that core's ask count. Link core 0's
+its own words (`KM_OWN_*`) and writes it into the relay area of its island's link core 0
+(between two cards: of the link core whose CPU holds link `rank % links` of the sending
+rank, `relay_link`), one ask line a core and NoC (`KM_RELAY_ASKS`, so every core's reader
+and writer can ask at once), and adds 1 to that core's ask count. Link core 0's
 link 0 CPU serves asks between commands, from its loop, taking the lines in turn: it reads
 the pages, sends them and the ask over link 0 into the far link core 0's inbox with one
 count, and writes a done word back into the sender's own words, which then frees its pages; the far link
