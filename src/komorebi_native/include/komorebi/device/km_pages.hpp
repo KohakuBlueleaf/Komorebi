@@ -296,9 +296,11 @@ namespace km {
             // its pages would go a page a read in a few groups; slots as many as fit
             const uint32_t spread = r.from_core == KM_PAGES_DRAM ? NUM_DRAM_BANKS : 1;
             per_read = (
-                slots_fit >= 3 * 16 && mine >= spread * 16 ? 16
-                : slots_fit >= 2 * 4 && mine >= spread * 4 ? 4
-                                                           : 1
+                slots_fit >= 3 * 16 && mine >= spread * 16
+                    ? 16
+                    : slots_fit >= 2 * 4 && mine >= spread * 4
+                        ? 4
+                        : 1
             );
             asked = kPagesSlotsMax;
         }
@@ -1696,9 +1698,8 @@ namespace km {
         );
     }
 
-    // The lead page CPU: a gather's `pages`, all written here, onto its keepers' port
-    // (`keeper`: KM_ASK_KEEPER, ranks of this island), share k onto keeper k's, a local
-    // NoC atomic each; keepers that name no rank or port are counted bad. kGave* code.
+    // The lead page CPU: a gather's `pages`, written here, onto its keepers' ports
+    // (share k onto keeper k's), a local atomic each; bad keepers counted. kGave* code.
     template <typename Kernel>
     inline uint32_t pages_keeper(
         const Kernel& kernel, uint32_t area, uint32_t keeper, uint32_t pages
@@ -1721,7 +1722,9 @@ namespace km {
         for (uint32_t k = 0; k < ranks; k++) {
             const uint32_t share = partition(pages, k, ranks).len;
             if (share != 0) {
-                noc_semaphore_inc(kernel.core_noc(view.base() + rank + k, count), share);
+                noc_semaphore_inc(
+                    kernel.core_noc(view.base() + rank + k, count), share
+                );
             }
         }
         return kernel.poll_at(

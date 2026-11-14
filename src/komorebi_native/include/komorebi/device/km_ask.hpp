@@ -129,9 +129,8 @@ namespace km {
         return KM_PORT_PAGES + (core.role() == kRoleWriter ? 1 : 0);
     }
 
-    // One line into `queue` for pages first .. first + pages - 1 at bank `address` of
-    // island `holder`, into L1 `at` (or `dram`), counted at `port`; a put from DRAM may
-    // name a keeper on the holder (KM_ASK_KEEPER, km::keeper). False: gave up.
+    // One line into `queue` for pages first .. first + pages - 1 at `address` of island
+    // `holder`, into L1 `at` (or `dram`), counted at `port`, `keeper`. False: gave up.
     template <typename Kernel>
     inline bool ask_line_at(
         const Kernel& core,
@@ -2170,20 +2169,18 @@ namespace km {
         );
     }
 
-    // Collectives across islands: pages a rank names in its island's DRAM become pages
-    // of a neighbour island's tensor, DRAM to DRAM by the link cores' page CPUs; the
-    // rank posts a line a run and goes on (km::gather_pages), waits once at the end
-    // (km::gather_wait); a keeper on the far island waits for them (km::gathered).
+    // Collectives across islands: a rank's pages in its island's DRAM go to a neighbour
+    // island's tensor by the page CPUs, a put line a run; waited for once at the end.
 
-    // Pages posted by km::gather_pages and not yet waited for, the last island posted to.
+    // Pages posted by km::gather_pages and not yet waited for, the last island posted
+    // to.
     struct Gather {
         uint32_t pages;
         uint32_t island;
     };
 
-    // Keepers: ranks rank .. rank + ranks - 1 of the far island (its indices there, at
-    // most 255) and their port `port` (0 .. KM_PORTS - 1); once a gather's pages are all
-    // written there, keeper k's port counts share k of them (partition(pages, k, ranks)).
+    // Keepers: ranks rank .. rank + ranks - 1 of the far island and their port; once a
+    // gather's pages are all written there, keeper k counts share k of them.
     constexpr uint32_t keeper(uint32_t rank, uint32_t port, uint32_t ranks = 1) {
         return (
             (rank + 1) | (ranks - 1) << KM_KEEPER_RANKS_SHIFT |
@@ -2191,8 +2188,8 @@ namespace km {
         );
     }
 
-    // Where page `page` of tensor `tensor` (its reference word) is on island `island`:
-    // a copy's there, a split tensor's where page_at says (another island's: address 0).
+    // Page `page` of `tensor` on island `island`: a copy's there, a split tensor's
+    // where page_at says (another island's: address 0).
     inline PageAt gather_place(uint32_t tensor, uint32_t page, uint32_t island) {
         const Islands view(island_area());
         const volatile uint32_t* entry = tensor_entry(view, tensor);
@@ -2284,13 +2281,8 @@ namespace km {
         return true;
     }
 
-    // Reader or writer: pages first .. first + pages - 1 of tensor `tensor` (its
-    // reference word; pages this island holds, its part or its copy) become the same
-    // pages of tensor `into` (0: `tensor`, a copy) on island `to`, a neighbour (hops 1):
-    // a put line a run from this island's DRAM (KM_ASK_DRAM), which the page CPUs read
-    // and send; returns once the lines are written (a CPU's third line in flight waits
-    // for its first's confirmation). `keeper` (km::keeper, 0: none) counts them at its
-    // port once written there. False: gave up (recorded).
+    // Pages first .. + pages - 1 of `tensor` here become those of `into` (0: `tensor`)
+    // on neighbour `to`: a put line a run from DRAM, `keeper` counts. False: gave up.
     template <typename Kernel>
     inline bool gather_pages(
         const Kernel& core,
@@ -2303,8 +2295,10 @@ namespace km {
         uint32_t keeper = 0,
         uint32_t into = 0
     ) {
-        return gather_run(
-            core, command, tensor, first, pages, to, gather, keeper, into, first
+        return (
+            gather_run(
+                core, command, tensor, first, pages, to, gather, keeper, into, first
+            )
         );
     }
 
@@ -2400,12 +2394,8 @@ namespace km {
         );
     }
 
-    // The plain collectives, km::all_gather and km::all_reduce: every rank of a command
-    // calls one (its reader or its writer, one of them) on every island, and each
-    // returns once its island holds the whole result. The islands lie on a line, each
-    // joined to the one before and the one after (two cards: islands 0 and 1). The
-    // first of an island's ranks of the command leads: it posts and waits for the lines
-    // (km::gather_run), the others wait for it; a fold is shared by all of them.
+    // km::all_gather and km::all_reduce: every rank of the command calls one; the first
+    // of an island's ranks posts the lines along the line of islands, all share a fold.
 
     // This island's ranks of `command`: the leader's flat rank, how many, this core's
     // place among them (from its flat rank `me`).
@@ -2434,7 +2424,9 @@ namespace km {
     // One more meeting on flat rank `rank` of this island (word KM_PORT_MET of its
     // KM_PORT_LEFT slot), then this CPU's atomics flushed (bounded). False: gave up.
     template <typename Kernel>
-    inline bool team_add(const Kernel& core, const km_command_t& command, uint32_t rank) {
+    inline bool team_add(
+        const Kernel& core, const km_command_t& command, uint32_t rank
+    ) {
         noc_semaphore_inc(
             core.core_noc(
                 core.core_of(rank),
@@ -2463,7 +2455,9 @@ namespace km {
     // The team meets: each rank tells the leader, the leader waits for all. False: gave
     // up.
     template <typename Kernel>
-    inline bool team_meet(const Kernel& core, const km_command_t& command, const Team& t) {
+    inline bool team_meet(
+        const Kernel& core, const km_command_t& command, const Team& t
+    ) {
         if (t.index != 0) {
             return team_add(core, command, t.leader);
         }
@@ -2473,7 +2467,9 @@ namespace km {
     // The leader lets the team go: one meeting on each other rank, which waits for it.
     // False: gave up.
     template <typename Kernel>
-    inline bool team_go(const Kernel& core, const km_command_t& command, const Team& t) {
+    inline bool team_go(
+        const Kernel& core, const km_command_t& command, const Team& t
+    ) {
         if (t.index != 0) {
             return team_met(core, command, 1);
         }
@@ -2502,11 +2498,13 @@ namespace km {
             if ((a & 0x7FFFFFu) != 0) {
                 return a | 0x400000u;
             }
-            return eb == 0xFFu && (b & 0x7FFFFFu) != 0
-                ? b | 0x400000u
-                : eb == 0xFFu && (a ^ b) >> 31
-                    ? 0x7FC00000u
-                    : a;
+            return (
+                eb == 0xFFu && (b & 0x7FFFFFu) != 0
+                    ? b | 0x400000u
+                    : eb == 0xFFu && (a ^ b) >> 31
+                        ? 0x7FC00000u
+                        : a
+            );
         }
         // the significands with three bits below them (guard, round, sticky)
         uint32_t ma = (a & 0x7FFFFFu) | (ea != 0 ? 0x800000u : 0);
@@ -2561,8 +2559,10 @@ namespace km {
             return sum_float32(a, b);
         }
         if (kind == Sum::Bfloat16) {
-            return sum_bfloat16(a & 0xFFFFu, b & 0xFFFFu) | sum_bfloat16(a >> 16, b >> 16)
-                                                                << 16;
+            return (
+                sum_bfloat16(a & 0xFFFFu, b & 0xFFFFu) |
+                sum_bfloat16(a >> 16, b >> 16) << 16
+            );
         }
         return a + b;
     }
@@ -2576,10 +2576,8 @@ namespace km {
         return pages_dram(KM_PAGES_DRAM, place.address, bytes, place.index);
     }
 
-    // The team's fold: pages `to_first` + q of `to` become pages `a_first` + q of `a`
-    // plus `b_first` + q of `b`, q in 0 .. pages - 1 (this island's pages, its
-    // copies), share t.index of them here, through L1 `buffer` (`room` bytes, two
-    // pages or more). False: gave up.
+    // The team's fold: page to_first + q of `to` = a_first + q of `a` + b_first + q of
+    // `b`, its share of q < pages, through L1 `buffer` (`room`: two pages or more).
     template <typename Kernel>
     __attribute__((noinline)) bool team_fold(
         const Kernel& core,
@@ -2614,9 +2612,7 @@ namespace km {
             const uint32_t q = share.start + k;
             for (uint32_t i = 0; i < n; i++) {
                 noc_async_read(at(a, a_first + q + i), buffer + i * bytes, bytes);
-                noc_async_read(
-                    at(b, b_first + q + i), buffer + (n + i) * bytes, bytes
-                );
+                noc_async_read(at(b, b_first + q + i), buffer + (n + i) * bytes, bytes);
             }
             uint32_t code = core.poll_at(
                 kWhereAsk,
@@ -2652,10 +2648,8 @@ namespace km {
         return true;
     }
 
-    // The leader's all-gather over the line of pages first .. first + pages - 1 of the
-    // copy `tensor`, island c's share partition(pages, c, islands) its own: its share
-    // to both neighbours, then each share that arrives from one side on to the other
-    // (counted at its KM_PORT_LEFT and KM_PORT_RIGHT), then every line's confirmation.
+    // The leader's line of shares: its own to both neighbours, each that arrives from
+    // one side (counted at KM_PORT_LEFT, KM_PORT_RIGHT) on to the other, then waited.
     template <typename Kernel>
     __attribute__((noinline)) bool gather_line(
         const Kernel& core,
@@ -2669,34 +2663,42 @@ namespace km {
         const uint32_t n = view.count(), i = view.here();
         const auto post = [&](uint32_t c, uint32_t to, uint32_t port) {
             const Partition part = partition(pages, c, n);
-            return gather_run(
-                core,
-                command,
-                tensor,
-                first + part.start,
-                part.len,
-                to,
-                posted,
-                keeper(team_leader(view, command, to), port),
-                0,
-                first + part.start
+            return (
+                gather_run(
+                    core,
+                    command,
+                    tensor,
+                    first + part.start,
+                    part.len,
+                    to,
+                    posted,
+                    keeper(team_leader(view, command, to), port),
+                    0,
+                    first + part.start
+                )
             );
         };
-        if ((i > 0 && !post(i, i - 1, KM_PORT_RIGHT)) ||
-            (i + 1 < n && !post(i, i + 1, KM_PORT_LEFT))) {
+        if (
+            (i > 0 && !post(i, i - 1, KM_PORT_RIGHT)) ||
+            (i + 1 < n && !post(i, i + 1, KM_PORT_LEFT))
+        ) {
             return false;
         }
         for (uint32_t r = 1; r < n; r++) {
             if (i >= r) {  // share i - r from the left, on to the right
                 const uint32_t c = i - r;
-                if (!gathered(core, command, KM_PORT_LEFT, partition(pages, c, n).len) ||
+                if (!gathered(
+                    core, command, KM_PORT_LEFT, partition(pages, c, n).len
+                ) ||
                     (i + 1 < n && !post(c, i + 1, KM_PORT_LEFT))) {
                     return false;
                 }
             }
             if (i + r < n) {  // share i + r from the right, on to the left
                 const uint32_t c = i + r;
-                if (!gathered(core, command, KM_PORT_RIGHT, partition(pages, c, n).len) ||
+                if (!gathered(
+                    core, command, KM_PORT_RIGHT, partition(pages, c, n).len
+                ) ||
                     (i > 0 && !post(c, i - 1, KM_PORT_RIGHT))) {
                     return false;
                 }
@@ -2705,12 +2707,8 @@ namespace km {
         return gather_wait(core, command, posted);
     }
 
-    // All-gather: pages first .. first + pages - 1 of the copy `tensor` (its reference
-    // word), island c's share partition(pages, c, islands) written by island c before
-    // the call; on return this island's copy holds every island's share (and every
-    // line this island sent is confirmed). Every rank of `command` calls it; one island:
-    // returns at once. Another island may write its share here from when any island
-    // calls it. False: gave up (recorded).
+    // All-gather of pages first .. + pages - 1 of the copy `tensor`, island c's share
+    // partition(pages, c, islands): on return this island's copy holds every share.
     template <typename Kernel>
     __attribute__((noinline)) bool all_gather(
         const Kernel& core,
@@ -2728,7 +2726,9 @@ namespace km {
         Gather posted = {};
         return (
             team_meet(core, command, t) &&
-            (t.index != 0 || gather_line(core, command, tensor, first, pages, posted)) &&
+            (
+                t.index != 0 || gather_line(core, command, tensor, first, pages, posted)
+            ) &&
             team_go(core, command, t)
         );
 #else
@@ -2738,14 +2738,8 @@ namespace km {
 #endif
     }
 
-    // All-reduce: pages first .. first + pages - 1 of the copy `tensor` (its reference
-    // word), each island's copy its partial; on return this island's copy holds the
-    // sum of all islands' (`kind`). `scratch`: a copy of 2 x pages pages of the same
-    // page size (the sums passed along the line), `buffer`: `room` bytes of L1 (two
-    // pages or more) for the folds. A reduce-scatter (island c keeps share c: the sums
-    // from the islands before it pass right, from those after it left, folded by the
-    // ranks of each island on the way), then all_gather's line of the shares. Every
-    // rank of `command` calls it; one island: returns at once. False: gave up.
+    // All-reduce of pages first .. + pages - 1 of the copy `tensor` (`kind`): on return
+    // this copy holds the sum; `scratch` 2 x pages pages, `buffer` `room` bytes of L1.
     template <typename Kernel>
     __attribute__((noinline)) bool all_reduce(
         const Kernel& core,
@@ -2772,32 +2766,43 @@ namespace km {
         // scratch pages q: the sums from the left of page first + q; pages + q: from
         // the right
         const auto post = [&](
-            uint32_t from, uint32_t from_first, uint32_t q, uint32_t len, uint32_t to,
-            uint32_t port, uint32_t into_first
+            uint32_t from,
+            uint32_t from_first,
+            uint32_t q,
+            uint32_t len,
+            uint32_t to,
+            uint32_t port,
+            uint32_t into_first
         ) {
-            return gather_run(
-                core,
-                command,
-                from,
-                from_first,
-                len,
-                to,
-                posted,
-                keeper(team_leader(view, command, to), port),
-                scratch,
-                into_first + q
+            return (
+                gather_run(
+                    core,
+                    command,
+                    from,
+                    from_first,
+                    len,
+                    to,
+                    posted,
+                    keeper(team_leader(view, command, to), port),
+                    scratch,
+                    into_first + q
+                )
             );
         };
         if (!team_meet(core, command, t)) {
             return false;
         }
         // the ends start the two sweeps from their partials
-        if (lead && i == 0 && !post(tensor, first + after, after, pages - after, 1,
-                                    KM_PORT_LEFT, 0)) {
+        if (
+            lead && i == 0 &&
+            !post(tensor, first + after, after, pages - after, 1, KM_PORT_LEFT, 0)
+        ) {
             return false;
         }
-        if (lead && i + 1 == n &&
-            !post(tensor, first, 0, mine.start, n - 2, KM_PORT_RIGHT, pages)) {
+        if (
+            lead && i + 1 == n &&
+            !post(tensor, first, 0, mine.start, n - 2, KM_PORT_RIGHT, pages)
+        ) {
             return false;
         }
         // from the left: the sums of the shares from this one on; those after it
@@ -2807,12 +2812,31 @@ namespace km {
                 return false;
             }
             if (i + 1 < n) {
-                if (!team_go(core, command, t) ||
-                    !team_fold(core, command, t, kind, scratch, after, scratch, after,
-                               tensor, first + after, pages - after, buffer, room) ||
+                if (
+                    !team_go(core, command, t) ||
+                    !team_fold(
+                        core,
+                        command,
+                        t,
+                        kind,
+                        scratch,
+                        after,
+                        scratch,
+                        after,
+                        tensor,
+                        first + after,
+                        pages - after,
+                        buffer,
+                        room
+                    ) ||
                     !team_meet(core, command, t) ||
-                    (lead && !post(scratch, after, after, pages - after, i + 1,
-                                   KM_PORT_LEFT, 0))) {
+                    (
+                        lead &&
+                        !post(
+                            scratch, after, after, pages - after, i + 1, KM_PORT_LEFT, 0
+                        )
+                    )
+                ) {
                     return false;
                 }
             }
@@ -2824,27 +2848,76 @@ namespace km {
                 return false;
             }
             if (i > 0) {
-                if (!team_go(core, command, t) ||
-                    !team_fold(core, command, t, kind, scratch, pages, scratch, pages,
-                               tensor, first, mine.start, buffer, room) ||
+                if (
+                    !team_go(core, command, t) ||
+                    !team_fold(
+                        core,
+                        command,
+                        t,
+                        kind,
+                        scratch,
+                        pages,
+                        scratch,
+                        pages,
+                        tensor,
+                        first,
+                        mine.start,
+                        buffer,
+                        room
+                    ) ||
                     !team_meet(core, command, t) ||
-                    (lead && !post(scratch, pages, 0, mine.start, i - 1, KM_PORT_RIGHT,
-                                   pages))) {
+                    (
+                        lead &&
+                        !post(
+                            scratch, pages, 0, mine.start, i - 1, KM_PORT_RIGHT, pages
+                        )
+                    )
+                ) {
                     return false;
                 }
             }
         }
         // this island's share: its partial plus the sums from both sides
-        if (!team_go(core, command, t) ||
-            (i > 0 &&
-             !team_fold(core, command, t, kind, tensor, first + mine.start, tensor,
-                        first + mine.start, scratch, mine.start, mine.len, buffer,
-                        room)) ||
-            (i + 1 < n &&
-             !team_fold(core, command, t, kind, tensor, first + mine.start, tensor,
-                        first + mine.start, scratch, pages + mine.start, mine.len,
-                        buffer, room)) ||
-            !team_meet(core, command, t)) {
+        if (
+            !team_go(core, command, t) ||
+            (
+                i > 0 &&
+                !team_fold(
+                    core,
+                    command,
+                    t,
+                    kind,
+                    tensor,
+                    first + mine.start,
+                    tensor,
+                    first + mine.start,
+                    scratch,
+                    mine.start,
+                    mine.len,
+                    buffer,
+                    room
+                )
+            ) ||
+            (
+                i + 1 < n &&
+                !team_fold(
+                    core,
+                    command,
+                    t,
+                    kind,
+                    tensor,
+                    first + mine.start,
+                    tensor,
+                    first + mine.start,
+                    scratch,
+                    pages + mine.start,
+                    mine.len,
+                    buffer,
+                    room
+                )
+            ) ||
+            !team_meet(core, command, t)
+        ) {
             return false;
         }
         return (

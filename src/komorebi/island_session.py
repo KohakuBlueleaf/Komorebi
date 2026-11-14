@@ -755,12 +755,10 @@ class IslandRun:
         return self._served(h["KM_HANDLER_GATHER"], [words] * len(self.runs), timeout)
 
     def all_reduce(self, tensor, scratch, first=0, pages=None, timeout=10.0):
-        """All-reduce of pages first .. first + pages - 1 (default to the end) of the
-        copy `tensor`, each island's copy its partial: on return every island's copy
-        holds the sum, added in the tensor's format (float32, bfloat16 rounded to
-        nearest even, int32 or uint32 modulo 2^32). `scratch`: a copy of 2 x pages
-        pages of the same page size. One island: returns at once. km::all_reduce on
-        every rank (REDUCE), its folds through the run's transfer buffer."""
+        """All-reduce of pages first .. first + pages - 1 of the copy `tensor` (each
+        island's copy its partial): every copy then holds the sum in the tensor's
+        format. `scratch`: a copy of 2 x pages pages. One island: returns at once;
+        else REDUCE on every rank (km::all_reduce, the run's transfer buffer)."""
         first, pages = self._collective(tensor, first, pages)
         kinds = {"int32": 0, "uint32": 0, "float32": 1, "bfloat16": 2}
         if tensor.dtype not in kinds:

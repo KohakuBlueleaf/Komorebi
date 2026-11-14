@@ -213,11 +213,8 @@
  * (it counts 1), KM_ASK_GET_SPAN offset | bytes << 16, the bytes into KM_ASK_TO. */
 #define KM_ASK_GET_BYTES 2u
 #define KM_ASK_GET_SPAN 14u
-/* Collectives across islands (km::gather_pages): a put line from the asker's DRAM may
- * name keepers on the holder island, ranks first .. first + n - 1 there: first + 1 |
- * (n - 1) << 8 | their port << 16 (0: none); once all its pages are written there,
- * the holder's lead page CPU adds share k of them (partition(pages, k, n)) to keeper
- * k's port. Word 14 of a put line (a get line of bytes keeps it for its span). */
+/* A put line from DRAM may name keepers (word 14, km::keeper): once its pages are all
+ * written, keeper k of the far island counts share k at its port. 0: none. */
 #define KM_ASK_KEEPER 14u
 #define KM_KEEPER_RANKS_SHIFT 8u
 #define KM_KEEPER_PORT_SHIFT 16u
@@ -249,10 +246,8 @@
 #define KM_PUT_RING_READ 0x50u /* what a putting core reads, from KM_PUT_TAKEN */
 #define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x80 the second CPU's */
 #define KM_PUT_OWN_BYTES 0x80u           /* unused (a core's own words, KM_OWN_*) */
-/* The lead page CPU's times of the last put line it served (wall clock, link core 0's
- * KM_PUT_OWN, unused otherwise): this island's line taken, sent across, its share
- * pushed; the far island's line taken from the arrivals, its pages all written and
- * confirmed; then its loop's passes */
+/* The lead page CPU's wall clock at a put line's steps (in link core 0's unused
+ * KM_PUT_OWN), then its loop's passes */
 #define KM_PUT_STAMPS KM_PUT_OWN
 #define KM_STAMP_TAKEN 0u
 #define KM_STAMP_ACROSS 1u
@@ -377,9 +372,8 @@ KM_STATIC_ASSERT(
    alone count at the reader's KM_PORT_PAGES and at the writer's, the one after. */
 #define KM_PORTS 8u
 #define KM_PORT_PAGES KM_PORTS
-/* the collectives' (km::all_gather, km::all_reduce): pages gathered into this island
-   from the island before it and after it on the line; in KM_PORT_LEFT's slot, word
-   KM_PORT_MET counts an island's ranks' meetings */
+/* the collectives' counts of pages from the island before and after on the line; word
+   KM_PORT_MET of KM_PORT_LEFT's slot counts an island's ranks' meetings */
 #define KM_PORT_LEFT (KM_PORTS + 2u)
 #define KM_PORT_RIGHT (KM_PORTS + 3u)
 #define KM_PORT_SLOTS (KM_PORTS + 4u)

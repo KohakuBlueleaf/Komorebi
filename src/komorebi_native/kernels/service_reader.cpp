@@ -1,6 +1,5 @@
-// The runtime's service overlay, its reader part: this core's slice of a PUSH, PULL or
-// COPY, or its part of a GATHER or REDUCE (the collectives); a failed bound or a
-// timed-out wait gives up (its where code).
+// The runtime's service overlay, its reader part: PUSH, PULL, COPY, GATHER or REDUCE;
+// a failed bound or a timed-out wait gives up (its where code).
 #include <stdint.h>
 
 #include "komorebi/device/km_ask.hpp"

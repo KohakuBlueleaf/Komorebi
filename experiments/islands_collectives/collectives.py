@@ -98,9 +98,8 @@ class Bench:
         self.own = [(graph.first(i), graph.count(i)) for i in range(self.islands)]
         shape = (pages, PAGE // 4)
         held = [self.own[i] for i in range(self.islands)]
-        # a source and a target a island (A: a gather's source, a reduce's partial;
-        # B: a gather's target, a reduce's staging), the reduce's result (a copy), a
-        # report page a rank and the stamps' page, each island's
+        # a source and a target an island, the reduce's result (a copy), a report
+        # page a rank and the stamps' page, each island's
         self.a = [session.empty(shape, "uint32", group=g) for g in held]
         self.b = [session.empty(shape, "uint32", group=g) for g in held]
         self.result = session.empty(shape, "uint32", copy=True)

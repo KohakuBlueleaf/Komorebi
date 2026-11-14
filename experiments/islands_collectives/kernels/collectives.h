@@ -5,26 +5,14 @@
 
 // NOP: nothing (a command's own time, the baseline of the time a collective adds).
 constexpr uint32_t kHandlerNop = 1;
-// GATHER (reader): ranks 0 .. a4 - 1 of the command each post their share of pages
-// a1 .. a1 + a2 - 1 of tensor a0 (km::gather_pages) to island a3, into tensor a6 (0:
-// a0, a copy), then wait once (km::gather_wait). Mode a8: kModeRing puts the share from
-// L1 instead (km::put_pages, put_piece of kPiece pages, put_wait: the linear kernel's
-// put). With a5 (a tensor of this island's) the rank's report into its page `rank`.
-// a7: the compute's busy loop (kBusy*), every rank of the command.
+// GATHER (reader): ranks 0 .. a4 - 1 post their share of pages a1 .. + a2 of tensor a0
+// to island a3 (into a6), then wait; a8 kModeRing: from L1. a5 reports, a7 busy loop.
 constexpr uint32_t kHandlerGather = 2;
 constexpr uint32_t kModeGather = 0;
 constexpr uint32_t kModeRing = 1;
 constexpr uint32_t kPiece = 4;
-// REDUCE (reader): an all-reduce of two islands' partials, a4 pages kept by each
-// island: this island keeps pages a8 .., the other a9 ... a5: ranks (low 16 bits; rank
-// r keeps share r of the kept pages) and the other island (bits 16 on). The leader
-// (rank 0) gathers its partial (tensor a0, this island's) of the other's kept pages
-// into the other's staging tensor a1, with that island's ranks as keepers (port
-// kPortKept); each rank, once its share's partials are there (km::gathered), adds each
-// page of its partial and of the staging tensor a2 (this island's) word by word into
-// the result a3 (a copy) and adds 1 to the leader's port kPortFolded; the leader, once
-// all have, gathers the kept sums into the other's copy. a6: the report, a7: the busy
-// loop.
+// REDUCE (reader): two islands' partials (a0) of a4 kept pages each (a8, a9), staged in
+// a1/a2, the sums into a3; a5 ranks | other << 16; a6 reports, a7 the busy loop.
 constexpr uint32_t kHandlerReduce = 3;
 constexpr uint32_t kPortKept = 0;
 constexpr uint32_t kPortFolded = 1;
@@ -32,11 +20,8 @@ constexpr uint32_t kFold = 8;  // pages a fold step
 // STAMPS (reader, one rank): the lead page CPU's KM_PUT_STAMPS words of link core 0
 // toward island a0, and this core's wall clock, into page 0 of tensor a1.
 constexpr uint32_t kHandlerStamps = 4;
-// FILL (reader): the command's ranks write pages a1 .. a1 + a2 - 1 of tensor a0 (this
-// island's pages), word w of page p the pattern p * kPagePrime + w * kWordPrime + a3.
-// CHECK (reader): the same pages read and compared with the pattern of salt a3 (a4 not
-// 0: plus the pattern of salt a4, a REDUCE's sum); the rank's bad words and first bad
-// page into its page of tensor a5 (kCheck*).
+// FILL (reader): pages a1 .. + a2 of a0 get the pattern of salt a3; CHECK: compared
+// with it (a4: plus salt a4's, a sum), bad words into page `rank` of a5.
 constexpr uint32_t kHandlerFill = 5;
 constexpr uint32_t kHandlerCheck = 6;
 constexpr uint32_t kPagePrime = 0x9E3779B1u;

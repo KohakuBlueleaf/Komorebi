@@ -1,6 +1,5 @@
-// Collectives across islands, compute: GATHER's and REDUCE's busy loop, a7 rounds of
-// kBusyTiles matrix-unit products into the destination registers (no pack), so the
-// collective runs beside a kernel computing.
+// Collectives across islands, compute: a7 rounds of kBusyTiles matrix products (no
+// pack) beside GATHER and REDUCE.
 #include <stdint.h>
 
 #include "api/compute/compute_kernel_api.h"
