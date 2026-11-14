@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 
+def rx(rate):
+    """A receiver rate for printing; none when no receiver kernel ran."""
+    return "-" if rate is None else f"{rate:.2f}"
+
+
 def report(path):
     """One run's line of the table, from the last JSON line of its log."""
     lines = [line for line in Path(path).read_text().splitlines() if line[:1] == "{"]
@@ -26,7 +31,11 @@ def report(path):
         first = 0 if options["fused"] else min(options["batch"], packets) - 1
         receiver = pair["receiver"]
         span_s = receiver["cycles"] / (mhz_to * 1e6)
-        into = (packets - 1 - first) * payload / span_s / 1e9 if span_s else 0.0
+        into = (
+            (packets - 1 - first) * payload / span_s / 1e9
+            if span_s and receiver["magic"]
+            else None
+        )
         sender_s = pair["sender"]["cycles"] / (mhz_from * 1e6)
         out = packets * payload / sender_s / 1e9 if sender_s else 0.0
         key = f"{pair['from']}->{pair['to']}"
@@ -36,10 +45,10 @@ def report(path):
     parts = []
     for key, rates in by_direction.items():
         each = " ".join(
-            f"l{link}@{core[0]},{core[1]} rx {into:.2f} tx {out:.2f}"
+            f"l{link}@{core[0]},{core[1]} rx {rx(into)} tx {out:.2f}"
             for link, into, out, _, core in rates
         )
-        total_in = sum(rate[1] for rate in rates)
+        total_in = sum(rate[1] or 0.0 for rate in rates)
         total_out = sum(rate[2] for rate in rates)
         parts.append(f"{key}: {each} (sum rx {total_in:.2f} tx {total_out:.2f} GB/s)")
     ok = run["ok"] and all(rate[3] for rates in by_direction.values() for rate in rates)

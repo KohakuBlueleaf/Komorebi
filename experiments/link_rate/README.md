@@ -71,3 +71,51 @@ four digits. The fused write and increment costs the most: 26.76 to 10.56 GB/s, 
 the wait after every fourth packet on or off. The wait costs 3.2 GB/s (12 %) with
 plain writes and nothing once every packet is fused. The earlier sender had the fused
 packet and the wait, which gives the 10.56 here.
+
+## 2. Four links, senders spread, NoC0
+
+16384 packets of 4352 bytes a link, plain writes, batch 64, no wait, one sending core
+a link on NoC0, links 0 to 3. "Spread" puts the senders at (0, 1), (3, 3), (6, 5),
+(9, 7); "row" at (0, 0) to (3, 0). GB/s, rx for each link and the sum:
+
+| Senders | Receivers | Direction | link 0 | link 1 | link 2 | link 3 | sum |
+|---|---|---|---|---|---|---|---|
+| spread, NoC0 | top rows | card 0 to 1 | 26.76 | 26.76 | 26.74 | 26.76 | 107.03 |
+| spread, NoC0 | top rows | both at once, card 0 to 1 | 26.76 | 26.76 | 26.74 | 26.76 | 107.03 |
+| | | both at once, card 1 to 0 | 26.76 | 26.76 | 26.75 | 26.76 | 107.04 |
+| spread, NoC0 | spread | card 0 to 1 | 26.76 | 26.76 | 26.74 | 26.76 | 107.03 |
+| spread, NoC0 | spread | both at once, card 0 to 1 | 26.76 | 26.76 | 26.74 | 26.76 | 107.03 |
+| | | both at once, card 1 to 0 | 26.76 | 26.76 | 26.74 | 26.76 | 107.03 |
+| row 0, NoC0 | top rows | card 0 to 1 | 26.60 | 26.59 | 26.72 | 26.76 | 106.67 |
+| spread, NoC1 | top rows | card 0 to 1 | 26.38 | 26.64 | 26.61 | 26.64 | 106.27 |
+
+Four links carry four times one link, 107 GB/s one way, and both ways at once
+carry the same 107 GB/s each way (214 GB/s in sum): the links do not share anything
+that this load fills. Where the senders sit and which NoC they use move the sum by
+under 1 %: senders along one row lose 0.4 %, NoC1 0.7 %. Four links do not reach the
+120 GB/s of the rougher measurement because a link here carries 26.8 GB/s, not 30.
+
+## 3. A packet for a card with no kernel running
+
+The packet's header names the target on the other card: a core's L1 address (`bare`)
+or the address in DRAM bank 0 (`dram`: the DRAM tile's NoC coordinates and the bank
+address of a buffer allocated on that card). Card 1 runs no kernel at all. Both cards'
+target memory was zeroed before the launch. The last packet of each batch is a fused
+write and increment of a counter in the L1 of a core of card 1. After the sender
+ended, the host read back every slot and the counter. One link, link 0, sender at
+(0, 1), 4352-byte payloads, window 64, batch 64:
+
+| Target | Packets | Slots exact (64 of 64) | Counter | Sender GB/s |
+|---|---|---|---|---|
+| core L1 | 256 | yes, 69,632 words, 0 wrong | 4 of 4 | 28.55 |
+| DRAM bank 0 | 256 | yes, 69,632 words, 0 wrong | 4 of 4 | 28.54 |
+| core L1 | 16384 | yes, 69,632 words, 0 wrong | 256 of 256 | 26.77 |
+| DRAM bank 0 | 16384 | yes, 69,632 words, 0 wrong | 256 of 256 | 26.77 |
+
+Both targets are exact with nothing running on the receiving side, and DRAM takes the
+same rate as L1: 26.77 GB/s from one sending core, 2663.7 µs for 71.3 MB. That rate is
+the sender's time from its first send to its last flush, a time the link sets, not
+the DRAM's: the sender cannot get ahead of the link by more than a few packets of
+buffer. The check shows every slot holds the pattern after being zeroed, and that
+every batch's closing packet arrived; the 16384-packet runs reuse each slot 256 times
+with the same bytes, so the check cannot tell one lost packet in the middle from none.
