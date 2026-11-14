@@ -23,7 +23,14 @@ void kernel_main() {
                     tile_regs_acquire();
                     for (uint32_t k = 0; k < kKb; ++k) {
                         matmul_block(
-                            kCbA, kCbB, row * kKb + k, k * kBn + column, 0, 0, kSw, kSh,
+                            kCbA,
+                            kCbB,
+                            row * kKb + k,
+                            k * kBn + column,
+                            0,
+                            0,
+                            kSw,
+                            kSh,
                             kKb
                         );
                     }

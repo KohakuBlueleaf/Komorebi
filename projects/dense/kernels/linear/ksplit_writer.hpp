@@ -1,6 +1,5 @@
-// Linear writer, the K-split plan (NoC1, mover B): its K chunks (ksplit.hpp); then a
-// rank other than its group's first sends its part (fp32) on, the first writes the
-// group's sum (bf16) to Y.
+// Linear writer, the K-split plan (NoC1, mover B): its K chunks; then its part (fp32)
+// sent on, or by the group's first rank the group's sum (bf16) written to Y.
 #include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "ksplit.hpp"
@@ -36,11 +35,17 @@ void kernel_main() {
             }
             LINEAR_ACCOUNT_DO(lap(account[kAcKMoveB - kAcKMoveB], since));
             uint32_t index = 0;
-        const km::Group group = k_group(command, writer.me(), plan(kKsS), index);
+            const km::Group group = k_group(command, writer.me(), plan(kKsS), index);
             const km::Arrival arrival = {kCbKArrive, plan(kKsArrive), block_tiles};
             if (group.rank != 0) {
                 if (!km::reduce_emit(
-                    writer, command, arrival, group, plan(kKsForm), kCbKSum, block_tiles
+                    writer,
+                    command,
+                    arrival,
+                    group,
+                    plan(kKsForm),
+                    kCbKSum,
+                    block_tiles
                 )) {
                     return false;
                 }

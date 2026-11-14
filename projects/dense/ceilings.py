@@ -1,8 +1,6 @@
-"""The card's two ceilings for the dense project's bounds (kernels/ceilings): READ,
-every rank reading its share of a tensor from the banks on both movers (nothing
-kept): GB/s of the card; MATMUL, the matrix unit of every rank multiplying resident
-tiles at the linear kernels' fidelity (nothing read): tile products a second. Prints
-one JSON line."""
+"""The card's two ceilings (kernels/ceilings): READ, every rank reading its share of a
+tensor on both movers, nothing kept (GB/s); MATMUL, every rank's matrix unit on resident
+tiles, nothing read (tile products a second). Prints one JSON line."""
 
 import argparse
 import json

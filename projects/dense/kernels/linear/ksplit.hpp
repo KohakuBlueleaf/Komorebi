@@ -1,7 +1,5 @@
-// The linear layer's K-split plan (LINEAR_SPLIT): the island's part of the product as
-// the placements give it (its K of W, its window of Y's columns, the rows it makes),
-// cut into groups of S ranks; this rank's K chunks as two streams, X's and W's, on both
-// movers (chunk q to the mover the pattern names).
+// The K-split plan (LINEAR_SPLIT): the island's part as its placements give it, in
+// groups of S ranks; this rank's K chunks as X's and W's streams on both movers.
 #pragma once
 
 #include <stdint.h>

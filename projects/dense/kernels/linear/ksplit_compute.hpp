@@ -1,6 +1,5 @@
-// Linear compute, the K-split plan: this rank's part over its K chunks (chunk q from
-// the buffers of its mover) into kCbKSum (fp32), then the parts it receives; the
-// group's first rank packs the sum in bf16.
+// Linear compute, the K-split plan: this rank's part over its K chunks into kCbKSum
+// (fp32), then the parts it receives; the group's first rank packs the sum (bf16).
 #include "ksplit.hpp"
 
 namespace {

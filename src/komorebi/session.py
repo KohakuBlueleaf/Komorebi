@@ -2336,11 +2336,10 @@ class _Backend:
         return [("KM_LINK_QUEUE", "1")]
 
     def _link_chunk(self, program, cores, apart=0):
-        """A link CPU's own chunk (bytes; 0: none, the transfer chunk serves): at most
-        LINK_CHUNK_MOST, at least one put ring's (link_chunk_least), whole 64 KiB, two
-        in what a link core has left after the program's buffers (unless `apart` bytes
-        of link area and relay are its alone), the transfer buffer, what the session
-        keeps and the put queue."""
+        """A link CPU's own chunk (bytes; 0: none): at most LINK_CHUNK_MOST, at least
+        link_chunk_least, whole 64 KiB, two in what a link core has left after the
+        program's buffers (unless `apart`), the transfer buffer, what the session keeps
+        and the put queue."""
         buffers = 0
         if not apart:  # else launched on the ranks only (buffers per core range)
             buffers = sum(

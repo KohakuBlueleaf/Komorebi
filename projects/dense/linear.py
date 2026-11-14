@@ -1,14 +1,11 @@
-"""A linear layer Y = X x W written for islands (kernels/linear): one command a call on
-every rank; X and W split along K alike, Y along N, by hints. Each island puts the
-columns others keep and adds what they put. Or the two standard forms: output dim
-sharded (--place out: W, Y split along N, X a copy; nothing crosses) and input dim
-sharded (--place in: X, W split along K, each island its partial of all of Y).
+"""A linear layer Y = X x W written for islands (kernels/linear), one command a call on
+every rank, its form by the tensors' placements: output dim sharded (--place out),
+input dim sharded (--place in: each island a partial of all of Y), W gathered (rows).
 Prints one JSON line; exit 1: a failed check."""
 
 import argparse
 import contextlib
 import dataclasses
-import gc
 import json
 import math
 import sys
@@ -34,9 +31,8 @@ G = pl.G
 # (IslandSession.held_bytes): the host transfer buffer, control block and overlay, slot.
 L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
-# The kernel buffer the linear kernels' code takes (all five CPUs, mock builds): the
-# rows form on two cards (no puts) 79,936 B; the K form on two cards 108,240 B; the
-# out and in forms (no puts) 79,936 B.
+# The kernel buffer the linear kernels' code takes (five CPUs, mock builds): 79,936 B
+# without puts; the K form or the K-split plan on two cards up to 108,240 B.
 KERNEL_BYTES = {"one": 88 * 1024, "two": 108 * 1024}
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
@@ -81,11 +77,8 @@ ACCOUNT_CLOCKS = (
     ("compute_start", "kAcComputeStart"),
     ("compute_end", "kAcComputeEnd"),
 )
-# Placements by hint (X, W, Y): "k", W sharded (split along K, Y along N); "rows", W
-# replicated (X and Y split along M, W a copy: Kohaku-TT's default form; "W
-# gathered"); "out", output dim sharded (W, Y split along N, X a copy: nothing
-# crosses); "in", input dim sharded (X, W split along K, Y a copy: each island's
-# partial of the whole output, the addition across the islands after the call).
+# Placements by hint (X, W, Y): "k" (K and N split, puts); "rows" (W gathered: X, Y
+# split along M); "out" (W, Y split along N, X a copy); "in" (X, W along K, Y partials).
 PLACES = {
     "k": ({"split": 1}, {"split": 0}, {"split": 1}),
     "rows": ({"split": 0}, {"copy": True}, {"split": 0}),
@@ -637,9 +630,11 @@ class Linear:
                 self.budget,
                 self.exchange,
                 # nothing put: any K block the model likes; puts: the one-card plan's
-                pl.K_BLOCKS[0]
-                if not self.exchange or one_card is None
-                else one_card.kb,
+                (
+                    pl.K_BLOCKS[0]
+                    if not self.exchange or one_card is None
+                    else one_card.kb
+                ),
                 every=not self.exchange,
             )
         )
@@ -1249,9 +1244,8 @@ def main():
     for dims, place in products:
         if place not in PLACES or any(value % pl.TILE for value in dims):
             raise SystemExit(f"{dims}:{place}: whole tiles, a place of {list(PLACES)}")
-    # the puts' build (the K form on two cards) is the larger one; the rows, out, in
-    # forms put nothing (LINEAR_OWN) and fit the one-card buffer; the K-split plan's on
-    # two cards is larger too (its writer's page calls; mock 105,376 B)
+    # the larger build: the K form's puts, or the K-split plan's page calls (mock
+    # 105,376 B), on two cards; the rows, out and in forms otherwise fit the one-card's
     puts = len(cards) > 1 and any(
         place == "k" or dims[0] <= SPLIT_ROWS * pl.TILE for dims, place in products
     )
@@ -1313,18 +1307,8 @@ def product_report(session, dimensions, place, cards, args):
     report["ok"] = report["linear"]["ok"] and report.get("grid", {}).get("ok", True)
     for tensor in tensors.values():  # the next product's room (the tensor table)
         tensor.free()
-    release_runs(session)
     return report
 
-
-def release_runs(session):
-    """Drops the session's stopped runs, so that their L1 (each core's control block
-    and transfer buffer) is free before the next product's load: a session keeps its
-    last run until a load replaces it, and the load places its own L1 first."""
-    session.run = None
-    for one in session.sessions:
-        one.run = None
-    gc.collect()
 
 
 if __name__ == "__main__":

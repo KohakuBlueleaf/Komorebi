@@ -1,6 +1,5 @@
-// Linear layer Y = X x W for islands: X, W split along K, Y along N; an island puts the
-// columns others keep, then makes its own with theirs added (W split along N: its own
-// columns of all K, nothing put). Words, buffers, ports.
+// Linear layer Y = X x W for islands, by its tensors' placements (split along K, along
+// N, or copied): words, buffers, ports.
 #pragma once
 
 #include <stdint.h>
@@ -56,13 +55,8 @@ constexpr uint32_t kStampPiece = 9;
 constexpr uint32_t kStampTurn = 10;
 constexpr uint32_t kStampWrite = 11;
 constexpr uint32_t kStampPieces = 12;
-// The account (built with LINEAR_ACCOUNT; else not kept): AICLK cycles a command of
-// each CPU's phases, each CPU its own words, written once at its command's end. The
-// writer: W's slot freed, W read (reads issued to landed), W cast (multicast or its
-// arrival), W's tiles read, Y's subblocks waited for, Y written. The reader: the same
-// for X, and its end. Compute: the unpacker's wait for both blocks, the matrix unit
-// (Dst acquired to committed), the packer (Dst waited to released, the out room
-// included), tile products, its start and end.
+// The account (LINEAR_ACCOUNT): AICLK cycles of each CPU's phases a command, written at
+// its end: the movers' frees, reads, casts and writes; compute's waits, math and pack.
 constexpr uint32_t kAcWFree = 16;
 constexpr uint32_t kAcWRead = 17;
 constexpr uint32_t kAcWCast = 18;
@@ -90,14 +84,13 @@ inline void lap(uint32_t& counter, uint32_t& since) {
     counter += now - since;
     since = now;
 }
-// The K-split plan (built with LINEAR_SPLIT, for a few rows of X): groups of S
-// consecutive ranks, one oh x ow block of the island's window a group, each rank 1/S
-// of the island's K in chunks of kc on both movers, the parts summed into the group's
-// first rank over the ranks' ports (owner or tree), which writes the block to Y.
-constexpr uint32_t kCbKa = 2;       // the reader's X chunks: oh x kc tiles
-constexpr uint32_t kCbKw = 3;       // the reader's W chunks: kc x ow tiles
-constexpr uint32_t kCbKaB = 9;      // the writer's X chunks
-constexpr uint32_t kCbKwB = 10;     // the writer's W chunks
+
+// The K-split plan (LINEAR_SPLIT, few rows of X): groups of S ranks, a block a group,
+// each rank 1/S of K on both movers, the parts summed into the group's first rank.
+constexpr uint32_t kCbKa = 2;        // the reader's X chunks: oh x kc tiles
+constexpr uint32_t kCbKw = 3;        // the reader's W chunks: kc x ow tiles
+constexpr uint32_t kCbKaB = 9;       // the writer's X chunks
+constexpr uint32_t kCbKwB = 10;      // the writer's W chunks
 constexpr uint32_t kCbKArrive = 11;  // fp32, a slot of oh x ow tiles a sender
 constexpr uint32_t kCbKSum = 25;     // fp32, this rank's part: oh x ow tiles
 constexpr uint32_t kCbKOut = 18;     // bf16, the group's sum at its first rank
@@ -290,9 +283,8 @@ inline bool copied(uint32_t tensor) {
     return entry != nullptr && (entry[3] & 1u) != 0;
 }
 
-// The columns island `to` keeps of the rows island `from` makes: none unless `to`
-// keeps every one of those rows, and `from` holds W's columns of them; of a Y copied
-// on every island (each island its own partial), its own only.
+// The columns island `to` keeps of the rows `from` makes (all of them kept, W's columns
+// held by `from`); of a Y copied on every island, its own only (its partial).
 [[gnu::noinline]] inline Span window(
     uint32_t x,
     uint32_t w,
