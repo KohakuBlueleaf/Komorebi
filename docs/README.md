@@ -23,16 +23,16 @@ Komorebi 0.1.0 is on PyPI (`pip install "komorebi-tt[runtime]"`), a first releas
 ## Where things are
 
 - **Getting started**: [install](install.md) Komorebi and check the host and the card.
-- **[Tutorial](tutorial/index.md)**: 50 lessons in six parts, from one core to a whole program.
+- **[Tutorial](tutorial/index.md)**: 51 lessons in six parts, from one core to a whole program.
 - **Concepts**: why the framework is the way it is.
-  [The dispatcher](concepts/dispatch.md) and [the Tensix runtime](concepts/runtime.md), then the
-  longer design pages on [micro-op streams](streams.md), [graphs](graphs.md) and [X280 threads](threads.md).
-- **Guides**: how to do one thing. [Debug a command that does not finish](guides/debug-a-command-that-does-not-finish.md), [measure a command](guides/measure-a-command.md) and [development](development.md).
+  [The dispatcher](concepts/dispatch.md), [the Tensix runtime](concepts/runtime.md) and
+  [islands](concepts/islands.md) (two cards as one session), then the longer design pages on [micro-op streams](streams.md), [graphs](graphs.md) and [X280 threads](threads.md).
+- **Guides**: how to do one thing. [Debug a command that does not finish](guides/debug-a-command-that-does-not-finish.md), [recover from one that does not return](guides/recovery.md), [measure a command](guides/measure-a-command.md) and [development](development.md).
 - **Reference**: exact descriptions of what is built: the [host API](reference/host.md), the
   [Tensix runtime](reference/runtime.md), [ports, emit and reduce](reference/ports.md),
   [broadcast](reference/broadcast.md), [Movement](reference/movement.md),
   [dynamic handlers](reference/dynamic.md), the
-  [X280 threads](reference/threads.md) and [overlays](reference/overlays.md).
+  [X280 threads](reference/threads.md), [overlays](reference/overlays.md) and [islands](reference/islands.md).
 - **Examples**: twenty-two programs of the repository, each with its own page, from the
   [first one](../examples/01_mapcollect/README.md) on; the
   [list](../examples/README.md) says what each one shows.

@@ -16,6 +16,7 @@
 #include "result.h"
 #include "ring.h"
 #include "trap.h"
+#include "watch.h"
 #include "work_port.h"
 
 /* Waits until `word` holds `value`, the runtime asks for a stop, or `deadline`. */
@@ -385,6 +386,22 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
 #endif
+#ifdef KMD_STALL_DEBUG
+    if (host && handler == KMD_HANDLER_STALL) {
+        ring_consumed(ring);
+        ring_push(ring, request, KM_EVENT_PONG, 0);
+        ring_flush(ring);
+        /* No pass for a0 ms: the watcher's interrupt ends it first, or the runtime's
+         * stop */
+        const uint64_t until = now + (uint64_t)argument * 50000u;
+        while (
+            x280_mtime() < until &&
+            !x280_hart_stop_requested(dispatcher->core, dispatcher->run)
+        ) {
+        }
+        return KMD_TAKEN;
+    }
+#endif
     /* An engine's queued job carries its stream's tag in `first`: never a cluster. */
     if (
         first >= KM_GROUP_CLUSTER_BASE && handler <= KM_HANDLER_USER_MAX &&
@@ -696,6 +713,7 @@ static void loop(kmd_t* dispatcher) {
 /* The stop flag goes out only while a slot is busy or before EXIT was submitted: after
  * a completed EXIT the cores have left and their L1 is no longer the program's. */
 static void finish(kmd_t* dispatcher) {
+    watch_off(dispatcher->x280_cores);
     result_where(dispatcher, KMD_WHERE_FINISH);
     uint32_t abandoned = dispatcher
                              ->queued; /* no DONE event for these: dropped or cut off */
@@ -753,6 +771,9 @@ __attribute__((used, noinline)) void kmd_trapped(
     }
     volatile uint8_t* lim = (volatile uint8_t*)arguments;
     volatile uint32_t* x280_cores = (volatile uint32_t*)(lim + KMD_LIM_CORES);
+    if (core == 0) {
+        watch_off(x280_cores);
+    }
     if (core == 1) {
         x280_cores[KMD_H_TRAP_CAUSE] = (uint32_t)cause;
         x280_cores[KMD_H_TRAP_PC] = (uint32_t)epc;
@@ -824,6 +845,32 @@ __attribute__((used, noinline)) void kmd_trapped(
     result_word(dispatcher, KMD_R_STATE, KMD_STATE_FAILED);
 }
 
+/* Core 0 after the watcher's interrupt, on run()'s frame: a line consumed before the
+ * stall freed, BACK to the host, then the loop again on the run's state. */
+__attribute__((used, noinline)) void kmd_resumed(kmd_t* dispatcher, uint64_t epc) {
+    *watch_msip(0) = 0u;
+    x280_fence_iorw();
+    for (uint32_t source = 0; source < KMD_SOURCES; source++) {
+        kmd_ring_t* ring = &dispatcher->ring[source];
+        if (ring->line_state != 0 && (uint32_t)ring->line[0] != ring->next) {
+            ring->line_state = 0;
+        }
+    }
+    noc_clear_tlb_2m(KMD_WIN_RESET);
+    noc_clear_tlb_2m(KMD_WIN_RESET_REGISTER);
+    kmd_ring_t* host = &dispatcher->ring[KMD_SRC_HOST];
+    if (host->events != 0 && ring_room(host)) {
+        const uint32_t took = (uint32_t)(x280_mtime() - dispatcher->stall_mtime);
+        ring_push(host, (uint32_t)epc, KMD_EVENT_STALL | KMD_STALL_BACK << 8, took);
+        ring_flush(host);
+    }
+    dispatcher->x280_cores[KMD_H_STALL_PC] = (uint32_t)epc;
+    dispatcher->x280_cores[KMD_H_BACK]++;
+    watch_on(dispatcher);
+    loop(dispatcher);
+    finish(dispatcher);
+}
+
 /* Core 0's kernel; kept out of main so main's prologue touches no FP register. */
 static __attribute__((noinline)) void run(uint64_t core) {
     uint64_t host_line[16], engine_line[16], work_lines[8u * KMD_WORK_CLUSTERS + 8u];
@@ -861,7 +908,9 @@ static __attribute__((noinline)) void run(uint64_t core) {
     dispatcher->island_first = (uint32_t)arguments->island & 0xFFFFu;
     dispatcher->island_count = (uint32_t)(arguments->island >> 16);
     dispatcher->messages.handler = (uint32_t)arguments->messages_handler;
-    dispatcher->messages.x280_cluster = KMD_X280_RANKS_CLUSTER(arguments->messages_handler);
+    dispatcher->messages.x280_cluster = (
+        KMD_X280_RANKS_CLUSTER(arguments->messages_handler)
+    );
     dispatcher->messages.x280_count = KMD_X280_RANKS_COUNT(arguments->messages_handler);
     dispatcher->programs = (uint32_t)arguments->programs;
     for (uint32_t program = 0; program < KMD_PROGRAMS_MAX; program++) {
@@ -906,6 +955,14 @@ static __attribute__((noinline)) void run(uint64_t core) {
         result_word(dispatcher, KMD_R_STATE, KMD_STATE_READY);
         events_ready(dispatcher);
         events_word(dispatcher, KMD_HOST_STATE, KMD_STATE_READY);
+        /* For the watcher's interrupt (trap.h): this frame's sp and the state. */
+        __asm__ volatile(
+            "csrr t0, mscratch\n"
+            "sd sp, 112(t0)\n"
+            "sd %0, 120(t0)\n" ::"r"(dispatcher)
+            : "t0", "memory"
+        );
+        watch_on(dispatcher);
         loop(dispatcher);
     } else {
         engine_go(dispatcher, 2u);
@@ -927,6 +984,14 @@ __attribute__((used, noinline)) int kmd_main(uint64_t core_id) {
         );
         if (arguments != 0 && args_valid(arguments, run_value)) {
             eng_run(core_id, arguments, run_value);
+        }
+    } else if (core_id == 2) {
+        const uint64_t run_value = x280_hart_control(core_id)->run_value;
+        const volatile kmd_args_t* arguments = (
+            (const volatile kmd_args_t*) x280_hart_args(core_id)
+        );
+        if (arguments != 0 && args_valid(arguments, run_value)) {
+            watch(core_id, arguments, run_value);
         }
     }
     return 0;

@@ -130,6 +130,23 @@
 #define KMD_EVENT_CANCEL 0x11u
 /* Kernel to engine, once after a KMD_REJECT_BUSY: a slot or the queue has room. */
 #define KMD_EVENT_WAKE 0x12u
+/* Kernel to host, no command's: core 0's loop stalled (watch.h); auxiliary KMD_STALL_*,
+ * req the host command core 0 was at (SEEN, LOST) or its mepc's low word (BACK). */
+#define KMD_EVENT_STALL 0x13u
+/* core 2: no pass for KMD_WATCH_STALL_TICKS; ticks the gap */
+#define KMD_STALL_SEEN 1u
+#define KMD_STALL_BACK 2u /* core 0: re-entered its loop; ticks since SEEN */
+/* core 2: core 0 did not take the interrupt; the run ends */
+#define KMD_STALL_LOST 3u
+/* Core 2's watch of core 0: a look every KMD_WATCH_POLL_TICKS (1 ms); a stall is no
+ * pass for KMD_WATCH_STALL_TICKS (100 ms); core 0 has KMD_WATCH_BACK_TICKS (50 ms). */
+#define KMD_WATCH_POLL_TICKS 50000u
+#define KMD_WATCH_STALL_TICKS 5000000u
+#define KMD_WATCH_BACK_TICKS 2500000u
+#define KMD_WATCH_ON 1u  /* KMD_H_WATCH, by core 0: its loop runs, interrupts on */
+#define KMD_WATCH_OFF 2u /* by core 0: its loop ended */
+/* by core 2: core 0 did not come back; it stopped watching */
+#define KMD_WATCH_LOST 3u
 
 /* Host to kernel: reset core `first` (group of one) by the write list of a1 bytes at a0
  * in the upload region; PONG {KMD_RESET_*, ticks}. DROP's number: engine-only. */
@@ -165,6 +182,8 @@
 #define KMD_HANDLER_CHECK_UPLOAD 246u
 /* Test builds with KMD_VERIFY_LINES: core 0 loads 8 bytes from address a0 (a trap). */
 #define KMD_HANDLER_TRAP 244u
+/* Test builds with KMD_STALL_DEBUG: PONG, then core 0's loop stalls for a0 ms. */
+#define KMD_HANDLER_STALL 249u
 
 /* KMD_TRACE builds, in the region's lower half: kmd_trace_t, then per slot taken or
  * freed {kind | slot << 8 | source << 16, request, group, mtime}. */
@@ -246,7 +265,13 @@ enum {
     KMD_H_TRAP_PC = 15,         /* core 1, after a trap: mepc, low word */
     KMD_H_BUSY_HIGH = 16,       /* core 0: busy slots 32 to 63 at the finish */
     KMD_H_GIVEN_UP = 17,        /* core 0: commands given up at their deadline */
-    KMD_H_WORDS = 18
+    KMD_H_WATCH = 18,           /* core 0, then core 2 at a loss: KMD_WATCH_* */
+    KMD_H_STALLS = 19,          /* core 2: stalls of core 0 it saw */
+    KMD_H_BACK = 20,            /* core 0: times it re-entered its loop */
+    KMD_H_WATCH_GAP = 21,       /* core 2: the longest time without a pass, ticks */
+    KMD_H_STALL_PC = 22,        /* core 0: mepc, low word, of its latest stall */
+    KMD_H_STALL_PASSES = 23,    /* core 2: core 0's passes, low word, at the stall */
+    KMD_H_WORDS = 24
 };
 
 /* The inspect block's header (KMD_LIM_INSPECT), words; `mark` is stored last. */
@@ -327,7 +352,7 @@ typedef struct {
     /* dynamic handlers, one per byte (dynamic.h), 0: none; bits 32 to 39 the X280
      * ranks, KMD_X280_RANKS(cluster, count) */
     uint64_t messages_handler;
-    uint64_t version;          /* KMD_ARGS_VERSION */
+    uint64_t version;  /* KMD_ARGS_VERSION */
     uint64_t programs; /* 1: KMD_LIM_PROGRAMS holds each core's program; 0: none */
     /* Groups in flat ranks: this island's, first | count << 16 (rank first + core i is
      * core i). 0: one island, a rank is its core. */

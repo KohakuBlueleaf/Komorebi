@@ -3,7 +3,7 @@
 The dispatcher runs on X280 cluster 0. Core 0 takes commands from its sources,
 submits commands to the Tensix grid, sweeps the grid's acknowledgement words and reports
 every finished command to its source as an event. Core 1 runs the stream engine, which
-is one of those sources. `km_dispatch.h` holds the exact layouts;
+is one of those sources. Core 2 watches core 0's loop (`watch.h`, "Watch" below). `km_dispatch.h` holds the exact layouts;
 `komorebi/abi/km_abi.h` holds the commands, the events and the handler numbers.
 
 | file | part |
@@ -21,6 +21,8 @@ is one of those sources. `km_dispatch.h` holds the exact layouts;
 | `graph.h` | core 1: up to two graphs on the plain-C executor (`../engines/km_graph_engine.c`) |
 | `dynamic.h` | dynamic runs: the two passes over the status lines, the end command |
 | `result.h` | the result block in LIM |
+| `reset.h` | the reset of one Tensix core during a run (`KMD_HANDLER_RESET`) |
+| `watch.h` | core 2: the watch of core 0's loop; core 0's side of it |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
 
 ## Sources
@@ -321,10 +323,28 @@ These rules are part of the protocol; a host that relies on anything else is wro
   stops core 1, writes `KMD_ERROR_TRAP` (core, `mcause`, `mepc`, `mtval`) into the result
   block and the host buffer, flushes the state's lines and returns from `main`, so the
   runtime restores the cluster as after an abort. Core 1 notes its trap in the core
-  block (`KMD_ENGINE_TRAPPED`); core 0 reports it at its finish. Interrupts, and a
-  second exception inside the handler, go to the runtime's handler, which ceases the
-  core as before.
-- **Clock.** The session runs the X280 at 1000 MHz; 1750 is an explicit opt-in that
+  block (`KMD_ENGINE_TRAPPED`); core 0 reports it at its finish. Core 0's machine
+  software interrupt is the watch's (below). Other interrupts, and a second exception
+  inside the handler, go to the runtime's handler, which ceases the core as before.
+- **Watch.** Core 2 reads core 0's passes plus its long waits' beats (`beat`, in the
+  state) every `KMD_WATCH_POLL_TICKS` (1 ms) while `KMD_H_WATCH` is `KMD_WATCH_ON`
+  (core 0 sets it before its loop, `KMD_WATCH_OFF` at its finish or trap). No change for
+  `KMD_WATCH_STALL_TICKS` (100 ms): it pushes `KMD_EVENT_STALL` (0x13) auxiliary
+  `KMD_STALL_SEEN`, `req` the host command core 0 was at, ticks the gap, then sets
+  `msip` of hart 0 in the cluster's CLINT. Core 0 enables that interrupt alone (`mie`
+  bit 3) while its loop runs; run() saves its stack pointer and the state in `main`'s
+  frame (words 112 and 120, zeroed by `main`), and `kmd_trap` on cause 3 calls
+  `kmd_resumed` on that frame: `msip` cleared, a ring's line that was consumed freed,
+  the reset windows cleared, `KMD_STALL_BACK` pushed (`req` the interrupted `mepc`,
+  ticks since SEEN), `KMD_H_BACK` counted, the loop entered again, then the finish.
+  Without a return within `KMD_WATCH_BACK_TICKS` (50 ms) core 2 clears `msip`, pushes
+  `KMD_STALL_LOST`, sets `KMD_WATCH_LOST` and stops watching; the host stops the run.
+  Its events use the host ring's room check; the host keeps them apart from the
+  commands' (`Run.stalls`). `KMD_H_WATCH_GAP` is the longest time it saw without a
+  change. Test builds with `KMD_STALL_DEBUG` have `KMD_HANDLER_STALL` (249): PONG, then
+  no pass for a0 ms (the runtime's stop still ends it).
+- **Clock.** The session runs the X280 at 1350 MHz (1000 on a runtime whose clock table
+  lacks that row; the numbers on this page were taken at 1000); 1750 is an explicit opt-in that
   loses loads when the Tensix grid is under full matrix load. At 1750 MHz, with every
   Tensix core at full matrix load (the card lowers its core voltage under it), core 0's
   loads returned wrong values (a pointer of the host ring read as 0, its base off by 12
@@ -333,7 +353,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   clusters, so thread programs on the work clusters run at the same clock. Before a
   session sets it, the runtime that opens the cluster leaves that PLL at its safe
   200 MHz; 1750 was never the card's own setting, only the session's earlier default.
-  The session's log names the clock it set (`X280 clock set: 1000 MHz`).
+  The session's log names the clock it set (`X280 clock set: 1350 MHz`).
 
   | Variant of the 8192-cubed run (a profile command, then 300 calls) | 1750 MHz | 1000 MHz |
   |---|---|---|

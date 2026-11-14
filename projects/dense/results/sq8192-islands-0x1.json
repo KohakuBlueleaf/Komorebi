@@ -1,0 +1,153 @@
+{
+ "shape": "sq8192",
+ "m": 8192,
+ "k": 8192,
+ "n": 8192,
+ "cards": [
+  0,
+  1
+ ],
+ "upload_s": 1.116,
+ "islands": [
+  {
+   "rows": [
+    0,
+    136
+   ],
+   "plan": {
+    "mt": 136,
+    "kt": 256,
+    "nt": 256,
+    "rows": 10,
+    "cols": 11,
+    "pcm": 14,
+    "pcn": 24,
+    "bm": 7,
+    "bn": 24,
+    "kb": 4,
+    "sh": 1,
+    "sw": 4,
+    "wa": 2,
+    "ww": 2,
+    "layout": "2d",
+    "l1": 1213440,
+    "form": "grid",
+    "nk": 64,
+    "nbh": 2,
+    "nbw": 1,
+    "rect": [
+     0,
+     0,
+     11,
+     10
+    ]
+   }
+  },
+  {
+   "rows": [
+    136,
+    120
+   ],
+   "plan": {
+    "mt": 120,
+    "kt": 256,
+    "nt": 256,
+    "rows": 10,
+    "cols": 11,
+    "pcm": 12,
+    "pcn": 24,
+    "bm": 12,
+    "bn": 24,
+    "kb": 1,
+    "sh": 1,
+    "sw": 4,
+    "wa": 2,
+    "ww": 2,
+    "layout": "2d",
+    "l1": 1344512,
+    "form": "grid",
+    "nk": 256,
+    "nbh": 1,
+    "nbw": 1,
+    "rect": [
+     0,
+     0,
+     11,
+     10
+    ]
+   }
+  }
+ ],
+ "group": [
+  0,
+  239
+ ],
+ "x280_mhz": [
+  1350,
+  1350
+ ],
+ "single_microseconds": [
+  4688.2,
+  4680.42,
+  4685.8
+ ],
+ "loop": {
+  "reps": 854,
+  "seconds": 4.477,
+  "microseconds_per_call": 5242.349,
+  "island_microseconds_median": [
+   4401.26,
+   5404.02
+  ],
+  "aiclk_mhz": {
+   "0": [
+    806,
+    969.6,
+    1350
+   ],
+   "1": [
+    1143,
+    1207.9,
+    1350
+   ]
+  }
+ },
+ "run": {
+  "cores": 240,
+  "kernel": [
+   "none",
+   "none"
+  ],
+  "cores_ended": {
+   "reader_end": 240,
+   "writer_end": 240,
+   "compute_end": 240
+  },
+  "gave_up": [],
+  "broadcast_gave_up": []
+ },
+ "readback_s": 0.269,
+ "gflops": 209736.4,
+ "sampled_row_tiles": [
+  67,
+  78,
+  120,
+  135,
+  136,
+  162,
+  182,
+  230
+ ],
+ "check": {
+  "max_rel": 0.006527357704705497,
+  "rms_rel": 0.003966272302456208,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "7.53",
+  "3.66",
+  "3.18"
+ ]
+}

@@ -45,8 +45,8 @@ changes is the data the host uploads for it to run.
 
 ## How the kernel behaves
 
-- **It is never interrupted.** It loops. When idle it polls its sources, gated so it
-  does not scan every source on every pass.
+- **It is not interrupted,** except by its watch (below). It loops. When idle it polls
+  its sources, gated so it does not scan every source on every pass.
 - **Messages are 64 bytes:** a header word and seven payload words. Messages carry
   request ids, replies are parked at the receiver, senders use credits, and every
   sender has an outbox so two senders never deadlock. Nothing is dropped. This holds
@@ -95,6 +95,32 @@ a whole graph inside this kernel; a graph is not spread over clusters.
 - **Command sources.** The host ring, the rings from clusters 1 to 3, and the engines
   themselves. Host-fed and X280-decided execution are the same kernel with different
   sources, and both are first-class.
+
+## The watch
+
+Core 2 of the cluster watches the loop on core 0, so a loop that stops making passes
+does not leave the host waiting without a reason.
+
+- **The heartbeat.** The loop counts its passes in its state, which the cluster's cores
+  share coherently; its long waits on purpose (a core reset's wait for the firmware)
+  count beats. Core 2 reads the two once a millisecond while the loop runs.
+- **Report first.** No change for 100 ms is a stall. Core 2 pushes a stall event
+  (`KMD_EVENT_STALL`, "stalled") into the host's event ring with the host command core 0
+  was at; the core block keeps the stall's words (`KMD_H_STALLS`, `KMD_H_STALL_PASSES`).
+- **Then recover.** Core 2 sets core 0's machine software interrupt in the cluster's
+  interrupt controller. Core 0 enables that interrupt alone and only while its loop
+  runs. Its trap entry drops the stalled call chain and enters the loop again on the
+  run's state (its tables, slots, rings and queue are kept), then pushes "back" with the
+  pc it was stopped at. A command line consumed before the stall is not taken again.
+- **Or say it failed.** If core 0 has not come back after 50 ms more, core 2 pushes
+  "lost" and stops watching; the host stops the run with that reason.
+
+Measured on a p150a, X280 at 1350 MHz, with a stall made on purpose (a debug image's
+command; [dispatcher_watch](../../experiments/dispatcher_watch/README.md)): the stall
+was seen after 100.009 ms, core 0 was back in its loop 1.2 microseconds after the
+interrupt, and the MAP commands sent after it were exact. A core 0 that stopped
+executing (an access that never completes) takes no interrupt: that one still needs
+the runtime's stop.
 
 ## Rules
 

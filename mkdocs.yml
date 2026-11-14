@@ -94,11 +94,13 @@ nav:
   - Concepts:
       - concepts/dispatch.md
       - concepts/runtime.md
+      - concepts/islands.md
       - streams.md
       - graphs.md
       - threads.md
   - Guides:
       - guides/debug-a-command-that-does-not-finish.md
+      - guides/recovery.md
       - guides/measure-a-command.md
       - development.md
   - Reference:

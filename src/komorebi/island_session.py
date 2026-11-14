@@ -82,10 +82,6 @@ class IslandRun:
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
     and it completes when every part has. Errors name the island (`error.island`)."""
 
-    # What an island is sent: its part in its own ranks (False), or the group's word
-    # unchanged in flat ranks, cut by its dispatcher (True: needs the island table).
-    flat_groups = False
-
     def __init__(self, graph, runs):
         self.graph = graph
         self.runs = tuple(runs)
@@ -112,11 +108,10 @@ class IslandRun:
         parts = self.graph.split(group)
         self._grow(1)
         ticket = self._next
-        for island, first, count in parts:
-            sent = group if self.flat_groups else (first, count)
-            try:
+        for island, _first, _count in parts:
+            try:  # the flat group word unchanged: the dispatcher cuts its part
                 handle = self.runs[island].submit(
-                    handler, sent, args, exclusive=exclusive, result=result
+                    handler, group, args, exclusive=exclusive, result=result
                 )
             except KomorebiError as error:
                 raise _named(error, island) from None
@@ -159,13 +154,13 @@ class IslandRun:
             if not mine.any():
                 continue
             named = handler if scalar else handlers[mine]
-            if self.flat_groups:
-                sent = first[mine], count[mine]
-            else:
-                sent = low[mine] - self.graph.first(island), (high - low)[mine]
-            try:
+            try:  # the flat group words unchanged: the dispatcher cuts its part
                 handles = run.submit_many(
-                    named, *sent, None if args is None else args[mine], exclusive
+                    named,
+                    first[mine],
+                    count[mine],
+                    None if args is None else args[mine],
+                    exclusive,
                 )
             except KomorebiError as error:
                 raise _named(error, island) from None
@@ -173,12 +168,12 @@ class IslandRun:
         self._next += rows
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
 
-    def _send(self):
-        """Stores every island's queued commands on its card, so that the islands
-        run their parts at once while the host waits on one."""
+    def send(self):
+        """Gives every island's queued commands to its dispatcher, so that the
+        islands run their parts at once while the host waits on one."""
         for island, run in enumerate(self.runs):
             try:
-                run.store()
+                run._hand()
             except KomorebiError as error:
                 raise _named(error, island) from None
 
@@ -193,7 +188,8 @@ class IslandRun:
         if wanted.min() < 1 or wanted.max() >= self._next:
             raise ValueError("a ticket that was never submitted")
         deadline = time.monotonic() + timeout
-        self._send()
+        self.send()
+        self._store(wanted, deadline)
         events = {}
         for island, run in enumerate(self.runs):
             handles = self._parts[island][wanted]
@@ -212,6 +208,36 @@ class IslandRun:
         out = [tuple(events[ticket]) for ticket in wanted.tolist()]
         return out[0] if single else out
 
+    def _store(self, wanted, deadline):
+        """Until the tickets' parts arrived or the deadline: one native round an island
+        in turn (store what its ring has room for, file its events), so that every
+        island is fed while the host waits; Run.wait then returns or raises."""
+        pending = {}
+        for island in range(len(self.runs)):
+            handles = self._parts[island][wanted]
+            pending[island] = np.unique(handles[handles != 0])
+        while any(handles.size for handles in pending.values()):
+            if time.monotonic() > deadline:
+                return
+            for island, handles in pending.items():
+                if not handles.size:
+                    continue
+                run = self.runs[island]
+                try:
+                    run._check_alive()
+                    run._step(handles, int(handles[-1]), 0.0)
+                except KomorebiError as error:
+                    raise _named(error, island) from None
+                pending[island] = handles[~run._arrived(handles)]
+
+    def inspect(self, island, cores=None, timeout=10.0):
+        """Run.inspect of island `island`'s cores [first, first + count) of `cores`
+        (its own core numbers; default all), asked of that island's dispatcher."""
+        try:
+            return self.runs[island].inspect(cores, timeout)
+        except KomorebiError as error:
+            raise _named(error, island) from None
+
     def _tickets(self, island, handles):
         """The tickets whose part on `island` has one of these handles."""
         parts = self._parts[island][: self._next]
@@ -222,7 +248,7 @@ class IslandRun:
         island's events; returns how many events it waited for, every island's
         together."""
         deadline = time.monotonic() + timeout
-        self._send()
+        self.send()
         waited = 0
         for island, run in enumerate(self.runs):
             try:
@@ -461,6 +487,15 @@ class IslandSession:
             out.append(dram.untilize_bf16(rows, *tensor.shape))
         return out
 
+    def read_tiles_bf16(self, tensor, first, pages):
+        """Tiles first .. first + pages - 1 of a bfloat16 tile tensor as float32
+        [pages, 32, 32], as Session.read_tiles_bf16, read as read() does."""
+        if tensor.layout != "tile" or tensor.dtype != "bfloat16":
+            raise ValueError("read_tiles_bf16 takes a bfloat16 tile tensor")
+        (raw,) = self.read(tensor, first=first, pages=pages)
+        tile = dram.TILE
+        return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+
     def write(self, tensor, pages, first=0):
         """Writes `pages` ([n, page_bytes] uint8) into pages first .. first + n - 1,
         each into the island that holds it (a copy: into every island)."""
@@ -478,21 +513,32 @@ class IslandSession:
             )
 
     def load(self, program, **options):
-        """Loads `program` on every island in turn (its grid, then its dispatcher),
-        with Session.load's options; returns an IslandRun over flat ranks."""
+        """Loads `program` on every island in turn (its grid, then its dispatcher), or
+        a list of Programs, one an island in island order, with Session.load's
+        options; returns an IslandRun over flat ranks."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
-        if not isinstance(program, Program):
-            raise ValueError("an island session loads one Program (not yet a list)")
-        if program.threads:
+        programs = list(program) if isinstance(program, list | tuple) else [program]
+        if len(programs) == 1:
+            programs *= len(self.sessions)
+        if len(programs) != len(self.sessions) or not all(
+            isinstance(one, Program) for one in programs
+        ):
             raise ValueError(
-                f"{program.name}: X280 threads over islands are not done yet"
+                f"an island session loads one Program or a list of "
+                f"{len(self.sessions)}, one an island"
             )
+        for one in programs:
+            if one.threads:
+                raise ValueError(
+                    f"{one.name}: X280 threads over islands are not done yet"
+                )
         runs = []
         try:
-            for island, session in enumerate(self.sessions):
+            for island, (session, one) in enumerate(zip(self.sessions, programs)):
                 try:
-                    runs.append(session.load(program, **options))
+                    island_of = (self.graph, island)
+                    runs.append(session.load(one, island=island_of, **options))
                 except KomorebiError as error:
                     raise _named(error, island) from None
         except BaseException:

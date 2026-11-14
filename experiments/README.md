@@ -183,3 +183,7 @@ place to ask a question and to be wrong.
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and
   1.05 on twelve (63.8 GB/s, the bank's rate); the whole call 30.4 ms, bound by the two sweeps
   of the region's cache lines; the X280's own loads 0.024 GB/s, `kmx_push` 2.20 GB/s.
+- [dispatcher_watch](dispatcher_watch/README.md): whether the dispatcher comes back by
+  itself when its loop on X280 core 0 stalls. Core 2 sees no pass for 100 ms, reports
+  the stall to the host and interrupts core 0, which re-enters its loop 1.2
+  microseconds later with the run's state kept; the MAP commands after it are exact.
