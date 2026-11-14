@@ -1,7 +1,7 @@
 """Map/collect over two cards as the islands of one session (`Session(cards=...)`):
-the same program and kernels on every island, groups in flat ranks split by island,
-one input tensor split over the islands; checks the tiles with mapcollect.py's sums
-and times commands. Prints one JSON line. See docs/reference/islands.md."""
+the same program and kernels on every island, groups in flat ranks, the input placed
+by a hint (`--split`, `--group`); checks the tiles with mapcollect.py's sums, times
+commands and writes. Prints one JSON line. See docs/reference/islands.md."""
 
 import argparse
 import json
@@ -44,6 +44,21 @@ def parse():
         "--hang", action="store_true", help="a HANG on island 1 must name island 1"
     )
     parser.add_argument(
+        "--split", type=int, default=None, help="the input's hint: split dimension"
+    )
+    parser.add_argument(
+        "--group",
+        default=None,
+        metavar="FIRST,RANKS",
+        help="the input's hint: the group that splits it (default every rank)",
+    )
+    parser.add_argument(
+        "--write-mib",
+        type=int,
+        default=64,
+        help="MiB written over every island at once, then over island 0 alone",
+    )
+    parser.add_argument(
         "--across",
         type=int,
         default=0,
@@ -55,7 +70,8 @@ def parse():
 
 def map_words(source, output, groups):
     """MAP arguments of each group (first, count): rank r of the group adds input
-    tiles 2r and 2r + 1 of the group's own window and stores page first + r."""
+    tiles 2r and 2r + 1 of the group's own window and stores page first + r. The
+    tensors by their reference words."""
     groups = np.asarray(groups, np.int64)
     jobs = len(groups)
     return np.stack(
@@ -97,20 +113,45 @@ def main():
             for i in range(len(session.sessions))
         ]
         log(f"open: {ranks} ranks, islands {report['islands']}")
-        exact = generator.integers(-2, 3, (2 * ranks * TILE, TILE)).astype(np.float32)
-        source = session.tensor(exact, "bfloat16", "tile")
+        # rank r's input tiles 2r and 2r + 1 are row r of a [ranks, 2] tile matrix
+        exact = generator.integers(-2, 3, (2 * ranks, TILE, TILE)).astype(np.float32)
+        matrix = exact.reshape(ranks, 2, TILE, TILE).transpose(0, 2, 1, 3)
+        matrix = matrix.reshape(ranks * TILE, 2 * TILE)
+        hint = {}
+        if args.split is not None:
+            hint["split"] = args.split
+        if args.group is not None:
+            hint["group"] = tuple(int(value) for value in args.group.split(","))
+        report["hint"] = hint
+        source = session.tensor(matrix, "bfloat16", "tile", **hint)
         output = session.tensor(
             np.zeros((ranks * TILE, TILE), np.float32), "bfloat16", "tile"
         )
         report["source_parts"] = list(source.placement.parts)
-        log(f"input split {report['source_parts']} at {source.address:#x}")
+        report["source_part_pages"] = [
+            source.placement.part_pages(i) for i in range(len(session.sessions))
+        ]
+        log(
+            f"input {hint or 'no hint'}: steps {report['source_parts']}, pages "
+            f"{report['source_part_pages']}, word {source.address:#x}"
+        )
         (back,) = session.read_bf16(source)
-        report["source_read_exact"] = bool(np.array_equal(back, exact))
+        report["source_read_exact"] = bool(np.array_equal(back, matrix))
         log(f"input read back from every island: {report['source_read_exact']}")
         far = source
         if args.across:
-            far = session.tensor(exact, "bfloat16", "tile", like=report["islands"][1])
+            far = session.tensor(
+                matrix, "bfloat16", "tile", group=tuple(report["islands"][1])
+            )
             log(f"input held by island 1 alone: {list(far.placement.parts)}")
+        pages = args.write_mib * (1 << 20) // 2048
+        shape = (pages * TILE, TILE)
+        written = {
+            "every island": session.empty(shape, "bfloat16", "tile"),
+            "island 0": session.empty(
+                shape, "bfloat16", "tile", group=tuple(report["islands"][0])
+            ),
+        }
         program = km.Program(
             "mapcollect",
             kernels=KERNELS,
@@ -119,10 +160,7 @@ def main():
                 km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
             ],
             compile_args={
-                # the placements of MAP's inputs (a7): the split one, the far one
-                "reader": source.accessor_args()
-                + source.placement_args()
-                + far.placement_args(),
+                "reader": source.accessor_args(),
                 "writer": output.accessor_args(),
             },
             compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
@@ -130,6 +168,7 @@ def main():
         )
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
+        report["write"] = write_rates(session, written, generator)
         if args.across:
             report.update(across(session, run, args, source, far, output))
         else:
@@ -152,9 +191,37 @@ def main():
         and report.get("kernel_errors", ["stop"]) == ["none"] * len(cards)
         and report.get("hang_named_island", True)
         and report.get("read_island1_in_run_exact", True)
+        and all(write["exact"] for write in report.get("write", {}).values())
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
+
+
+def write_rates(session, tensors, generator):
+    """GB/s of one write of each tensor's pages (random bytes) with the run loaded:
+    over every island's host channel at once, then over island 0's alone; a page of
+    each island's part read back."""
+    out = {}
+    for name, tensor in tensors.items():
+        pages = generator.integers(0, 256, (tensor.pages, tensor.page_bytes), np.uint8)
+        log(f"writing {pages.nbytes:,} B held by {name}")
+        started = time.perf_counter()
+        session.write(tensor, pages)
+        seconds = time.perf_counter() - started
+        checked = True
+        for island, part in enumerate(tensor.parts):
+            if part is not None:
+                page = int(tensor.placement.part(island)[-1])
+                (got,) = session.read(tensor, first=page, pages=1)
+                checked = checked and bool(np.array_equal(got[0], pages[page]))
+        out[name] = {
+            "bytes": int(pages.nbytes),
+            "seconds": round(seconds, 4),
+            "gb_s": round(pages.nbytes / seconds / 1e9, 3),
+            "exact": checked,
+        }
+        log(f"write held by {name}: {out[name]}")
+    return out
 
 
 def commands(session, run, args, source, output, ranks, exact):
@@ -216,7 +283,7 @@ def commands(session, run, args, source, output, ranks, exact):
             out["hang_named_island"] = error.island == 1 and error.given_up
         log(f"HANG on group {group}: {out['hang']}")
         out["hang_named_island"] = out.get("hang_named_island", False)
-        raw, _ = formats.to_bytes(exact, "bfloat16", "tile")
+        raw, _ = formats.to_bytes(exact.reshape(-1, TILE), "bfloat16", "tile")
         rows = raw.reshape(source.pages, source.page_bytes)
         (got,) = session.read(source, first=ranks, pages=16)
         out["read_island1_in_run_exact"] = bool(
@@ -236,8 +303,8 @@ def across(session, run, args, local, far, output):
     handler = run.program.handler("map")
     count = group[1]
 
-    def one_round(source, placed):
-        words = map_words(source, output, [group])[0].tolist() + [placed]
+    def one_round(source):
+        words = map_words(source, output, [group])[0].tolist()
         started = time.perf_counter()
         mapped = run.island(0).submit(handler, group, words)
         session.wait_together([(0, mapped)])
@@ -245,8 +312,8 @@ def across(session, run, args, local, far, output):
 
     out = {"map_groups": [list(group)], "across_links": args.across}
     tile_bytes = 2 * count * 2048
-    for name, source, placed in (("local", local, 0), ("across", far, 1)):
-        spent = median([one_round(source, placed) for _ in range(args.map_rounds)])
+    for name, source in (("local", local), ("across", far)):
+        spent = median([one_round(source) for _ in range(args.map_rounds)])
         out[f"map_{name}_us"] = spent
         out[f"map_{name}_gb_s"] = round(tile_bytes / spent / 1e3, 3)
         log(f"MAP on {group} reading {name}: {spent} us a round, {tile_bytes:,} B")

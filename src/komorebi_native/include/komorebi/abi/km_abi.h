@@ -173,7 +173,7 @@
    KM_GROUP_LINK_BASE + k, count n; never cut by island, never crossing. A rank is
    below KM_GROUP_LINK_BASE; a link core's rank in it is its link-core index - k. */
 #define KM_GROUP_LINK_BASE 0xFE00u
-#define KM_GROUP_IS_LINK(first) \
+#define KM_GROUP_IS_LINK(first)               \
     ((uint32_t)(first) - KM_GROUP_LINK_BASE < \
      KM_GROUP_CLUSTER_BASE - KM_GROUP_LINK_BASE)
 /* Whether a group (first, count) names a work cluster's thread, cluster 1 to 3. */
@@ -459,6 +459,14 @@ KM_STATIC_ASSERT(
    link area) */
 #define KM_ISLAND_LINK_AREA \
     (KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES)
+/* then a word, the tensor table's L1 address on this island's cores (0: none) */
+#define KM_ISLAND_TENSORS (KM_ISLAND_LINK_AREA + 4u)
+/* a reference word below KM_TENSORS_MAX names an entry, any other a bank address */
+#define KM_TENSORS_MAX 32u
+/* an entry: {aligned page bytes, steps of the split dimension, pages a step, copy} */
+#define KM_TENSOR_HEADER_BYTES 16u
+/* then each island's part: {its bank address, first step, steps, 0} */
+#define KM_TENSOR_PART_BYTES 16u
 /* KM_RING_SLOTS commands, the last part of the block */
 #define KM_CONTROL_RING (KM_CONTROL_ISLANDS + KM_ISLANDS_BYTES)
 #define KM_CONTROL_BYTES (KM_CONTROL_RING + KM_RING_SLOTS * 64u)
@@ -495,9 +503,9 @@ KM_STATIC_ASSERT(
     "the island area: whole lines after the live words; an island is a bit of a word"
 );
 KM_STATIC_ASSERT(
-    KM_ISLAND_LINK_AREA + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
+    KM_ISLAND_TENSORS + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
         KM_ASK_READ + 16u <= KM_ASK_HEADERS,
-    "the link area word after the island table; the ask lines whole lines"
+    "the link area and tensor table words after the island table; whole ask lines"
 );
 KM_STATIC_ASSERT(
     KM_CONTROL_RING % 64u == 0 &&

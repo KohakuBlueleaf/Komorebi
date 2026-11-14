@@ -134,56 +134,57 @@ namespace km {
         return code == kGaveNone || give_up(code);
     }
 
-    // Reader: pages first .. first + pages - 1 of `tensor` (bank address `address`, the
-    // same on every island) into L1 `to` on, page k at to + k aligned pages. The pages
-    // this island holds: read (the caller's read barrier waits for them); each run of
-    // pages another island holds: one ask, all counted at port `port` and waited for
-    // here (bounded). False: gave up; a miss names the island asked.
-    template <uint32_t Base, typename Accessor>
+    // Reader: pages first .. of tensor `tensor` (its word; `args` its accessor's) into L1
+    // `to` on; local pages read, each other island's run asked for. One card: the read.
+    template <typename Args>
     inline bool read_pages(
         const Reader& reader,
         const km_command_t& command,
-        const Placement<Base>& placement,
-        const Accessor& tensor,
-        uint32_t address,
+        const Args& args,
+        uint32_t tensor,
         uint32_t first,
         uint32_t pages,
         uint32_t to,
         uint32_t port
     ) {
         const uint32_t here = island();
-        const uint32_t bytes = tensor.get_aligned_page_size();
+        const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+        invalidate_l1_cache();  // the table may have grown since the last read
         uint32_t asked = 0, holder = here;
         for (uint32_t k = 0; k < pages;) {
-            const uint32_t at = island_of(placement, first + k);
-            if (at == here) {
-                noc_async_read_page(first + k, tensor, to + k * bytes);
+            const PageAt at = page_at(tensor, first + k);
+            if (at.island == here) {
+                noc_async_read_page(
+                    at.index, TensorAccessor(args, at.address), to + k * bytes
+                );
                 k++;
                 continue;
             }
             uint32_t run = 1;
-            while (k + run < pages && island_of(placement, first + k + run) == at) {
+            while (k + run < pages) {
+                const PageAt next = page_at(tensor, first + k + run);
+                if (next.island != at.island || next.index != at.index + run) {
+                    break;
+                }
                 run++;
             }
 #if !defined(KM_ASKS_BY_HOST)
-            if (
-                !ask_pages(
-                    reader,
-                    command,
-                    at,
-                    address,
-                    bytes,
-                    first + k,
-                    run,
-                    to + k * bytes,
-                    port
-                )
-            ) {
+            if (!ask_pages(
+                reader,
+                command,
+                at.island,
+                at.address,
+                bytes,
+                at.index,
+                run,
+                to + k * bytes,
+                port
+            )) {
                 return false;
             }
 #endif
             asked += run;
-            holder = at;
+            holder = at.island;
             k += run;
         }
         // asks by the host: the host's send brings them to `to` and counts them here

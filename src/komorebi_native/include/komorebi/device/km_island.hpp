@@ -52,6 +52,11 @@ namespace km {
             return area_[KM_ISLAND_LINK_AREA / 4];
         }
 
+        // The tensor table's L1 address on this island's cores; 0: none (one island).
+        uint32_t tensors() const {
+            return area_[KM_ISLAND_TENSORS / 4];
+        }
+
         uint32_t entry_first(uint32_t island) const {
             return half(island, kIslandEntryFirst);
         }
@@ -125,7 +130,9 @@ namespace km {
     };
 
     inline Part local_part(const Islands& view, const km_command_t& command) {
-        if (KM_GROUP_IS_LINK(first(command))) {  // link cores: the cores after the ranks
+        if (KM_GROUP_IS_LINK(
+            first(command)
+        )) {  // link cores: the cores after the ranks
             return {view.ranks() + first(command) - KM_GROUP_LINK_BASE, count(command)};
         }
         const uint32_t low = view.first();
