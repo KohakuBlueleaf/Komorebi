@@ -278,8 +278,8 @@ from island 0's thread to island 1's, one at a time, 10.61 µs; a HANG on ranks 
 `kmx_fetch` and `kmx_store` take a tensor another island holds as they take one of
 their own: `from` or `to` names the tensor (`KM_COPY_INTERLEAVED`, its bank address,
 its page bytes) and the range, never the island. The copy's cores find the tensor in
-the table of island tensors the load wrote (the ones made before the load, 16 at
-most) and move the pages another island holds through their island's link core 0: a
+the table of island tensors every core holds (32 entries at most; the host writes it
+again when a tensor is made while the run lives) and move the pages another island holds through their island's link core 0: a
 fetch asks for them a chunk at a time and writes them into the region, a store puts
 them from the chunk straight into the holder's DRAM
 ([islands](islands.md#pages-across-a-link)). The cache is handled as on one island: a
@@ -584,7 +584,7 @@ clusters' tiles and their banks' DRAM tiles for every thread on the card.
 
 On work cluster 1 of a p150a at 1,750 MHz: the bank read at about 1.3 GB/s and written
 at 1.3 to 1.8 GB/s with four cores; a flush or invalidate sweep at 5 to 8 GB/s of region
-(`experiments/x280_threads/`). At the session's 1,000 MHz on each of clusters 1 to 3:
+(`experiments/x280_threads/`). At 1,000 MHz on each of clusters 1 to 3:
 about 1.2 GB/s read and written per cluster, alone or together (three at once 3.5 GB/s);
 a push into the other bank 2.3 GB/s, a pull 0.024 GB/s; invalidate 4.6 GB/s, flush 4.3 GB/s
 (`experiments/work_clusters/`).

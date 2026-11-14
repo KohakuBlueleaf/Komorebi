@@ -14,17 +14,25 @@ Building from a clone: [install](install.md#from-a-clone).
 ```text
 src/komorebi/                  the package you import
   _env.py                      finds the tt-metal tree, its build and the X280 toolchain
-  cli.py                       the `kmr` command: doctor, build, power
+  cli.py                       the `kmr` command: doctor, setup, sfpi, prime, build, power
   layout.py                    the grid, its panels and core groups (pure functions)
   stats.py                     timing statistics and error against a reference
   program.py  session.py       Program; Session (loads a program under the dispatcher)
   run.py  errors.py  state.py  Run (submit, wait, stop); errors; result, state and trace decoding
+  programs.py  overlay.py      several programs in one run; overlays: the builder and the slots
+  movement.py  channel.py      both data-movement CPUs on one stream; the host channel
+  tensor.py  dram.py           device tensors; interleaved DRAM buffers, bank by bank
+  formats.py  insn_check.py    bfloat16 and tiles on the host; the instruction check of a kernel
+  thread.py                    X280 threads: declaration, arguments, regions, results
+  islands.py                   islands: the graph, ranks, the island table, placement (host values)
+  island_session.py            the session over several cards (or one card split into islands)
   abi.py  native.py            constants read from the C headers; the image and native module
   power.py                     power sampling: cards, a GPU, the CPU package
   build.py                     out-of-tree builds: host program, Python module, X280 image
-  engines/stream.py            micro-op streams: builder, upload encoding, check, simulator
+  engines/                     micro-op streams and graphs: builders, upload encoding, checks,
+                               simulators, the host-fed executors
   tools/cxx_format.py          clang-format with the rules it cannot express
-  manifest/  lang/             reserved for later tiers (README inside, no code yet)
+  manifest/                    reserved: a program's commands and handlers declared (README inside, no code yet)
 src/komorebi_native/           the native layer (README inside)
 src/komorebi_runtime/          komorebi-runtime's locator: where the runtime's files are
 examples/  projects/           runnable examples; larger programs (README inside)
@@ -50,7 +58,7 @@ KMR_SIZES=1 python -m pytest tests/projects/test_kernel_sizes.py   # kernel size
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
-mkdocs build --strict -d /tmp/komorebi-site     # the documentation site, tutorial included
+NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d /tmp/komorebi-site   # the documentation site, tutorial included
 ```
 
 The site is the reading surface of the [tutorial](tutorial/index.md): MkDocs with the Material
@@ -137,7 +145,7 @@ Experiments come first; a regression test comes after behaviour settles (see
   and defines that C++ code using the X280 runtime needs. This dependency ends when
   Komorebi has its own build files. `kmr build image` is not affected: it uses the X280
   runtime's compiler, flags, entry objects and linker script directly.
-- The wheels on PyPI (0.1.0) are built for one card model, the Blackhole P150A, and
+- The wheels on PyPI (0.2.0) are built for one card model, the Blackhole P150A, and
   run with no tree ([the two wheels](install.md#from-010-the-two-wheels)); a
   `komorebi-tt` wheel built locally without the native module builds it from a tt-metal
   tree on first use ([from a wheel](install.md#from-a-wheel)).

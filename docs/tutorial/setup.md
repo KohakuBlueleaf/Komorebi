@@ -36,15 +36,15 @@ export TT_METAL_HOME=~/tt-metal
 that `import komorebi` works. The `-e` means the package is read from the folder itself.
 The last line tells Komorebi where tt-metal is.
 
-### Or, from 0.1.0: the two wheels
+### Or, the two wheels
 
-From the 0.1.0 release there is a second way, with no tt-metal folder of your own: two
+There is a second way, with no tt-metal folder of your own: two
 packages from PyPI, `komorebi-tt` (the framework) and `komorebi-runtime` (tt-metal,
 already built). The packages do not hold the tutorial's programs, so you clone the
-repository at the release's tag for them:
+repository at the release's tag for them (0.2.0 here):
 
 ```bash
-git clone --depth 1 --branch v0.1.0 <this repository> komorebi
+git clone --depth 1 --branch v0.2.0 <this repository> komorebi
 cd komorebi
 python3.13 -m venv .venv
 source .venv/bin/activate

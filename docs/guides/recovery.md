@@ -57,7 +57,7 @@ A step is tried only when the one before it was not enough.
     `live` has, per kernel (`reader`, `writer`, `unpack`, `math`, `pack`), the runtime wait
     it is in (a where code's name, or None) and the command it runs; `given_up` counts the
     commands the core has given up. A core the dispatcher could not reach is `{"core": i,
-    "read": False, "reset": False}`. The inspect does not stop anything: the dispatcher
+    "read": False, "reset": reset}`, with `reset` a bool. The inspect does not stop anything: the dispatcher
     reads one core a pass of its loop beside the commands in flight. Only one inspect runs
     at a time; one that finds its block overwritten by the deadline's raises
     `km.KomorebiError`, and can be made again. Over several cards the group is in flat

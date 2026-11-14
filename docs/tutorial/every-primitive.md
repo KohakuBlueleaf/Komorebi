@@ -42,6 +42,9 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `run.thread_result(timeout)`, `run.thread.read(name)` | the thread's result, and a region after the run | [[hello-thread]], [[sharing-memory]] |
 | `program.overlay(name, folder)`, `program.slots(count=n)` | an overlay's parts, and the slots that hold them | [[overlays]] |
 | `session.load([a, b])`, `session.load({a: group, b: group})`, `program.handler(name)` | several programs in one run; a handler of one of them | [[two-programs]] |
+| `km.Session(cards=[0, 1])`, `session.ranks`, `session.graph` | one session over two cards, the flat ranks and the picture of the cards | [[two-cards]] |
+| `session.tensor(..., split=d, group=(first, ranks), copy=True)` | which card holds which pages of a tensor | [[two-cards]], [[a-sum-across-cards]] |
+| `run.island(i)` | the run of one card, whose command may cross to the other | [[a-sum-across-cards]] |
 
 ## Kernels, on the Tensix cores
 
@@ -65,6 +68,8 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `km::Messages`: `handler`, `forward` and `send` with a handler | a message names its handler | [[message-handlers]] |
 | `km::X280Port`: `call`, `tell` | ask and tell an X280 core | [[core-asks-x280]] |
 | `km::Overlay`: `load`, `call`, `held`; `km_overlay(kernel, argument)` | load an overlay into a slot and call it; a part's function | [[overlays]] |
+| `km::island()`, `km::islands()`, `km::island_of(rank)`, `km::crosses(rank)`, `group.local()` | where a core and a rank are among the cards | [[two-cards]] |
+| `km::local`, `group.leaders()`, `group.leader(j)`, `km::to_island(i).put` | a reduce kept inside a card, and one part sent across | [[a-sum-across-cards]] |
 | `km_program(kernel, command)` | a program in the runtime's form: one function a kernel, called for each command | [[two-programs]] |
 
 ## Threads, on the X280 cores

@@ -44,7 +44,11 @@ with km.Session(cards=[0, 1]) as session:  # every link, 236 ranks
 `km.Session(cards=[a, b, ...])` returns an `IslandSession`; nothing else is needed.
 Its other arguments, `links=None, islands=None, pll_mhz=None, tree=None, log=None,
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False,
-message_links=False`, are optional limits and choices.
+host_reaches=None, card_dram=False, line=False, packet=None, message_links=False`,
+are optional limits and choices: `packet` is the bytes of a link packet, whole 64-byte
+lines (default 8,192, from 4,352 to 15,232), and `host_reaches`, `card_dram` and `line` are
+described [below](#tensors) and under [a card split into
+islands](#a-card-split-into-islands).
 With one card it has the same calls over one island: no mesh and no fabric, the card's
 own `Session` as `session.island(0)`, the graph `islands.one`, every page of every
 tensor on the card, and each load the card's run as it is without islands. A program
@@ -119,7 +123,7 @@ written for islands runs on one card unchanged.
   session tensors on every core, rows of the table too.
 - A link core is named outside the ranks: a command's group with first
   `KM_GROUP_LINK_BASE + k` and count n names link cores k to k + n - 1 of the island
-  that takes it (`graph.link_group(island, k, n)`). Such a group is never cut by
+  that takes it (`graph.link_group(island, k, count)`). Such a group is never cut by
   island and never crosses; on a core, its rank is its link-core index less k. A link
   core is in no group of ranks. A timed-out command to link cores names them as
   `link core k (island i, core c)`.
@@ -196,6 +200,18 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   a crossing whose line was staged on it (the line's packet number is taken again by
   the next packet), or, on link core 0, a command whose cores wait for an ask or put.
   `run.links_hung` lists `(island, k)` until `run.reset_link(island, k)`.
+- Programs of the runtime's form load as on one card: a list, or a dict of groups in
+  flat ranks, is planned over every rank and each island runs its part, the runtime's
+  kernels built with the island's defines (example 19, `--far`; example 16 `--cards
+  0,1`, a dict whose group is cut at the island boundary, exact).
+- `run.load(program, group)` on an `IslandRun` takes flat ranks and sends each island
+  it touches its part, as `submit` does (one ticket). It loads only a program that
+  some group of each of those islands holds: a program's parts are built against the
+  kernels of a group that holds it (its buffers' formats are in them), so a program
+  whose groups are all on the other island is refused with a sentence, before any part
+  is sent. Example 16 `--cards 0,1 --phase live`: sum cut at the boundary, its island
+  1 half switching to scale and widen and back 200 times, 600 commands exact, the load
+  onto island 0 refused.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
@@ -240,6 +256,13 @@ its start: a `Crossings` whose `rows[(link, source, target)]` hold the counts is
 | `parts` | parts relayed by `km::to_island(i).put` |
 | `puts` | put lines of `km::write_pages` (64 bytes) and their confirmations (8 bytes) |
 | `bytes` | every payload byte of the above |
+
+A row also holds the put ring's counters of the link CPU, as cycles and turns (32-bit,
+a difference is taken modulo 2^32): `ring_sending` (its turns that sent), of them
+`ring_router` (waiting for the router's slots), and between its turns `ring_late` (the
+next slot ready, the CPU elsewhere), `ring_filling` (reserved, not yet written),
+`ring_empty` (not reserved) and `ring_turns` (the turns that sent: a count);
+"Where a put's time goes" below reads them.
 
 `after - before` is what crossed between two reads, so a command is bracketed by a
 read before and one after it; `total(source, target)` sums the links. Each CPU of a
@@ -303,7 +326,7 @@ answers the core's own island. `tensor.accessor_args()` is the same on every isl
 A part's fourth word is its bytes in each bank (an interleaved buffer's pages over the
 8 banks, rounded up, times the aligned page bytes), the bound of `km::SizedTensor`.
 
-`session.bank_range(island, bank, address, bytes)` names `bytes` of one DRAM bank of
+`session.bank_range(island, bank, address, size)` names `size` bytes of one DRAM bank of
 one island from bank address `address` (a multiple of 64), such as an X280 thread's
 region (`run.island(i).threads[cluster].regions.address(name)` gives its bank and
 address): it takes an entry of the table as a tensor does and returns an object whose
@@ -824,7 +847,7 @@ port arrival; the deadline gave the command up, `CommandTimeout` named island 1 
 cores, and the run went on; 16 pages of island 1 read inside the run were exact. Open
 to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
-## Not yet
+## What is not built
 
 - Links: a dynamic run's messages cross only in a RUN of every rank, and while the
   run's messages are served the links carry nothing else (a core's ask waits too). A
@@ -833,19 +856,7 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   link, and a put goes one link only. A copy with both sides placed moves a chunk at a
   time, a line a run of the chunk; a copy that asks pages another island holds sends a
   line a run, all in flight ([pages across a link](#pages-across-a-link)).
-- Engines and uploads over islands; tensors in L1. Programs of the runtime's form load
-  as on one card: a list, or a dict of groups in flat ranks, is planned over every rank
-  and each island runs its part, the runtime's kernels built with the island's defines
-  (example 19, `--far`; example 16 `--cards 0,1`, a dict whose group is cut at the
-  island boundary, exact).
-- `run.load(program, group)` on an `IslandRun` takes flat ranks and sends each island
-  it touches its part, as `submit` does (one ticket). It loads only a program that
-  some group of each of those islands holds: a program's parts are built against the
-  kernels of a group that holds it (its buffers' formats are in them), so a program
-  whose groups are all on the other island is refused with a sentence, before any part
-  is sent. Example 16 `--cards 0,1 --phase live`: sum cut at the boundary, its island
-  1 half switching to scale and widen and back 200 times, 600 commands exact, the load
-  onto island 0 refused.
+- Engines (streams and graphs) and uploads over islands; tensors in L1.
 - A tensor read or written by an address the kernel builds itself
   (`InterleavedAddrGen`: profile pages, job tables, the raster and ray tracer projects)
   does not cross, and neither do its ranges of a page. The raster passes' reads of the
