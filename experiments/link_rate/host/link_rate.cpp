@@ -82,6 +82,8 @@ namespace {
         uint32_t noc = 0;              // the sender kernels' NoC
         std::string target = "l1";     // l1 (a receiver kernel), bare or dram
         uint32_t dual = 0;  // 1: links pair up on one core, one link a data-movement CPU
+        uint32_t send = 0;  // the sender's way a packet leaves (kernels/sender.cpp)
+        uint32_t router_payload = 0;  // the routers' packet payload (0: the fabric's)
         uint32_t seed = 0x1234567u;
         double limit_s = 10.0;
     };
@@ -126,6 +128,10 @@ namespace {
                 o.target = value;
             } else if (key == "--dual") {
                 o.dual = std::stoul(value);
+            } else if (key == "--send") {
+                o.send = std::stoul(value);
+            } else if (key == "--router-payload") {
+                o.router_payload = std::stoul(value);
             } else if (key == "--limit-s") {
                 o.limit_s = std::stod(value);
             } else if (key == "--seed") {
@@ -250,6 +256,10 @@ int main(int argc, char** argv) {
         log("payload must be a multiple of 16; window and batch at least 1");
         return 2;
     }
+    if (o.send > 3 || (o.send >= 2 && o.dual)) {
+        log("send is 0 to 3; 2 and 3 (header and payload joined) without --dual");
+        return 2;
+    }
     const bool kernel_receiver = o.target == "l1";
     const bool dram = o.target == "dram";
     if (!kernel_receiver && !dram && o.target != "bare") {
@@ -287,7 +297,23 @@ int main(int argc, char** argv) {
         " mesh (slow dispatch: " +
         std::string(std::getenv("TT_METAL_SLOW_DISPATCH_MODE") ? "yes" : "no") + ")"
     );
-    tt::tt_fabric::SetFabricConfig(tt::tt_fabric::FabricConfig::FABRIC_1D);
+    tt::tt_fabric::FabricRouterConfig router;
+    if (o.router_payload != 0) {
+        router.max_packet_payload_size_bytes = o.router_payload;
+        log(
+            "routers told: packets of " + std::to_string(o.router_payload) +
+            " B payload"
+        );
+    }
+    tt::tt_fabric::SetFabricConfig(
+        tt::tt_fabric::FabricConfig::FABRIC_1D,
+        tt::tt_fabric::FabricReliabilityMode::STRICT_SYSTEM_HEALTH_SETUP_MODE,
+        std::nullopt,
+        tt::tt_fabric::FabricTensixConfig::DISABLED,
+        tt::tt_fabric::FabricUDMMode::DISABLED,
+        tt::tt_fabric::FabricManagerMode::DEFAULT,
+        router
+    );
     std::shared_ptr<distributed::MeshDevice> mesh;
     try {
         mesh = (
@@ -434,8 +460,14 @@ int main(int argc, char** argv) {
         const uint32_t second_shift = (
             (slots_l1 - status_l1 + slot_bytes + 63) / 64 * 64
         );
+        // send 2 and 3: the sender's packets (header and payload) from headers_l1
+        const uint64_t joined_end = (
+            headers_l1 + 2ull * o.window * (kHeaderStride + o.payload)
+        );
         if (
-            slots_l1 + (o.dual ? second_shift : 0) + slot_bytes > (1536u << 10) - 4096
+            slots_l1 + (o.dual ? second_shift : 0) + slot_bytes >
+                (1536u << 10) - 4096 ||
+            (o.send >= 2 && joined_end > (1536u << 10) - 4096)
         ) {
             throw std::runtime_error("the window does not fit in L1");
         }
@@ -553,7 +585,8 @@ int main(int argc, char** argv) {
                 o.fused,
                 o.batch,
                 o.wait_every,
-                o.space_every
+                o.space_every,
+                o.send
             };
             // The second link of a dual core runs on the other data-movement CPU,
             // which uses the other NoC.
@@ -690,6 +723,8 @@ int main(int argc, char** argv) {
                << ", \"space_every\": " << o.space_every << ", \"place\": \"" << o.place
                << "\", \"rx_place\": \"" << o.rx_place << "\", \"noc\": " << o.noc
                << ", \"target\": \"" << o.target << "\", \"dual\": " << o.dual
+               << ", \"send\": " << o.send
+               << ", \"router_payload\": " << o.router_payload
                << "}, \"noc_size\": [" << noc_size.first << ", " << noc_size.second
                << "], \"expect\": " << expect << ", \"aiclk_mhz\": [" << clocks.str()
                << "], \"pairs\": [";

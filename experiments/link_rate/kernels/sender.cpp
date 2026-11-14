@@ -1,5 +1,10 @@
 // Sender: streams packets over its fabric link from slot p % window into the
-// destination's same slot; headers written once, every wait bounded.
+// destination's same slot; headers written once, every wait bounded. `send` picks how
+// a packet leaves: 0 the payload and then its header (two writes and a credit each),
+// 1 the same two writes on command buffers set up once, 2 header and payload one
+// after the other in L1 and one write on set-up command buffers, 3 as 2 with posted
+// writes; 1 to 3 check the router's free slots only when the count read last is used
+// up.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -11,7 +16,7 @@
 
 using namespace tt::tt_fabric;
 
-constexpr uint32_t kArgs = 24;  // before the connection's; the host's: compile arg 0
+constexpr uint32_t kArgs = 25;  // before the connection's; the host's: compile arg 0
 
 inline uint32_t wall_lo() {
     return *reinterpret_cast<volatile uint32_t*>(RISCV_DEBUG_REG_WALL_CLOCK_L);
@@ -72,6 +77,7 @@ void kernel_main() {
     const uint32_t space_every = get_arg_val<uint32_t>(
         i++
     );  // 1 or 8: packets a space check
+    const uint32_t send = get_arg_val<uint32_t>(i++);  // 0 to 3, above
 
     volatile tt_l1_ptr uint32_t*
         status = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(status_l1);
@@ -87,15 +93,28 @@ void kernel_main() {
     if (
         i != kArgs || get_compile_time_arg_val(0) != kArgs || hops == 0 || hops > 255 ||
         payload == 0 || payload % 16 != 0 || window == 0 || slots_l1 % 16 != 0 ||
-        headers_l1 % 16 != 0 || dst_addr % 16 != 0 || cnt_addr % 16 != 0 || batch == 0
+        headers_l1 % 16 != 0 || dst_addr % 16 != 0 || cnt_addr % 16 != 0 ||
+        batch == 0 || send > 3 || sizeof(PACKET_HEADER_TYPE) % 16 != 0
     ) {
         code = kCodeArgs;
     } else {
-        volatile tt_l1_ptr uint32_t*
-            slots = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(slots_l1);
-        for (uint32_t s = 0; s < window; s++) {
+        // send 2 and 3: packet h (2 * window of them, the plain then the fused) at
+        // headers_l1 + h * (header + payload), its payload right after its header (a
+        // header of 16-byte words)
+        const bool joined = send >= 2;
+        const uint32_t packet_bytes = sizeof(PACKET_HEADER_TYPE) + payload;
+        const auto header_at = [&](uint32_t h) {
+            return headers_l1 + h * (joined ? packet_bytes : kHeaderStride);
+        };
+        for (uint32_t h = 0; h < (joined ? 2 * window : window); h++) {
+            volatile tt_l1_ptr uint32_t* slots = (
+                reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+                    joined ? header_at(h) + sizeof(PACKET_HEADER_TYPE)
+                           : slots_l1 + h * payload
+                )
+            );
             for (uint32_t w = 0; w < payload / 4; w++) {
-                slots[s * (payload / 4) + w] = pattern(seed, sender_id, s, w);
+                slots[w] = pattern(seed, sender_id, h % window, w);
             }
         }
         auto sender = (
@@ -110,7 +129,7 @@ void kernel_main() {
             volatile tt_l1_ptr PACKET_HEADER_TYPE*
                 header = (
                     reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(
-                        headers_l1 + h * kHeaderStride
+                        header_at(h)
                     )
                 );
             volatile tt_l1_ptr uint32_t*
@@ -135,6 +154,12 @@ void kernel_main() {
         }
         slots_in_router = sender.num_buffers_per_channel;
         sender.open();
+        if (send == 3) {
+            sender.setup_stateful_send_cmd_bufs<true>(noc_index);
+        } else if (send != 0) {
+            sender.setup_stateful_send_cmd_bufs<false>(noc_index);
+        }
+        uint32_t free_slots = 0;  // send 1 to 3: the router's free slots read last
         // The wait lets the receiver, launched at about the same time, start first.
         const uint64_t opened = clock.now();
         while (clock.now() - opened < delay) {
@@ -144,7 +169,8 @@ void kernel_main() {
         auto sent_out = [] {
             return (
                 ncrisc_noc_nonposted_writes_sent(noc_index) &&
-                ncrisc_noc_nonposted_writes_sent(get_fabric_worker_noc())
+                ncrisc_noc_nonposted_writes_sent(get_fabric_worker_noc()) &&
+                ncrisc_noc_posted_writes_sent(noc_index)
             );
         };
         for (uint32_t p = 0; p < packets; p++) {
@@ -157,6 +183,39 @@ void kernel_main() {
             }
             const uint32_t slot = p % window;
             const bool counted = fused || (p + 1) % batch == 0 || p + 1 == packets;
+            const uint32_t h = (counted ? window : 0) + slot;
+            if (send != 0) {
+                if (free_slots == 0) {
+                    free_slots = sender.get_num_free_write_slots();
+                }
+                if (free_slots == 0) {
+                    const uint64_t waiting = clock.now();
+                    if (!poll(clock, waiting, limit, [&] {
+                        free_slots = sender.get_num_free_write_slots();
+                        return free_slots != 0;
+                    })) {
+                        code = kCodeSlotTimeout;
+                        break;
+                    }
+                    waited += clock.now() - waiting;
+                }
+                if (send == 1) {
+                    sender.send_current_slot_stateful_non_blocking<false>(
+                        slots_l1 + slot * payload, payload, header_at(h), noc_index
+                    );
+                } else if (send == 2) {
+                    sender.send_current_slot_stateful_non_blocking_from_address<false>(
+                        header_at(h), packet_bytes, noc_index
+                    );
+                } else {
+                    sender.send_current_slot_stateful_non_blocking_from_address<true>(
+                        header_at(h), packet_bytes, noc_index
+                    );
+                }
+                free_slots--;
+                sent++;
+                continue;
+            }
             // One check for the next eight slots covers eight packets.
             if (space_every == 8 ? p % 8 == 0 : true) {
                 const bool free = (
@@ -183,8 +242,7 @@ void kernel_main() {
                 slots_l1 + slot * payload, payload
             );
             sender.send_payload_flush_non_blocking_from_address(
-                headers_l1 + ((counted ? window : 0) + slot) * kHeaderStride,
-                sizeof(PACKET_HEADER_TYPE)
+                header_at(h), sizeof(PACKET_HEADER_TYPE)
             );
             sent++;
         }

@@ -147,9 +147,7 @@ def open_session(args, cards):
         return km.Session(card=card, islands=args.islands, line=args.line, log=log)
     # the page calls over islands take the kernels past the runtime's 69 KiB buffer
     reaches = None if args.host_reaches is None else [args.host_reaches]
-    return km.Session(
-        cards=cards, log=log, kernel_bytes=96 * 1024, host_reaches=reaches
-    )
+    return km.Session(cards=cards, log=log, host_reaches=reaches)
 
 
 def main():

@@ -772,17 +772,36 @@ namespace {
     };
 
     // Several chips as one 1 x count mesh with tt-metal's 1-D fabric on (slow
-    // dispatch), each chip an island: a 1 x 1 submesh with its own command queue.
+    // dispatch), each chip an island: a 1 x 1 submesh with its own command queue. The
+    // routers carry packets of `packet` payload bytes (0: tt-metal's default).
     class Islands {
     public:
-        Islands(uint32_t count, std::optional<size_t> worker_l1_size) {
+        Islands(uint32_t count, std::optional<size_t> worker_l1_size, uint32_t packet) {
             namespace distributed = tt::tt_metal::distributed;
             if (count < 2) {
                 throw std::invalid_argument(
                     "islands: at least 2 (the fabric's minimum)"
                 );
             }
-            tt::tt_fabric::SetFabricConfig(tt::tt_fabric::FabricConfig::FABRIC_1D);
+            if (packet % 16 != 0) {
+                throw std::invalid_argument(
+                    "islands: a packet of " + std::to_string(packet) +
+                    " bytes (whole 16-byte words)"
+                );
+            }
+            tt::tt_fabric::FabricRouterConfig router;
+            if (packet != 0) {
+                router.max_packet_payload_size_bytes = packet;
+            }
+            tt::tt_fabric::SetFabricConfig(
+                tt::tt_fabric::FabricConfig::FABRIC_1D,
+                tt::tt_fabric::FabricReliabilityMode::STRICT_SYSTEM_HEALTH_SETUP_MODE,
+                std::nullopt,
+                tt::tt_fabric::FabricTensixConfig::DISABLED,
+                tt::tt_fabric::FabricUDMMode::DISABLED,
+                tt::tt_fabric::FabricManagerMode::DEFAULT,
+                router
+            );
             try {
                 mesh_ = MeshDevice::create(
                     distributed::MeshDeviceConfig(distributed::MeshShape(1, count)),
@@ -3019,9 +3038,10 @@ NB_MODULE(_km_host, m) {
         });
     nb::class_<Islands>(m, "Islands")
         .def(
-            nb::init<uint32_t, std::optional<size_t>>(),
+            nb::init<uint32_t, std::optional<size_t>, uint32_t>(),
             nb::arg("count"),
-            nb::arg("worker_l1_size") = nb::none()
+            nb::arg("worker_l1_size") = nb::none(),
+            nb::arg("packet") = 0
         ).def_prop_ro("is_open", &Islands::is_open).def("count", &Islands::count)
         .def("chips", &Islands::chips)
         .def("device", &Islands::device, nb::arg("island"))

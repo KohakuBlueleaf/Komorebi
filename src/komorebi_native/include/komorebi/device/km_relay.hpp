@@ -36,14 +36,15 @@ namespace km {
     constexpr uint32_t kRelayNoPort = 0xFFFFFFFFu;
 #if !defined(KM_WIRE)
     // Two cards: link core 0 writes an ask's bytes straight into the far rank's L1, a
-    // packet a slot (its stage: kRelaySlots and a header each; no far inbox).
-    constexpr uint32_t kRelayPacket = KM_PAGES_PACKET_MAX;
+    // packet a slot (its stage: kRelaySlots of kRelayStageSlot bytes at most and a
+    // header each; no far inbox).
     constexpr uint32_t kRelaySlots = 4;
     constexpr uint32_t kRelaySlotAt = KM_RELAY_STAGE + 512;
+    constexpr uint32_t kRelayStageSlot = (
+        (KM_RELAY_BYTES - kRelaySlotAt) / kRelaySlots / 64 * 64
+    );
     static_assert(
-        kRelaySlots * 64 <= 512 &&
-            kRelaySlotAt + kRelaySlots * kRelayPacket <= KM_RELAY_BYTES &&
-            kRelayPacket % 16 == 0,
+        kRelaySlots * 64 <= 512 && kRelayStageSlot >= 4096,
         "the relay's slots fit its stage and inbox"
     );
     constexpr uint32_t kRelayTurnAsks = 16;  // asks served a turn at most
@@ -316,14 +317,19 @@ namespace km {
                     )
             );
             auto& sender = link_sender();
-            // the slots: this CPU's page chunk (free between its PAGES commands), else
-            // the relay's stage
+            // the slots: this CPU's page chunk before its ring (free between its PAGES
+            // commands), else the relay's stage
+            const uint32_t packet = pages_packet();
+            const uint32_t room = pages_room(pages_held.chunk, packet);
             const uint32_t fit = (
-                pages_held.chunk > kPagesSlots
-                    ? (pages_held.chunk - kPagesSlots) / kRelayPacket
-                    : 0
+                room > kPagesSlots && packet != 0 ? (room - kPagesSlots) / packet : 0
             );
             const bool paged = fit >= kRelaySlots;
+            // a packet's bytes: the island's, or the stage's slot where it is less
+            const uint32_t size = (
+                paged || packet < kRelayStageSlot ? packet : kRelayStageSlot
+            );
+            ok = ok && size != 0;
             const uint32_t slots = (
                 paged ? (fit < kPagesSlotsMax ? fit : kPagesSlotsMax) : kRelaySlots
             );
@@ -334,16 +340,16 @@ namespace km {
                 paged ? pages_held.area + kPagesHeaders : area_ + KM_RELAY_STAGE
             );
             uint32_t sent_mark[kPagesSlotsMax] = {};
-            const uint32_t chunks = (bytes + kRelayPacket - 1) / kRelayPacket;
-            const uint32_t tail = bytes - (chunks - 1) * kRelayPacket;
+            const uint32_t chunks = size != 0 ? (bytes + size - 1) / size : 0;
+            const uint32_t tail = bytes - (chunks - 1) * size;
             // Slot r's read carries transaction id 1 + r: reads run ahead in the slots.
             uint32_t ahead = 0, r = 0;
             const auto read = [&] {
                 noc_async_read_set_trid(1 + r);
                 noc_async_read(
-                    kernel.core_noc(source, from + ahead * kRelayPacket),
-                    slot_at + r * kRelayPacket,
-                    ahead + 1 == chunks ? tail : kRelayPacket
+                    kernel.core_noc(source, from + ahead * size),
+                    slot_at + r * size,
+                    ahead + 1 == chunks ? tail : size
                 );
                 ahead++;
                 r = r + 1 == slots ? 0 : r + 1;
@@ -353,8 +359,8 @@ namespace km {
             }
             uint32_t s = 0, last = slots - 1;
             for (uint32_t k = 0; ok && k < chunks; k++) {
-                const uint32_t n = k + 1 == chunks ? tail : kRelayPacket;
-                const uint32_t slot = slot_at + s * kRelayPacket;
+                const uint32_t n = k + 1 == chunks ? tail : size;
+                const uint32_t slot = slot_at + s * size;
                 if (k != 0 && ahead < chunks) {  // the last packet's slot, once it left
                     ok = soon(kernel, [&] {
                         return (
@@ -382,7 +388,7 @@ namespace km {
                         )
                 );
                 const uint64_t at = (
-                    link_noc(xy & 0xFFFFu, xy >> 16, to + k * kRelayPacket)
+                    link_noc(xy & 0xFFFFu, xy >> 16, to + k * size)
                 );
                 if (k + 1 == chunks) {
                     link_counted_write(made, at, counter, 1, n);
