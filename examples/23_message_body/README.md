@@ -60,6 +60,39 @@ all exact (every word of the final body checked).
 | 12 cores (14 with the counter tiles), 1200 hops | 1.974 to 1.978 µs a hop | 2.394 to 2.397 µs | 5.452 to 5.454 µs |
 | the grid, 118 ranks (120 cores), 1180 hops | 2.081 to 2.099 µs a hop | 2.532 to 2.541 µs | 5.564 to 5.599 µs |
 
+With `--parts` the handler is an overlay part under Komorebi's own kernels
+(`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
+in one run, 6.39 µs a hop against 5.45 compiled in.
+
 Moving a 4 KiB body costs a hop about 0.42 µs more on 12 cores and 0.45 µs more on the
 grid than the line alone. Changing all 1024 words on the three compute threads costs
 about 3.06 µs (a third of the body each).
+
+## A cast of a body
+
+`cast_body.py` casts a body to a group instead: the first core of each broadcast of a
+rectangle reads a 4 KiB body from DRAM into its broadcast slot and casts it, and every
+core of the broadcast, the sender too, gets it in its buffer
+([broadcast](../../docs/reference/broadcast.md)). No new call is needed: the broadcast's
+buffer has one 4 KiB page a block (`km.Buffer(0, "uint32", 4096, window)`). Each core's
+unpack thread folds every word of every body into its L1 area (`cast_fold`), and the
+host checks each core's fold against numpy; `--no-fold` only frees each body, for the
+cost of the cast alone.
+
+```
+python cast_body.py --rect 0,0,12,1 --along row             # 12 cores: two broadcasts of six
+python cast_body.py --rect 0,0,12,10 --along column         # the grid: twelve of ten
+python cast_body.py --rect 0,0,12,10 --along column --no-fold
+```
+
+Card 1, 2026-11-14, 4 jobs of 1000 casts of 8 distinct bodies, window 2, host load 3.0
+to 5.7; a cast is the job's time over its casts:
+
+| Group | Folded, every word checked | Freed unread |
+|---|---|---|
+| a row of 12 cores (two broadcasts of six) | 0 of 12 cores wrong, 12,288,000 words; 10.42 µs a cast | 1.33 µs a cast |
+| the grid, 120 cores (twelve broadcasts of ten) | 0 of 120 cores wrong, 122,880,000 words; 10.43 µs a cast | 1.39 µs a cast |
+
+A cast of 4 KiB to a row or a column costs about 1.3 to 1.4 µs; the fold of 1024 words on
+one compute thread (about 9 µs) bounds the folded runs.
+
