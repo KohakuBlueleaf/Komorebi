@@ -26,7 +26,9 @@ def log(message):
 
 def parse(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--step", type=int, default=1, help="1: by the host")
+    parser.add_argument(
+        "--step", type=int, default=1, help="1: by the host, 2: by the dispatcher"
+    )
     parser.add_argument("--first", type=int, default=14, help="the group's first core")
     parser.add_argument("--core", type=int, default=15, help="the core reset")
     parser.add_argument("--tiles", type=int, default=120, help="input tiles of a MAP")
@@ -89,6 +91,26 @@ def brief(core):
     return json.dumps({k: v for k, v in core.items() if k not in skip}, default=str)
 
 
+def dispatcher_reset(run, core, x, y, report):
+    """The dispatcher resets `core`: the host uploads the write list and sends the
+    command; the X280's ticks and the host's seconds. True: the core is back."""
+    started = time.perf_counter()
+    writes = run.backend.launch.reset_list(x, y)
+    run.backend.port.upload(0, writes)
+    report["list_bytes"] = len(writes)
+    report["list_s"] = round(time.perf_counter() - started, 4)
+    log(f"write list: {len(writes)} B uploaded in {report['list_s']} s")
+    started = time.perf_counter()
+    handle = run._queue_command(run.h["KMD_HANDLER_RESET"], (core, 1), [0, len(writes)])
+    run._counts[-1] = 0  # the kernel's own command: no sequence number
+    (event,) = run.wait([handle], timeout=10.0)
+    report["reset_s"] = round(time.perf_counter() - started, 4)
+    report["x280_s"] = round(event.ticks / 50e6, 4)
+    report["status"] = event.auxiliary
+    log(f"reset by the dispatcher: {event}, host {report['reset_s']} s")
+    return event.kind == "pong" and event.auxiliary == run.h["KMD_RESET_OK"]
+
+
 def main():
     args = parse()
     generator = np.random.default_rng(args.seed)
@@ -125,16 +147,20 @@ def main():
         before = maps.batch([group, everyone], args.maps)
         split = len(maps.done)
         x, y = args.core % grid[0], args.core // grid[0]
-        log(f"reset of core {args.core} ({x}, {y}) by the host")
-        started = time.perf_counter()
-        parts = run.backend.launch.reset_core(x, y, 2.0)
-        report["reset_s"] = round(time.perf_counter() - started, 4)
-        report["parts_s"] = [round(part, 4) for part in parts]
-        log(f"reset done: {report['reset_s']} s, parts {report['parts_s']}")
+        if args.step == 1:
+            log(f"reset of core {args.core} ({x}, {y}) by the host")
+            started = time.perf_counter()
+            parts = run.backend.launch.reset_core(x, y, 2.0)
+            report["reset_s"] = round(time.perf_counter() - started, 4)
+            report["parts_s"] = [round(part, 4) for part in parts]
+            log(f"reset done: {report['reset_s']} s, parts {report['parts_s']}")
+            back = parts[1] >= 0
+        else:
+            back = dispatcher_reset(run, args.core, x, y, report)
         time.sleep(0.1)
         for core in run.inspect(group):
             log(f"inspect after the reset: {brief(core)}")
-        if parts[1] < 0:
+        if not back:
             report["firmware"] = False
             log("the core's firmware did not report DONE")
         else:

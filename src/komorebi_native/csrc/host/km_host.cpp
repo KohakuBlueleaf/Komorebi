@@ -1212,6 +1212,223 @@ namespace {
             return took;
         }
 
+        // The dispatcher's reset of core (x, y) (KMD_HANDLER_RESET): reset_core's
+        // writes as a write list of km_dispatch.h, in whole 64-byte lines.
+        nb::bytes reset_list(uint32_t x, uint32_t y) {
+            namespace tm = tt::tt_metal;
+            if (!workload_) {
+                throw std::runtime_error("reset_list: the program was not launched");
+            }
+            const auto& hal = tm::MetalContext::instance().hal();
+            auto* dev = chip(*mesh_);
+            const auto tensix = tm::HalProgrammableCoreType::TENSIX;
+            const uint32_t index = hal.get_programmable_core_type_index(tensix);
+            const tm::CoreCoord logical{x, y};
+            auto& program = workload_->get_programs().begin()->second;
+            auto* group = program.impl().kernels_on_core(logical, index);
+            if (group == nullptr) {
+                throw std::invalid_argument("reset_list: no kernels on that core");
+            }
+            if (
+                !program.impl()
+                                .semaphores_on_core(logical, tt::CoreType::WORKER)
+                .empty()
+            ) {
+                throw std::invalid_argument("reset_list: the core has semaphores");
+            }
+            std::vector<uint32_t> list;
+            const auto entry = [&](
+                uint32_t kind, uint64_t at, uint32_t size, uint32_t value
+            ) {
+                list.insert(list.end(), {kind, static_cast<uint32_t>(at), size, value});
+            };
+            const auto write = [&](uint64_t at, const void* data, size_t size) {
+                if (size % 4 != 0 || at % 4 != 0 || at + size > KMD_L1_BYTES) {
+                    throw std::runtime_error("reset_list: a write not of whole words");
+                }
+                entry(KMD_RESET_WRITE, at, static_cast<uint32_t>(size), 0);
+                const size_t start = list.size();
+                list.resize(start + (size + 15) / 16 * 4, 0);
+                std::memcpy(list.data() + start, data, size);
+            };
+            const auto address = [&](tm::HalL1MemAddrType type) {
+                return hal.get_dev_addr(tensix, type);
+            };
+            const auto image = [&](const ll_api::memory& memory, auto at) {
+                memory.process_spans([&](auto words, uint64_t span, uint32_t count) {
+                    write(at(span), &*words, count * sizeof(uint32_t));
+                });
+            };
+
+            entry(KMD_RESET_ASSERT, 0, 0, 0);
+            auto& builds = (
+                tm::BuildEnvManager::get_instance(tm::extract_context_id(dev))
+            );
+            for (
+                uint32_t kind = 0; kind < hal.get_processor_classes_count(tensix);
+                kind++
+            ) {
+                const uint32_t states = (
+                    builds.get_build_index_and_state_count(index, kind, true).second
+                );
+                for (uint32_t risc = 0; risc < states; risc++) {
+                    const uint64_t local = (
+                        hal.get_jit_build_config(index, kind, risc).local_init_addr
+                    );
+                    image(
+                        tt::llrt::get_risc_binary(builds.get_firmware_binary_path(
+                            dev->id(), index, kind, risc
+                        )),
+                        [&](uint64_t span) {
+                            return hal.relocate_dev_addr(span, local, false);
+                        }
+                    );
+                }
+            }
+            for (const auto& [at, bytes] : firmware_tables(dev)) {
+                write(at, bytes.data(), bytes.size());
+            }
+            auto factory = hal.get_dev_msgs_factory(tensix);
+            auto initial = factory.create<tm::dev_msgs::launch_msg_t>();
+            initial.view().kernel_config().mode() = tm::dev_msgs::DISPATCH_MODE_HOST;
+            std::vector<std::byte> launches;
+            for (
+                size_t entry = 0; entry < tm::dev_msgs::launch_msg_buffer_num_entries;
+                entry++
+            ) {
+                launches.insert(
+                    launches.end(), initial.data(), initial.data() + initial.size()
+                );
+            }
+            write(
+                address(tm::HalL1MemAddrType::LAUNCH), launches.data(), launches.size()
+            );
+            auto go = factory.create<tm::dev_msgs::go_msg_t>();
+            go.view().signal() = tm::dev_msgs::RUN_MSG_INIT;
+            write(address(tm::HalL1MemAddrType::GO_MSG), go.data(), go.size());
+            const uint32_t zero = 0;
+            write(address(tm::HalL1MemAddrType::LAUNCH_MSG_BUFFER_RD_PTR), &zero, 4);
+            write(address(tm::HalL1MemAddrType::GO_MSG_INDEX), &zero, 4);
+            const auto& boot = hal.get_jit_build_config(index, 0, 0);
+            write(boot.fw_launch_addr, &boot.fw_launch_addr_value, 4);
+            entry(KMD_RESET_RELEASE, 0, 0, 0);
+            // The firmware's DONE: the go message's signal byte (its mask from a go
+            // message whose signal is all ones) reads RUN_MSG_DONE.
+            auto mask = factory.create<tm::dev_msgs::go_msg_t>();
+            mask.view().signal() = 0xFF;
+            uint32_t mask_word = 0, done_word = 0;
+            std::memcpy(&mask_word, mask.data(), 4);
+            go.view().signal() = tm::dev_msgs::RUN_MSG_DONE;
+            std::memcpy(&done_word, go.data(), 4);
+            entry(
+                KMD_RESET_WAIT,
+                address(tm::HalL1MemAddrType::GO_MSG),
+                mask_word,
+                done_word & mask_word
+            );
+
+            const uint64_t config_base = address(tm::HalL1MemAddrType::KERNEL_CONFIG);
+            const uint64_t key = (
+                builds.get_device_build_env(dev->build_id()).build_key()
+            );
+            for (const auto kernel_id : group->kernel_ids) {
+                const auto& kernel = program.impl().get_kernel(kernel_id);
+                const auto& binaries = kernel->binaries(key);
+                for (size_t binary = 0; binary < binaries.size(); binary++) {
+                    const uint32_t processor = (
+                        hal.get_processor_index(
+                            kernel->get_kernel_programmable_core_type(),
+                            kernel->get_kernel_processor_class(),
+                            kernel->get_kernel_processor_type(static_cast<int>(binary))
+                        )
+                    );
+                    const uint64_t at = (
+                        config_base + group->kernel_text_offsets[processor]
+                    );
+                    image(*binaries[binary], [&](uint64_t) {
+                        return at;
+                    });
+                }
+            }
+            const auto& config = program.impl().get_program_config(index);
+            const uint32_t max_buffers = hal.get_num_dataflow_buffers();
+            std::vector<uint32_t> cbs(config.cb_size / sizeof(uint32_t));
+            const uint32_t remote_offset = config.local_cb_size / sizeof(uint32_t);
+            for (
+                const auto& buffer : program.impl().circular_buffers_on_core(logical)
+            ) {
+                for (const uint32_t buffer_index : buffer->local_buffer_indices()) {
+                    const uint32_t base = (
+                        buffer_index * UINT32_WORDS_PER_LOCAL_CIRCULAR_BUFFER_CONFIG
+                    );
+                    const uint32_t pages = buffer->num_pages(buffer_index);
+                    cbs[base] = buffer->address();
+                    cbs[base + 1] = buffer->size();
+                    cbs[base + 2] = pages;
+                    cbs[base + 3] = buffer->size() / pages;
+                }
+                for (const uint32_t buffer_index : buffer->remote_buffer_indices()) {
+                    const uint32_t base = (
+                        remote_offset +
+                        (max_buffers - 1 - buffer_index) *
+                            UINT32_WORDS_PER_REMOTE_CIRCULAR_BUFFER_CONFIG
+                    );
+                    cbs[base] = buffer->config_address();
+                    cbs[base + 1] = buffer->page_size(buffer_index);
+                }
+            }
+            if (!cbs.empty()) {
+                write(config_base + config.cb_offset, cbs.data(), cbs.size() * 4);
+            }
+            auto launch = group->launch_msg.view();
+            auto kernel_config = launch.kernel_config();
+            const uint64_t args_base = (
+                static_cast<uint64_t>(kernel_config.kernel_config_base()[index]) +
+                hal.get_l1_noc_offset(tensix)
+            );
+            for (const auto kernel_id : group->kernel_ids) {
+                const auto& kernel = program.impl().get_kernel(kernel_id);
+                const uint32_t processor = (
+                    hal.get_processor_index(
+                        kernel->get_kernel_programmable_core_type(),
+                        kernel->get_kernel_processor_class(),
+                        kernel->get_kernel_processor_type(0)
+                    )
+                );
+                const auto offsets = kernel_config.rta_offset()[processor];
+                const auto& args = kernel->runtime_args(logical);
+                if (!args.empty()) {
+                    write(
+                        args_base + offsets.rta_offset(), args.data(), args.size() * 4
+                    );
+                }
+                const auto& common = kernel->common_runtime_args();
+                if (!common.empty()) {
+                    write(
+                        args_base + offsets.crta_offset(),
+                        common.data(),
+                        common.size() * 4
+                    );
+                }
+            }
+            kernel_config.host_assigned_id() = program.get_runtime_id();
+            kernel_config.mode() = tm::dev_msgs::DISPATCH_MODE_HOST;
+            write(address(tm::HalL1MemAddrType::LAUNCH), launch.data(), launch.size());
+            write(
+                address(tm::HalL1MemAddrType::GO_MSG),
+                group->go_msg.data(),
+                group->go_msg.size()
+            );
+            entry(KMD_RESET_END, 0, 0, 0);
+            list.resize((list.size() + 15) / 16 * 16, 0);
+            return (
+                nb::bytes(
+                    reinterpret_cast<const char*>(list.data()),
+                    list.size() * sizeof(uint32_t)
+                )
+            );
+        }
+
     private:
         std::shared_ptr<MeshDevice> mesh_;
         tt::tt_metal::ProgramDescriptor desc_;
@@ -2378,7 +2595,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("x"),
             nb::arg("y"),
             nb::arg("timeout_s")
-        );
+        ).def("reset_list", &Launch::reset_list, nb::arg("x"), nb::arg("y"));
     m.def(
         "write_l1",
         [](
