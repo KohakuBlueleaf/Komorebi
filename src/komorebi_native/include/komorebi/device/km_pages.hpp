@@ -173,7 +173,11 @@ namespace km {
         uint32_t at;
         uint32_t slots;
         uint32_t issued;
-        uint32_t mark;
+        uint32_t mark;  // the writes issued after the last burst
+        // the oldest burst not yet counted sent: the slots issued by it, its mark
+        uint32_t held;
+        uint32_t held_mark;
+        bool holding;
     };
 
     inline PagesRing pages_ring_held;
@@ -1005,9 +1009,10 @@ namespace km {
 
     // Page CPU `cpu` of its core: the ready slots of its ring, in order, over its held
     // link (each packet as the putting core made it), and nothing else, while any is
-    // ready: once a burst's packets have left L1 its slots are counted sent at once
-    // (in its ring words in the link area at `area`), for the putting cores' room,
-    // and the slots made ready meanwhile follow. kGave* code.
+    // ready, a burst after another without waiting for one to leave L1: the oldest
+    // burst not yet counted is counted sent (in its ring words in the link area at
+    // `area`, for the putting cores' room) once its packets have left L1, looked at
+    // between bursts and while the router has no slot. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_ring(
         const Kernel& kernel, uint32_t cpu, uint32_t area
@@ -1017,8 +1022,20 @@ namespace km {
             return kGaveNone;
         }
         volatile tt_l1_ptr uint32_t* words = l1(area + KM_PUT_RING_WORDS + 16 * cpu);
+        // the slots of the held burst counted sent once its packets left L1, so the
+        // putting cores may fill them while later bursts go (no wait for a burst)
+        const auto publish = [&] {
+            if (
+                ring.holding &&
+                noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, ring.held_mark)
+            ) {
+                words[KM_PUT_RING_SENT / 4] = ring.held;
+                ring.holding = false;
+            }
+        };
+        publish();
         if (
-            words[KM_PUT_RING_SENT / 4] != ring.issued &&
+            !ring.holding && words[KM_PUT_RING_SENT / 4] != ring.issued &&
             noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, ring.mark)
         ) {
             words[KM_PUT_RING_SENT / 4] = ring.issued;
@@ -1046,6 +1063,7 @@ namespace km {
                     code = kernel.poll_at(
                         kWherePages,
                         [&] {
+                            publish();
                             return sender.space();
                         },
                         limit
@@ -1073,19 +1091,14 @@ namespace km {
             sending = true;
             ring.mark = noc_nonposted_writes_num_issued[noc_index];
             cross_count(area, KM_CROSS_PAGES, packets, bytes);
-            // the burst's slots free as soon as its packets left L1
-            code = kernel.poll_at(
-                kWherePages,
-                [&] {
-                    return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, ring.mark);
-                },
-                limit
-            );
-            if (code != kGaveNone) {
-                return code;
+            publish();
+            if (!ring.holding) {  // this burst held until its packets left L1
+                ring.held = ring.issued;
+                ring.held_mark = ring.mark;
+                ring.holding = true;
             }
-            words[KM_PUT_RING_SENT / 4] = ring.issued;
         }
+        publish();
         if (sending) {  // the turn's cycles sending, and of them waiting for the router
             words[KM_PUT_RING_SENDING / 4] += wall() - started;
             words[KM_PUT_RING_ROUTER / 4] += router;
