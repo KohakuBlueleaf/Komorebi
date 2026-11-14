@@ -440,18 +440,19 @@ KM_STATIC_ASSERT(
 #define KM_LIVE_TRACE_CAP 21u /* live word: the sequences it holds */
 #define KM_TRACE_ENTRY 16u /* bytes of one sequence's trace entry (km::kTraceWords) */
 /* Islands: sets of cores that reach each other only through links, ranks flat and
-   contiguous by island. A header line {island, islands, its first rank, its ranks} */
+   contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
 /* then the island table: an entry per island {first rank u16, count u16, next link u8
    (this island's own link number toward it), hops u8, 0 u16}; the host's, at load */
 #define KM_ISLANDS_MAX 16u
 #define KM_ISLAND_ENTRY_BYTES 8u
-#define KM_ISLAND_HEADER_BYTES 16u
+#define KM_ISLAND_HEADER_BYTES 32u
 #define KM_ISLAND_NO_LINK 0xFFu /* next link of the holder's own entry */
 #define KM_ISLAND_HERE 0u       /* header words: this island (0: island 0 of one) */
 #define KM_ISLAND_COUNT 1u      /* islands in the table (0 read as 1) */
 #define KM_ISLAND_FIRST 2u      /* this island's first rank */
 #define KM_ISLAND_RANKS 3u      /* this island's ranks */
+#define KM_ISLAND_BASE 4u       /* its first core of the card: core = base + local */
 #define KM_ISLANDS_BYTES                                                             \
     ((KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES + 63u) / 64u * \
      64u)
@@ -459,8 +460,29 @@ KM_STATIC_ASSERT(
    link area) */
 #define KM_ISLAND_LINK_AREA \
     (KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES)
-/* then a word, the tensor table's L1 address on this island's cores (0: none) */
-#define KM_ISLAND_TENSORS (KM_ISLAND_LINK_AREA + 4u)
+/* words after it: the relay area's L1 address on this island (0: no relay), the far
+ * island's, and the far link core 0's NoC tile x | y << 16 (km_relay.hpp) */
+#define KM_ISLAND_RELAY (KM_ISLAND_LINK_AREA / 4u + 1u)
+#define KM_ISLAND_RELAY_FAR (KM_ISLAND_RELAY + 1u)
+#define KM_ISLAND_RELAY_TILE (KM_ISLAND_RELAY + 2u)
+/* The relay area, on every core: a leader's ask to link core 0 (64 bytes a ring slot),
+ * the link core's done word back to the leader (16 bytes a slot), then link core 0's */
+#define KM_RELAY_ASK 0x0000u
+#define KM_RELAY_DONE 0x1000u
+#define KM_RELAY_ASKED 0x1400u  /* link core: asks posted (leaders add 1) */
+#define KM_RELAY_CREDIT 0x1410u /* link core: the far side's taken count */
+#define KM_RELAY_LANDED 0x1420u /* link core: requests landed from the far side */
+#define KM_RELAY_STATE 0x1430u  /* link core: served, sent, taken, failed */
+#define KM_RELAY_LINES 0x1440u  /* link core: 16-byte sources (taken, a done word) */
+#define KM_RELAY_HEADERS 0x1480u /* link core: four packet headers, 64 bytes each */
+#define KM_RELAY_DESC 0x1580u    /* link core: an ask as it crosses, 64 bytes */
+#define KM_RELAY_STAGE 0x1600u   /* link core: one chunk on its way out */
+#define KM_RELAY_CHUNK 4096u
+#define KM_RELAY_INBOX (KM_RELAY_STAGE + KM_RELAY_CHUNK) /* the far ask, its bytes */
+#define KM_RELAY_MAX 16384u /* the most bytes one ask carries */
+#define KM_RELAY_BYTES (KM_RELAY_INBOX + 64u + KM_RELAY_MAX)
+/* then a word (a byte offset), the tensor table's L1 address on this island (0: none) */
+#define KM_ISLAND_TENSORS ((KM_ISLAND_RELAY_TILE + 1u) * 4u)
 /* a reference word below KM_TENSORS_MAX names an entry, any other a bank address */
 #define KM_TENSORS_MAX 32u
 /* an entry: {aligned page bytes, steps of the split dimension, pages a step, copy} */
@@ -503,9 +525,17 @@ KM_STATIC_ASSERT(
     "the island area: whole lines after the live words; an island is a bit of a word"
 );
 KM_STATIC_ASSERT(
-    KM_ISLAND_TENSORS + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
+    KM_ISLAND_LINK_AREA + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
         KM_ASK_READ + 16u <= KM_ASK_HEADERS,
-    "the link area and tensor table words after the island table; whole ask lines"
+    "the link area word after the island table; the ask lines whole lines"
+);
+KM_STATIC_ASSERT(
+    KM_ISLAND_RELAY * 4u >= KM_ISLAND_LINK_AREA + 4u &&
+        KM_ISLAND_TENSORS == (KM_ISLAND_RELAY_TILE + 1u) * 4u &&
+        KM_ISLAND_TENSORS + 4u <= KM_ISLANDS_BYTES &&
+        KM_RELAY_DONE >= KM_RELAY_ASK + 64u * KM_RING_SLOTS &&
+        KM_RELAY_ASKED >= KM_RELAY_DONE + 16u * KM_RING_SLOTS,
+    "the relay and tensor table words after the island table; a slot an ask and done"
 );
 KM_STATIC_ASSERT(
     KM_CONTROL_RING % 64u == 0 &&

@@ -404,32 +404,49 @@ def one(cores, columns, threads=0):
     return Graph([Island(tuple(range(cores)), columns, threads)])
 
 
-def line(islands, links=1, rate=None, packet=None):
+def line(islands, links=1, rate=None, packet=None, reserve=True):
     """`islands` (Island values) in a line, `links` links each neighbouring pair."""
     return Graph(
-        islands, [Link(i, i + 1, links, rate, packet) for i in range(len(islands) - 1)]
+        islands,
+        [Link(i, i + 1, links, rate, packet) for i in range(len(islands) - 1)],
+        reserve,
     )
 
 
-def ring(islands, links=1, rate=None, packet=None):
+def ring(islands, links=1, rate=None, packet=None, reserve=True):
     """`islands` in a ring (a line for fewer than three: a pair is joined once)."""
     count = len(islands)
     if count < 3:
-        return line(islands, links, rate, packet)
+        return line(islands, links, rate, packet, reserve)
     return Graph(
-        islands, [Link(i, (i + 1) % count, links, rate, packet) for i in range(count)]
+        islands,
+        [Link(i, (i + 1) % count, links, rate, packet) for i in range(count)],
+        reserve,
     )
 
 
 def split_card(
-    cores, columns, parts, shape="line", links=1, rate=None, packet=None, threads=0
+    cores,
+    columns,
+    parts,
+    shape="line",
+    links=1,
+    rate=None,
+    packet=None,
+    threads=0,
+    rows=False,
+    reserve=True,
 ):
     """One card of cores 0 to cores - 1 described as `parts` islands of contiguous
-    cores (sizes by partition), joined as a "line" or a "ring"; `threads` on island 0.
-    parts 1: the card as today."""
+    cores (sizes by partition; `rows`: of whole rows), joined as a "line" or a "ring";
+    `threads` on island 0; `reserve` False: no link cores. parts 1: the card as today.
+    """
+    unit = columns if rows else 1
+    if cores % unit:
+        raise ValueError(f"{cores} cores are not whole rows of {columns}")
     islands = []
     for part in range(parts):
-        start, length = partition(cores, part, parts)
+        start, length = (unit * size for size in partition(cores // unit, part, parts))
         islands.append(
             Island(
                 tuple(range(start, start + length)),
@@ -438,9 +455,9 @@ def split_card(
             )
         )
     if shape == "line":
-        return line(islands, links, rate, packet)
+        return line(islands, links, rate, packet, reserve)
     if shape == "ring":
-        return ring(islands, links, rate, packet)
+        return ring(islands, links, rate, packet, reserve)
     raise ValueError(f"shape {shape!r}: 'line' or 'ring'")
 
 

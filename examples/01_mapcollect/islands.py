@@ -1,7 +1,7 @@
-"""Map/collect over two cards as the islands of one session (`Session(cards=...)`):
-the same program and kernels on every island, groups in flat ranks, the input placed
-by a hint (`--split`, `--group`); checks the tiles with mapcollect.py's sums, times
-commands and writes. Prints one JSON line. See docs/reference/islands.md."""
+"""Map/collect over cards as the islands of one session (`Session(cards=...)`), or one
+card split into islands (`--islands`): the same program and kernels on every island,
+flat groups, the input placed by a hint (`--split`, `--group`); checks the tiles with
+mapcollect.py's sums, times commands and writes. See docs/reference/islands.md."""
 
 import argparse
 import json
@@ -31,6 +31,12 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
+    parser.add_argument(
+        "--islands",
+        type=int,
+        default=0,
+        help="split the one card of --cards into this many islands (2 to 4)",
+    )
     parser.add_argument("--nop-rounds", type=int, default=3)
     parser.add_argument("--nop-jobs", type=int, default=20000, help="per round")
     parser.add_argument("--map-rounds", type=int, default=3)
@@ -100,12 +106,20 @@ def median(values):
     return round(float(np.median(values)), 3)
 
 
+def open_session(args, cards):
+    """Two or more cards as islands, or one card split into `--islands` islands."""
+    if args.islands:
+        (card,) = cards
+        return km.Session(card=card, islands=args.islands, log=log)
+    return km.Session(cards=cards, links=args.across, log=log)
+
+
 def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
-    report = {"cards": cards}
+    report = {"cards": cards, "split": args.islands}
     generator = np.random.default_rng(1)
-    with km.Session(cards=cards, links=args.across, log=log) as session:
+    with open_session(args, cards) as session:
         ranks = session.ranks
         report["ranks"] = ranks
         report["islands"] = [
@@ -188,7 +202,7 @@ def main():
     report["ok"] = bool(
         report["source_read_exact"]
         and report["wrong_tiles"] == 0
-        and report.get("kernel_errors", ["stop"]) == ["none"] * len(cards)
+        and report.get("kernel_errors", ["stop"]) == ["none"] * len(report["islands"])
         and report.get("hang_named_island", True)
         and report.get("read_island1_in_run_exact", True)
         and all(write["exact"] for write in report.get("write", {}).values())
@@ -231,10 +245,10 @@ def commands(session, run, args, source, output, ranks, exact):
     graph = session.graph
     own = [(graph.first(i), graph.count(i)) for i in range(len(session.sessions))]
     rounds, jobs = args.nop_rounds, args.nop_jobs
-    out["nop_island0_us"] = median(
-        [timed(run, 0, [own[0]] * jobs) for _ in range(rounds)]
-    )
-    log(f"NOP on island 0's {own[0][1]} ranks: {out['nop_island0_us']} us")
+    out["nop_island_us"] = [
+        median([timed(run, 0, [group] * jobs) for _ in range(rounds)]) for group in own
+    ]
+    log(f"NOP on each island's own ranks {own}: {out['nop_island_us']} us")
     out["nop_all_us"] = median(
         [timed(run, 0, [(0, ranks)] * jobs) for _ in range(rounds)]
     )
@@ -265,13 +279,14 @@ def commands(session, run, args, source, output, ranks, exact):
     out["map_groups"] = [list(group) for group in groups]
     log(f"MAP on groups {groups} in turn: {out['map_groups_us']} us")
     if args.hang:
-        # Flat rank 130 of a group over both islands: island 1's core 10. Its reader
-        # waits for a port arrival (hang_mode 1) until the deadline gives it up.
+        # Island 1's rank 10 in a group over both islands (its core: graph.core_of). Its
+        # reader waits for a port arrival (hang_mode 1) until the deadline gives it up.
+        rank = graph.first(1) + 10
         group = (graph.first(1) - 20, graph.count(1) + 20)
-        hang = run.submit("hang", group, [130 - group[0], 1])
+        hang = run.submit("hang", group, [rank - group[0], 1])
         run.send()
         time.sleep(0.25)  # a quarter of the deadline
-        (core,) = run.inspect(1, (130 - graph.first(1), 1))
+        (core,) = run.inspect(1, (graph.core_of(rank)[1], 1))
         out["inspect_island1"] = describe_core(core)
         log(f"inspect of island 1: {out['inspect_island1']}")
         try:

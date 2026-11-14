@@ -25,6 +25,7 @@ namespace km {
 #include "km_trace.hpp"
 #if defined(KM_PAGE_LINKS)
 #include "km_pages.hpp"
+#include "km_relay.hpp"
 #endif
 
 namespace km {
@@ -287,11 +288,17 @@ namespace km {
             uint32_t passes = 0, gave = kGaveNone, sequence = 0;
             const Islands view = islands_at(arguments.control);
             const uint32_t island_first = view.first();
-            const uint32_t link = KM_GROUP_LINK_BASE + (arguments.me - view.ranks());
+            const uint32_t link = (
+                KM_GROUP_LINK_BASE + (arguments.me - view.base() - view.ranks())
+            );
             // a link core is in no group of ranks: its name is its link name
             const bool serves = link_core(view, arguments.me);
-            const uint32_t rank = serves ? link : island_first + arguments.me;
+            const uint32_t rank = serves ? link : view.offset() + arguments.me;
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
+            // link core 0 relays between commands (km_relay.hpp)
+            const bool relays = (
+                link_core(view, arguments.me) && link == KM_GROUP_LINK_BASE
+            );
             for (;;) {
                 if (serves) {  // a link core's services between commands
                     pages_serve(*this, 0, kStReader);
@@ -301,6 +308,13 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
+#if defined(KM_PAGE_LINKS)
+                if (relays) {
+                    Relay::turn(*this);
+                }
+#else
+                static_cast<void>(relays);
+#endif
                 const Pass found = scan(ring, last, arguments.depth, rank, link);
                 passes++;
                 if (found.pick >= 0 && !found.partial) {
@@ -532,7 +546,7 @@ namespace km {
     public:
         Compute() :
             control_(get_arg_val<uint32_t>(kCArgControl)),
-            me_(islands_at(control_).first() + get_arg_val<uint32_t>(kCArgMe)),
+            me_(islands_at(control_).offset() + get_arg_val<uint32_t>(kCArgMe)),
             wait_(get_arg_val<uint32_t>(kCArgWait)),
             idle_(get_arg_val<uint32_t>(kCArgIdle)) {
             UNPACK((role_ = kRoleUnpack));

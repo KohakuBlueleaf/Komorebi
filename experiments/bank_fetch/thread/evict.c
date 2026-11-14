@@ -1,5 +1,5 @@
-/* The cluster cache's shape, read only (its configuration, ways, way masks, the Zero
- * Device past the pinned span); kmx_evict's time against a pad in DRAM; its proof. */
+/* The cluster cache's shape, read only (configuration, ways, way masks, the Zero Device
+ * past the pinned span); kmx_evict's time; its proofs for a fetch and for a store. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -9,6 +9,7 @@
 #define MODE_SHAPE 0u
 #define MODE_TIME 1u
 #define MODE_PROOF 2u
+#define MODE_STORE 3u
 #define W_BYTES 2u    /* proof: the range's bytes, at LEAD in region 0 */
 #define W_VARIANTS 3u /* proof: bit v runs variant v */
 #define W_FIRST 4u    /* proof: the first round's number */
@@ -62,6 +63,21 @@
 #define P_READ (P_STRIDE * VARIANTS) /* MiB cores 1 to 3 read */
 #define P_STATUS (P_READ + 1u)       /* a failed call: status | variant << 8 */
 #define P_WORDS (P_STATUS + 1u)
+
+/* store: region 0 the range, region 1 where the cores copy it. Variants: */
+#define V_STORE 0u /* kmx_store */
+#define V_SWEEP 1u /* a sweep of the range, then the copy: kmx_store as it was */
+#define V_BARE 2u  /* the copy alone, nothing written back: the control */
+#define STORE_VARIANTS 3u
+/* store words per variant: as the proof's to P_WANT, then the copy's best and worst
+ * ticks and the variant's */
+#define Q_BEST 8u
+#define Q_WORST 9u
+#define Q_TICKS 10u
+#define Q_STRIDE 11u
+/* a failed call: status | variant << 8 */
+#define Q_STATUS (Q_STRIDE * STORE_VARIANTS)
+#define Q_WORDS (Q_STATUS + 1u)
 
 static uint32_t g_stop __attribute__((section(".data"))) = 0;
 static uint32_t g_read[4] __attribute__((section(".data"))) = {0, 0, 0, 0};
@@ -259,6 +275,87 @@ static void proof(const uint32_t* words, uint32_t* out) {
     }
 }
 
+/* Every line of `range` against round `round`'s pattern: out[P_BAD] and the first bad
+ * line counted. */
+static void check(
+    volatile const uint64_t* range, uint64_t bytes, uint64_t round, uint32_t* out
+) {
+    for (uint64_t line = 0; line < bytes / 64; line++) {
+        uint32_t bad = 0;
+        for (uint64_t word = 8 * line; word < 8 * line + 8; word++) {
+            const uint64_t got = range[word], want = pattern(round, word);
+            if (got != want && bad++ == 0 && out[P_BAD] == 0) {
+                out[P_ROUND] = (uint32_t)round;
+                out[P_LINE] = (uint32_t)line;
+                out[P_GOT] = (uint32_t)got;
+                out[P_GOT + 1] = (uint32_t)(got >> 32);
+                out[P_WANT] = (uint32_t)want;
+                out[P_WANT + 1] = (uint32_t)(want >> 32);
+            }
+        }
+        out[P_BAD] += bad != 0;
+    }
+}
+
+/* One store round: a new pattern over the whole range, the variant's copy to region 1
+ * on four cores (timed), region 1 swept and checked. The copy's status. */
+static int store_round(
+    uint32_t variant, uint64_t round, uint64_t bytes, uint32_t* out
+) {
+    uint64_t region_bytes = 0;
+    volatile uint64_t* range = (volatile uint64_t*)kmx_region(0, &region_bytes);
+    volatile const uint64_t* copied = (volatile const uint64_t*)kmx_region(1, 0);
+    for (uint64_t word = 0; word < bytes / 8; word++) {
+        range[word] = pattern(round, word);
+    }
+    const kmx_args* arguments = kmx_args_get();
+    const uint32_t bank = KMX_BANK_OF_CLUSTER(arguments->cluster);
+    const kmx_dram to = {(uint32_t)arguments->region[1].offset, bank, 0, 0};
+    const kmx_dram from = {(uint32_t)arguments->region[0].offset, bank, 0, 0};
+    kmx_event event = {0, 0, 0, 0};
+    const uint64_t start = kmx_time();
+    const uint64_t deadline = start + KMX_TICKS_PER_SECOND;
+    int status;
+    if (variant == V_STORE) {
+        status = kmx_store(0, 0, &to, bytes, 0, COPY_CORES, deadline, &event);
+    } else {
+        if (variant == V_SWEEP) {
+            kmx_flush_at(0, 0, bytes);
+        }
+        status = kmx_fetch_clean(1, 0, &from, bytes, 0, COPY_CORES, deadline, &event);
+    }
+    const uint32_t ticks = (uint32_t)(kmx_time() - start);
+    if (status != KMX_OK) {
+        return status;
+    }
+    out[Q_BEST] = out[Q_BEST] == 0 || ticks < out[Q_BEST] ? ticks : out[Q_BEST];
+    out[Q_WORST] = ticks > out[Q_WORST] ? ticks : out[Q_WORST];
+    kmx_invalidate_at(1, 0, bytes);
+    check(copied, bytes, round, out);
+    return KMX_OK;
+}
+
+static void store(const uint32_t* words, uint32_t* out) {
+    uint64_t round = words[W_FIRST];
+    for (uint32_t variant = 0; variant < STORE_VARIANTS; variant++) {
+        uint32_t* mine = &out[Q_STRIDE * variant];
+        if (!(words[W_VARIANTS] >> variant & 1u) || out[Q_STATUS] != 0) {
+            continue;
+        }
+        const uint64_t start = kmx_time();
+        for (uint32_t r = 0; r < words[W_REPEATS] && !kmx_stop_requested(); r++) {
+            kmx_progress(1000u * (variant + 1) + r);
+            const int status = store_round(variant, round++, words[W_BYTES], mine);
+            if (status != KMX_OK) {
+                out[Q_STATUS] = (uint32_t)status | variant << 8 | 1u << 16;
+                break;
+            }
+            mine[P_ROUNDS]++;
+        }
+        mine[Q_TICKS] = (uint32_t)(kmx_time() - start);
+    }
+}
+
 int kmx_main(int core) {
     (void)core;
     const uint32_t* words = kmx_args_get()->words;
@@ -276,6 +373,9 @@ int kmx_main(int core) {
     } else if (words[W_MODE] == MODE_PROOF) {
         proof(words, result);
         kmx_result(0, result, P_WORDS);
+    } else if (words[W_MODE] == MODE_STORE) {
+        store(words, result);
+        kmx_result(0, result, Q_WORDS);
     } else {
         return 1;
     }

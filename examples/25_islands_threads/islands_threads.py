@@ -24,6 +24,7 @@ TICKS_PER_US = 50  # the X280 timer, 50 MHz
 THREAD_HANDLERS = {"maps": 1, "ask": 2, "fold": 3, "hang": 4, "counts": 5}  # across.c
 EVENT_TIMEOUT, EVENT_ISLAND = 1, 0x80  # KM_EVENT_TIMEOUT, KM_EVENT_ISLAND
 BAD = 0xFFFFFFFF
+NO_RANK = 0xFFFFFFFF  # MAP's slow_rank: none
 STARTED = time.monotonic()
 
 
@@ -63,7 +64,8 @@ def program(source, output, threads):
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
         ],
         compile_args={
-            "reader": source.accessor_args(),
+            # MAP's input placements (example 01's reader reads two): both the input
+            "reader": source.accessor_args() + 2 * source.placement_args(),
             "writer": output.accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
@@ -194,6 +196,32 @@ def host_hang(run, group, hung, before):
     }
 
 
+def healthy_after(run, own, hung, words):
+    """After the HANGs (their core still hung: no recovery yet on islands), commands
+    on the other ranks: a NOP on each island's own ring, example 01's MAP from the host
+    on each island's healthy ranks (its split), and a MAP from island 0's thread on
+    island 1's healthy ranks (it crosses). Each answered: the dispatchers go on taking
+    lines for every rank but the hung one."""
+    source, output = words
+    low1, cores1 = own[1]
+    after = hung + 10  # island 1's ranks past the hung one's HANG group
+    groups = [own[0], (after, low1 + cores1 - after)]
+    answered = {}
+    for island, rank in ((0, own[0][0] + 10), (1, low1 + cores1 - 1)):
+        part = run.island(island)
+        event = part.wait(part.submit(0, (rank, 1)), timeout=10.0)
+        answered[f"nop_island_{island}"] = event.kind == "done"
+    for first, count in groups:
+        args = [source, 2 * count, output, first, 0, NO_RANK, 2 * first]
+        events = run.wait(run.submit("map", (first, count), args), timeout=10.0)
+        answered[f"map_{first}_{count}"] = all(e.kind == "done" for e in events)
+    first, count = groups[1]
+    ticks = ask_thread(run.island(0), "maps", [first, count, 1, source, output])
+    answered[f"thread_map_{first}_{count}"] = ticks != BAD
+    log(f"after the HANGs, other ranks: {answered}")
+    return {"healthy_after": answered, "healthy_answered": all(answered.values())}
+
+
 def per_command_us(ticks, count):
     return None if ticks == BAD else round(ticks / TICKS_PER_US / count, 3)
 
@@ -271,6 +299,8 @@ def main():
             word = ask_thread(first, "hang", [100, 40, 30, 300000, 2000000])
             log(f"thread HANG on (100, 40): word {word:#x}")
             report.update(host_hang(run, (100, 40), 30, before))
+            words = (source.address, output.address)
+            report.update(healthy_after(run, own, 130, words))
         log("stopping")
         results = run.stop()
         report["kernel_errors"] = [result["error_name"] for result in results]
@@ -289,6 +319,7 @@ def main():
         and report.get("map_after_hang", True)
         and report.get("host_hang_given_up", True)
         and report.get("gave_up_counts_agree", True)
+        and report.get("healthy_answered", True)
         and report.get("exclusive_done", True)
         and report.get("host_counts_exact", True)
         and report.get("thread_counts_exact", True)
