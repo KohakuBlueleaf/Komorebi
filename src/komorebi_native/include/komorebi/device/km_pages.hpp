@@ -273,16 +273,17 @@ namespace km {
                 ->to_chip_unicast(static_cast<uint8_t>(r.hops));
         }
         auto& sender = pages_sender();
-        uint32_t read_mark[kPagesSlotsMax];
         uint32_t sent_mark[kPagesSlotsMax];
+        // A slot's read carries its own transaction id (s + 1; 0 is every other
+        // read's): reads of different banks answer in any order.
         const auto read = [&](uint32_t k) {
             const uint32_t s = k % slots;
+            noc_async_read_set_trid(s + 1);
             noc_async_read(
                 from.get_noc_addr(r.first + base + k),
                 area + kPagesSlots + s * r.page,
                 r.page
             );
-            read_mark[s] = noc_reads_num_issued[noc_index];
         };
         uint32_t ahead = total < slots ? total : slots;
         for (uint32_t k = 0; k < ahead; k++) {
@@ -293,7 +294,7 @@ namespace km {
             const uint32_t s = k % slots;
             const uint32_t slot = area + kPagesSlots + s * r.page;
             if (!wait([&] {
-                return noc_reached(NIU_MST_RD_RESP_RECEIVED, read_mark[s]);
+                return ncrisc_noc_read_with_transaction_id_flushed(noc_index, s + 1);
             })) {
                 break;
             }
@@ -349,6 +350,7 @@ namespace km {
                 read(ahead++);
             }
         }
+        noc_async_read_set_trid(0);
         const uint32_t sending = code;
         cross_count(
             islands_at(kernel.args().control).link_area(),
