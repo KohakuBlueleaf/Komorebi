@@ -33,7 +33,8 @@ with km.Session(cards=[0, 1]) as session:  # one session, 240 ranks
 ## The session
 
 `km.Session(cards=[a, b, ...], links=0, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)` returns an `IslandSession`.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)` returns an
+`IslandSession`.
 With one card it has the same calls over one island: no mesh and no fabric, the card's
 own `Session` as `session.island(0)`, the graph `islands.one`, every page of every
 tensor on the card, and each load the card's run as it is without islands. A program

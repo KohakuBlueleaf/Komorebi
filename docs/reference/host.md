@@ -181,7 +181,7 @@ The session sends each group a load of its own program before `session.load` ret
 ## `Session`
 
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`.
 
 - `cards=[a, b, ...]` gives one session over them, each card's chip an island with flat
   ranks ([Islands](islands.md)); `cards=[a]` is that session over one island, `card=a`
@@ -253,6 +253,11 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
   session opens the device with the runtime's `worker_l1_size` that gives it, so it is
   set only when the session opens the device. `session.l1()` returns `(kernel buffer,
   L1 left)` of the open device, from the runtime's layout.
+- `slow_code` lets a load place code at or above 1 MB of L1. A core's code (the
+  kernels, then the overlay slots as the run's first circular buffer) sits at the
+  bottom of L1 and its circular buffers above it, because a taken branch to code at or
+  above 0x100000 costs about 4 cycles more; a load whose slots would end there raises
+  `km.SlowCodeError` unless `slow_code=True`.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
@@ -639,6 +644,7 @@ All derive from `km.KomorebiError`.
 | `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core |
 | `L1LayoutError` | programs that share cores declare one buffer index two ways; an `L1BudgetError` | `table` |
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
+| `SlowCodeError` | the overlay slots, which sit just above the kernel buffer, would end above 1 MB of L1 (a kernel buffer near 1 MB); a `ProgramError`, raised before anything is launched. `Session(slow_code=True)` loads it anyway | `end`: the slots' end in L1 |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
