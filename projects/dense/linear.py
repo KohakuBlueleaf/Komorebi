@@ -208,6 +208,8 @@ REDUCE_BYTES_PER_S = 20e9
 # W's pages a K chunk at most: every mover's reads in small batches, one barrier each,
 # as the ceiling's (deep batches leave the ranks far from the banks behind)
 SPLIT_CHUNK_PAGES = 16
+# products each followed by the all-reduce, timed one at a time (input dim sharded)
+REDUCED_CALLS = 20
 
 
 def split_buffers(plan):
@@ -609,7 +611,8 @@ class Linear:
             if to != here
         )
         one_card = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.nocs.grid)
-        self.budget = l1_budget(session, self.islands, extra=2)  # S and T
+        # S and T; R, the all-reduce's scratch, when Y is each island's partial
+        self.budget = l1_budget(session, self.islands, extra=2 + self.tensors_y_copy)
         grid, planned = self.nocs.grid, ranks  # the grid and ranks planned on
         if COLUMNS is not None:
             if self.islands != 1 or not 0 < COLUMNS <= grid[0]:
@@ -665,6 +668,11 @@ class Linear:
         tensors["t"] = session.empty(
             (ranks, L["kStampBytes"] // 4), "uint32", "row", copy=True
         )
+        if self.tensors_y_copy:  # the one addition across: twice Y's pages
+            m_rows, _, n_columns = dimensions
+            tensors["r"] = session.empty(
+                (2 * m_rows, n_columns), "bfloat16", "tile", copy=True
+            )
         self.tensors = tensors
         self.session = session
         self.group = (0, session.ranks)
@@ -865,6 +873,30 @@ class Linear:
             [part.microseconds for event in events for part in event]
         ).reshape(commands, -1)
 
+    def reduced(self, commands):
+        """`commands` calls each followed by the all-reduce of Y's partials (the
+        input dim sharded form, whole): per call the host's microseconds of the
+        product, of the reduce, and each island's part of the reduce."""
+        out = []
+        for _ in range(commands):
+            started = time.perf_counter()
+            self.calls(1, timeout=10.0)
+            between = time.perf_counter()
+            events = self.run.all_reduce(self.tensors["y"], self.tensors["r"])
+            ended = time.perf_counter()
+            if any(part.kind != "done" for part in events):
+                raise km.KomorebiError(f"the all-reduce not done: {events}")
+            out.append(
+                {
+                    "product_us": round((between - started) * 1e6, 1),
+                    "reduce_us": round((ended - between) * 1e6, 1),
+                    "reduce_parts_us": [
+                        round(float(part.microseconds), 1) for part in events
+                    ],
+                }
+            )
+        return out
+
     def single(self, commands):
         """`commands` calls one at a time: the slowest part's microseconds each; each
         call's host time, its parts' (an island's, by its dispatcher's ticks) and its
@@ -1040,6 +1072,9 @@ def measure(product, cards, seconds):
         },
     }
     log(f"loop: {report['microseconds_per_call']} us per call")
+    if getattr(product, "tensors_y_copy", False):  # last: Y holds the sum
+        report["reduced"] = product.reduced(REDUCED_CALLS)
+        log(f"with the all-reduce: {report['reduced'][-1]}")
     return report
 
 
@@ -1055,18 +1090,18 @@ def checked(session, tensors, dimensions, matrices, kind):
     rows = ref.sampled_rows(m_rows)
     started = time.perf_counter()
     y = tensors["y"]
-    if len(session.sessions) > 1 and y.placement.copy:  # partials: their sum
-        got = sum(
+    if len(session.sessions) > 1 and y.placement.copy:  # after the all-reduce
+        copies = [
             card.read_rows(one, part, rows, log)
             for one, part in zip(session.sessions, y.parts, strict=True)
-        )
-        report_sum = True
+        ]
+        report = run.check(copies[0][:, :n_columns], rows, *matrices, kind)
+        report["copies_equal"] = all(np.array_equal(copies[0], one) for one in copies)
+        report["ok"] = report["ok"] and report["copies_equal"]
+        got = copies[0]
     else:
         got = card.read_rows(session, y, rows, log)
-        report_sum = False
-    report = run.check(got[:, :n_columns], rows, *matrices, kind)
-    # input dim sharded before the addition across: the islands' partials summed here
-    report["partials_summed_by_host"] = report_sum
+        report = run.check(got[:, :n_columns], rows, *matrices, kind)
     report["readback_s"] = round(time.perf_counter() - started, 3)
     if not report["ok"] and len(session.sessions) > 1:
         want = ref.matmul(matrices[0][rows], matrices[1])
