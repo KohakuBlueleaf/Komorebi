@@ -165,6 +165,7 @@ class Run:
         self._rejected = {}
         self._given_up = {}  # handle -> (its timeout event, the cores at the deadline)
         self._given_up_seen = 0  # the dispatcher's count of give-ups, as last read
+        self.stalls = []  # the watcher's KMD_EVENT_STALL events: stage, req, ticks
         self.inspect_ticks = None  # mtime ticks the last inspect() took on core 0
         self._failure = None
         self._stopped = False
@@ -571,10 +572,39 @@ class Run:
 
     # Events -----------------------------------------------------------------------
 
+    def _stalls(self, rows):
+        """Keeps the watcher's stall events (no command's) in `stalls`; a stall core 0
+        did not come back from stops the run. Returns the other rows."""
+        stall = self.h.constants.get("KMD_EVENT_STALL")
+        mine = (rows[:, 2] & 0xFF) == stall
+        if stall is None or not mine.any():
+            return rows
+        stages = {
+            self.h["KMD_STALL_SEEN"]: "stalled",
+            self.h["KMD_STALL_BACK"]: "back",
+            self.h["KMD_STALL_LOST"]: "lost",
+        }
+        for _, req, status, ticks in rows[mine].tolist():
+            stage = stages.get(int(status) >> 8, str(int(status) >> 8))
+            self.stalls.append({"stage": stage, "req": int(req), "ticks": int(ticks)})
+            if stage == "lost":
+                self.abort()
+                raise self._remember(
+                    KernelFailed(
+                        f"the dispatcher's loop stalled (at host command {req}) and "
+                        f"did not come back from the watcher's interrupt: the run is "
+                        f"stopped"
+                    )
+                )
+        return rows[~mine]
+
     def _take(self, rows):
         """Files a block of events (index, req, status, ticks). Every event is of a
         handle from the oldest without one on, so its low 32 bits name it."""
         rows = np.asarray(rows).reshape(-1, 4)
+        rows = self._stalls(rows)
+        if not len(rows):
+            return
         if self._engine_state is not None:  # the engines' events go to their handles
             rows = self._engine_state.take(rows)
         base = self._oldest

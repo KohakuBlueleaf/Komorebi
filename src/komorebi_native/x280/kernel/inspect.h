@@ -231,6 +231,7 @@ static int inspect_reset(kmd_t* dispatcher) {
     volatile uint32_t* header = inspect_header(dispatcher);
     for (; inspect->next < inspect->count; inspect->next++) {
         const uint32_t core = inspect->first + inspect->next;
+        dispatcher->beat++;
         if (inspect_left(dispatcher, core, inspect->sequence)) {
             continue;
         }

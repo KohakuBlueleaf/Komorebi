@@ -111,6 +111,7 @@ static uint32_t reset_run(
             volatile const uint32_t* word = (volatile const uint32_t*)(l1 + address);
             const uint64_t until = x280_mtime() + KMD_RESET_WAIT_TICKS;
             while ((*word & size) != value) {
+                dispatcher->beat++; /* the watcher's heartbeat (watch.h) */
                 if (x280_mtime() > until) {
                     status = KMD_RESET_NO_FIRMWARE;
                     break;

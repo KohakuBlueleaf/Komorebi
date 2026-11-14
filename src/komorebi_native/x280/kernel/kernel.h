@@ -179,6 +179,8 @@ typedef struct {
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */
     uint32_t traced, untraced;              /* KMD_TRACE builds */
     uint64_t passes, idle_passes, full_passes;
+    uint64_t beat,
+        stall_mtime; /* long waits' heartbeat; mtime the watcher saw a stall */
     uint64_t first_command_mtime, last_event_mtime;
 } kmd_t;
 
