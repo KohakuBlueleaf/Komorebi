@@ -363,6 +363,40 @@ static void link_part(
     }
 }
 
+/* A LINE of stage `stage` lost on hung link core `k`: its command packet's crossing,
+ * if still in flight, is named lost and ends at link_late's next look. */
+static void link_lost(kmd_t* dispatcher, uint32_t stage, uint32_t k, uint32_t ticks) {
+    kmd_link_t* link = link_state(dispatcher);
+    volatile const uint32_t*
+        crossing_line = (
+            (volatile const uint32_t*)(
+                link->window + KM_LINK_STAGE + stage * KM_LINK_STAGE_BYTES + 64u
+            )
+        );
+    x280_fence_ir();
+    const uint32_t kind = crossing_line[KMD_X_KIND] & 0xFFu;
+    const uint32_t ticket = crossing_line[KMD_X_TICKET];
+    const uint32_t index = ticket & 0xFFu;
+    if (kind != KMD_CROSS_COMMAND || index >= KMD_CROSSINGS) {
+        return; /* a DONE for the other island: its crossing ends at its deadline */
+    }
+    kmd_crossing_t* crossing = &link->crossing[index];
+    if (
+        !(link->busy & (1u << index)) || crossing->late ||
+        crossing->generation != ticket >> 8
+    ) {
+        return;
+    }
+    link_event(
+        dispatcher,
+        crossing->source == KMD_SRC_HOST ? crossing->request : 0u,
+        k,
+        KMD_LINK_LOST,
+        ticks
+    );
+    crossing->deadline = 0;
+}
+
 /* A busy slot of the link freed (its ack, or a give-up): a crossing's local part, or a
  * LINK command whose stage is free again. Returns 1 if the slot was the link's. */
 static int link_freed(
@@ -371,8 +405,12 @@ static int link_freed(
     kmd_link_t* link = link_state(dispatcher);
     dispatcher->link_slots &= ~(1ull << slot);
     if (link->slot_stage[slot] != 0) {
-        link->stages &= ~(1u << (link->slot_stage[slot] - 1u));
+        const uint32_t stage = link->slot_stage[slot] - 1u;
+        link->stages &= ~(1u << stage);
         link->slot_stage[slot] = 0;
+        if (dispatcher->slot_lost[slot] != 0 && (status & 0xFFu) != KM_EVENT_DONE) {
+            link_lost(dispatcher, stage, dispatcher->slot_lost[slot] - 1u, ticks);
+        }
         return 1;
     }
     if (link->slot_crossing[slot] != 0) {
