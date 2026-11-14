@@ -858,6 +858,253 @@ namespace km {
         );
     }
 
+    // One byte line of `bytes` (KM_PUT_INLINE at most) from L1 `source`, sent as a put
+    // line is (ask_line_at), for page `index` of island `holder`. False: gave up.
+    template <typename Kernel>
+    inline bool put_bytes_line(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        uint32_t holder,
+        uint32_t address,
+        uint32_t page,
+        uint32_t index,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t source
+    ) {
+        const Islands view = islands_at(core.args().control);
+        const uint32_t area = view.link_area();
+        const AskQueue queue = ask_puts(core.role());
+        const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+        const auto give_up = [&](uint32_t code) {
+            core.gave_up(word, code, kWhereAsk, slot | holder << 8, sequence);
+            return false;
+        };
+        const uint32_t me = core.args().me - view.base();
+        if (
+            area == 0 || view.hops(holder) != 1 || me >= KM_CORES_MAX || page == 0 ||
+            page % 16 != 0 || page > view.packet() || bytes == 0 ||
+            bytes > KM_PUT_INLINE
+        ) {
+            return give_up(kGaveBadItem);  // a link apart, a page a packet holds
+        }
+        const uint32_t link = view.base() + view.ranks() + view.link(holder);
+        const uint32_t limit = core.args().wait_limit;
+        volatile tt_l1_ptr uint32_t* mine = l1(area + queue.own);
+        invalidate_l1_cache();
+        const uint32_t parity = mine[KM_PUT_OWN_SENT / 4] & 1u;
+        const uint32_t owner = (
+            (me * 2 + (core.role() == kRoleWriter ? 1 : 0)) * 2 + parity
+        );
+        uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                return (
+                    mine[KM_PUT_OWN_NUMBER / 4 + parity] ==
+                    mine[KM_PUT_OWN_CONFIRMED / 4 + parity]
+                );
+            },
+            limit
+        );
+        if (code != kGaveNone) {
+            return give_up(code);
+        }
+        volatile tt_l1_ptr uint32_t* returned = l1(area + queue.returned);
+        returned[0] = kAskNoAnswer;
+        invalidate_l1_cache();  // a fence: the store lands before the answer can
+        noc_fast_atomic_increment<noc_mode, true>(
+            noc_index,
+            write_at_cmd_buf,
+            core.core_noc(link, area + queue.tail),
+            NOC_UNICAST_WRITE_VC,
+            1,
+            31,
+            false,
+            false,
+            area + queue.returned
+        );
+        code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                return (
+                    ncrisc_noc_nonposted_atomics_flushed(noc_index) &&
+                    returned[0] != kAskNoAnswer
+                );
+            },
+            limit
+        );
+        if (code != kGaveNone) {
+            return give_up(code);
+        }
+        const uint32_t number = returned[0];
+        const uint32_t build = (
+            area + KM_PUT_BUILD + (core.role() == kRoleWriter ? KM_PUT_BUILD_BYTES : 0)
+        );
+        PutRings rings{};
+        code = put_rings_read(core, link, area, build, rings, number);
+        if (code != kGaveNone) {
+            return give_up(code);
+        }
+        volatile tt_l1_ptr uint32_t* line = l1(area + queue.own);
+        for (uint32_t w = 0; w < 16; w++) {
+            line[w] = 0;
+        }
+        const volatile uint32_t* from = reinterpret_cast<volatile uint32_t*>(source);
+        for (uint32_t w = 0; w < bytes / 4; w++) {
+            line[KM_ASK_DATA + w] = from[w];
+        }
+        line[KM_ASK_TENSOR] = address;
+        line[KM_ASK_PAGE] = page;
+        line[KM_ASK_FIRST] = index;
+        line[KM_ASK_PAGES] = 1;
+        line[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
+        line[KM_ASK_COUNT] = (
+            core.args().control + KM_CONTROL_PORT + pages_port(core) * KM_PORT_STRIDE +
+            KM_PORT_COUNT * 4
+        );
+        line[KM_ASK_HOLDER] = holder;
+        line[KM_ASK_RING] = KM_ASK_RING_BYTES;
+        line[KM_ASK_OWNER] = owner;
+        line[KM_ASK_SPAN] = offset | bytes << 16;
+        line[KM_ASK_NUMBER] = number + 1;
+        line[KM_ASK_END] = number + 1;
+        const uint32_t to_line = (
+            rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64
+        );
+        noc_async_write(area + queue.own, core.core_noc(link, to_line), 64);
+        code = core.poll_at(
+            kWhereAsk,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            limit
+        );
+        mine[KM_PUT_OWN_SENT / 4] = mine[KM_PUT_OWN_SENT / 4] + 1;
+        mine[KM_PUT_OWN_NUMBER / 4 + parity] = number + 1;
+        return code == kGaveNone || give_up(code);
+    }
+
+    // `bytes` bytes at byte `offset` of page `page` of `tensor` become those at L1
+    // `source`, nothing else of the page; not waited (put_wait). False: gave up.
+    template <typename Kernel, uint32_t Base>
+    inline bool put_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Tensor<Base>& tensor,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t source
+    ) {
+        // multiples of 4 inside the page, `source` with the offset's low 4 bits
+        const uint32_t page_bytes = tensor.page_bytes();
+        if (
+            bytes == 0 || (offset | bytes) % 4 != 0 || offset >= page_bytes ||
+            bytes > page_bytes - offset || (source ^ offset) % 16 != 0
+        ) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                kGaveBadTransfer,
+                kWhereAsk,
+                slot(command),
+                command.sequence
+            );
+            return false;
+        }
+        if constexpr (Tensor<Base>::kLocal) {  // here: a NoC write, `source` kept
+            noc_async_write(source, tensor.accessor.get_noc_addr(page, offset), bytes);
+            return true;
+        } else {
+            const PageAt at = page_at(tensor.word, page);
+            if (at.island == island()) {
+                noc_async_write(
+                    source,
+                    TensorAccessor(Tensor<Base>::kArgs, at.address)
+                        .get_noc_addr(at.index, offset),
+                    bytes
+                );
+                return true;
+            }
+            // another island's: byte lines its link core 0 writes, `source` free
+            for (uint32_t done = 0; done < bytes; done += KM_PUT_INLINE) {
+                const uint32_t left = bytes - done;
+                if (!put_bytes_line(
+                    core,
+                    slot(command),
+                    command.sequence,
+                    at.island,
+                    at.address,
+                    page_bytes,
+                    at.index,
+                    offset + done,
+                    left < KM_PUT_INLINE ? left : KM_PUT_INLINE,
+                    source + done
+                )) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    // Reader or writer: waits until every byte line this CPU sent was confirmed (its
+    // bytes written there) and its own writes here are written. False: gave up.
+    template <typename Kernel>
+    inline bool put_wait(const Kernel& core, const km_command_t& command) {
+        const uint32_t area = islands_at(core.args().control).link_area();
+        const volatile tt_l1_ptr uint32_t* mine = l1(area + ask_puts(core.role()).own);
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                return (
+                    ncrisc_noc_nonposted_writes_flushed(noc_index) &&
+                    (
+                        area == 0 ||
+                        (
+                            mine[KM_PUT_OWN_NUMBER / 4] ==
+                                mine[KM_PUT_OWN_CONFIRMED / 4] &&
+                            mine[KM_PUT_OWN_NUMBER / 4 + 1] ==
+                                mine[KM_PUT_OWN_CONFIRMED / 4 + 1]
+                        )
+                    )
+                );
+            },
+            core.args().wait_limit
+        );
+        if (code != kGaveNone) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                code,
+                kWhereAsk,
+                slot(command) | island() << 8,
+                command.sequence
+            );
+            return false;
+        }
+        return true;
+    }
+
+    // put_bytes, then put_wait: the bytes written on return.
+    template <typename Kernel, uint32_t Base>
+    inline bool write_bytes(
+        const Kernel& core,
+        const km_command_t& command,
+        const Tensor<Base>& tensor,
+        uint32_t page,
+        uint32_t offset,
+        uint32_t bytes,
+        uint32_t source
+    ) {
+        return (
+            put_bytes(core, command, tensor, page, offset, bytes, source) &&
+            put_wait(core, command)
+        );
+    }
+
     // Whether a copy's side names, by its reference word, a tensor of which another
     // island holds pages (its pages then go page by page by their holder).
     inline bool copy_placed(const km_copy_side_t& side) {

@@ -542,6 +542,9 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::Tensor<offset>` | a tensor's accessor arguments, from the compile arguments the host's `tensor.tensor_args()` gives (`accessor_args()`), and its reference word (`tensor.address`); `next_compile_time_args_offset()` for the next one |
 | `km::read_pages(core, command, tensor, first, pages, to)` | pages `first` .. `first + pages - 1` into L1 `to` on, page k at `to` + k aligned pages; on the reader or the writer (`core`: its `km::Reader` or `km::Writer`); each run of pages another island holds asked for and waited for, counted at the CPU's page port (`KM_PORT_PAGES` the reader's, + 1 the writer's, past the ports a kernel names). False: gave up |
 | `km::write_pages(core, command, tensor, first, pages, from)` | pages `first` .. from L1 `from` on; each run of pages another island holds one put line, waited for at the CPU's page port, so `from` is free on return. False: gave up |
+| `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a byte line of up to 12 bytes, the bytes inside the line, which that island's link core 0 writes at the page's address plus the offset, a plain write (a longer range goes as several lines; `source` free on return). Does not wait. Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
+| `km::write_bytes(core, command, tensor, page, offset, bytes, source)` | `km::put_bytes`, then `km::put_wait(core, command)`: the bytes written on return |
+| `km::put_wait(core, command)` | waits until the CPU's NoC writes are written and every byte line it sent was confirmed by the other island (its bytes written there). False: gave up |
 | `km::Stream` | a stream over a `km::Tensor` reads and writes through these calls ([Movement](movement.md#a-stream-over-islands)) |
 
 A program loaded on one island (a card's own session, or an island session of one
@@ -558,10 +561,14 @@ The examples and projects whose kernels read or write a tensor's pages use these
 02, 03, 04, 06, 07, 09, 11, 15, 16, 17, 19, 21, 22, 23, 26, the dense project's
 resident, streamed, grid and K-split forms and its SwiGLU layer (each operand by its
 own word), attention, the core reset experiment's reader and the tutorial's lessons
-from 16 on. Example 09's writer writes single words of its output: a word goes to
-the part of the island that holds its page (`km::page_at`); a word of a page another
-island holds gives the command up. Measured on two p150a cards, one page link,
-2026-11-15:
+from 16 on. Example 09's writer writes single words of its output, each with
+`km::put_bytes` wherever its page is, then waits with `km::put_wait`. Measured on two
+p150a cards, one page link, 2026-11-15:
+
+- Example 09's `islands.py` (65,536 keys, 4,096 buckets, island 0's 118 ranks and its
+  thread): the output held by island 0, PLACE 0.125 ms; held by island 1 (every key a
+  byte line across, 65,536 lines and as many confirmations), PLACE 112.9 ms, 1.72 µs
+  a key for the island (one line at a time through its link core 0), both exact.
 
 - Example 11's `islands.py`: island 0's four cores copy 192 pages island 1 holds
   alone, exact, and READ them in 275.8 µs (1.43 GB/s); with `--write-across` they copy

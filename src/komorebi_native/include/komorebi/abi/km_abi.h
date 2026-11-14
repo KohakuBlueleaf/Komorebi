@@ -213,6 +213,12 @@
 #define KM_ASK_RING 12u
 #define KM_ASK_OWNER 13u /* a put: (core * 2 + its CPU) * 2 + parity, the asker's */
 #define KM_ASK_END 15u
+/* A byte line (km::put_bytes): KM_ASK_RING_BYTES, KM_ASK_PAGES 1, up to KM_PUT_INLINE
+ * bytes from KM_ASK_DATA on, KM_ASK_SPAN offset | bytes << 16; it counts no page. */
+#define KM_ASK_RING_BYTES 2u
+#define KM_ASK_DATA 9u
+#define KM_PUT_INLINE 12u
+#define KM_ASK_SPAN 14u
 /* Then what crossed, a row a CPU of the core, counted only on a link core by that CPU:
  * messages, command lines, asks, pages, relayed parts, bytes (low, high) it sent */
 #define KM_LINK_CROSS (KM_ASK_INBOX + KM_ASK_SLOTS * 64u)
@@ -715,6 +721,11 @@ KM_STATIC_ASSERT(
         KM_PUT_RING_IDLE + 32u <= KM_PUT_HEADERS &&
         2u * KM_PUT_BUILD_BYTES <= 2u * KM_ASK_SLOTS * 64u && KM_ASK_RING < KM_ASK_END,
     "the link area word after the island table; the ask lines whole lines; the rings"
+);
+KM_STATIC_ASSERT(
+    KM_ASK_DATA == KM_ASK_FROM && KM_ASK_DATA + KM_PUT_INLINE / 4u == KM_ASK_RING &&
+        KM_ASK_SPAN > KM_ASK_OWNER && KM_ASK_SPAN < KM_ASK_END,
+    "a byte line's bytes and span in words a put line does not read"
 );
 KM_STATIC_ASSERT(
     KM_ISLAND_RELAY * 4u >= KM_ISLAND_LINK_AREA + 4u &&

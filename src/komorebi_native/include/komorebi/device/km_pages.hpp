@@ -1521,6 +1521,46 @@ namespace km {
         return code;
     }
 
+    // The lead page CPU: the bytes of the byte line arrived at L1 `at` written, waited
+    // for, at their page's DRAM address plus the offset (a bad one counted). kGave*.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t
+    pages_bytes_land(const Kernel& kernel, uint32_t area, uint32_t at) {
+        volatile tt_l1_ptr uint32_t* line = l1(at);
+        const uint32_t span = line[KM_ASK_SPAN];
+        const uint32_t offset = span & 0xFFFFu, bytes = span >> 16;
+        const uint32_t page = line[KM_ASK_PAGE];
+        const bool good = (
+            line[KM_ASK_HOLDER] == islands_at(kernel.args().control).here() &&
+            bytes != 0 && bytes <= KM_PUT_INLINE && (offset | bytes) % 4 == 0 &&
+            page != 0 && page % 16 == 0 && offset + bytes <= page
+        );
+        if (!good) {
+            l1(area)[KM_PUT_BAD / 4] += 1;
+            return kGaveNone;
+        }
+        uint32_t data[KM_PUT_INLINE / 4];
+        for (uint32_t w = 0; w < KM_PUT_INLINE / 4; w++) {
+            data[w] = line[KM_ASK_DATA + w];
+        }
+        // staged in the line's words 4 to 11 at the offset's low 4 bits (the NoC rule)
+        const uint32_t stage = at + 16 + offset % 16;
+        for (uint32_t w = 0; w < bytes / 4; w++) {
+            l1(stage)[w] = data[w];
+        }
+        const uint64_t to = (
+            pages_dram(KM_PAGES_DRAM, line[KM_ASK_TENSOR], page, line[KM_ASK_FIRST])
+        );
+        noc_async_write(stage, to + offset, bytes);
+        return kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+    }
+
     // The lead page CPU: the far island's put lines as they arrive (in order, into
     // the pending ones), then each pending line on its own once all its pages have
     // landed here (written; KM_QUEUE_ARRIVED of its owner): its pages onto the asker's
@@ -1558,6 +1598,16 @@ namespace km {
             entry[KM_QUEUE_E_CORE] = line[KM_ASK_CORE];
             entry[KM_QUEUE_E_COUNT] = line[KM_ASK_COUNT];
             entry[KM_QUEUE_E_NUMBER] = line[KM_ASK_NUMBER];
+            if (line[KM_ASK_RING] == KM_ASK_RING_BYTES) {
+                // a byte line: its bytes written here first; it counts no page
+                const uint32_t code = (
+                    pages_bytes_land(kernel, area, reinterpret_cast<uint32_t>(line))
+                );
+                if (code != kGaveNone) {
+                    return code;
+                }
+                entry[KM_QUEUE_E_PAGES] = 0;
+            }
             count[0] = count[0] + 1;
             words[KM_PUT_CONFIRMED / 4] = taken + 1;
         }
