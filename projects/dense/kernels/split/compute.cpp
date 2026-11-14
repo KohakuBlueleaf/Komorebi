@@ -33,19 +33,19 @@ namespace {
 
 void kernel_main() {
     km::Compute compute;
-    const auto plan = [&](uint32_t word) {
-        return compute.arg(word);
-    };
-    const uint32_t k_tiles = plan(kSpKt), block_height = plan(kSpOh);
-    const uint32_t block_width = plan(kSpOw);
-    const uint32_t chunk_tiles = plan(kSpKc), subblock_height = plan(kSpSh);
-    const uint32_t subblock_width = plan(kSpSw), group_size = plan(kSpS);
-    const uint32_t block_tiles = block_height * block_width;
     compute_kernel_hw_startup<SrcOrder::Reverse>(kCbSa, kCbSw, kCbSum);
     compute.run([&](const km_command_t& command) {
-        if (km::handler(command) != kHandlerSplit) {
+        if (km::handler(command) != kHandlerSplit || command.a5 >= kSplitPlans) {
             return;
         }
+        const auto plan = [&](uint32_t word) {
+            return compute.arg(plan_words(command) + word);
+        };
+        const uint32_t k_tiles = plan(kSpKt), block_height = plan(kSpOh);
+        const uint32_t block_width = plan(kSpOw);
+        const uint32_t chunk_tiles = plan(kSpKc), subblock_height = plan(kSpSh);
+        const uint32_t subblock_width = plan(kSpSw), group_size = plan(kSpS);
+        const uint32_t block_tiles = block_height * block_width;
         const uint32_t reduce_form = command.a3, mode = command.a4;
         const km::Group group = km::digit_group(command, compute.me(), 1, group_size);
         const km::Partition k_part = km::partition(k_tiles, group.rank, group.size);

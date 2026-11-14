@@ -25,7 +25,7 @@ bool move_chunks(
     const AccessorW& w_matrix
 ) {
     const auto plan = [&](uint32_t word) {
-        return core.arg(word);
+        return core.arg(plan_words(command) + word);
     };
     const uint32_t m_tiles = plan(kSpMt), k_tiles = plan(kSpKt);
     const uint32_t n_tiles = plan(kSpNt), block_height = plan(kSpOh);

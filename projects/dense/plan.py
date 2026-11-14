@@ -411,7 +411,8 @@ REDUCE_FORMS = {"owner": 0, "tree": 1}
 class Split:
     """[mt, kt] @ [kt, nt] with K split: groups of s consecutive cores, one oh x ow
     output block a group, each core 1/s of K in chunks of kc, its part summed into
-    the group's root by owner or by tree. Subblock sh x sw."""
+    the group's root by owner or by tree. Subblock sh x sw; arrive the arrival
+    buffer's pages (0: enough for either form)."""
 
     mt: int
     kt: int
@@ -422,6 +423,7 @@ class Split:
     kc: int
     sh: int
     sw: int
+    arrive: int = 0
 
     def nbw(self):
         return cdiv(self.nt, self.ow)
@@ -433,8 +435,9 @@ class Split:
         return self.groups() * self.s
 
     def arrive_pages(self):
-        """Arrival slots of P tiles for either form: s - 1 (owner) covers the tree's."""
-        return max(1, self.s - 1) * self.oh * self.ow
+        """Arrival slots of P tiles for either form: s - 1 (owner) covers the tree's;
+        or the plan's own count."""
+        return self.arrive or max(1, self.s - 1) * self.oh * self.ow
 
     def words(self):
         """The kernels' arguments, in split.h's order."""
@@ -477,6 +480,8 @@ class Split:
             raise ValueError(f"subblock {self.sh} x {self.sw} of {self.oh} x {self.ow}")
         if self.l1_bytes() > budget:
             raise ValueError(f"{self.l1_bytes()} bytes of L1 > {budget}")
+        if self.arrive % (self.oh * self.ow):
+            raise ValueError(f"{self.arrive} arrival pages: not whole slots")
 
 
 def split_plan(
@@ -489,10 +494,11 @@ def split_plan(
     chunk_tiles=None,
     cores=120,
     budget=L1_BUDGET,
+    arrive=0,
 ):
     """A K-split plan: group_cores cores a group, output block block_height x
     block_width, K chunk chunk_tiles (default: the whole partition of K, at most
-    MAX_CHUNK)."""
+    MAX_CHUNK), arrive arrival pages (0: enough for either form)."""
     chunk_tiles = chunk_tiles or min(cdiv(k_tiles, group_cores), MAX_CHUNK)
     subblock_height, subblock_width = subblock(block_height, block_width)
     plan = Split(
@@ -505,14 +511,32 @@ def split_plan(
         chunk_tiles,
         subblock_height,
         subblock_width,
+        arrive,
     )
     plan.check(cores, budget)
     return plan
 
 
-def split_args(plan, a_address, w_address, y_address, form="owner", mode=0):
-    """Command words a0..a4 of SPLIT."""
-    return [a_address, w_address, y_address, REDUCE_FORMS[form], mode]
+def split_table(plans):
+    """The kernels' arguments of several plans that one loaded program takes, plan p
+    at word p * kSplitWords (a command's a5 picks it); they share every buffer."""
+    plans = list(plans)
+    if not 1 <= len(plans) <= S["kSplitPlans"]:
+        raise ValueError(f"{len(plans)} plans: 1 to {S['kSplitPlans']} a program")
+    if any(plan.buffers() != plans[0].buffers() for plan in plans):
+        raise ValueError("the plans of one program share their buffers")
+    return [word for plan in plans for word in plan.words()]
+
+
+def split_args(
+    plan, a_address, w_address, y_address, form="owner", mode=0, index=0, plans=1
+):
+    """Command words a0..a4 of SPLIT, and a5 the plan's index in a table of
+    `plans` when it is not 0."""
+    if not 0 <= index < plans:
+        raise ValueError(f"plan {index} of a table of {plans}")
+    words = [a_address, w_address, y_address, REDUCE_FORMS[form], mode]
+    return words + [index] if index else words
 
 
 def grid_args(plan, a_address, w_address, y_address, mode=0):

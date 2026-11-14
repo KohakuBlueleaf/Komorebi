@@ -7,7 +7,7 @@
 #include "../dense.h"
 
 // SPLIT: a0 a_address (A, [M, K] tiles), a1 w_address (W, [K, N]), a2 y_address (Y,
-// [M, N]), a3 reduce_form (0 owner, 1 tree), a4 mode. One call; groups of S cores.
+// [M, N]), a3 reduce_form (0 owner, 1 tree), a4 mode, a5 the plan (0 the first).
 constexpr uint32_t kHandlerSplit = 1;
 
 // SPLIT modes: the full call; the parts only (no reduce: each core packs its part and
@@ -39,3 +39,11 @@ constexpr uint32_t kSpSw = 8;
 constexpr uint32_t kSpNbw = 9;
 constexpr uint32_t kSpArrive = 10;
 constexpr uint32_t kSplitWords = 11;
+// A program takes up to kSplitPlans plans, plan p at argument p * kSplitWords: shapes
+// that share every buffer (oh, ow, kc, sh, sw and the arrival pages).
+constexpr uint32_t kSplitPlans = 8;
+
+// The first argument of the plan a command names (its a5).
+inline uint32_t plan_words(const km_command_t& command) {
+    return command.a5 * kSplitWords;
+}

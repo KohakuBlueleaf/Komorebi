@@ -11,13 +11,13 @@ void kernel_main() {
     using A = km::Tensor<0>;
     using W = km::Tensor<A::next_compile_time_args_offset()>;
     km::Reader reader;
-    const auto plan = [&](uint32_t word) {
-        return reader.arg(word);
-    };
     reader.run([&](const km_command_t& command) {
-        if (km::handler(command) != kHandlerSplit) {
+        if (km::handler(command) != kHandlerSplit || command.a5 >= kSplitPlans) {
             return;
         }
+        const auto plan = [&](uint32_t word) {
+            return reader.arg(plan_words(command) + word);
+        };
         const uint32_t reduce_form = command.a3, mode = command.a4;
         const uint32_t block_height = plan(kSpOh), block_width = plan(kSpOw);
         const km::Group group = km::digit_group(command, reader.me(), 1, plan(kSpS));
