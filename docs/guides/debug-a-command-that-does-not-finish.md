@@ -17,11 +17,14 @@ Use this when a program stops with `km.CommandTimeout`, or when `wait` raises
 
 1. Tell the two errors apart. `WaitTimeout` means that Python stopped waiting; the command
    may be slow and not broken. Wait again with a longer `timeout`, or time the command with
-   [Measure a command](measure-a-command.md). `CommandTimeout` means that the card stopped
-   the cores at the command's deadline, and that the run is over.
+   [Measure a command](measure-a-command.md). `CommandTimeout` means that the card ended
+   the command at its deadline. With `given_up` True the cores left it and the run goes
+   on; otherwise a core could not leave it (a loop of its own), and the run is over.
 2. Read the message of `CommandTimeout` in full. It names the command, the group, and
-   each core of the group that had not reported, with the step that each of its two data-movement kernels (`reader.cpp` and `writer.cpp`)
-   was in.
+   the step that each core's two data-movement kernels (`reader.cpp` and `writer.cpp`)
+   were in: `waits in` for a given-up command, `gave up (stop) in` for the cores that
+   had not reported when the run ended. `run.inspect(group)` shows the same steps while
+   a command is still running ([host](../reference/host.md#inspecting-a-run)).
 3. Read each step:
     - `next`: the kernel was waiting for its next command, so it had finished this one.
     - `data`: the kernel was waiting on a circular buffer. A kernel that drains the buffer waits for a tile to be
@@ -32,8 +35,8 @@ Use this when a program stops with `km.CommandTimeout`, or when `wait` raises
    the other kernel's `cb_push_back`; one that waits for room needs the other's
    `cb_pop_front`. In the tutorial's programs `reader.cpp` fills the buffer and `writer.cpp`
    drains it.
-5. Look at that call in the kernel, fix it, and load again. After a `CommandTimeout` the run
-   cannot be used.
+5. Look at that call in the kernel, fix it, and load again. After a `CommandTimeout` that
+   was not given up the run cannot be used.
 6. If the kernel is right and the command is only slow, raise the deadline of
    `session.load(program, deadline=...)` to the longest honest command of the program.
 

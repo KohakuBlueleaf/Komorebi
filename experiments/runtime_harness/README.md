@@ -49,7 +49,9 @@ headers and example kernels against this harness.
 - A dispatcher that submits commands the way the dispatcher does:
   - it holds a `KM_FLAG_EXCLUSIVE` command while an overlapping group is in flight;
   - it sweeps the acknowledgements;
-  - it stops the grid on a missed deadline.
+  - it stops the grid on a missed deadline, or, with `give_up`, copies the group's live
+    words (an inspect), writes the slot's abort word on every core, and frees the slot
+    once no core of the group runs the command (past `give_up_grace`: the stop).
 - NoC writes delivered in 16-byte chunks, each with its own delay, or dropped.
 - Circular buffers with the hardware's wrap rules:
   - compute pointers wrap at or past the limit;
@@ -109,6 +111,10 @@ between kernels.
 | `excl_waits_for_overlapping_group` | `KM_FLAG_EXCLUSIVE` commands on a disjoint and an overlapping group |
 | `completion_every_group` | every group of an 8-core grid, rows of 3, random chunk delays |
 | `random_jobs` | 10^4 commands with random groups, sizes and delays on 6 cores |
+| `give_up_stall_ends_the_run` | rank 1 waits for the stop flag only: it never leaves the command, and the deadline ends the run |
+| `give_up_reader_port` | rank 1's reader waits for a port arrival that never comes: given up at the deadline, the next commands on its cores are right |
+| `give_up_compute_input` | rank 1's compute waits for a second input tile that never comes: the same |
+| `give_up_writer_output` | rank 1's writer waits for a second output tile that never comes: the same |
 | `messages_smoke` | one message is forwarded once between two cores; the run ends quiet |
 | `messages_random` | 60 messages of 12 forwards on 4 cores with two bins: bins evicted, packets filled and split; against the replay |
 | `messages_idle_flapping` | an idle time of 50 cycles and chunk delays up to 3000: lines go idle and busy again many times, the end comes only after the last consume |
@@ -148,6 +154,12 @@ subject on the main branch.
 - Replay of a card finding. A command with no output was acknowledged while compute
   was still in its body: the writer waited only for its own body. Fixed by "Device: a
   core completes only after its compute body returned".
+- A command given up while math waited for unpack with a limit: math's wait ended
+  first and math left, and unpack, held meanwhile, then blocked for ever in its copy
+  of the command. Math and pack now wait for
+  unpack without a limit and show the wait in their live word; unpack's own waits are
+  the timed ones. Fixed by "Runtime: inspect a running core, give up one command at
+  its deadline".
 - A card finding: a feeder deadline passed long before its time. The 64-bit wall clock
   was read through the high word that every core of a tile latches, so a read at the
   low word's carry could come out 2^32 cycles ahead. Fixed by "Device: the wall clock
@@ -156,11 +168,11 @@ subject on the main branch.
 ## Result
 
 At the last change to this folder:
-- all 35 scenarios pass in the one-level form;
+- all 39 scenarios pass in the one-level form;
 - 3 scenarios pass in the row-leader form;
-- all 35 pass under the thread sanitizer.
+- all 39 pass under the thread sanitizer.
 
 Times on the shared development host, from a cold build:
 - one form: about 17 s, of which 13 s is `random_jobs`;
-- all three forms: about 56 s;
+- all three forms: about 74 s;
 - the tests' program: about 1.1 s to build.

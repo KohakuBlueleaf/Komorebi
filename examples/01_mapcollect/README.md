@@ -14,6 +14,7 @@ has finished, the group's first core tells the dispatcher, which tells the host.
 | `NOP` | none | reports |
 | `BAD_ITEM` (a test) | a0 `faulty_rank`, a1 `faulty_role` (0 writer, 1 reader) | rank a0 asks for an item that passes the end of its buffer and gives up with `bad_item`; the others report |
 | `RESULT` (a test) | a0 `result_base` | each core of the group gives a0 plus its index as the result word; with `KM_FLAG_RESULT` the command is acknowledged with the leader's, a0 |
+| `HANG` (a test) | a0 `hung_rank`, a1 `hang_mode` | rank a0 waits for what never comes: 1 its reader for an arrival at port 0; 2 compute for 2 input tiles (the reader sends 1); 3 the writer for 2 output tiles (compute sends 1); the dispatcher gives the command up at its deadline (below, "A command given up") |
 
 The host checks every core's tile against numpy: bit-exact on integer inputs (even
 jobs), and the relative RMS error of the total on uniform random inputs (odd jobs).
@@ -51,10 +52,13 @@ output tensors (`tensor.accessor_args()` of tensors made by
 `address`. `mapcollect.py` is this program with the tensors, the groups and the checks
 around it.
 
-If a core never reports, the dispatcher's deadline (one second unless `load`
-says otherwise) ends the run: `run.wait` raises `km.CommandTimeout`, which names the
-command, the slot, the sequence number, the group, and the cores that did not report
-with where each was waiting. The session is already closed cleanly by then.
+If a core never reports, the dispatcher's deadline (one second unless `load` says
+otherwise) gives the command up: `run.wait` raises `km.CommandTimeout` with `given_up`
+True, naming the command, the slot, the sequence number, the group, and where each
+core was waiting at the deadline, and the run goes on. A core that waits in a loop of
+its own, which polls nothing, cannot give up: the deadline then ends the run, and the
+error names the cores that did not report. The session is already closed cleanly by
+then.
 
 ## Files
 
@@ -64,6 +68,7 @@ with where each was waiting. The session is already closed cleanly by then.
 | `kernels/mapcollect.h` | handlers, buffers and command arguments shared by the kernels |
 | `mapcollect.py` | builds the commands, runs them, checks the outputs, prints one JSON line |
 | `block.py` | DOT commands that each carry a block of weights (below, "More than ten words") |
+| `give_up.py` | HANG commands inspected and given up, MAP commands after them; the cost of an inspect (below, "A command given up") |
 
 ## What it needs
 
@@ -121,6 +126,25 @@ Card 0, 2026-11-14, X280 at 1000 MHz, 200 commands on 2, 12 and 120 cores: every
 result right; a block costs the host 160 to 210 µs a command when 200 are submitted
 before one wait, and 2.0 to 3.0 ms when each is waited for (the DRAM barrier), and the
 cores about 1 µs (submit to acknowledgement 2.7 to 3.0 µs, against 1.8 to 2.0 without).
+
+## A command given up
+
+`give_up.py` hangs rank 1 of a group of 2 in each of the three ways HANG has. A
+quarter of the deadline later it inspects the group (`run.inspect`,
+[host](../../docs/reference/host.md#inspecting-a-run)). After the deadline it expects
+`km.CommandTimeout` with `given_up` True, then runs `--maps` MAP commands on the same
+cores and checks their tiles bit for bit. Last, it times an inspect of every core, and
+four NOP commands in flight alone and with an inspect queued behind them.
+
+```
+python give_up.py --deadline 0.5 --rounds 50
+```
+
+Card 0, 2026-11-14, X280 at 1000 MHz: the inspect names the wait on rank 1 (`port` for
+the reader, `cinput` for unpack, `data` for the writer) and each HANG is given up. An
+inspect of 120 cores takes the dispatcher 2.9 ms (about 24 µs a core); NOP commands in
+flight take 2.4 µs alone and 8.6 µs with an inspect behind them. Not passing yet: after
+the writer's HANG, run third, the first MAP on those cores is given up in turn.
 
 ## Measured
 

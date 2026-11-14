@@ -577,14 +577,19 @@ property of the model.
    dispatcher trapped in 9 of 18 runs under full matrix load (the card lowers its core
    voltage), and in 0 of 23 at 1,000 MHz. The runtime offers no setting between the
    two; one PLL clocks all four clusters.
-9. **Recovery without a reset.** Today a stuck RISC thread is recovered by the next
-   device open, but a kernel that leaves a compute unit running, a packer that writes
-   past its buffer, an X280 thread that never returns and polls nothing, or a
-   dispatcher whose loop has stopped costs a card reset. The compute kernel's waits
-   between its own three threads and the NoC barriers have no timeout.
+9. **Recovery without a reset.** Today a command that misses its deadline in one of the
+   runtime's waits is given up and the run goes on
+   ([giving up one command](docs/reference/runtime.md#giving-up-one-command)). A wait
+   that polls nothing still ends the run: a program's own loop or NoC barrier, the DST
+   hand-over between math and pack, a dynamic run's waits. A kernel that leaves a
+   compute unit running, a packer that writes past its buffer, an X280 thread that
+   never returns and polls nothing, or a dispatcher whose loop has stopped costs a card
+   reset.
 10. **Debugging on the card.** Today tt-metal's watcher cannot run while the X280
-    runtime is open; debugging is by the cores' state words, "where" codes and the
-    per-core trace, read after the stop.
+    runtime is open. `run.inspect` reads each core's state words, the wait each kernel
+    is in and its latest trace entries while the run goes on
+    ([inspecting a run](docs/reference/host.md#inspecting-a-run)). Nothing reads a
+    core's registers, its buffers' contents or a program's own variables.
 11. **The build.** Today `kmr build host` and `kmr build pymodule` take their compile
     flags from two targets that the
     [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project adds

@@ -233,9 +233,14 @@ Every wait of the runtime is a `km::poll_stop(stop, ready, limit, grace)`. It po
 `ready()` and returns `kGaveNone` when it holds. It returns `kGaveLimit` after
 `limit` units (0: no limit). It returns `kGaveStop` when the stop flag is set: at once
 with `grace` 0, otherwise after `grace` more units, so a wait already about to end
-can still end. A wait that gives up commands its first give-up and sets the tile's stop flag, so all three kernels leave. The writer reports a command only after the
-reader's and compute's bodies for it have returned, so a give-up in any of a core's
-three kernels fails the command it happens in.
+can still end. A wait that gives up records its first give-up and sets the tile's stop
+flag, so all three kernels leave. The writer reports a command only after the reader's
+and compute's bodies for it have returned, so a give-up in any of a core's three
+kernels fails the command it happens in. The one exception is a command the dispatcher
+gives up at its deadline ([giving up one command](#giving-up-one-command)).
+
+While it waits, each kernel keeps the wait's where code in its live word, so an inspect
+can name it while the run goes on.
 
 | Kernel | Wait | Limit | Where |
 |---|---|---|---|
@@ -243,7 +248,7 @@ three kernels fails the command it happens in.
 | reader | free token pages for the next command | idle; wait after a stop | `token` |
 | reader | the next landed command of this core | idle | `next` |
 | reader | `reserve` | wait | `data` |
-| reader | `wait_stop` | idle | `stall` |
+| reader | `wait_stop` (the stop flag only, not the abort word) | idle | `stall` |
 | reader | after a give-up: token pages for the EXIT it hands on (not recorded) | wait | - |
 | writer | the next token | idle; wait after a stop | `writer` |
 | writer | `wait_front` | wait x `times` | `data` |
@@ -256,12 +261,21 @@ three kernels fails the command it happens in.
 | writer | `km::emit`: write and atomic flush | wait | `emit` |
 | writer, compute | a wait behind a port's wait (`reduce_result`, `take`) | 2 x wait (`km::kBehindPort`) | `data`, `cinput` |
 | reader or writer | broadcast calls | wait | `broadcast*` ([broadcasts](broadcast.md)) |
+| reader or writer | the runtime's own NoC barriers (`Core::flushed`) | wait | `nocflush` |
+| compute (math, pack) | unpack's word: the command's verdict, a `wait_front`'s | none | `cmailbox` |
+| compute (unpack) | math's and pack's confirmations | none | `cconfirm` |
+| reader, writer, unpack | after a give-up: the producer's pages to clear | wait | `clear` |
 
-The NoC barriers have no timeout: `noc_async_read_barrier`,
-`noc_async_write_barrier`, `noc_async_writes_flushed` and `noc_async_atomic_barrier`.
-They end once the transactions to valid addresses complete. The buffer wrappers'
-checks are what keep those addresses valid. A program's own waits go through
-`poll` and `gave_up` in the same way.
+The runtime's own barriers (start-up, check-in, command block, completion, trace)
+are `Core::flushed`: timed, and polled with the stop flag. A program's
+`noc_async_read_barrier`, `noc_async_write_barrier`, `noc_async_writes_flushed` and
+`noc_async_atomic_barrier` have no timeout. They end once the transactions to valid
+addresses complete; the buffer wrappers' checks keep those addresses valid. A
+program's own waits go through `poll` and `gave_up` in the same way.
+
+Math and pack wait for unpack's words without a limit: unpack's own waits are timed,
+and unpack tells them the outcome. Their live word shows `cmailbox` meanwhile, and
+unpack's shows `cconfirm` while it waits for theirs.
 
 ## Gave-up and where codes
 
@@ -277,6 +291,7 @@ of each kernel is kept, because it names the cause. The host decodes the words w
 | 2 (`kGaveLimit`) | `limit` | the wait timed out |
 | 3 (`kGaveBadItem`) | `bad_item` | an item of several pages would pass the buffer's end, or a buffer is too small for its schedule; nothing was accessed |
 | 4 (`kGaveBadBroadcast`) | `bad_broadcast` | a broadcast's arguments do not fit the command |
+| 7 (`kGaveDeadline`) | `deadline` | the dispatcher gave the command up at its deadline: the run goes on |
 
 | Where | Name | Kernel: waiting for |
 |---|---|---|
@@ -298,6 +313,10 @@ of each kernel is kept, because it names the cause. The host decodes the words w
 | 16 | - | free |
 | 17 | `port` | reader: a port's count (`km::arrive`) |
 | 18 | `emit` | writer: a put or a bump to flush (`km::emit`) |
+| 45 | `nocflush` | reader or writer: one of the runtime's NoC barriers |
+| 46 | `cmailbox` | compute (math or pack): unpack's word |
+| 47 | `cconfirm` | compute (unpack): math's and pack's confirmations |
+| 48 | `clear` | after a give-up: a buffer's producer to finish the command |
 
 How each kernel left is one byte of `kStEnds` (reader, writer, compute):
 1. `kEndExit`: left on an EXIT command.
@@ -347,7 +366,26 @@ after them is derived from the one before.
 | 0x1DC0 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
 | 0x2600 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
 | 0x2640 | `KM_CONTROL_BLOCK` | 2 block areas of 1,088 bytes (`KM_BLOCK_AREA_BYTES`), the reader's then the writer's: a line whose word 0 is the sequence of the command read in, then up to 1,024 bytes of its block ([the block](#the-block)) |
-| 0x2EC0 | `KM_CONTROL_BYTES` | size of the control block |
+| 0x2EC0 | `KM_CONTROL_ABORT` | 64 abort words, one per slot: the sequence of the slot's command the dispatcher gave up |
+| 0x2FC0 | `KM_CONTROL_LIVE` | live words (`km::kLv*`, 512 bytes): per kernel its wait's where code, its command's sequence and slot, the commands it has left; the trace's address and capacity, the commands given up; then what a give-up clears ([live words](#live-words)) |
+| 0x31C0 | `KM_CONTROL_BYTES` | size of the control block |
+
+### Live words
+
+Each word has one writer: kernel r (`kRoleReader` 0, `kRoleWriter`, `kRoleUnpack`,
+`kRoleMath`, `kRolePack` 4) writes word `kLv*` + r. The dispatcher's inspect reads the
+first 128 bytes (`KM_LIVE_READ`) while the run goes on; `komorebi.state.live` decodes
+them.
+
+| Word | Meaning |
+|---|---|
+| 0 + r (`kLvWhere`) | the runtime wait kernel r is in, a where code; 0: none |
+| 5 + r (`kLvSequence`), 10 + r (`kLvSlot`) | the command it runs and its slot; sequence 0: none |
+| 15 + r (`kLvFinished`) | the commands it has left, a count |
+| 20 (`kLvTrace`), 21 (`kLvTraceCap`) | the trace's L1 address (0: none) and the sequences it holds |
+| 22 (`kLvGivenUp`) | the commands this core gave up (the writer's count) |
+| 24 to 26 (`kLvProduces`) | per producer (reader, pack, writer), the buffers it has filled |
+| 32 on (`kLvEnds`) | the pages each producer pushed by the end of a command, by its parity |
 
 Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing
@@ -364,6 +402,38 @@ sequences 1 to `trace_cap`:
 
 The writer writes the page to DRAM when it leaves. Commands past the capacity are
 counted in `kStTraceDropped`.
+
+## Giving up one command
+
+At a command's deadline the dispatcher can give up that one command and keep the run.
+This applies to a program's handler from the host, outside a dynamic run. The
+dispatcher first reads the group's state and live words (an inspect), then writes the
+command's sequence into its slot's abort word on every core. On each core:
+
+1. Every wait that polls the abort word (`poll`, `poll_at`, the buffer waits, the
+   tokens) returns `kGaveDeadline` once the word holds the command it runs. The handler
+   returns through `gave_up`, as on any other give-up, but the tile's stop flag stays
+   clear.
+2. The kernels leave the body. The writer does not report the command, and the leader
+   clears its slot's completion count.
+3. The reader, the writer and unpack each pop the pages their command's producer left in
+   the buffers 0 to 28, once that producer has finished the command (`clear`). Then
+   each takes the next command.
+
+The dispatcher then reads each core's live sequence words until no kernel of the group
+runs the command. Only then does it free the slot and send `KM_EVENT_TIMEOUT`, which
+the host reads as given up (the count in the core block's `KMD_H_GIVEN_UP` rose). The
+state word records `deadline` with the where code of the wait. The writer counts the
+command in `kLvGivenUp`. The next command on the same cores runs as usual.
+
+Where the line is: a core that still runs the command 20 ms after the abort
+(`KMD_GIVE_UP_TICKS`) ends the run as before, with `KMD_ERROR_DEADLINE` and the cores
+that did not report. That is a wait that polls nothing: a program's own loop, a NoC
+barrier of a program's, the DST hand-over between math and pack, a compute unit that
+never returns. `wait_stop` is one on purpose: it waits for the stop flag only, so the
+tests of the deadline still end the run. A consumer that waits for more pages than its
+command's producer sends can take the next command's pages if that command is already
+in flight.
 
 ## What a program may and may not do
 

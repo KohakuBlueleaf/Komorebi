@@ -424,11 +424,49 @@ the regions' whole tensor, 8 MB per MB of regions.
 | `drain(timeout=10.0)` | the same for everything submitted; returns how many events it waited for |
 | `event(handle)` | `Event(handle, kind, auxiliary, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `rejected`; `auxiliary` is the first core of the group that ran the command (done; for a queued command, the one the kernel chose), the slot (timeout) or the reason (rejected): the low 8 bits of the event's auxiliary, whose next 16 bits, the low bits of the command's sequence number, `sequence(handle)` reads (layout: the kernel README, "Sources"); `ticks` is submit to completion in the X280's 50 MHz timer, `microseconds` the same in microseconds; for a command submitted with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `microseconds` then hold it too), else None |
 | `sequence(handle)`, `group(handle)` | the sequence number the kernel gave the command (the trace's index), from its done or timeout event (None before it, and for a rejected command); its group, whose first core for a queued command comes from its done event (None before it) |
+| `inspect(group=None, timeout=10.0)` | while the run goes on: the dispatcher reads each core of `group` (default every core), one core per pass of its loop, and the call returns a list with a dict per core ([inspecting a run](#inspecting-a-run)). It is the kernel's own command: it takes no slot and no sequence number |
 | `forget(handles)` | releases what the run keeps for handles whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps groups and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
 | `abort()` | the failure path: stops the grid from the host (with a timeout), then the kernel through the runtime, closes it, reads back; `result()` then has `abandoned`; raises `KernelFailed` if the runtime could not restore cluster 0, with the runtime's account of each core (phase, stage, trap cause and address) in its message and the session log |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict (with `ports`: count and wanted count of every port slot, and `broadcasts`: each broadcast's VALID word, first give-up, blocks, wait cycles and DONE-BY words; a reader or writer that gave up waiting on a port or an emit names its `port`), the raw state words, the trace |
+
+### Inspecting a run
+
+`run.inspect(group)` reads what each core of the group is doing while the run goes on.
+The dispatcher reads each core's state words, its live words and the trace entries of
+the latest four commands from the core's control block in L1. It reads nothing else.
+The records go to a block in its local memory, and the host reads them back after the
+`pong` event.
+
+Each core's dict holds what `komorebi.state.core_state` gives (the gave-up words, the
+counters). `live` has, per kernel (`reader`, `writer`, `unpack`, `math`, `pack`), the
+runtime wait it is in (a where code's name, or None), the sequence and slot of the
+command it runs, and the commands it has left; `given_up` is the core's count of
+commands given up. `trace` holds the entries the trace has (empty without a trace). A
+core the dispatcher could not reach is `{"core": i, "read": False}`. `run.inspect_ticks`
+is how long the read took, in the X280's 50 MHz timer.
+
+```python
+handle = run.submit("hang", (0, 2))
+cores = run.inspect((0, 4))
+print([core["live"]["reader"]["where"] for core in cores])  # ['port', None, None, None]
+```
+
+An inspect does not stop the commands in flight; the dispatcher's loop takes one core
+of it per pass. Only one runs at a time, and a host inspect sent meanwhile waits for
+the one before it. The inspect at a command's deadline uses the same block: an inspect
+that finds the block overwritten by one raises `KomorebiError`, and the call can be
+made again.
+
+When a program's command from the host misses its deadline, the dispatcher can give
+it up and keep the run ([runtime](runtime.md#giving-up-one-command)). It reads the
+group, tells its cores to leave the command, and sends `timeout` once none runs it.
+`wait` then raises `CommandTimeout` with `given_up` True, and its `cores` are the group
+as that read found them. The run goes on: the next command on those cores runs as
+usual. A command whose core is still in it 20 ms later (a loop that polls nothing), and
+a command the dispatcher does not give up (a thread's own, a dynamic run's), end the
+run as before.
 
 ### A command's block
 
@@ -566,7 +604,7 @@ All derive from `km.KomorebiError`.
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
 | `CommandRejected` | the kernel consumed the command and submitted nothing (a reserved handler or flag, a group outside the grid, a command after EXIT); the run goes on | `handle`, `reason` (`KMD_REJECT_*`), `reason_name` |
-| `CommandTimeout` | a group missed its deadline; the kernel stopped the grid, the run is stopped and read back | `handle`, `slot`, `sequence`, `group`, `cores`: each core of the group that did not report, with where its reader and writer gave up |
+| `CommandTimeout` | a group missed its deadline. With `given_up` True, the dispatcher gave the command up and the run goes on. Otherwise the kernel stopped the grid, and the run is stopped and read back | `handle`, `slot`, `sequence`, `group`, `given_up`, `cores`: each core of the group that did not report, with where its reader and writer gave up; given up, the group as the inspect at the deadline read it (`live`: where each kernel waited) |
 | `KernelFailed` | the dispatcher finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |
 | `EngineRejected` | the kernel rejected a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `CommandRejected` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `handle`, `reason`, `reason_name`, `pc`, `node` |
@@ -589,7 +627,7 @@ the kernel's header; `reason_name` is the lower-case suffix):
 
 | `reason` | `reason_name` | The command |
 |---|---|---|
-| 1 | `handler` | has a handler from 240 to 251 (the session's own commands may carry 240 to 242) |
+| 1 | `handler` | has a handler from 240 to 251 (the session's own commands may carry 240 to 243) |
 | 2 | `flags` | sets the reserved flag bit 0 |
 | 3 | `group` | has a group of 0 cores, or one that does not lie inside the cores |
 | 4 | `exited` | came after EXIT |

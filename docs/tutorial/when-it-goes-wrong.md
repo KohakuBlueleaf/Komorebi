@@ -19,9 +19,14 @@ two answers, at two places.
   `km.WaitTimeout` and the program decides what to do. The command is not touched. It may
   be slow, not broken, and you can call `wait` again.
 - The **deadline** is on the card: how long a command may take from `submit` until every
-  core of its group has reported. The card measures it itself. When it runs out, the card stops the cores and the next `wait`
-  raises `km.CommandTimeout`. The deadline is a setting of `load`, and its default is one
-  second.
+  core of its group has reported. The card measures it itself. When it runs out, the card
+  tells the cores to leave the command, and the next `wait` raises `km.CommandTimeout`.
+  The deadline is a setting of `load`, and its default is one second.
+
+A core that waits for something, a page or a message, leaves at once: the card gives the
+command up and the run goes on ([[finding-a-bug]]). A core that is busy in a loop of its
+own does not hear it: the card then stops the cores, and the run is over. This lesson's
+command is that second kind.
 
 ## The general form
 
@@ -33,7 +38,7 @@ try:
 except km.WaitTimeout:
     ...  # the host gave up waiting; the command is still on the card
 except km.CommandTimeout as error:
-    ...  # the card gave up on the command; the run is over
+    ...  # the card ended the command; error.given_up: the run goes on
 ```
 
 - `deadline=` is the card's limit for every command of this run.

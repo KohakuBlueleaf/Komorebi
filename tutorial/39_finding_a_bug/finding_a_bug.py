@@ -34,6 +34,7 @@ with km.Session() as session:
             event = run.wait(handle, timeout=10.0)
         except km.CommandTimeout as error:
             print(f"with bug {bug}: {error}")
+            run.stop()  # the card gave the command up; this run is no longer needed
             continue
         # --8<-- [end:wait]
         run.stop()
