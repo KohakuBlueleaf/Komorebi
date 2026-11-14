@@ -197,7 +197,7 @@ def program(state, loops, fallbacks):
         "work_cluster",
         kernels=HERE / "kernels",
         buffers=[km.Buffer(index=16, format="uint32", page_bytes=64, pages=1)],
-        compile_args={"writer": state.accessor_args()},
+        compile_args={"writer": state.tensor_args()},
     )
     for cluster, words in loops.items():
         work_program.thread(

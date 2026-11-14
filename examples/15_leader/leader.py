@@ -145,10 +145,10 @@ def main():
             args=arguments_of,
             compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
             compile_args={
-                "reader": values_tensor.accessor_args()
-                + tiles.accessor_args()
-                + results.accessor_args(),
-                "writer": sums.accessor_args(),
+                "reader": values_tensor.tensor_args()
+                + tiles.tensor_args()
+                + results.tensor_args(),
+                "writer": sums.tensor_args(),
             },
         )
         run = session.load(program)

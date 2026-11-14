@@ -29,6 +29,14 @@ A part to another island goes through the relay: the leader asks its island's li
 which writes them into the arrival slot and bumps the port. The receiving core waits on
 its port as for a part from its own island.
 
+The input is read and the total written through Komorebi's page calls
+(`km::read_pages`, `km::write_pages` over a `km::Tensor`), so they hold wherever the
+session placed the tensors. Placed by the command's group (the session's default), each
+rank's tiles are in its own island and nothing is asked for; a page another island holds
+is asked for on port 6 (the input) or put on port 7 (the total), ports that the first
+leader also counts parts on, so a group that reads across at its first leader can mix
+the two counts.
+
 ## Running it
 
 `sum.py` loads the program, submits SUM on every rank `--rounds` times (from island 0's

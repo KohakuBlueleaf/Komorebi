@@ -16,4 +16,5 @@ constexpr uint32_t kHandlerNorm = 4;
 constexpr uint32_t kHandlerStall = 5;
 
 constexpr uint32_t kCbScratch = 16;
+constexpr uint32_t kAskPort = 0;  // the state pages another island holds count here
 constexpr uint32_t kPageBytes = 64;

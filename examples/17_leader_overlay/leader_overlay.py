@@ -159,9 +159,7 @@ def program(tensors, arguments_of, compiled):
         ],
         args=arguments_of,
         compile_args={
-            "reader": values.accessor_args()
-            + results.accessor_args()
-            + times.accessor_args()
+            "reader": values.tensor_args() + results.tensor_args() + times.tensor_args()
         },
         defines={"LEADER_COMPILED": 1} if compiled else {},
     )

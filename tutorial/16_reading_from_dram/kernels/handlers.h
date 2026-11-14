@@ -6,3 +6,4 @@
 
 constexpr uint32_t kHandlerFetch = 1;
 constexpr uint32_t kTileBuffer = 0;
+constexpr uint32_t kPort = 0;  // where a tile from another card is counted

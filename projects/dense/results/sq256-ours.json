@@ -1,0 +1,113 @@
+{
+ "shape": "sq256",
+ "m": 256,
+ "k": 256,
+ "n": 256,
+ "plan": {
+  "mt": 8,
+  "kt": 8,
+  "nt": 8,
+  "rows": 1,
+  "cols": 12,
+  "pcm": 8,
+  "pcn": 1,
+  "bm": 8,
+  "bn": 1,
+  "kb": 8,
+  "sh": 4,
+  "sw": 1,
+  "wa": 2,
+  "ww": 2,
+  "layout": "cols",
+  "l1": 316416,
+  "form": "grid",
+  "nk": 1,
+  "nbh": 1,
+  "nbw": 1,
+  "rect": [
+   0,
+   0,
+   12,
+   1
+  ]
+ },
+ "upload_s": 0.112,
+ "x280_mhz": 1350,
+ "deadline_s": 0.05,
+ "reduce": "owner",
+ "profile_mhz": 1350,
+ "load_microseconds": null,
+ "single_microseconds": {
+  "median": 10.8,
+  "min": 10.76
+ },
+ "loop": {
+  "reps": 370371,
+  "batch": 370371,
+  "seconds": 4.959,
+  "wall_seconds": 5.054,
+  "microseconds_per_call": 13.389,
+  "command_microseconds_median": 10.86,
+  "mean_w": 76.98209660132707,
+  "peak_w": 79.0,
+  "open_w": 72.69990202815283,
+  "joules_per_call": 0.0010505669483653979,
+  "aiclk_mhz": [
+   1350,
+   1350.0,
+   1350
+  ]
+ },
+ "tflops": 2.506119351706625,
+ "cut_microseconds_per_call": {
+  "broadcasts_only": 10.754,
+  "product_only": 6.355
+ },
+ "run": {
+  "cores": 120,
+  "kernel": "none",
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "broadcast_wait_cycles_max": [
+   3261526774,
+   58433987
+  ],
+  "broadcast_gave_up": []
+ },
+ "readback_s": 0.174,
+ "profile": {
+  "slowest_core": 1,
+  "slowest_microseconds": 8.861,
+  "mean_busy_over_slowest": 0.989,
+  "partitions_of_slowest": {
+   "read_A_dram": 0.0,
+   "row_broadcast": 0.621,
+   "read_W_dram": 0.198,
+   "column_broadcast": 0.039,
+   "writer_waits_for_output": 0.539,
+   "write": 0.09,
+   "unpack_waits_for_A": 0.652,
+   "unpack_waits_for_W": 0.01,
+   "unpack_waits_for_partials": 0.0,
+   "matrix_unit": 0.159,
+   "pack_waits_for_space": 0.021,
+   "pack": 0.181
+  }
+ },
+ "check": {
+  "max_rel": 0.006570684042705604,
+  "rms_rel": 0.00395746658058924,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "6.47",
+  "6.06",
+  "5.20"
+ ]
+}

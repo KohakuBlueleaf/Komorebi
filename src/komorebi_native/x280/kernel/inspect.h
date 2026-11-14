@@ -45,6 +45,7 @@ static inline void inspect_begin(
     inspect->count = count;
     inspect->next = 0;
     inspect->leaving = 0;
+    inspect->hung = 0;
     inspect->slot = slot;
     inspect->sequence = sequence;
     inspect->start = now;
@@ -201,6 +202,90 @@ static int inspect_ended(kmd_t* dispatcher, uint32_t core) {
     );
 }
 
+/* 1 + k when core `core` is link core k of this island (after its ranks), else 0. */
+static inline uint32_t inspect_link(const kmd_t* dispatcher, uint32_t core) {
+    const uint32_t after = dispatcher->island_base + dispatcher->island_count;
+    return (
+        dispatcher->link_on && dispatcher->island_count != 0 && core >= after &&
+            core < dispatcher->cores
+            ? core - after + 1u
+            : 0u
+    );
+}
+
+/* The host command a slot's events name, for KMD_EVENT_LINK (0: not the host's). */
+static inline uint32_t inspect_host_request(const kmd_t* dispatcher, uint32_t slot) {
+    return (
+        dispatcher->slot_source[slot] == KMD_SRC_HOST
+            ? dispatcher->slot_request[slot]
+            : 0u
+    );
+}
+
+/* Whether a core of [first, first + count) waits for an island's answer to its ask or
+ * put (KMD_WHERE_ASK) in command `sequence`: its traffic went to link core 0. */
+static int inspect_asking(
+    kmd_t* dispatcher, uint32_t first, uint32_t count, uint32_t sequence
+) {
+    for (uint32_t core = first; core < first + count; core++) {
+        volatile const uint8_t* window = inspect_aim(dispatcher, core);
+        if (window == 0) {
+            continue;
+        }
+        volatile const uint64_t*
+            words = (
+                (volatile const uint64_t*)(
+                    window + dispatcher->control_address + KM_CONTROL_LIVE
+                )
+            );
+        uint32_t live[10];
+        for (uint32_t word = 0; word < 5u; word++) {
+            const uint64_t pair = words[word];
+            live[2u * word] = (uint32_t)pair;
+            live[2u * word + 1u] = (uint32_t)(pair >> 32);
+        }
+        for (uint32_t role = 0; role < KM_LIVE_ROLES; role++) {
+            if (
+                live[role] == KMD_WHERE_ASK && live[KM_LIVE_SEQUENCE + role] == sequence
+            ) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static inline int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot);
+
+/* Link core k (core `core`) did not leave: each other command it held traffic of (its
+ * group has the core; link core 0: a core waits for an ask) is lost, late now. */
+static void inspect_lost(kmd_t* dispatcher, uint32_t core, uint32_t k, uint64_t now) {
+    for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
+        if (
+            !(dispatcher->busy & (1ull << slot)) || slot == dispatcher->inspect.slot ||
+            dispatcher->slot_lost[slot] != 0 ||
+            dispatcher->slot_deadline[slot] == ~0ull ||
+            !inspect_may_give_up(dispatcher, slot)
+        ) {
+            continue;
+        }
+        const uint32_t group = dispatcher->slot_group[slot];
+        const uint32_t first = group & 0xFFFFu, count = group >> 16;
+        int lost = core >= first && core < first + count;
+        if (!lost && k == 0 && inspect_link(dispatcher, first) == 0) {
+            lost = (
+                inspect_asking(
+                    dispatcher, first, count, dispatcher->slot_sequence[slot]
+                )
+            );
+        }
+        if (lost) {
+            dispatcher->slot_lost[slot] = (uint8_t)(k + 1u);
+            dispatcher->slot_deadline[slot] = now;
+        }
+    }
+}
+
 /* A timeout's abort: the slot's abort word on every core (each gives up the command
  * it runs only if it is this one); its cores are then checked (inspect_leave). */
 static void inspect_abort(kmd_t* dispatcher, uint32_t slot) {
@@ -228,6 +313,30 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     const uint32_t auxiliary = (
         slot | (sequence & KM_EVENT_SEQUENCE_MASK) << KM_EVENT_SEQUENCE_SHIFT
     );
+    /* The link it names goes first: lost on a hung link core, or a link core's own */
+    const uint32_t lost = dispatcher->slot_lost[slot];
+    const uint32_t link = (
+        inspect_link(dispatcher, dispatcher->slot_group[slot] & 0xFFFFu)
+    );
+    if (lost != 0) {
+        if (source == KMD_SRC_HOST) { /* a LINE's: link_freed names its crossing */
+            link_event(
+                dispatcher,
+                dispatcher->slot_request[slot],
+                lost - 1u,
+                KMD_LINK_LOST,
+                took
+            );
+        }
+    } else if (link != 0 && !dispatcher->inspect.hung) {
+        link_event(
+            dispatcher,
+            inspect_host_request(dispatcher, slot),
+            link - 1u,
+            KMD_LINK_GAVE,
+            took
+        );
+    }
     /* A crossing's part sends no event of its own: the crossing's one event counts
      * (link_gave); a part from the other island's dispatcher goes back to its origin.
      */
@@ -243,19 +352,17 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
         );
         link_gave(dispatcher, source);
     }
+    dispatcher->slot_lost[slot] = 0;
     dispatcher->last_event_mtime = now;
     if (dispatcher->waits) {
         sources_wake(dispatcher);
     }
 }
 
-/* End of a give-up's wait, a kept list: each core of the group still in the command
- * or ended, reset and loaded again (record flag KMD_INSPECT_RESET). 1: all were. */
+/* End of a give-up's wait: each core in the command or ended reset by its kept list
+ * (KMD_INSPECT_RESET), a link core left to the host (KMD_LINK_HUNG). 1: all were. */
 static int inspect_reset(kmd_t* dispatcher) {
     kmd_inspect_t* inspect = &dispatcher->inspect;
-    if (dispatcher->reset_bytes == 0) {
-        return 0;
-    }
     volatile uint32_t* header = inspect_header(dispatcher);
     for (; inspect->next < inspect->count; inspect->next++) {
         const uint32_t core = inspect->first + inspect->next;
@@ -265,6 +372,23 @@ static int inspect_reset(kmd_t* dispatcher) {
             !inspect_ended(dispatcher, core)
         ) {
             continue;
+        }
+        const uint32_t link = inspect_link(dispatcher, core);
+        if (link != 0) {
+            const uint64_t now = x280_mtime();
+            link_event(
+                dispatcher,
+                inspect_host_request(dispatcher, inspect->slot),
+                link - 1u,
+                KMD_LINK_HUNG,
+                (uint32_t)(now - dispatcher->slot_submitted[inspect->slot])
+            );
+            inspect->hung = 1;
+            inspect_lost(dispatcher, core, link - 1u, now);
+            continue;
+        }
+        if (dispatcher->reset_bytes == 0) {
+            return 0;
         }
         uint32_t offset = 0, bytes = 0;
         const uint32_t status = (
@@ -301,7 +425,10 @@ static void inspect_leave(kmd_t* dispatcher) {
     ) {
         inspect->next++;
     }
-    if (inspect->next == inspect->count && dispatcher->reset_bytes == 0) {
+    if (
+        inspect->next == inspect->count && dispatcher->reset_bytes == 0 &&
+        inspect_link(dispatcher, inspect->first) == 0
+    ) {
         inspect->active = 0;
         inspect_give_up(dispatcher, inspect->slot, now);
     } else if (inspect->next == inspect->count || now > inspect->until) {
@@ -361,16 +488,20 @@ static void inspect_turn(kmd_t* dispatcher) {
     }
 }
 
-/* Whether the command in busy slot `slot` may be given up at its deadline, the run
- * going on: a program's handler from the host, not a dynamic run's, not one kept. */
+/* Whether busy slot `slot` may be given up at its deadline, the run going on: a host's
+ * program handler or link cores' PAGES, not a dynamic run's, not one kept. */
 static inline int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot) {
     const uint32_t handler = dispatcher->slot_handler[slot];
+    const int pages = (
+        handler == KM_HANDLER_PAGES &&
+        inspect_link(dispatcher, dispatcher->slot_group[slot] & 0xFFFFu) != 0
+    );
     return (
         (
             dispatcher->slot_source[slot] == KMD_SRC_HOST ||
             dispatcher->slot_source[slot] == KMD_SRC_LINK
         ) &&
-        handler <= KM_HANDLER_USER_MAX &&
+        (pages || handler <= KM_HANDLER_USER_MAX) &&
         !KM_IS_DYNAMIC(dispatcher->messages.handler, handler) &&
         dispatcher->messages.end != slot + 1u
     );

@@ -159,11 +159,20 @@ class KernelFailed(KomorebiError):
         self.cores = list(cores)
 
 
+# What a link core's give-up says (KMD_LINK_*), in a CommandTimeout's text.
+LINK_SAYS = {
+    "gave": "its command given up, the core left it",
+    "hung": "did not leave the command: reset it with run.reset_link",
+    "lost": "held this command's traffic, did not leave: reset it with run.reset_link",
+}
+
+
 class CommandTimeout(KernelFailed):
     """A command's group missed its deadline: command, slot, sequence, group, and cores:
     after the stop, those that did not report and where each waited; `given_up`: the
     dispatcher gave it up, the run goes on, the cores as its inspect read them;
-    `recovered`: those reset and loaded again. `ranks`: named by flat rank (islands)."""
+    `recovered`: those reset again; `ranks`: by flat rank; `links`: (link core, what).
+    """
 
     def __init__(
         self,
@@ -176,6 +185,7 @@ class CommandTimeout(KernelFailed):
         given_up=False,
         recovered=(),
         ranks=False,
+        links=(),
     ):
         named = "; ".join(describe_core(core) for core in cores) or "none named"
         unit = "ranks" if ranks else "cores"
@@ -190,13 +200,18 @@ class CommandTimeout(KernelFailed):
             if recovered
             else ""
         )
+        on = "".join(
+            f"; link core {k}: {LINK_SAYS.get(say, say)}"
+            for k, say in dict(links).items()
+        )
         super().__init__(
             f"command {handle} {what}: slot {slot}, sequence {sequence}, "
-            f"group first {first} count {count}; {unit}: {named}{back}",
+            f"group first {first} count {count}; {unit}: {named}{back}{on}",
             result=result,
             cores=cores,
         )
         self.recovered = list(recovered)
+        self.links = list(links)
         self.handle = handle
         self.slot = slot
         self.sequence = sequence

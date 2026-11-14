@@ -15,14 +15,14 @@ namespace {
 
     // The command's jobs, `passes` times: each job's blocks through `broadcast` (null:
     // none), its rows written (full), popped (compute only) or none. False: gave up.
-    template <typename Accessor>
+    template <typename Outputs, typename Keys, typename Values>
     bool run_jobs(
         const km::Writer& writer,
         const km_command_t& command,
         uint32_t table,
-        const Accessor& outputs,
-        const Accessor& keys,
-        const Accessor& values,
+        const Outputs& outputs,
+        const Keys& keys,
+        const Values& values,
         km::Broadcast* broadcast,
         volatile tt_l1_ptr uint32_t* profile,
         uint32_t started
@@ -49,7 +49,15 @@ namespace {
                 if (
                     broadcast != nullptr &&
                     !broadcast_job<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
-                        *broadcast, keys, values, job_words, blocks, counters
+                        writer,
+                        command,
+                        kAskPortWriter,
+                        *broadcast,
+                        keys,
+                        values,
+                        job_words,
+                        blocks,
+                        counters
                     )
                 ) {
                     return false;
@@ -64,14 +72,19 @@ namespace {
                     }
                     const uint32_t wait_done = km::wall();
                     const uint32_t source = get_read_ptr(kCbOut);
-                    for (
-                        uint32_t column = 0; writes && column < VALUE_TILES; ++column
-                    ) {
-                        noc_async_write_page(
-                            first_page + row * stride * VALUE_TILES + column,
+                    if (
+                        writes &&
+                        !km::write_pages(
+                            writer,
+                            command,
                             outputs,
-                            source + column * kTileBytes
-                        );
+                            first_page + row * stride * VALUE_TILES,
+                            VALUE_TILES,
+                            source,
+                            kAskPortWriter
+                        )
+                    ) {
+                        return false;
                     }
                     if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                         return false;
@@ -101,7 +114,10 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    constexpr auto tile_args = TensorAccessorArgs<5>();  // K, V, O: bf16 tiles in DRAM
+    // O, K, V: bf16 tiles in DRAM, after the five sizes
+    using O = km::Tensor<5>;
+    using K = km::Tensor<O::next_compile_time_args_offset()>;
+    using V = km::Tensor<K::next_compile_time_args_offset()>;
     km::Writer writer;
     // The table copy's page: reserved once, used in place, never pushed.
     cb_reserve_back(kCbWriterJobs, 1);
@@ -141,9 +157,9 @@ void kernel_main() {
         )) {
             return false;
         }
-        const auto keys = TensorAccessor(tile_args, k_address);
-        const auto values = TensorAccessor(tile_args, v_address);
-        const auto outputs = TensorAccessor(tile_args, o_address);
+        const K keys(k_address);
+        const V values(v_address);
+        const O outputs(o_address);
 #ifdef BROADCAST_ON_WRITER
         if (mode != kModeComputeOnly) {
             km::Broadcast broadcast(writer, command, kArgBroadcast);

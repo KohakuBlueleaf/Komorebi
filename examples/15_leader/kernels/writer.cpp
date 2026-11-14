@@ -3,11 +3,12 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "leader.h"
 
 void kernel_main() {
-    constexpr auto sums_args = TensorAccessorArgs<0>();
+    using Sums = km::Tensor<0>;
     km::Writer writer;
     const uint32_t included = writer.arg(0);
     writer.run([&](const km_command_t& command) {
@@ -15,11 +16,21 @@ void kernel_main() {
             return true;
         }
         const uint32_t rank = writer.me() - km::first(command);
-        const auto sums = TensorAccessor(sums_args, command.a7);
+        const Sums sums(command.a7);
         if (!writer.wait_front(kCbSum, 1)) {
             return false;
         }
-        noc_async_write_page(command.a4 + rank, sums, get_read_ptr(kCbSum));
+        if (!km::write_pages(
+            writer,
+            command,
+            sums,
+            command.a4 + rank,
+            1,
+            get_read_ptr(kCbSum),
+            kAskPortWriter
+        )) {
+            return false;
+        }
         const uint32_t code = writer.poll(
             [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);

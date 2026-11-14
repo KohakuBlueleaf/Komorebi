@@ -361,7 +361,9 @@ capsule named `komorebi.mesh_device` holding a `std::shared_ptr<MeshDevice>`.
 A `Tensor` has `address` (its address in every bank, or in every core's L1),
 `shape` (on the card, padded), `dtype`, `layout`, `page_bytes`, `aligned_page_bytes`,
 `pages`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
-for `Program(compile_args=...)`); `write(data)`; `read()` (the whole tensor as a numpy
+for `Program(compile_args=...)`); `tensor_args()` (those: what a
+kernel's `km::Tensor` reads, for the page calls of
+[Islands](islands.md#a-kernels-page-reads-and-writes)); `write(data)`; `read()` (the whole tensor as a numpy
 array, bfloat16 as float32) and `read_bytes()`; `free()`. Its `write` and `read` wait
 for the cores of a launched program to return, which the persistent grid does only at
 the stop: before `load` and after `run.stop()` they are the plain way. bfloat16 values

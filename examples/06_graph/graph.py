@@ -135,7 +135,7 @@ def run(session, args):
         for mode in modes
         for name in cases
     }
-    accessor = next(iter(states.values())).accessor_args()
+    accessor = next(iter(states.values())).tensor_args()
     program = km.Program(
         "graph",
         kernels=KERNELS,

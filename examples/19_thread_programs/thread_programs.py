@@ -110,8 +110,8 @@ def programs(tensors, work):
         kernels=KERNELS / "scale",
         buffers=[km.Buffer(C["TP_CB_IN"], **tile), km.Buffer(C["TP_CB_OUT"], **tile)],
         compile_args={
-            "reader": tensors["input"].accessor_args(),
-            "writer": tensors["output"].accessor_args(),
+            "reader": tensors["input"].tensor_args(),
+            "writer": tensors["output"].tensor_args(),
         },
         handlers={"scale": C["TP_HANDLER_SCALE"]},
     )
