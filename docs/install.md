@@ -140,7 +140,7 @@ public scenes' textures).
 ### What 0.2.0 asks for
 
 - **The runtime wheel `komorebi-runtime` 0.81.1.4.** The extra `runtime` names
-  `komorebi-runtime>=0.81.1.3,<0.81.2`, and `pip install -U "komorebi-tt[runtime]"` takes
+  `komorebi-runtime>=0.81.1.4,<0.81.2`, and `pip install -U "komorebi-tt[runtime]"` takes
   the newest build. Build 4 is the first with 1250, 1350 and 1500 MHz in the X280 clock
   table, and the session's clock is 1350 MHz unless it is given one
   ([host API](reference/host.md#session)). With build 3 (0.81.1.3, the runtime of 0.1.0)
