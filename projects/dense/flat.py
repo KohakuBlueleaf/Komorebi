@@ -153,8 +153,8 @@ def flat_program(plan, args, tensors, fidelity="HiFi2"):
         buffers=[km.Buffer(*buffer) for buffer in plan.buffers()],
         args=args,
         compile_args={
-            "reader": tensors["a"].accessor_args(),
-            "writer": tensors["w"].accessor_args() + tensors["y"].accessor_args(),
+            "reader": tensors["a"].tensor_args(),
+            "writer": tensors["w"].tensor_args() + tensors["y"].tensor_args(),
         },
         compute={
             "math_fidelity": fidelity,
