@@ -578,6 +578,122 @@ again: 4096 cubed 23,342.2 us a call (67.6 MB crossed, 2.90 GB/s), 8192 110,614.
 (281.1 MB, 2.54 GB/s), 16384 473,437.4 us (1.210 GB, 2.56 GB/s); one card 1,475.2,
 8,906.5 and 90,030.6 us then. JSON lines: `results/linear-curve-<cube>-0x1-n.json`.
 
+## Shapes, one card and two, against Kohaku-TT
+
+Y = X x W in bfloat16 over fifteen shapes, one card and two cards, ours and
+[Kohaku-TT](https://github.com/KohakuBlueleaf/Kohaku-TT) (commit ac81ff2) on the same
+inputs and the same check (relative RMS 3.96e-3 one card, 4.12e-3 to 4.14e-3 two cards;
+Kohaku-TT 3.96e-3 and, split along K, 3.86e-3; every point exact to that bound). This is the first answer, on
+the kernels and the put path of the one-exchange linear kernel above (main at 6b74b4a2);
+the sweep is to be run once more when the plan and the put path change
+(`compare/shapes.py` lists the shapes, `compare/ktt_shapes.py` runs Kohaku-TT's side,
+`linear.py --m --k --n` ours).
+
+**How Kohaku-TT's two cards work** (from its source and documentation, and the placement
+log of the runs below):
+- A tensor of 1 MiB or more is created split along its first dimension, so X is split by
+  rows and W along K. For `x @ w` its rule engine (cheapest conversion by a cost model)
+  chose, in every run here but one (below): gather W to every chip once (an all-gather on the first call;
+  the copy is kept on the tensor and reused), each chip multiplies its half of the rows
+  of X by the whole W, Y is split by rows. Nothing crosses the chips in a call after the
+  first: no bytes, no sync, W held twice per chip. This is the column "Kohaku-TT 2 cards".
+  The exception is 4096 x 16384 x 16384 (W of 512 MiB): there the engine split K, moved X
+  by an all-to-all once, and left Y a partial sum on each chip, unreduced (its 4,936 us has
+  no completion in it; the K-split column, 6,077 us, has).
+- The form with our layout (X and W split along K, the partial completed to Y split along N;
+  "K split" here, marked by `kohakutt.shard`): each chip's matmul gives a bf16 M x N partial; the
+  completion is TT-NN's reduce-scatter over the Ethernet fabric (M x N / 2 x 2 bytes each way a
+  call), a second program queued after the matmul on the same command queue: nothing overlaps,
+  the program boundary is the sync. Its own collectives (4 links, one sender core under each
+  Ethernet tile, 16 to 48 drain cores adding in fp32, two bf16 tiles a packet) serve fp32
+  partials and the all-reduce of a replicated result, not this one.
+- Each chip's matmul: `ktt_gemm` (10 x 11 = 110 cores, 2D multicast layout: A along core rows,
+  W down columns on the other NoC, blocks of bm x bn tiles, K blocks of up to 16 tiles,
+  fp32 accumulation, HiFi2) where its rule picks it (here 4096 cubed, 4096 x 16384 x 16384,
+  16384 x 4096 x 16384 and the halves of those), TT-NN's matmul elsewhere.
+- Its own split (documented, 2048 rows, 4096 to 16384 to 4096, per block): matmuls 713 and
+  649 us, all-reduce and residual 288 us; four blocks 8.1 ms on two chips against 13.4 ms on one.
+- The difference from ours: its default form moves nothing in a call (the weight is
+  replicated once), ours crosses the whole M x N matrix a call by design (X and W stay split);
+  in the K-split form it completes after the matmul, ours puts blocks while it computes
+  the other island's columns and syncs once.
+
+Times in microseconds, "single" the median of synced calls and "loop" calls back to back for
+about three seconds (a cool-down of the same length between points), one run each; ratios are
+one card over two cards on the single calls, the loops' in brackets (a one-card loop is
+throttled by the card's power limit, so the loop ratio flatters two cards). Ours: three
+single calls. Kohaku-TT: one card three calls; on two cards the steady median of nine calls
+(the first calls after the first product are slow and the median of three had caught them:
+2048 x 8192 x 2048 gave 747 / 1,021 / 315 us), and its loop of the first run. On two cards
+its synced call has a floor of about 1.5 to 3 ms in some runs (2048 x 16384 x 2048: 3,000 us in a
+run of nine calls, 508 us in a run of three, 851 us a call in the loop): below about 5 ms
+the two-card single is the synchronization, not the product, and its loop is the better figure.
+
+| M x K x N | Ours 1 card | Ours 2 cards | Ours ratio | Kohaku-TT 1 card | Kohaku-TT 2 cards | ratio | Kohaku-TT 2 cards, K split | ratio |
+|---|---|---|---|---|---|---|---|---|---|
+| 8192x65536x8192 | 43,698.4 / 107,034.9 | 46,382.9 / 52,652.9 | 0.94 (2.03) | 34,544.0 / 95,826.2 | 20,452.8 / 58,286.5 | 1.69 (1.64) | 18,357.9 / 48,696.6 | 1.88 (1.97) |
+| 4096x32768x4096 | 4,421.3 / 12,210.0 | 4,321.9 / 4,961.1 | 1.02 (2.46) | 5,393.5 / 14,906.9 | 2,794.7 / 7,427.0 | 1.93 (2.01) | 3,152.8 / 7,446.3 | 1.71 (2.00) |
+| 2048x16384x2048 | 883.9 / 1,097.0 | 1,425.2 / 1,437.1 | 0.62 (0.76) | 792.2 / 1,823.0 | 2,999.7 / 851.3 | 0.26 (2.14) | 2,997.6 / 765.0 | 0.26 (2.38) |
+| 8192x32768x8192 | 22,034.0 / 52,647.2 | 24,583.7 / 27,118.2 | 0.90 (1.94) | 17,331.4 / 47,951.6 | 10,324.4 / 29,266.7 | 1.68 (1.64) | 9,889.3 / 24,675.5 | 1.75 (1.94) |
+| 4096x16384x4096 | 2,271.0 / 6,232.9 | 2,706.6 / 2,927.4 | 0.84 (2.13) | 2,824.0 / 7,365.9 | 1,503.3 / 1,435.8 | 1.88 (5.13) | 1,842.5 / 3,525.2 | 1.53 (2.09) |
+| 2048x8192x2048 | 471.4 / 576.0 | 1,013.1 / 1,009.2 | 0.47 (0.57) | 472.7 / 872.0 | 317.0 / 197.5 | 1.49 (4.42) | 476.3 / 269.2 | 0.99 (3.24) |
+| 4096x16384x16384 | 23,388.8 / 27,295.1 | 13,720.9 / 14,515.8 | 1.70 (1.88) | 8,955.3 / 23,754.6 | 4,936.4 / 12,588.7 | 1.81 (1.89) | 6,076.8 / 12,774.3 | 1.47 (1.86) |
+| 16384x16384x16384 | 75,169.4 / 90,231.8 | 49,002.8 / 52,854.2 | 1.53 (1.71) | 32,489.3 / 95,676.9 | 17,067.8 / 47,303.6 | 1.90 (2.02) | 32,970.6 / 43,996.1 | 0.99 (2.17) |
+| 8192x16384x8192 | 11,161.3 / 25,719.0 | 13,501.0 / 14,630.1 | 0.83 (1.76) | 8,777.9 / 24,630.6 | 5,257.1 / 14,485.0 | 1.67 (1.70) | 5,672.0 / 11,923.8 | 1.55 (2.07) |
+| 4096x8192x4096 | 1,199.8 / 2,961.6 | 1,975.1 / 1,970.2 | 0.61 (1.50) | 1,551.6 / 3,551.8 | 865.1 / 1,745.2 | 1.79 (2.04) | 1,113.8 / 1,190.4 | 1.39 (2.98) |
+| 2048x4096x2048 | 248.3 / 307.8 | 815.2 / 805.1 | 0.30 (0.38) | 311.0 / 387.8 | 255.9 / 109.2 | 1.22 (3.55) | 331.5 / 190.5 | 0.94 (2.04) |
+| 8192x8192x8192 | 5,716.0 / 12,463.3 | 8,145.2 / 8,478.3 | 0.70 (1.47) | 4,549.5 / 12,094.0 | 2,482.8 / 5,905.9 | 1.83 (2.05) | 3,930.1 / 4,796.2 | 1.16 (2.52) |
+| 4096x4096x4096 | 664.6 / 1,539.5 | 1,611.6 / 1,601.2 | 0.41 (0.96) | 819.8 / 1,531.3 | 487.3 / 345.1 | 1.68 (4.44) | 868.8 / 679.7 | 0.94 (2.25) |
+| 8192x2048x8192 | 1,713.5 / 2,358.1 | 4,268.4 / 4,260.6 | 0.40 (0.55) | 1,725.8 / 3,010.0 | 879.0 / 778.1 | 1.96 (3.87) | 2,164.0 / 2,103.1 | 0.80 (1.43) |
+| 16384x4096x16384 | 19,557.4 / 22,825.5 | 25,907.5 / 25,922.0 | 0.75 (0.88) | 14,782.2 / 20,692.6 | 7,784.0 / 10,721.3 | 1.90 (1.93) | 12,240.6 / 14,096.5 | 1.21 (1.47) |
+
+Our two-card passes (the slower island's slowest core, ms at 1,350 MHz: the other island's
+columns made and put; the sync; its own columns), the plan, the bytes crossed and the card
+clock of each loop:
+
+| M x K x N | Our plan (rows x cols, kb) | Crossed a call, MB | Put | Sync | Own | AICLK mean, MHz: ours 1, ours 2, Kohaku-TT 1, Kohaku-TT 2 |
+|---|---|---|---|---|---|---|
+| 8192x65536x8192 | 9 x 11, 1 | 146.0 | 23.07 | 6.24 | 21.82 | 1,023 / 1,165 / 1,020 / 1,030 |
+| 4096x32768x4096 | 10 x 8, 4 | 34.1 | 2.12 | 1.13 | 1.59 | 1,051 / 1,143 / 1,010 / 1,010 |
+| 2048x16384x2048 | 10 x 8, 16 | 9.2 | 0.73 | 0.29 | 0.44 | 1,081 / 1,349 / 1,008 / 997 |
+| 8192x32768x8192 | 9 x 11, 1 | 146.0 | 12.55 | 2.29 | 11.07 | 1,030 / 1,208 / 1,021 / 1,026 |
+| 4096x16384x4096 | 10 x 8, 4 | 34.1 | 1.37 | 0.79 | 0.84 | 1,017 / 1,240 / 1,014 / 1,299 |
+| 2048x8192x2048 | 10 x 8, 16 | 9.2 | 0.52 | 0.25 | 0.22 | 1,079 / 1,350 / 1,010 / 1,298 |
+| 4096x16384x16384 | 9 x 11, 4 | 147.1 | 7.09 | 1.55 | 6.13 | 1,150 / 1,273 / 1,037 / 1,016 |
+| 16384x16384x16384 | 9 x 11, 4 | 579.6 | 27.00 | 2.92 | 23.11 | 1,115 / 1,254 / 1,012 / 1,016 |
+| 8192x16384x8192 | 9 x 11, 1 | 146.0 | 7.18 | 1.69 | 5.68 | 1,011 / 1,239 / 1,003 / 1,032 |
+| 4096x8192x4096 | 10 x 8, 4 | 34.1 | 1.03 | 0.47 | 0.47 | 1,048 / 1,344 / 1,025 / 1,015 |
+| 2048x4096x2048 | 10 x 8, 16 | 9.2 | 0.43 | 0.24 | 0.12 | 1,093 / 1,349 / 1,003 / 1,350 |
+| 8192x8192x8192 | 9 x 11, 1 | 146.0 | 4.54 | 1.16 | 3.01 | 1,023 / 1,289 / 1,013 / 1,022 |
+| 4096x4096x4096 | 10 x 8, 4 | 34.1 | 0.85 | 0.45 | 0.29 | 1,037 / 1,349 / 1,018 / 1,344 |
+| 8192x2048x8192 | 9 x 11, 1 | 146.0 | 2.76 | 0.48 | 1.01 | 981 / 1,350 / 999 / 1,314 |
+| 16384x4096x16384 | 9 x 11, 4 | 579.6 | 19.15 | 0.42 | 6.32 | 1,154 / 1,350 / 951 / 958 |
+
+Measured on 2026-11-15 between 02:11 and 03:08, host load average 4 to 11, X280 at 1,350 MHz; JSON in `results/shape-<M>x<K>x<N>-<ours|ktt>-<0|0x1>[-<variant>].json`
+(the cubes of ours are the curve's above; the nine-call runs are in `results/singles9/`).
+Ours: `python projects/dense/linear.py --m M --k K --n N --cards 0|0,1 --seconds 3`. Kohaku-TT:
+`python projects/dense/compare/ktt_shapes.py --cards 0|0,1 --shapes MxKxN,... --variants default[,ksplit]`.
+
+The best two-card ratio on single calls is 1.70 at 4096 x 16384 x 16384 (16384 cubed 1.53) for
+ours and 1.96 at 8192 x 2048 x 8192 for Kohaku-TT's row split (1.93 at 4096 x 32768 x 4096; its
+K split 1.88 at 8192 x 65536 x 8192), and our ratio grows with K at fixed M = N (M = N = 4096: 0.41, 0.61, 0.84,
+1.02 for K = 4096 to 32768; M = N = 8192: 0.40 to 0.94 for K = 2048 to 65536) without
+reaching 1.5 except where N is large. We do not beat Kohaku-TT's row split in ratio or in
+two-card single time at any shape, except 2048 x 16384 x 2048 where its call sat on the
+3 ms floor (and 4096 x 16384 x 16384, where its row of 1.81 leaves Y unreduced); against its K split (the same
+exchange) we beat the ratio at 4096 x 16384 x 16384 (1.70 against 1.47), 16384 cubed (1.53
+against 0.99) and 2048 x 16384 x 2048 (floor) only; in absolute
+single time our two cards beat its one card at two shapes only (4096 x 32768 x 4096, 4096 x 16384 x 4096),
+and in the loop our two cards beat its row split at 8192 x 65536 x 8192 (52.7 against 58.3 ms),
+8192 x 32768 x 8192 and 4096 x 32768 x 4096 (5.0 against 7.4 ms), where our two-card clock averages 1,143 to
+1,208 MHz against its 1,010 to 1,030.
+Our rows below 1.0 are bound by what the passes show: with K small the product is too short
+for the crossing (at 8192 x 2048 x 8192 an island puts 73 MB in 2.76 ms, 26 GB/s, against a
+one-card call of 1.71 ms), at M = N = 2048 the put (0.43 to 0.73 ms) and a 0.24 to 0.29 ms sync are the call, and with large K at M = N = 8192
+the plan has K blocks of one tile (the put buffer leaves little L1), so each pass takes
+about 22 ms where a quarter of a one-card call is 11 ms; at 4096 x 32768 x 4096 the island's plan is
+10 x 8 = 80 cores of 118 and its puts run at 8 GB/s.
+
 ## Files
 
 | File | What it is |
@@ -593,6 +709,7 @@ again: 4096 cubed 23,342.2 us a call (67.6 MB crossed, 2.90 GB/s), 8192 110,614.
 | `linear.py`, `kernels/linear/linear.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the linear layer written for islands: K split, the other islands' columns put whole, one sync, the own columns with theirs added |
 | `flat.py` | the grid form, kernels unchanged, on one flat group over the islands: one plan for the islands' grids one below the other, every tensor held once |
 | `results/` | the runs behind the results table |
+| `compare/shapes.py`, `compare/ktt_shapes.py` | the shapes of the comparison with Kohaku-TT on one card and two, their table, and Kohaku-TT's side of it |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
 | `bench_ttnn.py` | TT-NN's product and SwiGLU on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |
 | `reference/gpu_bench.py`, `reference/gpu/gemm_gpu.cu` | cuBLAS on one idle GPU (fp32 and fp16) |

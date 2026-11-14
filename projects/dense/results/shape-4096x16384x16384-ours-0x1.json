@@ -1,0 +1,180 @@
+{
+ "m": 4096,
+ "k": 16384,
+ "n": 16384,
+ "cards": [
+  0,
+  1
+ ],
+ "links": 0,
+ "upload_s": 1.535,
+ "placements": {
+  "x": [
+   [
+    0,
+    256
+   ],
+   [
+    256,
+    256
+   ]
+  ],
+  "w": [
+   [
+    0,
+    256
+   ],
+   [
+    256,
+    256
+   ]
+  ],
+  "y": [
+   [
+    0,
+    256
+   ],
+   [
+    256,
+    256
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350,
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 128,
+   "kt": 256,
+   "nt": 256,
+   "rows": 9,
+   "cols": 11,
+   "pcm": 15,
+   "pcn": 24,
+   "bm": 4,
+   "bn": 24,
+   "kb": 4,
+   "sh": 1,
+   "sw": 4,
+   "wa": 2,
+   "ww": 2,
+   "layout": "2d",
+   "l1": 869376,
+   "form": "grid",
+   "nk": 64,
+   "nbh": 4,
+   "nbw": 1,
+   "rect": [
+    0,
+    0,
+    11,
+    9
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 37716,
+    "NCRISC": 38404,
+    "TRISC0": 14420,
+    "TRISC1": 5360,
+    "TRISC2": 5668
+   },
+   "total": 94240
+  },
+  "crossed_bytes": {
+   "blocks": 147062784,
+   "tiles": 134217728,
+   "put_bytes": 196608
+  },
+  "loop": {
+   "single_microseconds": [
+    13720.88,
+    13740.12,
+    13666.16
+   ],
+   "reps": 219,
+   "seconds": 3.179,
+   "microseconds_per_call": 14515.791,
+   "part_microseconds_median": [
+    14716.18,
+    14740.62
+   ],
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 0.0,
+    "pages": 71808.0,
+    "parts": 2.0,
+    "puts": 1496.0,
+    "bytes": 147116704.0
+   },
+   "aiclk_mhz": {
+    "0": [
+     1218,
+     1272.7,
+     1350
+    ],
+    "1": [
+     1312,
+     1326.5,
+     1350
+    ]
+   }
+  },
+  "run": {
+   "cores": 236,
+   "kernel": [
+    "none",
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "passes": [
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 9551464,
+     "sync": 523109,
+     "own": 8296042
+    },
+    "microseconds_at_mhz": {
+     "put": 7075.2,
+     "sync": 387.5,
+     "own": 6145.2
+    }
+   },
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 9567000,
+     "sync": 2087561,
+     "own": 8274797
+    },
+    "microseconds_at_mhz": {
+     "put": 7086.7,
+     "sync": 1546.3,
+     "own": 6129.5
+    }
+   }
+  ],
+  "check": {
+   "max_rel": 0.0061306865812063545,
+   "rms_rel": 0.004132210235815329,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 3.108
+  },
+  "tflops": 151.49,
+  "crossed_gb_per_s": 10.13,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "3.66",
+  "6.42",
+  "7.91"
+ ]
+}

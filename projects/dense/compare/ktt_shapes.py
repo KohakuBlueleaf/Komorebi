@@ -25,7 +25,6 @@ from projects.dense.compare import shapes  # noqa: E402
 from projects.dense.reference import ktt_bench as base  # noqa: E402
 from reference import dense as ref  # noqa: E402
 
-SINGLES = 3
 VARIANTS = ("default", "ksplit", "colwise")
 
 
@@ -59,10 +58,10 @@ def describe(mesh, x, w, y):
     }
 
 
-def measure(product, device, cards, seconds):
+def measure(product, device, cards, seconds, singles):
     """Synced calls, then calls back to back with every card's AICLK sampled."""
     synced = []
-    for _ in range(SINGLES):
+    for _ in range(singles):
         started = time.perf_counter()
         product()
         kohakutt.synchronize(device)
@@ -138,7 +137,7 @@ def one_point(args, device, cards, shape, variant, uploaded, matrices):
     say("checking the sampled rows")
     report["check"] = ref.errors(got, ref.matmul(x_matrix[rows], w_matrix))
     del y
-    report |= measure(product, device, cards, args.seconds)
+    report |= measure(product, device, cards, args.seconds, args.singles)
     report["load_avg"] = os.getloadavg()[0]
     return report
 
@@ -149,6 +148,7 @@ def main():
     parser.add_argument("--shapes", required=True, help="M x K x N, comma separated")
     parser.add_argument("--variants", default="default")
     parser.add_argument("--seconds", type=float, default=3.0)
+    parser.add_argument("--singles", type=int, default=3, help="synced calls")
     parser.add_argument("--out", required=True, help="folder of the JSON files")
     args = parser.parse_args()
     cards = [int(value) for value in args.cards.split(",")]

@@ -3,6 +3,7 @@ are measured, the names of their result files, and the README table made from th
 `python -m projects.dense.compare.shapes list|table`."""
 
 import json
+import statistics
 import sys
 from pathlib import Path
 
@@ -74,11 +75,25 @@ def ours_times(report):
     return singles[len(singles) // 2], loop["microseconds_per_call"]
 
 
-def ktt_times(report):
-    if not report:
+def ktt_report(shape, cards, variant="default"):
+    """Kohaku-TT's report of a point: its single call is the nine-call run's median
+    where `results/singles9` has one (the first calls after the first product are
+    slow), its loop that of the first run."""
+    first = load(result_path(RESULTS, shape, "ktt", cards, variant))
+    nine = load(result_path(RESULTS / "singles9", shape, "ktt", cards, variant))
+    return first, nine
+
+
+def ktt_times(shape, cards, variant="default"):
+    """(single, loop) microseconds; single is the steady median of nine calls when
+    one was run."""
+    first, nine = ktt_report(shape, cards, variant)
+    if not first:
         return None, None
-    loop = (report.get("loop") or {}).get("microseconds_per_call")
-    return report["synced_microseconds_median"], loop
+    single = (nine or first)["synced_microseconds_median"]
+    if nine:  # the nine-call median skips the slow calls after the first product
+        single = statistics.median(nine["synced_microseconds"][3:])
+    return single, first["loop"]["microseconds_per_call"]
 
 
 def text(value, digits=1):
@@ -99,38 +114,58 @@ def passes(report):
     return slower["microseconds_at_mhz"]
 
 
-def table(variant="default"):
-    """The two README tables as text: times and ratios, then our crossing."""
-    head = "| M x K x N | Ours 1 card single / loop, us | Ours 2 cards | Ratio "
-    head += "(loop) | Kohaku-TT 1 card | Kohaku-TT 2 cards | Ratio (loop) |"
-    rows = [head, "|---|---|---|---|---|---|---|"]
+def clock(report):
+    """Mean AICLK of a loop, MHz: the lower of the cards'."""
+    loop = ((report or {}).get("linear") or report or {}).get("loop") or {}
+    means = [value[1] for value in (loop.get("aiclk_mhz") or {}).values()]
+    return round(min(means)) if means else None
+
+
+def pair(one, two):
+    """'single (loop)' of a ratio pair of (single, loop) tuples."""
+    return f"{text(ratio(one[0], two[0]), 2)} ({text(ratio(one[1], two[1]), 2)})"
+
+
+def tables():
+    """The README tables: times and ratios, then our crossing and the clocks."""
+    head = "| M x K x N | Ours 1 card | Ours 2 cards | Ours ratio | Kohaku-TT 1 card "
+    head += "| Kohaku-TT 2 cards | ratio | Kohaku-TT 2 cards, K split | ratio |"
+    rows = [head, "|---|---|---|---|---|---|---|---|---|"[:-4] + "---|---|"]
     crossing = [
-        "| M x K x N | Crossed a call, MB | Put | Sync | Own columns | in ms |",
-        "|---|---|---|---|---|---|",
+        "| M x K x N | Our plan (rows x cols, kb) | Crossed a call, MB | Put | Sync "
+        "| Own | AICLK mean, MHz: ours 1, ours 2, Kohaku-TT 1, Kohaku-TT 2 |",
+        "|---|---|---|---|---|---|---|",
     ]
     for shape in SHAPES:
-        ours = [ours_times(load(ours_path(shape, c))) for c in ([0], [0, 1])]
-        theirs = [
-            ktt_times(load(result_path(RESULTS, shape, "ktt", c, "default")))
-            for c in ([0], [0, 1])
-        ]
-        cells = [f"{text(one)} / {text(loop)}" for one, loop in ours + theirs]
-        pair = []
-        for (one_s, one_l), (two_s, two_l) in (ours[:2], theirs[:2]):
-            single, looped = ratio(one_s, two_s), ratio(one_l, two_l)
-            pair.append(f"{text(single, 2)} ({text(looped, 2)})")
+        one, two = (load(ours_path(shape, c)) for c in ([0], [0, 1]))
+        ours = [ours_times(one), ours_times(two)]
+        k1 = ktt_times(shape, [0])
+        k2 = ktt_times(shape, [0, 1])
+        ks = ktt_times(shape, [0, 1], "ksplit")
+        cells = [f"{text(s)} / {text(loop)}" for s, loop in (ours[0], ours[1], k1, k2)]
+        ksplit_cell = f"{text(ks[0])} / {text(ks[1])}"
         rows.append(
-            f"| {name(shape)} | {cells[0]} | {cells[1]} | {pair[0]} | "
-            f"{cells[2]} | {cells[3]} | {pair[1]} |"
+            f"| {name(shape)} | {cells[0]} | {cells[1]} | {pair(*ours)} | {cells[2]} | "
+            f"{cells[3]} | {pair(k1, k2)} | {ksplit_cell} | {pair(k1, ks)} |"
         )
-        two = load(ours_path(shape, [0, 1]))
         found = passes(two)
-        if found:
+        plan = (two or {}).get("linear", {}).get("plan")
+        if found and plan:
             crossed = two["linear"]["crossed_bytes"]["blocks"] / 1e6
             times = " | ".join(
                 f"{found[key] / 1e3:.2f}" for key in ("put", "sync", "own")
             )
-            crossing.append(f"| {name(shape)} | {crossed:,.1f} | {times} | |")
+            clocks = [
+                clock(one),
+                clock(two),
+                clock(load(result_path(RESULTS, shape, "ktt", [0], "default"))),
+                clock(load(result_path(RESULTS, shape, "ktt", [0, 1], "default"))),
+            ]
+            plan_text = f"{plan['rows']} x {plan['cols']}, {plan['kb']}"
+            crossing.append(
+                f"| {name(shape)} | {plan_text} | {crossed:,.1f} | {times} | "
+                f"{' / '.join(text(c, 0) for c in clocks)} |"
+            )
     return "\n".join(rows + [""] + crossing)
 
 
@@ -138,7 +173,7 @@ def main():
     if sys.argv[1:] == ["list"]:
         print(*(name(shape) for shape in SHAPES), sep="\n")
     elif sys.argv[1:] == ["table"]:
-        print(table())
+        print(tables())
     else:
         raise SystemExit(__doc__)
 
