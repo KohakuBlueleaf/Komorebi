@@ -25,6 +25,10 @@ namespace km {
         kPagesHeaders + kPagesSlotsMax * kPagesHeaderStride
     );
     constexpr uint32_t kPagesBatch = 64;  // packets a count
+    // A share of this many pages or more is a bulk one: several pages a read, and on
+    // link 0 too where it is a page CPU. A smaller one goes a page a read (measured:
+    // example 01's one page a line crossed a fifth slower four pages a read).
+    constexpr uint32_t kPagesBulk = 64;
     constexpr uint32_t kPagesHelloEvery = 4096;  // hello polls between two hellos
 
     struct PagesRequest {
@@ -181,7 +185,8 @@ namespace km {
             (shape >> 2 & 3u) != 0 ? kPagesSlotsDefault << ((shape >> 2 & 3u) - 1)
                                    : kPagesSlotsDefault
         );
-        if (shape == 0) {
+        const uint32_t mine = range ? share.len * r.pages : share.len;
+        if (shape == 0 && mine >= kPagesBulk) {
             per_read = slots_fit >= 3 * 16 ? 16 : slots_fit >= 2 * 4 ? 4 : 1;
             asked = per_read == 1 ? kPagesSlotsDefault : kPagesSlotsMax;
         }
@@ -661,21 +666,17 @@ namespace km {
         return pages_held.link - page_first(area);
     }
 
-    // A line's pages that link 0 takes a share of, when it is a page CPU: fewer go on
-    // the others, its CPU kept for its lines (measured: example 01's two pages a rank
-    // crossed a fifth slower with link 0 in every line).
-    constexpr uint32_t kPagesLinkZeroFrom = 64;
-
     // The page CPU that sends a put line across, confirms and counts the bad ones: the
     // one holding link 1 (link 0 when alone).
     inline uint32_t page_lead(uint32_t area) {
         return page_first(area) == 0 && pages_held.links > 1 ? 1 : 0;
     }
 
-    // Page CPU j's share of a line of `pages` pages.
+    // Page CPU j's share of a line of `pages` pages: link 0's CPU only in a bulk line,
+    // a smaller one on the others (its CPU kept for its lines).
     inline Partition page_share(uint32_t area, uint32_t pages, uint32_t j) {
         const uint32_t cpus = page_cpus(area);
-        if (page_lead(area) == 0 || pages >= kPagesLinkZeroFrom) {
+        if (page_lead(area) == 0 || pages >= kPagesBulk) {
             return partition(pages, j, cpus);
         }
         return j == 0 ? Partition{0, 0} : partition(pages, j - 1, cpus - 1);
