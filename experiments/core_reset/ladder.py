@@ -34,7 +34,10 @@ def log(message):
 def parse(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
-        "--step", type=int, default=1, help="1: the host, 2: the dispatcher, 3: stuck"
+        "--step",
+        type=int,
+        default=1,
+        help="1: the host, 2: the dispatcher, 3: stuck, 5: the give-up resets",
     )
     parser.add_argument("--spin", default="reader", help="step 3: reader or math")
     parser.add_argument("--first", type=int, default=14, help="the group's first core")
@@ -119,6 +122,38 @@ def dispatcher_reset(run, core, x, y, report):
     return event.kind == "pong" and event.auxiliary == run.h["KMD_RESET_OK"]
 
 
+def keep_list(run, report):
+    """The dispatcher keeps every core's write list: a command given up resets the
+    cores that do not leave it. True when the dispatcher took it."""
+    writes = run.backend.launch.reset_list(0, 0, every=True)
+    run.backend.port.upload(0, writes)
+    report["list_bytes"] = len(writes)
+    handle = run._queue_command(run.h["KMD_HANDLER_RESET"], (0, 0), [0, len(writes)])
+    run._counts[-1] = 0  # the kernel's own command: no sequence number
+    (event,) = run.wait([handle], timeout=10.0)
+    log(f"reset list kept: {len(writes)} B, {event}")
+    return event.kind == "pong" and event.auxiliary == run.h["KMD_RESET_OK"]
+
+
+def spin_given_up(run, group, core, where, report):
+    """SPIN on `core` (`where`), no host action: the give-up must reset it."""
+    log(f"SPIN on core {core} ({where}), the dispatcher alone")
+    started = time.perf_counter()
+    spin = run.submit(HANDLER_SPIN, group, [1, SPIN_WHERE[where]])
+    out = {"where": where}
+    try:
+        run.wait(spin, timeout=10.0)
+        out["spin"] = "done"
+    except km.CommandTimeout as timeout:
+        out["spin"] = "given up" if timeout.given_up else "timeout"
+        out["recovered"] = getattr(timeout, "recovered", None)
+        log(f"timeout event: {timeout}")
+    out["s"] = round(time.perf_counter() - started, 3)
+    log(f"SPIN: {out}")
+    report.setdefault("spins", []).append(out)
+    return out["spin"] == "given up" and out["recovered"] == [core]
+
+
 def main():
     args = parse()
     generator = np.random.default_rng(args.seed)
@@ -126,6 +161,8 @@ def main():
     report = {"step": args.step, "group": list(group), "core": args.core}
     if args.step == 3:
         report["spin_where"] = args.spin
+    if args.step == 5:
+        report["spin_where"] = ["reader", "math"]
     with km.Session(log=log) as session:
         grid = session.grid
         cores = grid[0] * grid[1]
@@ -158,7 +195,13 @@ def main():
         split = len(maps.done)
         x, y = args.core % grid[0], args.core // grid[0]
         spin = None
-        if args.step == 3:
+        if args.step == 5:
+            back = keep_list(run, report)
+            for where in report["spin_where"] if back else ():
+                back = spin_given_up(run, group, args.core, where, report) and back
+            for core in run.inspect(group):
+                log(f"inspect after the give-ups: {brief(core)}")
+        elif args.step == 3:
             log(f"SPIN on core {args.core} ({args.spin})")
             spin = run.submit(HANDLER_SPIN, group, [1, SPIN_WHERE[args.spin]])
             time.sleep(0.5)
@@ -172,7 +215,7 @@ def main():
             report["parts_s"] = [round(part, 4) for part in parts]
             log(f"reset done: {report['reset_s']} s, parts {report['parts_s']}")
             back = parts[1] >= 0
-        else:
+        elif args.step != 5:
             back = dispatcher_reset(run, args.core, x, y, report)
         time.sleep(0.1)
         for core in run.inspect(group):
@@ -186,7 +229,7 @@ def main():
             log(f"SPIN: {report['spin']}")
         if not back:
             report["firmware"] = False
-            log("the core's firmware did not report DONE")
+            log("the core did not come back (no DONE, or not recovered)")
         else:
             log("MAPs after the reset")
             maps.look = group

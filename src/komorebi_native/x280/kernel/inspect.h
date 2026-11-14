@@ -4,6 +4,7 @@
 
 #include "completion.h"
 #include "kernel.h"
+#include "reset.h"
 #include "ring.h"
 
 static inline volatile uint32_t* inspect_header(const kmd_t* dispatcher) {
@@ -34,6 +35,7 @@ static inline void inspect_begin(
     header[KMD_I_SEQUENCE] = sequence;
     header[KMD_I_START] = (uint32_t)now;
     header[KMD_I_TICKS] = 0;
+    header[KMD_I_RESET] = 0;
     kmd_inspect_t* inspect = &dispatcher->inspect;
     inspect->active = 1;
     inspect->kind = kind;
@@ -219,8 +221,39 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     }
 }
 
+/* At the end of a give-up's wait, with a kept list: each core of the group still in
+ * the command reset and loaded again (record flag KMD_INSPECT_RESET). 1: all were. */
+static int inspect_reset(kmd_t* dispatcher) {
+    kmd_inspect_t* inspect = &dispatcher->inspect;
+    if (dispatcher->reset_bytes == 0) {
+        return 0;
+    }
+    volatile uint32_t* header = inspect_header(dispatcher);
+    for (; inspect->next < inspect->count; inspect->next++) {
+        const uint32_t core = inspect->first + inspect->next;
+        if (inspect_left(dispatcher, core, inspect->sequence)) {
+            continue;
+        }
+        if (reset_run(
+            dispatcher, core, dispatcher->reset_offset, dispatcher->reset_bytes
+        ) != KMD_RESET_OK) {
+            return 0;
+        }
+        volatile uint32_t* line = (
+            (volatile uint32_t*)(
+                dispatcher->lim + KMD_LIM_INSPECT + KMD_INSPECT_HEAD +
+                inspect->next * KMD_INSPECT_RECORD
+            )
+        );
+        line[KMD_IR_FLAGS] |= KMD_INSPECT_RESET;
+        header[KMD_I_RESET]++;
+    }
+    x280_fence_ow(); /* the flags land before the timeout's event */
+    return 1;
+}
+
 /* A timeout's cores after the abort, one a pass: the give-up once none runs the
- * command; at KMD_GIVE_UP_TICKS, the slot kept for the next poll's fatal deadline. */
+ * command; at KMD_GIVE_UP_TICKS, those reset (a kept list) or the slot kept (fatal). */
 static void inspect_leave(kmd_t* dispatcher) {
     kmd_inspect_t* inspect = &dispatcher->inspect;
     const uint64_t now = x280_mtime();
@@ -235,6 +268,10 @@ static void inspect_leave(kmd_t* dispatcher) {
         inspect_give_up(dispatcher, inspect->slot, now);
     } else if (now > inspect->until) {
         inspect->active = 0;
+        if (inspect_reset(dispatcher)) {
+            inspect_give_up(dispatcher, inspect->slot, x280_mtime());
+            return;
+        }
         dispatcher->slot_handler[inspect->slot] = KMD_HANDLER_KEPT;
         dispatcher->slot_deadline[inspect->slot] = 0;
     }

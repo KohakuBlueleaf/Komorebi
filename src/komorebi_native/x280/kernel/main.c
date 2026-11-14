@@ -297,6 +297,15 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         dispatcher->last_event_mtime = now;
         return KMD_TAKEN;
     }
+    if (host && handler == KMD_HANDLER_RESET && count == KMD_RESET_KEEP) {
+        ring_consumed(ring);
+        const uint32_t kept = (
+            reset_keep(dispatcher, argument, (uint32_t)(line[2] >> 32))
+        );
+        host_push(dispatcher, request, KM_EVENT_PONG | kept << 8, 0);
+        dispatcher->last_event_mtime = now;
+        return KMD_TAKEN;
+    }
     if (
         host && handler == KMD_HANDLER_RESET && count == 1u &&
         !group_outside(dispatcher, first, count)

@@ -1404,7 +1404,7 @@ namespace {
 
         // The dispatcher's reset of core (x, y) (KMD_HANDLER_RESET): reset_core's
         // writes as a write list of km_dispatch.h, in whole 64-byte lines.
-        nb::bytes reset_list(uint32_t x, uint32_t y) {
+        nb::bytes reset_list(uint32_t x, uint32_t y, bool every) {
             namespace tm = tt::tt_metal;
             if (!workload_) {
                 throw std::runtime_error("reset_list: the program was not launched");
@@ -1576,6 +1576,36 @@ namespace {
                 static_cast<uint64_t>(kernel_config.kernel_config_base()[index]) +
                 hal.get_l1_noc_offset(tensix)
             );
+            // every: each core's runtime arguments, core i (x + y * grid x) the i-th
+            // part; every core must hold this core's kernels, so the rest is common.
+            const auto grid = mesh_->compute_with_storage_grid_size();
+            const uint32_t cores = static_cast<uint32_t>(grid.x * grid.y);
+            const auto each = [&](uint64_t at, tm::Kernel& kernel) {
+                size_t size = 0;
+                for (uint32_t core = 0; core < cores; core++) {
+                    const tm::CoreCoord other{core % grid.x, core / grid.x};
+                    if (program.impl().kernels_on_core(other, index) != group) {
+                        throw std::invalid_argument(
+                            "reset_list: cores differ in kernels"
+                        );
+                    }
+                    size = std::max(size, kernel.runtime_args(other).size() * 4);
+                }
+                const size_t padded = (size + 15) / 16 * 16;
+                entry(KMD_RESET_EACH, at, static_cast<uint32_t>(size), cores);
+                const size_t start = list.size();
+                list.resize(start + padded / 4 * cores, 0);
+                for (uint32_t core = 0; core < cores; core++) {
+                    const auto& args = kernel.runtime_args(
+                        tm::CoreCoord{core % grid.x, core / grid.x}
+                    );
+                    std::copy(
+                        args.begin(),
+                        args.end(),
+                        list.begin() + start + core * padded / 4
+                    );
+                }
+            };
             for (const auto kernel_id : group->kernel_ids) {
                 const auto& kernel = program.impl().get_kernel(kernel_id);
                 const uint32_t processor = (
@@ -1586,8 +1616,11 @@ namespace {
                     )
                 );
                 const auto offsets = kernel_config.rta_offset()[processor];
-                const auto& args = kernel->runtime_args(logical);
-                if (!args.empty()) {
+                if (every) {
+                    each(args_base + offsets.rta_offset(), *kernel);
+                } else if (
+                    const auto& args = kernel->runtime_args(logical); !args.empty()
+                ) {
                     write(
                         args_base + offsets.rta_offset(), args.data(), args.size() * 4
                     );
@@ -2844,7 +2877,13 @@ NB_MODULE(_km_host, m) {
             nb::arg("x"),
             nb::arg("y"),
             nb::arg("timeout_s")
-        ).def("reset_list", &Launch::reset_list, nb::arg("x"), nb::arg("y"));
+        ).def(
+            "reset_list",
+            &Launch::reset_list,
+            nb::arg("x"),
+            nb::arg("y"),
+            nb::arg("every") = false
+        );
     m.def(
         "write_l1",
         [](
