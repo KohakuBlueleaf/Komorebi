@@ -66,6 +66,7 @@
     }
    }
   ],
+  "materials": {},
   "light": [200.0, 800.0, 100.0],
   "views": {
    "overview": {"eye": [-900.0, 600.0, 0.0], "target": [1000.0, 250.0, 0.0], "fov": 75},
@@ -153,6 +154,24 @@
     }
    }
   ],
+  "texture_files": [
+   {
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/BuildingTextures.zip",
+    "sha256": "16538a37f34cadec5665d97e5b77ef3581d67ab674b33b9caeef1d277cbde6bf",
+    "bytes": 507671451
+   },
+   {
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/OtherTextures.zip",
+    "sha256": "0806fee3eeb0e14cd501582edbd2d5caf33c5416a62a871e0f126391096f5c58",
+    "bytes": 431016313
+   },
+   {
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/PropTextures.zip",
+    "sha256": "a179e4ee6367d2b518c4978d7e2e690c59503861634d67d0da8bacfa7196571a",
+    "bytes": 415421476
+   }
+  ],
+  "materials": {"archives": {"BuildingTextures": "BuildingTextures.zip", "OtherTextures": "OtherTextures.zip", "PropTextures": "PropTextures.zip"}},
   "light": [600.0, 330.0, -460.0],
   "views": {
    "overview": {"eye": [450.0, 260.0, -750.0], "target": [750.0, 150.0, -150.0], "fov": 75},
@@ -308,6 +327,24 @@
     }
    }
   ],
+  "texture_files": [
+   {
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/BuildingTextures.zip",
+    "sha256": "16538a37f34cadec5665d97e5b77ef3581d67ab674b33b9caeef1d277cbde6bf",
+    "bytes": 507671451
+   },
+   {
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/OtherTextures.zip",
+    "sha256": "0806fee3eeb0e14cd501582edbd2d5caf33c5416a62a871e0f126391096f5c58",
+    "bytes": 431016313
+   },
+   {
+    "url": "https://casual-effects.com/g3d/data10/research/model/bistro/PropTextures.zip",
+    "sha256": "a179e4ee6367d2b518c4978d7e2e690c59503861634d67d0da8bacfa7196571a",
+    "bytes": 415421476
+   }
+  ],
+  "materials": {"archives": {"BuildingTextures": "BuildingTextures.zip", "OtherTextures": "OtherTextures.zip", "PropTextures": "PropTextures.zip"}},
   "light": [-2000.0, 4000.0, 1000.0],
   "views": {
    "overview": {"eye": [-1100.0, 700.0, -100.0], "target": [200.0, 100.0, -2400.0], "fov": 70},

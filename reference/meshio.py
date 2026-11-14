@@ -1,7 +1,8 @@
 """Readers for OBJ (with MTL) and PLY meshes in numpy: polygons cut into fans from
-their first vertex, a triangle's colour is its material's diffuse colour (`Kd`; textures
-are not read), degenerate triangles (a repeated vertex, two equal positions, exactly
-collinear corners) dropped and counted."""
+their first vertex, a triangle's colour is its material's diffuse colour (`Kd`),
+degenerate triangles (a repeated vertex, two equal positions, exactly collinear
+corners) dropped and counted. On request an OBJ's texture coordinates and each
+triangle's material come along (`with_uv`); the texture images are not read here."""
 
 import gzip
 import re
@@ -41,6 +42,13 @@ class Mesh:
     faces: np.ndarray
     colour: np.ndarray
     counts: dict = field(default_factory=dict)
+    # With `with_uv` only: corner texture coordinates (T, 3, 2), NaN where a corner
+    # has none; the material number of each triangle (T,), -1 before any usemtl; the
+    # material names in number order and their MTL statements.
+    uv: np.ndarray | None = None
+    material: np.ndarray | None = None
+    material_names: list | None = None
+    statements: dict | None = None
 
 
 def fan(starts, sizes, flat):
@@ -76,11 +84,14 @@ def drop_degenerate(positions, faces):
     return keep, counts
 
 
-def finish(positions, faces, colour, counts):
+def finish(positions, faces, colour, counts, uv=None, material=None):
     """The mesh with degenerate triangles removed and the counts recorded."""
     keep, dropped = drop_degenerate(positions, faces)
     counts = {**counts, **dropped, "triangles": int(keep.sum())}
-    return Mesh(positions, faces[keep], colour[keep], counts)
+    mesh = Mesh(positions, faces[keep], colour[keep], counts)
+    if uv is not None:
+        mesh.uv, mesh.material = uv[keep], material[keep]
+    return mesh
 
 
 def parse_mtl(text):
@@ -98,20 +109,48 @@ def parse_mtl(text):
     return colours
 
 
-def parse_obj(text, materials):
-    """Mesh of an OBJ file's text; `materials` maps names to diffuse colours."""
+def parse_statements(text):
+    """{material name: {statement: rest of its line}} of an MTL file's text."""
+    statements, name = {}, None
+    for line in text.splitlines():
+        words = line.split(None, 1)
+        if not words:
+            continue
+        if words[0] == "newmtl":
+            name = " ".join(words[1:])
+            statements.setdefault(name, {})
+        elif name is not None and len(words) == 2:
+            statements[name][words[0]] = words[1].strip()
+    return statements
+
+
+def parse_obj(text, materials, with_uv=False):
+    """Mesh of an OBJ file's text; `materials` maps names to diffuse colours.
+
+    with_uv: also the corners' texture coordinates and each triangle's material.
+    """
     verts, flat, starts, sizes, face_mtl = [], [], [], [], []
     names, current, n_verts = {}, -1, 0
+    texcoords, flat_uv, n_texcoords = [], [], 0
     for line in text.splitlines():
         if line.startswith("v "):
             verts.append(line[2:])
             n_verts += 1
         elif line.startswith("f "):
-            ids = [int(w.split("/", 1)[0]) for w in line[2:].split()]
+            words = line[2:].split()
+            ids = [int(w.split("/", 1)[0]) for w in words]
             starts.append(len(flat))
             sizes.append(len(ids))
             flat += [i - 1 if i > 0 else n_verts + i for i in ids]
             face_mtl.append(current)
+            if with_uv:
+                for w in words:
+                    parts = w.split("/")
+                    k = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+                    flat_uv.append(k - 1 if k > 0 else (n_texcoords + k if k else -1))
+        elif with_uv and line.startswith("vt "):
+            texcoords.append((line[3:].split() + ["0", "0"])[:2])
+            n_texcoords += 1
         elif line.startswith("usemtl"):
             name = line[6:].strip()
             current = names.setdefault(name, len(names))
@@ -133,7 +172,15 @@ def parse_obj(text, materials):
         "materials_without_colour": missing,
         "triangles_without_material": int((mtl < 0).sum()),
     }
-    return finish(positions, faces, table[mtl], counts)
+    if not with_uv:
+        return finish(positions, faces, table[mtl], counts)
+    corner_uv, _ = fan(starts, sizes, np.array(flat_uv, dtype=np.int64))
+    coords = np.array(texcoords, dtype=np.float64).reshape(-1, 2)
+    coords = np.concatenate([coords, np.full((1, 2), np.nan)])
+    uv = coords[np.where(corner_uv < 0, len(coords) - 1, corner_uv)]
+    mesh = finish(positions, faces, table[mtl], counts, uv, mtl)
+    mesh.material_names = list(names)
+    return mesh
 
 
 def read_ply(data):
@@ -257,21 +304,28 @@ def find_mtl(obj_text):
     return [m.strip() for m in re.findall(r"^mtllib\s+(.+)$", obj_text, re.M)]
 
 
-def read_obj_in(archive, member, colours=None):
+def read_obj_in(archive, member, colours=None, with_uv=False):
     """Mesh of an OBJ file and the MTL files it names (same folder); `colours`
     replaces the diffuse colour of the materials it names."""
     text = read_member(archive, member).decode("latin-1")
     folder = member.rsplit("/", 1)[0] + "/" if "/" in member else ""
-    materials = {}
+    materials, statements = {}, {}
     for mtl in find_mtl(text):
         mtl_text = read_member(archive, folder + mtl).decode("latin-1")
         materials.update(parse_mtl(mtl_text))
+        statements.update(parse_statements(mtl_text))
     materials.update({k: tuple(v) for k, v in (colours or {}).items()})
-    return parse_obj(text, materials)
+    mesh = parse_obj(text, materials, with_uv)
+    if with_uv:
+        mesh.statements = statements
+    return mesh
 
 
-def read_mesh(archive, member, colours=None):
-    """Mesh of an OBJ or PLY file, given as an archive and its member (or the file)."""
+def read_mesh(archive, member, colours=None, with_uv=False):
+    """Mesh of an OBJ or PLY file, given as an archive and its member (or the file).
+
+    with_uv: an OBJ's texture coordinates and materials too (a PLY has none: its
+    uv stays None)."""
     if member.lower().endswith(".obj"):
-        return read_obj_in(archive, member, colours)
+        return read_obj_in(archive, member, colours, with_uv)
     return read_ply(read_member(archive, member))

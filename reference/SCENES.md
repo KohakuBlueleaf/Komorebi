@@ -53,8 +53,8 @@ archive, with numpy only:
 - polygons are cut into fans from their first vertex;
 - degenerate triangles (a repeated index, two equal positions, exactly collinear corners)
   are dropped and counted;
-- a triangle's colour is its material's diffuse colour `Kd`. Textures are not read. For a
-  material whose colour comes from a texture (`Kd` white with a `map_Kd`) the table gives
+- a triangle's colour is its material's diffuse colour `Kd`; the scene file reads no
+  texture (the materials file below does). For a material whose colour comes from a texture (`Kd` white with a `map_Kd`) the table gives
   a colour instead (`material_colours`): the mean linear colour of that texture over its
   opaque texels, times `Kd`, computed once from the downloaded textures and recorded as
   data;
@@ -75,11 +75,63 @@ scene's diagonal and the near distance `1e-4` of it unless the view gives `near`
 scenes are added to the table (for scenes used locally whose terms do not allow
 publishing pictures).
 
+## Materials
+
+Sponza and the two Bistro scenes also have their materials and textures, in a file of
+their own beside the scene file, which stays as above (everything that reads
+`<scene>.npz` is unchanged):
+
+```sh
+pip install -e ".[scenes]"                      # Pillow, for decoding the textures
+python -m reference.public materials sponza     # <scene>_materials.npz (all three if none named)
+```
+
+The command needs the scene converted (`fetch`) and the texture files of the table
+(`texture_files`: the Bistro textures are three archives of their own, kept in
+`downloads/textures/`); it downloads only what is missing, checked by SHA-256 like the
+meshes. Pillow is the `scenes` extra of `pyproject.toml` and is imported by this
+command only; without it the command stops with an error that names it.
+`load_materials(name, data)` gives the arrays (a view's name works too).
+
+| array | shape, type | content |
+|---|---|---|
+| `uv` | (T, 3, 2) float32 | texture coordinates of each triangle's corners, in the scene file's triangle order (0 where there are none) |
+| `material` | (T,) int32 | the triangle's material |
+| `light` | (T, 3) float32 | the light term of each corner, the shade the scene file's colours are multiplied by (`vertex_shade`), kept apart |
+| `kind` | (M,) int32 | the material's kind of shader: 0 `flat`, 1 `textured`, 2 `masked`, 3 `lit`, 4 `emissive` |
+| `base_colour` | (M, 3) float32 | `Kd`; for `emissive` without a texture, `Ke` clamped to 1 |
+| `textures` | (M, 4) int32 | the material's albedo, mask, normal and specular texture, -1 for none |
+| `exponent` | (M,) int32 | the specular exponent `Ns`, rounded, 1 to 1024 |
+| `specular` | (M, 3) float32 | `Ks` |
+| `texels` | (B,) uint8 | every level of every texture, RGBA8, rows from the top |
+| `mip` | (N, 11, 3) int64 | per texture and level: the level's byte offset in `texels`, width, height |
+| `levels` | (N,) int32 | the levels of each texture's chain |
+
+Material 0 is `flat`: the generated ground, and every triangle without texture
+coordinates or without a material. A material's kind comes from its MTL statements, in
+this order: a glow (`map_Ke`, or `Ke` of 0.5 or more in a channel) makes it `emissive`,
+its albedo the `map_Ke` texture; without `map_Kd` it is `flat` (the scene file's
+colour); with `map_d` it is `masked` (the mask is `map_d`; when `map_d` names the albedo
+image itself, the albedo's alpha); with a bump map (`map_bump` or `bump`) or a specular
+map (`map_Ks`) it is `lit`; otherwise `textured`. Glass and other transparency are
+opaque.
+
+Textures are stored as decoded, RGBA8; a grey image is copied into the three colours. A
+texture is reduced by halving (2 x 2 box filter, rounded) until neither side is above
+1,024: most of the Bistro's textures are 2,048 or 4,096 texels wide and are kept at
+1,024. Its mip chain halves again down to 1 x 1 (a side of 1 stays 1). A mask keeps its
+alpha when it has one that is not all opaque, else its first channel, in all four
+channels. Sponza's bump maps are heights; they are turned into tangent-space normal maps
+(central differences, slope gain 2) before the chain is built; the Bistro's are normal
+maps already. The same image used in two roles is stored once per role.
+
+The converted sizes: Sponza 26 materials, 37 textures, 190 MB of texels; Bistro
+interior 67 and 88, 373 MB; Bistro exterior 133 and 208, 1,007 MB.
+
 ## Limits
 
-Not represented: textures (only their mean colour), normal maps, alpha masks (foliage
-cut out of quads is drawn as whole opaque quads), transparency (glass is opaque), the
-scenes' own lights and emissive materials. Each of these would need a change to the
-references (texture coordinates and filtering in the fill and shading, an alpha test in
-the depth test and in the triangle test of the ray tracer, more than one light), which
-these scenes are not meant to drive.
+Not represented: transparency (glass is opaque), the scenes' own lights (one point light
+per scene; emissive materials are drawn unlit and light nothing) and San Miguel's
+textures (only their mean colour). Without the materials file, as in the ray tracer,
+textures are represented by their mean colour and foliage cut out of quads is drawn as
+whole opaque quads.

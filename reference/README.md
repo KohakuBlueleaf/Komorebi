@@ -22,7 +22,7 @@ correlation), and exactly on inputs whose result is exactly representable.
 | `png.py` | a PNG writer and colour map for the pictures (numpy and zlib only) |
 | `native.py`, `native/` | building and running the C++ and CUDA references; shared headers |
 | `meshio.py` | OBJ (with MTL) and PLY readers in numpy |
-| `public.py`, `public_scenes.json` | public demo scenes: download, check, convert ([SCENES.md](SCENES.md)) |
+| `public.py`, `public_scenes.json` | public demo scenes: download, check, convert; their materials and textures ([SCENES.md](SCENES.md)) |
 
 ## Scenes
 
