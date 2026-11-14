@@ -202,46 +202,42 @@ namespace km {
         );
     }
 
-    // Reader: pages first .. first + pages - 1 of `tensor` (bank address `address`, the
-    // same on every island) into L1 `to` on, page k at to + k aligned pages. The pages
-    // this island holds: read (the caller's read barrier waits for them); each run of
-    // pages another island holds: one ask, all counted at port `port` and waited for
-    // here (bounded). False: gave up; a miss names the island asked.
-    template <uint32_t Base, typename Accessor>
+    // Reader: pages first .. of tensor `tensor` (its word; `args`: its accessor's) into
+    // L1 `to` on; local pages read, another island's runs asked for. One card: a read.
+    template <typename Args>
     inline bool read_pages(
         const Reader& reader,
         const km_command_t& command,
-        const Placement<Base>& placement,
-        const Accessor& tensor,
-        uint32_t address,
+        const Args& args,
+        uint32_t tensor,
         uint32_t first,
         uint32_t pages,
         uint32_t to,
         uint32_t port
     ) {
         const uint32_t here = island();
-        const uint32_t bytes = tensor.get_aligned_page_size();
+        const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+        invalidate_l1_cache();  // the table may have grown since the last read
         uint32_t asked = 0, holder = here;
         for (uint32_t k = 0; k < pages;) {
-            const uint32_t at = island_of(placement, first + k);
-            if (at == here) {
-                noc_async_read_page(first + k, tensor, to + k * bytes);
+            const PageAt at = page_at(tensor, first + k);
+            if (at.island == here) {
+                noc_async_read_page(
+                    at.index, TensorAccessor(args, at.address), to + k * bytes
+                );
                 k++;
                 continue;
             }
-            uint32_t run = 1;
-            while (k + run < pages && island_of(placement, first + k + run) == at) {
-                run++;
-            }
+            const uint32_t run = page_run(tensor, first + k, pages - k, at);
 #if !defined(KM_ASKS_BY_HOST)
             if (
                 !ask_pages(
                     reader,
                     command,
-                    at,
-                    address,
+                    at.island,
+                    at.address,
                     bytes,
-                    first + k,
+                    at.index,
                     run,
                     to + k * bytes,
                     port
@@ -251,7 +247,7 @@ namespace km {
             }
 #endif
             asked += run;
-            holder = at;
+            holder = at.island;
             k += run;
         }
         // asks by the host: the host's send brings them to `to` and counts them here
@@ -263,49 +259,42 @@ namespace km {
         );
     }
 
-    // Reader or writer: pages first .. first + pages - 1 of `tensor` (bank address
-    // `address`, the same on every island) from L1 `from` on, page k at from + k
-    // aligned pages. The pages this island holds: written as noc_async_write_page
-    // writes them (the caller's write barrier waits for them); each run of pages
-    // another island holds: one put line, whose pages link core 0's page CPU reads from
-    // this core and sends into the holder's DRAM; all of them counted at port `port`
-    // once written there, and waited for here (bounded): `from` is free on return.
-    // False: gave up; a miss names the island.
-    template <typename Kernel, uint32_t Base, typename Accessor>
+    // Reader or writer: pages first .. of tensor `tensor` (its word) from L1 `from` on;
+    // local pages written, each other island's run one put line. `from` free on return.
+    template <typename Kernel, typename Args>
     inline bool write_pages(
         const Kernel& core,
         const km_command_t& command,
-        const Placement<Base>& placement,
-        const Accessor& tensor,
-        uint32_t address,
+        const Args& args,
+        uint32_t tensor,
         uint32_t first,
         uint32_t pages,
         uint32_t from,
         uint32_t port
     ) {
         const uint32_t here = island();
-        const uint32_t bytes = tensor.get_aligned_page_size();
+        const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+        invalidate_l1_cache();  // the table may have grown since the last read
         uint32_t put = 0, holder = here;
         for (uint32_t k = 0; k < pages;) {
-            const uint32_t at = island_of(placement, first + k);
-            if (at == here) {
-                noc_async_write_page(first + k, tensor, from + k * bytes);
+            const PageAt at = page_at(tensor, first + k);
+            if (at.island == here) {
+                noc_async_write_page(
+                    at.index, TensorAccessor(args, at.address), from + k * bytes
+                );
                 k++;
                 continue;
             }
-            uint32_t run = 1;
-            while (k + run < pages && island_of(placement, first + k + run) == at) {
-                run++;
-            }
+            const uint32_t run = page_run(tensor, first + k, pages - k, at);
             if (
                 !ask_line(
                     core,
                     command,
                     ask_puts(core.role()),
-                    at,
-                    address,
+                    at.island,
+                    at.address,
                     bytes,
-                    first + k,
+                    at.index,
                     run,
                     from + k * bytes,
                     port
@@ -314,7 +303,7 @@ namespace km {
                 return false;
             }
             put += run;
-            holder = at;
+            holder = at.island;
             k += run;
         }
         return (
@@ -328,71 +317,16 @@ namespace km {
     // A copy's port for the pages it asks for or puts (the last port).
     constexpr uint32_t kCopyPort = KM_PORTS - 1;
 
-    // The placement table entry of the island tensor at bank address `address` (the
-    // session's, at the load, in the link area), or nullptr: none, or one island.
-    inline const volatile tt_l1_ptr uint32_t* placed_at(uint32_t address) {
-        const Islands view(island_area());
-        const uint32_t area = view.link_area();
-        if (view.count() < 2 || area == 0 || address == 0) {
-            return nullptr;
-        }
-        for (uint32_t e = 0; e < KM_PLACE_ENTRIES; e++) {
-            const volatile tt_l1_ptr uint32_t* entry = (
-                l1(area + KM_PLACE_TABLE + e * KM_PLACE_ENTRY_BYTES)
-            );
-            if (entry[0] == 0) {
-                return nullptr;
-            }
-            if (entry[0] == address) {
-                return entry;
-            }
-        }
-        return nullptr;
+    // Whether a copy's side names, by its reference word, a tensor of which another
+    // island holds pages (its pages then go page by page by their holder).
+    inline bool copy_placed(const km_copy_side_t& side) {
+        return side.bank == KM_COPY_INTERLEAVED && held_elsewhere(side.address);
     }
 
-    // The island that holds page `page` of a placed tensor (`entry`): its part's; a
-    // copy's or a page in no part: this island.
-    inline uint32_t entry_holder(
-        const volatile tt_l1_ptr uint32_t* entry, uint32_t page
-    ) {
-        if (entry[1] == 0) {
-            for (uint32_t i = 0; i < 2; i++) {
-                if (page - entry[2 + 2 * i] < entry[3 + 2 * i]) {
-                    return i;
-                }
-            }
-        }
-        return island();
-    }
-
-    // A copy's side (`pages` pages) that names a tensor another island holds some of
-    // those pages of: its table entry, or nullptr (a bank range, a tensor the table
-    // does not list, or all its pages here).
-    inline const volatile tt_l1_ptr uint32_t* copy_placed(
-        const km_copy_side_t& side, uint32_t pages
-    ) {
-        const volatile tt_l1_ptr uint32_t* entry = (
-            side.bank == KM_COPY_INTERLEAVED ? placed_at(side.address) : nullptr
-        );
-        if (entry == nullptr || entry[1] != 0) {
-            return nullptr;
-        }
-        const uint32_t here = island();
-        for (uint32_t i = 0; i < 2; i++) {
-            const uint32_t first = entry[2 + 2 * i], end = first + entry[3 + 2 * i];
-            if (i != here && first < side.first + pages && side.first < end) {
-                return entry;
-            }
-        }
-        return nullptr;
-    }
-
-    // Whether a copy has a side with pages another island holds (two islands).
+    // Whether a copy has a side with pages another island holds.
     inline bool copy_crosses(const km_copy_t& c) {
-        return (
-            copy_placed(c.from, c.pages) != nullptr ||
-            copy_placed(c.to, c.pages) != nullptr
-        );
+        invalidate_l1_cache();  // the table may have grown since the last read
+        return copy_placed(c.from) || copy_placed(c.to);
     }
 
     // Reader: rank `rank` of `count` copies its pages a chunk at a time, a side whose
@@ -433,16 +367,16 @@ namespace km {
             );
         };
         const uint32_t here = island();
-        const auto* from = copy_placed(c.from, c.pages);
-        const auto* to = copy_placed(c.to, c.pages);
+        const bool from = copy_placed(c.from);
+        const bool to = copy_placed(c.to);
         const Partition share = partition(c.pages, rank, count);
         const uint32_t chunk_pages = c.chunk / c.page;
         // One side of `n` pages from index `start` of the share: local pages by
-        // `local(index, k)`, runs held elsewhere by one line each from L1 `at`. The
+        // `local(noc, k)`, runs held elsewhere by one line each from L1 `at`. The
         // pages asked for or put, and the island of the last run.
         const auto side = [&](
             const km_copy_side_t& s,
-            const volatile tt_l1_ptr uint32_t* entry,
+            bool placed,
             const AskQueue& queue,
             uint32_t start,
             uint32_t n,
@@ -453,25 +387,26 @@ namespace km {
             uint32_t lined = 0;
             for (uint32_t k = 0; k < n;) {
                 const uint32_t page = s.first + start + k;
-                const uint32_t h = entry != nullptr ? entry_holder(entry, page) : here;
-                if (h == here) {
-                    local(page, k);
+                const PageAt where = (
+                    placed ? page_at(s.address, page) : PageAt{here, s.address, page}
+                );
+                if (where.island == here) {
+                    km_copy_side_t mine = s;
+                    mine.address = where.address;
+                    local(copy_noc(mine, c.page, where.index), k);
                     k++;
                     continue;
                 }
-                uint32_t run = 1;
-                while (k + run < n && entry_holder(entry, page + run) == h) {
-                    run++;
-                }
+                const uint32_t run = page_run(s.address, page, n - k, where);
                 if (
                     !ask_line(
                         reader,
                         command,
                         queue,
-                        h,
-                        s.address,
+                        where.island,
+                        where.address,
                         c.page,
-                        page,
+                        where.index,
                         run,
                         at + k * c.page,
                         kCopyPort
@@ -480,7 +415,7 @@ namespace km {
                     return 0xFFFFFFFFu;
                 }
                 lined += run;
-                holder = h;
+                holder = where.island;
                 k += run;
             }
             return lined;
@@ -498,10 +433,8 @@ namespace km {
                 start,
                 n,
                 c.buffer,
-                [&](uint32_t page, uint32_t k) {
-                    noc_async_read(
-                        copy_noc(c.from, c.page, page), c.buffer + k * c.page, c.page
-                    );
+                [&](uint64_t noc, uint32_t k) {
+                    noc_async_read(noc, c.buffer + k * c.page, c.page);
                 },
                 holder
             );
@@ -521,10 +454,8 @@ namespace km {
                 start,
                 n,
                 c.buffer,
-                [&](uint32_t page, uint32_t k) {
-                    noc_async_write(
-                        c.buffer + k * c.page, copy_noc(c.to, c.page, page), c.page
-                    );
+                [&](uint64_t noc, uint32_t k) {
+                    noc_async_write(c.buffer + k * c.page, noc, c.page);
                 },
                 holder
             );

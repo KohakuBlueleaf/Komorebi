@@ -68,39 +68,35 @@ def main():
         report["link_cores"] = [list(cores) for cores in session.link_cores]
         report["channels"] = [list(channels) for channels in session.channels]
         moving = args.ask or args.put
-        # ASK: island 1 holds the source; PUT: island 0 holds it
-        source = session.tensor(data, "uint32", like=own[1 if args.ask else 0])
+        # MOVE: ASK reads a source island 1 holds, PUT writes a target it holds
+        source = session.tensor(data, "uint32", group=own[1 if args.ask else 0])
         # one target a size: ASK's on island 0, PUT's on island 1
         targets = [
-            session.empty(data.shape, "uint32", like=own[0 if args.ask else 1])
+            session.empty(data.shape, "uint32", group=own[0 if args.ask else 1])
             for _ in moving or ()
         ]
-        if moving:  # the writer's second placement: PUT's target (island 1)
-            target = split = copy = targets[0]
+        if moving:
+            tensors = (source, *targets)
         else:
-            target = session.empty(data.shape, "uint32", like=own[1])
+            target = session.empty(data.shape, "uint32", group=own[1])
             split = session.empty(data.shape, "uint32")
             copy = session.empty(data.shape, "uint32", copy=True)
-        tensors = (source, target, split, copy)
+            tensors = (source, target, split, copy)
         report["parts"] = [list(tensor.placement.parts) for tensor in tensors]
-        log(f"source {source.placement.parts}, target {target.placement.parts}")
-        # the moving CPU's buffer holds a call's pages; the other one page
-        step = args.step * args.page
-        ask_bytes = step if args.ask else args.page
-        put_bytes = step if args.put else args.page
+        log(f"source {source.placement.parts}, target {tensors[1].placement.parts}")
         program = km.Program(
             "pages",
             kernels=KERNELS,
             handlers=KERNELS / "pages.h",
-            buffers=[
-                km.Buffer(index=0, format="bfloat16", page_bytes=ask_bytes, pages=1),
-                km.Buffer(index=1, format="bfloat16", page_bytes=put_bytes, pages=1),
+            buffers=[  # MOVE's: a call's pages
+                km.Buffer(
+                    index=0,
+                    format="bfloat16",
+                    page_bytes=args.step * args.page,
+                    pages=1,
+                )
             ],
-            compile_args={
-                "reader": source.accessor_args() + source.placement_args(),
-                "writer": source.accessor_args()
-                + [w for tensor in tensors for w in tensor.placement_args()],
-            },
+            compile_args={"reader": source.accessor_args()},
         )
         run = session.load(program, deadline=2.0)
         log("loaded on both islands")
@@ -154,13 +150,13 @@ def main():
 
 
 def move(session, run, program, args, source, targets, data):
-    """ASK or PUT of each size by island 0's ranks, one command each (submit to its
-    event, the dispatcher's ticks), what crossed beside it, then the target's pages
-    read back and compared."""
-    ask = bool(args.ask)
-    handler = program.handler("ask" if ask else "put")
+    """MOVE of each size by island 0's ranks (ASK: the source across, PUT: the
+    target), one command each (its event's ticks: submit to completion), what
+    crossed beside it; then each target's pages read back and compared."""
+    handler = program.handler("move")
     mine = run.island(0)
     group = (session.graph.first(0), session.graph.count(0))
+    name = "ASK" if args.ask else "PUT"
     rows = []
     for mib, target in zip(args.ask or args.put, targets):
         pages = mib * (1 << 20) // args.page
@@ -175,7 +171,7 @@ def move(session, run, program, args, source, targets, data):
             "gb_s": round(pages * args.page / seconds / 1e9, 2),
             "crossed": {f"{a}->{b}": moved.total(a, b) for a, b in ((0, 1), (1, 0))},
         }
-        log(f"{'ASK' if ask else 'PUT'} {mib} MiB: {row['ms']} ms, {row['gb_s']} GB/s")
+        log(f"{name} {mib} MiB: {row['ms']} ms, {row['gb_s']} GB/s")
         log(f"crossed:\n{moved}")
         rows.append(row)
     for row, target in zip(rows, targets):
@@ -184,7 +180,7 @@ def move(session, run, program, args, source, targets, data):
         got = got.view(np.uint32).reshape(pages, -1)
         row["wrong_pages"] = int((got != data[:pages]).any(axis=1).sum())
         log(f"{row['mib']} MiB read back: {row['wrong_pages']} pages wrong")
-    return {"mode": "ask" if ask else "put", "group": list(group), "rows": rows}
+    return {"mode": name.lower(), "group": list(group), "rows": rows}
 
 
 def where(session, program, tensors):
@@ -195,7 +191,7 @@ def where(session, program, tensors):
     for island in range(2):
         run = session.run.island(island)
         cores = (0, session.graph.count(island) - 1)
-        for index, tensor in enumerate(tensors):
+        for tensor in tensors:
             pages = {0, tensor.pages - 1}
             for start, length in tensor.placement.parts:
                 pages |= {start, start + length - 1} if length else set()
@@ -203,10 +199,14 @@ def where(session, program, tensors):
                 for page in sorted(pages):
                     rank = session.graph.first(island) + core  # groups are flat
                     event = run.wait(
-                        run.submit(handler, (rank, 1), [index, page], result=True)
+                        run.submit(
+                            handler, (rank, 1), [tensor.address, page], result=True
+                        )
                     )
                     want = islands.island_of(tensor.placement, page, island)
-                    asked.append([island, core, index, page, event.result, want])
+                    asked.append(
+                        [island, core, tensor.address, page, event.result, want]
+                    )
                     wrong += int(event.result != want)
     log(f"{len(asked)} answers of km::island_of, {wrong} wrong")
     return {"answers": asked, "wrong_answers": wrong}

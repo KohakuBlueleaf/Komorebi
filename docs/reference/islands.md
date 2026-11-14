@@ -23,7 +23,7 @@ host values (the graph of islands, ranks, the split of a group, placement) are i
 import komorebi as km
 
 with km.Session(cards=[0, 1]) as session:  # every link, 236 ranks
-    source = session.tensor(array, "bfloat16", "tile")  # split by island
+    source = session.tensor(array, "bfloat16", "tile")  # split along dimension 0
     run = session.load(program)  # on every island
     ticket = run.submit("map", group=(0, session.ranks), args=[...])
     parts = run.wait(ticket, timeout=5.0)  # one event per island
@@ -142,10 +142,16 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   their flat ranks. `run.reset_core(rank)` resets the core of one rank and loads its
   kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
   handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
-  is each island's `Run.recovery`. On two p150a cards with the map/collect example, each island's lists
-  take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores are left out: a reset link core would lose the
-  connection it holds open, so a give-up does not reset one and `reset_core` of a
-  link core is refused.
+  is each island's `Run.recovery`. On two p150a cards with the map/collect example,
+  each island's lists take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores
+  get no list, so a give-up does not reset one.
+- `run.reset_link(island, k)` resets link core k of `island` by the host
+  (`session.reset_link`): each of its connections closed at its router (the close
+  request, the router's teardown, the producer cursor set at the router's read
+  counter), the core reset and loaded again, then its OPEN with the far link core's
+  hello taken as heard. Returns `{island, core, by, seconds, reset_seconds,
+  open_seconds, parts}`. Between commands only: a line or ask in flight on that core
+  is lost and its command times out at its deadline.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
@@ -191,28 +197,68 @@ link 1 (2,048 bytes each), and nothing crossed while it read its own DRAM.
 
 ## Tensors
 
-`session.tensor(data, dtype, layout, like=None, copy=False, by="rank")` makes one
-tensor of the whole shape on every island, at the same address, so a program takes its
-`address` and `accessor_args()` unchanged. Its pages are placed by `islands.place`:
-split by island along the leading dimension in rank order (`like`: the group the split
-follows; default every rank), so a rank that partitions the tensor by rank finds its
-part in its own island's DRAM; `by="island"` splits the leading dimension into even
-parts by island (`partition(units, i, islands)` to island i), for a program that cuts
-its work by island first and over an island's ranks inside; `copy=True` puts every
-page on every island. A split
-tensor's pages that another island holds are zeros on this one.
+A tensor of an island session is one logical tensor: a script names it and says how
+the program uses it, and the session decides which island holds which page. The hints
+are in the kernel's own words:
 
-A kernel asks where a page lives with `km::island_of(placement, page)`
-(`km_placement.hpp`): the session writes a tensor's placement as compile arguments
-after its accessor's (`tensor.placement_args()`: the islands, copy, then each
-island's first page and pages), which `km::Placement<offset>()` reads; a copy's page
-answers the core's own island (`km::island()`, from the island table). On both islands' cores, for four tensors
-(all on island 0, all on island 1, split, a copy): 40 answers, all as
-`islands.island_of` gives them (`experiments/islands_pages/pages.py --where`).
+| Hint | Where the pages live |
+|---|---|
+| none | as `split=0` over every rank |
+| `split=d`, `group=(first, ranks)` | the group's ranks partition dimension `d` (its page steps: rows of a "row" tensor, tile rows or tile columns of a "tile" one) by the rule of `km::partition`, and the part rank `r` works on is held by `r`'s island; `group` defaults to every rank |
+| `like=other` | `other`'s hint applied to this tensor, so the same holders part for part |
+| `copy=True` | every page on every island; only when asked, never by default |
 
-`session.read` and `session.read_bf16` assemble a tensor from the island that holds
-each page, through that island's host channel; `session.write` writes each page into
-the island that holds it (a copy: into every island).
+`session.tensor(data, dtype, layout="row", split=None, group=None, like=None,
+copy=False)` makes it and writes it; `session.empty(shape, dtype, layout, ...)` takes
+the same hints and writes nothing. `islands.place(graph, shape, layout, split, group,
+copy)` is the rule on the host: a `Placement` whose pages are `outer` blocks of `steps`
+steps of the split dimension, `inner` pages a step, and whose `parts[i]` are the
+(first step, steps) island `i` holds of every block. `placement.where(page)` gives the
+island and the page's index in that island's part, `placement.runs(first, pages)` the
+runs held at consecutive indices, `placement.part(i)` the pages of island `i`'s part in
+its order. A split along a dimension other than the leading one gives an island pages
+that are not one run of page indices: tile column 0 of every tile row on island 0 and
+column 1 on island 1, for `split=1` over a group of two ranks one on each island.
+
+Each island allocates only its part, in its own DRAM at its own bank address, so a
+tensor that does not fit one card fits two when the hint splits it. A part that does
+not fit raises `KomorebiError` naming the island and the most pages of that kind its
+DRAM takes now.
+
+`tensor.address` is the tensor's reference word, what a script passes in a command and
+a kernel hands to Komorebi's page calls. On one card it is the bank address, as without
+islands. Over islands it is the index of the tensor's entry in the tensor table
+(`KM_TENSORS_MAX`, 32, entries), which the session writes into every core of every
+island at the load and again when a tensor is made while a run is loaded; the word
+`KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
+the aligned page bytes, the steps of the split dimension, the pages a step and a copy
+flag, then each island's part: its bank address, first step and steps. On a core,
+`km::page_at(tensor, page)` (`km_placement.hpp`) gives the island that holds the page,
+its part's bank address and the page's index there, and `km::island_of(tensor, page)`
+the island; a word that is not an entry (a bank address) answers this island, the word
+and the page, so a kernel written this way runs unchanged on one card. A copy's page
+answers the core's own island. `tensor.accessor_args()` is the same on every island.
+
+`session.write(tensor, pages, first=0)` scatters each island's pages into its part
+through that island's own host channel, and `session.read` and `session.read_bf16`
+gather them into one array; while a run is loaded, the islands' transfers go at once,
+one host thread an island. Example 01's MAP on one group of the 238 ranks of two
+cards, its input of 238 x 2 tiles placed with no hint, `split=0` and `split=1` over the
+group (118, 2) (`examples/01_mapcollect/islands.py --whole --split 1 --group 118,2`;
+2026-11-14, AICLK 800 MHz idle before the run, host load 3.8 to 8.4, one run each):
+
+| Input hint | Island 0 holds | MAP, us | Wrong tiles |
+|---|---|---|---|
+| none | tile rows 0 to 118 | 6.10 | 0 of 238 |
+| `split=0` | tile rows 0 to 118 | 6.13 | 0 of 238 |
+| `split=1`, group (118, 2) | tile column 0 | 469.4 | 0 of 238 |
+
+With `split=1` every rank reads one tile from its own island and asks the other island
+for the other. The same script with `--cards 0` and `split=1`: one island holds every
+page, the word is the bank address, 0 wrong of 120, 3.13 us a MAP. A write of 64 MiB
+with the run loaded, one run each: split over both cards 1.85 to 3.69 GB/s, all on
+island 0 2.89 to 3.11 GB/s, card 0 alone 2.86 to 3.13 GB/s; one write takes 18 to 36
+ms, so the two channels at once are not measurably faster than one.
 
 ## Pages across a link
 
@@ -232,24 +278,27 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   sent before the far side runs.
 
 - `session.cross(source, target, first=0, pages=None, timeout=10.0)` writes the pages
-  of `source` into the same pages of `target` where another island holds them, and
-  waits until the far island's count says they all landed. It returns the pages, the
+  of `source` into the same pages of `target` where another island holds them (a
+  copy: every other island's copy), and waits until the far island's count says they
+  all landed. It returns the pages, the
   bytes and the seconds from the submit to the last count.
 - `session.send_pages(source, first, pages, to, core=None, counted=None, port=None)`
-  queues the send alone: into tensor `to`, or into L1 address `to` of local core
-  `core` of the other island, counted at port `port` (default 7) of core `counted`.
+  queues the send alone: into tensor `to` (which the other island holds at the
+  indices its part has here), or into L1 address `to` of local core `core` of the
+  other island, counted at port `port` (default 7) of core `counted`.
   `session.wait_pages(island, core, pages, port=None)` queues a bounded wait for a
   count. Both return handles of the islands' own runs.
 - 64 MiB from island 0 into a tensor of island 1 over four links: 2.09 ms, 32.1 GB/s,
   every page exact (`experiments/islands_pages`; measured when pages took all four
   links, before link 0 became the lines link: pages now take three of four).
 - A kernel reads a tensor's pages wherever they live with one call (`km_ask.hpp`):
-  `km::read_pages(reader, command, placement, tensor, address, first, pages, to,
-  port)`, with the tensor's `km::Placement`, its accessor, its bank address (the same
-  on every island), and L1 address `to` of the core, page k at `to` + k aligned pages.
-  The pages its island holds are read as `noc_async_read_page` reads them (the
-  caller's read barrier waits for them); on one island that is all the call does.
-  Each run of pages another island holds is one ask line of 64 bytes: the core
+  `km::read_pages(reader, command, args, tensor, first, pages, to, port)`, with the
+  tensor's accessor arguments, its reference word, and L1 address `to` of the core,
+  page k at `to` + k aligned pages.
+  The pages its island holds are read as `noc_async_read_page` reads them, at their
+  index in its part (the caller's read barrier waits for them); on one island that is
+  all the call does. Each run another island holds at consecutive indices of its part
+  is one ask line of 64 bytes: the core
   reserves a line in its island's link core 0 with a local atomic, waits until that
   line is free, and writes it; link core 0's link 0 CPU sends it, between commands,
   over its held connection into the far link core 0, whose page CPU (link 1, or link
@@ -257,34 +306,32 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   asker's L1, adds them to the asker's port, and sends back the count of asks it
   answered. The asker waits on its port, bounded; a miss gives the command up at
   `ask` with the island asked in the word's top byte. 32 lines are in flight an
-  island. A tensor of one card has `placement_args()` too (one island holding every
-  page), so the same kernel builds on one card.
+  island.
 - A kernel writes a tensor's pages wherever they live with the counterpart, in the
-  same header: `km::write_pages(core, command, placement, tensor, address, first,
-  pages, from, port)`, from the reader or the writer, page k from L1 `from` + k
-  aligned pages. The pages its island holds are written as `noc_async_write_page`
-  writes them (the caller's write barrier waits for them); on one island that is all
-  the call does. Each run of pages another island holds is one put line (the same 64
-  bytes, `KM_PUT_*` in `km_abi.h`) into its own island's link core 0, reserved and
-  written as an ask line is. That island's page CPU sends the line to the far link
-  core 0, then reads the pages from the asking core's L1 and sends them straight into
-  the holder's DRAM; each batch's last packet adds its pages, once all the batch
-  carried are written (the router flushes its writes before the add), to the far link
-  core 0's count of pages landed. When the line's pages have all landed, the far page
-  CPU adds them to the asker's port and sends back the count of puts confirmed. The
-  call waits on its port, bounded, so `from` is free when it returns; a miss gives the
-  command up at `ask` with the island in the word's top byte. 32 put lines are in
-  flight an island.
+  same header: `km::write_pages(core, command, args, tensor, first, pages, from,
+  port)`, from the reader or the writer, page k from L1 `from` + k aligned pages. The
+  pages its island holds are written as `noc_async_write_page` writes them, at their
+  index in its part (the caller's write barrier waits for them); on one island that is
+  all the call does. Each run another island holds at consecutive indices of its part
+  is one put line (the same 64 bytes, `KM_PUT_*` in `km_abi.h`) into its own island's
+  link core 0, reserved and written as an ask line is. That island's page CPU sends the
+  line to the far link core 0, then reads the pages from the asking core's L1 and
+  sends them straight into the holder's DRAM; each batch's last packet adds its pages,
+  once all the batch carried are written (the router flushes its writes before the
+  add), to the far link core 0's count of pages landed. When the line's pages have all
+  landed, the far page CPU adds them to the asker's port and sends back the count of
+  puts confirmed. The call waits on its port, bounded, so `from` is free when it
+  returns; a miss gives the command up at `ask` with the island in the word's top
+  byte. 32 put lines are in flight an island.
 - A copy (`KM_HANDLER_COPY`, what `kmx_fetch` and `kmx_store` submit) that names a
-  tensor by its bank address finds where its pages are: at the load the session writes
-  the island tensors made so far into every core's link area (`KM_PLACE_TABLE`, 16 of
-  them, the newest first: address, copy, each island's first page and pages). A copy
+  tensor by its reference word finds where its pages are in the tensor table. A copy
   with a side whose pages another island holds moves a chunk at a time: this island's
-  pages read or written as the copy does, each run the other island holds one ask line
-  (a fetch) or put line (a store) from the chunk, waited for on the core's last port
-  before the chunk goes on. A thread's source names the tensor and the range only.
-  Pages that cross are at most one packet (4,352 bytes). On one island, or for a
-  tensor made after the load or not listed, the copy is what it was.
+  pages read or written as the copy does, at their index in its part, each run the
+  other island holds one ask line (a fetch) or put line (a store) from the chunk,
+  waited for on the core's last port before the chunk goes on. A thread's source names
+  the tensor and the range only. Pages that cross are at most one packet (4,352
+  bytes). On one island, or for a tensor named by a bank address, the copy is what it
+  was.
 - `IslandSession.ASKS_BY` is `"core"` (the call asks itself) by default; with
   `"host"` (the define `KM_ASKS_BY_HOST`) the call only waits on the port, and the host
   sends: `session.ask(tensor, first, pages, island, core, to, port)` has the holder's
@@ -353,8 +400,8 @@ islands is developed and checked with one card. One device and one open; the gra
   on two cards; a give-up names its ranks and island and the run goes on.
 - **Stop.** Each island stops alone: the host waits for its rows and reads its cores'
   control blocks from L1, since a buffer read would wait for the whole launch.
-- **Tensors.** One tensor in the card's DRAM; its placement by island is kept, so a
-  kernel's `km::island_of(placement, page)` answers as on two cards.
+- **Tensors.** One tensor in the card's DRAM, every page local to every island: its
+  word is the bank address; its placement by the hint is kept on the host.
 - **Not on a split card.** A list or dict of programs, dynamic handlers, X280 threads
   and ports, links, a reset list for a core (a given-up command is not recovered by
   a reset), queued commands (the dispatcher places them over the whole card), and

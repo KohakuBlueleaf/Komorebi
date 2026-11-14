@@ -66,7 +66,7 @@ in the holder's own entry), hops (8), zero (16). The table holds up to
 A core of card 1 holds the same table with `0xFF` and 0 in island 1's entry, its own, and
 next link 0 and hops 1 in island 0's. The host's values are in `komorebi.islands`: the graph of islands and links
 (`Graph`, `line`, `ring`), the rank of every core, `Graph.split` for a group,
-`islands.place` for a tensor's pages, and `ENTRY` for the layout. On one card the table
+`islands.place` for a tensor's pages by its hint, and `ENTRY` for the layout. On one card the table
 has one entry, `(0, cores, NO_LINK, 0)`, and every answer below is the one of a run
 without islands.
 
@@ -126,7 +126,11 @@ carries the dispatcher's command lines and the cores' asks; the others carry pag
 ([islands](../reference/islands.md#pages-across-a-link)).
 
 A kernel that reads a tensor's pages calls `km::read_pages` with the tensor's
-placement: the pages its island holds are read from its own DRAM, as on one card; for
+reference word, which the script passes as on one card (`tensor.address`) and which
+names the tensor's entry in a table every core holds: the session placed the tensor by
+the hint the script gave, in the kernel's own words (split along a dimension over a
+group of ranks, like another tensor, or a copy), and the entry says which island holds
+which part. The pages its island holds are read from its own DRAM, as on one card; for
 pages another island holds the core puts one ask line into its island's link core 0,
 which sends it on link 0 between commands, and the holder's link core pushes the pages
 into the asking core's L1 and counts them at its port, where the core waits. No host
@@ -239,6 +243,17 @@ across the islands (the rows inside), 535.5 µs with its 4 row broadcasts across
 columns inside), against 186.1 µs on card 0 alone. Each block that crosses costs two
 relay asks and a marker back, one ask a way at a time.
 
+## When a core stops
+
+Each island's dispatcher holds its own island's reset lists. A command given up on
+island i resets and loads again that island's cores still in it, or whose kernels
+ended at a wait's own limit; the time-out says `island i:` and names them by flat
+rank and the island's own core number, and the run goes on on both islands
+([recovery](../guides/recovery.md)). A link core is reset by the host
+(`run.reset_link(island, k)`): its connections are closed at their routers, the
+core is loaded again and opens them again, and reads and commands across are exact
+after it. The far link core needs nothing.
+
 ## What is not built
 
 - **Over a link:** a reduce or a broadcast over more than two islands (a part crosses
@@ -255,3 +270,6 @@ relay asks and a marker back, one ask a way at a time.
   tensors in L1.** A list of programs, one an island, loads; a thread of one island
   fetches and stores tensors the other holds.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.
+- **A link core reset by its dispatcher.** A give-up resets only ranks; a link core
+  is reset by the host, between commands. A line or an ask in flight on it is lost,
+  and the command that waits for it times out at its deadline.

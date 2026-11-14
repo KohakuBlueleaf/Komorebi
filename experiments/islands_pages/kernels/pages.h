@@ -1,22 +1,17 @@
-// Pages across islands: the program's handlers and the tensors its kernels know.
+// Pages across islands: the program's handlers.
 #pragma once
 
 #include <stdint.h>
 
-// WHERE: the writer's result is km::island_of(tensor a0, page a1) on this core.
+// WHERE: the writer's result is km::island_of(tensor a0, page a1) on this core (a0:
+// the tensor's reference word).
 constexpr uint32_t kHandlerWhere = 1;
-// ASK (reader): the rank's share of pages 0 .. a2 - 1 of the tensor at a0 (the
-// reader's first placement, another island holds it), a3 pages a call of
-// km::read_pages into its L1 buffer, each call's pages then written into the same
-// pages of the tensor at a1 (this island's).
-constexpr uint32_t kHandlerAsk = 2;
-// PUT (writer): the rank's share of pages 0 .. a2 - 1 of the tensor at a0 (this
-// island's), a3 pages at a time read into its L1 buffer and written with
-// km::write_pages into the same pages of the tensor at a1 (the writer's second
-// placement, another island holds it).
-constexpr uint32_t kHandlerPut = 3;
-// The L1 buffers (circular buffer indices; only their addresses are used) and ports.
-constexpr uint32_t kCbAsk = 0;
-constexpr uint32_t kCbPut = 1;
+// MOVE (reader): the rank's share of pages 0 .. a2 - 1 of tensor a0 (its reference
+// word), a3 pages a call: km::read_pages into its L1 buffer, then km::write_pages
+// into the same pages of tensor a1. A tensor another island holds is asked for
+// (read) or put (written) across; this island's pages move as tt-metal's page calls.
+constexpr uint32_t kHandlerMove = 2;
+// The L1 buffer (a circular buffer index; only its address is used) and the ports.
+constexpr uint32_t kCbMove = 0;
 constexpr uint32_t kAskPort = 2;
 constexpr uint32_t kPutPort = 3;
