@@ -173,7 +173,7 @@
    KM_GROUP_LINK_BASE + k, count n; never cut by island, never crossing. A rank is
    below KM_GROUP_LINK_BASE; a link core's rank in it is its link-core index - k. */
 #define KM_GROUP_LINK_BASE 0xFE00u
-#define KM_GROUP_IS_LINK(first)               \
+#define KM_GROUP_IS_LINK(first) \
     ((uint32_t)(first) - KM_GROUP_LINK_BASE < \
      KM_GROUP_CLUSTER_BASE - KM_GROUP_LINK_BASE)
 /* Whether a group (first, count) names a work cluster's thread, cluster 1 to 3. */
@@ -481,7 +481,7 @@ KM_STATIC_ASSERT(
 #define KM_RELAY_INBOX (KM_RELAY_STAGE + KM_RELAY_CHUNK) /* the far ask, its bytes */
 #define KM_RELAY_MAX 16384u /* the most bytes one ask carries */
 #define KM_RELAY_BYTES (KM_RELAY_INBOX + 64u + KM_RELAY_MAX)
-/* then a word (a byte offset), the tensor table's L1 address on this island (0: none) */
+/* then a word (byte offset): the tensor table's L1 address on this island (0: none) */
 #define KM_ISLAND_TENSORS ((KM_ISLAND_RELAY_TILE + 1u) * 4u)
 /* a reference word below KM_TENSORS_MAX names an entry, any other a bank address */
 #define KM_TENSORS_MAX 32u

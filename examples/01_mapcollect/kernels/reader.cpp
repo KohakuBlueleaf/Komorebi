@@ -36,16 +36,18 @@ void kernel_main() {
                     const uint32_t destination = get_write_ptr(kCbIn);
                     const uint32_t first = first_tile + partition.start + done;
                     // the tiles another island holds are asked for, then waited for
-                    if (!km::read_pages(
-                        reader,
-                        command,
-                        input_args,
-                        input_tensor,
-                        first,
-                        block_tiles,
-                        destination,
-                        kAskPort
-                    )) {
+                    if (
+                        !km::read_pages(
+                            reader,
+                            command,
+                            input_args,
+                            input_tensor,
+                            first,
+                            block_tiles,
+                            destination,
+                            kAskPort
+                        )
+                    ) {
                         return;
                     }
                     noc_async_read_barrier();

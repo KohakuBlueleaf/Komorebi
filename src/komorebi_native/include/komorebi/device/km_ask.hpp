@@ -169,17 +169,19 @@ namespace km {
                 run++;
             }
 #if !defined(KM_ASKS_BY_HOST)
-            if (!ask_pages(
-                reader,
-                command,
-                at.island,
-                at.address,
-                bytes,
-                at.index,
-                run,
-                to + k * bytes,
-                port
-            )) {
+            if (
+                !ask_pages(
+                    reader,
+                    command,
+                    at.island,
+                    at.address,
+                    bytes,
+                    at.index,
+                    run,
+                    to + k * bytes,
+                    port
+                )
+            ) {
                 return false;
             }
 #endif

@@ -64,8 +64,7 @@ def program(source, output, threads):
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
         ],
         compile_args={
-            # MAP's input placements (example 01's reader reads two): both the input
-            "reader": source.accessor_args() + 2 * source.placement_args(),
+            "reader": source.accessor_args(),
             "writer": output.accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
