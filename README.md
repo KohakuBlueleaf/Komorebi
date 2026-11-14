@@ -273,6 +273,38 @@ of work from its X280 core, the answer names the overlay for that range, and the
 loads it when it does not hold it and calls it. Choosing the code where the work is
 takes 3,158 µs where the best single overlay takes 4,222 µs.
 
+### A thread reaches any DRAM
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/reach-dark.svg">
+  <img src="docs/images/reach-light.svg" width="830" alt="Two panels. First, one kmx_fetch on the P150A tile grid: the thread on X280 1 empties its cluster's cache (kmx_evict, 21 microseconds), sends one command by its ring to the dispatcher on X280 0, which sends it to cores 0 to 3; the cores copy a range of DRAM bank D0 into work cluster 1's region in bank D6, bank to bank in 16 KiB chunks; the thread then reads its region with plain loads. kmx_store is the same the other way. Second, the call in time on three rows (the thread, the dispatcher, cores 0 to 3): evict, the command, the copy of 64 MiB in 1.06 ms at 63.4 GB/s on four cores, the event back, the thread's reads; under it the lines of experiments/bank_fetch/thread/islands.c that name the tensor and the range and call kmx_fetch, and a table of the whole call for 1 MiB, 16 MiB and 64 MiB: kmx_fetch from another bank of the card 40.2 microseconds, 289 microseconds and 1.08 ms; kmx_store within one bank 64.5 to 69.4 microseconds and 2.30 to 2.32 ms; kmx_fetch of a tensor another island holds 115 microseconds and 1.13 ms; kmx_store into one 112 microseconds and 1.14 ms; the X280's own loads through a NoC window 44.1 ms for 1 MiB.">
+</picture>
+
+An X280 cluster's cache reaches one DRAM bank, the one beside it, and its own loads
+through a NoC window move 0.024 GB/s. So a thread does not load far data: it calls
+`kmx_fetch`, and Tensix cores copy the range, from any bank or from a tensor's pages,
+into the thread's region at the bank's rate; `kmx_store` is the same the other way.
+The call names the tensor and the range, never where they are: for a tensor another
+island holds, the same call goes straight between the two cards' DRAMs
+([threads](docs/reference/threads.md), [bank_fetch](experiments/bank_fetch/)).
+
+### More than one card
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/islands-dark.svg">
+  <img src="docs/images/islands-light.svg" width="830" alt="Four panels. First, two cards as one run: the host opens km.Session(cards=[0, 1]) and submits one command whose group is flat ranks 96 to 139; island 0 holds ranks 0 to 117 and island 1 ranks 118 to 235, so the group is cores 96 to 117 of card 0 and cores 0 to 21 of card 1, each part sent to its own island's dispatcher on X280 0. The last two Tensix cores of each card are link cores L0 and L1, named and not ranks; each of their data-movement CPUs holds one of the four links between the cards. Link 0 carries the lines, a command's part and ask and put lines, in order; every link carries pages, a page a packet, into the other island's DRAM or a core's L1. Second, a tensor is placed by a hint and a kernel names the tensor, never the island: session.tensor with split, group, like or copy; drawn as rows of pages tinted by the island that holds them: split=0, the default, gives the first half to island 0 and the second to island 1; split=1 over a group of two ranks alternates them; like=other takes the other tensor's holders; copy=True puts every page on every island. Under it three lines of 06_graph/kernels/writer.cpp: the tensor's type, km::read_pages and km::write_pages, the same lines as on one card. Third, what crosses a link, each measured on two P150A joined by four links: a command's part, 7.46 microseconds a command split by the host and 10.89 sent across by a thread's dispatcher; a message, 4.7 microseconds a crossing; a reduce's part or a broadcast's block, a sum over 238 ranks in 172.6 microseconds against 162.8 on one island; pages, puts at 72.5 GB/s each way with both islands putting and reads at 40.6 to 48.3 GB/s; part of a page with km::put_bytes and km::read_bytes, 65,536 keys placed across in 5.99 ms; a thread's fetch and store, 64 MiB in 1.13 ms, and the session's own copy across at 100.4 GB/s. Fourth, a kernel may act by island in its own words, with lines of 26_islands_sum/kernels/writer.cpp: group.leaders(), a reduce with km::local inside its island, and km::to_island(...).put for its island's part, once; on one island each of these is the group, its first rank and a local send.">
+</picture>
+
+An **island** is a set of cores that reach the others only through links: one card's
+chip. Ranks stay flat and contiguous across islands, so a command names a group as
+on one card and a kernel finds its place in it the same way; a core holds a table
+with one entry for each island, not one for each rank. The host places a tensor by a
+hint in the kernel's own words, and a kernel reads and writes it with the page calls,
+which ask the other island for what it holds: the kernels of a program written for
+one card run on two unchanged. Crossing a link is slower than the NoC, and the run
+counts what crossed (`run.crossings()`), so a program can be placed to cross less
+([islands](docs/concepts/islands.md), [reference](docs/reference/islands.md)).
+
 ## What exists
 
 | Part | On main | Page | Example |
