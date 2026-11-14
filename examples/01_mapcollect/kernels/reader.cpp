@@ -3,12 +3,14 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "mapcollect.h"
 
 void kernel_main() {
     constexpr auto input_args = TensorAccessorArgs<0>();
+    using First = km::Placement<input_args.next_compile_time_args_offset()>;
+    using Second = km::Placement<First::next_compile_time_args_offset()>;
     km::Reader reader;
     uint32_t write_page = 0;  // write position in kCbIn, in pages: a block never wraps
     reader.run([&](const km_command_t& command) {
@@ -18,19 +20,11 @@ void kernel_main() {
                 const uint32_t input_address = command.a0;
                 const uint32_t tiles = command.a1;
                 const uint32_t first_tile = command.a6;
-                const uint32_t across = command.a7;
-                const uint32_t landing = command.a8;
+                const uint32_t placed = command.a7;
                 const km::Partition partition = (
                     km::partition(tiles, index, km::count(command))
                 );
                 const auto input = TensorAccessor(input_args, input_address);
-                // Tiles another island holds: its link cores put them at `landing`.
-                if (
-                    across != kAcrossLocal && partition.len != 0 &&
-                    !km::port_wait(reader, command, across - 1, partition.len)
-                ) {
-                    return;
-                }
                 for (uint32_t done = 0; done < partition.len;) {
                     uint32_t block_tiles = (
                         partition.len - done < kBlock ? partition.len - done : kBlock
@@ -44,20 +38,23 @@ void kernel_main() {
                         return;
                     }
                     const uint32_t destination = get_write_ptr(kCbIn);
-                    for (uint32_t tile = 0; tile < block_tiles; tile++) {
-                        if (across != kAcrossLocal) {
-                            noc_async_read(
-                                get_noc_addr(landing + (done + tile) * kTileBytes),
-                                destination + tile * kTileBytes,
-                                kTileBytes
-                            );
-                        } else {
-                            noc_async_read_page(
-                                first_tile + partition.start + done + tile,
-                                input,
-                                destination + tile * kTileBytes
-                            );
-                        }
+                    const uint32_t first = first_tile + partition.start + done;
+                    // the tiles another island holds are asked for, then waited for
+                    const auto read = [&](const auto& placement) {
+                        return km::read_pages(
+                            reader,
+                            command,
+                            placement,
+                            input,
+                            input_address,
+                            first,
+                            block_tiles,
+                            destination,
+                            kAskPort
+                        );
+                    };
+                    if (!(placed == kInputSecond ? read(Second()) : read(First()))) {
+                        return;
                     }
                     noc_async_read_barrier();
                     cb_push_back(kCbIn, block_tiles);
