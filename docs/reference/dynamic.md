@@ -378,6 +378,54 @@ the same loaded program.
 The codes follow the runtime's where codes (0 to 18), 40 and 41 follow the overlays',
 and all are `kWhereMessages*` in `km_core.hpp`.
 
+## X280 ranks
+
+A dynamic run can take X280 cores as ranks too: X280 cores 0 to n - 1 (n from 1 to 4)
+of one work cluster's thread are ranks `count` to `count + n - 1`, after the group's
+`count` core ranks. A core's `forward` and `send` to such a rank work as to a core; the
+thread takes its messages and sends to core ranks with the calls of
+[X280 cores as ranks](threads.md#x280-cores-as-ranks). The host declares them with the
+handlers:
+
+```python
+program.dynamic("grid", "x280", message_bytes=64, max_live=8192, queue_messages=8192,
+                counters=1, x280_ranks=4, x280_cluster=1)
+program.thread(cluster=1, sources=["rank.c"])
+```
+
+On a core, `messages.x280()` is the number of X280 ranks (0: none); `forward` and `send`
+accept ranks below `count() + x280()`. The quota is `max_live` over every rank, the X280
+ranks included.
+
+**Cores to an X280 rank.** Each X280 rank has a queue of `queue_messages` messages in
+its cluster's DRAM bank (the thread's region `x280_queues`, after its own), with the
+same marks and commit as a core's queue. It borrows core index `KM_X280_RANK_CORE(r)` (124
++ r) for its tail line on the counter tiles and the writer's destination, so the
+grid has at most 124 cores. The X280 rank flushes the head of its queue and takes the
+prefix of valid marks, up to 8 messages at a time.
+
+**An X280 rank to cores.** A core's messages from the X280 ranks land in an inbox of 32
+messages in its L1, which its reader takes before its DRAM queue. The cluster's X280
+cores share each inbox's positions through an atomic add in their local memory; the
+core's reader writes its head back into a credit line there every 8 messages, and an
+X280 rank waits for room for at most the line's `wait` (then it gives up, below). The
+inbox is not part of `max_live`: a full inbox makes the X280 rank wait, never a core.
+
+**The end.** Each X280 rank keeps a status line `{run, state, sent, consumed}` like a
+core's, at core index `KM_X280_RANK_CORE(r)` in the dispatcher's lines, and the
+dispatcher reads `count + n` lines in its two passes. It stores a run line
+`{run, START, group, handler}` into the thread at the `RUN`, and `{run, END, ...}` at the
+end command; `kmx_messages_next` returns no message once it sees the end. An X280 rank
+that gives up writes a `gave up` line (`KMX_GAVE_*` in word 3, its queue's head in word
+2) and stops taking messages, and the dispatcher stops the run as for a core that gives
+up ([When something goes wrong](#when-something-goes-wrong)), naming core index
+`KM_X280_RANK_CORE(r)`.
+
+Limits of this version: the X280 ranks are on one cluster; an X280 rank sends only to
+core ranks; messages an X280 rank's function leaves untaken when it returns are
+consumed by the library. The [thread rank example](../../examples/24_thread_rank/README.md)
+runs 12 cores and four X280 ranks with every message checked.
+
 ## Not in this version
 
 - A direct L1-to-L1 path with DRAM as overflow, and a forward to the core itself without DRAM.
