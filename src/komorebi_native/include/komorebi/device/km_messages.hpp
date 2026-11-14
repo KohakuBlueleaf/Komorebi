@@ -286,7 +286,7 @@ namespace km {
         // Counter tile `tile` of this island as its core, and the one that holds flat
         // rank `flat`'s tail (`flat` a message rank of this island).
         uint32_t tile_core(uint32_t tile) const {
-            return low_ + ranks_here() + tile - view_.first();
+            return low_ + ranks_here() + tile - view_.offset();
         }
 
         uint32_t counter_core(uint32_t flat) const {
@@ -595,13 +595,14 @@ namespace km {
         // A counter tile sets its cores' tails to their heads, then shows READY; a
         // core waits for its counter tile's READY before it reads its tail there.
         const uint32_t counter_tiles = messages_arguments.counters;
-        const uint32_t island_first = islands_at(arguments.control).first();
+        // a core's flat rank less its core of the card (arguments.me: its core, for
+        // queues and lines)
+        const uint32_t offset = islands_at(arguments.control).offset();
         const MessageRanks message_ranks(
             islands_at(arguments.control), command, counter_tiles
         );
         const uint32_t ranks = message_ranks.ranks_here();
-        // This core's flat rank (arguments.me: its core, for queues and lines).
-        const uint32_t me = island_first + arguments.me;
+        const uint32_t me = offset + arguments.me;
         const bool counter = message_ranks.reserved(me);
         if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
             where = where != 0 ? where : kWhereMessagesCounter;
@@ -613,7 +614,7 @@ namespace km {
                 rank < ranks && message_ranks.tile_of(me) < counter_tiles;
                 rank += counter_tiles
             ) {
-                const uint32_t core = message_ranks.low() + rank - island_first;
+                const uint32_t core = message_ranks.low() + rank - offset;
                 noc_async_read(
                     reader.core_noc(
                         core,
@@ -1079,6 +1080,8 @@ namespace km {
         };
         const uint32_t store = get_write_ptr(kCbMessagesBins);
         const uint32_t island_first = islands_at(arguments.control).first();
+        // a core's flat rank less its core of the card
+        const uint32_t offset = islands_at(arguments.control).offset();
         uint32_t bin_destination[kMessagesBinsMax], bin_fill[kMessagesBinsMax];
         // A bin's body (its last message's; a body is sent at once): L1 address, bytes.
         uint32_t bin_body[kMessagesBinsMax], bin_body_bytes[kMessagesBinsMax];
@@ -1104,7 +1107,7 @@ namespace km {
             message_ranks.ranks_here() == 0
         ) {
             where = kWhereMessagesCounter;
-        } else if (!message_ranks.reserved(island_first + arguments.me)) {
+        } else if (!message_ranks.reserved(offset + arguments.me)) {
             for (
                 uint32_t counter_tile = 0; counter_tile < counter_tiles && where == 0;
                 counter_tile++
@@ -1182,7 +1185,7 @@ namespace km {
                 noc_index,
                 write_at_cmd_buf,
                 writer.core_noc(
-                    message_ranks.counter_core(island_first + bin_destination[bin]),
+                    message_ranks.counter_core(offset + bin_destination[bin]),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * bin_destination[bin]
                 ),
@@ -1321,16 +1324,16 @@ namespace km {
                 ended = flush_all();
                 break;
             }
-            // this island's local core of the rank; a rank on another island (no X280
-            // rank's core) is kMessagesAway above its flat rank, for its link
-            uint32_t destination = (
-                (outgoing_word & kMessagesOutDestination) - island_first
+            // the rank's core of the card (an X280 rank's: its local core); a rank on
+            // another island is kMessagesAway above its flat rank, for its link
+            const uint32_t flat = outgoing_word & kMessagesOutDestination;
+            const bool x280 = (
+                messages_arguments.x280 != 0 &&
+                flat - island_first >= KM_X280_RANK_CORE(0)
             );
-            if (
-                island_ranks != 0 && destination >= island_ranks &&
-                !(messages_arguments.x280 != 0 && destination >= KM_X280_RANK_CORE(0))
-            ) {
-                destination = kMessagesAway | (outgoing_word & kMessagesOutDestination);
+            uint32_t destination = x280 ? flat - island_first : flat - offset;
+            if (island_ranks != 0 && flat - island_first >= island_ranks && !x280) {
+                destination = kMessagesAway | flat;
             }
             const uint32_t bin = destination % bins;
             if (

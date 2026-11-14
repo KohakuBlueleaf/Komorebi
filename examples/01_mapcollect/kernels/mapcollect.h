@@ -3,17 +3,12 @@
 
 #include <stdint.h>
 
-// MAP: a0 input_address, a1 tiles (T), a2 output_address, a3 first_page (of rank 0), a6
-// first_tile; rank a5 slow_rank holds its output tile a4 slow_cycles cycles (a test).
+// MAP: a0 input, a2 output (reference words), a1 tiles (T), a3 first_page (rank 0's),
+// a6 first_tile; rank a5 slow_rank holds its output tile a4 slow_cycles cycles (test).
 constexpr uint32_t kHandlerMap = 1;
-// MAP's a7: the placement of its input among the reader's two (compile arguments after
-// the input's accessor's): kInputFirst, kInputSecond. Pages another island holds are
-// asked for (km::read_pages) and counted at port kAskPort.
-constexpr uint32_t kInputFirst = 0;
-constexpr uint32_t kInputSecond = 1;
+// Input pages another island holds are asked for (km::read_pages), counted here.
 constexpr uint32_t kAskPort = 1;
-// MAP's a8: the placement of its output among the writer's two, numbered the same:
-// pages another island holds are put there (km::write_pages), counted at kPutPort.
+// Output pages another island holds are put there (km::write_pages), counted here.
 constexpr uint32_t kPutPort = 2;
 // STALL: rank a0 stalled_rank waits for the stop flag and does not report; the others
 // report.

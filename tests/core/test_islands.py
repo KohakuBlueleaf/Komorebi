@@ -18,8 +18,8 @@ def test_one_island_is_todays_run():
     assert islands.read_table(graph.table(0)) == [(0, 120, NO_LINK, 0)]
     assert [graph.thread(n) for n in (1, 2, 3)] == [(0, 1), (0, 2), (0, 3)]
     assert islands.partition(10, 0, 1) == (0, 10)
-    placement = islands.place(graph, 64, units=8)
-    assert placement.parts == ((0, 64),) and islands.island_of(placement, 63) == 0
+    placement = islands.place(graph, (256, 256), "tile", split=1)
+    assert placement.parts == ((0, 8),) and placement.where(63) == (0, 63)
     assert islands.tree(graph, (0, 120)) == islands.Tree(0, {0: 0}, {}, ())
 
 
@@ -90,17 +90,36 @@ def test_thread_numbers_are_flat_by_island():
 
 def test_pages_split_by_rank_order_and_hints():
     graph = islands.split_card(120, 12, 2)  # 59 and 59 ranks
-    split = islands.place(graph, 118 * 4, units=118)
-    assert split.parts == ((0, 236), (236, 236))
+    split = islands.place(graph, (118, 4))  # rows: rank r's row on its island
+    assert split.parts == ((0, 59), (59, 59)) and split.part_pages(1) == 59
     rank = 70
     start, _ = islands.partition(118, rank, 118)
-    assert islands.island_of(split, start * 4) == graph.resolve(rank)[0]
-    like = islands.place(graph, 30, like=(50, 10))  # 9 ranks on island 0, 1 on 1
-    assert like.parts == ((0, 27), (27, 3))
-    copy = islands.place(graph, 30, copy=True)
-    assert islands.island_of(copy, 5, island=1) == 1
-    assert islands.leading_units((64, 96), "tile") == 2
-    assert islands.leading_units((5, 7), "row") == 5
+    assert islands.island_of(split, start) == graph.resolve(rank)[0]
+    group = islands.place(graph, (30, 4), group=(50, 10))  # 9 ranks on 0, 1 on 1
+    assert group.parts == ((0, 27), (27, 3)) and group.where(28) == (1, 1)
+    copy = islands.place(graph, (30, 4), copy=True)
+    assert islands.island_of(copy, 5, island=1) == 1 and copy.part_pages(0) == 30
+    assert islands.page_dims((2, 64, 96), "tile") == (2, 2, 3)
+    with pytest.raises(ValueError, match="inside a page"):
+        islands.place(graph, (5, 7), split=1)
+
+
+@pytest.mark.parametrize("parts", [1, 2, 3])
+def test_a_split_along_the_second_dimension_is_each_islands_columns(parts):
+    graph = islands.split_card(120, 12, parts)
+    columns = 2 * graph.ranks  # two tile columns a rank, two tile rows
+    tiles = islands.place(graph, (64, 32 * columns), "tile", split=1)
+    for page in (0, columns - 1, columns + 77, 2 * columns - 1):
+        holder, index = tiles.where(page)
+        assert holder == graph.resolve(page % columns // 2)[0]
+        assert tiles.part(holder)[index] == page
+    assert sum(tiles.part_pages(i) for i in range(parts)) == 2 * columns
+    assert tiles.runs(columns, columns) == [
+        (i, columns + 2 * graph.first(i), 2 * graph.count(i), 2 * graph.count(i))
+        for i in range(parts)
+    ]
+    like = islands.place(graph, (64, 32), "tile", split=1, group=(0, 1))
+    assert like.parts[0] == (0, 1) and like.part_pages(0) == 2
 
 
 def test_trees_fold_inside_an_island_then_cross_once():

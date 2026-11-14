@@ -47,8 +47,8 @@ is not a rank. The kernel buffer is sized for the link services the kernels carr
 number of ranks is the cores of both cards less their link cores:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:97:97"
---8<-- "examples/01_mapcollect/islands.py:106:106"
+--8<-- "examples/01_mapcollect/islands.py:142:144"
+--8<-- "examples/01_mapcollect/islands.py:153:153"
 ```
 
 `session.graph` is the host's picture of the islands: `graph.first(i)` is island `i`'s
@@ -59,31 +59,33 @@ The tensors come next. The input has two tiles for each rank of both cards; the 
 one:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:113:117"
+--8<-- "examples/01_mapcollect/islands.py:160:173"
 ```
 
-A tensor is one tensor of the whole shape on every card, at the same address, and its
-pages are split by card along the leading dimension in rank order. So a kernel is given
-`source.address` and `source.accessor_args()` as on one card, and rank `r`, which reads the
-tiles `2r` and `2r + 1`, finds them in its own card's DRAM. A page that another card holds
-is zeros on this one. `session.read_bf16(source)` assembles the whole tensor from the card
-that holds each page:
+A tensor is one logical tensor: each card holds only its part. With no hint its pages
+are split along the leading dimension over the ranks in rank order, with the rule of
+`km::partition`; `split=d` splits dimension `d` instead and `group=` names the ranks that
+split it (`--split`, `--group` here). So a kernel is given `source.address` and
+`source.accessor_args()` as on one card, and rank `r`, which reads the tiles `2r` and
+`2r + 1`, finds them in its own card's DRAM; `km::read_pages` asks the other card for a
+page it holds. `session.read_bf16(source)` assembles the whole tensor from the card that
+holds each page:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:120:120"
+--8<-- "examples/01_mapcollect/islands.py:229:229"
 ```
 
 The program is loaded on every card, one after the other, and each card's cores get the
 island table that tells them where the ranks are:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:144:144"
+--8<-- "examples/01_mapcollect/islands.py:223:223"
 ```
 
 A command for a group of every rank:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:185:186"
+--8<-- "examples/01_mapcollect/islands.py:354:355"
 ```
 
 `submit` takes the group `(0, ranks)`, the host cuts it into the part on each card, and
@@ -95,7 +97,7 @@ handle of a command over several cards.
 When the run is stopped, the output is read back in the same way:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:155:155"
+--8<-- "examples/01_mapcollect/islands.py:255:255"
 ```
 
 ## What changes in the kernel
@@ -157,7 +159,7 @@ With `--hang` the same script hangs a command on a rank of card 1 and asks what 
 was doing, by its flat rank as everywhere else:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:232:232"
+--8<-- "examples/01_mapcollect/islands.py:395:395"
 ```
 
 `run.inspect((rank, 1))` has island 1's dispatcher read the core of that rank; the answer
@@ -169,12 +171,9 @@ such a time-out is [Recover from a command that does not return](../guides/recov
 
 ## Common mistakes
 
-- Making a tensor after something else was allocated on one card alone. The tensors of a
-  session over cards must be at one address on every card, and a session that cannot make
-  that so says so: make them before anything else.
-- Reading a page that another card holds from a kernel. The page is zeros on this card. A
-  rank partitions the tensor by its rank and finds its own part; reading across the
-  boundary is not what the kernel can do yet.
+- Reading a page that another card holds with a plain `TensorAccessor` from a kernel.
+  `source.address` over cards is not a bank address but the tensor's entry in the
+  tensor table; `km::read_pages` and `km::write_pages` find the card and the part.
 - Expecting a message or a broadcast to reach a rank of the other card. `forward`,
   `collect` and `broadcast` over cards are not built; `km::crosses(rank)` tells a kernel
   that a send would cross, and a program that needs it waits for the links.

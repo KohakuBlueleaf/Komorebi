@@ -84,12 +84,12 @@ island each is exactly the tt-metal page call it stands for):
 
 | Name | What it is |
 |---|---|
-| `km::read_pages(reader, command, placement, tensor, address, first, pages, to, port)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages): this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at port `port` |
-| `km::write_pages(core, command, placement, tensor, address, first, pages, from, port)` | the other way, from a reader or a writer: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at `port` until written; `from` is free on return |
+| `km::read_pages(reader, command, args, tensor, first, pages, to, port)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages): this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at port `port` |
+| `km::write_pages(core, command, args, tensor, first, pages, from, port)` | the other way, from a reader or a writer: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at `port` until written; `from` is free on return |
 
-`placement` is the tensor's `km::Placement` (its compile arguments after the
-accessor's, `tensor.placement_args()` on the host), `tensor` its accessor and `address`
-its bank address, the same on every island. Both return false when they gave up
+`args` are the tensor's `TensorAccessorArgs` (`tensor.accessor_args()` on the host),
+`tensor` its reference word (`tensor.address`: a bank address on one card, an entry of
+the tensor table over islands), the same on every island. Both return false when they gave up
 (recorded, the island named). `km::Stream` does not use them yet: a stream's tensor is
 read and written on the core's own island. How the pages cross:
 [islands](islands.md#pages-across-a-link).

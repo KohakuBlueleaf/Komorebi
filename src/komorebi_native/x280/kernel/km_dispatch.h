@@ -456,7 +456,10 @@ enum {
     KMD_L_FAR = 5,       /* the island at the link's other end */
     KMD_L_FAR_TILE = 6,  /* that island's dispatcher tile: x | y << 16 */
     KMD_L_FAR_BLOCK = 7, /* the NoC address there of its link block */
-    KMD_L_WORDS = 8
+    KMD_L_WORDS = 8,
+    /* more than two islands: island i's dispatcher tile and link block at + 2 i */
+    KMD_L_TILES = 8,
+    KMD_L_TILES_MAX = 4
 };
 
 /* A packet's crossing line (its second line), words. */
@@ -514,7 +517,7 @@ KMD_STATIC_ASSERT(
 KMD_STATIC_ASSERT(
     KMD_LIM_PROGRAMS + KM_CORES_MAX <= KMD_LIM_COORDS &&
         KMD_LIM_COORDS + 4u * KM_CORES_MAX <= KMD_LIM_LINK &&
-        KMD_LINK_TABLE >= 4u * KMD_L_WORDS &&
+        KMD_LINK_TABLE >= 4u * (KMD_L_TILES + 2u * KMD_L_TILES_MAX) &&
         KMD_LINK_TABLE + 8u * KM_ISLANDS_MAX <= KMD_LINK_COUNT &&
         KMD_LINK_COUNT + 64u <= KMD_LINK_SLOTS_AT && KMD_LIM_LINK % 64u == 0 &&
         KMD_LIM_INSPECT % 64u == 0 && KMD_INSPECT_RECORD % 64u == 0,

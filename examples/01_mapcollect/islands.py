@@ -1,10 +1,10 @@
 """Map/collect over cards as the islands of one session (`Session(cards=...)`), or one
 card split into islands (`--islands`): the same program and kernels on every island,
-flat groups split by island, an input split over the islands; checks the tiles with
-mapcollect.py's sums, times commands, prints a JSON line. See docs/reference/islands.md.
-"""
+flat groups, the input placed by a hint (`--split`, `--group`); checks the tiles with
+mapcollect.py's sums, times commands and writes. See docs/reference/islands.md."""
 
 import argparse
+import concurrent.futures
 import json
 import sys
 import time
@@ -51,6 +51,28 @@ def parse():
         "--hang", action="store_true", help="a HANG on island 1 must name its rank"
     )
     parser.add_argument(
+        "--split", type=int, default=None, help="the input's hint: split dimension"
+    )
+    parser.add_argument(
+        "--group",
+        default=None,
+        metavar="FIRST,RANKS",
+        help="the input's hint: the group that splits it (default every rank)",
+    )
+    parser.add_argument(
+        "--host-reaches",
+        type=int,
+        default=None,
+        metavar="ISLAND",
+        help="the host's channel to that island only: the other's parts cross a link",
+    )
+    parser.add_argument(
+        "--io-mib",
+        default="64",
+        metavar="MIB,...",
+        help="sizes written and read over every island at once, then island 0 alone",
+    )
+    parser.add_argument(
         "--across",
         action="store_true",
         help="MAP on island 0 reading an input island 1 holds",
@@ -80,7 +102,8 @@ def parse():
 
 def map_words(source, output, groups, per=2):
     """MAP arguments of each group (first, count): rank r of the group adds input
-    tiles per r .. per r + per - 1 of the group's own window, stores page first + r."""
+    tiles per r .. per r + per - 1 of the group's own window, stores page first + r.
+    The tensors by their reference words."""
     groups = np.asarray(groups, np.int64)
     jobs = len(groups)
     return np.stack(
@@ -114,9 +137,11 @@ def open_session(args, cards):
     if args.islands:
         (card,) = cards
         return km.Session(card=card, islands=args.islands, log=log)
-    # the write call's put path takes the kernels past the runtime's 69 KiB buffer
-    kernel_bytes = 96 * 1024 if args.put else None
-    return km.Session(cards=cards, log=log, kernel_bytes=kernel_bytes)
+    # the page calls over islands take the kernels past the runtime's 69 KiB buffer
+    reaches = None if args.host_reaches is None else [args.host_reaches]
+    return km.Session(
+        cards=cards, log=log, kernel_bytes=96 * 1024, host_reaches=reaches
+    )
 
 
 def main():
@@ -132,19 +157,36 @@ def main():
             for i in range(len(session.sessions))
         ]
         log(f"open: {ranks} ranks, islands {report['islands']}")
-        exact = generator.integers(-2, 3, (2 * ranks * TILE, TILE)).astype(np.float32)
-        source = session.tensor(exact, "bfloat16", "tile")
-        output = session.tensor(
-            np.zeros((ranks * TILE, TILE), np.float32), "bfloat16", "tile"
-        )
+        # rank r's input tiles 2r and 2r + 1 are row r of a [ranks, 2] tile matrix
+        exact = generator.integers(-2, 3, (2 * ranks, TILE, TILE)).astype(np.float32)
+        matrix = exact.reshape(ranks, 2, TILE, TILE).transpose(0, 2, 1, 3)
+        matrix = matrix.reshape(ranks * TILE, 2 * TILE)
+        hint = {}
+        if args.split is not None:
+            hint["split"] = args.split
+        if args.group is not None:
+            hint["group"] = tuple(int(value) for value in args.group.split(","))
+        report["hint"] = hint
+        zeros = np.zeros((ranks * TILE, TILE), np.float32)
+        if args.host_reaches is None:
+            source = session.tensor(matrix, "bfloat16", "tile", **hint)
+            output = session.tensor(zeros, "bfloat16", "tile")
+        else:  # a part that crosses a link is written once the run is loaded
+            source = session.empty(matrix.shape, "bfloat16", "tile", **hint)
+            output = session.empty(zeros.shape, "bfloat16", "tile")
         report["source_parts"] = list(source.placement.parts)
-        log(f"input split {report['source_parts']} at {source.address:#x}")
-        (back,) = session.read_bf16(source)
-        report["source_read_exact"] = bool(np.array_equal(back, exact))
-        log(f"input read back from every island: {report['source_read_exact']}")
+        report["source_part_pages"] = [
+            source.placement.part_pages(i) for i in range(len(session.sessions))
+        ]
+        log(
+            f"input {hint or 'no hint'}: steps {report['source_parts']}, pages "
+            f"{report['source_part_pages']}, word {source.address:#x}"
+        )
         far = source
         if args.across:
-            far = session.tensor(exact, "bfloat16", "tile", like=report["islands"][1])
+            far = session.tensor(
+                matrix, "bfloat16", "tile", group=tuple(report["islands"][1])
+            )
             log(f"input held by island 1 alone: {list(far.placement.parts)}")
         held = output
         if args.put:
@@ -152,9 +194,18 @@ def main():
                 np.zeros((ranks * TILE, TILE), np.float32),
                 "bfloat16",
                 "tile",
-                like=report["islands"][0],
+                group=tuple(report["islands"][0]),
             )
             log(f"output held by island 0 alone: {list(held.placement.parts)}")
+        moved = {}
+        for mib in (int(size) for size in args.io_mib.split(",")):
+            shape = (mib * (1 << 20) // 2048 * TILE, TILE)
+            moved[mib] = {
+                "every island": session.empty(shape, "bfloat16", "tile"),
+                "island 0": session.empty(
+                    shape, "bfloat16", "tile", group=tuple(report["islands"][0])
+                ),
+            }
         program = km.Program(
             "mapcollect",
             kernels=KERNELS,
@@ -163,20 +214,23 @@ def main():
                 km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
             ],
             compile_args={
-                # the placements of MAP's inputs (a7): the split one, the far one
-                "reader": source.accessor_args()
-                + source.placement_args()
-                + far.placement_args(),
-                # the placements of MAP's outputs (a8): the split one, the held one
-                "writer": output.accessor_args()
-                + output.placement_args()
-                + held.placement_args(),
+                "reader": source.accessor_args(),
+                "writer": output.accessor_args(),
             },
             compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
             handlers=KERNELS / "mapcollect.h",
         )
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
+        if args.host_reaches is not None:
+            for tensor, data in ((source, matrix), (output, zeros)):
+                raw, _ = formats.to_bytes(data, "bfloat16", "tile")
+                session.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        (back,) = session.read_bf16(source)
+        report["source_read_exact"] = bool(np.array_equal(back, matrix))
+        log(f"input read back from every island: {report['source_read_exact']}")
+        report["io"] = io_rates(session, moved, generator)
+        report["channel"] = channel_rates(session, generator)
         if args.across:
             report["per_rank"] = args.per_rank
             report.update(across(session, run, args, source, far, output, exact))
@@ -186,7 +240,9 @@ def main():
         else:
             report.update(commands(session, run, args, source, output, ranks))
         if args.hang:
-            report.update(hang(session, run, source, ranks, exact))
+            report.update(hang(session, run, source, ranks, matrix))
+        if args.host_reaches is not None:  # island 1's part crosses: in the run
+            (got,) = session.read_bf16(output)
         log("stopping")
         try:
             results = run.stop()
@@ -195,7 +251,8 @@ def main():
         except km.KomorebiError as error:
             report["stop_error"] = str(error)
         log(f"stopped: {report.get('kernel_errors', report.get('stop_error'))}")
-        (got,) = session.read_bf16(output)
+        if args.host_reaches is None:
+            (got,) = session.read_bf16(output)
         log("output read back from every island")
         report.update(check(exact, got, report["map_groups"], report["per_rank"]))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
@@ -207,10 +264,76 @@ def main():
         and report.get("hang_named_island", True)
         and report.get("read_island1_in_run_exact", True)
         and report.get("crossings_agree", True)
+        and all(io["exact"] for io in report.get("io", []))
         and report.get("before_reset", {}).get("wrong_tiles", 0) == 0
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
+
+
+def io_rates(session, sizes, generator):
+    """GB/s of one write and one read of each tensor (random bytes, the run loaded):
+    over every island's host channel at once, then over island 0's alone; the read
+    compared whole; each island's last round on its cores (cycles)."""
+    out = []
+    for mib, tensors in sizes.items():
+        for name, tensor in tensors.items():
+            pages = generator.integers(
+                0, 256, (tensor.pages, tensor.page_bytes), np.uint8
+            )
+            row = {"mib": mib, "held by": name}
+            started = time.perf_counter()
+            session.write(tensor, pages)
+            row["write_s"] = round(time.perf_counter() - started, 4)
+            row["write_cycles"] = [one.transfer_cycles for one in session.sessions]
+            started = time.perf_counter()
+            (got,) = session.read(tensor)
+            row["read_s"] = round(time.perf_counter() - started, 4)
+            row["read_cycles"] = [one.transfer_cycles for one in session.sessions]
+            row["write_gb_s"] = round(pages.nbytes / row["write_s"] / 1e9, 3)
+            row["read_gb_s"] = round(pages.nbytes / row["read_s"] / 1e9, 3)
+            row["exact"] = bool(np.array_equal(got, pages))
+            log(f"{mib} MiB held by {name}: {row}")
+            out.append(row)
+    return out
+
+
+def channel_rates(session, generator, mib=64):
+    """GB/s of the host's own copies into and out of the islands' host channels (no
+    transfer): island 0's alone, then each island's from its own thread at once."""
+    data = generator.integers(0, 256, mib << 20, np.uint8)
+    channels = [one.channel[: mib << 20] for one in session.sessions]
+    halves = np.split(data, len(channels))
+
+    def copies(work):
+        started = time.perf_counter()
+        with concurrent.futures.ThreadPoolExecutor(len(work)) as pool:
+            for done in [pool.submit(*one) for one in work]:
+                done.result()
+        return round(data.nbytes / (time.perf_counter() - started) / 1e9, 3)
+
+    def into(channel, part):
+        channel[: part.nbytes] = part
+
+    def out_of(channel, part):
+        part[:] = channel[: part.nbytes]
+
+    back = np.empty_like(data)
+    out = {
+        "into_island0_gb_s": copies([(into, channels[0], data)]),
+        "out_of_island0_gb_s": copies([(out_of, channels[0], back)]),
+        "into_each_gb_s": copies(
+            [(into, channel, half) for channel, half in zip(channels, halves)]
+        ),
+        "out_of_each_gb_s": copies(
+            [
+                (out_of, channel, half)
+                for channel, half in zip(channels, np.split(back, len(channels)))
+            ]
+        ),
+    }
+    log(f"host copies of {mib} MiB, host channels: {out}")
+    return out
 
 
 def commands(session, run, args, source, output, ranks):
@@ -256,7 +379,7 @@ def commands(session, run, args, source, output, ranks):
     return out
 
 
-def hang(session, run, source, ranks, exact):
+def hang(session, run, source, ranks, matrix):
     """A HANG on a group over both islands, addressed and reported by flat rank: an
     inspect of the hanging rank, then the deadline's give-up; island 1's pages read."""
     out = {}
@@ -285,7 +408,7 @@ def hang(session, run, source, ranks, exact):
     out["hang_named_island"] = out.get("hang_named_island", False) and (
         out["inspect_rank"].startswith(named)
     )
-    raw, _ = formats.to_bytes(exact, "bfloat16", "tile")
+    raw, _ = formats.to_bytes(matrix, "bfloat16", "tile")
     rows = raw.reshape(source.pages, source.page_bytes)
     (got,) = session.read(source, first=ranks, pages=16)
     out["read_island1_in_run_exact"] = bool(
@@ -308,8 +431,8 @@ def across(session, run, args, local, far, output, exact):
         raise ValueError(f"--per-rank {per}: 1 to 4 (the input holds 2 tiles a rank)")
     out = {"map_groups": [list(group)], "links": session.links, "rounds_wrong": []}
 
-    def one_round(name, source, placed, number):
-        words = map_words(source, output, [group], per)[0].tolist() + [placed]
+    def one_round(name, source, number):
+        words = map_words(source, output, [group], per)[0].tolist()
         started = time.perf_counter()
         run.wait(run.submit(handler, group, words), timeout=10.0)
         spent = (time.perf_counter() - started) * 1e6
@@ -322,11 +445,9 @@ def across(session, run, args, local, far, output, exact):
         return spent
 
     tile_bytes = per * count * 2048
-    for name, source, placed in (("local", local, 0), ("across", far, 1)):
+    for name, source in (("local", local), ("across", far)):
         before = run.crossings()
-        spent = median(
-            [one_round(name, source, placed, n) for n in range(args.map_rounds)]
-        )
+        spent = median([one_round(name, source, n) for n in range(args.map_rounds)])
         moved = run.crossings() - before
         out[f"map_{name}_us"] = spent
         out[f"map_{name}_gb_s"] = round(tile_bytes / spent / 1e3, 3)
@@ -354,7 +475,7 @@ def across(session, run, args, local, far, output, exact):
             key: round(value, 6) if isinstance(value, float) else value
             for key, value in reset.items()
         }
-        out["map_across_after_reset_us"] = round(one_round("after reset", far, 1, 0), 3)
+        out["map_across_after_reset_us"] = round(one_round("after reset", far, 0), 3)
         log(f"after the reset, MAP across: {out['map_across_after_reset_us']} us")
     return out
 
@@ -368,15 +489,15 @@ def put(session, run, args, source, output, held, ranks):
     group = (0, ranks)
     handler = run.program.handler("map")
 
-    def one_round(target, placed):
-        words = map_words(source, target, [group])[0].tolist() + [0, placed]
+    def one_round(target):
+        words = map_words(source, target, [group])[0].tolist()
         started = time.perf_counter()
         run.wait(run.submit(handler, group, words), timeout=10.0)
         return (time.perf_counter() - started) * 1e6
 
     out = {"map_groups": [list(group)], "links": session.links}
-    for name, target, placed in (("split", output, 0), ("put", held, 1)):
-        spent = median([one_round(target, placed) for _ in range(args.map_rounds)])
+    for name, target in (("split", output), ("put", held)):
+        spent = median([one_round(target) for _ in range(args.map_rounds)])
         out[f"map_{name}_us"] = spent
         log(f"MAP on {group} storing {name}: {spent} us a round")
     return out

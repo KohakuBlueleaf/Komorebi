@@ -1,47 +1,100 @@
-// Where a tensor's pages live, on a core: the session writes a tensor's placement as
-// compile arguments after its accessor's (IslandTensor.placement_args()).
+// Where a tensor's pages live: its reference word (`tensor.address`) is a bank address
+// on one island, its entry of the tensor table over islands (KM_ISLAND_TENSORS).
 #pragma once
 
 #include <stdint.h>
 
-#include "api/compile_time_args.h"
 #include "km_island.hpp"
 
 namespace km {
 
-    // A tensor's placement from compile argument `Base` on: the islands, copy, then
-    // (first page, pages) of each island. On one island: island 0 holds every page.
-    template <uint32_t Base>
-    struct Placement {
-        static constexpr uint32_t kIslands = get_compile_time_arg_val(Base);
-        static constexpr bool kCopy = get_compile_time_arg_val(Base + 1) != 0;
-
-        static constexpr uint32_t next_compile_time_args_offset() {
-            return Base + 2 + 2 * kIslands;
-        }
+    // A page's place: page `index` of the interleaved buffer at bank address `address`
+    // on island `island`.
+    struct PageAt {
+        uint32_t island;
+        uint32_t address;
+        uint32_t index;
     };
 
-    // From island I on, the first whose part holds `page`; none: this island.
-    template <uint32_t Base, uint32_t I>
-    inline uint32_t placement_holder(uint32_t page) {
-        if constexpr (I >= Placement<Base>::kIslands) {
-            return island();
-        } else {
-            constexpr uint32_t first = get_compile_time_arg_val(Base + 2 + 2 * I);
-            constexpr uint32_t pages = get_compile_time_arg_val(Base + 3 + 2 * I);
-            return page - first < pages ? I : placement_holder<Base, I + 1>(page);
+    constexpr uint32_t kPartWords = KM_TENSOR_PART_BYTES / 4;
+
+    // The table entry word `tensor` names on this island, or nullptr: a bank address.
+    inline const volatile uint32_t* tensor_entry(const Islands& view, uint32_t tensor) {
+        const uint32_t table = view.tensors();
+        if (tensor >= KM_TENSORS_MAX || table == 0) {
+            return nullptr;
         }
+        const uint32_t bytes = (
+            KM_TENSOR_HEADER_BYTES + view.count() * KM_TENSOR_PART_BYTES
+        );
+        return reinterpret_cast<const volatile uint32_t*>(table + tensor * bytes);
     }
 
-    // The island that holds page `page` of the tensor; a copy's (or a page outside the
-    // tensor): this core's own island.
-    template <uint32_t Base>
-    inline uint32_t island_of(const Placement<Base>&, uint32_t page) {
-        if constexpr (Placement<Base>::kCopy) {
-            return island();
-        } else {
-            return placement_holder<Base, 0>(page);
+    // Where page `page` of tensor `tensor` (its reference word) lives; a word naming
+    // no entry is a bank address here: {this island, word, page}; a copy: this island.
+    inline PageAt page_at(uint32_t tensor, uint32_t page) {
+        const Islands view(island_area());
+        const volatile uint32_t* entry = tensor_entry(view, tensor);
+        if (entry == nullptr) {
+            return {view.here(), tensor, page};
         }
+        const volatile uint32_t* parts = entry + KM_TENSOR_HEADER_BYTES / 4;
+        if (entry[3] & 1u) {
+            return {view.here(), parts[view.here() * kPartWords], page};
+        }
+        const uint32_t steps = entry[1];
+        const uint32_t inner = entry[2];
+        const uint32_t block = page / (steps * inner);
+        const uint32_t step = page / inner % steps;
+        for (uint32_t island = 0; island < view.count(); island++) {
+            const volatile uint32_t* part = parts + island * kPartWords;
+            if (step - part[1] < part[2]) {
+                return {
+                    island,
+                    part[0],
+                    (block * part[2] + step - part[1]) * inner + page % inner
+                };
+            }
+        }
+        return {view.here(), 0, page};  // outside the tensor: no island holds it
+    }
+
+    // How many pages from `page` on (at most `most`) the island of `at`, page `page`'s
+    // place, holds at consecutive indices of its part.
+    inline uint32_t page_run(
+        uint32_t tensor, uint32_t page, uint32_t most, const PageAt& at
+    ) {
+        uint32_t run = 1;
+        while (run < most) {
+            const PageAt next = page_at(tensor, page + run);
+            if (next.island != at.island || next.index != at.index + run) {
+                break;
+            }
+            run++;
+        }
+        return run;
+    }
+
+    // Whether word `tensor` names a split tensor of which another island holds pages;
+    // a bank address or a copy: false.
+    inline bool held_elsewhere(uint32_t tensor) {
+        const Islands view(island_area());
+        const volatile uint32_t* entry = tensor_entry(view, tensor);
+        if (entry == nullptr || (entry[3] & 1u)) {
+            return false;
+        }
+        const volatile uint32_t* parts = entry + KM_TENSOR_HEADER_BYTES / 4;
+        for (uint32_t island = 0; island < view.count(); island++) {
+            if (island != view.here() && parts[island * kPartWords + 2] != 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The island that holds page `page` of tensor `tensor`; one island: 0.
+    inline uint32_t island_of(uint32_t tensor, uint32_t page) {
+        return page_at(tensor, page).island;
     }
 
 }  // namespace km

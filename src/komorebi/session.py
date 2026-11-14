@@ -460,6 +460,7 @@ class Session:
         self.run = None
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
+        self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
         self._starting = None  # the Dispatch of a load before its Run exists
@@ -657,29 +658,37 @@ class Session:
         grid_x, grid_y, table, noc0 = self._module.core_nocs(self.device)
         return layout.nocs((grid_x, grid_y), table, noc0)
 
-    def read(self, *tensors, first=0, pages=None):
+    def read(self, *tensors, first=0, pages=None, out=None):
         """The raw pages of tensors in DRAM or L1 ([pages, page_bytes] uint8 each);
-        with `first` or `pages`, only those pages of one tensor (None: to the end). It
-        may run while a program runs: read only what no kernel writes any more (after
-        its event). Through the host channel when it is there (host.md, "Reads")."""
-        if (first or pages is not None) and len(tensors) != 1:
-            raise ValueError("a page range is read from one tensor")
+        with `first` or `pages`, only those pages of one tensor (None: to the end); with
+        `out` (one tensor), into those rows. Through the host channel when it is there
+        (host.md, "Reads"); while a run runs, only what no kernel writes any more."""
+        if (first or pages is not None or out is not None) and len(tensors) != 1:
+            raise ValueError("a page range, or rows to fill, is read from one tensor")
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way(tensors, first, pages)
         if way is None:
-            return self._read_device(tensors, first, pages)
-        out = []
+            got = self._read_device(tensors, first, pages)
+            if out is None:
+                return got
+            out[:] = got[0]
+            return [out]
+        rows = []
         for tensor in tensors:
             start, count = dram.page_range(first, pages, tensor.pages)
-            pages_out = np.empty((count, tensor.page_bytes), np.uint8)
+            if out is not None and out.shape != (count, tensor.page_bytes):
+                raise ValueError(f"out is [{count}, {tensor.page_bytes}] uint8 rows")
+            pages_out = (
+                np.empty((count, tensor.page_bytes), np.uint8) if out is None else out
+            )
             page = tensor.aligned_page_bytes
             for done, step in channel_module.rounds(count, page, self._region):
                 raw = self._push(tensor, start + done, step, way)
                 pages_out[done : done + step] = raw.reshape(step, page)[
                     :, : tensor.page_bytes
                 ]
-            out.append(pages_out)
-        return out
+            rows.append(pages_out)
+        return rows
 
     def _read_device(self, tensors, first, pages):
         """read() through the device API: DRAM tensors by banks, an L1 tensor whole
@@ -983,6 +992,7 @@ class Session:
         thread="card",
         island=None,
         link=None,
+        tensors=0,
         recover=True,
     ):
         """Launches `program` (or programs in the runtime's form: a list, every core
@@ -996,6 +1006,7 @@ class Session:
             raise ValueError("link= is an island's (island= too)")
         self.link_plan = link
         self.link_area = link.area if link is not None else 0
+        self.tensor_table = tensors
         placed = None
         if not isinstance(program, Program) or program.form() == "program":
             grid = self.grid
@@ -1241,21 +1252,27 @@ class Session:
         batch=64,
         settle_microseconds=1.0,
         image=None,
+        links=None,
     ):
-        """This card split into the islands of `graph` (whole rows each, no link cores:
-        islands.split_card(..., rows=True, reserve=False)): `program` launched once on
-        every core, island i's dispatcher on X280 cluster i. Returns a Run an island,
-        each over flat ranks; Session.load's options. No X280 threads or messages."""
+        """This card split into the islands of `graph` (whole rows, ranks then link
+        cores): `program` launched once, island i's dispatcher on X280 cluster i,
+        `links` each island's LinkPlan or None. A Run an island over flat ranks;
+        Session.load's options, no X280 threads."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if not isinstance(program, Program) or program.form() == "program":
             raise ValueError("a card split into islands loads one Program")
-        if program.threads or program.messages is not None or program.x280_ports:
+        if (
+            program.threads
+            or program.x280_ports
+            or (program.messages is not None and program.messages.x280_ranks)
+        ):
             raise ValueError(
-                f"{program.name}: X280 threads, ports and dynamic handlers need the "
-                "work clusters, which a split card's dispatchers take"
+                f"{program.name}: X280 threads, ports and ranks need the work "
+                "clusters, which a split card's dispatchers take"
             )
         rows = _split_rows(graph, self.grid)
+        self.link_plans, self.link_plan, self.link_area = links, None, 0
         image = Path(image) if image else native.image_path(self.tree)
         if not image.is_file() or image.stat().st_size == 0:
             raise StartError(f"dispatcher image {image}: missing or empty")
@@ -1281,15 +1298,29 @@ class Session:
                     raise StartError(f"X280 cluster {island} is not idle")
                 states.append(_state_area(self))
                 base = first_row * self.grid[0]
+                plan = links[island] if links else None
+                line = b""
+                if plan:
+                    line = plan.line(dispatch, dispatches[plan.far], dispatches)
                 tags.append(
                     dispatch.prepare(
                         depth, host_depth, event_depth, start, deadline, kernel_idle,
                         states[-1].address,
+                        messages_handler=(
+                            program.messages.dispatcher_word()
+                            if program.messages is not None
+                            else 0
+                        ),
                         island=_island_word((graph, island)) | base << 32,
-                        first_row=first_row, rows=count,
+                        link=list(line), first_row=first_row, rows=count,
                     )  # fmt: skip
                 )
                 check_bases(lim_bases(dispatch.lim_base))
+            if len({dispatch.lim_base for dispatch in dispatches}) != 1:
+                raise StartError(  # a core's words name one LIM address on every one
+                    "the islands' dispatchers differ in LIM base: "
+                    f"{[hex(dispatch.lim_base) for dispatch in dispatches]}"
+                )
             first = _Backend(self, dispatches[0], mhz, trace)
             first.split = (graph, list(dispatches), tags, rows, set())
             first.state_tensor = states[0]
@@ -1346,7 +1377,9 @@ class Session:
                 batch,
                 ranks=graph.ranks,
                 island_first=graph.first(island),
+                island_ranks=graph.count(island),
                 island_cores=(rows[island][0] * self.grid[0], graph.count(island)),
+                island_span=rows[island][1] * self.grid[0],
             )
             run.recovery_refused = "a card split into islands"
             runs.append(run)
@@ -1401,21 +1434,22 @@ def _island_word(island):
 
 def _split_rows(graph, grid):
     """[(first row, rows)] of each island of a card split into islands: its cores whole
-    rows of the grid in order, no link cores, at most one island an X280 cluster."""
+    rows of the grid in order, its ranks then its link cores (the dispatcher's
+    mapping), at most one island an X280 cluster."""
     columns, rows = grid
     out, at = [], 0
     if not 2 <= len(graph.islands) <= SPLIT_ISLANDS_MAX:
         raise ValueError(f"{len(graph.islands)} islands: 2 to {SPLIT_ISLANDS_MAX}")
-    for island, cores in enumerate(graph.rank_cores):
+    for island, ranks in enumerate(graph.rank_cores):
+        cores = ranks + graph.link_cores[island]
         if (
-            graph.link_cores[island]
-            or cores != tuple(range(at, at + len(cores)))
+            cores != tuple(range(at, at + len(cores)))
             or at % columns
             or len(cores) % columns
         ):
             raise ValueError(
-                f"island {island}: its cores are not whole rows of the {columns} x "
-                f"{rows} grid after the island before it, without link cores"
+                f"island {island}: its ranks, then its link cores, are not whole rows "
+                f"of the {columns} x {rows} grid after the island before it"
             )
         out.append((at // columns, len(cores) // columns))
         at += len(cores)
@@ -1868,7 +1902,8 @@ class _Backend:
     def _island_rows(self, cores, columns):
         """Every core's island area in control_rows: island i of the load's graph,
         else island 0 of 1 with every core a rank (its header, then its table, then
-        the link area's address); on a split card each island's rows its own."""
+        the link area's and the tensor table's addresses); a split card's islands their
+        own rows."""
         abi_headers = abi.headers()
         graph, here = self.session.island or (islands.one(cores, columns), 0)
         parts = [(here, 0, cores)]
@@ -1880,7 +1915,10 @@ class _Backend:
         at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
         line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
         plan = getattr(self.session, "link_plan", None)
+        plans = getattr(self.session, "link_plans", None) if self.split else None
         for here, base, count in parts:
+            plan = plans[here] if plans else plan
+            area = plan.area if plans else self.session.link_area
             table = np.frombuffer(graph.table(here), np.uint32)
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
             header.append(base)
@@ -1890,8 +1928,11 @@ class _Backend:
             if plan is not None:  # the relay's words after the table (km_relay.hpp)
                 relay = at + abi_headers["KM_ISLAND_RELAY"]
                 mine[:, relay : relay + 3] = plan.relay
-            mine[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = (
-                self.session.link_area
+                for core, tile in getattr(plan, "relay_tiles", {}).items():
+                    self.control_rows[core, relay + 2] = tile
+            mine[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = area
+            mine[:, at + abi_headers["KM_ISLAND_TENSORS"] // 4] = (
+                self.session.tensor_table
             )
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):

@@ -305,8 +305,9 @@ form for those rows alone (`plan.grid_plan`, the project's rule) and loads the g
 program of that plan (`card.grid_program`) on its own rectangle. The kernels are those
 of `kernels/grid/`.
 
-A and Y are placed by island (`by="island"`: even parts of the row tiles, island i
-its part i); W is a copy on every island. Each island's program is the grid form of
+A and Y are split along their row tiles over every rank (`split=0`, the session's
+hint; the rows below were measured when they were placed by island, even parts of the
+row tiles, which two islands of equal ranks split alike); W is a copy on every island. Each island's program is the grid form of
 its own plan, with its rows' first tile and end in its words, and each call is one
 GRID command an island on its rectangle's flat ranks (the rows below were measured
 with one command over a flat group of both rectangles; a group that reaches another
@@ -353,9 +354,9 @@ its loop under the power sampler, where this script runs 3 single calls and its 
 at once; `bench.py` itself ran in that mode in two of its three runs. `sq16384` on two
 cards takes 0.53 of one card's time per call.
 
-"B moved once a call": B (the weight, 128 MiB) is held by island 0 alone (`like` its
-ranks) and before each call island 0's link cores send it into the same pages of
-island 1's DRAM (`send_pages`, waited for on island 1's link core), then one GRID
+"B moved once a call": before each call island 0's link cores send B (the weight, 128
+MiB) from island 0's copy into the same pages of island 1's (measured when B was held
+by island 0 alone and island 1 had room for every page) (`send_pages`, waited for on island 1's link core), then one GRID
 command an island runs as above, waited for
 (`--links 2 --kernel-bytes 90112 --b-moved`; the page links' code needs the larger
 kernel buffer). Of the 27,196.9 us a call the crossing takes 23,709.5 us, 5.66 GB/s:
