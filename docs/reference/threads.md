@@ -273,6 +273,27 @@ from island 0's thread to island 1's, one at a time, 10.61 µs; a HANG on ranks 
 (With the link core a rank of its own, opened on its first packet: 3.08, 4.36, 6.00,
 15.41 on 240 ranks and 10.69 µs.)
 
+### Fetch and store across islands
+
+`kmx_fetch` and `kmx_store` take a tensor another island holds as they take one of
+their own: `from` or `to` names the tensor (`KM_COPY_INTERLEAVED`, its bank address,
+its page bytes) and the range, never the island. The copy's cores find the tensor in
+the table of island tensors the load wrote (the ones made before the load, 16 at
+most) and move the pages another island holds through their island's link core 0: a
+fetch asks for them a chunk at a time and writes them into the region, a store puts
+them from the chunk straight into the holder's DRAM
+([islands](islands.md#pages-across-a-link)). The cache is handled as on one island: a
+fetch drops or evicts the range before the copy, a store writes the region back before
+it. A page that crosses is at most one fabric packet (4,352 bytes); a larger one gives
+the copy's command up. On one island the calls are what they
+were.
+
+Measured (`experiments/bank_fetch/islands.py`, two cards, four links, 2026-11-14, 16
+cores, 4 KiB pages, best of 3, every word checked): from island 0's work cluster 1,
+`kmx_fetch` of 1 MiB and 64 MiB 51 µs and 1.30 ms from island 0's tensor, 204 µs and
+11.0 ms (6.10 GB/s) from island 1's; `kmx_store` 47 µs and 1.30 ms into island 0's,
+197 µs and 10.7 ms into island 1's.
+
 Not done: a `kmx_push` larger than one packet does not cross (one command line and its
 crossing line are a packet); runs of more than two islands (one link, no routing); a
 crossing's local part that times out from a thread ends the run as on one island.

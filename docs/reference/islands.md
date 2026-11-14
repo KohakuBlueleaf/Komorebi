@@ -169,7 +169,7 @@ its start: a `Crossings` whose `rows[(link, source, target)]` hold the counts is
 | `messages` | a dynamic run's messages to a rank of the other island |
 | `lines` | the dispatcher's command lines (commands across), 192 bytes each |
 | `asks` | ask lines of `km::read_pages` for pages the other island holds, 64 bytes each |
-| `pages` | pages sent: the answers to asks, `send_pages`, `cross`, `ask`, `ask_range` |
+| `pages` | pages sent: the answers to asks, puts, `send_pages`, `cross`, `ask`, `ask_range` |
 | `parts` | parts relayed by `km::to_island(i).put` |
 | `bytes` | every payload byte of the above |
 
@@ -259,6 +259,32 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   `ask` with the island asked in the word's top byte. 32 lines are in flight an
   island. A tensor of one card has `placement_args()` too (one island holding every
   page), so the same kernel builds on one card.
+- A kernel writes a tensor's pages wherever they live with the counterpart, in the
+  same header: `km::write_pages(core, command, placement, tensor, address, first,
+  pages, from, port)`, from the reader or the writer, page k from L1 `from` + k
+  aligned pages. The pages its island holds are written as `noc_async_write_page`
+  writes them (the caller's write barrier waits for them); on one island that is all
+  the call does. Each run of pages another island holds is one put line (the same 64
+  bytes, `KM_PUT_*` in `km_abi.h`) into its own island's link core 0, reserved and
+  written as an ask line is. That island's page CPU sends the line to the far link
+  core 0, then reads the pages from the asking core's L1 and sends them straight into
+  the holder's DRAM; each batch's last packet adds its pages, once all the batch
+  carried are written (the router flushes its writes before the add), to the far link
+  core 0's count of pages landed. When the line's pages have all landed, the far page
+  CPU adds them to the asker's port and sends back the count of puts confirmed. The
+  call waits on its port, bounded, so `from` is free when it returns; a miss gives the
+  command up at `ask` with the island in the word's top byte. 32 put lines are in
+  flight an island.
+- A copy (`KM_HANDLER_COPY`, what `kmx_fetch` and `kmx_store` submit) that names a
+  tensor by its bank address finds where its pages are: at the load the session writes
+  the island tensors made so far into every core's link area (`KM_PLACE_TABLE`, 16 of
+  them, the newest first: address, copy, each island's first page and pages). A copy
+  with a side whose pages another island holds moves a chunk at a time: this island's
+  pages read or written as the copy does, each run the other island holds one ask line
+  (a fetch) or put line (a store) from the chunk, waited for on the core's last port
+  before the chunk goes on. A thread's source names the tensor and the range only.
+  Pages that cross are at most one packet (4,352 bytes). On one island, or for a
+  tensor made after the load or not listed, the copy is what it was.
 - `IslandSession.ASKS_BY` is `"core"` (the call asks itself) by default; with
   `"host"` (the define `KM_ASKS_BY_HOST`) the call only waits on the port, and the host
   sends: `session.ask(tensor, first, pages, island, core, to, port)` has the holder's
@@ -283,6 +309,22 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   | One `ask_range` a round, 1 ms an island in `wait_together` | 1,340.4 | 171.2 |
   | 118 asks a round (one a rank), connections held | 3,009.1 | 170.5 |
   | 118 asks a round, a connection opened and closed by each command | 3,132.5 | 169.9 |
+
+- Example 01's MAP on one flat group of all 236 ranks over both islands, kernels
+  unchanged, storing with `km::write_pages` (`islands.py --put`, four links,
+  2026-11-14, every tile exact): 532.8 µs a round into an output island 0 holds alone
+  (island 1's 118 ranks put theirs across), 343.2 µs into the output split over the
+  islands (each rank's page in its own island's DRAM).
+- `kmx_fetch` and `kmx_store` of island 0's work cluster 1 thread on 16 cores, of a
+  tensor of 4 KiB pages each island holds (`experiments/bank_fetch/islands.py`, four
+  links, 2026-11-14, every word checked, best of 3 for a fetch):
+
+  | Call | 1 MiB | 64 MiB |
+  |---|---|---|
+  | `kmx_fetch`, island 0's tensor | 51 µs | 1.30 ms, 51.6 GB/s |
+  | `kmx_fetch`, island 1's tensor | 204 µs | 11.0 ms, 6.10 GB/s |
+  | `kmx_store`, into island 0's tensor | 47 µs | 1.30 ms |
+  | `kmx_store`, into island 1's tensor | 197 µs | 10.7 ms |
 
 ## A card split into islands
 
@@ -370,8 +412,11 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 - Links: a dynamic run's messages cross only in a RUN of every rank;
   `collect` and `broadcast` over islands are not built, and while the run's messages
   are served link 0 carries nothing else (a core's ask waits too). A kernel's own ask
-  (`km::read_pages`) is answered by one page CPU, on one link; asks of more than two
-  islands are not built.
+  (`km::read_pages`), its put (`km::write_pages`) and a copy across are carried by one
+  page CPU, on one link; asks and puts of more than two islands are not built. Put
+  lines and their confirmations are not counted in `crossings()` (their pages are,
+  under `pages`). A copy across knows the island tensors made before the load (16 at
+  most).
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.
