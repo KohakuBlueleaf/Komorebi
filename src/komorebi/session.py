@@ -2108,6 +2108,7 @@ class _Backend:
         all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
         include = [str(abi.headers().abi.parents[2])]
         defines = [(name, str(value)) for name, value in program.defines.items()]
+        defines += self._one_island()
         if program.messages is not None:
             defines += program.messages.defines()
         ranks, links = _link_kernels(self.session.island, program, self.split, cores)
@@ -2162,6 +2163,14 @@ class _Backend:
                     **(compute_config({}) if kernel == "compute" else {}),
                 )
         return launch
+
+    def _one_island(self):
+        """KM_ONE_ISLAND for a load that is no island of several (a card of its own,
+        not split): its kernels take the island table's one entry as known
+        (km_island.hpp), the code of several islands left out."""
+        if self.session.island is not None or self.split is not None:
+            return []
+        return [("KM_ONE_ISLAND", "1")]
 
     def _apart_links(self, links):
         """The bytes of the link area and relay at the link cores' buffers' base when
@@ -2319,6 +2328,7 @@ class _Backend:
                     ("KM_PROGRAM_GROUP", str(number)),
                     ("KM_PROGRAM_SWITCH", "1"),
                 ]
+            defines += self._one_island()
             first = held[0] if held else None
             if placed.switch and first is None:
                 first = placed.programs[0]  # one build for every group's kernels
