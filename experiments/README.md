@@ -143,3 +143,9 @@ place to ask a question and to be wrong.
   over the NoC through the PCIe tile into the host's pinned memory channel, checked byte
   for byte. 4 KiB to 20 MiB exact; 13.5 GB/s from one core and about 15 GB/s from 2 to
   12 (the x8 link) against 1 to 2 MB/s for `Session.read_chunks`.
+- [texture_lookup](texture_lookup/README.md): what a texture lookup costs on a core:
+  pages of texels in L1 through a 4-way table (10 cycles a pixel with every page held,
+  17 to 40 through the table, the same on all four CPUs), a 4 KB miss from DRAM in
+  about 580 cycles (127 a page with 8 in flight), texel x light on the vector unit 29
+  times faster than in integers, and the real reads of Sponza and Bistro replayed:
+  1.1 to 2.1 ms a frame over 120 cores with a table of 32 pages.
