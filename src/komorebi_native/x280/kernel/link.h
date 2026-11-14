@@ -26,6 +26,7 @@ typedef struct {
     uint32_t result; /* it has KM_FLAG_RESULT: 1, 2 once a part gave the word */
     uint32_t late;   /* its TIMEOUT went out; the rest of its parts send none */
     uint32_t far;    /* the island of its part across */
+    uint32_t holder; /* the island that holds the group's first rank: its result word */
     uint64_t submitted, deadline;
 } kmd_crossing_t;
 
@@ -268,8 +269,8 @@ static void link_part(
                 : status
         );
     }
-    if (kind == KM_EVENT_DONE && crossing->result == 1u) {
-        crossing->word = ticks; /* the first part back gives the result */
+    if (kind == KM_EVENT_DONE && crossing->result == 1u && island == crossing->holder) {
+        crossing->word = ticks; /* as on one island: the part of the group's first */
         crossing->result = 2u;
     }
     if (--crossing->parts != 0) {
@@ -406,6 +407,11 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     crossing->word = 0;
     crossing->late = 0;
     crossing->far = link->far;
+    crossing->holder = (
+        !thread && first - dispatcher->island_first < dispatcher->island_count
+            ? link->island
+            : link->far
+    );
     crossing->first = part & 0xFFFFu;
     crossing->submitted = now;
     crossing->deadline = now + ring->t_command;

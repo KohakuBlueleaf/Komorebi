@@ -315,7 +315,8 @@ class IslandRun:
     def wait(self, tickets, timeout=10.0):
         """Sends what is queued and waits, within one `timeout` for all, for every
         part of the tickets. Returns per ticket the tuple of its parts' events in
-        island order (one tuple, or a list for a list of tickets)."""
+        island order (one tuple, or a list for a list of tickets); the first holds the
+        group's first rank, so its result word is the command's, as on one island."""
         single = isinstance(tickets, int | np.integer)
         wanted = np.asarray([tickets] if single else list(tickets), np.int64)
         if not wanted.size:
@@ -1311,7 +1312,8 @@ class IslandSession:
 
     def _check_links(self, runs, plans):
         """Every island's dispatcher has the tile and LIM base its link line took for
-        the far one's (its own)."""
+        the far one's (its own); the control blocks are at one address (what crosses
+        through the relay lands at its sender's addresses)."""
         if plans[0] is None:
             return
         ports = [run.backend.port for run in runs]
@@ -1320,6 +1322,9 @@ class IslandSession:
             raise KomorebiError(
                 f"the islands' dispatchers differ in tile or LIM base: {sorted(seen)}"
             )
+        controls = sorted({run.backend.control.address for run in runs})
+        if len(controls) != 1:
+            raise KomorebiError(f"the islands' control blocks differ: {controls}")
 
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'
