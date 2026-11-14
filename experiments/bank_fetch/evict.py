@@ -1,7 +1,7 @@
 """Work cluster 1's thread reads the cluster cache's shape (`shape`), times kmx_evict
-against the same reads of a pad in DRAM (`time`), or proves that it drops the lines
-of a range the cores then copy into (`proof`). One JSON line. Example: python evict.py
-proof --bytes 4096 --repeats 300"""
+against the same reads of a pad in DRAM (`time`), proves that it drops the lines of a
+range the cores then copy into (`proof`) or that kmx_store writes them back (`store`).
+One JSON line. Example: python evict.py proof --bytes 4096 --repeats 300"""
 
 import argparse
 import json
@@ -12,13 +12,17 @@ import komorebi as km
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE.parents[1] / "examples" / "08_parallel_thread" / "kernels"  # NOPs
-MODES = {"shape": 0, "time": 1, "proof": 2}
+MODES = {"shape": 0, "time": 1, "proof": 2, "store": 3}
 MASTERS = 38
 TICKS = 50  # kmx_time() ticks a microsecond
 PADS = ("zero_device", "dram")
 STATES = ("after_read", "after_write", "after_evict")  # the cache before the call
-VARIANTS = ("plain", "lead", "readers", "one_evict", "no_evict")  # evict.c's V_*
-CONTROL = 4  # no_evict: the check must find bad lines
+# per mode: evict.c's variants, words a variant, the failed call's word, the control
+# (which must find bad lines)
+SPECS = {
+    "proof": (("plain", "lead", "readers", "one_evict", "no_evict"), 9, 46, 4),
+    "store": (("store", "sweep", "bare"), 11, 33, 2),
+}
 LEAD = 1 << 18  # bytes of region 0 before the range
 T0 = time.monotonic()
 
@@ -70,13 +74,17 @@ def time_report(words):
     return report
 
 
-def proof_report(words):
-    """Per variant its rounds, bad lines, first bad line and seconds; what the readers
-    read and the first failed call."""
+def proof_report(words, mode):
+    """Per variant its rounds, bad lines, first bad line and seconds (a store's copy:
+    best and worst µs); what the readers read and the first failed call."""
+    names, stride, failed, _ = SPECS[mode]
     report = {}
-    for v, name in enumerate(VARIANTS):
-        out = words[9 * v : 9 * v + 9]
-        row = {"rounds": out[0], "bad_lines": out[1], "seconds": out[8] / TICKS / 1e6}
+    for v, name in enumerate(names):
+        out = words[stride * v : stride * (v + 1)]
+        row = {"rounds": out[0], "bad_lines": out[1]}
+        row["seconds"] = out[stride - 1] / TICKS / 1e6
+        if mode == "store":
+            row["copy_us"] = [out[8] / TICKS, out[9] / TICKS]
         if out[1]:
             row["first_bad"] = {
                 "round": out[2],
@@ -85,28 +93,32 @@ def proof_report(words):
                 "want": f"{out[6] | out[7] << 32:#018x}",
             }
         report[name] = row
-    report["readers_mib"] = words[45]
-    report["failed_call"] = f"{words[46]:#x}"
+    if mode == "proof":
+        report["readers_mib"] = words[45]
+    report["failed_call"] = f"{words[failed]:#x}"
     return report
 
 
 def regions(args):
     """The thread's regions for the mode."""
+    if args.mode == "store":
+        return {"range": args.bytes, "out": args.bytes}
     if args.mode != "proof":
         return {"pad": 1 << 17, "fill": 1 << 20}
     return {"range": LEAD + args.bytes, "source": args.bytes, "noise": 1 << 22}
 
 
-def merged(results, loads):
-    """The proof words of loads of a variant or several: each variant's from its load,
-    the readers' MiB summed, the failed calls together."""
+def merged(results, loads, mode):
+    """The words of loads of a variant or several: each variant's from its load, the
+    readers' MiB summed, the failed calls together."""
+    _, stride, failed, _ = SPECS[mode]
     words = [0] * 48
     for result, load in zip(results, loads, strict=True):
         got = list(result.words) + [0] * 48
         for v in load:
-            words[9 * v : 9 * v + 9] = got[9 * v : 9 * v + 9]
-        words[45] += got[45]
-        words[46] |= got[46]
+            words[stride * v : stride * (v + 1)] = got[stride * v : stride * (v + 1)]
+        words[45] += got[45] if mode == "proof" else 0
+        words[failed] |= got[failed]
     return words
 
 
@@ -137,10 +149,12 @@ def main():
     parser.add_argument("mode", choices=sorted(MODES))
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--bytes", type=int, default=4096, help="proof: the range")
-    parser.add_argument("--variants", type=int, nargs="+", default=[0, 1, 2, 3, 4])
+    parser.add_argument("--variants", type=int, nargs="+", help="default: every one")
     parser.add_argument("--deadline", type=float, default=50.0)
     parser.add_argument("--load-each", action="store_true", help="a load a variant")
     args = parser.parse_args()
+    if args.variants is None:
+        args.variants = list(range(len(SPECS.get(args.mode, ((),))[0])))
     variants = sorted(set(args.variants))
     loads = [[v] for v in variants] if args.load_each else [variants]
     with km.Session(log=log) as session:
@@ -149,21 +163,24 @@ def main():
             for i in range(len(loads))
         ]
     words = list(results[0].words) + [0] * 48
-    if args.mode == "proof":
-        words = merged(results, loads)
+    if args.mode in SPECS:
+        words = merged(results, loads, args.mode)
     failed = [r for r in results if not r.ran or r.code or r.state != "done"]
     result = (failed or results)[0]
     report = {"mode": args.mode, "thread": [result.state, result.code, result.error]}
-    reports = {"shape": shape_report, "time": time_report, "proof": proof_report}
-    report.update(reports[args.mode](words))
-    if args.mode == "proof":
+    if args.mode in SPECS:
+        names, _, failed, control = SPECS[args.mode]
+        report.update(proof_report(words, args.mode))
         report["bytes"] = args.bytes
-        rows = [report[VARIANTS[v]] for v in set(args.variants) - {CONTROL}]
-        report["exact"] = words[46] == 0 and all(
+        rows = [report[names[v]] for v in set(args.variants) - {control}]
+        report["exact"] = words[failed] == 0 and all(
             row["rounds"] == args.repeats and row["bad_lines"] == 0 for row in rows
         )
-    if args.mode == "proof" and CONTROL in args.variants:
-        report["control_caught"] = report[VARIANTS[CONTROL]]["bad_lines"] > 0
+        if control in args.variants:
+            report["control_caught"] = report[names[control]]["bad_lines"] > 0
+    else:
+        reports = {"shape": shape_report, "time": time_report}
+        report.update(reports[args.mode](words))
     report["ok"] = result.ran and result.code == 0 and report.get("exact", True)
     print(json.dumps(report), flush=True)
     return 0 if report["ok"] else 1

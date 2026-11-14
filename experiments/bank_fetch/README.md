@@ -43,7 +43,9 @@ same day.
   run the zeroed region's lines were dirty before each `kmx_fetch` and flushed before
   each `kmx_fetch_clean`.
 - **The store.** `kmx_store` of 1 MiB from the region back to bank 0 on four cores:
-  0.19 to 0.24 ms (one sweep, then the copy), exact: card 0's run.
+  0.19 to 0.24 ms (one sweep, then the copy), exact: card 0's run. From 160 KiB on a
+  store evicts instead of sweeping ([below](#the-clusters-cache)): an evicted dirty
+  line is written back, which is what the cores need before they read the range.
 
 On card 1 the same day, the X280 reading the range itself (8-byte loads through a NoC
 window) took 44.1 ms for 1 MiB (0.024 GB/s), and `kmx_push` of 1 MiB from cluster 1 to
@@ -117,6 +119,27 @@ during or after the copy would be written back over the bytes the cores wrote. A
 the cache holds after the eviction can only come from a read of the range, and nothing
 on the cluster reads it while the cores copy, so `one_evict` needs no second eviction.
 
+`kmx_fetch` and `kmx_store` evict only when the thread's start found the cache this
+shape: the library reads `CCACHE0_WAYENABLE` (0) and core 0's way mask (way 0 in it)
+once, and sweeps otherwise.
+
+`python evict.py store` proves the store the same way. Each round the thread writes a
+new pattern over the whole range (the cache then holds its last 2,048 lines, dirty),
+the four cores copy the range to a second region of the bank, and the thread sweeps
+that region's lines and compares every word with the pattern. Variants: `store`
+(`kmx_store`, which evicts), `sweep` (a sweep of the range then the copy: the store
+as it was) and `bare` (the copy alone, nothing written back: the control). Card 1,
+2026-11-14, host load 2.8 to 2.9; the call's time best to worst:
+
+| Range | `store` | `sweep` | `bare` (control) |
+|---|---|---|---|
+| 1 MiB, 300 rounds | exact, 64.5 to 69.4 µs | exact, 309 to 311 µs | 613,200 wrong lines, 39.8 to 41.7 µs |
+| 64 MiB, 200 rounds | exact, 2.30 to 2.32 ms | exact, 13.27 to 13.35 ms | 408,800 wrong lines, 2.28 to 2.31 ms |
+
+The control's wrong lines are 2,044 a round, the dirty lines the cache held: the cores
+read the range's previous pattern there. The copy reads and writes the same bank, so
+it takes about twice a fetch's 64 MiB.
+
 ## Running it
 
 ```sh
@@ -136,6 +159,8 @@ python evict.py proof --bytes 1048576 --repeats 300
 python evict.py proof --bytes 67108864 --repeats 90 --variants 2 --load-each --deadline 58
 python evict.py proof --bytes 67108864 --repeats 180 --variants 0 1 --load-each --deadline 58
 python evict.py proof --bytes 67108864 --repeats 180 --variants 3 4 --load-each --deadline 58
+python evict.py store --bytes 1048576 --repeats 300
+python evict.py store --bytes 67108864 --repeats 200 --load-each --deadline 58
 ```
 
 At 64 MiB a round takes 0.23 s (0.49 s with the readers), so each variant gets a load
