@@ -149,6 +149,6 @@ the other way (1,000 pipelined to one core).
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **A card split into islands.** The host's graph describes it (`islands.split_card`);
   nothing runs on it.
-- **A list or a dict of programs, X280 threads and ports, engines and uploads over
-  islands, tensors in L1.**
+- **A dict of programs, X280 threads and ports, engines and uploads over islands,
+  tensors in L1.** A list of programs, one an island, loads.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.

@@ -189,6 +189,7 @@ class IslandRun:
             raise ValueError("a ticket that was never submitted")
         deadline = time.monotonic() + timeout
         self.send()
+        self._store(wanted, deadline)
         events = {}
         for island, run in enumerate(self.runs):
             handles = self._parts[island][wanted]
@@ -206,6 +207,28 @@ class IslandRun:
                 events.setdefault(ticket, []).append(event)
         out = [tuple(events[ticket]) for ticket in wanted.tolist()]
         return out[0] if single else out
+
+    def _store(self, wanted, deadline):
+        """Until the tickets' parts arrived or the deadline: one native round an island
+        in turn (store what its ring has room for, file its events), so that every
+        island is fed while the host waits; Run.wait then returns or raises."""
+        pending = {}
+        for island in range(len(self.runs)):
+            handles = self._parts[island][wanted]
+            pending[island] = np.unique(handles[handles != 0])
+        while any(handles.size for handles in pending.values()):
+            if time.monotonic() > deadline:
+                return
+            for island, handles in pending.items():
+                if not handles.size:
+                    continue
+                run = self.runs[island]
+                try:
+                    run._check_alive()
+                    run._step(handles, int(handles[-1]), 0.0)
+                except KomorebiError as error:
+                    raise _named(error, island) from None
+                pending[island] = handles[~run._arrived(handles)]
 
     def inspect(self, island, cores=None, timeout=10.0):
         """Run.inspect of island `island`'s cores [first, first + count) of `cores`

@@ -54,9 +54,9 @@ returns an `IslandSession`; with one card it is the card's `Session` as before.
 ## The run
 
 `session.load(program, **options)` loads one `Program` on every island in turn (its
-grid, then its dispatcher), with `Session.load`'s options and `island=(graph, i)`: each
-core gets the island table and each dispatcher its island's range of ranks. It returns
-an `IslandRun`.
+grid, then its dispatcher), or a list of Programs, one an island in island order, with
+`Session.load`'s options and `island=(graph, i)`: each core gets the island table and
+each dispatcher its island's range of ranks. It returns an `IslandRun`.
 
 - `run.submit(handler, group, args)` takes a group of flat ranks. The host finds the
   islands it touches with `Graph.split` and sends each of them the group's word
@@ -64,8 +64,10 @@ an `IslandRun`.
   first of its cores in the group, and a core's rank is its flat rank less the group's
   first, its count the whole group's. The call returns a ticket. `run.submit_many` does the same for n commands, one `submit_many` an
   island.
-- `run.wait(tickets, timeout)` sends every island's queued commands first, so the
-  islands run their parts at once, then waits for every part within the one timeout.
+- `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
+  islands in turn (one native round each: store what its ring has room for, take its
+  events) until every part arrived, so the islands run their parts at once; all within
+  the one timeout.
   A ticket completes when every part has; its result is the tuple of its parts' events
   in island order. `run.drain`, `run.stop` and `run.abort` act on every island within
   one timeout; `run.state()` lists every rank in flat order, `run.result()` every
@@ -127,6 +129,6 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 - Links: no message, page or command crosses between islands inside a run; `forward`
   to another island's rank, `collect` and `broadcast` over islands, and a read of a
   page another island holds need the link service.
-- A list or a dict of programs, X280 threads and ports, engines and uploads over
-  islands; tensors in L1.
+- A dict of programs, X280 threads and ports, engines and uploads over islands;
+  tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.
