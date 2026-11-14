@@ -588,6 +588,7 @@ class IslandSession:
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
         slow_code=False,
+        card_dram=False,
     ):
         self.cards = tuple(int(card) for card in cards)
         if not self.cards or len(set(self.cards)) != len(self.cards):
@@ -598,6 +599,9 @@ class IslandSession:
                 "between two islands"
             )
         self.split = islands or 1  # the islands one card is split into
+        # a split card: tensors held by island (pages asked across, as over cards);
+        # card_dram: one tensor in the card's DRAM, every page local to every island
+        self.card_dram = bool(card_dram) and self.split > 1
         if self.split == 1 and links and len(self.cards) != 2:
             raise ValueError(f"links={links}: between two cards, or a split card")
         if self.split > 1 and len(self.cards) != 1:
@@ -791,7 +795,7 @@ class IslandSession:
             hint = like.placement
             split, group, copy = hint.split, hint.group, hint.copy
         placement = islands.place(self.graph, shape, layout, split, group, copy)
-        if self.split > 1:  # one tensor in the card's DRAM, every page local
+        if self.card_dram:  # one tensor in the card's DRAM, every page local
             part = self.sessions[0].empty(shape, dtype, layout)
             return IslandTensor(
                 [part] * self.split, placement, shape, dtype, layout, part.address
@@ -899,7 +903,8 @@ class IslandSession:
         if not self._tables:
             return
         row = self._table_rows()
-        for session, table in zip(self.sessions, self._tables):
+        pairs = {id(table): (s, table) for s, table in zip(self.sessions, self._tables)}
+        for session, table in pairs.values():  # a split card: one table
             rows = np.tile(row, (table.pages, 1)).view(np.uint8)
             session.write(table, rows)
 
@@ -912,7 +917,7 @@ class IslandSession:
             raise KomorebiError("islands.TENSORS_MAX differs from km_abi.h's")
         if not self._tables:
             row = self._table_rows()
-            for session in self.sessions:
+            for session in self.sessions[: 1 if self.split > 1 else None]:
                 columns, rows = session.grid
                 self._tables.append(
                     session.tensor(
@@ -921,6 +926,7 @@ class IslandSession:
                         shard_grid=(columns, rows),
                     )
                 )
+            self._tables *= len(self.sessions) // len(self._tables)  # split: one
         else:
             self._write_table()
         return [table.address for table in self._tables]
@@ -931,7 +937,7 @@ class IslandSession:
         gathered into one array."""
         if (first or pages is not None) and len(tensors) != 1:
             raise ValueError("a page range is read from one tensor")
-        if self.split > 1:  # one tensor in the card's DRAM
+        if self.card_dram:  # one tensor in the card's DRAM
             parts = [tensor.parts[0] for tensor in tensors]
             return self.sessions[0].read(*parts, first=first, pages=pages)
         out = []
@@ -967,7 +973,7 @@ class IslandSession:
         """work(island, at, low, high) for every span: with a run loaded on every
         island, one thread an island at once; else in turn."""
         live = self.run is not None and not self.run.stopped
-        if not live or len(spans) < 2:
+        if not live or len(spans) < 2 or self.split > 1:  # a split card: one channel
             for span in spans:
                 work(*span)
             return
@@ -1004,7 +1010,7 @@ class IslandSession:
         pages = np.ascontiguousarray(pages, np.uint8)
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
             raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
-        if self.split > 1:  # one tensor in the card's DRAM
+        if self.card_dram:  # one tensor in the card's DRAM
             self.sessions[0].write(tensor.parts[0], pages, first)
             return
         start, count = dram.page_range(first, len(pages), tensor.pages)
@@ -1104,8 +1110,9 @@ class IslandSession:
                     **asks,
                 }
                 plans = self._links()
+            tables = [0] if self.card_dram else self._tables_for_load()
             runs = self.sessions[0].load_islands(
-                program, self.graph, links=plans, **options
+                program, self.graph, links=plans, tensors=tables[0], **options
             )
         finally:
             program.defines = own
