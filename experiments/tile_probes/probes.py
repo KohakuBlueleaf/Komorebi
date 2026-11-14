@@ -1019,6 +1019,11 @@ def main():
     p.add_argument(
         "--icache-passes", type=int, default=1000, help="icache: loop passes"
     )
+    p.add_argument(
+        "--allow-unproven",
+        action="store_true",
+        help="run fpu and ties, whose only run did not finish (README section 8)",
+    )
     p.add_argument("--n-float", type=int, default=10000)
     p.add_argument("--rays", type=int, default=32, help="walk: multiple of 32, <= 1024")
     p.add_argument("--ray-set", choices=["camera", "random"], default="random")
@@ -1029,6 +1034,9 @@ def main():
     for name in names:
         if name not in PROBES:
             p.error(f"unknown probe {name!r}; one of {', '.join(PROBES)}")
+    unproven = {"fpu", "ties"} & set(names)
+    if unproven and not args.allow_unproven:
+        p.error(f"{', '.join(sorted(unproven))}: not proven safe (README section 8)")
     if "slab" in names:
         args.nodes = min(args.nodes, 64)
 

@@ -1,7 +1,5 @@
-// Probes 11 and 14, matrix unit: issue cost of its instructions with K blocks in
-// rotation (probe 11), and the ties rule of its products and of the packer (probe 14).
-// The unpack thread fills SrcA and SrcB once; the math thread times; the pack thread
-// waits for both done words (and packs, probe 14).
+// Probes 11 (matrix-unit issue cost, K Dst blocks in rotation) and 14 (ties of MVMUL,
+// packer): unpack fills SrcA and SrcB, the math thread runs, the pack thread waits.
 #pragma once
 
 #include <stdint.h>
@@ -12,8 +10,8 @@ namespace fpu {
 
     constexpr uint32_t kWallClock = 0xFFB121F0;  // RISCV_DEBUG_REG_WALL_CLOCK_L
     constexpr uint32_t kDstWindow = 0xFFBD8000;
-    constexpr uint32_t kRows = 128;               // Dst rows (32-bit view) the probes use
-    constexpr uint32_t kAm = ADDR_MOD_1;          // no step on any counter
+    constexpr uint32_t kRows = 128;       // Dst rows (32-bit view) the probes use
+    constexpr uint32_t kAm = ADDR_MOD_1;  // no step on any counter
 
     inline uint32_t wall() {
         return *reinterpret_cast<volatile uint32_t*>(kWallClock);
@@ -91,8 +89,17 @@ namespace fpu {
     // ---- Probe 11: issue cost (rows 3 and 4) ----------------------------------------
 
     enum Op : uint32_t {
-        kNone, kMvmul, kElwmul, kElwadd, kElwsub, kGapool, kGmpool, kMova2d, kMovb2d,
-        kMovd2a, kMovd2b
+        kNone,
+        kMvmul,
+        kElwmul,
+        kElwadd,
+        kElwsub,
+        kGapool,
+        kGmpool,
+        kMova2d,
+        kMovb2d,
+        kMovd2a,
+        kMovd2b
     };
 
     struct Config {
@@ -102,11 +109,13 @@ namespace fpu {
     };
 
     constexpr Config kConfigs[] = {
-        {kNone, 1, 0},   {kMvmul, 1, 0},  {kMvmul, 2, 0},  {kMvmul, 3, 0},  {kMvmul, 4, 0},
-        {kMvmul, 5, 0},  {kMvmul, 6, 0},  {kMvmul, 8, 0},  {kMvmul, 8, 1},  {kMvmul, 8, 2},
-        {kMvmul, 8, 3},  {kElwmul, 1, 0}, {kElwmul, 8, 0}, {kElwadd, 1, 0}, {kElwadd, 8, 0},
-        {kElwsub, 8, 0}, {kGapool, 1, 0}, {kGapool, 8, 0}, {kGmpool, 1, 0}, {kGmpool, 8, 0},
-        {kMova2d, 1, 0}, {kMova2d, 8, 0}, {kMovb2d, 8, 0}, {kMovd2a, 8, 0}, {kMovd2b, 8, 0},
+        {kNone, 1, 0},   {kMvmul, 1, 0},  {kMvmul, 2, 0},  {kMvmul, 3, 0},
+        {kMvmul, 4, 0},  {kMvmul, 5, 0},  {kMvmul, 6, 0},  {kMvmul, 8, 0},
+        {kMvmul, 8, 1},  {kMvmul, 8, 2},  {kMvmul, 8, 3},  {kElwmul, 1, 0},
+        {kElwmul, 8, 0}, {kElwadd, 1, 0}, {kElwadd, 8, 0}, {kElwsub, 8, 0},
+        {kGapool, 1, 0}, {kGapool, 8, 0}, {kGmpool, 1, 0}, {kGmpool, 8, 0},
+        {kMova2d, 1, 0}, {kMova2d, 8, 0}, {kMovb2d, 8, 0}, {kMovd2a, 8, 0},
+        {kMovd2b, 8, 0},
     };
     constexpr uint32_t kNumConfigs = sizeof(kConfigs) / sizeof(kConfigs[0]);
     constexpr uint32_t kReps = 3, kReplays = 64;
@@ -115,23 +124,33 @@ namespace fpu {
     inline uint32_t word(Op op, uint32_t j) {
         const uint32_t d = (8 * j) & 0x3FF, s = (32 + 4 * j) & 0x3F;
         switch (op) {
-            case kMvmul: return TT_OP_MVMUL(0, 0, kAm, d);
-            case kElwmul: return TT_OP_ELWMUL(0, 0, 0, kAm, d);
-            case kElwadd: return TT_OP_ELWADD(0, 1, 0, kAm, d);
-            case kElwsub: return TT_OP_ELWSUB(0, 1, 0, kAm, d);
-            case kGapool: return TT_OP_GAPOOL(0, p_gpool::DIM_16X16, kAm, p_gpool::INDEX_DIS, d);
-            case kGmpool: return TT_OP_GMPOOL(0, p_gpool::DIM_16X16, kAm, p_gpool::INDEX_DIS, d);
-            case kMova2d: return TT_OP_MOVA2D(0, 0, kAm, p_mova2d::MOV_8_ROWS, d);
-            case kMovb2d: return TT_OP_MOVB2D(0, 0, kAm, p_movb2d::MOV_4_ROWS, d);
-            case kMovd2a: return TT_OP_MOVD2A(0, s, kAm, p_movd2a::MOV_4_ROWS, d);
-            case kMovd2b: return TT_OP_MOVD2B(0, s, kAm, p_movd2b::MOV_4_ROWS, d);
-            default: return TT_OP_NOP;
+            case kMvmul:
+                return TT_OP_MVMUL(0, 0, kAm, d);
+            case kElwmul:
+                return TT_OP_ELWMUL(0, 0, 0, kAm, d);
+            case kElwadd:
+                return TT_OP_ELWADD(0, 1, 0, kAm, d);
+            case kElwsub:
+                return TT_OP_ELWSUB(0, 1, 0, kAm, d);
+            case kGapool:
+                return TT_OP_GAPOOL(0, p_gpool::DIM_16X16, kAm, p_gpool::INDEX_DIS, d);
+            case kGmpool:
+                return TT_OP_GMPOOL(0, p_gpool::DIM_16X16, kAm, p_gpool::INDEX_DIS, d);
+            case kMova2d:
+                return TT_OP_MOVA2D(0, 0, kAm, p_mova2d::MOV_8_ROWS, d);
+            case kMovb2d:
+                return TT_OP_MOVB2D(0, 0, kAm, p_movb2d::MOV_4_ROWS, d);
+            case kMovd2a:
+                return TT_OP_MOVD2A(0, s, kAm, p_movd2a::MOV_4_ROWS, d);
+            case kMovd2b:
+                return TT_OP_MOVD2B(0, s, kAm, p_movd2b::MOV_4_ROWS, d);
+            default:
+                return TT_OP_NOP;
         }
     }
 
-    // Per config c at out[kData + 32 c]: kReps spans of kReplays replays of a body of
-    // len instructions (words 0..2), len (3), nonzero Dst words in rows 0..127 (4) and
-    // up to four (value, count) pairs of them (5..12).
+    // Config c at out[kData + 32 c]: 0..2 spans of kReplays replays of the body, 3 its
+    // length, 4 nonzero Dst words (rows 0..127), 5..12 four (value, count) pairs.
     inline void issue(volatile uint32_t* out) {
         math_setup();
         for (uint32_t c = 0; c < kNumConfigs; ++c) {
@@ -200,8 +219,8 @@ namespace fpu {
         tensix_sync();
     }
 
-    // Math thread: Dst rows 0..7 = SrcB @ SrcA with round to nearest, rows 8 j (j = 1..7)
-    // the same with the matrix unit's stochastic rounding; then commit the section.
+    // Math thread: Dst rows 0..7 = SrcB @ SrcA, rounded to nearest; rows 8 j (j = 1..7)
+    // the same with stochastic rounding; then commit the section.
     inline void ties_math() {
         tile_regs_acquire();
         math_setup();
@@ -226,13 +245,15 @@ namespace fpu {
         tensix_sync();
     }
 
-    // Pack thread, after both done words: out data 0..1023 = Dst rows 0..63 (the
-    // products); Dst rows 64..127 (tile 1) = in[1024 ..]; tile 1 packed to BF16 with
-    // round to nearest into CB rne (data 1024..1535) and with stochastic rounding into
-    // CB sr (data 1536..2047).
+    // Data 0..1023 = Dst rows 0..63 (products); tile 1 = in[1024 ..], packed to BF16
+    // into cb_rne (data 1024..1535), then stochastically rounded into cb_sr (1536..).
     inline void ties_pack(
-        const volatile uint32_t* in, volatile uint32_t* out, uint32_t cb_rne, uint32_t cb_sr,
-        const volatile uint32_t* rne, const volatile uint32_t* sr
+        const volatile uint32_t* in,
+        volatile uint32_t* out,
+        uint32_t cb_rne,
+        uint32_t cb_sr,
+        const volatile uint32_t* rne,
+        const volatile uint32_t* sr
     ) {
         volatile uint32_t* d = out + probe::kData;
         tile_regs_wait();

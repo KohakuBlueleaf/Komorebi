@@ -192,7 +192,10 @@ void kernel_main() {
     err |= out[probe::kAuxError];
     if (err == 0) {
         fpu::ties_pack(
-            in, out, probe::kCbRne, probe::kCbSr,
+            in,
+            out,
+            probe::kCbRne,
+            probe::kCbSr,
             reinterpret_cast<const volatile uint32_t*>(rne_addr),
             reinterpret_cast<const volatile uint32_t*>(sr_addr)
         );

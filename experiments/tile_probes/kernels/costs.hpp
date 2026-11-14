@@ -144,22 +144,37 @@ namespace costs {
             }));
         } else if (f == 3 || f == 4) {
             // r = outer x 32 replays of 16, or 4 r = outer x 64 replays of 4.
-            ckernel_template mop(f == 3 ? r / 32 : r / 16, f == 3 ? 32 : 64, f == 3 ? rep16 : rep4);
+            ckernel_template mop(
+                f == 3 ? r / 32 : r / 16, f == 3 ? 32 : 64, f == 3 ? rep16 : rep4
+            );
             mop.program();
-            t.add(span([] { ckernel_template::run(); }));
+            t.add(span([] {
+                ckernel_template::run();
+            }));
         } else {
             // 16 r instructions = outer x inner x 2 (LoopOp and LoopOp1 alternate).
             ckernel_template mop(
-                r / 8, 64, TT_OP_SFPMAD(L0, ONE, ONE, L0, 0), TT_OP_SFPMAD(L1, ONE, ONE, L1, 0)
+                r / 8,
+                64,
+                TT_OP_SFPMAD(L0, ONE, ONE, L0, 0),
+                TT_OP_SFPMAD(L1, ONE, ONE, L1, 0)
             );
             mop.program();
-            t.add(span([] { ckernel_template::run(); }));
+            t.add(span([] {
+                ckernel_template::run();
+            }));
         }
     }
 
-    // Timing: K spans per push form, then K per loop form. Data: L4 of each push form
-    // at slot f, L0..L3 of each loop form at slot 8 + f; expected immediates at word 2048.
-    inline void push(volatile uint32_t* out, volatile uint32_t* scratch, uint32_t r, uint32_t k_runs, Times& t) {
+    // Timing: K spans a push form, then K a loop form. Data: L4 of push form f at slot
+    // f, L0..L3 of loop form f at slot 8 + f; the expected immediates at word 2048.
+    inline void push(
+        volatile uint32_t* out,
+        volatile uint32_t* scratch,
+        uint32_t r,
+        uint32_t k_runs,
+        Times& t
+    ) {
         for (uint32_t j = 0; j < 64; ++j) {
             scratch[j] = kLoadi | ((j * 77) & 0xFFFF);
         }
@@ -191,7 +206,8 @@ namespace costs {
         }
     }
 
-    // ---- Probe 9: load-macro chain (row 5) -------------------------------------------
+    // ---- Probe 9: load-macro chain (row 5)
+    // -------------------------------------------
 
     constexpr uint32_t kRows = 64;  // vectors at Dst addresses 0, 2, .., 126
 
@@ -202,8 +218,8 @@ namespace costs {
         }
     }
 
-    // Form f, p passes over the 64 vectors (x += 1 each): 0 one instruction at a time
-    // (load, add, store a vector), 1 four vectors interleaved, 2 one load macro a vector.
+    // Form f, p passes over the 64 vectors (x += 1): 0 load, add, store one vector at a
+    // time, 1 four vectors interleaved, 2 one load macro a vector.
     [[gnu::noinline]] void macro_form(uint32_t f, uint32_t p, Times& t) {
         if (f == 0) {
             TTI_REPLAY(0, 3, 0, 1);
@@ -246,8 +262,8 @@ namespace costs {
         TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, p_setrwc::SET_D);
     }
 
-    // Macro 0: load [x] into the register named by the instruction, MAD slot (delay 0)
-    // x = 1 * 1 + x from template 0, store slot (delay 2) x back to the macro's address.
+    // Macro 0: load x into the instruction's register, MAD slot (delay 0) x = 1 * 1 + x
+    // from template 0, store slot (delay 2) x back to the macro's address.
     inline void macro_setup() {
         TTI_SFPCONFIG(0, 0xF, 1);  // LaneConfig 0: back-door template load on
         TTI_SFPNOP;
@@ -263,8 +279,12 @@ namespace costs {
         TTI_SFPCONFIG(0x010, 8, 1);  // Misc: macro 0 stores in the load's format
         TTI_SFPNOP;
         TTI_SFPNOP;
-        addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, .dest = {.incr = 2}}.set(ADDR_MOD_6);
-        addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, .dest = {.incr = 8}}.set(ADDR_MOD_5);
+        addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, .dest = {.incr = 2}}.set(
+            ADDR_MOD_6
+        );
+        addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, .dest = {.incr = 8}}.set(
+            ADDR_MOD_5
+        );
         tensix_sync();
     }
 
@@ -282,7 +302,13 @@ namespace costs {
 
     // Timing: K spans per form. Data: per form the count of wrong lanes and the first
     // (word 3 f, 3 f + 1), then the 64 vectors after the last form at word 64.
-    inline void macro(const volatile uint32_t* in, volatile uint32_t* out, uint32_t p, uint32_t k_runs, Times& t) {
+    inline void macro(
+        const volatile uint32_t* in,
+        volatile uint32_t* out,
+        uint32_t p,
+        uint32_t k_runs,
+        Times& t
+    ) {
         volatile uint32_t* d = out + probe::kData;
         TTI_SFPMOV(0, 15, L7, 8);  // LaneConfig as found, restored at the end
         TTI_SFPNOP;
@@ -326,7 +352,8 @@ namespace costs {
         tensix_sync();
     }
 
-    // ---- Probe 10: SFPCONFIG combine modes (row 8) -----------------------------------
+    // ---- Probe 10: SFPCONFIG combine modes (row 8)
+    // -----------------------------------
 
     // Misc (special 8) or LaneConfig (special 15) into L0, stored to Dst slot s.
     inline void read_special(uint32_t which, uint32_t s) {
@@ -342,9 +369,8 @@ namespace costs {
         tensix_sync();
     }
 
-    // Slots: 0 Misc and 1 LaneConfig as found; Misc after replace 0x0F0, mode 2, 4, 6
-    // with 0x0CC (slots 2..5); LaneConfig after mode 2 (0x0001 with 0x0100) and mode 4
-    // (0x0101 with 0x0001) (slots 6, 7); both after the restore (slots 8, 9).
+    // Slots 0, 1 Misc and LaneConfig as found; 2..5 Misc 0x0F0, then 0x0CC in mode 2,
+    // 4, 6; 6, 7 LaneConfig 1 mode 2 0x100, 0x101 mode 4 1; 8, 9 after the restore.
     inline void sfpcfg(volatile uint32_t* out) {
         TTI_SFPMOV(0, 8, L6, 8);
         TTI_SFPMOV(0, 15, L7, 8);
@@ -392,7 +418,8 @@ namespace costs {
         }
     }
 
-    // ---- Probe 13: what the SFPI compiler emits (row 6) ------------------------------
+    // ---- Probe 13: what the SFPI compiler emits (row 6)
+    // ------------------------------
 
     // Inputs a, b, c at dst_reg[0..2]; results at dst_reg[3..6].
     [[gnu::noinline]] void sfpi_mad() {
@@ -413,7 +440,7 @@ namespace costs {
     [[gnu::noinline]] void sfpi_if() {
         sfpi::vFloat a = sfpi::dst_reg[0], b = sfpi::dst_reg[1], c = sfpi::dst_reg[2];
         sfpi::vFloat r = a;
-        v_if (a < b) {
+        v_if(a < b) {
             r = c;
         }
         v_endif;
