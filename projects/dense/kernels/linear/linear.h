@@ -1,5 +1,6 @@
 // Linear layer Y = X x W for islands: X, W split along K, Y along N; an island puts the
-// columns others keep, then makes its own with theirs added. Words, buffers, ports.
+// columns others keep, then makes its own with theirs added (W split along N: its own
+// columns of all K, nothing put). Words, buffers, ports.
 #pragma once
 
 #include <stdint.h>
@@ -146,7 +147,7 @@ struct Span {
 };
 
 // The K tiles of W island `at` holds: whole rows of W ([K, N] tiles, split along K),
-// or all of it.
+// or all of it (all of it too for its columns of a W split along N).
 inline Span k_part(uint32_t w, uint32_t at, uint32_t k_whole, uint32_t n_whole) {
     const Holding part = holding(w, at, k_whole * n_whole);
     if (part.pages == k_whole * n_whole) {
@@ -155,7 +156,22 @@ inline Span k_part(uint32_t w, uint32_t at, uint32_t k_whole, uint32_t n_whole) 
     if (part.pages != 0 && part.all == k_whole && part.inner == n_whole) {
         return {part.first, part.steps};
     }
+    if (part.pages != 0 && part.all == n_whole && part.inner == 1) {
+        return {0, k_whole};
+    }
     return {0, 0};
+}
+
+// The columns of W island `at` holds: its columns of a W split along N, else all.
+inline Span w_columns(uint32_t w, uint32_t at, uint32_t k_whole, uint32_t n_whole) {
+    const Holding part = holding(w, at, k_whole * n_whole);
+    if (
+        part.pages != 0 && part.pages != k_whole * n_whole && part.all == n_whole &&
+        part.inner == 1
+    ) {
+        return {part.first, part.steps};
+    }
+    return {0, n_whole};
 }
 
 // The columns of Y ([M, N] tiles: split along N, along M, or all of it) island `at`
@@ -203,9 +219,10 @@ inline Span made_rows(uint32_t x, uint32_t at, uint32_t m_tiles, uint32_t k_whol
 }
 
 // The columns island `to` keeps of the rows island `from` makes: none unless `to`
-// keeps every one of those rows.
+// keeps every one of those rows, and `from` holds W's columns of them.
 [[gnu::noinline]] inline Span window(
     uint32_t x,
+    uint32_t w,
     uint32_t y,
     uint32_t from,
     uint32_t to,
@@ -220,7 +237,14 @@ inline Span made_rows(uint32_t x, uint32_t at, uint32_t m_tiles, uint32_t k_whol
     ) {
         return {0, 0};
     }
-    return columns(y, to, m, n);
+    const Span kept_columns = columns(y, to, m, n), held = w_columns(w, from, k, n);
+    if (
+        kept_columns.first < held.first ||
+        kept_columns.first + kept_columns.count > held.first + held.count
+    ) {
+        return {0, 0};
+    }
+    return kept_columns;
 }
 
 // The islands in the order an island computes their columns: the next one first, its
@@ -239,7 +263,7 @@ inline uint32_t island_at(uint32_t here, uint32_t turn) {
             continue;
         }
         for (uint32_t to = 0; to < km::islands(); ++to) {
-            if (to != from && window(x, y, from, to, m, k, n).count != 0) {
+            if (to != from && window(x, w, y, from, to, m, k, n).count != 0) {
                 return true;
             }
         }
@@ -263,7 +287,7 @@ inline uint32_t island_at(uint32_t here, uint32_t turn) {
         const uint32_t from = island_at(here, turn);
         senders += (
             k_part(w, from, k, n).count != 0 &&
-            window(x, y, from, here, m, k, n).count != 0
+            window(x, w, y, from, here, m, k, n).count != 0
         );
     }
     return senders;

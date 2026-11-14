@@ -175,7 +175,7 @@ void kernel_main() {
         // the rows this island makes: the plan's rows start at its first
         const Span made = made_rows(x, here, m_tiles, k_whole);
         const auto window_of = [&](uint32_t to) {
-            return window(x, y, here, to, m_tiles, k_whole, n_whole);
+            return window(x, w, y, here, to, m_tiles, k_whole, n_whole);
         };
         const Holding y_here = holding(y, here, m_tiles * n_whole);
         const auto y_matrix = TensorAccessor(y_args, y_here.address);

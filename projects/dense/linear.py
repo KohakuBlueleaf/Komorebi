@@ -1,7 +1,8 @@
 """A linear layer Y = X x W written for islands (kernels/linear): one command a call on
 every rank; X and W split along K alike, Y along N, by hints. Each island puts the
-columns others keep and adds what they put. Prints one JSON line; exit 1: a failed
-check."""
+columns others keep and adds what they put. Or W and Y split along N, X a copy (--place
+cols): each island its own columns of all K, nothing crosses.
+Prints one JSON line; exit 1: a failed check."""
 
 import argparse
 import contextlib
@@ -32,7 +33,8 @@ G = pl.G
 L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
 # The kernel buffer the linear kernels' code takes (all five CPUs, mock builds): the
-# rows form on two cards (no puts) 79,936 B; the K form on two cards 106,784 B.
+# rows form on two cards (no puts) 79,936 B; the K form on two cards 108,240 B; the
+# cols form (no puts) 79,936 B.
 KERNEL_BYTES = {"one": 88 * 1024, "two": 108 * 1024}
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
@@ -44,10 +46,12 @@ NOCS = (0, 1)
 # both broadcasts mark a block valid once it is sent, not acknowledged (--valid sent)
 VALID_SENT = False
 # Placements by hint (X, W, Y): "k", W sharded (split along K, Y along N); "rows", W
-# replicated (X and Y split along M, W a copy: Kohaku-TT's default form).
+# replicated (X and Y split along M, W a copy: Kohaku-TT's default form); "cols", W
+# sharded along N with Y, X (the activation) a copy: column-parallel, nothing crosses.
 PLACES = {
     "k": ({"split": 1}, {"split": 0}, {"split": 1}),
     "rows": ({"split": 0}, {"copy": True}, {"split": 0}),
+    "cols": ({"copy": True}, {"split": 1}, {"split": 1}),
 }
 
 
@@ -80,10 +84,20 @@ def spans(placement, outer_split):
 
 def k_spans(placement, k_tiles):
     """Each island's K tiles of W ([K, N] tiles), as the kernels' k_part() finds them:
-    a copy holds all of K."""
+    a copy holds all of K, a split along N all of K of its columns."""
     if placement.copy:
         return [(0, k_tiles)] * len(placement.parts)
+    if placement.split == 1:
+        return [(0, k_tiles if steps else 0) for _, steps in spans(placement, 1)]
     return spans(placement, 0)
+
+
+def w_column_spans(placement, n_tiles):
+    """Each island's columns of W, as the kernels' w_columns() finds them: its own of a
+    W split along N, else all."""
+    if not placement.copy and placement.split == 1:
+        return spans(placement, 1)
+    return [(0, n_tiles)] * len(placement.parts)
 
 
 def made_spans(placement, m_tiles):
@@ -483,6 +497,7 @@ class Linear:
         self.nocs = session.sessions[0].nocs()
         self.n_tiles = n_tiles
         self.k_parts = k_spans(tensors["w"].placement, k_tiles)
+        self.w_columns = w_column_spans(tensors["w"].placement, n_tiles)
         self.made = made_spans(tensors["x"].placement, m_tiles)
         self.kept = kept_spans(tensors["y"].placement, m_tiles, n_tiles)
         if not all(count for _, count in self.k_parts):
@@ -712,9 +727,12 @@ class Linear:
 
     def window(self, here, to):
         """(first, count) of the columns island `to` keeps of the rows island `here`
-        makes, as the kernels' window() finds them."""
+        makes and holds W's columns of, as the kernels' window() finds them."""
         made, kept = self.made[here], self.kept[to]
         if not made[1] or made[0] < kept[0][0] or sum(made) > sum(kept[0]):
+            return (0, 0)
+        held = self.w_columns[here]
+        if kept[1][0] < held[0] or sum(kept[1]) > sum(held):
             return (0, 0)
         return kept[1]
 
@@ -957,7 +975,7 @@ def main():
         choices=list(PLACES),
         default="k",
         help="k: X, W split along K, Y along N (W sharded); rows: X, Y split along "
-        "M, W a copy on every island (W replicated)",
+        "M, W a copy on every island (W replicated); cols: W, Y split along N",
     )
     parser.add_argument("--cards", default="0")
     parser.add_argument("--inputs", choices=["uniform", "int"], default="uniform")
@@ -1012,8 +1030,8 @@ def main():
     log("building the inputs")
     x_matrix, w_matrix = ref.inputs(*dimensions, kind=args.inputs)
     log("inputs built")
-    # the puts' build (the K form on two cards) is the larger one; the rows form
-    # puts nothing (LINEAR_OWN) and fits the one-card buffer
+    # the puts' build (the K form on two cards) is the larger one; the rows and cols
+    # forms put nothing (LINEAR_OWN) and fit the one-card buffer
     puts = len(cards) > 1 and args.place == "k"
     kernel_bytes = args.kernel_bytes or KERNEL_BYTES["two" if puts else "one"]
     options = {"links": args.links, "kernel_bytes": kernel_bytes}

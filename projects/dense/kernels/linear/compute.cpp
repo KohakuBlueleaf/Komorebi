@@ -60,7 +60,7 @@ void kernel_main() {
         for (uint32_t turn = 1; ok && turn <= islands; ++turn) {
             const uint32_t to = island_at(here, turn);
             if (
-                window(x, y, here, to, m_tiles, k_whole, n_whole).count == 0 ||
+                window(x, w, y, here, to, m_tiles, k_whole, n_whole).count == 0 ||
                 (!LINEAR_EXCHANGES && to != here)
             ) {
                 continue;

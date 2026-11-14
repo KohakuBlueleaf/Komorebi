@@ -53,7 +53,9 @@ void kernel_main() {
         const uint32_t senders = (
             LINEAR_EXCHANGES ? senders_to(x, w, y, here, m_tiles, k_whole, n_whole) : 0
         );
-        const uint32_t kept = window(x, y, here, here, m_tiles, k_whole, n_whole).count;
+        const uint32_t kept = (
+            window(x, w, y, here, here, m_tiles, k_whole, n_whole).count
+        );
         if (
             included && mine.count != 0 && kept != 0 && senders > 1 &&
             senders >= k_blocks
@@ -84,7 +86,7 @@ void kernel_main() {
             for (uint32_t turn = 1; turn <= islands; ++turn) {
                 const uint32_t to = island_at(here, turn);
                 const uint32_t width = (
-                    window(x, y, here, to, m_tiles, k_whole, n_whole).count
+                    window(x, w, y, here, to, m_tiles, k_whole, n_whole).count
                 );
                 if (width == 0 || (!LINEAR_EXCHANGES && to != here)) {
                     continue;
