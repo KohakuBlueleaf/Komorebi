@@ -14,7 +14,7 @@ import numpy as np
 from mapcollect import rank_sums
 
 import komorebi as km
-from komorebi import formats, islands
+from komorebi import formats
 from komorebi.errors import describe_core
 
 HERE = Path(__file__).resolve().parent
@@ -242,9 +242,9 @@ ACROSS_PORT = 1  # the port island 0's ranks count the tiles island 1 sent at
 
 def across(session, run, args, local, far, output):
     """Rounds of one MAP on island 0's ranks (its own run: island 0 starts at rank 0)
-    reading `local` (their own DRAM), then `far` (island 1 holds it): each rank's tiles
-    asked of island 1's link cores, sent into the rank's L1. The last round is checked.
-    """
+    reading `local` (their own DRAM), then `far` (island 1 holds it): every rank's
+    tiles asked of island 1's link cores at once (one ask for the range of ranks), sent
+    into each rank's L1. The last round is checked."""
     graph = session.graph
     group = (graph.first(0), graph.count(0))
     handler = run.program.handler("map")
@@ -256,14 +256,9 @@ def across(session, run, args, local, far, output):
         words = map_words(source, output, [group])[0].tolist()
         asks = []
         started = time.perf_counter()
-        if asked:
+        if asked:  # rank r's two tiles are 2r and 2r + 1 (partition of 2 * count)
             words += [port + 1, landing]
-            for rank in range(count):
-                low, length = islands.partition(2 * count, rank, count)
-                core = graph.core_of(first + rank)[1]
-                asks.append(
-                    session.ask(far, 2 * first + low, length, 0, core, landing, port)[1]
-                )
+            asks.append(session.ask_range(far, 2 * first, 2, group, landing, port)[1])
         mapped = run.island(0).submit(handler, group, words)
         session.wait_together([(0, mapped)] + [(1, ask) for ask in asks])
         return (time.perf_counter() - started) * 1e6

@@ -229,7 +229,7 @@ thread's first arrival, 8.32 µs against 6.51 µs for a later arrival
   only by `send` and `forward`. Every other overlay number (17 to 63) is free.
 - Slots: 1 to 4 on each compute core (`program.slots`), as for any overlay; with fewer
   slots than handlers, a load replaces the handler the tile used least recently. The
-  slots go just under 1 MB of L1, and the session's L1 budget table lists them.
+  slots lie below 1 MB of L1, and the session's L1 budget table lists them.
 - A message whose handler is not one of the program's dynamic handlers, or whose program
   field is not 0, stops the run before compute sees it: the core gives up with reason 40
   (`handler`), and `seen` is the message's word 0. A part that does not load gives up

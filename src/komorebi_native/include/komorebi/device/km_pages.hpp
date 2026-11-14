@@ -173,7 +173,8 @@ namespace km {
 
     // CPU `cpu` of link core `rank` sends its share on link 2 rank + cpu over its held
     // connection, reads run ahead in the slots; each batch's last packet adds its
-    // pages to the count. kGave* code.
+    // pages to the count. A range: its share of the ranks, each rank's pages into its
+    // core's L1, each rank's last packet adding to its count. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_send(
         const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
@@ -199,10 +200,35 @@ namespace km {
         ) {
             return kGaveBadTransfer;
         }
-        const Partition share = partition(r.pages, link, cpus);
-        if (share.len == 0) {
+        // link 0 carries the lines (LINE); with more links, pages go on links 1 on
+        const uint32_t first_link = cpus > 1 ? 1 : 0;
+        if (link < first_link) {
             return kGaveNone;
         }
+        const bool range = r.mode == KM_PAGES_RANGE;
+        const uint32_t ranks = r.counter & 0xFFFFu;  // a range's
+        const Partition share = partition(
+            range ? ranks : r.pages, link - first_link, cpus - first_link
+        );
+        // its pages: those of its ranks (a range), else its share of the pages
+        const uint32_t base = range ? share.start * r.pages : share.start;
+        const uint32_t total = range ? share.len * r.pages : share.len;
+        if (total == 0) {
+            return kGaveNone;
+        }
+        const volatile tt_l1_ptr uint32_t* cores = (
+            l1(kernel.args().control + KM_CONTROL_CORES)
+        );
+        // range: the far core of the share's rank q (the core tables of both islands
+        // are the same, checked by the session) and address `at` there
+        const auto far = [&](uint32_t q, uint32_t at) {
+            const uint32_t xy = cores[r.to_core + q];
+            return (
+                safe_get_noc_addr(
+                    xy & 0xFFFFu, xy >> 16, at, tt::tt_fabric::edm_to_local_chip_noc
+                )
+            );
+        };
         const uint32_t limit = kernel.args().wait_limit;
         uint32_t code = kGaveNone;
         const auto wait = [&](auto ready) {
@@ -222,7 +248,7 @@ namespace km {
         const InterleavedAddrGen<true> to = {
             .bank_base_address = r.to, .page_size = r.page
         };
-        const uint64_t counter = (
+        uint64_t counter = (
             safe_get_noc_addr(
                 r.counter & 0xFFu,
                 r.counter >> 8,
@@ -246,18 +272,18 @@ namespace km {
         const auto read = [&](uint32_t k) {
             const uint32_t s = k % slots;
             noc_async_read(
-                from.get_noc_addr(r.first + share.start + k),
+                from.get_noc_addr(r.first + base + k),
                 area + kPagesSlots + s * r.page,
                 r.page
             );
             read_mark[s] = noc_reads_num_issued[noc_index];
         };
-        uint32_t ahead = share.len < slots ? share.len : slots;
+        uint32_t ahead = total < slots ? total : slots;
         for (uint32_t k = 0; k < ahead; k++) {
             read(k);
         }
         uint32_t batch = 0;
-        for (uint32_t k = 0; k < share.len; k++) {
+        for (uint32_t k = 0; k < total; k++) {
             const uint32_t s = k % slots;
             const uint32_t slot = area + kPagesSlots + s * r.page;
             if (!wait([&] {
@@ -265,15 +291,26 @@ namespace km {
             })) {
                 break;
             }
-            const uint32_t p = r.first + share.start + k;
+            const uint32_t p = r.first + base + k;
             auto* header = (
                 reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(
                     area + kPagesHeaders + s * kPagesHeaderStride
                 )
             );
-            const uint64_t at = pages_target(r, to, p, share.start + k);
+            // a range: page j of rank q of the share
+            const uint32_t q = range ? share.start + k / r.pages : 0;
+            const uint32_t j = range ? k % r.pages : 0;
+            const uint64_t at = (
+                range ? far(q, r.to + j * r.page) : pages_target(r, to, p, base + k)
+            );
+            if (range) {
+                counter = far(q, r.count);
+            }
             batch++;
-            if (batch == kPagesBatch || k + 1 == share.len) {
+            if (
+                batch == kPagesBatch || k + 1 == total ||
+                (range && j + 1 == r.pages)
+            ) {
                 header->to_noc_fused_unicast_write_atomic_inc(
                     tt::tt_fabric::NocUnicastAtomicIncFusedCommandHeader(
                         at, counter, static_cast<uint16_t>(batch), true
@@ -296,7 +333,7 @@ namespace km {
                 reinterpret_cast<uint32_t>(header), sizeof(PACKET_HEADER_TYPE)
             );
             sent_mark[s] = noc_nonposted_writes_num_issued[noc_index];
-            if (ahead < share.len) {  // the slot again, once its packet left L1
+            if (ahead < total) {  // the slot again, once its packet left L1
                 if (!wait([&] {
                     return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, sent_mark[s]);
                 })) {
@@ -401,6 +438,83 @@ namespace km {
         return code != kGaveNone ? code : sent;
     }
 
+    // LINE (link core 0's link 0 CPU): the packet the dispatcher staged in the link
+    // area, then its count line, one hop into the other island's dispatcher, over the
+    // held connection; once both left the core. Every wait bounded. kGave* code.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t pages_line(
+        const Kernel& kernel, const km_command_t& command
+    ) {
+        const uint32_t a[6] = {
+            command.a0, command.a1, command.a2, command.a3, command.a4, command.a5
+        };
+        const uint32_t stage = a[KM_LINE_STAGE], number = a[KM_LINE_NUMBER];
+        const uint32_t x = a[KM_LINE_TILE] & 0xFFFFu, y = a[KM_LINE_TILE] >> 16;
+        const uint32_t area = a[KM_LINE_AREA];
+        if (
+            pages_held.open == 0 || stage >= KM_LINK_STAGES ||
+            (a[KM_LINE_PACKET] | a[KM_LINE_COUNT] | area) % 16 != 0 ||
+            static_cast<uint64_t>(area) + KM_LINK_AREA_BYTES > MEM_L1_SIZE
+        ) {
+            return kGaveBadTransfer;
+        }
+        uint32_t code = kGaveNone;
+        const auto wait = [&](auto ready) {
+            code = kernel.poll_at(
+                kWherePages,
+                [&] {
+                    invalidate_l1_cache();
+                    return ready();
+                },
+                kernel.args().wait_limit
+            );
+            return code == kGaveNone;
+        };
+        const uint32_t at = area + KM_LINK_STAGE + stage * KM_LINK_STAGE_BYTES;
+        if (!wait([&] {  // the dispatcher's stores landed
+            return (
+                l1(at)[0] == number && l1(at + 64)[0] == number &&
+                l1(at + KM_LINK_PACKET_BYTES)[1] == number
+            );
+        })) {
+            return code;
+        }
+        auto& sender = pages_sender();
+        const auto packet = [&](uint32_t which, uint32_t to, uint32_t from, uint32_t n) {
+            const uint32_t header = area + KM_LINK_HEADERS + which * 64;
+            for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
+                l1(header)[w] = 0;
+            }
+            auto* made = reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(header);
+            made->to_chip_unicast(1);
+            made->to_noc_unicast_write(
+                tt::tt_fabric::NocUnicastCommandHeader{
+                    safe_get_noc_addr(x, y, to, tt::tt_fabric::edm_to_local_chip_noc)
+                },
+                n
+            );
+            if (!wait([&] {
+                return sender.edm_has_space_for_packet<1>();
+            })) {
+                return false;
+            }
+            sender.send_payload_without_header_non_blocking_from_address(from, n);
+            sender.send_payload_flush_non_blocking_from_address(
+                header, sizeof(PACKET_HEADER_TYPE)
+            );
+            return true;
+        };
+        if (
+            packet(0, a[KM_LINE_PACKET], at, KM_LINK_PACKET_BYTES) &&
+            packet(1, a[KM_LINE_COUNT], at + KM_LINK_PACKET_BYTES, 64)
+        ) {
+            wait([] {
+                return ncrisc_noc_nonposted_writes_sent(noc_index);
+            });
+        }
+        return code;
+    }
+
     // At the kernel's end: the held connection's teardown, bounded (the router must
     // not keep this core).
     template <typename Kernel>
@@ -455,8 +569,9 @@ namespace km {
         return code;
     }
 
-    // The part of CPU `cpu` (0 the reader, 1 the writer) of a PAGES command; a failure
-    // gives the command up (recorded). False: given up.
+    // The link core's services, in one place: the part of CPU `cpu` (0 the reader, 1
+    // the writer) of a PAGES command (open, send, range, wait, line); a failure gives
+    // the command up (recorded). False: given up.
     template <typename Kernel>
     __attribute__((noinline)) bool pages_serve(
         const Kernel& kernel, const km_command_t& command, uint32_t cpu, uint32_t word
@@ -468,10 +583,20 @@ namespace km {
         uint32_t code = kGaveNone;
         if (r.mode == KM_PAGES_WAIT) {
             code = cpu == 0 ? pages_wait(kernel, r) : kGaveNone;
-        } else if (r.mode == KM_PAGES_SEND && links) {
+        } else if ((r.mode == KM_PAGES_SEND || r.mode == KM_PAGES_RANGE) && links) {
             code = pages_send(kernel, r, index, cpu);
+        } else if (r.mode == KM_PAGES_LINE && links) {
+            // link core 0's link 0 CPU, which holds its connection
+            code = cpu == 0 && index == 0 ? pages_line(kernel, command) : kGaveNone;
         } else if (r.mode == KM_PAGES_OPEN && links) {
             code = pages_open(kernel, r, index, cpu);
+#if defined(KM_LINKS) && defined(COMPILE_FOR_BRISC)  // the reader: link 0's CPU
+        } else if (r.mode == KM_PAGES_MESSAGES && links) {
+            code = index == 0 && cpu == 0 ? link_messages(kernel, command) : kGaveNone;
+#elif defined(KM_LINKS)
+        } else if (r.mode == KM_PAGES_MESSAGES && links) {
+            code = kGaveNone;
+#endif
         } else {
             code = kGaveBadTransfer;
         }

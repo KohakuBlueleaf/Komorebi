@@ -1102,7 +1102,8 @@ namespace {
             uint8_t index,
             const std::string& format,
             uint32_t page_size,
-            uint32_t total_size
+            uint32_t total_size,
+            bool first
         ) {
             tt::tt_metal::CBDescriptor descriptor;
             descriptor.total_size = total_size;
@@ -1114,7 +1115,12 @@ namespace {
                     .page_size = page_size
                 }
             );
-            desc_.cbs.push_back(std::move(descriptor));
+            // the runtime places a core's buffers in this order from its L1 base
+            if (first) {
+                desc_.cbs.insert(desc_.cbs.begin(), std::move(descriptor));
+            } else {
+                desc_.cbs.push_back(std::move(descriptor));
+            }
         }
 
         // A kernel from a file on `cores`, args (x, y, words) per core; processor 0 or
@@ -2913,7 +2919,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("index"),
             nb::arg("format"),
             nb::arg("page_size"),
-            nb::arg("total_size")
+            nb::arg("total_size"),
+            nb::arg("first") = false
         ).def(
             "kernel",
             &Launch::kernel,

@@ -1,6 +1,6 @@
 """The matrix product over the islands of a session: A and Y split by row tiles into
 even parts by island, W a copy on every island; each island runs the grid plan of its
-own rows, one GRID command a call over every island's cores (one card: every row).
+own rows, one GRID command an island a call on its rect (one card: every row).
 Prints one JSON line; exits 1 when the check fails. Usage in README.md."""
 
 import argparse
@@ -25,6 +25,12 @@ G = pl.G
 log = run.log
 
 
+def w_placement(session, moved):
+    """B's placement: a copy on every island, or (`moved`) all on island 0 (its pages
+    follow the group of island 0's ranks)."""
+    return {"like": (0, session.graph.count(0))} if moved else {"copy": True}
+
+
 def island_rows(a_tensor, k_tiles):
     """[(first row tile, row tiles)] of each island: its part of A's pages."""
     return [
@@ -35,8 +41,8 @@ def island_rows(a_tensor, k_tiles):
 
 class Rows:
     """The product loaded on every island: island i's grid plan on its rows of A and
-    Y, one GRID command a call on the flat group over every island's rectangle,
-    exclusive (its broadcasts)."""
+    Y, one GRID command an island a call on its rect's flat ranks, exclusive (its
+    broadcasts)."""
 
     def __init__(self, session, dimensions, tensors, wait=1.0):
         graph, sessions = session.graph, session.sessions
@@ -52,16 +58,19 @@ class Rows:
         ]
         if None in self.plans:
             raise SystemExit(f"no grid plan fits L1 for {dimensions}")
-        last = len(self.plans) - 1
-        rect = self.plans[last].group(nocs[last].grid)
-        self.group = (0, graph.first(last) + rect[0] + rect[1])
-        word = self.group[0] | self.group[1] << 16
-        reached = {
-            island: (first, count) for island, first, count in graph.split(self.group)
-        }
+        # one command an island a call, on its rect's ranks: a command whose group
+        # reaches another island crosses, and a crossing command is never exclusive
+        rects = [plan.group(n.grid) for plan, n in zip(self.plans, nocs)]
+        self.groups = [
+            (graph.first(i) + first, count) for i, (first, count) in enumerate(rects)
+        ]
         programs = [
             card.grid_program(
-                plan, island_nocs, tensors, first_row=first, command=(reached[i], word)
+                plan,
+                island_nocs,
+                tensors,
+                first_row=first,
+                command=(rects[i], self.groups[i][0] | self.groups[i][1] << 16),
             )
             for i, (plan, island_nocs, (first, _)) in enumerate(
                 zip(self.plans, nocs, self.rows)
@@ -80,20 +89,20 @@ class Rows:
 
     def calls(self, commands, mode=G["kGridFull"], timeout=60.0):
         """`commands` GRID commands back to back: (host seconds from the first submit
-        to the last event, [commands, islands] microseconds of each part)."""
-        words = np.tile(np.array(self.words(mode), np.int64), (commands, 1))
+        to the last event, [commands, islands] microseconds of each island's)."""
+        islands = len(self.groups)
+        words = np.tile(np.array(self.words(mode), np.int64), (commands * islands, 1))
+        firsts, counts = np.tile(np.array(self.groups, np.int64).T, commands)
         started = time.perf_counter()
-        handles = self.run.submit_many(
-            "grid", self.group[0], self.group[1], words, exclusive=True
-        )
+        handles = self.run.submit_many("grid", firsts, counts, words, exclusive=True)
         events = self.run.wait(list(handles), timeout=timeout)
         host_s = time.perf_counter() - started
         unfinished = [part for event in events for part in event if part.kind != "done"]
         if unfinished:
             raise km.KomorebiError(f"{len(unfinished)} parts not done: {unfinished[0]}")
         return host_s, np.array(
-            [[part.microseconds for part in event] for event in events]
-        )
+            [part.microseconds for event in events for part in event]
+        ).reshape(commands, islands)
 
     def single(self, commands):
         """`commands` GRID commands one at a time (each waited for): the slowest
@@ -101,6 +110,15 @@ class Rows:
         return np.concatenate(
             [self.calls(1, timeout=10.0)[1].max(axis=1) for _ in range(commands)]
         )
+
+    def cross(self, session, timeout=10.0):
+        """B's pages, held by island 0, sent by its link cores into the same pages of
+        island 1's DRAM and waited for there (two islands): host seconds."""
+        w = self.tensors["w"]
+        started = time.perf_counter()
+        far = (1, session.wait_pages(1, session.link_cores[1][0], w.pages))
+        session.wait_together([session.send_pages(w, 0, w.pages, w), far], timeout)
+        return time.perf_counter() - started
 
     def stop(self):
         """Stops the run; every island's kernel result and the cores that gave up."""
@@ -181,6 +199,44 @@ def measure(product, cards, seconds, report):
     log(f"loop: {report['loop']['microseconds_per_call']} us per call")
 
 
+def measure_moved(product, session, cards, seconds, report):
+    """B held by island 0 only: each call B crosses into island 1's DRAM, then one
+    GRID command, waited for; for about `seconds`, every card's AICLK sampled."""
+    first_cross = product.cross(session)
+    single = product.single(3)
+    one_microseconds = float(np.median(single)) + first_cross * 1e6
+    report["single_microseconds"] = [float(value) for value in single]
+    log(f"first crossing {first_cross * 1e3:.2f} ms, single call {single[0]:.1f} us")
+    reps = max(2, math.ceil(seconds * 1e6 / one_microseconds))
+    crossing_s, product_s, microseconds = 0.0, 0.0, []
+    with contextlib.ExitStack() as stack:
+        clocks = [stack.enter_context(bench.Clock(index)) for index in cards]
+        log(f"loop of {reps} calls, each with B's crossing")
+        started = time.perf_counter()
+        for _ in range(reps):
+            crossing_s += product.cross(session)
+            host_s, parts = product.calls(1, timeout=10.0)
+            product_s += host_s
+            microseconds.append(parts[0])
+        wall_s = time.perf_counter() - started
+    pages = product.tensors["w"].pages
+    report["loop"] = {
+        "reps": reps,
+        "seconds": round(wall_s, 3),
+        "microseconds_per_call": round(wall_s * 1e6 / reps, 3),
+        "crossing_microseconds_per_call": round(crossing_s * 1e6 / reps, 3),
+        "product_microseconds_per_call": round(product_s * 1e6 / reps, 3),
+        "crossing_gb_per_s": round(
+            pages * product.tensors["w"].aligned_page_bytes * reps / crossing_s / 1e9, 2
+        ),
+        "island_microseconds_median": np.median(microseconds, axis=0).tolist(),
+        "aiclk_mhz": {
+            card_index: clock.summary() for card_index, clock in zip(cards, clocks)
+        },
+    }
+    log(f"loop: {report['loop']['microseconds_per_call']} us per call")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--shape", choices=run.SHAPES, default=None)
@@ -190,6 +246,11 @@ def main():
     parser.add_argument("--cards", default="0,1")
     parser.add_argument("--inputs", choices=["uniform", "int"], default="uniform")
     parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument("--links", type=int, default=0, help="page links, two cards")
+    parser.add_argument("--kernel-bytes", type=int, default=None, help="kernel buffer")
+    parser.add_argument(
+        "--b-moved", action="store_true", help="B on island 0 only, moved each call"
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     dimensions = run.SHAPES[args.shape] if args.shape else (args.m, args.k, args.n)
@@ -200,17 +261,18 @@ def main():
     cards = [int(value) for value in args.cards.split(",")]
     m_rows, k_depth, n_columns = dimensions
     report = {"shape": args.shape, "m": m_rows, "k": k_depth, "n": n_columns}
-    report["cards"] = cards
+    report |= {"cards": cards, "links": args.links, "b_moved": args.b_moved}
     log("building the inputs")
     a_matrix, w_matrix = ref.inputs(m_rows, k_depth, n_columns, kind=args.inputs)
     log("inputs built")
-    with km.Session(cards=cards, log=log) as session:
+    options = {"links": args.links, "kernel_bytes": args.kernel_bytes}
+    with km.Session(cards=cards, log=log, **options) as session:
         started = time.perf_counter()
         y_matrix = np.zeros((m_rows, n_columns), np.float32)
         tensors = {}
         for name, value, placement in (
             ("a", a_matrix, {"by": "island"}),
-            ("w", w_matrix, {"copy": True}),
+            ("w", w_matrix, w_placement(session, args.b_moved)),
             ("y", y_matrix, {"by": "island"}),
         ):
             tensors[name] = session.tensor(value, "bfloat16", "tile", **placement)
@@ -222,11 +284,14 @@ def main():
             {"rows": list(rows), "plan": run.describe(plan)}
             for rows, plan in zip(product.rows, product.plans)
         ]
-        report["group"] = list(product.group)
+        report["groups"] = [list(group) for group in product.groups]
         report["x280_mhz"] = [one.pll_mhz for one in session.sessions]
-        log(f"loaded on {len(product.plans)} islands, group {product.group}")
+        log(f"loaded on {len(product.plans)} islands, groups {product.groups}")
         try:
-            measure(product, cards, args.seconds, report)
+            if args.b_moved:
+                measure_moved(product, session, cards, args.seconds, report)
+            else:
+                measure(product, cards, args.seconds, report)
         except km.KomorebiError as error:
             report["failed"] = product.failed(error)
             log(f"failed: {json.dumps(report['failed'], default=str)}")

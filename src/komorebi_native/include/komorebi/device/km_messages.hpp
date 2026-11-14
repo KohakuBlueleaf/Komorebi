@@ -81,6 +81,8 @@ namespace km {
     // islands), the handler above it.
     constexpr uint32_t kMessagesOutHandlerShift = 16;
     constexpr uint32_t kMessagesOutDestination = 0xFFFF;
+    // A writer's bin for a rank of another island: this bit above its flat rank.
+    constexpr uint32_t kMessagesAway = 1u << 31;
 
     // A body beside a message (MessagesArgs::body_bytes > 0): word 1 of the message is
     // its body's bytes (0: none); a packet holds at most kMessagesBodyPacket messages.
@@ -195,18 +197,137 @@ namespace km {
     }
 
     // The counter tile that holds the tail of flat rank `rank`, as this island's core
-    // (`rank_offset`: the rank of core 0, Islands::offset).
+    // (`island_first`: the island's first rank).
     inline uint32_t messages_counter(
         const km_command_t& command,
         uint32_t counter_tiles,
         uint32_t rank,
-        uint32_t rank_offset
+        uint32_t island_first
     ) {
         return (
-            first(command) - rank_offset + messages_ranks(command, counter_tiles) +
+            first(command) - island_first + messages_ranks(command, counter_tiles) +
             (rank - first(command)) % counter_tiles
         );
     }
+
+    // A run's message ranks over the islands its group spans: each island's part gives
+    // its cores but its last K, its counter tiles. One island: messages_ranks above.
+    class MessageRanks {
+    public:
+        static constexpr uint32_t kNone = 0xFFFFFFFF;
+
+        MessageRanks(
+            const Islands& view, const km_command_t& command, uint32_t counter_tiles
+        ) :
+            view_(view),
+            group_first_(km::first(command)),
+            group_end_(km::first(command) + km::count(command)),
+            counters_(counter_tiles) {
+            for (uint32_t island = 0; island < tables(); island++) {
+                uint32_t low = 0, high = 0;
+                part(island, low, high);
+                parts_ += high > low;
+            }
+            reserved_ = counters_;
+            for (uint32_t island = 0; island < tables(); island++) {
+                uint32_t low = 0, high = 0;
+                part(island, low, high);
+                if (island == here()) {
+                    low_ = low;
+                    high_ = high;
+                    before_ = count_;
+                }
+                count_ += held(low, high);
+            }
+        }
+
+        // The run's message ranks; whether its group has parts on several islands.
+        uint32_t count() const {
+            return count_;
+        }
+
+        bool spans() const {
+            return parts_ > 1;
+        }
+
+        // This island's part, flat: message ranks from low(), then the reserved cores.
+        uint32_t low() const {
+            return low_;
+        }
+
+        uint32_t ranks_here() const {
+            return held(low_, high_);
+        }
+
+        // Whether flat rank `flat` of this island's part is reserved (no message rank).
+        bool reserved(uint32_t flat) const {
+            return flat - low_ >= ranks_here();
+        }
+
+        // The message rank of flat rank `flat` of this island (reserved: count() on).
+        uint32_t rank_of(uint32_t flat) const {
+            return reserved(flat) ? count_ + flat - low_ - ranks_here()
+                                  : before_ + flat - low_;
+        }
+
+        // The flat rank of message rank `rank` (< count()).
+        uint32_t flat_of(uint32_t rank) const {
+            for (uint32_t island = 0; island < tables(); island++) {
+                uint32_t low = 0, high = 0;
+                part(island, low, high);
+                if (rank < held(low, high)) {
+                    return low + rank;
+                }
+                rank -= held(low, high);
+            }
+            return kNone;
+        }
+
+        // Counter tile `tile` of this island as its core, and the one that holds flat
+        // rank `flat`'s tail (`flat` a message rank of this island).
+        uint32_t tile_core(uint32_t tile) const {
+            return low_ + ranks_here() + tile - view_.first();
+        }
+
+        uint32_t counter_core(uint32_t flat) const {
+            return tile_core((flat - low_) % (counters_ == 0 ? 1 : counters_));
+        }
+
+        // Counter tile index of this island's flat rank `flat` (counter tiles: < K).
+        uint32_t tile_of(uint32_t flat) const {
+            return flat - low_ - ranks_here();
+        }
+
+    private:
+        // Islands in the table (one, as [0, 2^32), when no table was written).
+        uint32_t tables() const {
+            return view_.ranks() == 0 ? 1 : view_.count();
+        }
+
+        uint32_t here() const {
+            return view_.ranks() == 0 ? 0 : view_.here();
+        }
+
+        uint32_t held(uint32_t low, uint32_t high) const {
+            return high - low > reserved_ ? high - low - reserved_ : 0;
+        }
+
+        void part(uint32_t island, uint32_t& low, uint32_t& high) const {
+            uint32_t start = 0, end = 0xFFFFFFFF;
+            if (view_.ranks() != 0) {
+                start = view_.entry_first(island);
+                end = start + view_.entry_count(island);
+            }
+            low = start > group_first_ ? start : group_first_;
+            high = end < group_end_ ? end : group_end_;
+            high = high > low ? high : low;
+        }
+
+        Islands view_;
+        uint32_t group_first_, group_end_, counters_;
+        uint32_t reserved_ = 0, count_ = 0, before_ = 0, low_ = 0, high_ = 0;
+        uint32_t parts_ = 0;
+    };
 
     // Commands the first give-up of a dynamic run (where, position, run).
     inline void messages_gave_up(
@@ -288,6 +409,35 @@ namespace km {
                 return false;
             }
         }
+    }
+
+    // True when the next command of rank `me` in the ring is the end of run `run`.
+    template <typename CoreType>
+    inline bool messages_ended(const CoreType& core, uint32_t run, uint32_t me) {
+        const Args& arguments = core.args();
+        const volatile km_command_t*
+            ring = (
+                reinterpret_cast<const volatile km_command_t*>(
+                    core.control(KM_CONTROL_RING)
+                )
+            );
+        volatile tt_l1_ptr uint32_t* last = core.state() + kStLast;
+        for (uint32_t slot_index = 0; slot_index < arguments.depth; slot_index++) {
+            const uint32_t sequence = ring[slot_index].sequence;
+            if (!newer(sequence, last[slot_index])) {
+                continue;
+            }
+            km_command_t candidate;
+            copy_command(&ring[slot_index], &candidate);
+            if (
+                candidate.sequence == sequence && KM_LANDED(&candidate) &&
+                handler(candidate) == KM_HANDLER_MESSAGES_END && candidate.a0 == run &&
+                in_group(candidate, me)
+            ) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Start-up, before the first command: zero-fills this core's queue (mark 0 is
@@ -445,21 +595,25 @@ namespace km {
         // A counter tile sets its cores' tails to their heads, then shows READY; a
         // core waits for its counter tile's READY before it reads its tail there.
         const uint32_t counter_tiles = messages_arguments.counters;
-        const uint32_t ranks = messages_ranks(command, counter_tiles);
+        const uint32_t island_first = islands_at(arguments.control).first();
+        const MessageRanks message_ranks(
+            islands_at(arguments.control), command, counter_tiles
+        );
+        const uint32_t ranks = message_ranks.ranks_here();
         // This core's flat rank (arguments.me: its core, for queues and lines).
-        const uint32_t rank_offset = islands_at(arguments.control).offset();
-        const uint32_t me = rank_offset + arguments.me;
-        const bool counter = me - first(command) >= ranks;
+        const uint32_t me = island_first + arguments.me;
+        const bool counter = message_ranks.reserved(me);
         if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
             where = where != 0 ? where : kWhereMessagesCounter;
         } else if (where == 0 && counter) {
             *tail = head;  // nobody sends here: the loop sees an empty queue
             uint32_t served = 0;
-            for (
-                uint32_t rank = me - first(command) - ranks; rank < ranks;
+            for (  // this tile's ranks: every counter_tiles-th of the run
+                uint32_t rank = message_ranks.tile_of(me);
+                rank < ranks && message_ranks.tile_of(me) < counter_tiles;
                 rank += counter_tiles
             ) {
-                const uint32_t core = first(command) + rank - rank_offset;
+                const uint32_t core = message_ranks.low() + rank - island_first;
                 noc_async_read(
                     reader.core_noc(
                         core,
@@ -486,10 +640,7 @@ namespace km {
         } else if (
             where == 0 &&
             !messages_ready(
-                reader,
-                messages_counter(command, counter_tiles, me, rank_offset),
-                KM_TAILS_READER,
-                run
+                reader, message_ranks.counter_core(me), KM_TAILS_READER, run
             )
         ) {
             where = kWhereMessagesCounter;
@@ -508,12 +659,7 @@ namespace km {
             counter
                 ? 0
                 : reader.core_noc(
-                    messages_counter(
-                        command,
-                        counter_tiles == 0 ? 1 : counter_tiles,
-                        me,
-                        rank_offset
-                    ),
+                    message_ranks.counter_core(me),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * arguments.me
                 )
@@ -606,29 +752,7 @@ namespace km {
         };
         // True when the next command of this core in the ring is this run's end.
         auto end_command = [&] {
-            const volatile km_command_t*
-                ring = (
-                    reinterpret_cast<const volatile km_command_t*>(
-                        reader.control(KM_CONTROL_RING)
-                    )
-                );
-            volatile tt_l1_ptr uint32_t* last = reader.state() + kStLast;
-            for (uint32_t slot_index = 0; slot_index < arguments.depth; slot_index++) {
-                const uint32_t sequence = ring[slot_index].sequence;
-                if (!newer(sequence, last[slot_index])) {
-                    continue;
-                }
-                km_command_t candidate;
-                copy_command(&ring[slot_index], &candidate);
-                if (
-                    candidate.sequence == sequence && KM_LANDED(&candidate) &&
-                    handler(candidate) == KM_HANDLER_MESSAGES_END &&
-                    candidate.a0 == run && in_group(candidate, me)
-                ) {
-                    return true;
-                }
-            }
-            return false;
+            return messages_ended(reader, run, me);
         };
 
         while (where == 0) {
@@ -905,10 +1029,27 @@ namespace km {
         }
     }
 
-    // Generic writer: outgoing messages in bins by destination; one atomic add per bin
-    // reserves positions, then the messages go to that queue. True: the run ended.
-    template <typename WriterType>
-    inline bool messages_writer(WriterType& writer, const km_command_t& command) {
+    // Where a writer's bins go when their destination is not a queue of this island:
+    // nowhere (every destination is local). km_link.hpp's LinkOut takes the others.
+    struct LocalOnly {
+        bool takes(uint32_t) const {
+            return false;
+        }
+
+        template <typename WriterType>
+        uint32_t put(
+            WriterType&, const km_command_t&, uint32_t, uint32_t, uint32_t, uint32_t
+        ) {
+            return 0;
+        }
+    };
+
+    // Generic writer: bins by destination, one atomic add a bin reserves positions,
+    // then the messages go to that queue, or to `away` if it takes it. True: ended.
+    template <typename WriterType, typename Away = LocalOnly>
+    inline bool messages_writer(
+        WriterType& writer, const km_command_t& command, Away away = Away()
+    ) {
         const Args& arguments = writer.args();
         const MessagesArgs messages_arguments = messages_args(writer);
         const uint32_t run = command.sequence;
@@ -937,7 +1078,7 @@ namespace km {
             .page_size = messages_arguments.body_bytes
         };
         const uint32_t store = get_write_ptr(kCbMessagesBins);
-        const uint32_t rank_offset = islands_at(arguments.control).offset();
+        const uint32_t island_first = islands_at(arguments.control).first();
         uint32_t bin_destination[kMessagesBinsMax], bin_fill[kMessagesBinsMax];
         // A bin's body (its last message's; a body is sent at once): L1 address, bytes.
         uint32_t bin_body[kMessagesBinsMax], bin_body_bytes[kMessagesBinsMax];
@@ -954,17 +1095,23 @@ namespace km {
         writer_flags[0] = run;
         // A core reserves on the counter tiles: it waits until each shows READY.
         const uint32_t counter_tiles = messages_arguments.counters;
-        const uint32_t ranks = messages_ranks(command, counter_tiles);
-        if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
+        const MessageRanks message_ranks(
+            islands_at(arguments.control), command, counter_tiles
+        );
+        const uint32_t island_ranks = islands_at(arguments.control).ranks();
+        if (
+            counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX ||
+            message_ranks.ranks_here() == 0
+        ) {
             where = kWhereMessagesCounter;
-        } else if (rank_offset + arguments.me - first(command) < ranks) {
+        } else if (!message_ranks.reserved(island_first + arguments.me)) {
             for (
                 uint32_t counter_tile = 0; counter_tile < counter_tiles && where == 0;
                 counter_tile++
             ) {
                 if (!messages_ready(
                     writer,
-                    first(command) - rank_offset + ranks + counter_tile,
+                    message_ranks.tile_core(counter_tile),
                     KM_TAILS_WRITER,
                     run
                 )) {
@@ -1002,18 +1149,40 @@ namespace km {
         // Bin `bin` to its destination: reserve, mark, write, wait for the writes.
         auto flush = [&](uint32_t bin) {
             const uint32_t bin_messages = bin_fill[bin];
+            if (
+                (bin_destination[bin] & kMessagesAway) != 0 &&
+                !away.takes(bin_destination[bin])
+            ) {
+                where = kWhereMessagesBadDest;  // another island's rank and no link here
+                lost_to = bin_destination[bin];
+                return false;
+            }
+            if (away.takes(bin_destination[bin])) {
+                where = away.put(
+                    writer,
+                    command,
+                    bin_destination[bin],
+                    store + bin * kMessagesPacket * messages_arguments.message_bytes,
+                    messages_arguments.message_bytes,
+                    bin_messages
+                );
+                if (where != 0) {
+                    return false;
+                }
+                sent += bin_messages;
+                messages[KM_MESSAGES_SENT / 4] = sent;
+                bin_fill[bin] = 0;
+                bin_destination[bin] = kMessagesEnd;
+                held--;
+                return true;
+            }
             returned[0] = kMessagesEnd;
             invalidate_l1_cache();  // a fence: the store lands before the answer can
             noc_fast_atomic_increment<noc_mode, true>(
                 noc_index,
                 write_at_cmd_buf,
                 writer.core_noc(
-                    messages_counter(
-                        command,
-                        counter_tiles,
-                        rank_offset + bin_destination[bin],
-                        rank_offset
-                    ),
+                    message_ranks.counter_core(island_first + bin_destination[bin]),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * bin_destination[bin]
                 ),
@@ -1152,11 +1321,17 @@ namespace km {
                 ended = flush_all();
                 break;
             }
-            // this island's local core of the rank (a rank on another island goes to
-            // its link in a later version)
-            const uint32_t destination = (
-                (outgoing_word & kMessagesOutDestination) - rank_offset
+            // this island's local core of the rank; a rank on another island (no X280
+            // rank's core) is kMessagesAway above its flat rank, for its link
+            uint32_t destination = (
+                (outgoing_word & kMessagesOutDestination) - island_first
             );
+            if (
+                island_ranks != 0 && destination >= island_ranks &&
+                !(messages_arguments.x280 != 0 && destination >= KM_X280_RANK_CORE(0))
+            ) {
+                destination = kMessagesAway | (outgoing_word & kMessagesOutDestination);
+            }
             const uint32_t bin = destination % bins;
             if (
                 bin_destination[bin] != destination && bin_fill[bin] != 0 && !flush(bin)
@@ -1284,10 +1459,14 @@ namespace km {
             idle_(get_arg_val<uint32_t>(kCArgIdle)),
             wait_(get_arg_val<uint32_t>(kCArgWait)),
             run_(command.sequence),
-            first_(km::first(command)),
-            count_(messages_ranks(command, compute.arg(kMessagesCArgCounters))),
+            ranks_(
+                islands_at(get_arg_val<uint32_t>(kCArgControl)),
+                command,
+                compute.arg(kMessagesCArgCounters)
+            ),
+            count_(ranks_.count()),
             x280_(compute.arg(kMessagesCArgX280)),
-            rank_(compute.me() - km::first(command)),
+            rank_(ranks_.rank_of(compute.me())),
             message_bytes_(compute.arg(kMessagesCArgMessage) & 0xFFFF),
             body_bytes_(compute.arg(kMessagesCArgMessage) >> kMessagesCArgBodyShift),
             quota_(compute.arg(kMessagesCArgQuota)),
@@ -1469,8 +1648,8 @@ namespace km {
                 if (!failed_) {
                     push_out(
                         (destination < count_
-                             ? first_ + destination
-                             : islands_at(control_).offset() +
+                             ? ranks_.flat_of(destination)
+                             : islands_at(control_).first() +
                                    KM_X280_RANK_CORE(destination - count_)) |
                             (handler & 0xFF) << kMessagesOutHandlerShift,
                         message,
@@ -1518,7 +1697,7 @@ namespace km {
                 (void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId);
                 if (!failed_) {
                     push_out(
-                        (first_ + destination) |
+                        ranks_.flat_of(destination) |
                             (handler & 0xFF) << kMessagesOutHandlerShift,
                         message,
                         body.bytes | (body.address >> 6) << kMessagesOutBodyShift
@@ -1722,7 +1901,7 @@ namespace km {
         uint32_t idle_;
         uint32_t wait_;
         uint32_t run_;
-        uint32_t first_;
+        MessageRanks ranks_;
         uint32_t count_;
         uint32_t x280_;
         uint32_t rank_;

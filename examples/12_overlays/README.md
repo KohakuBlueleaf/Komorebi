@@ -106,7 +106,7 @@ What the numbers say:
 - With 2 slots, only the first command of each overlay loads (120 loading runs). The loading
   median on 120 cores, 3,126 cycles, is that first load on every core at once.
 - The calls cost what the same code costs in a kernel: mix's loop takes about 540 cycles
-  loaded or held. The slots sit just under 1 MB of L1: a loop run from above it takes
+  loaded or held. The slots sit below 1 MB of L1: a loop run from above it takes
   about 4 cycles more an iteration (815 cycles here, 25,900 for scale, before they moved).
 
 [overlay_costs](../../experiments/overlay_costs/README.md) and

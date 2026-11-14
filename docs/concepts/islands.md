@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, a card split into islands, the links between islands and what they carry, and what is not built.
+summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, a card split into islands, the links between islands and what they carry, messages across a link, and what is not built.
 tags:
   - concepts
   - islands
@@ -13,13 +13,14 @@ Status: implemented over two Blackhole p150a cards, each card's chip an island, 
 over one card split into islands. A group that spans islands runs as one part on each,
 every core sees its flat rank in the whole group, and a program written for one card
 (one `Program`, as example 01's) runs on two as it does on one. Nothing crosses between
-islands inside a run yet: no message, page or command goes over a link from a kernel. The calls are in [islands](../reference/islands.md), the kernel
-side in the [runtime reference](../reference/runtime.md#islands).
+islands inside a run yet: no message, page or command goes over a link from a kernel.
+The calls are in [islands](../reference/islands.md), the kernel side in the
+[runtime reference](../reference/runtime.md#islands).
 
 An **island** is a set of cores that reach the others only through links. Today it is one
 card's chip: its own Tensix grid, its own dispatcher on its own X280 cluster 0, its own
-DRAM banks. Cores inside an island reach each other by the NoC, as on a card opened
-alone. A core of one island reaches a core of another only over a link, which is slower
+DRAM banks; or rows of one card split into islands (below). Cores inside an island
+reach each other by the NoC, as on a card opened alone. A core of one island reaches a core of another only over a link, which is slower
 than the NoC and which a program has to be able to see.
 
 ## Why the level exists
@@ -115,12 +116,14 @@ x 24 to 27, one for each of the four links. A router has one channel for a core 
 card, so one core at a time holds a link's connection; sharing a link between cores at
 once needs tt-metal's mux cores.
 
-The host's graph models this: a link that is used takes one core on each island it joins
-out of that island's ranks (a link core), spread over rows and columns, and ranks and
-thread numbers are counted without it. `Session(cards=[...], links=...)` takes only
-`links=0` today: no core is taken for a link, every core is a rank (240 on two cards),
-because the link service that would use the core does not exist. The graph joins each
-neighbouring pair of islands with one link.
+The host's graph models this: a link that is used takes a core on each island it joins
+out of that island's ranks (a link core), and ranks and thread numbers are counted
+without it. A session over two cards takes each island's last `(links + 1) // 2` cores
+(one with `links=0`), both data-movement CPUs of a link core holding a link each, from
+the load to the run's end; a command names them as link cores, first
+`KM_GROUP_LINK_BASE` (0xFE00) + k, never as ranks. Link 0, on link core 0's first CPU,
+carries the dispatcher's command lines; the others carry pages
+([islands](../reference/islands.md#pages-across-a-link)).
 
 What a link carries, measured. Two Blackhole p150a cards joined by four Ethernet links,
 one process holding both with tt-metal's 1-D fabric in slow dispatch, AICLK 1350 MHz.
@@ -153,12 +156,35 @@ held a fabric connection across commands and wrote 64 bytes into the L1 of a cor
 other, exact in both directions, 1.685 µs a command from island 0 to island 1 and 1.585
 the other way (1,000 pipelined to one core).
 
+## Messages across a link
+
+A dynamic run whose group is every rank of two islands (`Session(cards=..., links=1)`)
+forwards to a rank of the other island as to any rank: the kernels do not change. The
+writer flush puts a message for another island into link core 0's outbox; beside the
+RUN the session starts the message service on link core 0, on the CPU that holds link 0
+over the connection it opened at load. The service sends the outbox across, many
+messages to a packet (at most 4352 bytes) and one count a packet, and issues what landed
+from the far island to its ranks. Every wait is bounded and the link has credits, so a
+full far inbox holds the sender. The run ends when both islands are quiet: each service
+sends its island's quiet report across, and the dispatcher's quiet test counts link core
+0's line (sent: messages issued again here; consumed: messages sent across).
+
+[05_forward](../../examples/05_forward/README.md) runs this on two Blackhole p150a cards,
+one link: 16 messages of 4 forwards over 234 message ranks of 238, exact against its
+replay, 27 of the 64 forwards across. Measured before the service moved onto the link
+cores (a link core of its own as a rank, one link,
+[link_service](../../experiments/link_service/README.md)): 6.5 µs a crossing for a single
+message, 4.7 µs in a run of 1000 round trips; about 4.7 million 64-byte messages a second
+each way when messages wait to be batched, 0.6 million a packet a message.
+
+While a run's messages are served, link 0's CPU serves nothing else: with `links=1` a
+dispatcher's command line or a page on link 0 waits until the run ends.
+
 ## What is not built
 
-- **Links in a run.** `forward` to a rank of another island, `collect` and `broadcast`
-  over islands, a read of a page that another island holds, and a command from a thread of
-  one island to another's cores. All need the link service: a core that holds the
-  connection and a program on it.
+- **Collectives over a link.** `collect` and `broadcast` over islands, a dynamic run on
+  part of the ranks of two islands, X280 ranks over a link, and a kernel's own ask for a
+  page another island holds (the host asks for it today).
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **A link between the islands of one card.** A split card runs, but nothing crosses
   between its islands inside a run.

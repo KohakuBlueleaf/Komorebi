@@ -94,6 +94,26 @@ A reserved position that is never written (a gap) cannot be made on the card; th
 harness (`experiments/runtime_harness`, case `messages_gap`) shows it reported with the core
 and the position.
 
+## Over two cards
+
+`islands.py` runs the same program and kernels on two cards joined by a link
+(`Session(cards=[0, 1], links=1)`): one RUN over every rank of both islands, so a forward
+to a rank of the other island crosses. Each island keeps its last core as its link core
+(no rank), so the run has 238 ranks; each island's last two ranks are its counter tiles,
+so `messages.count()` is 234, numbered on from island 0 to island 1. Beside the RUN, the
+session starts the message service on each island's link core 0, on the CPU that holds
+link 0. The run ends once both islands are quiet and the messages each link sent across
+meet the other's issued count. The service makes the kernels larger than the default
+buffer, so the script opens the session with `kernel_bytes=84 * 1024`.
+
+```
+python islands.py --messages 16 --forwards 4
+```
+
+Cards 0 and 1 (Blackhole p150a, one Ethernet link used), 16 messages of 4 forwards: both
+parts done (174.5 and 134.1 µs, each from its own island's submit), exact against the
+replay over the 234 message ranks; 27 of the 64 forwards crossed.
+
 ## Files
 
 | File | What it is |
@@ -101,4 +121,5 @@ and the position.
 | `kernels/compute.cpp` | the handler body: seeding, the visit, forward or consume, the results |
 | `kernels/forward.h` | handler number, message words, modes, result words, the generator |
 | `replay.py` | the numpy replay of every message |
+| `islands.py` | the run over two cards joined by a link, checked against the replay |
 | `tests/hardware/feeder/forward_fed.py` | the run under the test feeder and its checks |

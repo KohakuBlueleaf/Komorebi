@@ -44,6 +44,7 @@ from komorebi.errors import (
     KernelSizeError,
     L1BudgetError,
     ProgramError,
+    SlowCodeError,
     StartError,
 )
 from komorebi.program import KernelSizes, Program, messages_header
@@ -85,10 +86,9 @@ GROUP_LINE = re.compile(r"^#define KM_PROGRAM_GROUP (\d+)$", re.M)
 # build's hash, which no part refers to
 UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
 KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
-# A loop runs from L1 at or above this address about 4 cycles slower an iteration than
-# from below it: an overlay's slots are placed just under it when they fit.
+# A taken branch to code at or above this L1 address costs about 4 cycles more: the
+# kernels and the slots go below it, the circular buffers above them.
 L1_FAST_CODE = 1 << 20
-SLOT_MARGIN = 1024  # kept free above the runtime's circular buffers
 TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 # A transfer without a run launches its kernel from this many bytes on: a launch costs
 # about 30 ms, as the device API's read of some 76 KiB does (measured on a p150a).
@@ -258,11 +258,18 @@ def kernel_build(program, kernel, defines):
     return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
 
 
-def slot_address(size, floor):
-    """Where `size` bytes of slots go in L1: just under the line above which code
-    runs slower, or None (the allocator's choice) when that is not above `floor`."""
-    address = (L1_FAST_CODE - size) // overlay.ALIGN * overlay.ALIGN
-    return address if address >= floor else None
+def slot_area(base, size, used, slow_code):
+    """The slots' (address, bytes, buffer index): `size` bytes as the first circular
+    buffer, at the L1 base `base`, on an index not in `used`; refused (SlowCodeError)
+    when they end above L1_FAST_CODE, unless `slow_code`."""
+    size = -(-size // overlay.ALIGN) * overlay.ALIGN
+    if base + size > L1_FAST_CODE and not slow_code:
+        raise SlowCodeError(base, size, L1_FAST_CODE)
+    # below the highest index in use: the kernel config keeps its size
+    free = set(range(max(used))) - set(used)
+    if not free:
+        raise ProgramError(f"no circular buffer index below {max(used)} for the slots")
+    return base, size, max(free)
 
 
 def visible_card():
@@ -435,6 +442,7 @@ class Session:
         grid_timeout=10.0,
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
+        slow_code=False,
     ):
         self.card = card
         self.device = device
@@ -445,6 +453,7 @@ class Session:
         self.log = log or (lambda message: None)
         self.grid_timeout = grid_timeout
         self.kernel_bytes = kernel_bytes  # None: the runtime's default buffer
+        self.slow_code = slow_code  # slots may end above L1_FAST_CODE
         self._worker_l1 = worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
             raise ValueError("kernel_bytes is set when the session opens the device")
@@ -648,7 +657,7 @@ class Session:
         return layout.nocs((grid_x, grid_y), table, noc0)
 
     def read(self, *tensors, first=0, pages=None):
-        """The raw pages of interleaved DRAM tensors ([pages, page_bytes] uint8 each);
+        """The raw pages of tensors in DRAM or L1 ([pages, page_bytes] uint8 each);
         with `first` or `pages`, only those pages of one tensor (None: to the end). It
         may run while a program runs: read only what no kernel writes any more (after
         its event). Through the host channel when it is there (host.md, "Reads")."""
@@ -657,7 +666,7 @@ class Session:
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way(tensors, first, pages)
         if way is None:
-            return read_tensors(self.device, self._module, tensors, first, pages)
+            return self._read_device(tensors, first, pages)
         out = []
         for tensor in tensors:
             start, count = dram.page_range(first, pages, tensor.pages)
@@ -669,6 +678,27 @@ class Session:
                     :, : tensor.page_bytes
                 ]
             out.append(pages_out)
+        return out
+
+    def _read_device(self, tensors, first, pages):
+        """read() through the device API: DRAM tensors by banks, an L1 tensor whole
+        (which waits for launched cores: not while a run is loaded)."""
+        in_l1 = [tensor for tensor in tensors if not tensor.in_dram]
+        if in_l1 and self.run is not None and not self.run.stopped:
+            raise ChannelError(
+                "an L1 tensor is read while a run is loaded through the host channel, "
+                "which this session cannot use for it"
+            )
+        in_dram = [tensor for tensor in tensors if tensor.in_dram]
+        banked = iter(read_tensors(self.device, self._module, in_dram, first, pages))
+        out = []
+        for tensor in tensors:
+            if tensor.in_dram:
+                out.append(next(banked))
+                continue
+            start, count = dram.page_range(first, pages, tensor.pages)
+            rows = tensor.read_bytes().reshape(tensor.pages, tensor.page_bytes)
+            out.append(rows[start : start + count].copy())
         return out
 
     def read_chunks(self, tensor, chunk_bytes=2 << 20):
@@ -693,7 +723,7 @@ class Session:
 
     def write(self, tensor, pages, first=0):
         """Writes `pages` ([n, page_bytes] uint8, as read() returns them) into pages
-        first .. first + n - 1 of an interleaved DRAM tensor, through the host channel
+        first .. first + n - 1 of a tensor in DRAM or L1, through the host channel
         (also while a run is loaded); without it only a whole tensor, before a load."""
         pages = np.ascontiguousarray(pages, np.uint8)
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
@@ -717,17 +747,26 @@ class Session:
 
     def _transfer_way(self, tensors, first, pages):
         """How a read of these pages goes: "run" (the live run's cores push them),
-        "launch" (the transfer kernel, from LAUNCH_MIN_BYTES on), None (the device)."""
+        "launch" (the transfer kernel, from LAUNCH_MIN_BYTES on), None (the device).
+        An L1 tensor's pages are moved by the cores that hold them."""
         self._map_channel()
-        if self.channel is None or any(not tensor.in_dram for tensor in tensors):
+        if self.channel is None:
             return None
-        largest = max(tensor.aligned_page_bytes for tensor in tensors)
-        if largest > self._region.data:
+        if max(tensor.aligned_page_bytes for tensor in tensors) > self._region.data:
             return None
+        largest = max(
+            (tensor.aligned_page_bytes for tensor in tensors if tensor.in_dram),
+            default=0,
+        )
         run = self.run
         if run is not None and not run.stopped:
             transfer = getattr(run.backend, "transfer", None)
             fits = transfer is not None and largest <= transfer.chunk
+            fits = fits and all(
+                self._l1_ranks(tensor, 0, tensor.pages) is not None
+                for tensor in tensors
+                if not tensor.in_dram
+            )
             return "run" if fits and run.alive() else None
         if self._starting is not None:
             return None
@@ -748,9 +787,18 @@ class Session:
         self._transfer(tensor, first, pages, way, True)
         return self.channel[: pages * tensor.aligned_page_bytes]
 
+    def _l1_ranks(self, tensor, first, pages):
+        """channel.l1_ranks of an L1 tensor's pages in the live run."""
+        return channel_module.l1_ranks(
+            first, pages, tensor.shard_grid[0], self.grid[0], self.run.holds()
+        )
+
     def _transfer(self, tensor, first, pages, way, push):
         """One round of a PUSH or PULL of pages first .. first + pages - 1, through
         the live run ("run") or the transfer kernel ("launch"), checked first."""
+        if not tensor.in_dram:
+            self._transfer_l1(tensor, first, pages, way, push)
+            return
         page, region = tensor.aligned_page_bytes, self._region
         nonce = secrets.randbits(32)
         timeout = TRANSFER_WAIT_S + pages * page / 1e9
@@ -785,6 +833,44 @@ class Session:
             self._launch_transfer(transfer, count, push, words, want, timeout)
         self.transfer_cycles = channel_module.cycles(words)
 
+    def _transfer_l1(self, tensor, first, pages, way, push):
+        """One round of an L1 tensor: each core holding one of the pages moves it
+        between its L1 and the region, as one rank of a command a run of consecutive
+        ranks (one program held) or of one launch over those cores."""
+        page, region = tensor.aligned_page_bytes, self._region
+        timeout = TRANSFER_WAIT_S + pages * page / 1e9
+        h = abi.headers()
+        if way != "run":
+            transfer = channel_module.Transfer(
+                tensor.address, page, first, pages, 0, region.words, region.bytes,
+                secrets.randbits(32), 0, h["KM_TRANSFER_L1"],
+            )  # fmt: skip
+            channel_module.check(transfer, pages, L1_BYTES)
+            words = channel_module.words_view(self.channel, region, pages)
+            words[:] = 0
+            want = channel_module.sequence_words(transfer.nonce, pages, page, pages)
+            self._launch_transfer(transfer, pages, push, words, want, timeout, tensor)
+            self.transfer_cycles = channel_module.cycles(words)
+            return
+        run = self.run
+        handler = h["KM_HANDLER_PUSH" if push else "KM_HANDLER_PULL"]
+        here = self.island[0].first(self.island[1]) if self.island else 0
+        self.transfer_cycles = 0
+        for at, count, rank, field in self._l1_ranks(tensor, first, pages):
+            transfer = channel_module.Transfer(
+                tensor.address, page, at, count, (at - first) * page, region.words,
+                region.bytes, secrets.randbits(32), run.backend.transfer.address,
+                h["KM_TRANSFER_L1"],
+            )  # fmt: skip
+            channel_module.check(transfer, count, L1_BYTES)
+            words = channel_module.words_view(self.channel, region, count)
+            words[:] = 0
+            want = channel_module.sequence_words(transfer.nonce, count, page, count)
+            run.transfer(handler, (rank + here, count, field), transfer.args(), timeout)
+            if not self._words_arrived(words, want, timeout):
+                raise ChannelError(self._words_missing(words, want, timeout))
+            self.transfer_cycles += channel_module.cycles(words)
+
     @staticmethod
     def _words_arrived(words, want, timeout):
         """Waits (bounded) until every rank's sequence word is the one expected."""
@@ -803,15 +889,21 @@ class Session:
             f"in the host channel within {timeout:.1f} s"
         )
 
-    def _launch_transfer(self, transfer, count, push, words, want, timeout):
-        """The transfer kernel on cores 0 .. count - 1 of row 0, one rank each, without
-        a run: waits for their words, then for the cores; their reports on a failure."""
-        report = self.empty((count, 16), "uint32", shard_grid=(count, 1))
-        cores = [(0, 0, count - 1, 0)]
+    def _launch_transfer(self, transfer, count, push, words, want, timeout, l1=None):
+        """The transfer kernel without a run, one rank a core: cores 0 .. count - 1 of
+        row 0, or the cores holding the pages of L1 tensor `l1`; waits for their
+        words, then for the cores; their reports on a failure."""
+        if l1 is None:
+            grid, places = (count, 1), [(rank, 0) for rank in range(count)]
+            cores = [(0, 0, count - 1, 0)]
+        else:
+            grid = l1.shard_grid
+            places, cores = channel_module.l1_cores(transfer.first, count, grid[0])
+        report = self.empty((grid[0] * grid[1], 16), "uint32", shard_grid=grid)
         launch = self._module.Launch(self.device)
         args = [
-            (rank, 0, [report.address, int(push), rank, count, *transfer.args()])
-            for rank in range(count)
+            (x, y, [report.address, int(push), rank, count, *transfer.args()])
+            for rank, (x, y) in enumerate(places)
         ]
         include = abi.headers().abi.parents[2]
         source = include.parent / "kernels" / "host_transfer.cpp"
@@ -822,7 +914,10 @@ class Session:
             arrived = self._words_arrived(words, want, timeout)
         finally:
             self.device.finish()
-        status = None if arrived else report.read()[:, 0].astype(np.int64) - 1
+        status = None
+        if not arrived:
+            rows = report.read()[:, 0].astype(np.int64) - 1
+            status = rows[[y * grid[0] + x for x, y in places]]
         report.free()
         if status is not None:
             raise ChannelError(
@@ -980,7 +1075,6 @@ class Session:
             plan, port_lines = _port_lines(owner, dispatch, rings)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
-            backend.link = link
             if ranks is not None:
                 ranks = _x280_words(self, program, dispatch, rings, regions, plan)
             descriptor = backend.describe(
@@ -1053,6 +1147,7 @@ class Session:
             switch=getattr(backend, "switch", None),
             ranks=self.island[0].ranks if self.island else None,
             island_first=self.island[0].first(self.island[1]) if self.island else 0,
+            island_ranks=self.island[0].count(self.island[1]) if self.island else None,
         )
         self.run = run
         self._starting = None
@@ -1707,7 +1802,6 @@ class _Backend:
             ""  # the runtime's error message when an abort did not restore
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
-        self.link = None  # an island_session.LinkPlan: this island's link core
         self.transfer = None  # a _TransferBuffer: with the host channel, or threads
         # a split card: (graph, dispatches, tags, [(first row, rows)], the islands whose
         # cores returned) of the one launch; `rows` this backend's island's
@@ -1901,9 +1995,6 @@ class _Backend:
                 }
             )
             reader, writer, compute = _core_args(program, placed, core)
-            if self.link is not None and core == self.link.core:
-                link_arg = len(start) + len(messages_reader_writer_args) + len(writer)
-                writer = [*writer, *self.link.connection()]
             reader_args.append(
                 (x, y, start + messages_reader_writer_args + list(reader))
             )
@@ -1915,10 +2006,6 @@ class _Backend:
                 (x, y, [control, core, *limits, *messages_compute_args, *compute])
             )
         launch = self.session._module.Launch(self.device)
-        if placed is not None and self.link is not None:
-            raise ValueError(
-                "a link over islands takes one program, not the runtime's form"
-            )
         if placed is not None:
             args = (reader_args, writer_args, compute_args)
             self._describe_groups(launch, placed, sources, args, grid)
@@ -1928,10 +2015,10 @@ class _Backend:
         defines = [(name, str(value)) for name, value in program.defines.items()]
         if program.messages is not None:
             defines += program.messages.defines()
-        if self.link is not None:
-            defines += self.link.defines(link_arg)
+        self.cb_indices = set()  # every buffer index of the launch, the slots' apart
         for index, fmt, page, pages in self._cbs(program.buffers):
             launch.cb(all_cores, index, fmt, page, page * pages)
+            self.cb_indices.add(index)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
         kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
         for kernel, args, processor, config in kernels:
@@ -2043,6 +2130,9 @@ class _Backend:
         include = [str(abi.headers().abi.parents[2])]
         free = self.session.l1()[1]
         self.group_buffers = []
+        self.cb_indices = {  # a switch may give any core any program's buffers
+            buffer.index for program in placed.programs for buffer in program.buffers
+        }
         align = programs.CB_ALIGN
         if placed.switch:  # the runtime's buffers first, then room for the largest
             reserve = -(-self._switch_layouts(placed) // align) * align
@@ -2062,6 +2152,7 @@ class _Backend:
                     cbs.append((index, "uint32", pad, 1))
             for index, fmt, page, pages in cbs:
                 launch.cb(cores, index, fmt, page, page * pages)
+                self.cb_indices.add(index)
             cb_in, cb_out = programs.start_buffers(buffers)
             defines = [
                 ("KM_PROGRAM_GROUP", str(number)),
@@ -2098,6 +2189,24 @@ class _Backend:
                     **build,
                     **config,
                 )
+
+    def _slot_buffer(self, descriptor, slot_bytes):
+        """Every core's slots as the launch's first circular buffer, at the L1 base,
+        so they lie below 1 MB and the buffers above them; returns their address."""
+        base = L1_BYTES - self.session.l1()[1]
+        address, size, index = slot_area(
+            base, slot_bytes, self.cb_indices, self.session.slow_code
+        )
+        grid = (self.port.grid_x, self.port.grid_y)
+        cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
+        descriptor.cb(cores, index, "uint32", size, size, first=True)
+        # a switch's buffers of every program field move up with the rest
+        if getattr(self, "switch_layouts", None):
+            for layout in self.switch_layouts.values():
+                for key, (at, *rest) in layout.items():
+                    layout[key] = (at + size, *rest)
+        self.session.log(f"slots: {size:,} B from {address:#x} (buffer {index})")
+        return address
 
     def load_overlays(self, program, descriptor):
         """Builds the program's overlays and the service overlay against the kernels
@@ -2137,17 +2246,8 @@ class _Backend:
             raise L1BudgetError(program.name, table)
         image_rows, placed = overlay.dram_rows(built)
         image = _words(session, image_rows)
-        words = (built.slot_bytes + overlay.ALIGN) // 4
-        floor = L1_BYTES - session.l1()[1] + buffers + SLOT_MARGIN
-        at = slot_address(4 * words, floor)
-        try:
-            slots = session.empty((cores, words), "uint32", shard_grid=grid, address=at)
-        except RuntimeError:  # the place is taken: where the allocator puts them
-            slots = session.empty((cores, words), "uint32", shard_grid=grid)
-        if slots.address + built.slot_bytes > L1_FAST_CODE:
-            session.log("slots above 1 MB of L1: their code runs slower")
-        self.io += [image, slots]
-        slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
+        slot_base = self._slot_buffer(descriptor, built.slot_bytes)
+        self.io.append(image)
         area = overlay.area_words(
             built, placed, image.address, image.aligned_page_bytes, slot_base
         )
@@ -2226,7 +2326,7 @@ class _Backend:
         grid = (self.port.grid_x, self.port.grid_y)
         cores = grid[0] * grid[1]
         declared = placed.programs[0].overlay_slots
-        built, symbols, largest = [], [], 0
+        built, symbols = [], []
         for number, group in enumerate(placed.groups):
             recipes = by_group[number]
             if placed.switch:  # a part runs on any group's kernels: the same globals
@@ -2264,7 +2364,6 @@ class _Backend:
                 for buffer in self.group_buffers[number]
             )
             buffers += 2 * abi_headers["kTokenBytes"] + self.trace_cap * 16
-            largest = max(largest, buffers)
             rows = [
                 ("circular buffers", buffers),
                 ("control block and overlay area", self.control.nbytes // cores),
@@ -2294,7 +2393,7 @@ class _Backend:
         if placed.switch:  # one set of slots, every program's parts fit any core's
             common = _common_slots(placed, declared, built)
             built = [overlay.Built(made.images, common.slots) for made in built]
-            buffers = largest = self.switch_reserve  # the runtime's buffers included
+            buffers = self.switch_reserve  # the runtime's buffers included
             rows = [
                 ("circular buffers (the largest program)", buffers),
                 ("control block and overlay area", self.control.nbytes // cores),
@@ -2310,18 +2409,10 @@ class _Backend:
                 raise L1BudgetError(", ".join(p.name for p in placed.programs), table)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
         image = _words(session, image_rows)
-        slot_bytes = max(made.slot_bytes for made in built)
-        words = (slot_bytes + overlay.ALIGN) // 4
-        floor = L1_BYTES - session.l1()[1] + largest + SLOT_MARGIN
-        at = slot_address(4 * words, floor)
-        try:
-            slots = session.empty((cores, words), "uint32", shard_grid=grid, address=at)
-        except RuntimeError:  # the place is taken: where the allocator puts them
-            slots = session.empty((cores, words), "uint32", shard_grid=grid)
-        if slots.address + slot_bytes > L1_FAST_CODE:
-            session.log("slots above 1 MB of L1: their code runs slower")
-        self.io += [image, slots]
-        slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
+        slot_base = self._slot_buffer(
+            descriptor, max(made.slot_bytes for made in built)
+        )
+        self.io.append(image)
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}
