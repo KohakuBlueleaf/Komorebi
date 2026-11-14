@@ -426,7 +426,8 @@ def not_reported(state, group, slot, sequence, abi_headers=None):
     out = []
     for core in range(first, first + count):
         report = core_state(state, core, abi_headers)
-        if report["reported"][slot] != sequence:
+        reported = report["reported"]
+        if slot >= len(reported) or reported[slot] != sequence:
             out.append(
                 {
                     "core": core,
