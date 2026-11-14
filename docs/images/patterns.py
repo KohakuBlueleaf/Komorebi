@@ -1414,7 +1414,7 @@ def panel_roles(s, y):
             [
                 "commands from the host and three rings",
                 "streams, graphs and a job queue",
-                "16 commands in flight, a deadline each",
+                "64 commands in flight, a deadline each",
                 "which program each core holds",
             ],
         ),
