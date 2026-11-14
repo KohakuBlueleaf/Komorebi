@@ -295,10 +295,8 @@ namespace km {
             const bool serves = link_core(view, arguments.me);
             const uint32_t rank = serves ? link : view.offset() + arguments.me;
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
-            // link core 0 relays between commands (km_relay.hpp)
-            const bool relays = (
-                link_core(view, arguments.me) && link == KM_GROUP_LINK_BASE
-            );
+            // a link core relays between commands (km_relay.hpp)
+            const bool relays = link_core(view, arguments.me);
             for (;;) {
                 if (serves) {  // a link core's services between commands
                     pages_serve(*this, 0, kStReader);

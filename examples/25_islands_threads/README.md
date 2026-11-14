@@ -49,3 +49,9 @@ core loaded again, the connection opened again), and the thread's COUNTs run onc
 each rank's count exact (3 x `--counts` + 1); on two p150a cards the reset took 95.0 ms,
 opening again 0.24 ms, and the crossed COUNTs 10.97 µs a command before and after. The
 script exits non-zero if a check fails.
+
+`--cards 0 --islands n --steps nop`: card 0 split into n islands, the NOPs to island 1's
+ranks crossing the wire to its dispatcher: 2.966 µs to island 0's ranks and 3.891 µs to
+island 1's with 2 islands (two cards: 2.98 / 3.94), 3.034 / 5.067 with 3, 3.042 / 6.278
+with 4 (fewer commands across in flight: 3 and 2, not 8). The other steps need X280
+threads, which a split card does not run.

@@ -82,12 +82,12 @@ static inline uint32_t messages_link(const kmd_t* dispatcher) {
     const kmd_messages_t* run = &dispatcher->messages;
     return (
         dispatcher->island_count != 0 && (run->part >> 16) < (run->group >> 16) &&
-        dispatcher->cores > dispatcher->island_count
+        dispatcher->cores > dispatcher->island_base + dispatcher->island_count
     );
 }
 
 /* The index of the run's line `index` of `lines`: the group's cores on this island,
- * link core 0 when it serves the run, then the X280 ranks at their core indices. */
+ * link core 0 (base + ranks) when it serves the run, then the X280 ranks. */
 static inline uint32_t messages_line(const kmd_t* dispatcher, uint32_t index) {
     const kmd_messages_t* run = &dispatcher->messages;
     const uint32_t first = run->part & 0xFFFFu, count = run->part >> 16;
@@ -95,8 +95,11 @@ static inline uint32_t messages_line(const kmd_t* dispatcher, uint32_t index) {
     if (index < count) {
         return first + index;
     }
-    return index < count + link ? dispatcher->island_count
-                                : KM_X280_RANK_CORE(index - count - link);
+    return (
+        index < count + link
+            ? dispatcher->island_base + dispatcher->island_count
+            : KM_X280_RANK_CORE(index - count - link)
+    );
 }
 
 /* The two passes: 1 quiet, 0 not yet (a line busy, of an earlier run or changed).
