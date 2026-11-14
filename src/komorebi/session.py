@@ -2656,9 +2656,8 @@ class _Backend:
                 for key, (row, _) in placed_records.items()
             },
             "refused": refused,
-            # an island's part of a plan: programs none of its groups holds, whose
-            # parts were not built here (a part is built against kernels that carry
-            # its own buffers' formats, a group's that holds it)
+            # an island's part of a plan: programs none of its groups holds, whose parts
+            # were not built here (a part is built against its group's kernels' buffers)
             "unheld": {
                 program.program_field: program.name
                 for index, program in enumerate(placed.programs)

@@ -37,9 +37,8 @@ int kmx_cluster(void);
 int kmx_island(void);
 int kmx_islands(void);
 
-/* Thread numbers are flat over islands, one a work cluster: island i's cluster c is
- * KMX_THREAD(i, c). A command's group (KM_GROUP_CLUSTER_BASE + number, 1) names it;
- * one for a thread of another island crosses to that island's dispatcher. */
+/* Thread numbers are flat over islands: island i's cluster c is KMX_THREAD(i, c); a
+ * command's group (KM_GROUP_CLUSTER_BASE + number, 1) names it, and crosses if far. */
 #define KMX_THREAD(island, cluster) (3u * (uint32_t)(island) + (uint32_t)(cluster))
 
 /* The island of thread `number` (1 to 3 * kmx_islands()), or -1 for none. */

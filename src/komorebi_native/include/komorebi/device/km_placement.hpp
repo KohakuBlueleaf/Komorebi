@@ -59,9 +59,8 @@ namespace km {
         return {view.here(), 0, page};  // outside the tensor: no island holds it
     }
 
-    // How many pages from `page` on (at most `most`) the island of `at`, page `page`'s
-    // place, holds at consecutive indices of its part: from the entry, to the end of
-    // its part's steps in this block (all of them: to the end).
+    // How many pages from `page` on (at most `most`) the island at `at` holds at
+    // consecutive indices of its part, to the end of its steps in this block.
     inline uint32_t page_run(
         uint32_t tensor, uint32_t page, uint32_t most, const PageAt& at
     ) {
@@ -72,9 +71,8 @@ namespace km {
         }
         const uint32_t steps = entry[1];
         const uint32_t inner = entry[2];
-        const volatile uint32_t* part = (
-            entry + KM_TENSOR_HEADER_BYTES / 4 + at.island * kPartWords
-        );
+        const volatile uint32_t*
+            part = (entry + KM_TENSOR_HEADER_BYTES / 4 + at.island * kPartWords);
         if (part[1] == 0 && part[2] == steps) {
             return most;
         }

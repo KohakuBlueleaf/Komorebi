@@ -1,5 +1,5 @@
-/* Example 24, the thread: X280 cores 0 to kmx_ranks() - 1 are ranks of the cores' run;
- * a message is stepped and goes on to a core, or ends here once its hops are used up. */
+/* Example 24, the thread: X280 cores 0 .. kmx_ranks() - 1 are ranks of the cores' run;
+ * a message is stepped and goes on to a core, or ends once its hops are used. */
 #include <stdint.h>
 
 #include "kmx.h"

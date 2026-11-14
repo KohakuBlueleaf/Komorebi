@@ -246,12 +246,10 @@ class Run:
         block=None,
         part=False,
     ):
-        """Queues a command for handler `handler` on cores [first, first + count)
-        (default every core), or on work cluster `cluster`'s X280 thread; returns its
-        handle. `result`: the event carries the result word; `queued`: the kernel picks
-        the cores; `block`: bytes or an array its handlers read (a7, a8); `part`: the
-        line is this island's part of a group split over islands (IslandRun), run here
-        and never crossed."""
+        """Queues a command for `handler` on cores [first, first + count) (default all),
+        or on cluster `cluster`'s X280 thread; returns its handle. `result`: the event
+        has the result word; `queued`: the kernel picks the cores; `block`: bytes or an
+        array its handlers read; `part`: an island's part of a split group."""
         started = time.perf_counter()
         program_field = 0
         if cluster is not None:

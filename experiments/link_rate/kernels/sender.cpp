@@ -1,10 +1,5 @@
-// Sender: streams packets over its fabric link from slot p % window into the
-// destination's same slot; headers written once, every wait bounded. `send` picks how
-// a packet leaves: 0 the payload and then its header (two writes and a credit each),
-// 1 the same two writes on command buffers set up once, 2 header and payload one
-// after the other in L1 and one write on set-up command buffers, 3 as 2 with posted
-// writes; 1 to 3 check the router's free slots only when the count read last is used
-// up.
+// Sender: streams packets over its fabric link, slot p % window to the same slot, waits
+// bounded. `send`: 0 two writes, 1 on set-up buffers, 2 one write, 3 posted.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -76,7 +71,7 @@ void kernel_main() {
     const uint32_t wait_every = get_arg_val<uint32_t>(i++);  // 0: never wait for sends
     const uint32_t space_every = get_arg_val<uint32_t>(
         i++
-    );  // 1 or 8: packets a space check
+    );                                                 // 1 or 8: packets a space check
     const uint32_t send = get_arg_val<uint32_t>(i++);  // 0 to 3, above
 
     volatile tt_l1_ptr uint32_t*
@@ -98,21 +93,22 @@ void kernel_main() {
     ) {
         code = kCodeArgs;
     } else {
-        // send 2 and 3: packet h (2 * window of them, the plain then the fused) at
-        // headers_l1 + h * (header + payload), its payload right after its header (a
-        // header of 16-byte words)
+        // send 2 and 3: packet h (2 * window: plain, then fused) at headers_l1 + h *
+        // (header + payload), the payload right after its header
         const bool joined = send >= 2;
         const uint32_t packet_bytes = sizeof(PACKET_HEADER_TYPE) + payload;
         const auto header_at = [&](uint32_t h) {
             return headers_l1 + h * (joined ? packet_bytes : kHeaderStride);
         };
         for (uint32_t h = 0; h < (joined ? 2 * window : window); h++) {
-            volatile tt_l1_ptr uint32_t* slots = (
-                reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
-                    joined ? header_at(h) + sizeof(PACKET_HEADER_TYPE)
-                           : slots_l1 + h * payload
-                )
-            );
+            volatile tt_l1_ptr uint32_t*
+                slots = (
+                    reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+                        joined
+                            ? header_at(h) + sizeof(PACKET_HEADER_TYPE)
+                            : slots_l1 + h * payload
+                    )
+                );
             for (uint32_t w = 0; w < payload / 4; w++) {
                 slots[w] = pattern(seed, sender_id, h % window, w);
             }

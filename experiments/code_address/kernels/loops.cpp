@@ -1,7 +1,5 @@
-// Runs a fixed loop of machine code from a chosen L1 address and times it. The loop is
-// written in assembly, copied from the kernel's own text to the address, run with the
-// instruction cache invalidated, and timed with the wall clock; address 0 runs it in
-// place.
+// Times a fixed assembly loop run from a chosen L1 address: copied from the kernel's
+// text, instruction cache invalidated, wall clock (address 0: in place).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -98,10 +96,8 @@ namespace {
 
 }  // namespace
 
-// Arguments: 0 report address; 1 runs; 2 repeats a run; then per run: blob, the address
-// to run it from (0: in place), iterations, the data buffer for the memory loop, the
-// fill word. Report words: 0 status (1 done, 2 refused), 1 runs done, 2 text address of
-// the first blob, 3 its size; then runs * repeats cycle counts from word kReport.
+// Arguments: 0 report address, 1 runs, 2 repeats; per run: blob, address (0: in place),
+// iterations, buffer, fill. Report: 0 status, 1 runs done, 2-3 blob, then cycles.
 void kernel_main() {
     volatile uint32_t* report = (
         reinterpret_cast<volatile uint32_t*>(get_arg_val<uint32_t>(0))

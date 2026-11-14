@@ -3,19 +3,14 @@
 
 #include <stdint.h>
 
-// READ (reader): rank r reads a4 ranges of a3 bytes from tensor a0 (its reference
-// word; a2 pages), a5 in flight (km::ask_bytes, then km::bytes_wait; 1:
-// km::read_bytes), each at a page and offset of its own (ranges_pick of a6, r and
-// the range's number). Each range lands in a slot of its own between guard words;
-// every word is checked against the host's pattern (ranges_word) and the guards
-// against kRangesMark. Then the rank's report into page a7 + r of tensor a1.
+// READ (reader): rank r reads a4 ranges of a3 bytes of a0, a5 in flight (km::ask_bytes;
+// 1: km::read_bytes) by ranges_pick, checks words and guards. Report: a1 page a7 + r.
 constexpr uint32_t kHandlerRead = 1;
 constexpr uint32_t kRangesMagic = 0x52414E47u;  // "RANG": word 0 of a report
 constexpr uint32_t kRangesMark = 0xA5A5A5A5u;   // a slot's words before its range lands
 constexpr uint32_t kRangesNone = 0xFFFFFFFFu;
-// a report's words: magic, rank, ranges read, words wrong, guard words changed, the
-// first wrong range (kRangesNone: none), the cycles in the read calls, whether a call
-// gave up, the last range's page and offset; its bytes from kRangesCopy on
+// report words: magic, rank, ranges read, words wrong, guards changed, first wrong
+// range (kRangesNone), read cycles, gave up, last page and offset; bytes after
 constexpr uint32_t kRangesRank = 1;
 constexpr uint32_t kRangesDone = 2;
 constexpr uint32_t kRangesWrong = 3;

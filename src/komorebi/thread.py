@@ -379,9 +379,8 @@ def args_block(
 ):
     """The thread's LIM block (KMX_LIM_BYTES, a remote ring's events zeroed): argument
     block, check line, region table (`table`, else place()), the lines of `ring`
-    (RingPlacement, with `records` and `buffer`), `peers` (Peers), `ports` (Ports) and
-    `ranks` (Ranks), the areas of the last three after the block; `island` its island
-    | islands << 16 (0: island 0 of one)."""
+    (RingPlacement, with `records` and `buffer`), `peers`, `ports` and `ranks` (their
+    areas after the block); `island` its island | islands << 16 (0: island 0 of one)."""
     constants = layout()
     if table is None:
         table = [

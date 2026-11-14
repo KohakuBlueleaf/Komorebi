@@ -771,9 +771,8 @@ namespace {
         std::shared_ptr<IslandRuntime> x280_;
     };
 
-    // Several chips as one 1 x count mesh with tt-metal's 1-D fabric on (slow
-    // dispatch), each chip an island: a 1 x 1 submesh with its own command queue. The
-    // routers carry packets of `packet` payload bytes (0: tt-metal's default).
+    // Several chips as a 1 x count fabric mesh (slow dispatch), each an island with its
+    // own queue; `packet`: router payload bytes (0: default).
     class Islands {
     public:
         Islands(uint32_t count, std::optional<size_t> worker_l1_size, uint32_t packet) {

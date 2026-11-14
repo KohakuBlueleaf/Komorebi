@@ -231,11 +231,10 @@ def host_hang(run, group, hung, before):
 
 
 def healthy_after(run, own, hung, words):
-    """After the HANGs (their cores reset at the give-ups), commands
-    on the other ranks: a NOP on each island's own ring, example 01's MAP from the host
-    on each island's healthy ranks (its split), and a MAP from island 0's thread on
-    island 1's healthy ranks (it crosses). Each answered: the dispatchers go on taking
-    lines for every rank but the hung one."""
+    """After the HANGs (their cores reset at the give-ups), commands on the other ranks:
+    a NOP on each island's own ring, example 01's MAP from the host on each island's
+    healthy ranks (its split), and a MAP from island 0's thread on island 1's healthy
+    ranks (it crosses). Each is answered."""
     source, output = words
     low1, cores1 = own[1]
     after = hung + 10  # island 1's ranks past the hung one's HANG group

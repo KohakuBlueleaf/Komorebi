@@ -322,8 +322,7 @@ namespace km {
         }
 
         // The sender, or a part's first core with the block in its slot: once every
-        // receiver (and the next part) freed the slot, multicast, VALID, then the
-        // relay.
+        // receiver (and the next part) freed the slot: multicast, VALID, relay.
         bool spread(uint32_t block, uint32_t word, bool carries) {
             const bool tiles = args_.pages != 0;
             if (

@@ -118,9 +118,8 @@ namespace km {
         return true;
     }
 
-    // Reader or writer: waits until the port has counted `wanted` (pages another
-    // island sent count there), then clears it; a give-up at `where`, `named` its top
-    // half. False: gave up; the port keeps the count wanted.
+    // Reader or writer: waits until the port counted `wanted`, then clears it; a
+    // give-up at `where` (`named`: its top half). False: gave up, the count kept.
     template <typename Kernel>
     inline bool port_wait_at(
         const Kernel& core,
@@ -160,8 +159,10 @@ namespace km {
         uint32_t port,
         uint32_t wanted
     ) {
-        return port_wait_at(
-            reader, command, port, wanted, kWherePort, slot(command) | port << 8
+        return (
+            port_wait_at(
+                reader, command, port, wanted, kWherePort, slot(command) | port << 8
+            )
         );
     }
 

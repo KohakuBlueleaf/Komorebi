@@ -1,7 +1,5 @@
-/* Fetch and store over islands: for each size, kmx_fetch of a tensor this island holds
- * and of one the other island holds into region 0 (best of `repeats`, its hash), then
- * kmx_store of the region into a tensor of each. The thread names the tensors and the
- * ranges only. */
+/* Fetch and store over islands: per size, kmx_fetch of a tensor of this island and of
+ * the other into region 0 (best of `repeats`, hash), then kmx_store into each. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -20,8 +18,8 @@
 /* result words: per size at 10 i */
 /* the first failure: status | event kind << 8 | aux << 16 | way << 24 */
 #define R_STATUS 0u
-#define R_LOCAL 1u  /* best ticks, then the hash's two words */
-#define R_FAR 4u    /* best ticks, then the hash's two words */
+#define R_LOCAL 1u /* best ticks, then the hash's two words */
+#define R_FAR 4u   /* best ticks, then the hash's two words */
 #define R_STORE_LOCAL 7u
 #define R_STORE_FAR 8u
 #define RESULT_WORDS 20u
@@ -67,8 +65,10 @@ int kmx_main(int core) {
                 }
                 kmx_event event = {0, 0, 0, 0};
                 const uint64_t start = kmx_time();
-                const int status = kmx_fetch(
-                    0, 0, &from, bytes, 0, count, start + KMX_TICKS_PER_SECOND, &event
+                const int status = (
+                    kmx_fetch(
+                        0, 0, &from, bytes, 0, count, start + KMX_TICKS_PER_SECOND, &event
+                    )
                 );
                 const uint32_t ticks = (uint32_t)(kmx_time() - start);
                 if (status != KMX_OK) {
@@ -92,8 +92,10 @@ int kmx_main(int core) {
             kmx_event event = {0, 0, 0, 0};
             kmx_progress(3 + 4 * i + way);
             const uint64_t start = kmx_time();
-            const int status = kmx_store(
-                0, 0, &to, bytes, 0, count, start + KMX_TICKS_PER_SECOND, &event
+            const int status = (
+                kmx_store(
+                    0, 0, &to, bytes, 0, count, start + KMX_TICKS_PER_SECOND, &event
+                )
             );
             out[R_STORE_LOCAL + way] = (uint32_t)(kmx_time() - start);
             if (status != KMX_OK) {

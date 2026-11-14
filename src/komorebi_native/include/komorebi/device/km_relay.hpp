@@ -37,8 +37,7 @@ namespace km {
     constexpr uint32_t kRelayNoPort = 0xFFFFFFFFu;
 #if !defined(KM_WIRE)
     // Two cards: link core 0 writes an ask's bytes straight into the far rank's L1, a
-    // packet a slot (its stage: kRelaySlots of kRelayStageSlot bytes at most and a
-    // header each; no far inbox).
+    // packet a slot (stage: kRelaySlots of kRelayStageSlot bytes, header each).
     constexpr uint32_t kRelaySlots = 4;
     constexpr uint32_t kRelaySlotAt = KM_RELAY_STAGE + 512;
     constexpr uint32_t kRelayStageSlot = (
@@ -70,8 +69,8 @@ namespace km {
         return cpu == 0 ? 0 : KM_RELAY_SECOND - KM_RELAY_ASKED;
     }
 
-    // The rule: flat rank `source`'s asks take link source % KM_ISLAND_LINKS between two
-    // cards (CPU k % 2 of link core k / 2: a rank's stay in order), else the next link.
+    // The rule: rank `source`'s asks take link source % KM_ISLAND_LINKS between two
+    // cards (CPU k % 2 of link core k / 2, so a rank's stay in order), else the next.
     struct RelayLink {
         uint32_t core;
         uint32_t cpu;
@@ -432,9 +431,7 @@ namespace km {
                             header_at + s * kPagesHeaderStride
                         )
                 );
-                const uint64_t at = (
-                    link_noc(xy & 0xFFFFu, xy >> 16, to + k * size)
-                );
+                const uint64_t at = (link_noc(xy & 0xFFFFu, xy >> 16, to + k * size));
                 if (k + 1 == chunks) {
                     link_counted_write(made, at, counter, 1, n);
                 } else {

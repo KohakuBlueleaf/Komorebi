@@ -333,17 +333,15 @@ namespace {
                 );
                 return false;
             }
-            if (
-                !km::read_pages(
-                    reader_,
-                    command_,
-                    TreePages(treelet_images_address_),
-                    first_page,
-                    pages,
-                    destination
-                ) ||
-                !timed::reads_done(reader_, km::kStReader)
-            ) {
+            if (!km::read_pages(
+                reader_,
+                command_,
+                TreePages(treelet_images_address_),
+                first_page,
+                pages,
+                destination
+            ) ||
+                !timed::reads_done(reader_, km::kStReader)) {
                 return false;
             }
             slots_.treelet[slot] = treelet;
@@ -832,12 +830,10 @@ void kernel_main() {
                 reader.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 2, pages);
                 return;
             }
-            if (
-                !km::read_pages(
-                    reader, command, TreePages(tree_address), 0, pages, base
-                ) ||
-                !timed::reads_done(reader, km::kStReader)
-            ) {
+            if (!km::read_pages(
+                reader, command, TreePages(tree_address), 0, pages, base
+            ) ||
+                !timed::reads_done(reader, km::kStReader)) {
                 return;
             }
             g_tree = base;
@@ -850,17 +846,15 @@ void kernel_main() {
             const uint32_t unsort_vectors = command.a5;
             const uint32_t directory_space = get_write_ptr(kCbDirReader);
             volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
-            if (
-                !km::read_pages(
-                    reader,
-                    command,
-                    Directories(directory_address),
-                    reader.me(),
-                    1,
-                    directory_space
-                ) ||
-                !timed::reads_done(reader, km::kStReader)
-            ) {
+            if (!km::read_pages(
+                reader,
+                command,
+                Directories(directory_address),
+                reader.me(),
+                1,
+                directory_space
+            ) ||
+                !timed::reads_done(reader, km::kStReader)) {
                 return;
             }
             for (uint32_t counter = 0; counter < kRdCounters; ++counter) {

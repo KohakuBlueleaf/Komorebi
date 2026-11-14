@@ -62,9 +62,8 @@
 /* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
-/* served on link cores (km_pages.hpp): from the host, each data-movement CPU of the
- * group sends its share of DRAM pages over its own link, or the reader waits for a
- * count; from the dispatcher, link core 0's link 0 CPU sends a staged packet across */
+/* served on link cores (km_pages.hpp): host: each CPU sends its pages share over its
+ * link, or the reader waits a count; dispatcher: link 0 sends a staged packet */
 #define KM_HANDLER_PAGES 248u
 #define KM_PAGES_FROM 0u  /* send: the source's bank address (interleaved DRAM) */
 #define KM_PAGES_PAGE 1u  /* send: aligned page bytes, at most the island's packet */
@@ -85,11 +84,8 @@
 #define KM_PAGES_LINKS 8u
 /* send: L1 of CPU c at buffer + c * chunk (bits 0..23), the push's shape << 24 */
 #define KM_PAGES_BUFFER 9u
-/* the shape of a send's push (0: the loop's own; the others measure it): pages a DRAM
- * read 4 ** (bits 0..1), slots 15 << (bits 2..3) - 1 (0: as many as fit, at most 15),
- * no read (bit 4: the slots are sent as they are), no wait for a slot's packet to
- * leave L1 (bit 5, with bit 4); bit 6: link 0's CPU takes a share too, its island's
- * lines first between its reads (the host's, when no message service holds it) */
+/* a send's push shape (0: the loop's; others measure): pages a read 4 ** bits 0..1,
+ * slots 15 << bits 2..3 - 1, bit 4 no read, 5 no L1 wait, 6 link 0's CPU shares */
 #define KM_PAGES_SHAPE_SHIFT 24u
 #define KM_PAGES_SHAPE_NO_READ 0x10u
 #define KM_PAGES_SHAPE_NO_WAIT 0x20u
@@ -108,9 +104,8 @@
 /* dispatcher -> link core 0 of its island: CPU 0 (link 0) sends the packet staged in
  * the link area, then its count line, into the other island's dispatcher */
 #define KM_PAGES_LINE 3u
-/* pages a rank to each of ranks r (the far island's cores from KM_PAGES_TO_CORE on):
- * rank r's pages first + r * pages on into L1 address KM_PAGES_TO of its core, counted
- * at its KM_PAGES_COUNT; the CPUs split the ranks */
+/* pages a rank for each of ranks r (far cores from KM_PAGES_TO_CORE): pages first + r *
+ * pages on into L1 KM_PAGES_TO of core r, counted at KM_PAGES_COUNT */
 #define KM_PAGES_RANGE 4u
 /* link 0's CPU of link core 0 serves the messages of the RUN whose group word is a0
  * across its link until that RUN ends (km_link.hpp) */
@@ -121,9 +116,8 @@
 /* the largest packet payload the routers take (Blackhole): the bound of an island's
  * packet word (KM_ISLAND_PACKET) */
 #define KM_PACKET_LARGEST 15232u
-/* LINE's words: a0 the stage, a1 the packet's number (each line of the stage holds it
- * in word 0, the count line in word 1), a2 the far tile x | y << 16, a3 the far address
- * of the packet, a4 the count line's, a5 the link area, a6 its island; a7 as above */
+/* LINE's words: a0 stage, a1 packet number, a2 far tile x | y << 16, a3 far packet
+ * address, a4 count line's, a5 link area, a6 its island; a7 as above */
 #define KM_LINE_STAGE 0u
 #define KM_LINE_NUMBER 1u
 #define KM_LINE_TILE 2u
@@ -131,39 +125,21 @@
 #define KM_LINE_COUNT 4u
 #define KM_LINE_AREA 5u
 #define KM_LINE_ISLAND 6u
-/* The link area, in link core 0's L1 (a run over islands; its offsets): two packet
- * headers, then the stages, each a packet (the command line and its crossing line) and
- * the count line written after */
+/* The link area, in link core 0's L1 (a run over islands; offsets): two packet headers,
+ * the stages (a command line and a crossing line each), then the count line */
 #define KM_LINK_HEADERS 0x40u /* 64 bytes each: the packet's, the count line's */
 #define KM_LINK_STAGE 0x100u
 #define KM_LINK_STAGES 4u
 #define KM_LINK_PACKET_BYTES 128u
 #define KM_LINK_STAGE_BYTES 192u
-/* Then the asks of cores for pages another island holds (km_ask.hpp), on every core
- * of the area: on link core 0 the count its island's cores reserve lines with (a local
- * atomic), the lines it took, the asks each far page CPU answered (a word each, at
- * most KM_PAGE_CPUS), the bad ones; on a page CPU's core the far asks it answered
- * (a word a CPU of the core); a link core's own line and two answer words (a rank's
- * in its own words, KM_OWN_*); the two headers
- * of link core 0's CPUs (the far ask, the answer's count); the lines, then the far
- * asks. A page CPU is a CPU that holds a page link (every link when no message
- * service holds link 0, else links 1 on, link 0 when it is the only one: KM_PUT_CPUS
- * of them, the last links); each serves its share of every ask and put
- * (partition(pages, j, page CPUs)). */
+/* Then asks for pages another island holds (km_ask.hpp): counts and answers on link
+ * core 0, a page CPU's answers, the lines, the far asks */
 #define KM_PAGE_CPUS 4u
-/* the circular buffer index of a link core's own L1 (link cores alone; its kernels
- * built with KM_LINK_QUEUE): the put queue (KM_QUEUE_*), then, built with
- * KM_LINK_CHUNK (a CPU's bytes), two chunks */
+/* the circular buffer index of a link core's own L1 (link cores alone; KM_LINK_QUEUE):
+ * the put queue (KM_QUEUE_*), then, with KM_LINK_CHUNK (a CPU's bytes), two chunks */
 #define KM_LINK_CB 31u
-/* The put queue, on link core 0 (its own L1, KM_LINK_CB; its address in KM_PUT_QUEUE,
- * the same on every island): a put line a core's CPU may have two of in flight, so
- * at most KM_QUEUE_LINES lines are unconfirmed and neither ring below wraps onto a
- * line not yet taken. Its words (the pending lines' count), this island's put lines
- * (line n at n % KM_QUEUE_LINES, its page CPUs take them in order), the far island's
- * lines as they arrive (the same places), the pages landed of each owner (a core's
- * CPU and parity, KM_ASK_OWNER: one line at a time each), and the lines taken from
- * the arrivals and not yet confirmed (KM_QUEUE_ENTRY bytes each: KM_QUEUE_E_*), each
- * confirmed on its own once its pages have landed. */
+/* The put queue, on link core 0 (KM_LINK_CB, at KM_PUT_QUEUE): up to KM_QUEUE_LINES
+ * unconfirmed put lines, the far lines as they arrive, pages landed per owner */
 #define KM_QUEUE_LINES (4u * KM_CORES_MAX) /* a core's two CPUs, two lines each */
 #define KM_QUEUE_WORDS 0u
 #define KM_QUEUE_PENDING_COUNT 0u /* a word of KM_QUEUE_WORDS */
@@ -190,14 +166,8 @@
 #define KM_ASK_LINES (KM_ASK_HEADERS + 0x80u)
 #define KM_ASK_SLOTS 32u
 #define KM_ASK_INBOX (KM_ASK_LINES + KM_ASK_SLOTS * 64u)
-/* An ask line's words (64 bytes; words 0 and 15 its number, the reserved count + 1):
- * the tensor's bank address (the same on every island), its aligned page bytes, the
- * first page, pages, the asker's x | y << 16 (core table), its L1 address, its port
- * count's L1 address, the holder island, the asker's island; the asker's side in its
- * island's DRAM instead (KM_ASK_TO a bank address, from its page KM_ASK_DRAM_FIRST: a
- * get's pages pushed into it, a put's read from it): 1 an interleaved buffer of the
- * same pages, 2 + b bank b's range; 0: L1. A put from L1 whose pages the asker wrote
- * into the page CPUs' rings itself: KM_ASK_RING 1 (its page CPUs then send nothing). */
+/* An ask line's words (64 bytes; words 0 and 15 its number): bank address, page bytes,
+ * first page, pages, asker's tile, L1 and port, islands; KM_ASK_*: DRAM side */
 #define KM_ASK_NUMBER 0u
 #define KM_ASK_TENSOR 1u
 #define KM_ASK_PAGE 2u
@@ -231,31 +201,20 @@
  * (it counts 1), KM_ASK_GET_SPAN offset | bytes << 16, the bytes into KM_ASK_TO. */
 #define KM_ASK_GET_BYTES 2u
 #define KM_ASK_GET_SPAN 14u
-/* Then a core's puts of pages into DRAM another island holds (km::write_pages), the
- * same way the other direction: on link core 0 the count its cores reserve put lines
- * with, the put lines each page CPU took (a word each), the far island's count of puts
- * confirmed written, the puts confirmed here, the bad ones, the island's page CPUs
- * (the session writes it, on every core); on link core 0 each page CPU's ring (its L1
- * address, 0: none; its core's number | its CPU << 16), the slots a ring and the far
- * link core 0 (the page CPUs write them at their open);
- * room for a core's own put lines (unused: a core's own put lines, answer words, line
- * words and the headers it builds for a put into the rings are in its own words,
- * KM_OWN_*); on a link core each CPU's ring words (the slots reserved, a putting
- * core's atomic; the slots sent and left); page CPU 0's three headers (a put line
- * across, a confirmation's count and its done word); the put lines, then the far
- * island's (an ask line each: KM_ASK_TO the asker's L1, KM_ASK_TENSOR the holder's
- * tensor). */
+/* Then a core's puts into another island's DRAM (km::write_pages), as the asks: link
+ * core 0's counts and each ring's address, each CPU's ring words, the put lines */
 #define KM_PUT_TAIL (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
 #define KM_PUT_TAKEN (KM_PUT_TAIL + 0x10u) /* + 4 j: page CPU j's */
 #define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)
 #define KM_PUT_CONFIRMED (KM_PUT_TAIL + 0x24u)
 #define KM_PUT_BAD (KM_PUT_TAIL + 0x28u)
-#define KM_PUT_CPUS (KM_PUT_TAIL + 0x2Cu)   /* read with the counts taken: 32 bytes */
-#define KM_PUT_RING (KM_PUT_TAIL + 0x30u)      /* + 4 j: page CPU j's ring */
-#define KM_PUT_RING_CORE (KM_PUT_TAIL + 0x40u) /* + 4 j */
+#define KM_PUT_CPUS (KM_PUT_TAIL + 0x2Cu) /* read with the counts taken: 32 bytes */
+#define KM_PUT_RING (KM_PUT_TAIL + 0x30u) /* + 4 j: page CPU j's ring */
+#define KM_PUT_RING_CORE (KM_PUT_TAIL + 0x40u)  /* + 4 j */
 #define KM_PUT_RING_SLOTS (KM_PUT_TAIL + 0x50u) /* | 1 << 31 once published */
 #define KM_PUT_RING_FAR (KM_PUT_TAIL + 0x54u)   /* the far link core 0, x | y << 16 */
-#define KM_PUT_QUEUE (KM_PUT_TAIL + 0x58u) /* the put queue's L1 address, 0: none yet */
+/* the put queue's L1 address, 0: none yet */
+#define KM_PUT_QUEUE (KM_PUT_TAIL + 0x58u)
 #define KM_PUT_LANDING (KM_PUT_TAIL + 0x5Cu) /* the host's: the far landing */
 #define KM_PUT_LANDED (KM_PUT_TAIL + 0x60u)  /* the host's: this island's */
 /* A CPU's batch: used, records, island, sequence; records of address, page, page
@@ -269,7 +228,7 @@
 #define KM_BATCH_SPAN_SHIFT 20u
 #define KM_PUT_RING_READ 0x50u /* what a putting core reads, from KM_PUT_TAKEN */
 #define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x80 the second CPU's */
-#define KM_PUT_OWN_BYTES 0x80u /* unused (a core's own words, KM_OWN_*) */
+#define KM_PUT_OWN_BYTES 0x80u           /* unused (a core's own words, KM_OWN_*) */
 #define KM_PUT_RING_WORDS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES) /* + 16 a CPU */
 #define KM_PUT_RING_TAIL 0u
 #define KM_PUT_RING_SENT 4u
@@ -286,11 +245,8 @@
 #define KM_PUT_INBOX (KM_PUT_LINES + KM_ASK_SLOTS * 64u)
 /* the headers a CPU builds for a put into the rings (KM_OWN_BUILD) */
 #define KM_PUT_BUILD_BYTES 0x800u
-/* Then a page CPU's own (0x100 a CPU of the core): its copy of an ask line, of a put
- * line (read from link core 0 when it is on another core), the header of its answer's
- * count; in their last 64 bytes, on link core 0, the pages of the far island's put
- * line i that have landed here (KM_PUT_ARRIVED(i), i below KM_ASK_SLOTS: every packet
- * that ends a share or a piece adds its pages once written) */
+/* Then a page CPU's own (0x100 a CPU): its ask line and put line copies, its answer
+ * header; on link core 0 the pages landed of far put line i (KM_PUT_ARRIVED) */
 #define KM_PAGE_CPU (KM_PUT_INBOX + KM_ASK_SLOTS * 64u)
 #define KM_PAGE_CPU_BYTES 0x100u
 #define KM_PAGE_CPU_ASK 0u
@@ -306,18 +262,16 @@
 #define KM_FLAG_RESULT 4u
 /* dispatcher: a queued job; `first` is ignored, the group allocator chooses it */
 #define KM_FLAG_QUEUE 8u
-/* dispatcher: one island's part of a group its submitter split over islands (the host
- * sends the flat line to each island it touches): the dispatcher runs its own part
- * and never crosses the line to another island. A spanning line without it crosses. */
+/* dispatcher: one island's part of a group split over islands (the host sends the flat
+ * line to each island): run here, never crossed. A spanning line crosses. */
 #define KM_FLAG_PART 16u
 #define KM_GROUP_ALL(n) ((uint32_t)(n) << 16) /* first 0, count n */
 /* A command to the X280 thread of work cluster c (1 to 3): first is
    KM_GROUP_CLUSTER_BASE + c, count 1. No core has such a first. */
 #define KM_GROUP_CLUSTER_BASE 0xFF00u
 #define KM_GROUP_CLUSTER(c) ((KM_GROUP_CLUSTER_BASE + (uint32_t)(c)) | 1u << 16)
-/* A command to link cores k to k + n - 1 of the island that takes it: first is
-   KM_GROUP_LINK_BASE + k, count n; never cut by island, never crossing. A rank is
-   below KM_GROUP_LINK_BASE; a link core's rank in it is its link-core index - k. */
+/* A command to link cores k .. k + n - 1 of the island that takes it: first
+ * KM_GROUP_LINK_BASE + k, count n; never cut or crossed. Ranks are below the base. */
 #define KM_GROUP_LINK_BASE 0xFE00u
 #define KM_GROUP_IS_LINK(first)               \
     ((uint32_t)(first) - KM_GROUP_LINK_BASE < \
@@ -508,8 +462,7 @@ KM_STATIC_ASSERT(
 /* KM_X280_RANK_CORE(r), the last indices: no core of a grid of at most 124 cores */
 #define KM_X280_RANK_CORE(r) (KM_CORES_MAX - KM_X280_RANKS_MAX + (uint32_t)(r))
 /* The run line: one 16-byte store of the dispatcher into the X280 ranks' thread at a
- * dynamic run's RUN and at its end command, {run, KM_X280_RUN_*, group, its handler}.
- */
+ * dynamic run's RUN and end command, {run, KM_X280_RUN_*, group, its handler}. */
 #define KM_X280_RUN_SEQUENCE 0u /* word offsets */
 #define KM_X280_RUN_STATE 1u
 #define KM_X280_RUN_GROUP 2u
@@ -622,9 +575,8 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_RELAY (KM_ISLAND_LINK_AREA / 4u + 1u)
 #define KM_ISLAND_RELAY_FAR (KM_ISLAND_RELAY + 1u)
 #define KM_ISLAND_RELAY_TILE (KM_ISLAND_RELAY + 2u)
-/* The relay area, on link cores (on every core when they run the program's kernels):
- * a core's ask to link core 0 (64 bytes at line 2 core + NoC; its done word comes
- * back to its own words' KM_OWN_DONE; DONE here unused), then link core 0's words */
+/* The relay area, on link cores (every core when they run the program's kernels): a
+ * core's ask to link core 0 (64 bytes), then link core 0's words */
 #define KM_RELAY_ASKS 256u /* ask lines: 2 a core */
 #define KM_RELAY_ASK 0x0000u
 #define KM_RELAY_DONE 0x4000u
@@ -649,14 +601,8 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_FORWARD (KM_ISLAND_TENSORS + 4u)
 /* then a word (byte offset): the own words' L1 address on this island (0: none) */
 #define KM_ISLAND_OWN (KM_ISLAND_FORWARD + 4u)
-/* A core's own words (every core of an island run with page links, the session's, at
- * one address on every island): a block a data-movement CPU (the reader's, then the
- * writer's), the scratch of its get, put and relay asks (one at a time a CPU): the
- * line as written to the link core, the atomic's answer, the counts read back (32
- * bytes), the relay's done word; its put lines: those it sent, the number word of its
- * last line on each parity and the one the far island confirmed (+ 4 parity, the far
- * lead page CPU writes it); the headers it builds for a put into the rings (and
- * there first the rings read, KM_PUT_RING_READ bytes) */
+/* A core's own words (every core of a run with page links): per data-movement CPU its
+ * asks' scratch, put lines and put headers */
 #define KM_OWN_LINE 0x00u
 #define KM_OWN_RETURNED 0x40u
 #define KM_OWN_READ 0x50u
@@ -671,9 +617,8 @@ KM_STATIC_ASSERT(
  * next 64-byte boundary on: what the session's own words hold in all */
 #define KM_OWN_BATCH KM_OWN_BYTES
 #define KM_OWN_ALL_BYTES (KM_OWN_BATCH + 2u * KM_PUT_BATCH_BYTES + 64u)
-/* The forward area (km_transport.hpp), a link core's: packets for an island not its
- * own, sent on by its next link toward it. Part 0's writer: the far link core */
-/* part 1 + i: link core i (i + 1 when not below this one) */
+/* The forward area (km_transport.hpp), a link core's: packets for another island, sent
+ * on toward it. Part 0's writer: far link core; part 1 + i: link core i */
 #define KM_FORWARD_PARTS 3u
 #define KM_FORWARD_SLOTS 2u
 #define KM_FORWARD_LANDED 0x00u /* 16 bytes a part: its packets landed */
@@ -681,9 +626,9 @@ KM_STATIC_ASSERT(
 #define KM_FORWARD_CREDIT 0x30u
 #define KM_FORWARD_STATE 0x60u /* taken a part, sent a destination, failed */
 #define KM_FORWARD_FAILED (2u * KM_FORWARD_PARTS) /* state word */
-#define KM_FORWARD_HEADERS 0x80u /* two packet headers */
-#define KM_FORWARD_STAGE 0x100u  /* the head of a packet this core starts */
-#define KM_FORWARD_SLOT 0x180u   /* slots: {island, bytes, KM_CROSS_* field} */
+#define KM_FORWARD_HEADERS 0x80u                  /* two packet headers */
+#define KM_FORWARD_STAGE 0x100u /* the head of a packet this core starts */
+#define KM_FORWARD_SLOT 0x180u  /* slots: {island, bytes, KM_CROSS_* field} */
 /* a forwarded packet's largest payload: its slot's (the session's packets over more
  * than two islands are no larger) */
 #define KM_FORWARD_PAYLOAD 4352u

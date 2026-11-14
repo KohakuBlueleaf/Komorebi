@@ -458,13 +458,13 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 
 /* The link line's words (KMD_LIM_LINK), the host's; with no mark nothing crosses. */
 enum {
-    KMD_L_MARK = 0,      /* KMD_LINK_MARK */
-    KMD_L_ISLAND = 1,    /* this island */
-    KMD_L_ISLANDS = 2,   /* islands in the table, 2 to KM_ISLANDS_MAX */
-    KMD_L_CORE = 3,      /* link core 0: its index in this island's cores (its ranks') */
-    KMD_L_AREA = 4,      /* its link area's L1 address (KM_LINK_*) */
-    KMD_L_FAR = 5,       /* the island at the link's other end */
-    KMD_L_FAR_TILE = 6,  /* that island's dispatcher tile: x | y << 16 */
+    KMD_L_MARK = 0,     /* KMD_LINK_MARK */
+    KMD_L_ISLAND = 1,   /* this island */
+    KMD_L_ISLANDS = 2,  /* islands in the table, 2 to KM_ISLANDS_MAX */
+    KMD_L_CORE = 3,     /* link core 0: its index in this island's cores (its ranks') */
+    KMD_L_AREA = 4,     /* its link area's L1 address (KM_LINK_*) */
+    KMD_L_FAR = 5,      /* the island at the link's other end */
+    KMD_L_FAR_TILE = 6, /* that island's dispatcher tile: x | y << 16 */
     KMD_L_FAR_BLOCK = 7, /* the NoC address there of its link block */
     KMD_L_WORDS = 8,
     /* more than two islands: island i's dispatcher tile and link block at + 2 i */

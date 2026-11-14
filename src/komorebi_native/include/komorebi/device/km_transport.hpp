@@ -1,6 +1,5 @@
-// A link's transport, the one place a link core's packets leave by: a fabric connection
-// to an Ethernet router (two cards), or with KM_WIRE (islands of one card) NoC writes
-// straight to the far tile. The services above it are the same on both.
+// A link's transport, where a link core's packets leave: a fabric connection to an
+// Ethernet router (two cards), or with KM_WIRE (one card) NoC writes to the far tile.
 #pragma once
 
 #include <stdint.h>
@@ -346,17 +345,14 @@ namespace km {
             return true;
         }
 
-        // The NoC command buffers set once for send_stateful's packets (tt-metal's
-        // stateful send): call before a run of them and again after any other write,
-        // inline write or atomic of this CPU, which set the same buffers.
+        // NoC command buffers set once for send_stateful's packets: call before a run
+        // of them and after any other write or atomic of this CPU.
         void ready() {
             edm().template setup_stateful_send_cmd_bufs<false>();
         }
 
-        // As send_across, on the buffers ready() set: the payload's write, the
-        // header's and the router's credit, each a write of the addresses alone
-        // (measured, one link at 4352 bytes: 139 ns a packet against send_across's
-        // 150, the router's own bound).
+        // As send_across, on the buffers ready() set: writes set only addresses (4352
+        // bytes a packet over one link: 139 ns against 150).
         bool send_across_stateful(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
             edm().template send_current_slot_stateful_non_blocking<false>(
                 from, bytes, reinterpret_cast<uint32_t>(header)
@@ -544,9 +540,7 @@ namespace km {
         const uint32_t to = words[0], bytes = words[1], field = words[2];
         const uint32_t k = forward_index(view);
         const uint32_t j = to < view.count() ? view.link(to) : KM_ISLAND_NO_LINK;
-        if (
-            j == KM_ISLAND_NO_LINK || to == view.here() || bytes > KM_FORWARD_PAYLOAD
-        ) {
+        if (j == KM_ISLAND_NO_LINK || to == view.here() || bytes > KM_FORWARD_PAYLOAD) {
             return kForwardBad;
         }
         const auto count = [&] {

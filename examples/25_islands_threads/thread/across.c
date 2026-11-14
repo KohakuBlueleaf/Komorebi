@@ -1,6 +1,5 @@
-/* The thread of example 25, on work cluster 1 of each island. Island 0's sends
- * commands whose groups or threads are on island 1 and times them; island 1's
- * answers FOLD. kmx_program serves the host's commands on both. */
+/* Example 25's thread, on work cluster 1 of each island: island 0's sends commands to
+ * island 1 and times them, island 1's answers FOLD; kmx_program serves the host. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -92,10 +91,8 @@ static int set_deadline(uint32_t microseconds) {
     return kmx_submit(&command, &handle);
 }
 
-/* HANG: a0 first, a1 count, a2 the hung rank of the group, a3 its deadline and a4 the
- * one after it (microseconds); example 01's HANG, its reader waiting for an arrival
- * that never comes. Its word: the event's kind << 8 | its auxiliary's low byte (a
- * part on another island that timed out: KM_EVENT_ISLAND + that island). */
+/* HANG: a0 first, a1 count, a2 the hung rank, a3 its deadline, a4 the next's
+ * (microseconds); example 01's HANG. Word: event kind << 8 | auxiliary's low byte. */
 static uint32_t hang(const km_command_t* command) {
     km_command_t hung;
     kmx_event event;

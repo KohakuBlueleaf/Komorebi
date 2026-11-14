@@ -513,9 +513,8 @@ def across(session, run, args, local, far, output, exact):
 def put(session, run, args, source, output, held, ranks):
     """Rounds of one MAP on every rank (one flat group over the islands) storing into
     `output` (split: each rank's page on its own island), then into `held` (island 0
-    holds every page): island 1's ranks put theirs across with the same writer's
-    write call, which returns once the page is written there. The last round is
-    checked."""
+    holds every page): island 1's ranks put theirs across with the same write call,
+    which returns once the page is written there. The last round is checked."""
     group = (0, ranks)
     handler = run.program.handler("map")
 

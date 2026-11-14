@@ -72,12 +72,10 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
     const uint32_t started = km::wall();
     const uint32_t scratch = get_write_ptr(kCbDirWriter);
     volatile tt_l1_ptr uint32_t* directory = km::l1(scratch);
-    if (
-        !km::read_pages(
-            writer, command, Directories(directory_address), writer.me(), 1, scratch
-        ) ||
-        !read_done(writer, command.sequence)
-    ) {
+    if (!km::read_pages(
+        writer, command, Directories(directory_address), writer.me(), 1, scratch
+    ) ||
+        !read_done(writer, command.sequence)) {
         return false;
     }
     invalidate_l1_cache();
@@ -183,17 +181,15 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
     profile[kProfWriter + 1] = write;
     profile[kProfWriter + 2] = km::wall() - started;
     profile[kProfWriter + 3] = items;
-    if (
-        !km::write_pages(
-            writer,
-            command,
-            Profiles(profile_address),
-            writer.me(),
-            1,
-            get_read_ptr(kCbOut)
-        ) ||
-        !writes_sent(writer, command.sequence)
-    ) {
+    if (!km::write_pages(
+        writer,
+        command,
+        Profiles(profile_address),
+        writer.me(),
+        1,
+        get_read_ptr(kCbOut)
+    ) ||
+        !writes_sent(writer, command.sequence)) {
         return false;
     }
     cb_pop_front(kCbOut, pages_per_item);

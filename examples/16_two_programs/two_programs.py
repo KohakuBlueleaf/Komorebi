@@ -328,8 +328,7 @@ def live_groups(cores, boundary=0):
     """{name: group} of the live phase on `cores` (at least 2), and the part of sum's
     group that switches: half of sum's cores; scale and widen share the rest. With an
     island `boundary`, sum is cut at it and its part is the far island's half, where
-    scale and widen have their groups (a part switches only to a program its island's
-    groups hold)."""
+    scale and widen have groups (a part switches only to a program its island holds)."""
     held = max(1, cores // 2) if not boundary else boundary + (cores - boundary) // 2
     others = cores - held
     wide = max(1, others // 5)

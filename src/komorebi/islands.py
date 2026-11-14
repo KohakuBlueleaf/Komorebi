@@ -176,10 +176,9 @@ def spread(cores, columns, count):
 
 class Graph:
     """Islands and their links (any connected graph). A used link takes a core on each
-    island it joins (`reserve` False: none; `link_cores`: per island, these cores);
-    ranks and thread numbers (from 1) are flat and contiguous by island, ranks = cores
-    less link cores in core order. Routes by hops, ties to the lowest island. On one
-    island: no link cores, rank = core."""
+    island it joins (`reserve` False: none; `link_cores`: these cores); ranks and thread
+    numbers (from 1) are flat and contiguous by island, ranks = cores less link cores.
+    Routes by hops, ties to the lowest island. On one island: rank = core."""
 
     def __init__(self, islands, links=(), reserve=True, link_cores=None):
         self.islands = tuple(

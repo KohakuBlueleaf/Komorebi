@@ -37,15 +37,12 @@ LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PAR
 KERNEL_BYTES = 160 * 1024
 # Less than this: a dynamic program's messages on link 0's service alone.
 KERNEL_BYTES_SERVICES = 160 * 1024
-# The transfer buffer's chunk a session over two cards asks for: a page CPU passes
-# pages through its chunk, one L1 slot a read in flight (15 slots of 4 KiB and their
-# headers); a run with no room for it keeps the default.
+# The transfer chunk a session over two cards asks for: a page CPU passes pages through
+# it, one L1 slot a read in flight (15 slots of 4 KiB); with no room: the default.
 LINK_CHUNK = 64 * 1024
 CROSS_PAGE = 64  # bytes of a link CPU's row of what crossed, as COUNTS writes it
-# The payload bytes of a packet on the links, the routers told so at the open (the
-# kernels read it from the island area). Measured, one link from L1 slots: 31.3 GB/s
-# at 4352 bytes (tt-metal's default), 40.2 at 8192, 33.2 at 15232 (the routers'
-# largest, KM_PACKET_LARGEST: four router slots starve the link). packet= overrides it.
+# The packet payload on the links, told to the routers at the open. One link from L1
+# slots: 31.3 GB/s at 4352 B (the default), 40.2 at 8192, 33.2 at 15232 (the largest).
 PACKET_BYTES = 8192
 
 
@@ -103,10 +100,8 @@ class Crossings:
     `after - before` is what crossed between two reads; `total` sums links."""
 
     FIELDS = ("messages", "lines", "asks", "pages", "parts", "puts", "bytes")
-    # the link CPU's put ring: cycles its turns sent, of them waiting for the router's
-    # slots; the cycles between its turns, by its first slot at the next: ready (the
-    # CPU was elsewhere), reserved but not written, not reserved; and the turns that
-    # sent, a count (32-bit counts: a difference is taken modulo 2 ** 32)
+    # Put-ring cycles of the link CPU: turns sent (some waiting for the router), between
+    # turns by the next first slot, and the turns that sent (a count, mod 2**32).
     IDLE = ("ring_late", "ring_filling", "ring_turns", "ring_empty")
     CYCLES = ("ring_sending", "ring_router") + IDLE
 
@@ -752,10 +747,8 @@ class IslandSession:
     context manager. `host_reaches`: see the islands reference (a test)."""
 
     LINKS_MAX = 4  # a byte each in a PAGES command's link word
-    # How a core's ask for pages another island holds reaches the holder: "core" (its
-    # own read call, km::read_pages, puts an ask line into its link core 0, sent on
-    # link 0); "host" (the host queues the holder's send: ask, ask_range; the read call
-    # only waits for the pages).
+    # How an ask for another island's pages reaches the holder: "core" (the read call
+    # puts an ask line into link core 0), "host" (the host queues the holder's send).
     ASKS_BY = "core"
 
     def __init__(
@@ -1746,10 +1739,9 @@ class IslandSession:
         shape=0,
     ):
         """Sends pages first .. of `source` by its holder's link cores into island
-        `there` (default: its one neighbour): the same pages of tensor `to`, or (`core`:
-        a local core) L1 from address `to`; each batch adds its pages to port `port` of
-        `counted` (default `core`, else the link core across). `shape`: the push's
-        (KM_PAGES_SHAPE_*, a measurement's; 0 the loop's own). (island, handle)."""
+        `there` (default: the neighbour): the same pages of tensor `to`, or (`core`) L1
+        from address `to`; each batch adds to port `port` of `counted` (default `core`,
+        else the far link core). `shape`: the loop shape. Returns (island, handle)."""
         if not self.links:
             raise KomorebiError(
                 "no page links: pages cross in a session over two cards"
@@ -1861,11 +1853,10 @@ class IslandSession:
         return self.send_pages(tensor, first, pages, to, core, core, port, island)
 
     def ask_range(self, tensor, first, pages, group, to, port):
-        """One ask for every rank of `group` (first rank, ranks; all on one island):
-        rank first + i gets pages first + i * pages .. of `tensor` (held by another
-        island) into L1 address `to` of its core, counted at its port `port`. One
-        command to the holder's link cores, which split the ranks among their CPUs.
-        Returns (holder, handle)."""
+        """One ask for every rank of `group` (first rank, ranks; one island): rank first
+        + i gets pages first + i * pages .. of `tensor` (held by another island) into L1
+        address `to`, counted at port `port`. One command to the holder's link cores,
+        which split the ranks among their CPUs. Returns (holder, handle)."""
         h = abi.headers()
         if self.ASKS_BY != "host":
             raise KomorebiError(
@@ -2181,12 +2172,10 @@ class IslandSession:
         )
 
     def _links(self, programs=None):
-        """Each island's LinkPlan (two islands, or a split card), else None each: its
-        link core 0, own words on every core (zeroed), a link area and a relay (zeroed:
-        the asks' counts start at 0) at one address on every island, each link core's
-        far one for the relay; over more than two islands a forward area too
-        (km_transport.hpp), at one address. When the link cores run their own kernels
-        (_apart) the link area and relay are theirs alone, at their buffers' base."""
+        """Each island's LinkPlan (two islands, or a split card), else None each: link
+        core 0, own words on every core, a link area and a relay at one address on every
+        island, each link core's far one for the relay, a forward area beyond two
+        islands. Own-kernel link cores (_apart): the area and relay are theirs."""
         if len(self.sessions) != 2 and self.split == 1:
             return [None] * len(self.sessions)
         h = abi.headers()

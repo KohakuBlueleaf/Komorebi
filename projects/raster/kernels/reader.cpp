@@ -35,12 +35,10 @@ void fill_reader_command(const km::Reader& reader, const km_command_t& command) 
     const uint32_t started = km::wall();
     const uint32_t scratch = get_write_ptr(kCbDirReader);
     volatile tt_l1_ptr uint32_t* directory = km::l1(scratch);
-    if (
-        !km::read_pages(
-            reader, command, Directories(directory_address), reader.me(), 1, scratch
-        ) ||
-        !read_done(reader, command.sequence)
-    ) {
+    if (!km::read_pages(
+        reader, command, Directories(directory_address), reader.me(), 1, scratch
+    ) ||
+        !read_done(reader, command.sequence)) {
         return;
     }
     invalidate_l1_cache();
@@ -53,12 +51,10 @@ void fill_reader_command(const km::Reader& reader, const km_command_t& command) 
             return;
         }
         const uint32_t reserved = km::wall();
-        if (
-            !km::read_pages(
-                reader, command, lists, first + page, 1, get_write_ptr(kCbIn)
-            ) ||
-            !read_done(reader, command.sequence)
-        ) {
+        if (!km::read_pages(
+            reader, command, lists, first + page, 1, get_write_ptr(kCbIn)
+        ) ||
+            !read_done(reader, command.sequence)) {
             return;
         }
         cb_push_back(kCbIn, 1);
