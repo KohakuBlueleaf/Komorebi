@@ -1595,7 +1595,7 @@ def panel_time(s, y):
 def panel_rounds(s, y):
     """An X280 thread splits the grid between two programs each round."""
     c, col = s.c, "a"
-    code = lines_of("19_thread_programs/thread/rounds.c", [105])
+    code = lines_of("19_thread_programs/thread/rounds.c", [106])
     rows = [
         (
             "code",
@@ -1603,7 +1603,7 @@ def panel_rounds(s, y):
             True,
             "submit",
             "to the cores this round gives spin",
-            "rounds.c 105",
+            "rounds.c 106",
         )
     ]
     host, thread = "host", "X280 1, the thread"
