@@ -1,6 +1,7 @@
-"""Work cluster 1's thread reads the cluster cache's shape (`shape`: configuration,
-ways, way masks, the Zero Device past the pinned span) or times kmx_evict against the
-same reads of a pad in DRAM (`time`). One JSON line. Example: python evict.py shape"""
+"""Work cluster 1's thread reads the cluster cache's shape (`shape`), times kmx_evict
+against the same reads of a pad in DRAM (`time`), or proves that it drops the lines
+of a range the cores then copy into (`proof`). One JSON line. Example: python evict.py
+proof --bytes 4096 --repeats 300"""
 
 import argparse
 import json
@@ -11,11 +12,14 @@ import komorebi as km
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE.parents[1] / "examples" / "08_parallel_thread" / "kernels"  # NOPs
-MODES = {"shape": 0, "time": 1}
+MODES = {"shape": 0, "time": 1, "proof": 2}
 MASTERS = 38
 TICKS = 50  # kmx_time() ticks a microsecond
 PADS = ("zero_device", "dram")
 STATES = ("after_read", "after_write", "after_evict")  # the cache before the call
+VARIANTS = ("plain", "lead", "readers", "one_evict", "no_evict")  # evict.c's V_*
+CONTROL = 4  # no_evict: the check must find bad lines
+LEAD = 1 << 18  # bytes of region 0 before the range
 T0 = time.monotonic()
 
 
@@ -66,30 +70,101 @@ def time_report(words):
     return report
 
 
+def proof_report(words):
+    """Per variant its rounds, bad lines, first bad line and seconds; what the readers
+    read and the first failed call."""
+    report = {}
+    for v, name in enumerate(VARIANTS):
+        out = words[9 * v : 9 * v + 9]
+        row = {"rounds": out[0], "bad_lines": out[1], "seconds": out[8] / TICKS / 1e6}
+        if out[1]:
+            row["first_bad"] = {
+                "round": out[2],
+                "line": out[3],
+                "got": f"{out[4] | out[5] << 32:#018x}",
+                "want": f"{out[6] | out[7] << 32:#018x}",
+            }
+        report[name] = row
+    report["readers_mib"] = words[45]
+    report["failed_call"] = f"{words[46]:#x}"
+    return report
+
+
+def regions(args):
+    """The thread's regions for the mode."""
+    if args.mode != "proof":
+        return {"pad": 1 << 17, "fill": 1 << 20}
+    return {"range": LEAD + args.bytes, "source": args.bytes, "noise": 1 << 22}
+
+
+def merged(results, loads):
+    """The proof words of loads of a variant or several: each variant's from its load,
+    the readers' MiB summed, the failed calls together."""
+    words = [0] * 48
+    for result, load in zip(results, loads, strict=True):
+        got = list(result.words) + [0] * 48
+        for v in load:
+            words[9 * v : 9 * v + 9] = got[9 * v : 9 * v + 9]
+        words[45] += got[45]
+        words[46] |= got[46]
+    return words
+
+
+def thread_run(session, args, variants, first):
+    """Loads the thread with `variants` (proof) from round `first`; its result."""
+    mask = sum(1 << v for v in variants)
+    program = km.Program("bank_evict", kernels=KERNELS)
+    program.thread(
+        cluster=1,
+        sources=[HERE / "thread" / "evict.c"],
+        regions=regions(args),
+        words=[MODES[args.mode], args.repeats, args.bytes, mask, first],
+        deadline=args.deadline,
+    )
+    run = session.load(program)
+    log(f"loaded, variants {variants}")
+    while not run.thread.returned(5.0):
+        log("thread running")
+    result = run.thread_result(timeout=5.0)
+    log(f"thread: {result.state}, code {result.code}, error {result.error}")
+    run.stop()
+    log("stopped")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("mode", choices=sorted(MODES))
     parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument("--bytes", type=int, default=4096, help="proof: the range")
+    parser.add_argument("--variants", type=int, nargs="+", default=[0, 1, 2, 3, 4])
+    parser.add_argument("--deadline", type=float, default=50.0)
+    parser.add_argument("--load-each", action="store_true", help="a load a variant")
     args = parser.parse_args()
+    variants = sorted(set(args.variants))
+    loads = [[v] for v in variants] if args.load_each else [variants]
     with km.Session(log=log) as session:
-        program = km.Program("bank_evict", kernels=KERNELS)
-        program.thread(
-            cluster=1,
-            sources=[HERE / "thread" / "evict.c"],
-            regions={"pad": 1 << 17, "fill": 1 << 20},
-            words=[MODES[args.mode], args.repeats],
-            deadline=10.0,
-        )
-        run = session.load(program)
-        log("loaded")
-        result = run.thread_result(timeout=15.0)
-        log(f"thread: {result.state}, code {result.code}, error {result.error}")
-        run.stop()
-        log("stopped")
+        results = [
+            thread_run(session, args, loads[i], 1 + 100000 * i)
+            for i in range(len(loads))
+        ]
+    words = list(results[0].words) + [0] * 48
+    if args.mode == "proof":
+        words = merged(results, loads)
+    failed = [r for r in results if not r.ran or r.code or r.state != "done"]
+    result = (failed or results)[0]
     report = {"mode": args.mode, "thread": [result.state, result.code, result.error]}
-    words = list(result.words) + [0] * 48
-    report.update(shape_report(words) if args.mode == "shape" else time_report(words))
-    report["ok"] = result.ran and result.code == 0
+    reports = {"shape": shape_report, "time": time_report, "proof": proof_report}
+    report.update(reports[args.mode](words))
+    if args.mode == "proof":
+        report["bytes"] = args.bytes
+        rows = [report[VARIANTS[v]] for v in set(args.variants) - {CONTROL}]
+        report["exact"] = words[46] == 0 and all(
+            row["rounds"] == args.repeats and row["bad_lines"] == 0 for row in rows
+        )
+    if args.mode == "proof" and CONTROL in args.variants:
+        report["control_caught"] = report[VARIANTS[CONTROL]]["bad_lines"] > 0
+    report["ok"] = result.ran and result.code == 0 and report.get("exact", True)
     print(json.dumps(report), flush=True)
     return 0 if report["ok"] else 1
 

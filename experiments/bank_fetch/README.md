@@ -79,6 +79,38 @@ The Zero Device answers from the cluster itself; the pad's lines come from DRAM.
 sweep costs 10.4 ns a line, so eviction is cheaper from about 2,540 lines (159 KiB)
 on.
 
+`python evict.py proof` tries to make a stale line survive. Each round the thread
+writes a new pattern (different in every round and word) into a source region of its
+bank and sweeps it out, reads the whole range (the cache then holds its last lines),
+writes every fifth line of it (dirty lines), evicts, has four Tensix cores copy the
+source into the range (`kmx_fetch_clean`), evicts again and compares every word of the
+range with the pattern. The variants:
+
+- `plain`: as above.
+- `lead`: the thread also reads the 256 KiB before the range, up to its first byte,
+  just before the first eviction, so the prefetcher runs ahead into the range.
+- `readers`: cores 1 to 3 read 4 MiB of other memory the whole time.
+- `one_evict`: as `lead`, without the second eviction: the order of `kmx_fetch`.
+- `no_evict`: as `lead`, without any eviction: the control, which must find stale
+  lines.
+
+Card 1, 2026-11-14, host load 2.9 to 7.3; every variant exact (no wrong word):
+
+| Range | plain | lead | readers | one_evict | no_evict (control) |
+|---|---|---|---|---|---|
+| 4 KiB | 300 rounds | 300 | 300 | 300 | not run |
+| 1 MiB | 300 | 300 | 300 | 300 | 1,800 stale lines in 300 rounds |
+| 64 MiB | 180 | 180 | 90 | 180 | 4,320 stale lines in 180 rounds |
+
+The control's stale lines are the first lines of the range (6 a round at 1 MiB, 24 at
+64 MiB): the prefetcher fetched them during the lead read, after the lead read had
+pushed every other line of the range out. One eviction before the copy removes them.
+
+The eviction comes before the copy: a dirty line of the range that left the cache
+during or after the copy would be written back over the bytes the cores wrote. A line
+the cache holds after the eviction can only come from a read of the range, and nothing
+on the cluster reads it while the cores copy, so `one_evict` needs no second eviction.
+
 ## Running it
 
 ```sh
@@ -88,7 +120,15 @@ python fetch.py --bytes 16777216 --cores 1 4 12 --repeats 3 --store 1048576
 python fetch.py --bytes 67108864 --cores 1 4 12 --repeats 3 --store 1048576
 python evict.py shape
 python evict.py time --repeats 20
+python evict.py proof --bytes 4096 --repeats 300 --variants 0 1 2 3
+python evict.py proof --bytes 1048576 --repeats 300
+python evict.py proof --bytes 67108864 --repeats 90 --variants 2 --load-each --deadline 58
+python evict.py proof --bytes 67108864 --repeats 180 --variants 0 1 --load-each --deadline 58
+python evict.py proof --bytes 67108864 --repeats 180 --variants 3 4 --load-each --deadline 58
 ```
+
+At 64 MiB a round takes 0.23 s (0.49 s with the readers), so each variant gets a load
+of its own (`--load-each`): a thread runs at most 60 s.
 
 `fetch.py` writes the source as a DRAM tensor of 16 KiB pages whose pages in bank
 `--bank` (default 0) hold random words one after another, loads a grid whose commands
