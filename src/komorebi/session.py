@@ -58,6 +58,8 @@ L1_BYTES = 1536 * 1024
 KERNEL_BUFFER_BASE = 41088
 KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B)
 KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
+GROUP_DEFINE = "-DKM_PROGRAM_GROUP"  # a group's runtime kernels are built apart
+GROUP_LINE = re.compile(r"^#define KM_PROGRAM_GROUP (\d+)$", re.M)
 KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 # A loop runs from L1 at or above this address about 4 cycles slower an iteration than
 # from below it: an overlay's slots are placed just under it when they fit.
@@ -745,6 +747,31 @@ class Session:
         return run
 
 
+def _recipe_group(recipe):
+    """The group number a runtime kernel's build was made for (KM_PROGRAM_GROUP, in
+    its defines or in the header the runtime generates beside its ELF), or None."""
+    for word in recipe.defines:
+        if word.startswith(GROUP_DEFINE + "="):
+            return int(word.split("=", 1)[1])
+    header = recipe.elf.parent.parent / "defines_generated.h"
+    found = GROUP_LINE.search(header.read_text()) if header.is_file() else None
+    return int(found.group(1)) if found else None
+
+
+def _group_recipes(kernels, count):
+    """{target: Recipe} of each group's runtime kernels, by group number: the
+    runtime lists a program's kernels in no fixed order."""
+    out = [{} for _ in range(count)]
+    for _, builds in kernels:
+        for row in builds:
+            recipe = overlay.Recipe.from_native(row)
+            number = _recipe_group(recipe)
+            if number is None or not 0 <= number < count:
+                raise ProgramError(f"{recipe.elf}: no group number in its build")
+            out[number][recipe.target] = recipe
+    return out
+
+
 def _peers(session, dispatch, images):
     """{cluster: komorebi.thread.Peers} for the threads on the card: each with the
     clusters running its image, their tiles and their banks' DRAM tiles."""
@@ -1249,17 +1276,13 @@ class _Backend:
         table, when a group's do not fit) and writes each group's overlay area."""
         session, abi_headers = self.session, abi.headers()
         started = time.perf_counter()
-        kernels = descriptor.recipes()
+        by_group = _group_recipes(descriptor.recipes(), len(placed.groups))
         grid = (self.port.grid_x, self.port.grid_y)
         cores = grid[0] * grid[1]
         declared = placed.programs[0].overlay_slots
         built = []
         for number, group in enumerate(placed.groups):
-            recipes = {}
-            for _, builds in kernels[3 * number : 3 * number + 3]:
-                for row in builds:
-                    recipe = overlay.Recipe.from_native(row)
-                    recipes[recipe.target] = recipe
+            recipes = by_group[number]
             held = [placed.programs[index] for index in group.programs]
             if not held:
                 built.append(None)

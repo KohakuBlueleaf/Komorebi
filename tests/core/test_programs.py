@@ -7,6 +7,7 @@ from fake_port import FakeBackend, FakePort
 
 import komorebi as km
 from komorebi import abi, overlay, programs
+from komorebi import session as session_module
 from komorebi.engines import graph as graph_module
 from komorebi.engines import stream as stream_module
 from komorebi.errors import L1LayoutError, ProgramError
@@ -177,3 +178,27 @@ def test_the_runs_commands_carry_the_field_and_refuse_cores_without_the_program(
         run.check_templates(stream.templates())
     assert run.field_handler(2, 1).program is second and run.field_handler(2, 0) == 2
     assert run._rejections[CONSTANTS["KMD_REJECT_PROGRAM"]] == "program"
+
+
+def test_each_group_gets_its_own_kernels_whatever_order_the_runtime_lists_them(
+    tmp_path,
+):
+    rows = []
+    for number in (2, 0, 1):  # the runtime's order is not the groups'
+        compute = tmp_path / f"compute{number}" / "trisc0"
+        compute.mkdir(parents=True)
+        (compute.parent / "defines_generated.h").write_text(
+            f"#pragma once\n#define KM_PROGRAM_GROUP {number}\n"
+        )
+        reader = ["brisc", str(tmp_path / f"r{number}.elf"), "riscv-g++", "O2"]
+        reader += ["", "", "", "O2", f"-DKM_PROGRAM_GROUP={number}"]
+        trisc = ["trisc0", str(compute / "trisc0.elf"), "riscv-g++", "O3"]
+        trisc += ["", "", "", "O3"]
+        rows.append(("program_reader.cpp", [reader]))
+        rows.append(("program_compute.cpp", [trisc]))
+    groups = session_module._group_recipes(rows, 3)
+    for number, recipes in enumerate(groups):
+        assert recipes["brisc"].elf.name == f"r{number}.elf"
+        assert recipes["trisc0"].elf.parent.parent.name == f"compute{number}"
+    with pytest.raises(ProgramError, match="no group number"):
+        session_module._group_recipes(rows, 2)
