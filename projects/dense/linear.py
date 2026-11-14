@@ -40,8 +40,10 @@ def covers(w, k_tiles, n_tiles):
     placement = w.placement
     out = []
     for first, steps in placement.parts:
-        if placement.copy or placement.pages == steps * placement.inner:
-            out.append((0, k_tiles, 0, n_tiles) if steps else (0, 0, 0, 0))
+        if not steps:
+            out.append((0, 0, 0, 0))
+        elif placement.copy or placement.pages == steps * placement.inner:
+            out.append((0, k_tiles, 0, n_tiles))
         elif placement.split == 0:
             out.append((first, steps, 0, n_tiles))
         else:
