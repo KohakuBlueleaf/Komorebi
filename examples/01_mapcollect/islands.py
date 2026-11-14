@@ -270,7 +270,7 @@ def write_rates(session, tensors, generator):
         seconds = time.perf_counter() - started
         checked = True
         for island, part in enumerate(tensor.parts):
-            if part is not None:
+            if part is not None and len(tensor.placement.part(island)):
                 page = int(tensor.placement.part(island)[-1])
                 (got,) = session.read(tensor, first=page, pages=1)
                 checked = checked and bool(np.array_equal(got[0], pages[page]))

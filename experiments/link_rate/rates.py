@@ -13,6 +13,18 @@ def rx(rate):
     return "-" if rate is None else f"{rate:.2f}"
 
 
+def hops(pair, size):
+    """NoC hops from the sender to its link's Ethernet core on the sender's NoC (NoC0
+    runs toward higher x and y, NoC1 toward lower, both wrap); None without places."""
+    if "sender_noc0" not in pair or not size:
+        return None
+    (sx, sy), (ex, ey) = pair["sender_noc0"], pair["eth_noc0"]
+    width, height = size
+    if pair.get("sender_noc", 0) == 0:
+        return (ex - sx) % width + (ey - sy) % height
+    return (sx - ex) % width + (sy - ey) % height
+
+
 def report(path):
     """One run's line of the table, from the last JSON line of its log."""
     lines = [line for line in Path(path).read_text().splitlines() if line[:1] == "{"]
@@ -37,14 +49,21 @@ def report(path):
         sender_s = pair["sender"]["cycles"] / (mhz_from * 1e6)
         out = packets * payload / sender_s / 1e9 if sender_s else 0.0
         key = f"{pair['from']}->{pair['to']}"
+        place = ""
+        if "sender_noc0" in pair:
+            place = (
+                f" noc{pair['sender_noc']} from {tuple(pair['sender_noc0'])} to eth "
+                f"{tuple(pair['eth_noc0'])}, {hops(pair, run.get('noc_size'))} hops,"
+                f" {(packets - 1 - first) / span_s / 1e6 if span_s else 0:.3f} Mpkt/s"
+            )
         by_direction.setdefault(key, []).append(
-            (pair["link"], into, out, pair["ok"], tuple(pair["sender_core"]))
+            (pair["link"], into, out, pair["ok"], tuple(pair["sender_core"]), place)
         )
     parts = []
     for key, rates in by_direction.items():
         each = " ".join(
-            f"l{link}@{core[0]},{core[1]} rx {rx(into)} tx {out:.2f}"
-            for link, into, out, _, core in rates
+            f"l{link}@{core[0]},{core[1]} rx {rx(into)} tx {out:.2f}{place}"
+            for link, into, out, _, core, place in rates
         )
         total_in = sum(rate[1] or 0.0 for rate in rates)
         total_out = sum(rate[2] for rate in rates)

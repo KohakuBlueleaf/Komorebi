@@ -37,6 +37,9 @@ def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
     parser.add_argument(
+        "--islands", type=int, default=0, help="one card split into this many islands"
+    )
+    parser.add_argument(
         "--links", type=int, default=0, help="the session's page links (0: link 0)"
     )
     parser.add_argument(
@@ -258,8 +261,13 @@ def main():
     )
     report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
+    opened = {"card": cards[0]} if args.islands else {"cards": cards}
     with km.Session(
-        cards=cards, links=args.links, log=log, kernel_bytes=84 * 1024
+        **opened,
+        islands=args.islands or None,
+        links=args.links,
+        log=log,
+        kernel_bytes=84 * 1024,
     ) as session:
         ranks = session.ranks
         graph = session.graph
@@ -271,7 +279,8 @@ def main():
             np.zeros((ranks * TILE, TILE), np.float32), "bfloat16", "tile"
         )
         made = [program(source, output, threads) for _ in range(2)]
-        run = session.load(made, deadline=2.0)
+        # a split card: one launch, so one program for every island
+        run = session.load(made[0] if args.islands else made, deadline=2.0)
         log("loaded on both islands")
         first = run.island(0)
         if "nop" in steps:
@@ -340,7 +349,7 @@ def main():
             log(f"output: {report['wrong_tiles']} wrong of {ranks}")
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["ok"] = bool(
-        report["kernel_errors"] == ["none", "none"]
+        all(error == "none" for error in report["kernel_errors"])
         and report.get("wrong_tiles", 0) == 0
         and report.get("thread_map_all_us", 0) is not None
         and report.get("thread_ask_us", 0) is not None

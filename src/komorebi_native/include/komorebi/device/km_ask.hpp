@@ -84,8 +84,8 @@ namespace km {
         ) {
             return give_up(kGaveBadItem);  // two islands a link apart, whole packets
         }
-        // link core 0: the core after the island's ranks
-        const uint32_t link = view.base() + view.ranks();
+        // the link core toward the holder: the table's next link after the ranks
+        const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
         volatile tt_l1_ptr uint32_t* returned = l1(area + queue.returned);
         returned[0] = kAskNoAnswer;
