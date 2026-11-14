@@ -460,6 +460,7 @@ class Session:
         self.run = None
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
+        self.transfer_chunk = None  # a larger transfer chunk asked for, where it fits
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
         self._starting = None  # the Dispatch of a load before its Run exists
@@ -2073,11 +2074,7 @@ class _Backend:
         program, keeps the default: it has slots to place."""
         page = self.session.largest_page
         held = placed.programs if placed else [program]
-        if (
-            page <= channel_module.CHUNK_DEFAULT
-            or (placed and placed.switch)
-            or any(each.overlays for each in held)
-        ):
+        if (placed and placed.switch) or any(each.overlays for each in held):
             return channel_module.CHUNK_DEFAULT
         buffers = max(
             sum(buffer.page_bytes * buffer.pages for buffer in each.buffers)
@@ -2085,6 +2082,12 @@ class _Backend:
         )
         buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
         spare = self.session.l1()[1] - buffers - self.control.nbytes // cores
+        asked = self.session.transfer_chunk  # a session over two cards: LINK_CHUNK
+        word = abi.headers()["KM_TRANSFER_WORD_BYTES"]
+        if asked and asked >= page and 2 * asked + word <= spare // 2:
+            return asked
+        if page <= channel_module.CHUNK_DEFAULT:
+            return channel_module.CHUNK_DEFAULT
         return (
             channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
         )
