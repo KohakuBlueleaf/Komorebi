@@ -18,10 +18,19 @@ void kernel_main() {
                 const uint32_t input_address = command.a0;
                 const uint32_t tiles = command.a1;
                 const uint32_t first_tile = command.a6;
+                const uint32_t across = command.a7;
+                const uint32_t landing = command.a8;
                 const km::Partition partition = (
                     km::partition(tiles, index, km::count(command))
                 );
                 const auto input = TensorAccessor(input_args, input_address);
+                // Tiles another island holds: its link cores put them at `landing`.
+                if (
+                    across != kAcrossLocal && partition.len != 0 &&
+                    !km::port_wait(reader, command, across - 1, partition.len)
+                ) {
+                    return;
+                }
                 for (uint32_t done = 0; done < partition.len;) {
                     uint32_t block_tiles = (
                         partition.len - done < kBlock ? partition.len - done : kBlock
@@ -36,11 +45,19 @@ void kernel_main() {
                     }
                     const uint32_t destination = get_write_ptr(kCbIn);
                     for (uint32_t tile = 0; tile < block_tiles; tile++) {
-                        noc_async_read_page(
-                            first_tile + partition.start + done + tile,
-                            input,
-                            destination + tile * kTileBytes
-                        );
+                        if (across != kAcrossLocal) {
+                            noc_async_read(
+                                get_noc_addr(landing + (done + tile) * kTileBytes),
+                                destination + tile * kTileBytes,
+                                kTileBytes
+                            );
+                        } else {
+                            noc_async_read_page(
+                                first_tile + partition.start + done + tile,
+                                input,
+                                destination + tile * kTileBytes
+                            );
+                        }
                     }
                     noc_async_read_barrier();
                     cb_push_back(kCbIn, block_tiles);

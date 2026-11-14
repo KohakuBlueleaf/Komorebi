@@ -16,6 +16,7 @@ from komorebi.errors import CardBusy, KomorebiError, WaitTimeout
 from komorebi.program import Program
 
 M32 = 0xFFFFFFFF
+SLICE_S = 0.001  # an island's turn in wait_together
 
 
 def _named(error, island):
@@ -287,6 +288,9 @@ class IslandSession:
     core is a rank. Use as a context manager."""
 
     LINKS_MAX = 4  # a byte each in a PAGES command's link word
+    # How a core's ask for pages another island holds reaches the holder: "host" (the
+    # host queues the holder's send); "message" (the asker's own message) is not built.
+    ASKS_BY = "host"
 
     def __init__(
         self,
@@ -614,6 +618,17 @@ class IslandSession:
         )
         return here, handle
 
+    def ask(self, tensor, first, pages, island, core, to, port):
+        """Pages first .. of `tensor`, held by another island, into L1 address `to` of
+        local core `core` of `island`, counted at its port `port`: what that core waits
+        on (km::port_wait). Returns (holder, handle) of the holder's send."""
+        if self.ASKS_BY != "host":
+            raise KomorebiError(f"asks by {self.ASKS_BY!r}: not built (only 'host')")
+        holder = tensor.holders(first, pages)[0][0]
+        if holder == island:
+            raise ValueError(f"pages {first} + {pages}: island {island} holds them")
+        return self.send_pages(tensor, first, pages, to, core, core, port)
+
     def wait_pages(self, island, core, pages, port=None):
         """Queues on local core `core` of `island` a wait (bounded) until port `port`'s
         count has reached `pages`, which it then takes off. Returns the handle."""
@@ -626,6 +641,46 @@ class IslandSession:
         return self.run.island(island)._queue_command(
             h["KM_HANDLER_PAGES"], (core, 1), words
         )
+
+    def wait_together(self, waits, timeout=10.0):
+        """Waits, within one `timeout`, for [(island, handle)] of the islands' own runs,
+        a short native slice an island in turn: a host's commands reach an island's
+        ring only while the host waits on it, and pages crossing need both islands'.
+        Returns the events in the order given; errors name their island."""
+        mine = {}
+        for island, handle in waits:
+            mine.setdefault(island, []).append(handle)
+        pending = {i: np.unique(np.asarray(h, np.int64)) for i, h in mine.items()}
+        deadline = time.monotonic() + timeout
+        for island in pending:
+            self.run.island(island)._hand()
+        while any(handles.size for handles in pending.values()):
+            if time.monotonic() > deadline:
+                island = next(i for i, h in pending.items() if h.size)
+                raise _named(
+                    WaitTimeout(
+                        f"{pending[island].size} handles not done in {timeout} s",
+                        pending[island].tolist(),
+                    ),
+                    island,
+                )
+            for island, handles in pending.items():
+                if handles.size:
+                    run = self.run.island(island)
+                    try:
+                        run._check_alive()
+                        run._step(handles, int(handles[-1]), SLICE_S)
+                    except KomorebiError as error:
+                        raise _named(error, island) from None
+                    pending[island] = handles[~run._arrived(handles)]
+        events = {}
+        for island, handles in mine.items():
+            try:
+                got = self.run.island(island).wait(handles, _left(deadline))
+            except KomorebiError as error:
+                raise _named(error, island) from None
+            events.update({(island, h): e for h, e in zip(handles, got)})
+        return [events[(island, handle)] for island, handle in waits]
 
     def cross(self, source, target, first=0, pages=None, timeout=10.0):
         """Writes pages first .. of `source` into the same pages of `target` where
@@ -644,14 +699,8 @@ class IslandSession:
                 (there, self.wait_pages(there, self.link_cores[there][0], length))
             )
             waits.append(self.send_pages(source, low, length, target))
-        waits += far  # the senders first: a failure names the side that failed
-        self.run._send()
-        deadline = time.monotonic() + timeout
-        for island, handle in waits:
-            try:
-                self.run.island(island).wait(handle, _left(deadline))
-            except KomorebiError as error:
-                raise _named(error, island) from None
+        # the senders first: a failure names the side that failed
+        self.wait_together(waits + far, timeout)
         seconds = time.perf_counter() - started
         moved = sum(length for _, _, length in sends)
         return {

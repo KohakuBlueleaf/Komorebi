@@ -115,6 +115,21 @@ that batch's pages to a count in a core's port.
   count. Both return handles of the islands' own runs.
 - 64 MiB from island 0 into a tensor of island 1 over four links: 2.09 ms, 32.1 GB/s,
   every page exact (`experiments/islands_pages`).
+- A core reads pages another island holds by asking: `session.ask(tensor, first,
+  pages, island, core, to, port)` has the holder's link cores send them into L1
+  address `to` of the asking core, counted at its port; the core waits on that count,
+  bounded, with `km::port_wait(reader, command, port, pages)` and reads them from its
+  L1. The ask travels as a command from the host (`IslandSession.ASKS_BY = "host"`);
+  a core's own message to the holder is the other setting, not built yet.
+- `session.wait_together([(island, handle), ...], timeout)` waits for handles of
+  several islands' own runs at once. A host's commands reach an island's ring only
+  while the host waits on that island, so two sides that wait on each other are
+  waited together.
+- Example 01's MAP on island 0's 118 ranks reading an input island 1 holds alone
+  (`islands.py --across 4`, each rank's two tiles asked into its transfer buffer):
+  every tile exact, 3,132 µs a round of 118 asks against 170 µs reading its own DRAM.
+  A rank's ask is one command of two pages, and each command opens and closes its
+  connection: the cost is the command's, not the link's.
 
 ## Measured
 
@@ -149,7 +164,8 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
 - Links: no message or command crosses between islands inside a run; `forward` to
   another island's rank, `collect` and `broadcast` over islands need the link service.
-  Pages cross on the host's command (`send_pages`), not yet on a kernel's own request.
+  Pages cross on the host's command (`send_pages`, `ask`), not yet on a kernel's own
+  request.
 - A list or a dict of programs, X280 threads and ports, engines and uploads over
   islands; tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.
