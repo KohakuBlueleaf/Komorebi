@@ -292,7 +292,10 @@ Measured (`experiments/bank_fetch/islands.py`, two cards, four links, 2026-11-14
 cores, 4 KiB pages, best of 3, every word checked): from island 0's work cluster 1,
 `kmx_fetch` of 1 MiB and 64 MiB 51 µs and 1.30 ms from island 0's tensor, 204 µs and
 11.0 ms (6.10 GB/s) from island 1's; `kmx_store` 47 µs and 1.30 ms into island 0's,
-197 µs and 10.7 ms into island 1's.
+197 µs and 10.7 ms into island 1's. With every page CPU serving (2026-11-15, one run):
+228 µs and 12.4 ms from island 1's, 213 µs and 11.7 ms into it. The copy asks four pages
+a line and keeps one line a core in flight, so its rate is the lines' round trip, not
+the links'.
 
 Not done: a `kmx_push` larger than one packet does not cross (one command line and its
 crossing line are a packet); runs of more than two islands (one link, no routing); a

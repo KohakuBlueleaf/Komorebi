@@ -19,7 +19,8 @@ namespace km {
     constexpr uint32_t kAskNoAnswer = 0xFFFFFFFFu;  // the atomic's answer not yet in
 
     // A queue of lines in link core 0's link area (offsets): the count its island's
-    // cores reserve lines with, the count it took, its lines; and the asking CPU's own
+    // cores reserve lines with, the count it took (`cursors`: a count each page CPU
+    // took, the page CPUs in the fourth word), its lines; and the asking CPU's own
     // line and its two answer words, on its own core.
     struct AskQueue {
         uint32_t tail;
@@ -28,31 +29,40 @@ namespace km {
         uint32_t own;
         uint32_t returned;
         uint32_t read;
+        bool cursors;
     };
 
-    // The get queue (the reader's) and the put queue of CPU `role`.
-    constexpr AskQueue kAskGets = {
-        KM_ASK_TAIL,
-        KM_ASK_TAKEN,
-        KM_ASK_LINES,
-        KM_ASK_OWN,
-        KM_ASK_RETURNED,
-        KM_ASK_READ
-    };
+    // The get queue (the reader's) and the put queue of CPU `role`
+    // (functions, not objects: an overlay keeps no copy of the runtime's data)
+    constexpr AskQueue ask_gets() {
+        return {
+            KM_ASK_TAIL,
+            KM_ASK_TAKEN,
+            KM_ASK_LINES,
+            KM_ASK_OWN,
+            KM_ASK_RETURNED,
+            KM_ASK_READ,
+            false
+        };
+    }
 
     constexpr AskQueue ask_puts(uint32_t role) {
         const uint32_t own = KM_PUT_OWN + (role == kRoleWriter ? 0 : KM_PUT_OWN_BYTES);
-        return {KM_PUT_TAIL, KM_PUT_TAKEN, KM_PUT_LINES, own, own + 0x40, own + 0x50};
+        return {
+            KM_PUT_TAIL, KM_PUT_TAKEN, KM_PUT_LINES, own, own + 0x40, own + 0x50, true
+        };
     }
 
     // The get queue of CPU `role`: the writer's own line and answer words at its
     // area's ask lines, which only link core 0 holds lines in.
     constexpr AskQueue ask_gets(uint32_t role) {
         if (role != kRoleWriter) {
-            return kAskGets;
+            return ask_gets();
         }
         constexpr uint32_t own = KM_ASK_LINES;
-        return {KM_ASK_TAIL, KM_ASK_TAKEN, KM_ASK_LINES, own, own + 0x40, own + 0x50};
+        return {
+            KM_ASK_TAIL, KM_ASK_TAKEN, KM_ASK_LINES, own, own + 0x40, own + 0x50, false
+        };
     }
 
     // A tensor as the page calls take it: its accessor's compile arguments from `Base`
@@ -171,8 +181,17 @@ namespace km {
             return give_up(code);
         }
         const uint32_t number = returned[0];
-        // the line is free once link core 0 took the one KM_ASK_SLOTS before
+        // the line is free once link core 0 (each page CPU) took the one KM_ASK_SLOTS
+        // before
         volatile tt_l1_ptr uint32_t* taken = l1(area + queue.read);
+        const auto oldest = [&] {
+            const uint32_t cpus = queue.cursors && taken[3] != 0 ? taken[3] : 1;
+            uint32_t behind = 0;
+            for (uint32_t j = 0; j < cpus && j < 3; j++) {
+                behind = number - taken[j] > behind ? number - taken[j] : behind;
+            }
+            return behind;
+        };
         bool reading = false;
         code = core.poll_at(
             kWhereAsk,
@@ -183,7 +202,7 @@ namespace km {
                     }
                     reading = false;
                     invalidate_l1_cache();
-                    if (number - taken[0] < KM_ASK_SLOTS) {
+                    if (oldest() < KM_ASK_SLOTS) {
                         return true;
                     }
                 }
@@ -310,7 +329,7 @@ namespace km {
     ) {
         return (
             ask_line(
-                reader, command, kAskGets, holder, address, bytes, first, pages, to, port
+                reader, command, ask_gets(), holder, address, bytes, first, pages, to, port
             )
         );
     }
@@ -682,7 +701,7 @@ namespace km {
             const uint32_t got = side(
                 c.from,
                 from,
-                kAskGets,
+                ask_gets(),
                 start,
                 n,
                 c.buffer,

@@ -348,7 +348,12 @@ does, each rank's part on its island; default every rank), `like=other` (as `oth
 is placed) or `copy=True` (on every island); no hint is `split=0` over every rank.
 `tensor.address` is then the tensor's reference word, which a kernel hands to
 Komorebi's page calls; on one card it is the bank address
-([islands](islands.md#tensors)).
+([islands](islands.md#tensors)). A hint whose part does not fit an island's DRAM
+raises `km.KomorebiError` before anything is written, naming the island, the pages
+and shape asked and the most pages of that kind its DRAM takes now. Writes and reads
+go through each island's own host channel at once, one host thread an island;
+`km.Session(cards=[0, 1], host_reaches=[0])` (a test) carries every part through
+island 0's channel, island 1's crossing by the page path, inside a loaded run.
 
 `session.device.mesh_capsule()` hands the device to a native module that takes it: a
 capsule named `komorebi.mesh_device` holding a `std::shared_ptr<MeshDevice>`.
@@ -382,7 +387,7 @@ A part of one tensor is read the same way:
 
 | Call | Returns |
 |---|---|
-| `session.read(tensor, first=0, pages=None)` | `[pages]`: pages `first` .. `first + pages - 1` as one `[pages, page_bytes]` uint8 array (`pages=None`: to the end); a range outside the tensor raises `km.KomorebiError` naming its page count |
+| `session.read(tensor, first=0, pages=None, out=None)` | `[pages]`: pages `first` .. `first + pages - 1` as one `[pages, page_bytes]` uint8 array (`pages=None`: to the end), or into `out`, rows of that shape, which it returns; a range outside the tensor raises `km.KomorebiError` naming its page count |
 | `session.read_chunks(tensor, chunk_bytes=2 << 20)` | a generator of `(first, pages)` over the whole tensor, each chunk at most `chunk_bytes` |
 | `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them) into pages `first` .. `first + n - 1` of a tensor in DRAM or L1, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
 | `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]` |

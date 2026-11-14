@@ -47,8 +47,8 @@ is not a rank. The kernel buffer is sized for the link services the kernels carr
 number of ranks is the cores of both cards less their link cores:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:134:134"
---8<-- "examples/01_mapcollect/islands.py:143:143"
+--8<-- "examples/01_mapcollect/islands.py:142:144"
+--8<-- "examples/01_mapcollect/islands.py:153:153"
 ```
 
 `session.graph` is the host's picture of the islands: `graph.first(i)` is island `i`'s
@@ -59,7 +59,7 @@ The tensors come next. The input has two tiles for each rank of both cards; the 
 one:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:150:163"
+--8<-- "examples/01_mapcollect/islands.py:160:173"
 ```
 
 A tensor is one logical tensor: each card holds only its part. With no hint its pages
@@ -72,20 +72,20 @@ page it holds. `session.read_bf16(source)` assembles the whole tensor from the c
 holds each page:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:172:172"
+--8<-- "examples/01_mapcollect/islands.py:229:229"
 ```
 
 The program is loaded on every card, one after the other, and each card's cores get the
 island table that tells them where the ranks are:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:212:212"
+--8<-- "examples/01_mapcollect/islands.py:223:223"
 ```
 
 A command for a group of every rank:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:294:295"
+--8<-- "examples/01_mapcollect/islands.py:354:355"
 ```
 
 `submit` takes the group `(0, ranks)`, the host cuts it into the part on each card, and
@@ -97,7 +97,7 @@ handle of a command over several cards.
 When the run is stopped, the output is read back in the same way:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:233:233"
+--8<-- "examples/01_mapcollect/islands.py:255:255"
 ```
 
 ## What changes in the kernel
@@ -159,7 +159,7 @@ With `--hang` the same script hangs a command on a rank of card 1 and asks what 
 was doing, by its flat rank as everywhere else:
 
 ```{ .python }
---8<-- "examples/01_mapcollect/islands.py:335:335"
+--8<-- "examples/01_mapcollect/islands.py:395:395"
 ```
 
 `run.inspect((rank, 1))` has island 1's dispatcher read the core of that rank; the answer

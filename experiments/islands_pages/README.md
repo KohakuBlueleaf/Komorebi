@@ -36,7 +36,7 @@ holder's link cores, the wait on the other island's first link core (its port 7)
 ## Result
 
 `pages.py`: a uint32 tensor of 4096-byte pages, every page held by island 0, is copied
-into a tensor whose pages are all held by island 1 (`like=` the island's ranks). The
+into a tensor whose pages are all held by island 1 (`group=` the island's ranks). The
 host reads the target back from island 1 and compares every page. 2026-11-14, AICLK
 1350 MHz, both runs once:
 
@@ -52,6 +52,43 @@ three slots a CPU has at most three DRAM reads in flight, so the read latency se
 rate; more L1 a CPU, more reads in flight, is the next step. (Both rows ran before the
 writer took the `WHERE` handler below, which the page sender does not use, and before
 the connections were held: each command then opened and closed its own.)
+
+With 15 slots a CPU (a 64 KiB chunk of the transfer buffer, asked by a session over
+two cards) and pages on links 1 to 3 (link 0 carries the lines), 2026-11-15:
+`pages.py --mib 512`, 16.857 ms, 31.85 GB/s, 0 of 131,072 pages wrong. That is 10.6
+GB/s a CPU: more reads in flight lifted a CPU from 8.0, and the rest of the gap to
+28.9 is not the slots (below).
+
+## Pages a kernel asks for and puts
+
+`pages.py --ask MIB...` and `--put MIB...` have island 0's 118 ranks move a tensor
+with one `MOVE` command a size (the reader's handler): each rank takes its share of the
+pages in calls of `--step` pages, `km::read_pages` into its L1 then `km::write_pages`
+out of it. `--ask`: island 1 holds the source, island 0 the target, so every page is
+asked for across; `--put`: island 0 holds the source, island 1 the target, so every page
+is put across. The time is the command's event (the dispatcher's span, submit to
+completion), the rate payload over it; each target is read back and every page
+compared. Every page CPU of the holder (asks) or of island 0 (puts) serves a third of
+each line. Four links, 4 KiB pages, 2026-11-15, each row one run:
+
+| Move | Pages a call | 64 MiB | 512 MiB | Pages wrong |
+|---|---|---|---|---|
+| ask | 32 | 3.044 ms, 22.05 GB/s | 22.694 ms, 23.66 GB/s | 0 |
+| ask | 128 | 2.368 ms, 28.34 GB/s | 16.732 ms, 32.09 GB/s | 0 |
+| put | 128 | 2.363 ms, 28.40 GB/s | 16.610 ms, 32.32 GB/s | 0 |
+
+(The 32-page row and an earlier 128-page pair, 32.14 GB/s asked and 31.84 GB/s put at
+512 MiB, ran with an `ASK` and a `PUT` handler of the same loop, before the tensor table
+named tensors by their reference word.) Before every page CPU served, one page CPU on
+link 1 with three slots moved a thread's 64 MiB across in 11.0 ms (6.1 GB/s).
+
+What bounds it: about 10.7 GB/s a page CPU, the same with lines of 128 pages as with
+the host's `cross` (one push of a third of the tensor a CPU, no line at all), so the
+push loop sets the rate, not the lines; at 32 pages a line the line's round trip adds
+a quarter. A CPU sending from L1 alone reaches 27.8 GB/s on one link, from the grid's
+far corner (these link cores, the island's last cores) as from under the Ethernet row
+(`experiments/link_rate`), so the place is not it. What is left is the DRAM read: each
+4 KiB read's round trip with 15 in flight holds a CPU at 10.7.
 
 ## Which island holds a page, asked on a core
 
@@ -71,6 +108,9 @@ the repository's `src` on the path:
 
     python pages.py --links 4 --mib 64
     python pages.py --links 4 --mib 1 --where
+    python pages.py --mib 512
+    python pages.py --ask 64 512 --step 128
+    python pages.py --put 64 512 --step 128
 
 It prints one JSON line and exits nonzero if a page is wrong or a kernel ended with an
 error.
