@@ -139,9 +139,12 @@ measured again on 2026-11-14 (X280 at 1,000 MHz, host load 6 to 7; `bench.py --s
 <preset> --cuts`, best of three, Kohaku-TT's columns not run again): their per call fell
 by 8 to 21 %, the single command did not change (the commands now follow each other
 1.0 to 1.2 us apart instead of 15.9 and 16.5). The other two exact rows (4096 x 64
-and 4096 x 128) moved by less than 1 % in one run and stay; the approximate rows were
-not run again. Per call: ours, single-pass commands back to back (the time of
-10 to 60 commands less that of 5, divided); ours per pass, the power loop of multi-pass
+and 4096 x 128) moved by less than 1 % in one run and stay. Of the approximate rows,
+8x16x256x64 and 1x8x1024x64 causal were measured again on 2026-11-14 the same way
+(`--approx --cuts`, best of three): their per call fell by 19 and 23 %, the single
+command did not change; the approximate 4096 x 64 row moved by 1 % and stays. Per
+call: ours, single-pass commands back to back (the time of 10 to 60 commands less
+that of 5, divided); ours per pass, the power loop of multi-pass
 commands (no command boundary); Kohaku-TT, its calls back to back for about 4 s. Clock
 (AICLK mean), power (whole card, mean of the loop) and temperature are the power
 loops', ours / Kohaku-TT's. RMS: relative RMS error of the sampled rows, the same for
@@ -155,8 +158,8 @@ both kernels on every row.
 | 1x8x1024x64 causal | 58.1 | 48.3 | 53.7 | 1350 / 1350 | 103 / 99 | 66 / 66 | 5.71e-3 |
 | 2x8x1024x128, Hk 2 | 149.9 | 133.9 | 261.8 | 1303 / 1350 | 136 / 105 | 69 / 66 | 6.28e-3 |
 | 1x32x4096x64, approx | 1932.5 | 1996.2 | 2183.7 | 1295 / 1284 | 143 / 140 | 69 / 71 | 1.94e-2 |
-| 8x16x256x64, approx | 81.7 | 54.7 | 67.5 | 1336 / 1350 | 128 / 117 | 68 / 67 | 2.14e-2 |
-| 1x8x1024x64 causal, approx | 60.7 | 38.8 | 44.4 | 1350 / 1350 | 108 / 103 | 65 / 66 | 2.21e-2 |
+| 8x16x256x64, approx | 66.5 | 55.3 | 67.5 | 1326 / 1350 | 124 / 117 | 69 / 67 | 2.14e-2 |
+| 1x8x1024x64 causal, approx | 47.0 | 38.7 | 44.4 | 1350 / 1350 | 108 / 103 | 66 / 66 | 2.21e-2 |
 
 The 4096 x 128 loops, the 2 x 8 x 1024 x 128 one of 2026-11-14 and the approximate 4096 x 64 ones ran below 1,350 MHz (the card's
 own clock control under load), both kernels alike. With the approximate exponential the
@@ -175,15 +178,16 @@ pass.
 | 8x16x256x64 | score 0.29, P V 0.28, exp 0.32; Q reads 0.15, compute waiting for Q 0.16 and for K / V 0.16 | 55 / 65 | the command: 10.6 us of each command's 75.6 is outside the passes (table, broadcast start and end, the first Q and K / V reads), and back-to-back commands add 1.0 us each |
 | 1x8x1024x64 causal | score 0.35, P V 0.39, exp 0.43; waiting for the broadcast 0.58 | 31 / 59 | the command as above (56.9 us a command, 1.2 us between commands), and balance: the mean core is busy 0.56 of the slowest |
 | 2x8x1024x128, Hk 2 | compute waiting for K / V 0.67; score 0.14, P V 0.14 | 83 / 134 | compute (compute only = per pass) |
-| 8x16x256x64, approx | score 0.24, P V 0.23, exp 0.24; Q reads 0.19, compute waiting for Q 0.20 and for K / V 0.20 | 63 / 58 | the command: 10.5 us of each command's 65.2 is outside the passes, and back-to-back commands add 16.5 us each |
-| 1x8x1024x64 causal, approx | score 0.33, P V 0.33, exp 0.34; waiting for the broadcast 0.60 | 36 / 49 | the command (45.8 us a command, 7.0 outside the passes, 14.9 us between commands), and balance: the mean core is busy 0.57 of the slowest |
+| 8x16x256x64, approx | score 0.24, P V 0.23, exp 0.24; Q reads 0.19, compute waiting for Q 0.20 and for K / V 0.20 | 55 / 54 | the command: 10.5 us of each command's 65.2 is outside the passes, and back-to-back commands add 1.3 us each |
+| 1x8x1024x64 causal, approx | score 0.33, P V 0.33, exp 0.34; waiting for the broadcast 0.60 | 32 / 49 | the command (45.8 us a command, 7.0 outside the passes, 1.2 us between commands), and balance: the mean core is busy 0.57 of the slowest |
 
 Compute only runs on whatever Q, K and V are left in L1, which takes the rescaling
 branch more often than real inputs do; it is an upper bound on the compute. The short
 rows are ahead of Kohaku-TT per pass. Per call, 8x16x256x64 is ahead (76.7 against 80.7
 us) and the causal row is 8 % behind (58.1 against 53.7): what is behind is the cost of a
-command, now 1.0 to 1.2 us between commands. The approximate rows are of 2026-11-13, with
-15 to 17 us between commands.
+command, now 1.0 to 1.3 us between commands. The approximate rows, measured again on
+2026-11-14, are alike: per call the approximate 8x16x256x64 is ahead of Kohaku-TT (66.5
+against 67.5 us) and the causal one 6 % behind (47.0 against 44.4).
 
 ### The broadcast's NoC, the broadcast length, commands and graphs
 
