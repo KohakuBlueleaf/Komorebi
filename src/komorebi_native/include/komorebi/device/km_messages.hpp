@@ -74,6 +74,25 @@ namespace km {
         return folded + 1;
     }
 
+    // The marks of `count` messages (at most a queue) from `position` on, worked out
+    // once: the first's lap mark, and the next lap's if the run passes the queue's end.
+    struct MessageMarks {
+        uint32_t before, after, left;
+
+        MessageMarks(uint32_t position, uint32_t shift, uint32_t count) :
+            before(messages_mark(position, shift)),
+            after(before),
+            left((1u << shift) - (position & ((1u << shift) - 1))) {
+            if (left < count) {
+                after = messages_mark(position + left, shift);
+            }
+        }
+
+        uint32_t operator()(uint32_t index) const {
+            return index < left ? before : after;
+        }
+    };
+
     // The handler in a message's word 0.
     inline uint32_t messages_handler(uint32_t word) {
         return word >> kMessagesHandlerShift & 0xFF;
@@ -623,6 +642,7 @@ namespace km {
             }
             invalidate_l1_cache();
             uint32_t valid = 0;
+            const MessageMarks marks(head, shift, batch);
             // The prefix of valid marks: a message is valid only after its packet's
             // first message, whose mark is written once the whole packet has landed.
             while (
@@ -633,7 +653,7 @@ namespace km {
                         valid * messages_arguments.message_bytes
                     )[0] &
                     kMessagesMarkMask
-                ) == messages_mark(head + valid, shift)
+                ) == marks(valid)
             ) {
                 valid++;
             }
@@ -798,11 +818,10 @@ namespace km {
                 store + bin * kMessagesPacket * messages_arguments.message_bytes
             );
             const uint32_t first_word = l1(base)[0];
+            const MessageMarks marks(first_position, shift, bin_messages);
             l1(base)[0] = 0;
             for (uint32_t i = 1; i < bin_messages; i++) {
-                l1(base + i * messages_arguments.message_bytes)[0] |= messages_mark(
-                    first_position + i, shift
-                );
+                l1(base + i * messages_arguments.message_bytes)[0] |= marks(i);
             }
             invalidate_l1_cache();  // a fence: the NoC reads the stored marks
             for (uint32_t i = 0; i < bin_messages;) {
@@ -831,7 +850,7 @@ namespace km {
                 where = kWhereMessagesFlush;
                 return false;
             }
-            l1(base)[0] = first_word | messages_mark(first_position, shift);
+            l1(base)[0] = first_word | marks(0);
             invalidate_l1_cache();
             noc_async_write(
                 base,
