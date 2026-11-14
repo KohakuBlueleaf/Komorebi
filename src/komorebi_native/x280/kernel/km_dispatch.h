@@ -443,7 +443,7 @@ enum {
     KMD_L_MARK = 0,      /* KMD_LINK_MARK */
     KMD_L_ISLAND = 1,    /* this island */
     KMD_L_ISLANDS = 2,   /* islands in the table, 2 to KM_ISLANDS_MAX */
-    KMD_L_CORE = 3,      /* the link core: its index in this island's cores */
+    KMD_L_CORE = 3,      /* link core 0: its index in this island's cores (its ranks') */
     KMD_L_AREA = 4,      /* its link area's L1 address (KM_LINK_*) */
     KMD_L_FAR = 5,       /* the island at the link's other end */
     KMD_L_FAR_TILE = 6,  /* that island's dispatcher tile: x | y << 16 */

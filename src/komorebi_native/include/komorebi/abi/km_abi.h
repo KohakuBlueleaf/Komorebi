@@ -59,21 +59,26 @@
 /* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
-/* host only, served on link cores (km_pages.hpp): each data-movement CPU of the group
- * sends its share of DRAM pages over its own link, or the reader waits for a count */
+/* served on link cores (km_pages.hpp): from the host, each data-movement CPU of the
+ * group sends its share of DRAM pages over its own link, or the reader waits for a
+ * count; from the dispatcher, link core 0's link 0 CPU sends a staged packet across */
 #define KM_HANDLER_PAGES 248u
 #define KM_PAGES_FROM 0u  /* send: the source's bank address (interleaved DRAM) */
 #define KM_PAGES_PAGE 1u  /* send: aligned page bytes, at most KM_PAGES_PACKET_MAX */
 #define KM_PAGES_FIRST 2u /* send: first page */
-#define KM_PAGES_PAGES 3u /* send: pages of all CPUs; wait: the count waited for */
-#define KM_PAGES_TO 4u    /* send: the target's bank address, or L1 of its first page */
-/* send: x | y << 8 of the target core (KM_PAGES_DRAM: DRAM), chunk / 64 << 16: the
-   L1 bytes of a CPU */
+/* send: pages of all CPUs; range: pages a rank; wait: the count waited for */
+#define KM_PAGES_PAGES 3u
+#define KM_PAGES_TO 4u /* send: the target's bank address, or L1 of its first page */
+/* send: x | y << 8 of the target core (KM_PAGES_DRAM: DRAM), range: the first rank's
+   far core, chunk / 64 << 16: the L1 bytes of a CPU */
 #define KM_PAGES_TO_CORE 5u
-#define KM_PAGES_COUNT 6u /* L1 address of the count (wait: here; open: far hello) */
-/* x | y << 8 of the counted core (open: the far link core), hops << 16, mode << 24 */
+/* L1 address of the count (wait: here; open: far hello; range: on each rank) */
+#define KM_PAGES_COUNT 6u
+/* x | y << 8 of the counted core (open: the far link core; range: the ranks), hops
+   << 16, mode << 24 */
 #define KM_PAGES_COUNTER 7u
-/* byte k: Ethernet channel of link k; CPU c of link core r sends on link 2r + c */
+/* byte k: Ethernet channel of link k; CPU c of link core r sends on link 2r + c.
+   Link 0 carries the lines (LINE); pages go on links 1 on, on link 0 when alone. */
 #define KM_PAGES_LINKS 8u
 #define KM_PAGES_BUFFER 9u    /* send: L1 of CPU c at buffer + c * chunk */
 #define KM_PAGES_DRAM 0xFFFFu /* page p into page p of the tensor at KM_PAGES_TO */
@@ -84,24 +89,32 @@
  * link core's same CPU: port KM_PAGES_HELLO_PORT + c of both, 1 up, 2 both up */
 #define KM_PAGES_OPEN 2u
 #define KM_PAGES_HELLO_PORT 5u
+/* dispatcher -> link core 0 of its island: CPU 0 (link 0) sends the packet staged in
+ * the link area, then its count line, into the other island's dispatcher */
+#define KM_PAGES_LINE 3u
+/* pages a rank to each of ranks r (the far island's cores from KM_PAGES_TO_CORE on):
+ * rank r's pages first + r * pages on into L1 address KM_PAGES_TO of its core, counted
+ * at its KM_PAGES_COUNT; the CPUs split the ranks */
+#define KM_PAGES_RANGE 4u
 #define KM_PAGES_PACKET_MAX 4352u /* a fabric packet's largest payload */
-/* dispatcher -> its island's link core only: the writer sends the packet staged in its
- * link area over the fabric into the other island's dispatcher (the reader skips it) */
-#define KM_HANDLER_LINK 246u
-/* The link area, in the link core's L1 (a run over islands; its offsets): the
- * connection's teardown and cursor words, two packet headers, then the stages, each a
- * packet (the command line and its crossing line) and the count line written after */
-#define KM_LINK_TEARDOWN 0x00u
-#define KM_LINK_CURSOR 0x10u
+/* LINE's words: a0 the stage, a1 the packet's number (each line of the stage holds it
+ * in word 0, the count line in word 1), a2 the far tile x | y << 16, a3 the far address
+ * of the packet, a4 that of the count line, a5 the link area; a7 as KM_PAGES_COUNTER */
+#define KM_LINE_STAGE 0u
+#define KM_LINE_NUMBER 1u
+#define KM_LINE_TILE 2u
+#define KM_LINE_PACKET 3u
+#define KM_LINE_COUNT 4u
+#define KM_LINE_AREA 5u
+/* The link area, in link core 0's L1 (a run over islands; its offsets): two packet
+ * headers, then the stages, each a packet (the command line and its crossing line) and
+ * the count line written after */
 #define KM_LINK_HEADERS 0x40u /* 64 bytes each: the packet's, the count line's */
 #define KM_LINK_STAGE 0x100u
 #define KM_LINK_STAGES 4u
 #define KM_LINK_PACKET_BYTES 128u
 #define KM_LINK_STAGE_BYTES 192u
 #define KM_LINK_AREA_BYTES (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
-/* LINK's words: a0 the stage, a1 the packet's number (each line of the stage holds it
- * in word 0, the count line in word 1), a2 the far tile x | y << 16, a3 the far address
- * of the packet, a4 that of the count line */
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u

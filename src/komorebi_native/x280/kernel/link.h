@@ -1,8 +1,9 @@
 /* Commands across islands: a command of this island's sources whose group (or thread)
  * has a part on the island at the link's other end crosses as a packet; that island's
  * dispatcher runs it as a command of its own source KMD_SRC_LINK and sends DONE back.
- * Packets go out through the link core (KM_HANDLER_LINK) and land in the other
- * dispatcher's link inbox, one writer an inbox: the lines, then the count word. */
+ * Packets go out through link core 0 of the island (a PAGES LINE to the CPU that holds
+ * link 0) and land in the other dispatcher's link inbox, one writer an inbox: the
+ * lines, then the count word. */
 #pragma once
 
 #include "completion.h"
@@ -57,7 +58,7 @@ typedef struct {
     uint8_t slot_stage[KM_RING_SLOTS];    /* 1 + the stage of a LINK command */
     volatile uint8_t* window;             /* the link core's area */
     volatile const uint8_t* inbox;
-    uint32_t island, islands, core, far, far_tile, far_block;
+    uint32_t island, islands, core, far, far_tile, far_block, area;
     uint32_t stored; /* lines put into the link ring */
     uint32_t taken;  /* packets read from the inbox */
     uint32_t sent;   /* packets handed to the link core */
@@ -93,7 +94,8 @@ static inline kmd_link_t* link_state(kmd_t* dispatcher) {
 }
 
 /* Reads the host's link line; with its mark, the window onto the link core's area and
- * the link ring. KMD_ERROR_NONE also with no link; KMD_ERROR_WINDOW. */
+ * the link ring (the link core: link core 0, the core after the island's ranks).
+ * KMD_ERROR_NONE also with no link; KMD_ERROR_WINDOW. */
 static inline uint32_t link_open(kmd_t* dispatcher) {
     volatile const uint32_t* words = (
         (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_LINK)
@@ -110,10 +112,12 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
     link->far_tile = words[KMD_L_FAR_TILE];
     link->far_block = words[KMD_L_FAR_BLOCK];
     const uint32_t area = words[KMD_L_AREA];
+    link->area = area;
     if (
         link->islands < 2u || link->islands > KM_ISLANDS_MAX ||
         link->island >= link->islands || link->far >= link->islands ||
-        link->far == link->island || link->core >= dispatcher->cores || (area & 63u) ||
+        link->far == link->island || link->core >= dispatcher->cores ||
+        link->core != dispatcher->island_count || (area & 63u) ||
         area < KMD_CONTROL_FLOOR || area > KMD_L1_BYTES - KM_LINK_AREA_BYTES ||
         (link->far_block & 63u)
     ) {
@@ -195,9 +199,12 @@ static inline uint32_t link_thread_island(const kmd_link_t* link, uint32_t numbe
 }
 
 /* Whether a command's group word reaches outside this island: ranks beyond its own, or
- * a thread number another island serves. Only with a link. */
+ * a thread number another island serves. Only with a link. Link cores never do. */
 KMD_HOT int link_reaches_out(const kmd_t* dispatcher, uint32_t group) {
     const uint32_t first = group & 0xFFFFu, count = group >> 16;
+    if (KM_GROUP_IS_LINK(first)) {
+        return 0;
+    }
     if (first >= KM_GROUP_CLUSTER_BASE) {
         const uint32_t number = first - KM_GROUP_CLUSTER_BASE;
         return count == 1u && number - dispatcher->thread_first >= KMD_WORK_CLUSTERS;
@@ -420,14 +427,9 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     return KMD_TAKEN;
 }
 
-/* The group word of a LINK command: the link core alone. Here a rank of the island
- * (its flat rank); the one place that names it. */
-static inline uint32_t link_core_group(const kmd_t* dispatcher) {
-    return (dispatcher->island_first + link_state((kmd_t*)dispatcher)->core) | 1u << 16;
-}
-
-/* Hands queued packets to the link core: each staged in a free stage of its area
- * (three lines through the window), then a LINK command to that core. */
+/* Hands queued packets to link core 0: each staged in a free stage of its area (three
+ * lines through the window), then a PAGES LINE command to that core, named outside the
+ * ranks (KM_GROUP_LINK_BASE). */
 static void link_send(kmd_t* dispatcher, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
     while (link->out_head != link->out_tail) {
@@ -461,8 +463,8 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
         link->out_head++;
         const uint32_t far = link->far_block;
         uint64_t* send = link->send;
-        send[0] = (uint64_t)KM_HANDLER_LINK << 32;
-        send[1] = (uint64_t)link_core_group(dispatcher) | (uint64_t)stage << 32;
+        send[0] = (uint64_t)KM_HANDLER_PAGES << 32;
+        send[1] = (uint64_t)(KM_GROUP_LINK_BASE | 1u << 16) | (uint64_t)stage << 32;
         send[2] = (uint64_t)number << 32;
         send[3] = (
             (uint64_t)link->far_tile |
@@ -473,7 +475,9 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
                 << 32
         );
         send[4] = (uint64_t)(far + KMD_LINK_COUNT) << 32;
-        send[5] = send[6] = send[7] = 0;
+        send[5] = link->area; /* a5; a7: one hop, the LINE mode */
+        send[6] = (uint64_t)(1u << 16 | KM_PAGES_LINE << 24) << 32;
+        send[7] = 0;
         command_submit(
             dispatcher,
             send,

@@ -972,7 +972,6 @@ class Session:
             plan, port_lines = _port_lines(owner, dispatch, rings)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
-            backend.link = link
             if ranks is not None:
                 ranks = _x280_words(self, program, dispatch, rings, regions, plan)
             descriptor = backend.describe(
@@ -1045,6 +1044,7 @@ class Session:
             switch=getattr(backend, "switch", None),
             ranks=self.island[0].ranks if self.island else None,
             island_first=self.island[0].first(self.island[1]) if self.island else 0,
+            island_ranks=self.island[0].count(self.island[1]) if self.island else None,
         )
         self.run = run
         self._starting = None
@@ -1512,7 +1512,6 @@ class _Backend:
             ""  # the runtime's error message when an abort did not restore
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
-        self.link = None  # an island_session.LinkPlan: this island's link core
         self.transfer = None  # a _TransferBuffer: with the host channel, or threads
 
     def block(self, data):
@@ -1686,9 +1685,6 @@ class _Backend:
                 }
             )
             reader, writer, compute = _core_args(program, placed, core)
-            if self.link is not None and core == self.link.core:
-                link_arg = len(start) + len(messages_reader_writer_args) + len(writer)
-                writer = [*writer, *self.link.connection()]
             reader_args.append(
                 (x, y, start + messages_reader_writer_args + list(reader))
             )
@@ -1700,10 +1696,6 @@ class _Backend:
                 (x, y, [control, core, *limits, *messages_compute_args, *compute])
             )
         launch = self.session._module.Launch(self.device)
-        if placed is not None and self.link is not None:
-            raise ValueError(
-                "a link over islands takes one program, not the runtime's form"
-            )
         if placed is not None:
             args = (reader_args, writer_args, compute_args)
             self._describe_groups(launch, placed, sources, args, grid)
@@ -1713,8 +1705,6 @@ class _Backend:
         defines = [(name, str(value)) for name, value in program.defines.items()]
         if program.messages is not None:
             defines += program.messages.defines()
-        if self.link is not None:
-            defines += self.link.defines(link_arg)
         for index, fmt, page, pages in self._cbs(program.buffers):
             launch.cb(all_cores, index, fmt, page, page * pages)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]

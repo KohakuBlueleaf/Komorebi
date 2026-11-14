@@ -9,7 +9,9 @@ a tensor held by the other, straight into the other island's DRAM, exact, and ho
 A session with `links` 1 to 4 takes the last `(links + 1) // 2` cores of each island
 as link cores. They are not ranks: a command names them by first `KM_GROUP_LINK_BASE`
 (0xFE00) + k (`graph.link_group`). Both data-movement CPUs of a link core send, each on
-its own link: CPU c of link core r sends on link 2r + c. The run's kernels are built
+its own link: CPU c of link core r sends on link 2r + c. Link 0 also carries the
+dispatcher's command lines, so with more than one link pages go on links 1 on (since
+the rows below were measured; they used all four). The run's kernels are built
 with the define `KM_PAGE_LINKS`, which adds the runtime's `PAGES` command
 (`KM_HANDLER_PAGES`, `km_pages.hpp`) to the reader and writer loops. A run of a session
 without links is built as before.
