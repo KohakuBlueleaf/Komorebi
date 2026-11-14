@@ -49,6 +49,9 @@ rounds, the median from submit to the event on the host:
 |---|---|---|---|
 | 0 and 1 (one link) | 238 | 165.9 | exact |
 | 0 | 120 | 158.0 | exact |
+| 0 split in 2 (`--islands 2`, a wire) | 118 | 162.18 | exact |
+| 0 split in 3 | 114 | 174.19 | exact |
+| 0 split in 4 | 108 | 168.37 | exact |
 
 A command that crosses completes with the result word of the first part back, not the
 group's rank 0's, so the script checks the total itself, not a result word.

@@ -120,6 +120,11 @@ The same with every link (four, 236 ranks, 232 message ranks), 2026-11-14: both 
 (178.8 and 134.1 µs), exact against the replay; `run.crossings()` counted 15 messages from
 island 0 and 7 from island 1 on link 0, the replay's 22 forwards across.
 
+Card 0 split into two islands (`--cards 0 --islands 2`, the wire between them), the same
+16 messages of 4 forwards: both parts done (145.1 and 99.9 µs), exact against the replay
+over 114 message ranks; 23 forwards crossed. Messages over more than two islands are not
+built (the session refuses them).
+
 ## Files
 
 | File | What it is |

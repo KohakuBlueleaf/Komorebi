@@ -27,6 +27,9 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
+    parser.add_argument(
+        "--islands", type=int, default=0, help="one card split into this many islands"
+    )
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument("--tiles", type=int, default=512, help="input tiles T")
     parser.add_argument("--part", type=int, default=1, help="tiles per part P (1 to 3)")
@@ -68,7 +71,10 @@ def main():
     generator = np.random.default_rng(1)
     report = {"cards": cards, "tiles": args.tiles, "part": args.part}
     links = 1 if len(cards) > 1 else 0
-    with km.Session(cards=cards, links=links, log=log) as session:
+    opened = {"cards": cards, "links": links}
+    if args.islands:  # one card split: a wire between each pair of islands
+        opened = {"card": cards[0], "islands": args.islands}
+    with km.Session(**opened, log=log) as session:
         ranks = session.ranks
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)]

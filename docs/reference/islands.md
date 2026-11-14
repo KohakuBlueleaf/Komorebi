@@ -12,7 +12,7 @@ Status: implemented over two Blackhole p150a cards, and over one card split into
 to four islands. A group that spans islands runs as one part on each island, and every
 core sees its flat rank in the whole group, so an existing program runs unchanged.
 Commands cross between the cards on link 0 and pages on the session's links, through
-each island's link cores; nothing crosses between the islands of a split card.
+each island's link cores; between the islands of a split card they cross on wires.
 
 An island is a set of cores that reach the others only through links: here one card's
 chip, with its own Tensix grid and its own dispatcher on its own X280 cluster 0. The
@@ -401,11 +401,28 @@ islands is developed and checked with one card. One device and one open; the gra
 - **Stop.** Each island stops alone: the host waits for its rows and reads its cores'
   control blocks from L1, since a buffer read would wait for the whole launch.
 - **Tensors.** One tensor in the card's DRAM, every page local to every island: its
-  word is the bank address; its placement by the hint is kept on the host.
-- **Not on a split card.** A list or dict of programs, dynamic handlers, X280 threads
-  and ports, links, a reset list for a core (a given-up command is not recovered by
-  a reset), queued commands (the dispatcher places them over the whole card), and
-  engine streams and graphs (not checked on a split card).
+  word is the bank address; its placement by the hint is kept on the host. So a
+  kernel's page read or write does not cross on a split card (example 01's reads of
+  island 1's tiles below were asks across, measured before this rule).
+- **Wires.** Every pair of islands is joined by `links` wires (default 1; with more
+  than two islands, one): link cores taken from the end of each island's rows, a
+  neighbour's links ceil(links / 2) cores in neighbour order, named and served as
+  between two cards (commands across on link 0, a core's own page ask and put, the
+  relay, messages, `crossings()`). The build defines `KM_WIRE`: the link's transport
+  (`km_transport.hpp`) writes the far tile over the NoC instead of handing the packet
+  to a router, each count or word after the writes before it; `KM_WIRE_DELAY` (ticks
+  of the wall clock, default 0) holds each packet back to imitate a slow link. Every
+  link core is found by the island table's next link, so each island reaches every
+  other in one link.
+- **Commands across.** A dispatcher sends a command to every island its group
+  reaches; each island writes its own part of a far dispatcher's inbox (the 16 slots
+  cut in islands - 1 parts), so with three islands a dispatcher keeps 3 commands
+  across in flight and with four 2 (8 with two).
+- **Not on a split card.** A dict of programs, X280 threads and ports, a reset list
+  for a core (a given-up command is not recovered by a reset), queued commands (the
+  dispatcher places them over the whole card), and engine streams and graphs (not
+  checked on a split card). With more than two islands: messages (a link's quiet
+  test reads one far island; the session refuses them).
 
 Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,
 then with `--islands 2`), 2026-11-14, X280 at 1350 MHz, host load about 3, the median
@@ -417,6 +434,19 @@ pipelined:
 | NOP on each island's own ranks | 1.190 (0, 120) | 1.218 (0, 60), 1.249 (60, 60) |
 | NOP on all 120 ranks | 1.218 | 2.537 (a part on each island, joined) |
 | MAP on (0, 120), the input split over the islands | 2.651 | 4.674 |
+
+Across the wires of card 0 split into n islands, 2026-11-14 (median from submit to
+event; the two-card numbers from the examples' READMEs beside them):
+
+| What | 2 islands | 3 | 4 | Two cards |
+|---|---|---|---|---|
+| Example 01, MAP on island 0's ranks reading its own DRAM / reading island 1's tiles by each core's ask (µs a round) | 201.1 / 306.9 (59 ranks) | 279.3 / 320.9 (46) | 251.6 / 285.8 (33) | 441 across (118 ranks) |
+| Example 26, the sum over every rank (µs a round) | 162.18 | 174.19 | 168.37 | 165.9 |
+| Example 25, NOP from island 0's ring to its ranks / to island 1's (µs) | 2.966 / 3.891 | 3.034 / 5.067 | 3.042 / 6.278 | 2.98 / 3.94 |
+| Example 05, 16 messages of 4 forwards, the parts (µs) | 145.1 and 99.9 | refused | refused | 174.5 and 134.1 |
+
+Every output exact, every kernel ended with no error. These are to check a program,
+not to compare speeds: a split card's islands share one card's DRAM and NoC.
 
 A NOP on one island of the split card costs what it costs on the whole card; a group
 over both islands costs two commands of host work, as on two cards. MAP on (0, 120):
@@ -467,5 +497,6 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.
-- Between the islands of a split card: no link (a NoC write with a settable rate).
-  Three and four islands on one card were not run.
+- A split card: messages and a copy across over more than two islands; more than one
+  wire a pair with more than two islands; two cards each split (fabric links and wires
+  in one graph).
