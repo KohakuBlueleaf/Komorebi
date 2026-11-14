@@ -340,6 +340,7 @@ uint32_t kmg_start(
     state->error_reason = state->error_node = 0;
     state->in_flight = 0;
     state->core_count = core_count;
+    state->first_rank = 0;
     reset(state);
     return 0;
 }
@@ -522,8 +523,8 @@ static uint32_t submit_command(
     } else if (
         KM_GROUP_IS_CLUSTER(first, count)
             ? (command.hdr >> 8 & KM_FLAG_EXCLUSIVE) != 0
-            : count == 0 || first > state->core_count ||
-                count > state->core_count - first
+            : count == 0 || first - state->first_rank > state->core_count ||
+                count > state->core_count - (first - state->first_rank)
     ) {
         fail(state, KM_STREAM_ERROR_GROUP, node);
         return KMG_ERROR;

@@ -108,6 +108,7 @@ class Run:
         thread_program=None,
         switch=None,
         ranks=None,
+        island_first=0,
     ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
@@ -118,6 +119,7 @@ class Run:
         self.cores = grid[0] * grid[1]
         # groups are in flat ranks, of all islands (one island: rank = core)
         self.ranks = ranks or self.cores
+        self.island_first = island_first  # rank island_first + c is core c
         self.program = program
         # the run's programs by program field; holds[field]: the cores holding it
         self.programs = list(programs or ([program] if program is not None else []))
@@ -344,7 +346,8 @@ class Run:
         one: every core, since the kernel picks them)."""
         if self._holds is None or handler == self._nop or not self.check_programs:
             return
-        if not self._holds[program_field][first : first + count].all():
+        low, high = self._part(first, count)
+        if not self._holds[program_field][low:high].all():
             name = self.programs[program_field].name
             where = "every core" if queued else f"group ({first}, {count})"
             raise ValueError(
@@ -368,8 +371,9 @@ class Run:
         handle = self._queue_command(
             self.h["KM_HANDLER_LOAD"], (first, count), [record], False, 0, program_field
         )
+        low, high = self._part(first, count)
         for held, cores in enumerate(self._holds or ()):
-            cores[first : first + count] = held == program_field
+            cores[low:high] = held == program_field
         return handle
 
     def transfer(self, handler, group, args, timeout):
@@ -457,9 +461,8 @@ class Run:
             )
         if self._holds is not None and self.check_programs:
             missing = np.concatenate([[0], np.cumsum(~self._holds[program_field])])
-            bad = (missing[first + count] - missing[first] > 0) & (
-                handlers != self._nop
-            )
+            low, high = self._part(first, count)
+            bad = (missing[high] - missing[low] > 0) & (handlers != self._nop)
             if bad.any():
                 i = int(np.argmax(bad))
                 self._check_holds(
@@ -499,6 +502,13 @@ class Run:
         if handler.__class__ is not int:
             handler = thread.handler(handler) if thread is not None else int(handler)
         return handler, (self._cluster_base + cluster, 1)
+
+    def _part(self, first, count):
+        """The cores [low, high) of flat group (first, count) on this island (numbers
+        or arrays; low == high: none)."""
+        low = np.clip(first - self.island_first, 0, self.cores)
+        high = np.clip(first + count - self.island_first, low, self.cores)
+        return low, high
 
     def _group(self, group):
         if group is None:

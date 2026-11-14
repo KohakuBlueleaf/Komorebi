@@ -194,13 +194,17 @@ namespace km {
         return count(command) > counter_tiles ? count(command) - counter_tiles : 0;
     }
 
-    // The counter tile that holds the tail of core `core`.
+    // The counter tile that holds the tail of flat rank `rank`, as this island's core
+    // (`island_first`: the island's first rank).
     inline uint32_t messages_counter(
-        const km_command_t& command, uint32_t counter_tiles, uint32_t core
+        const km_command_t& command,
+        uint32_t counter_tiles,
+        uint32_t rank,
+        uint32_t island_first
     ) {
         return (
-            first(command) + messages_ranks(command, counter_tiles) +
-            (core - first(command)) % counter_tiles
+            first(command) - island_first + messages_ranks(command, counter_tiles) +
+            (rank - first(command)) % counter_tiles
         );
     }
 
@@ -442,17 +446,20 @@ namespace km {
         // core waits for its counter tile's READY before it reads its tail there.
         const uint32_t counter_tiles = messages_arguments.counters;
         const uint32_t ranks = messages_ranks(command, counter_tiles);
-        const bool counter = arguments.me - first(command) >= ranks;
+        // This core's flat rank (arguments.me: its core, for queues and lines).
+        const uint32_t island_first = islands_at(arguments.control).first();
+        const uint32_t me = island_first + arguments.me;
+        const bool counter = me - first(command) >= ranks;
         if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
             where = where != 0 ? where : kWhereMessagesCounter;
         } else if (where == 0 && counter) {
             *tail = head;  // nobody sends here: the loop sees an empty queue
             uint32_t served = 0;
             for (
-                uint32_t rank = arguments.me - first(command) - ranks; rank < ranks;
+                uint32_t rank = me - first(command) - ranks; rank < ranks;
                 rank += counter_tiles
             ) {
-                const uint32_t core = first(command) + rank;
+                const uint32_t core = first(command) + rank - island_first;
                 noc_async_read(
                     reader.core_noc(
                         core,
@@ -480,7 +487,7 @@ namespace km {
             where == 0 &&
             !messages_ready(
                 reader,
-                messages_counter(command, counter_tiles, arguments.me),
+                messages_counter(command, counter_tiles, me, island_first),
                 KM_TAILS_READER,
                 run
             )
@@ -502,7 +509,10 @@ namespace km {
                 ? 0
                 : reader.core_noc(
                     messages_counter(
-                        command, counter_tiles == 0 ? 1 : counter_tiles, arguments.me
+                        command,
+                        counter_tiles == 0 ? 1 : counter_tiles,
+                        me,
+                        island_first
                     ),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * arguments.me
@@ -613,10 +623,7 @@ namespace km {
                 if (
                     candidate.sequence == sequence && KM_LANDED(&candidate) &&
                     handler(candidate) == KM_HANDLER_MESSAGES_END &&
-                    candidate.a0 == run &&
-                    in_group(
-                        candidate, islands_at(arguments.control).first() + arguments.me
-                    )
+                    candidate.a0 == run && in_group(candidate, me)
                 ) {
                     return true;
                 }
@@ -950,14 +957,14 @@ namespace km {
         const uint32_t ranks = messages_ranks(command, counter_tiles);
         if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
             where = kWhereMessagesCounter;
-        } else if (arguments.me - first(command) < ranks) {
+        } else if (island_first + arguments.me - first(command) < ranks) {
             for (
                 uint32_t counter_tile = 0; counter_tile < counter_tiles && where == 0;
                 counter_tile++
             ) {
                 if (!messages_ready(
                     writer,
-                    first(command) + ranks + counter_tile,
+                    first(command) - island_first + ranks + counter_tile,
                     KM_TAILS_WRITER,
                     run
                 )) {
@@ -1001,7 +1008,12 @@ namespace km {
                 noc_index,
                 write_at_cmd_buf,
                 writer.core_noc(
-                    messages_counter(command, counter_tiles, bin_destination[bin]),
+                    messages_counter(
+                        command,
+                        counter_tiles,
+                        island_first + bin_destination[bin],
+                        island_first
+                    ),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * bin_destination[bin]
                 ),

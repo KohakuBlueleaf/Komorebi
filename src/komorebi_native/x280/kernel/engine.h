@@ -47,6 +47,7 @@ typedef struct {
     volatile uint32_t* x280_cores;  /* the core block */
     volatile const uint8_t* upload; /* the upload region */
     uint32_t upload_bytes, cores;
+    uint32_t island_first; /* groups are flat: this island's ranks from island_first */
     /* its ring, the source's side */
     volatile uint8_t* command_ring;
     volatile const uint32_t* consumed;
@@ -562,7 +563,8 @@ static kmd_uop_t stream_command(
         if (
             KM_GROUP_IS_CLUSTER(first, count)
                 ? exclusive != 0
-                : count == 0 || first > engine->cores || count > engine->cores - first
+                : count == 0 || first - engine->island_first > engine->cores ||
+                    count > engine->cores - (first - engine->island_first)
         ) {
             stream_fail(stream, KM_STREAM_ERROR_GROUP, pc);
             return KMD_UOP_ENDED;
@@ -910,6 +912,7 @@ static void eng_run(uint64_t core, const volatile kmd_args_t* arguments, uint64_
     engine->upload = (volatile const uint8_t*)arguments + KMD_LIM_UPLOAD;
     engine->upload_bytes = (uint32_t)arguments->upload_bytes;
     engine->cores = (uint32_t)arguments->cores;
+    engine->island_first = (uint32_t)arguments->island & 0xFFFFu;
     engine->command_ring = ring + KMD_ERING_CMDS;
     engine->consumed = (volatile const uint32_t*)(ring + KMD_ERING_CONSUMED);
     engine->events = ring + KMD_ERING_EVENTS;
