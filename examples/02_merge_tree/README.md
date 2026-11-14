@@ -73,7 +73,8 @@ inputs, by relative RMS on uniform random ones) and every result word against th
 checksum of numpy's total (integer inputs) or of the total read back (random ones).
 One JSON line, with `ok`: every job and result word right, no core given up, no port
 left waiting and every core ended (with `--stall-rank`: the stalled load ends in the
-deadline on job 1 and the load after it is clean); `merge.py` and `merge_fed.py` exit
+deadline and the host's timeout, with a core given up, and the load after it is
+clean); `merge.py` and `merge_fed.py` exit
 non-zero without it. Setup is that of
 [01_mapcollect](../01_mapcollect/README.md#what-it-needs).
 
@@ -87,8 +88,8 @@ python merge.py --group-list 0:8,0:60,3:60,40:2,0:33 --form both --part 2
 `--form both` runs every job twice, by owner and then by tree, on the same input, and
 compares the two (`pairs_bit_equal`). `--stall-rank M` adds two loads of the
 program in the same session, of the first four jobs: in the first, rank M of job 1
-stalls instead of sending; the host raises `CommandTimeout` naming the handle and the
-cores that did not report, and the driver reads the cores that gave up (a reader
+stalls instead of sending; the host raises `CommandTimeout` naming the handle (the last
+command, once the stalled job has been given up) and the cores that did not report, and the driver reads the cores that gave up (a reader
 waiting on a port names it) and the ports still waiting with their missing counts.
 The second load runs the same jobs clean.
 

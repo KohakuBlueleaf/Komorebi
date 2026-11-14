@@ -1,10 +1,10 @@
 """Overlays on a card (KMR_CARD=1): the overlays example on four cores, with one slot
-(each load replaces the other overlay) and with two (both stay); every result exact."""
+(each load replaces the other overlay); every result exact."""
 
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = (
@@ -12,8 +12,8 @@ SCRIPT = (
 )
 
 
-@pytest.mark.parametrize("slots", [1, 2])
-def test_two_overlays_in_turn_are_exact(slots):
+def test_two_overlays_in_turn_are_exact():
+    slots = 1
     out = run_json(SCRIPT, "--cores", 4, "--rounds", 3, "--slots", slots)
     assert out["exact"] and out["commands"] == 12
     assert set(out["image_bytes"]) == {

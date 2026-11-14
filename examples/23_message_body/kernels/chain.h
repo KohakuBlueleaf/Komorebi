@@ -5,6 +5,9 @@
 #include <stdint.h>
 
 constexpr uint32_t kHandlerChain = 1;  // the dynamic handler
+// --send: the RUN's handler, a part every core loads; rank 0 sends the thread to
+// itself as chain, so a rank loads chain only when the thread first arrives.
+constexpr uint32_t kHandlerStart = 2;
 
 // Message words (64 bytes): word 0 is the runtime's, word 1 too in a program with
 // bodies (the body's bytes); the program's fields from word 2.
@@ -24,8 +27,12 @@ constexpr uint32_t kResThread = 1025;    // 1 + the thread that ended here
 constexpr uint32_t kResHop = 1026;       // its arrivals
 constexpr uint32_t kResState = 1027;     // its state word
 constexpr uint32_t kResRun = 1028;       // the run's sequence
-constexpr uint32_t kAreaWords = 1040;    // the body, then 16 result words
-static_assert(kResArrivals == kBodyWordsMax && kResRun < kAreaWords, "the area");
+constexpr uint32_t kResStamps = 1029;           // parts, rank 0: wall clock at arrival hop / count
+constexpr uint32_t kStamps = 8;  // laps 0 to 6, then the last lap in slot 7
+constexpr uint32_t kAreaWords = 1040;  // the body, then 16 result words
+static_assert(
+    kResArrivals == kBodyWordsMax && kResStamps + kStamps <= kAreaWords, "the area"
+);
 
 inline uint32_t chain_seed(uint32_t thread, uint32_t word) {
     return (thread + 1) * 0x9E3779B1u ^ word * 0x85EBCA6Bu;

@@ -79,7 +79,7 @@ def plan(spec, cores):
         raise TypeError("load takes Programs")
     if len({id(program) for program in programs}) != len(programs):
         raise ValueError("a program is given twice")
-    most = overlay.constants()["kOverlaysMax"] - 1
+    most = overlay.constants()["kOverlayService"] - 1
     if len(programs) > most:
         raise ValueError(f"{len(programs)} programs; a run holds at most {most}")
     for program in programs:
@@ -229,7 +229,7 @@ def program_overlay(program, switch=False):
         }
     return overlay.Overlay(
         program.name,
-        overlay.constants()["kOverlaysMax"] - 1 - program.program_field,
+        overlay.constants()["kOverlayService"] - 1 - program.program_field,
         sources,
         defines,
         program=True,

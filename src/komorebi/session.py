@@ -26,6 +26,7 @@ from komorebi import (
     formats,
     insn_check,
     island_session,
+    islands,
     layout,
     native,
     overlay,
@@ -44,12 +45,13 @@ from komorebi.errors import (
     ProgramError,
     StartError,
 )
-from komorebi.program import KernelSizes, Program
+from komorebi.program import KernelSizes, Program, messages_header
 from komorebi.run import Run
 
 CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
 MESSAGES_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may take
+X280_QUEUES = "x280_queues"  # the region of the X280 ranks' queues in their thread
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
@@ -920,6 +922,7 @@ class Session:
             if on_card
             else {}
         )
+        ranks = _x280_ranks(program, owner, placed, on_card)
         depth = depth or program.depth
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
@@ -953,7 +956,9 @@ class Session:
                 state_tensor.address,
                 **thread_module.kernel_work_args(ends),
                 messages_handler=(
-                    program.messages.word() if program.messages is not None else 0
+                    program.messages.dispatcher_word()
+                    if program.messages is not None
+                    else 0
                 ),
                 programs=_held_fields(placed) if placed and placed.switch else [],
             )
@@ -961,9 +966,12 @@ class Session:
             plan, port_lines = _port_lines(owner, dispatch, rings)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
+            if ranks is not None:
+                ranks = _x280_words(self, program, dispatch, rings, regions, plan)
             descriptor = backend.describe(
-                program, sources, tag, depth, wait, idle, trace, port_lines, placed
-            )
+                program, sources, tag, depth, wait, idle, trace, port_lines, placed,
+                ranks,
+            )  # fmt: skip
             started = time.perf_counter()
             try:
                 elves, *build = descriptor.build()
@@ -993,7 +1001,7 @@ class Session:
                 )
             if placed is not None:
                 backend.load_programs(placed, descriptor)
-            elif program.overlays:
+            else:
                 backend.load_overlays(program, descriptor)
             self.log("launch")
             # From here the grid may run: an interrupt is delivered when the launch
@@ -1065,6 +1073,11 @@ class Session:
                             owner.x280_ports["noc"],
                         )
                         thread_run.write_ports()
+                    if ranks is not None and cluster == program.messages.x280_cluster:
+                        thread_run.ranks = _x280_line(
+                            program, dispatch, backend, ranks, wait, mhz
+                        )
+                        thread_run.write_ranks()
                     run.threads[cluster] = thread_run
                 for (
                     thread_run
@@ -1127,18 +1140,20 @@ def _start_loads(run, placed):
 
 def _common_slots(placed, declared, built):
     """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most kOverlaySlotsMax) of the largest part any program has there."""
+    program, the reader one more for the service overlay, at most kOverlaySlotsMax) of
+    the largest part any program has there."""
     most = overlay.constants()["kOverlaySlotsMax"]
     slots = {}
     for made in built:
-        for part, (_, size) in (made.slots if made else {}).items():
+        for part, (_, size) in made.slots.items():
             slots[part] = max(slots.get(part, 0), size)
     count = declared.count
     out = {}
     for part, size in slots.items():
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
-        out[part] = (wanted or min(len(placed.programs), most), size)
+        service = part == "reader"  # the service overlay's slot beside them
+        out[part] = (wanted or min(len(placed.programs) + service, most), size)
     return overlay.Built({}, out)
 
 
@@ -1190,6 +1205,71 @@ def _port_lines(program, dispatch, rings):
     return plan, _PortLines(
         [int(core_tile) for core_tile in dispatch.core_table()[:cores]], lines
     )
+
+
+def _x280_ranks(program, owner, placed, on_card):
+    """The thread of the program's X280 ranks, its queues' region (X280_QUEUES) added;
+    None when the program has none."""
+    messages = program.messages
+    if messages is None or messages.x280_ranks == 0:
+        return None
+    work = owner.threads.get(messages.x280_cluster)
+    if placed is not None or work is None or not on_card:
+        raise ValueError(
+            f"{program.name}: X280 ranks need one program with its thread on cluster "
+            f"{messages.x280_cluster}, on the card"
+        )
+    size = messages.queue_region_bytes()
+    if work.regions.get(X280_QUEUES, size) != size:
+        raise ValueError(f"{program.name}: the thread's region {X280_QUEUES!r} is ours")
+    work.regions[X280_QUEUES] = size
+    return work
+
+
+def _x280_words(session, program, dispatch, rings, regions, plan):
+    """The X280 ranks' words of km::MessagesArgs (without the inbox): their queues'
+    bank address and DRAM tile, their cluster's tile, the cores' credit lines there."""
+    messages = program.messages
+    cluster = messages.x280_cluster
+    bank, queue = regions[thread_module.BANK_OF_CLUSTER[cluster]].address(
+        (cluster, X280_QUEUES)
+    )
+    x, y = session.device.dram_core(bank)
+    info = dispatch.work_info(cluster)
+    at = thread_module.ranks_at(rings[cluster][0], plan)
+    return {
+        "x280_queue": queue,
+        "x280_bank": int(x) | int(y) << 16,
+        "x280_tile": info["virtual_x"] | info["virtual_y"] << 16,
+        "x280_credits": (
+            info["lim_base"] + at + thread_module.layout()["KMX_RANKS_CREDITS"]
+        ),
+    }
+
+
+def _x280_line(program, dispatch, backend, words, wait, mhz):
+    """The X280 ranks' line and area for their thread (komorebi.thread.Ranks)."""
+    messages = program.messages
+    abi_headers, (constants, _) = abi.headers(), messages_header()
+    cores = dispatch.grid_x * dispatch.grid_y
+    ticks = thread_module.TIMER_HZ
+    line = {
+        "ranks": messages.x280_ranks,
+        "cores": cores,
+        "queue": words["x280_queue"],
+        "cap": messages.queue_messages,
+        "message_bytes": messages.message_bytes,
+        "quota": messages.quota(cores),
+        "counters": messages.counters,
+        "idle": max(1, round(messages.idle_cycles / (mhz * 1e6) * ticks)),
+        "inbox": backend.inbox.address,
+        "inbox_messages": constants["kMessagesInbox"],
+        "lines": dispatch.lim_base + abi_headers["KMD_LIM_MESSAGES"],
+        "lines_tile": dispatch.l2_x | dispatch.l2_y << 16,
+        "wait": round(wait * ticks),
+    }
+    tiles = [int(core_tile) for core_tile in dispatch.core_table()[:cores]]
+    return thread_module.Ranks(line, tiles)
 
 
 def _region_bytes(value):
@@ -1387,6 +1467,7 @@ class _Backend:
         self.control_offset = 0
         self.trace_tensor = None
         self.state_tensor = None
+        self.inbox = None  # the X280 ranks' messages to each core, in L1
         self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
@@ -1435,6 +1516,7 @@ class _Backend:
         self.control_offset = (self.control_addr - base) // 4
         check_bases({"control block": self.control_addr})
         self.control_rows = np.zeros((cores, words), dtype=np.uint32)
+        self._island_rows(cores, grid[0])
         if port_lines is not None:
             rows = self.control_rows
             to_offset = (
@@ -1447,12 +1529,31 @@ class _Backend:
             self.control.write(rows)
         return self.control_addr
 
-    def _dynamic(self, program, cores, depth, base):
+    def _island_rows(self, cores, columns):
+        """Every core's island area in control_rows: one island, island 0 of 1 with
+        every core a rank (its header line, then its table)."""
+        abi_headers = abi.headers()
+        graph = islands.one(cores, columns)
+        table = np.frombuffer(graph.table(0), np.uint32)
+        header = [0, len(graph.islands), graph.first(0), graph.count(0)]
+        at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
+        line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
+        self.control_rows[:, at : at + line] = header
+        self.control_rows[:, at + line : at + line + len(table)] = table
+
+    def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
-        reader / writer and compute words; status lines in the kernel's LIM."""
+        reader / writer and compute words; status lines in the kernel's LIM; with the
+        X280 ranks' words `x280`, each core's inbox in L1 (zeroed)."""
         messages = program.messages
         if messages is None:
             return [], []
+        if x280 is not None:
+            constants, _ = messages_header()
+            words = constants["kMessagesInbox"] * messages.message_bytes // 4
+            self.inbox = _words(self.session, np.zeros((cores, words)), grid)
+            self.io.append(self.inbox)
+            x280 = x280 | {"inbox": self.inbox.address}
         abi_headers = abi.headers()
         messages.check(cores, MESSAGES_DRAM_BYTES, depth)
         page = 32 * messages.message_bytes  # kMessagesPageMessages messages a page
@@ -1468,7 +1569,9 @@ class _Backend:
             self.io.append(bodies)
             body = bodies.address
         lines = base + abi_headers["KMD_LIM_MESSAGES"]
-        return messages.args(queue.address, lines, body), messages.compute_args(cores)
+        return messages.args(queue.address, lines, body, x280), messages.compute_args(
+            cores
+        )
 
     def describe(
         self,
@@ -1481,18 +1584,16 @@ class _Backend:
         trace,
         port_lines=None,
         placed=None,
+        x280=None,
     ):
         """The program descriptor for every core, with the start-up arguments; with
-        `placed` (a programs.Plan) the runtime's kernels, per group of cores."""
+        `placed` (a programs.Plan) the runtime's kernels, per group of cores; `x280`:
+        the X280 ranks' words of a dynamic program."""
         abi_headers = abi.headers()
         port = self.port
         grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
-        area = (
-            overlay.constants()["kOverlayAreaBytes"]
-            if program.overlays or placed is not None
-            else 0
-        )
+        area = overlay.constants()["kOverlayAreaBytes"]  # the service overlay's too
         control = self._control_blocks(cores, grid, port_lines, area)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
@@ -1526,7 +1627,7 @@ class _Backend:
             "trace_cap": self.trace_cap,
         }
         messages_reader_writer_args, messages_compute_args = self._dynamic(
-            program, cores, depth, base
+            program, cores, depth, base, grid, x280
         )
         reader_args, writer_args, compute_args = [], [], []
         for core in range(cores):
@@ -1715,9 +1816,9 @@ class _Backend:
                 )
 
     def load_overlays(self, program, descriptor):
-        """Builds the program's overlays against the kernels just built, puts each
-        part in every DRAM bank, places the slots in L1 (refused, with the L1 budget
-        table, when they do not fit) and writes the overlay area beside each block."""
+        """Builds the program's overlays and the service overlay against the kernels
+        just built, puts each part in every DRAM bank, places the slots in L1 (refused,
+        with the L1 budget table, when they do not fit), writes each overlay area."""
         session, abi_headers = self.session, abi.headers()
         started = time.perf_counter()
         recipes = {}
@@ -1725,8 +1826,12 @@ class _Backend:
             for row in builds:
                 recipe = overlay.Recipe.from_native(row)
                 recipes[recipe.target] = recipe
-        built = overlay.build(
-            program, recipes, native.cache_directory() / "overlays", session.log
+        built = overlay.build_overlays(
+            [*program.overlays.values(), overlay.service()],
+            program.overlay_slots,
+            recipes,
+            native.cache_directory() / "overlays",
+            session.log,
         )
         program.overlays_built = built
         grid = (self.port.grid_x, self.port.grid_y)
@@ -1766,7 +1871,7 @@ class _Backend:
         self.control_rows[:, at : at + len(area)] = area
         self.control.write(self.control_rows)
         session.log(
-            f"overlays {list(program.overlays)} built and placed: slots from "
+            f"overlays {[*program.overlays, 'service']} built and placed: slots from "
             f"{slot_base:#x}, {image.nbytes:,} B of DRAM "
             f"({time.perf_counter() - started:.2f} s)"
         )
@@ -1792,7 +1897,7 @@ class _Backend:
         c = overlay.constants()
         records = {}
         for program in placed.programs:
-            number = c["kOverlaysMax"] - 1 - program.program_field
+            number = c["kOverlayService"] - 1 - program.program_field
             table = []
             for part in overlay.PARTS:
                 row, size = placed_rows.get((number, part), (None, 0))
@@ -1854,13 +1959,13 @@ class _Backend:
                     }
                 )
             held = [placed.programs[index] for index in group.programs]
-            if not held:
-                built.append(None)
-                continue
             made = overlay.build_overlays(
                 [
-                    programs.program_overlay(program, switch=placed.switch)
-                    for program in held
+                    *(
+                        programs.program_overlay(program, switch=placed.switch)
+                        for program in held
+                    ),
+                    overlay.service(),
                 ],
                 declared,
                 recipes,
@@ -1890,16 +1995,21 @@ class _Backend:
             session.log(f"L1 budget of a core of {names}:\n{table}")
             if not fits:
                 raise L1BudgetError(names, table)
-        images = {}
+        images, stored = {}, []
+        service = overlay.constants()["kOverlayService"]
         for made in built:
-            if made is not None:
-                images.update(made.images)
+            mine = {}
+            for key, image in made.images.items():
+                at = key
+                if key[0] == service:  # a copy for each different build of it
+                    same = [k for k, v in images.items() if k[:2] == key and v == image]
+                    at = same[0] if same else (*key, len(images))
+                images[at] = image
+                mine[key] = at
+            stored.append(mine)
         if placed.switch:  # one set of slots, every program's parts fit any core's
             common = _common_slots(placed, declared, built)
-            built = [
-                overlay.Built(made.images if made else {}, common.slots)
-                for made in built
-            ]
+            built = [overlay.Built(made.images, common.slots) for made in built]
             buffers = largest = self.switch_reserve  # the runtime's buffers included
             rows = [
                 ("circular buffers (the largest program)", buffers),
@@ -1916,7 +2026,7 @@ class _Backend:
                 raise L1BudgetError(", ".join(p.name for p in placed.programs), table)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
         image = _words(session, image_rows)
-        slot_bytes = max(made.slot_bytes for made in built if made is not None)
+        slot_bytes = max(made.slot_bytes for made in built)
         words = (slot_bytes + overlay.ALIGN) // 4
         floor = L1_BYTES - session.l1()[1] + largest + SLOT_MARGIN
         at = slot_address(4 * words, floor)
@@ -1929,10 +2039,8 @@ class _Backend:
         self.io += [image, slots]
         slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
-        for group, made in zip(placed.groups, built, strict=True):
-            if made is None:
-                continue
-            mine = {key: placed_rows[key] for key in made.images}
+        for group, made, keys in zip(placed.groups, built, stored, strict=True):
+            mine = {key: placed_rows[at] for key, at in keys.items()}
             area = overlay.area_words(
                 made, mine, image.address, image.aligned_page_bytes, slot_base
             )

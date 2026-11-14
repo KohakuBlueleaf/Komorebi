@@ -163,12 +163,12 @@ def launch(session, args, jobs, inputs, output, stall=-1, stall_rank=NONE):
         },
     }
     if timed_out is not None:
-        job = handles.index(timed_out.handle)
+        job = handles.index(timed_out.handle) if timed_out.handle in handles else None
         summary["timed_out"] = {
             "handle": timed_out.handle,
-            "job": job,
+            "job": job,  # None: a command that is not one of the jobs (the last one)
             "group": list(timed_out.group),
-            "form": jobs[job][2],
+            "form": jobs[job][2] if job is not None else None,
             "not_reported": [core["core"] for core in timed_out.cores],
         }
     return events, summary
@@ -273,13 +273,14 @@ def clean(load, jobs, cores):
 
 
 def verdict(result, jobs, cores):
-    """The jobs clean; with --stall-rank, the stalled load ended in the deadline on
-    job 1 with every core ended, and the load after it clean."""
+    """The jobs clean; with --stall-rank, the stalled load ended in the deadline and the
+    host's timeout with a core given up and every core ended, the load after it clean.
+    """
     ok = clean(result, jobs, cores)
     if "stall" in result:
         stalled = result["stall"]
         ok &= ended(stalled, cores) and stalled["kernel"]["error_name"] == "deadline"
-        ok &= stalled.get("timed_out", {}).get("job") == 1
+        ok &= "timed_out" in stalled and bool(stalled["gave_up"])
         ok &= clean(result["after"], min(4, jobs), cores)
     return bool(ok)
 

@@ -50,6 +50,12 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_port_run(const km_command_t* command, void (*function)(int cluster, int x280_core, uint64_t arg), uint64_t arg, kmx_event* event)` | the lead's 0, not nested | submits `command`, runs `function(cluster, x280_core, arg)` on every X280 core as `kmx_parallel_all` does, ends the serve at the command's event | `KMX_OK` and `event` once every `function` returned; `KMX_FULL` (nothing submitted, or 32 events kept); `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ports; error `parallel` elsewhere |
 | `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `function` | whether the command still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
 | `int kmx_pull_run(const km_command_t* command, const kmx_pull* settings, kmx_event* event)` | the lead's 0, not nested | submits `command` and serves its pulls on every X280 core until its event: units 0 to `settings->units - 1` in ranges of `settings->per`, by `settings->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `settings->log`), `settings->pick` (the range) or `settings->pick_word` (the range and a word the core gets with it, [the pull's word](#the-pulls-word)) | as `kmx_port_run`; `KMX_BAD` also for a bad mode, both `pick` and `pick_word` set, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
+| `int kmx_ranks(void)` | any | X280 cores 0 to `kmx_ranks() - 1` are ranks of the program's dynamic run ([X280 cores as ranks](#x280-cores-as-ranks)) | 0 to 4 (0: none on this cluster) |
+| `int kmx_messages_run(void (*function)(int x280_core, kmx_messages* messages, void* arg), void* arg, uint64_t deadline)` | 0, not nested | waits by `deadline` for the next dynamic run's `RUN`, then runs `function(x280_core, messages, arg)` on each X280 rank, cores 1 to `kmx_ranks() - 1` spawned, and joins them; afterwards it takes and consumes what a `function` left | `KMX_OK` once all returned; `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ranks or inside `kmx_parallel` |
+| `const volatile uint32_t* kmx_messages_next(kmx_messages* messages)` | the rank's | the next message of the rank's queue, `message_bytes / 4` words (word 0 the runtime's, `messages->handler` its handler), valid until the next call; waits while the queue is empty | the message; 0 once the run ended or the rank gave up |
+| `int kmx_messages_forward(kmx_messages* messages, uint32_t rank, const uint32_t* message, uint32_t handler)` | the rank's | the message taken last goes on at core rank `rank` (below `messages->count`), handled there by `handler`; words 1 on of `message` are sent | `KMX_OK`; `KMX_BAD` once it gave up (no such core rank, or no room in the core's inbox within the wait) |
+| `int kmx_messages_send(...)`, same arguments | the rank's | a new message, as forward, taking one of the quota | as forward; `KMX_FULL` with no quota left (nothing sent) |
+| `void kmx_messages_consume(kmx_messages* messages)` | the rank's | the message taken last ends here: one send back to the quota | - |
 | `void kmx_command(km_command_t* command, uint32_t program, uint32_t handler, uint32_t first, uint32_t count)` | any | fills `command`: `hdr = handler \| program << 24`, `group = first \| count << 16`, every other word 0 ([several programs](#a-thread-in-a-run-of-several-programs)) | - |
 | `int kmx_block(km_command_t* command, int id, uint64_t offset, uint32_t bytes)` | any | makes `bytes` (1 to 1,024) of region `id` from `offset` (a multiple of 64) the command's block: `a7` and `a8` ([the block of a command](#the-block-of-a-command)) | `KMX_OK`; `KMX_BAD` outside the region or for a bad size or offset |
 | `int kmx_load(uint32_t program, uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event)` | 0 | in a run loaded with a dict, makes cores `[first, first + count)` hold `program` (its field, `kProgram<Name>`): submits the load, waits for its event and, while the dispatcher rejects it busy, waits for the wake and sends it again, all by `deadline` ([a thread gives a group another program](#a-thread-gives-a-group-another-program)) | `KMX_OK` and `event` (may be 0) once the load is done; `KMX_BAD` when the dispatcher refused it or its timeout came (`event` says which) or the run has no record for `program`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
@@ -61,6 +67,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event)` | 0 | waits for the handle's event until `kmx_time()` passes `deadline`; other handles' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_poll(kmx_event* event)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
 | `int kmx_cluster(void)` | any | the work cluster the thread runs on | 1, 2 or 3 |
+| `int kmx_island(void)`, `int kmx_islands(void)` | any | the island the thread's cores are on, and the run's islands ([islands](runtime.md#islands)) | 0 and 1 on one island |
 | `uint64_t kmx_time(void)` | any | the 50 MHz timer (`KMX_TICKS_PER_SECOND`) | ticks |
 | `int kmx_stop_requested(void)` | any | true once the host asked for a stop or the thread's deadline passed (never once it serves commands) | 0 or 1 |
 | `void kmx_progress(uint32_t where)` | any | writes `where` and its time into the result block as a progress marker | - |
@@ -123,6 +130,38 @@ static uint64_t pick_word(int core, uint32_t index, uint64_t ranges) {
 }
 const kmx_pull pull = {units, per, KMX_PULL_COUNT, 0, 0, ranges, pick_word};
 ```
+
+### X280 cores as ranks
+
+A thread can be ranks of the program's dynamic run
+([X280 ranks](dynamic.md#x280-ranks)): with `x280_ranks=n` on the program's `dynamic`,
+X280 cores 0 to n - 1 of the thread's cluster are ranks `count` to `count + n - 1`
+after the group's `count` core ranks. `kmx_main` calls `kmx_messages_run` once for each
+dynamic `RUN` it takes part in; each rank's function takes its messages with
+`kmx_messages_next` until it returns 0, and ends each with a forward to a core rank or a
+consume. `kmx_messages` holds the run (`run`, the `RUN`'s sequence), the rank (`rank`),
+the core ranks (`count`, `first` the group's first core), the taken message's
+`handler`, the `quota`, `sent`, `consumed` and `gave` (`KMX_GAVE_ROOM` 1, `_RANK` 2,
+`_STOPPED` 3, `_LINE` 4; 0: it did not give up).
+
+```c
+static void rank(int x280_core, kmx_messages* messages, void* arg) {
+    uint32_t message[16];
+    const volatile uint32_t* in;
+    while ((in = kmx_messages_next(messages)) != 0) {
+        for (uint32_t w = 1; w < 16; w++) message[w] = in[w];
+        if (done(message)) { kmx_messages_consume(messages); continue; }
+        kmx_messages_forward(messages, message[3] % messages->count, message, kHandlerGrid);
+    }
+}
+int kmx_main(int core) {
+    return kmx_messages_run(rank, 0, kmx_time() + 20 * KMX_TICKS_PER_SECOND);
+}
+```
+
+The rank's queue is in the cluster's bank and the library reads it itself; the thread's
+regions and words are as without ranks, and `x280_queues` is a region after the
+thread's own (the ids of shared regions move one on).
 
 ## Commands to a thread
 
@@ -344,13 +383,14 @@ The thread's block in the cluster's local memory (LIM), bytes from its base:
 
 | Offset | Bytes | What | Written by |
 |---|---|---|---|
-| `0x000` | `0x240` | `kmx_args`: run value, magic `kmx1`, version 4 (`KMX_VERSION`), deadline (ticks), region and word counts, check line address and value, flags (`KMX_FLAG_KEEP_PREFETCH` 1), the cluster (`cluster`, at `0x38`); region table at `0x040` (16 x `{offset, bytes}`); words at `0x140` (64 x `uint32`) | host, before the start |
+| `0x000` | `0x240` | `kmx_args`: run value, magic `kmx1`, version 5 (`KMX_VERSION`), deadline (ticks), region and word counts, check line address and value, flags (`KMX_FLAG_KEEP_PREFETCH` 1), the cluster (`cluster`, at `0x38`); region table at `0x040` (16 x `{offset, bytes}`); words at `0x140` (64 x `uint32`) | host, before the start |
 | `0x240` | 64 | stop line: word 0 = `0x53544F50` asks for a stop | host |
 | `0x280` | 256 | result block | thread |
 | `0x380` | 4 x 64 | spawn lines, one per core, core `core`'s at `+ 64 * core`: 64-bit words `gen`, `fn`, `arg` (core 0), `done` (that core); core 0's word 0 ends the service | cores |
 | `0x480` | 64 | `kmx_ring_descriptor`, zero for no ring | host, before the start |
 | `0x4C0` | 64 | `kmx_peers`: a value for this load (`nonce`), the lead, the mask of clusters running the image, the offset `all` of the `kmx_parallel_all` lines, then each cluster's tile and its bank's DRAM tile (`x \| y << 16`, indexed by cluster); zero: no peers | host, before the start |
 | `0x500` | 64 | `kmx_ports`: `at` (LIM offset of the ports area, 0: no ports), `control` (the cores' control block address), `cores` (table entries), `flags` (`KMX_PORTS_NOC1` 1), `state` (`kmx_port_run`'s: `n << 1` while run `n` serves, `\| 1` once it ended), `next`, `lost`, `pull` (units, per, mode and log, 1 when `pick` is a `pick_word`), `pick`, `arg` (`kmx_pull_run`'s, written by the lead) | host, before the start; `state` the lead |
+| `0x540` | 64 | `kmx_ranks_line` (0: no X280 ranks): `at` (LIM offset of the ranks area), `ranks`, `cores`, `queue` (bank address of rank 0's queue), `cap`, `message_bytes`, `quota`, `counters`, `idle` (ticks), `inbox` (the cores' L1 inbox), `inbox_messages`, `lines` and `lines_tile` (the dispatcher's status lines), `wait` (ticks) | host, before the start |
 | `all` | 4 x 64 | after the block the host writes (and the ring's events): the call line the lead writes into each other cluster (32-bit words `nonce`, `gen`, `fn`, `arg`, `exit`), and in the lead's, cluster `cluster`'s done line at `+ 64 * cluster` (`nonce`, the last `gen` done; 0: it serves) | the lead; the others |
 
 The ports area at `at` (after the `kmx_parallel_all` lines, written by the host before any
@@ -367,6 +407,12 @@ Windows on a work cluster: the ring's 16 (`KMX_RING_WINDOW`), cluster `c`'s LIM
 through `16 + c` (`KMX_PEER_WINDOW + c - 1`) while the thread runs, core `h`'s push
 through `20 + h` (`KMX_PUSH_WINDOW + h`) during a push, core `i`'s control block through
 `24 + i` (`KMX_PORT_WINDOW + i`) for the run when this cluster serves it.
+With X280 ranks, the same windows onto the cores' L1 for their inboxes while
+`kmx_messages_run` runs, and X280 rank `r`'s status line through `152 + r`
+(`KMX_RANKS_WINDOW + r`). The ranks area at `at` (`KMX_RANKS_BYTES` = 3,072): each
+core's tile at `+ 4 i`, its credit line at `0x200 + 16 i` (word 0 the head of its inbox,
+written by the core), its next inbox position at `0xA00 + 4 i` (an atomic add of the
+X280 ranks).
 
 Regions are whole 4 KiB pages of the work cluster's DRAM bank (on the p150a bank 6 for
 cluster 1, bank 7 for clusters 2 and 3); page 0 of a bank's pages is the check line,

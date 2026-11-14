@@ -12,17 +12,15 @@ from komorebi import channel as channel_module
 from komorebi.session import read_tensors
 
 pytestmark = pytest.mark.card
-CARD_IN_PROCESS = True  # opens the card in this process
 KERNELS = Path(__file__).resolve().parents[2] / "examples" / "01_mapcollect" / "kernels"
 PAGES, PAGE = 64, 4096  # 256 KiB: above the size from which a launch pays
 
 
-@pytest.fixture(scope="module")
-def session():
-    with km.Session() as opened_session:
-        if opened_session.channel is None:
-            pytest.skip("no host channel on this machine")
-        yield opened_session
+@pytest.fixture
+def session(session):
+    if session.channel is None:
+        pytest.skip("no host channel on this machine")
+    return session
 
 
 def pages(seed):

@@ -1,5 +1,5 @@
-// Groups: the completion a group reports (writer side). Group tests, partitions and who
-// reports to whom are in km_command.hpp.
+// Groups: the completion a group reports (writer side), an island's part through its
+// first core. Group tests, partitions and who reports to whom are in km_command.hpp.
 #pragma once
 
 #include <stdint.h>
@@ -14,14 +14,19 @@ namespace km {
         const Core& core, const km_command_t& command, uint32_t result = 0
     ) {
         const Args& arguments = core.args();
+        const Islands view = islands_at(arguments.control);
         if (!in_group(
-            command, arguments.me
+            command, view.first() + arguments.me
         )) {  // the reader never hands one to a core outside the group
             return false;
         }
         const uint32_t slot_index = slot(command);
         const uint32_t counter = KM_CONTROL_DONE + slot_index * 16;
-        const Report report = report_to(command, arguments.me, arguments.row);
+        // the island's part completes through the first of its cores in the group
+        const Part part = local_part(view, command);
+        const Report report = (
+            report_in(part.first, part.count, arguments.me, arguments.row)
+        );
         if (report.want != 0) {
             volatile tt_l1_ptr uint32_t* done = core.control(counter);
             const uint32_t code = core.poll_at(
@@ -49,7 +54,7 @@ namespace km {
         if (core.given_up(command)) {
             return false;
         }
-        if (arguments.me != first(command)) {
+        if (arguments.me != part.first) {
             noc_semaphore_inc(
                 core.core_noc(report.parent, arguments.control + counter), 1
             );

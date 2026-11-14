@@ -11,8 +11,20 @@
 #include "api/dataflow/dataflow_api.h"
 #endif
 #include "km_command.hpp"
+#include "km_island.hpp"
 
 namespace km {
+
+    // The island area of this core's control block: every kernel's argument 0 is the
+    // control block's address.
+    template <int>
+    inline const volatile uint32_t* island_area() {
+        return (
+            reinterpret_cast<const volatile uint32_t*>(
+                get_arg_val<uint32_t>(0) + KM_CONTROL_ISLANDS
+            )
+        );
+    }
 
     // Runtime-owned circular buffers: the tokens the reader hands to compute and
     // writer, and the per-command trace (only when tracing).

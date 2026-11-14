@@ -18,7 +18,7 @@ static inline int work_args_valid(const volatile kmd_args_t* arguments) {
     }
     const uint64_t depth = arguments->work_depth;
     const uint64_t event_depth = arguments->work_event_depth;
-    const uint64_t remote = KMD_WORK_IN(event_depth) + KMD_WORK_IN_DEPTH * 64u;
+    const uint64_t remote = KMD_WORK_RUN(event_depth) + KMD_WORK_RUN_BYTES;
     int ok = (
         work_pow2(depth) && depth <= KMD_WORK_DEPTH_MAX && work_pow2(event_depth) &&
         event_depth <= KMD_WORK_EVENTS_MAX && (arguments->work_cmds & 63u) == 0 &&
@@ -213,6 +213,9 @@ static __attribute__((noinline)) void work_answer(
             }
         }
         thread->unstored = 0;
+        if (thread->run_unstored) {
+            messages_run_store(thread);
+        }
         return;
     }
     const uint32_t slot = number & (KMD_WORK_IN_DEPTH - 1u), bit = 1u << slot;

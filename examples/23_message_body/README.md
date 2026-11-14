@@ -60,6 +60,58 @@ all exact (every word of the final body checked).
 | 12 cores (14 with the counter tiles), 1200 hops | 1.974 to 1.978 µs a hop | 2.394 to 2.397 µs | 5.452 to 5.454 µs |
 | the grid, 118 ranks (120 cores), 1180 hops | 2.081 to 2.099 µs a hop | 2.532 to 2.541 µs | 5.564 to 5.599 µs |
 
+With `--parts` the handler is an overlay part under Komorebi's own kernels
+(`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
+in one run, 6.39 µs a hop against 5.45 compiled in.
+
+## An overlay sent by name
+
+`--parts --send` gives the program two handlers as parts: `start`, the `RUN` command's,
+which every core loads at the start and which seeds the thread on rank 0, and `chain`,
+which `start` names in its send (`messages.send(0, message, kHandlerChain, body)`). No
+core holds `chain` until the thread first arrives there; the reader then loads it from
+DRAM before compute calls it. Rank 0 records the wall clock each time the thread comes
+round; the first lap holds the 11 other ranks' loads.
+
+```
+python message_body.py --count 14 --hops 1200 --bodies 4096 --parts --send
+```
+
+Card 1, 2026-11-14, one run, host load 3.7: exact; every rank loaded two handlers
+(`start`, then `chain` once), the counter tiles none. Laps of 12 hops: the first 131,822
+cycles, the later ones 104,620 to 106,168. At the clock the run gives (1,345 MHz) a later
+arrival is 8,759 cycles, 6.51 µs; a first arrival, with the load of `chain`'s three
+parts (1,408 + 1,216 + 4,608 bytes), 11,188 cycles, 8.32 µs.
+
 Moving a 4 KiB body costs a hop about 0.42 µs more on 12 cores and 0.45 µs more on the
 grid than the line alone. Changing all 1024 words on the three compute threads costs
 about 3.06 µs (a third of the body each).
+
+## A cast of a body
+
+`cast_body.py` casts a body to a group instead: the first core of each broadcast of a
+rectangle reads a 4 KiB body from DRAM into its broadcast slot and casts it, and every
+core of the broadcast, the sender too, gets it in its buffer
+([broadcast](../../docs/reference/broadcast.md)). No new call is needed: the broadcast's
+buffer has one 4 KiB page a block (`km.Buffer(0, "uint32", 4096, window)`). Each core's
+unpack thread folds every word of every body into its L1 area (`cast_fold`), and the
+host checks each core's fold against numpy; `--no-fold` only frees each body, for the
+cost of the cast alone.
+
+```
+python cast_body.py --rect 0,0,12,1 --along row             # 12 cores: two broadcasts of six
+python cast_body.py --rect 0,0,12,10 --along column         # the grid: twelve of ten
+python cast_body.py --rect 0,0,12,10 --along column --no-fold
+```
+
+Card 1, 2026-11-14, 4 jobs of 1000 casts of 8 distinct bodies, window 2, host load 3.0
+to 5.7; a cast is the job's time over its casts:
+
+| Group | Folded, every word checked | Freed unread |
+|---|---|---|
+| a row of 12 cores (two broadcasts of six) | 0 of 12 cores wrong, 12,288,000 words; 10.42 µs a cast | 1.33 µs a cast |
+| the grid, 120 cores (twelve broadcasts of ten) | 0 of 120 cores wrong, 122,880,000 words; 10.43 µs a cast | 1.39 µs a cast |
+
+A cast of 4 KiB to a row or a column costs about 1.3 to 1.4 µs; the fold of 1024 words on
+one compute thread (about 9 µs) bounds the folded runs.
+

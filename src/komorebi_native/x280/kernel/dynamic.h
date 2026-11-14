@@ -6,6 +6,34 @@
 #include "completion.h"
 #include "kernel.h"
 
+/* The run line into the X280 ranks' thread area: one 16-byte store, then a fence. */
+static inline void messages_run_store(kmd_thread_t* thread) {
+    kmd_store_chunk(
+        thread->lines + KMD_WORK_IN_DEPTH * 64u, (const uint32_t*)thread->run_line
+    );
+    x280_fence_ow();
+    thread->run_unstored = 0;
+}
+
+/* The X280 ranks' cluster learns the run's start or end (KM_X280_RUN_*): stored now
+ * if its thread serves, else once it does (its start-up writes the area over). */
+static inline void messages_run_line(kmd_t* dispatcher, uint32_t state) {
+    kmd_messages_t* run = &dispatcher->messages;
+    if (run->x280_count == 0) {
+        return;
+    }
+    kmd_thread_t* thread = &dispatcher->thread[run->x280_cluster - 1u];
+    thread->run_line[KM_X280_RUN_SEQUENCE] = run->sequence;
+    thread->run_line[KM_X280_RUN_STATE] = state;
+    thread->run_line[KM_X280_RUN_GROUP] = run->group;
+    thread->run_line[KM_X280_RUN_HANDLER] = run->run_handler;
+    if (thread->serving && thread->lines != 0) {
+        messages_run_store(thread);
+    } else {
+        thread->run_unstored = 1;
+    }
+}
+
 /* After command_submit: `line` in `slot`, for command `request` of source `source`, may
  * start the dynamic run. */
 KMD_HOT void messages_submitted(
@@ -25,6 +53,8 @@ KMD_HOT void messages_submitted(
     run->group = (uint32_t)line[1];
     run->request = request;
     run->source = source;
+    run->run_handler = (uint32_t)(line[0] >> 32) & 0xFFu;
+    messages_run_line(dispatcher, KM_X280_RUN_START);
 }
 
 /* Whether a RUN of handler `handler` must wait: a dynamic run or its end is in flight.
@@ -42,19 +72,28 @@ static inline void messages_gave(kmd_t* dispatcher, uint32_t core) {
     dispatcher->x280_cores[KMD_H_MESSAGES_GAVE] = core + 1u;
     dispatcher->slot_deadline[dispatcher->messages.slot] = 0;
     dispatcher->messages.active = 0;
+    messages_run_line(dispatcher, KM_X280_RUN_END);
+}
+
+/* The index of the run's line `index` of `lines`: the group's cores, then the X280
+ * ranks at their core indices. */
+static inline uint32_t messages_line(const kmd_messages_t* run, uint32_t index) {
+    const uint32_t first = run->group & 0xFFFFu, count = run->group >> 16;
+    return index < count ? first + index : KM_X280_RANK_CORE(index - count);
 }
 
 /* The two passes: 1 quiet, 0 not yet (a line busy, of an earlier run or changed).
- * Counter tiles are group cores like the rest: idle lines, nothing sent or consumed. */
+ * Counter tiles and X280 ranks are read as the group's other cores. */
 static inline int messages_quiet(kmd_t* dispatcher) {
     kmd_messages_t* run = &dispatcher->messages;
-    const uint32_t first = run->group & 0xFFFFu, end = first + (run->group >> 16);
+    const uint32_t lines_count = (run->group >> 16) + run->x280_count;
     volatile const uint32_t* lines = (
         (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_MESSAGES)
     );
     dispatcher->x280_cores[KMD_H_MESSAGES_CHECKS] = ++run->checks;
     x280_fence_ir();
-    for (uint32_t core = first; core < end; core++) {
+    for (uint32_t index = 0; index < lines_count; index++) {
+        const uint32_t core = messages_line(run, index);
         volatile const uint32_t* line = lines + 4u * core;
         if (line[KM_MESSAGES_LINE_RUN] != run->sequence) {
             return 0;
@@ -72,7 +111,8 @@ static inline int messages_quiet(kmd_t* dispatcher) {
     }
     x280_fence_ir();
     uint64_t sent = 0, consumed = 0;
-    for (uint32_t core = first; core < end; core++) {
+    for (uint32_t index = 0; index < lines_count; index++) {
+        const uint32_t core = messages_line(run, index);
         volatile const uint32_t* line = lines + 4u * core;
         if (
             line[KM_MESSAGES_LINE_RUN] != run->sequence ||
@@ -97,6 +137,7 @@ static inline void messages_turn(kmd_t* dispatcher) {
         dispatcher->slot_sequence[run->slot] != run->sequence
     ) {
         run->active = 0; /* the RUN completed or ended otherwise: nothing to end */
+        messages_run_line(dispatcher, KM_X280_RUN_END);
         return;
     }
     if (!messages_quiet(dispatcher)) {
@@ -122,5 +163,6 @@ static inline void messages_turn(kmd_t* dispatcher) {
     );
     run->end = slot + 1u;
     run->active = 0;
+    messages_run_line(dispatcher, KM_X280_RUN_END);
     dispatcher->x280_cores[KMD_H_MESSAGES_QUIET] = (uint32_t)now;
 }

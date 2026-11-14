@@ -1,5 +1,5 @@
-"""The map/collect kernels on a card, fed by the test feeder (KMR_CARD=1). One device
-open for the module; each test is one behaviour of the runtime on the smallest run."""
+"""The map/collect kernels on a card, fed by the test feeder (KMR_CARD=1): the
+behaviours the dispatcher's tests do not reach, each on the smallest run."""
 
 import os
 import sys
@@ -15,17 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "feeder"))
 
 import mapcollect_fed
 
-import komorebi as km
-
 pytestmark = pytest.mark.card
-CARD_IN_PROCESS = True  # opens the card in this process
 CYCLES_300MS = 405_000_000  # at 1350 MHz
-
-
-@pytest.fixture(scope="module")
-def session():
-    with km.Session() as opened_session:
-        yield opened_session
 
 
 @pytest.fixture
@@ -50,65 +41,10 @@ def ran_as_ranks(out):
     return out["ranks_bad"] == []
 
 
-def waiting(out, where):
-    """Cores named by their state words as waiting in `where`, with the sequence."""
-    return sorted(
-        (entry["core"], entry[role]["sequence"])
-        for entry in out["named"]
-        for role in ("reader", "writer")
-        if entry.get(role, {}).get("where") == where
-    )
-
-
-def test_a_fixed_group_is_exact(run):
-    out = run("--jobs", 8, "--count", 8)
-    assert out["feeder"]["status"] == "done" and out["feeder"]["exit_acked"]
-    assert out["jobs_checked"] == 8 and out["jobs_bad"] == 0
-    assert out["compute_wrong"] == 0 and every_kernel_returned(out)
-    assert ran_as_ranks(out)
-
-
 def test_a_group_across_rows_completes_through_row_leaders(run):
     out = run("--jobs", 4, "--first", 11, "--count", 14, "--row", 12)
     assert out["feeder"]["status"] == "done" and out["feeder"]["exit_acked"]
     assert out["jobs_checked"] == 4 and out["jobs_bad"] == 0
-    assert ran_as_ranks(out)
-
-
-def test_records_past_the_trace_capacity_are_counted(run):
-    out = run("--jobs", 12, "--count", 8, "--trace", "--trace-cap", 8)
-    assert out["feeder"]["status"] == "done"
-    assert out["trace_dropped"] == {core: 4 for core in range(8)}  # sequence 9 to 12
-    assert every_kernel_returned(out) and ran_as_ranks(out)
-
-
-def test_a_flagged_command_is_acknowledged_with_the_leaders_result(run):
-    out = run("--jobs", 3, "--first", 4, "--count", 8, "--result", 1)
-    assert out["feeder"]["status"] == "done" and out["feeder"]["done"] == 3
-    assert out["result"] == 0x5EED  # the leader's: a0 plus index 0
-    assert every_kernel_returned(out) and ran_as_ranks(out)
-
-
-def test_a_stalled_rank_is_named_after_the_feeder_timeout(run):
-    # Core group 4 to 23 (row leaders 4 and 12); rank 10 (core 14) stalls job 3.
-    stall = ["--stall", 3, "--stall-rank", 10, "--deadline", 0.02]
-    out = run("--jobs", 6, "--count", 20, "--first", 4, "--row", 12, *stall)
-    sequence = out["feeder"]["sequence"]
-    assert (
-        out["feeder"]["status"] == "timeout"
-        and out["timed_out"]["sequence"] == sequence
-    )
-    assert every_kernel_returned(out)
-    assert waiting(out, "stall") == [(14, sequence)]
-    assert waiting(out, "complete") == [(4, sequence), (12, sequence)]
-    assert sorted(out["not_reported"]) == [4, 12, 14]
-
-
-def test_excl_commands_on_overlapping_groups_are_never_in_flight_together(run):
-    out = run("--jobs", 12, "--groups", "overlap", "--trace", "--exclusive")
-    assert out["feeder"]["status"] == "done" and out["jobs_bad"] == 0
-    seen = out["overlapping_groups"]
-    assert seen["pairs"] > 0 and seen["together"] == 0 and out["held"] > 0
     assert ran_as_ranks(out)
 
 
@@ -118,25 +54,6 @@ def test_an_exit_naming_a_partial_group_completes_as_every_core(run):
     assert out["feeder"]["status"] == "done" and out["feeder"]["exit_acked"]
     assert out["exit"]["status"] == 1 and out["exit"]["reported_by"] == 119
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
-
-
-def test_a_command_naming_another_slot_is_not_run(run):
-    raw = ["--handler", "nop", "--raw", 0, "--raw-slot", 3, "--deadline", 0.02]
-    out = run("--jobs", 2, "--depth", 1, "--first", 10, "--count", 8, *raw)  # slot 0
-    assert out["feeder"]["status"] == "timeout" and out["feeder"]["index"] == 0
-    assert out["slot_wrong"] == {core: 1 for core in range(10, 18)}
-    assert out["runs"] == 0 and every_kernel_returned(out)
-
-
-def test_slow_compute_gives_up_and_acknowledges_nothing(run):
-    # Core 0's compute holds job 0's tile 0.3 s; the writer's wait limit is 0.1 s.
-    slow = ["--slow", 0, "--slow-rank", 0, "--slow-cycles", CYCLES_300MS]
-    out = run("--group-list", "0:1,0:1", *slow, "--wait", 0.1, "--deadline", 1.0)
-    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["sequence"] == 1
-    assert out["feeder"]["done"] == 0 and out["not_reported"] == [0]
-    assert every_kernel_returned(out)
-    writer = {entry["core"]: entry for entry in out["gave_up_busy"]}[0]["writer"]
-    assert (writer["code"], writer["where"]) == ("limit", "data")
 
 
 def test_a_leader_whose_rank_is_late_acknowledges_nothing(run):
