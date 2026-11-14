@@ -31,6 +31,9 @@ G = pl.G
 # 1,555,968), and the runtime's control block, overlay area and reader slot.
 L1_TOP_LINKED = 81_024
 L1_RUNTIME = 16_960 + 16_256
+# The kernel buffer the linear kernels' code takes (all five CPUs): one card 87,712 B;
+# two cards, with the link services in every kernel, 135,776 B.
+KERNEL_BYTES = {"one": 88 * 1024, "two": 144 * 1024}
 log = run.log
 
 
@@ -439,7 +442,9 @@ def main():
     parser.add_argument("--seconds", type=float, default=3.0)
     parser.add_argument("--wait", type=float, default=2.0, help="wait limit, s")
     parser.add_argument("--links", type=int, default=0, help="page links, two cards")
-    parser.add_argument("--kernel-bytes", type=int, default=None, help="kernel buffer")
+    parser.add_argument(
+        "--kernel-bytes", type=int, default=None, help="kernel buffer (default: own)"
+    )
     parser.add_argument(
         "--beside", action="store_true", help="then the project's grid kernels"
     )
@@ -457,7 +462,8 @@ def main():
     log("building the inputs")
     x_matrix, w_matrix = ref.inputs(*dimensions, kind=args.inputs)
     log("inputs built")
-    options = {"links": args.links, "kernel_bytes": args.kernel_bytes}
+    kernel_bytes = args.kernel_bytes or KERNEL_BYTES["two" if len(cards) > 1 else "one"]
+    options = {"links": args.links, "kernel_bytes": kernel_bytes}
     options = {key: value for key, value in options.items() if value}
     with km.Session(cards=cards, log=log, **options) as session:
         started = time.perf_counter()

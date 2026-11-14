@@ -196,34 +196,56 @@ void kernel_main() {
                             return false;
                         }
                         uint32_t source = get_read_ptr(out);
+                        const uint32_t column = block_column + subblock_column;
+                        const uint32_t left = (
+                            column < column_end ? column_end - column : 0
+                        );
                         for (
                             uint32_t tile_row = 0; tile_row < subblock_height;
                             ++tile_row
                         ) {
+                            // the row's tiles: pages page .. of Y (or P), Y's here
+                            // at consecutive indices when its part holds them all
+                            const uint32_t row = block_row + subblock_row + tile_row;
+                            const uint32_t columns = (
+                                row >= row_end
+                                    ? 0
+                                    : left < subblock_width
+                                        ? left
+                                        : subblock_width
+                            );
+                            const uint32_t page = row * n_whole + mine.n0 + column;
+                            const bool home = (
+                                whole && columns != 0 && y_here.holds(page, columns)
+                            );
+                            const uint32_t index = home ? y_here.index(page) : 0;
                             for (
                                 uint32_t tile_column = 0; tile_column < subblock_width;
                                 ++tile_column
                             ) {
-                                const uint32_t row = (
-                                    block_row + subblock_row + tile_row
-                                );
-                                const uint32_t column = (
-                                    block_column + subblock_column + tile_column
-                                );
-                                const uint32_t page = row * n_whole + mine.n0 + column;
-                                if (row < row_end && column < column_end) {
+                                if (tile_column < columns) {
                                     if (!whole) {
-                                        noc_async_write_page(page, p_matrix, source);
-                                    } else if (km::island_of(y, page) == here) {
                                         noc_async_write_page(
-                                            y_here.index(page), y_matrix, source
+                                            page + tile_column, p_matrix, source
+                                        );
+                                    } else if (home) {
+                                        noc_async_write_page(
+                                            index + tile_column, y_matrix, source
+                                        );
+                                    } else if (
+                                        km::island_of(y, page + tile_column) == here
+                                    ) {
+                                        noc_async_write_page(
+                                            y_here.index(page + tile_column),
+                                            y_matrix,
+                                            source
                                         );
                                     } else if (!km::write_pages(
                                         writer,
                                         command,
                                         y_args,
                                         y,
-                                        page,
+                                        page + tile_column,
                                         1,
                                         source,
                                         kPortY
@@ -268,24 +290,27 @@ void kernel_main() {
                                 ? mine.k_tiles - k_start
                                 : k_block_tiles
                         );
-                        for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
-                            // W's rows this island holds: read here
-                            const uint32_t page = (
-                                (mine.k0 + k_start + k_tile) * n_whole + mine.n0 +
-                                block_column
+                        const uint32_t left =
+                            (  // of this island's columns
+                                block_column < mine.n_tiles
+                                    ? mine.n_tiles - block_column
+                                    : 0
                             );
-                            const uint32_t left =
-                                (  // of this island's columns
-                                    block_column < mine.n_tiles
-                                        ? mine.n_tiles - block_column
-                                        : 0
-                                );
-                            const uint32_t columns = (
-                                left < block_width ? left : block_width
+                        const uint32_t columns = (
+                            left < block_width ? left : block_width
+                        );
+                        for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
+                            // W's rows this island holds, read here: a row's tiles
+                            // at consecutive indices of its part
+                            const uint32_t index = (
+                                w_here.index(
+                                    (mine.k0 + k_start + k_tile) * n_whole + mine.n0 +
+                                    block_column
+                                )
                             );
                             for (uint32_t column = 0; column < columns; ++column) {
                                 noc_async_read_page(
-                                    w_here.index(page + column),
+                                    index + column,
                                     w_matrix,
                                     base + (k_tile * block_width + column) * kBf16Bytes
                                 );

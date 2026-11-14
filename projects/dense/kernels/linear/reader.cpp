@@ -42,6 +42,8 @@ void kernel_main() {
             const uint32_t k_blocks = blocks_of(mine.k_tiles, k_block_tiles);
             const uint32_t blocks_high = plan(kPlNbh), blocks_wide = plan(kPlNbw);
             const uint32_t first_row = core(kCoreM0);
+            const Holding x_here = holding(x, here, m_tiles * k_whole);
+            const auto x_matrix = TensorAccessor(x_args, x_here.address);
             uint32_t step = 0;
             for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
                 const uint32_t block_row = (
@@ -69,18 +71,29 @@ void kernel_main() {
                         tile_row < block_height && block_row + tile_row < m_tiles;
                         ++tile_row
                     ) {
-                        // a row of X where it lives: here, or asked of its island
+                        // a row of X where it lives: here, its part's consecutive
+                        // pages read; else km::read_pages (asked of its island)
                         const uint32_t page = (
                             (block_row + tile_row) * k_whole + mine.k0 + k_start
                         );
-                        if (!km::read_pages(
+                        const uint32_t to = (
+                            base + tile_row * k_block_tiles * kBf16Bytes
+                        );
+                        if (x_here.holds(page, k_length)) {
+                            const uint32_t index = x_here.index(page);
+                            for (uint32_t k = 0; k < k_length; ++k) {
+                                noc_async_read_page(
+                                    index + k, x_matrix, to + k * kBf16Bytes
+                                );
+                            }
+                        } else if (!km::read_pages(
                             reader,
                             command,
                             x_args,
                             x,
                             page,
                             k_length,
-                            base + tile_row * k_block_tiles * kBf16Bytes,
+                            to,
                             kPortX
                         )) {
                             return;

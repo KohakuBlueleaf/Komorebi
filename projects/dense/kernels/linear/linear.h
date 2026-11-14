@@ -81,6 +81,16 @@ struct Holding {
         const uint32_t block = page / (all * inner), step = page / inner % all;
         return (block * steps + step - first) * inner + page % inner;
     }
+
+    // Whether pages page .. page + count - 1 are all of the part, so at consecutive
+    // indices from index(page).
+    bool holds(uint32_t page, uint32_t count) const {
+        const uint32_t last = page + count - 1, span = all * inner;
+        return (
+            page / span == last / span && page / inner % all - first < steps &&
+            last / inner % all - first < steps
+        );
+    }
 };
 
 inline Holding holding(uint32_t tensor, uint32_t at, uint32_t pages) {
