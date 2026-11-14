@@ -105,7 +105,14 @@ inline uint32_t jobs_end(const km_command_t& command, uint32_t jobs) {
 constexpr uint32_t kArgBroadcast = 0;
 constexpr uint32_t kArgWindow = 0;
 
+// The ports operand pages another island holds are counted at: the reader's, the
+// writer's.
+constexpr uint32_t kAskPortReader = 0;
+constexpr uint32_t kAskPortWriter = 1;
+
 #if !defined(COMPILE_FOR_TRISC)
+
+#include "komorebi/device/km_ask.hpp"
 
 // Timed wait until this kernel's reads have landed (km::kFlushReads) or its writes
 // have left L1 (km::kFlushSent); a give-up goes into state word `word`.
@@ -148,15 +155,20 @@ inline bool read_table(
 }
 
 // Sender: K tiles [block_start, block_start + keys_in_block) of every head-dim tile
-// (head-tile-major) and their V rows (key-major) into the block at `address`.
+// (head-tile-major), then their V rows, into `address` (km::read_pages). False: gave
+// up.
 template <
     uint32_t HEAD_TILES,
     uint32_t VALUE_TILES,
     uint32_t BLOCK_KEYS,
-    typename Accessor>
-void read_kv(
-    const Accessor& keys,
-    const Accessor& values,
+    typename Keys,
+    typename Values>
+bool read_kv(
+    const km::Core& core,
+    const km_command_t& command,
+    uint32_t port,
+    const Keys& keys,
+    const Values& values,
     uint32_t first_key_page,
     uint32_t first_value_page,
     uint32_t block_start,
@@ -165,36 +177,50 @@ void read_kv(
 ) {
     for (uint32_t key = 0; key < keys_in_block; ++key) {
         for (uint32_t head_tile = 0; head_tile < HEAD_TILES; ++head_tile) {
-            noc_async_read_page(
-                first_key_page + (block_start + key) * HEAD_TILES + head_tile,
+            if (!km::read_pages(
+                core,
+                command,
                 keys,
-                address + (head_tile * BLOCK_KEYS + key) * kTileBytes
-            );
+                first_key_page + (block_start + key) * HEAD_TILES + head_tile,
+                1,
+                address + (head_tile * BLOCK_KEYS + key) * kTileBytes,
+                port
+            )) {
+                return false;
+            }
         }
     }
     for (uint32_t key = 0; key < keys_in_block; ++key) {
-        for (uint32_t column = 0; column < VALUE_TILES; ++column) {
-            noc_async_read_page(
-                first_value_page + (block_start + key) * VALUE_TILES + column,
-                values,
-                address +
-                    (HEAD_TILES * BLOCK_KEYS + key * VALUE_TILES + column) * kTileBytes
-            );
+        if (!km::read_pages(
+            core,
+            command,
+            values,
+            first_value_page + (block_start + key) * VALUE_TILES,
+            VALUE_TILES,
+            address + (HEAD_TILES * BLOCK_KEYS + key * VALUE_TILES) * kTileBytes,
+            port
+        )) {
+            return false;
         }
     }
+    return true;
 }
 
 // One job's K / V blocks through the broadcast (`job_words`; `blocks`, `counters`):
-// the sender reads and multicasts, a receiver waits. False: gave up.
+// the sender reads (asks at `port`) and multicasts, a receiver waits. False: gave up.
 template <
     uint32_t HEAD_TILES,
     uint32_t VALUE_TILES,
     uint32_t BLOCK_KEYS,
-    typename Accessor>
+    typename Keys,
+    typename Values>
 bool broadcast_job(
+    const km::Core& core,
+    const km_command_t& command,
+    uint32_t port,
     km::Broadcast& broadcast,
-    const Accessor& keys,
-    const Accessor& values,
+    const Keys& keys,
+    const Values& values,
     const volatile tt_l1_ptr uint32_t* job_words,
     uint32_t& blocks,
     uint32_t* counters
@@ -222,7 +248,10 @@ bool broadcast_job(
         const uint32_t keys_in_block = (
             key_tiles - block_start < BLOCK_KEYS ? key_tiles - block_start : BLOCK_KEYS
         );
-        read_kv<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
+        if (!read_kv<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
+            core,
+            command,
+            port,
             keys,
             values,
             first_key_page,
@@ -230,7 +259,9 @@ bool broadcast_job(
             block_start,
             keys_in_block,
             address
-        );
+        )) {
+            return false;
+        }
         const uint32_t read_issued = km::wall();
         if (!broadcast.cast(blocks)) {
             return false;

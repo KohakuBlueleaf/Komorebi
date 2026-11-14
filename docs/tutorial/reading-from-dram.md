@@ -34,18 +34,18 @@ program = km.Program(
     kernels=FOLDER,
     handlers=HEADER,
     buffers=[km.Buffer(index=INDEX, format=DTYPE, page_bytes=BYTES, pages=PAGES)],
-    compile_args={"reader": TENSOR.accessor_args()},
+    compile_args={"reader": TENSOR.tensor_args()},
 )
 ```
 
 In `reader.cpp`:
 
 ```cpp
-constexpr auto ARGUMENTS = TensorAccessorArgs<0>();
+using Tensor = km::Tensor<0>;
 ...
-const auto tensor = TensorAccessor(ARGUMENTS, ADDRESS);
+const Tensor tensor(ADDRESS);
 reader.reserve(INDEX, PAGES);
-noc_async_read_page(TILE, tensor, get_write_ptr(INDEX));
+km::read_pages(reader, command, tensor, TILE, PAGES, get_write_ptr(INDEX), PORT);
 noc_async_read_barrier();
 cb_push_back(INDEX, PAGES);
 ```
@@ -55,14 +55,19 @@ cb_push_back(INDEX, PAGES);
   for the tiles of the last lesson. `PAGES` is how many tiles fit; this lesson uses one.
   The `cb_` in the C++ names below belongs to the kind of buffer that
   [[circular-buffers]] explains. For now a buffer is a numbered room in L1.
-- `compile_args` hands the kernel what it needs to find the tensor's pages. In the
-  kernel, `TensorAccessorArgs<0>()` receives it, and `TensorAccessor(ARGUMENTS, ADDRESS)`
-  is an object that turns a tile number into a place in DRAM. `ADDRESS` is where the
-  tensor starts. Python has it as `tensor.address`; it travels in a command argument.
+- `compile_args` hands the kernel what it needs to find the tensor's pages: their layout
+  in DRAM and which card holds which of them. In the kernel, `km::Tensor<0>` receives it
+  (from compile argument 0 on), and `Tensor(ADDRESS)` is the tensor the page calls take.
+  `ADDRESS` is where the tensor starts. Python has it as `tensor.address`; it travels in
+  a command argument.
 - `reader.reserve(INDEX, PAGES)` waits until the buffer has room for `PAGES` tiles.
-- `noc_async_read_page(TILE, tensor, where)` starts a copy of tile number `TILE` of the
-  tensor to the L1 address `where`. `get_write_ptr(INDEX)` is the address of the room in
-  the buffer. The call returns at once; the copy goes on.
+- `km::read_pages(reader, command, tensor, TILE, PAGES, where, PORT)` starts a copy of
+  `PAGES` tiles from tile number `TILE` of the tensor to the L1 address `where`.
+  `get_write_ptr(INDEX)` is the address of the room in the buffer. The call returns at
+  once; the copy goes on. On one card it is exactly tt-metal's `noc_async_read_page`,
+  once a tile. When the session spans two cards and another card holds a tile, the
+  call asks that card for it and waits for it, counted at port `PORT` ([[port]]); the
+  kernel is the same either way. It returns false if it gave up.
 - `noc_async_read_barrier()` waits until every copy that was started is finished.
 - `cb_push_back(INDEX, PAGES)` says "these tiles are now in the buffer". Whoever waits
   for them is let through.
@@ -97,7 +102,7 @@ buffer holds one tile of 4096 bytes in the format of the tensor.
 --8<-- "tutorial/16_reading_from_dram/kernels/reader.cpp:run"
 ```
 
-The command's arguments say which tensor and which tile. `reader.cpp` makes the accessor,
+The command's arguments say which tensor and which tile. `reader.cpp` makes the tensor,
 waits for room, starts the copy, waits for it to finish, and announces the tile.
 
 ```{ .cpp }
@@ -155,8 +160,11 @@ agree; beyond them a tile keeps its numbers in four blocks of 16 x 16.
 
 ## Common mistakes
 
-- Starting the copy and not waiting. `noc_async_read_page` returns at once, and without
+- Starting the copy and not waiting. `km::read_pages` returns at once, and without
   `noc_async_read_barrier()` the tile may not be in L1 yet when it is used.
+- Calling tt-metal's `noc_async_read_page` directly. It works on one card, but it reads
+  only the DRAM of the core's own card: on two cards a tile the other card holds is
+  never read.
 - Typing `page_bytes` by hand. It must be the size of one tile of the tensor; write
   `source.page_bytes` instead of 4096 and it cannot go wrong when the dtype changes.
 - Forgetting `cb_pop_front` in `writer.cpp`. The first command works. The second finds the

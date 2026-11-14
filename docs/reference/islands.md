@@ -217,6 +217,42 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   | 118 asks a round (one a rank), connections held | 3,009.1 | 170.5 |
   | 118 asks a round, a connection opened and closed by each command | 3,132.5 | 169.9 |
 
+## A kernel's page reads and writes
+
+A kernel reads and writes a tensor's pages through Komorebi's calls, never tt-metal's
+own page calls: a page read through `noc_async_read_page` reads its own island's DRAM
+only, so a kernel that calls it works on one card and reads zeros for a page another
+island holds. The calls (`km_ask.hpp`) take the tensor as one object:
+
+```c++
+using Input = km::Tensor<0>;  // compile arguments from 0 on: tensor_args()
+using Output = km::Tensor<Input::next_compile_time_args_offset()>;
+
+const Input input(command.a0);  // the tensor's address
+if (!km::read_pages(core, command, input, first, pages, to, kAskPort)) return;
+noc_async_read_barrier();
+if (!km::write_pages(core, command, output, first, pages, from, kAskPort)) return;
+```
+
+| Call | What it does |
+|---|---|
+| `km::Tensor<offset>` | a tensor's accessor, its placement and its address, from the compile arguments the host's `tensor.tensor_args()` gives (`accessor_args()` then `placement_args()`); `next_compile_time_args_offset()` for the next one |
+| `km::read_pages(core, command, tensor, first, pages, to, port)` | pages `first` .. `first + pages - 1` into L1 `to` on, page k at `to` + k aligned pages; on the reader or the writer (`core`: its `km::Reader` or `km::Writer`); the pages another island holds asked for and waited for, counted at `port` (one port a CPU that asks). False: gave up |
+| `km::write_pages(core, command, tensor, first, pages, from, port)` | pages `first` .. from L1 `from` on; a page another island holds ends the command, nothing written (`not_across`, the island in the word's top byte; `port` is for the write across, unused until it is built). False: gave up |
+| `km::Stream` | a stream over a `km::Tensor` reads and writes through these calls ([Movement](movement.md#a-stream-over-islands)) |
+
+When the placement says this island holds every page (one island, or a copy), each call
+compiles to exactly tt-metal's page call it replaces, `noc_async_read_page` or
+`noc_async_write_page` once a page, and `port` is unused. The reader asks with the
+link area's own line and answer words; the writer with the first ask line's place,
+which only link core 0 holds lines in. The reader's form with a `km::Placement`, an
+accessor and an address stays (example 01).
+
+The examples and projects whose kernels read or write a tensor's pages use these calls:
+06, 07 and 09 (the reader), 11, 15, 17, 19, 22, 23, the dense project's grid and K-split
+forms, and attention. Example 11's `islands.py` runs the movement stream on island 0's
+cores over an input island 1 holds alone.
+
 ## Measured
 
 Two Blackhole p150a cards joined by four Ethernet links, one process, example 01's
@@ -255,4 +291,9 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   islands are not built.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
+- A kernel's write of a page another island holds (`km::write_pages` ends the command);
+  a write of part of a page (example 09's writer), a tensor read by an address the
+  kernel builds itself (`InterleavedAddrGen`: profile pages, job tables, the raster and
+  ray tracer projects), and the dense project's resident and streamed forms, whose
+  operands share one layout argument, do not cross.
 - More than two cards: the mesh opens 1 x n; tried with two.

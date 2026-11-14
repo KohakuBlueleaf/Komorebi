@@ -88,6 +88,14 @@ def split_program(sp, tensors, pattern):
         k: SPLIT_KERNELS / f"{k}.cpp" for k in ("reader", "writer", "compute")
     }
     made.defines = {"CHUNK_PATTERN": km.Pattern(pattern).word}
+    made.compile_args = {  # these kernels take the accessors alone
+        "reader": tensors["a"].accessor_args() + tensors["w"].accessor_args(),
+        "writer": (
+            tensors["y"].accessor_args()
+            + tensors["a"].accessor_args()
+            + tensors["w"].accessor_args()
+        ),
+    }
     return made
 
 

@@ -31,7 +31,7 @@ program = km.Program(
         km.BufferPair(0, 1, "bfloat16", 2048, pages=64),  # input: mover A's, mover B's
         km.BufferPair(16, 17, "bfloat16", 2048, pages=32),  # output
     ],
-    compile_args={"movement": tensor.accessor_args()},
+    compile_args={"movement": source.tensor_args() + target.tensor_args()},
     handlers="kernels/movement.h",  # kHandlerRead = 1, kHandlerCopy = 2
 )
 pattern = km.Pattern("AAAB")
@@ -40,11 +40,12 @@ run.submit("read", group=(0, cores), args=[address, 0, 256, 16, pattern.word, 1]
 
 ```c++
 // movement.cpp, the same source on both movers
+using Input = km::Tensor<0>;  // the input's tensor_args(), then the output's
 km::Movement movement;
 movement.run([&](const km_command_t& command) {
-    const km::Stream read(km::kMoveRead, TensorAccessor(arguments, command.a0),
-                          rank * tiles, tiles, tiles_per_block, repetitions, kInput,
-                          km::Pattern::of(command.a4));
+    const km::Stream read(km::kMoveRead, Input(command.a0), rank * tiles, tiles,
+                          tiles_per_block, repetitions, kInput,
+                          km::Pattern::of(command.a4), kAskPort);
     return movement.move(read);  // this mover's blocks of the stream
 });
 
@@ -60,6 +61,7 @@ const uint32_t half = km::block_half(kInput, pattern, block);
 | `kernels/compute.cpp` | takes the blocks in order; `COPY` copies each through the vector unit's registers |
 | `kernels/movement.h` | handlers, the buffer indices of the two pairs and the command arguments |
 | `movement.py` | checks the copies, times the reads, prints one line a pattern and one JSON line |
+| `islands.py` | the same kernels over two cards: island 0's cores copy and read an input island 1 holds alone ([Islands](../../docs/reference/islands.md#a-kernels-page-reads-and-writes)) |
 
 ## What it needs
 

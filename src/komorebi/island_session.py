@@ -112,6 +112,11 @@ class IslandTensor:
             raise KomorebiError("the islands' accessor arguments differ")
         return args[0]
 
+    def tensor_args(self):
+        """What km::Tensor reads (compile arguments): the accessor's, then the
+        placement's; what a kernel's page calls (km::read_pages) take."""
+        return self.accessor_args() + self.placement_args()
+
     def holders(self, first, pages):
         """[(island, first, pages)] of the pages first .. first + pages - 1 by the
         island that holds each (a copy: island 0)."""

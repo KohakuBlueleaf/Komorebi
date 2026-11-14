@@ -251,6 +251,11 @@ def main():
     parser.add_argument(
         "--b-moved", action="store_true", help="B on island 0 only, moved each call"
     )
+    parser.add_argument(
+        "--b-far",
+        action="store_true",
+        help="B on island 0 only, read by island 1's cores across the link",
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     dimensions = run.SHAPES[args.shape] if args.shape else (args.m, args.k, args.n)
@@ -262,6 +267,7 @@ def main():
     m_rows, k_depth, n_columns = dimensions
     report = {"shape": args.shape, "m": m_rows, "k": k_depth, "n": n_columns}
     report |= {"cards": cards, "links": args.links, "b_moved": args.b_moved}
+    report["b_far"] = args.b_far
     log("building the inputs")
     a_matrix, w_matrix = ref.inputs(m_rows, k_depth, n_columns, kind=args.inputs)
     log("inputs built")
@@ -272,7 +278,7 @@ def main():
         tensors = {}
         for name, value, placement in (
             ("a", a_matrix, {"by": "island"}),
-            ("w", w_matrix, w_placement(session, args.b_moved)),
+            ("w", w_matrix, w_placement(session, args.b_moved or args.b_far)),
             ("y", y_matrix, {"by": "island"}),
         ):
             tensors[name] = session.tensor(value, "bfloat16", "tile", **placement)

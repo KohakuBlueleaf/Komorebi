@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 
+#include <type_traits>
+
 #include "km_core.hpp"
 #include "km_worker.hpp"
 
@@ -82,6 +84,8 @@ namespace km {
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
+#include "km_ask.hpp"
+
 namespace km {
 
 #if defined(COMPILE_FOR_BRISC)
@@ -139,8 +143,35 @@ namespace km {
         }
     };
 
-    // One stream: a direction, a tensor, its blocks, how often they repeat, the pair
-    // that holds them and the pattern that deals them to the movers.
+    // What a stream keeps of a tensor: a km::Tensor whose island holds every page, its
+    // accessor (one island: the stream is the plain one); else the tensor itself.
+    template <typename T>
+    struct StreamTensorOf {
+        using Type = T;
+    };
+
+    template <uint32_t Base>
+    struct StreamTensorOf<Tensor<Base>> {
+        using Type = std::conditional_t<
+            Tensor<Base>::kLocal,
+            typename Tensor<Base>::Accessor,
+            Tensor<Base>>;
+    };
+
+    template <typename T>
+    using StreamTensor = typename StreamTensorOf<T>::Type;
+
+    template <typename Kept, typename T>
+    inline const Kept& kept_tensor(const T& tensor) {
+        if constexpr (std::is_same_v<Kept, T>) {
+            return tensor;
+        } else {
+            return tensor.accessor;
+        }
+    }
+
+    // One stream: direction, tensor (a km::Tensor or a local accessor), blocks,
+    // repetitions, pair, pattern; asks count at `port` (mover A) and port + 1 (B).
     template <typename Accessor>
     struct Stream {
         uint32_t direction;
@@ -149,33 +180,39 @@ namespace km {
         uint32_t repetitions;
         BufferPair pair;
         Pattern pattern;
+        uint32_t port;
 
+        template <typename T>
         Stream(
             uint32_t direction,
-            const Accessor& tensor,
+            const T& tensor,
             const Walk& walk,
             uint32_t repetitions,
             BufferPair pair,
-            Pattern pattern
+            Pattern pattern,
+            uint32_t port = 0
         ) :
             direction(direction),
-            tensor(tensor),
+            tensor(kept_tensor<Accessor>(tensor)),
             walk(walk),
             repetitions(repetitions),
             pair(pair),
-            pattern(pattern) {
+            pattern(pattern),
+            port(port) {
         }
 
         // The plain case: `tiles` pages from `first_page`, `repetitions` times.
+        template <typename T>
         Stream(
             uint32_t direction,
-            const Accessor& tensor,
+            const T& tensor,
             uint32_t first_page,
             uint32_t tiles,
             uint32_t tiles_per_block,
             uint32_t repetitions,
             BufferPair pair,
-            Pattern pattern
+            Pattern pattern,
+            uint32_t port = 0
         ) :
             Stream(
                 direction,
@@ -183,10 +220,14 @@ namespace km {
                 Walk::run(first_page, tiles, tiles_per_block),
                 repetitions,
                 pair,
-                pattern
+                pattern,
+                port
             ) {
         }
     };
+
+    template <typename T, typename... Rest>
+    Stream(uint32_t, const T&, Rest...) -> Stream<StreamTensor<T>>;
 
     // What one mover spent in a move: tiles moved, cycles in passes that moved a block.
     struct Moved {
@@ -270,9 +311,12 @@ namespace km {
         return true;
     }
 
-    // Issues the page reads or writes of the cursor's block at this mover's half.
+    // Issues the cursor's block at this mover's half (a tensor that may cross: a row at
+    // a time through km::read_pages, km::write_pages). False: gave up (recorded).
     template <typename Accessor>
-    inline void move_issue(const Stream<Accessor>& stream, const MoveCursor& cursor) {
+    inline bool move_issue(
+        const Core& core, const Stream<Accessor>& stream, const MoveCursor& cursor
+    ) {
         const Walk& walk = stream.walk;
         const uint32_t buffer = stream.pair.half(kMover);
         const uint32_t page_bytes = get_local_cb_interface(buffer).fifo_page_size;
@@ -281,25 +325,67 @@ namespace km {
         const uint32_t columns = last ? walk.last_columns : walk.columns;
         const bool read = stream.direction == kMoveRead;
         const uint32_t base = read ? get_write_ptr(buffer) : get_read_ptr(buffer);
-        for (uint32_t row = 0; row < rows; row++) {
-            uint32_t page = cursor.page + row * walk.row_step;
-            uint32_t address = base + row * walk.row_pitch * page_bytes;
-            for (uint32_t column = 0; column < columns; column++) {
-                if (read) {
-                    noc_async_read_page(page, stream.tensor, address);
-                } else {
-                    noc_async_write_page(page, stream.tensor, address);
+        if constexpr (kMayCross<Accessor>) {
+            const uint32_t slot = core.running_slot();
+            const uint32_t sequence = core.running_sequence();
+            const uint32_t port = stream.port + kMover;
+            // a row of consecutive pages is one call; else one call a page
+            const uint32_t run = walk.column_step == 1 ? columns : 1;
+            for (uint32_t row = 0; row < rows; row++) {
+                uint32_t page = cursor.page + row * walk.row_step;
+                uint32_t address = base + row * walk.row_pitch * page_bytes;
+                for (uint32_t column = 0; column < columns; column += run) {
+                    if (!(read ? read_pages_at(
+                        core,
+                        slot,
+                        sequence,
+                        stream.tensor,
+                        page,
+                        run,
+                        address,
+                        port
+                    )
+                               : write_pages_at(
+                                   core,
+                                   slot,
+                                   sequence,
+                                   stream.tensor,
+                                   page,
+                                   run,
+                                   address,
+                                   port
+                               ))) {
+                        return false;
+                    }
+                    page += run * walk.column_step;
+                    address += run * page_bytes;
                 }
-                page += walk.column_step;
-                address += page_bytes;
             }
+            return true;
+        } else {
+            const auto& tensor = accessor_of(stream.tensor);
+            for (uint32_t row = 0; row < rows; row++) {
+                uint32_t page = cursor.page + row * walk.row_step;
+                uint32_t address = base + row * walk.row_pitch * page_bytes;
+                for (uint32_t column = 0; column < columns; column++) {
+                    if (read) {
+                        noc_async_read_page(page, tensor, address);
+                    } else {
+                        noc_async_write_page(page, tensor, address);
+                    }
+                    page += walk.column_step;
+                    address += page_bytes;
+                }
+            }
+            return true;
         }
     }
 
     // One pass over a stream: if this mover has a block left and its half has room
-    // (reads) or data (writes), takes the item and issues the block. False: bad item.
+    // (reads) or data (writes), takes the item and issues the block. False: gave up.
     template <typename Accessor>
     inline bool move_offer(
+        const Core& core,
         const Stream<Accessor>& stream,
         const MoveCursor& cursor,
         bool& issued,
@@ -331,9 +417,8 @@ namespace km {
             cb_wait_front(buffer, pages);
             writes = true;
         }
-        move_issue(stream, cursor);
         issued = true;
-        return true;
+        return move_issue(core, stream, cursor);
     }
 
     // After the barrier: push (reads) or pop (writes) an issued block, go to the next.
@@ -427,6 +512,7 @@ namespace km {
                 (
                     fine = fine &&
                         move_offer(
+                            core,
                             streams,
                             cursors[index],
                             issued[index],

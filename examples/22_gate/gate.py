@@ -39,8 +39,9 @@ def parse():
     return args
 
 
-def program(tensor):
-    """Three pairs of buffers, a, b and out: four blocks of tiles in each half."""
+def program(tensors):
+    """Three pairs of buffers, a, b and out: four blocks of tiles in each half; the
+    tensor arguments of a, b and out."""
     pages = 4 * CONSTANTS["kBlock"]
     return km.Program(
         "gate",
@@ -68,7 +69,9 @@ def program(tensor):
                 pages,
             ),
         ],
-        compile_args={"movement": tensor.accessor_args()},
+        compile_args={
+            "movement": [word for tensor in tensors for word in tensor.tensor_args()]
+        },
         handlers=HEADER,
     )
 
@@ -101,7 +104,7 @@ def main():
         a, b = session.tensor(a_bits, "uint16"), session.tensor(b_bits, "uint16")
         out = session.tensor(np.zeros_like(a_bits), "uint16")
         log("tensors written")
-        run = session.load(program(a))
+        run = session.load(program((a, b, out)))
         try:
             words = [a.address, b.address, out.address, args.tiles, args.pattern.word]
             event = run.wait(run.submit("gate", (0, cores), words), timeout=30.0)

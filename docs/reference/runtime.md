@@ -293,6 +293,7 @@ of each kernel is kept, because it names the cause. The host decodes the words w
 | 3 (`kGaveBadItem`) | `bad_item` | an item of several pages would pass the buffer's end, or a buffer is too small for its schedule; nothing was accessed |
 | 4 (`kGaveBadBroadcast`) | `bad_broadcast` | a broadcast's arguments do not fit the command |
 | 7 (`kGaveDeadline`) | `deadline` | the dispatcher gave the command up at its deadline: the run goes on |
+| 8 (`kGaveNotAcross`) | `not_across` | a write of a page another island holds (`km::write_pages`): nothing was written; the top byte names that island |
 
 | Where | Name | Kernel: waiting for |
 |---|---|---|

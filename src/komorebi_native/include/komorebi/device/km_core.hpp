@@ -70,6 +70,8 @@ namespace km {
     // The dispatcher gave the command up at its deadline (its abort word): the kernels
     // leave its body, clear what it left and take the next command.
     constexpr uint32_t kGaveDeadline = 7;
+    // A write of a page another island holds: nothing written (no write across yet).
+    constexpr uint32_t kGaveNotAcross = 8;
     constexpr uint32_t kWhereCheckin = 1;   // leader collecting start-up check-ins
     constexpr uint32_t kWhereToken = 2;     // reader waiting for free token pages
     constexpr uint32_t kWhereNext = 3;      // reader waiting for a command

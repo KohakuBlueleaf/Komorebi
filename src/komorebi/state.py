@@ -17,6 +17,7 @@ GAVES = {
     "Overlay": "overlay",
     "BadTransfer": "bad_transfer",
     "Deadline": "deadline",
+    "NotAcross": "not_across",
 }  # kGave*
 WHERES = (
     "Checkin",

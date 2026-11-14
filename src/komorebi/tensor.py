@@ -61,6 +61,11 @@ class Tensor:
         island holding every page, as an island session's tensor on one island."""
         return [1, 0, 0, self.pages]
 
+    def tensor_args(self):
+        """What km::Tensor reads (compile arguments): the accessor's, then the
+        placement's; what a kernel's page calls (km::read_pages) take."""
+        return self.accessor_args() + self.placement_args()
+
     def write(self, data):
         """Writes `data` (this shape) over the whole buffer, once the cores of a
         launched program are done."""
