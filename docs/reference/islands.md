@@ -96,6 +96,17 @@ written for islands runs on one card unchanged.
   load checks each build against the buffer: one that does not fit raises
   `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
   is launched. `kernel_bytes` sets another size at the open.
+- **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
+  `session: ...`: the own words (`KM_OWN_BYTES`, 256 bytes: each data-movement CPU's
+  scratch for an ask, a put line and a relay ask, and the relay's done word), the
+  tensor table (48 bytes an entry on two islands, as many entries as the tensors held
+  at the load, in steps of 4; a tensor made while a run lives takes a free entry) and
+  a dynamic run's message region. When the link cores run the link kernels, the link
+  area and the relay (48,192 bytes) are theirs alone: at the base of their circular
+  buffers, zeroed by the host at the load (`write_l1`, just before the launch), the
+  ranks' buffers launched apart; the link cores take no overlay slots. Otherwise (a
+  program with messages, a split card, a program placed by overlays) both are
+  session tensors on every core, rows of the table too.
 - A link core is named outside the ranks: a command's group with first
   `KM_GROUP_LINK_BASE + k` and count n names link cores k to k + n - 1 of the island
   that takes it (`graph.link_group(island, k, n)`). Such a group is never cut by

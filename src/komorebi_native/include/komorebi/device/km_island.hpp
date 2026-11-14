@@ -22,24 +22,37 @@ namespace km {
     template <int = 0>
     const volatile uint32_t* island_area();
 
-    // An island area viewed through its header and its table.
+    // An island area viewed through its header and its table; a card of its own
+    // (KM_ONE_ISLAND) knows them at build time: island 0 of 1, no link area or tables.
     class Islands {
     public:
         explicit Islands(const volatile uint32_t* area) : area_(area) {
         }
 
         uint32_t here() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
             return area_[KM_ISLAND_HERE];
+#endif
         }
 
         // Islands in the table; a block the host wrote no table into is one island.
         uint32_t count() const {
+#if defined(KM_ONE_ISLAND)
+            return 1;
+#else
             const uint32_t count = area_[KM_ISLAND_COUNT];
             return count == 0 ? 1 : count;
+#endif
         }
 
         uint32_t first() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
             return area_[KM_ISLAND_FIRST];
+#endif
         }
 
         // This island's ranks; 0 when no table was written (every rank is here).
@@ -49,7 +62,11 @@ namespace km {
 
         // Its first core of the card (a card split into islands); 0 on a whole card.
         uint32_t base() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
             return area_[KM_ISLAND_BASE];
+#endif
         }
 
         // The flat rank of core 0 (first - base, modulo 2^32): rank = this + core.
@@ -59,12 +76,29 @@ namespace km {
 
         // The link area's L1 address on this island's cores; 0: none (no links).
         uint32_t link_area() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
             return area_[KM_ISLAND_LINK_AREA / 4];
+#endif
+        }
+
+        // The own words' L1 address on this island's cores; 0: none (no links).
+        uint32_t own_words() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
+            return area_[KM_ISLAND_OWN / 4];
+#endif
         }
 
         // The tensor table's L1 address on this island's cores; 0: none (one island).
         uint32_t tensors() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
             return area_[KM_ISLAND_TENSORS / 4];
+#endif
         }
 
         uint32_t entry_first(uint32_t island) const {
@@ -80,16 +114,23 @@ namespace km {
         }
 
         uint32_t hops(uint32_t island) const {
+#if defined(KM_ONE_ISLAND)
+            return static_cast<void>(island), 0;
+#else
             return (
                 island < count() && area_[KM_ISLAND_COUNT] != 0
                     ? byte(island, kIslandEntryHops)
                     : 0
             );
+#endif
         }
 
         // The island that holds `rank`: its table entry; this island when the rank is
         // in no entry (one island: always 0).
         uint32_t island_of(uint32_t rank) const {
+#if defined(KM_ONE_ISLAND)
+            return static_cast<void>(rank), 0;
+#else
             const uint32_t islands = area_[KM_ISLAND_COUNT];
             for (
                 uint32_t island = 0; island < islands && island < KM_ISLANDS_MAX;
@@ -100,6 +141,7 @@ namespace km {
                 }
             }
             return here();
+#endif
         }
 
     private:
@@ -158,7 +200,11 @@ namespace km {
 
     // Whether core `me` is a link core: a core after the island's ranks.
     inline bool link_core(const Islands& view, uint32_t me) {
+#if defined(KM_ONE_ISLAND)
+        return static_cast<void>(view), static_cast<void>(me), false;
+#else
         return view.ranks() != 0 && me - view.base() >= view.ranks();
+#endif
     }
 
     // The name core `me` has in `command`'s group: a link core's is always
