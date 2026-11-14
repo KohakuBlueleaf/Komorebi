@@ -459,6 +459,27 @@ KM_STATIC_ASSERT(
    link area) */
 #define KM_ISLAND_LINK_AREA \
     (KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES)
+/* words after it: the relay area's L1 address on this island (0: no relay), the far
+ * island's, and the far link core 0's NoC tile x | y << 16 (km_relay.hpp) */
+#define KM_ISLAND_RELAY 37u
+#define KM_ISLAND_RELAY_FAR 38u
+#define KM_ISLAND_RELAY_TILE 39u
+/* The relay area, on every core: a leader's ask to link core 0 (64 bytes a ring slot),
+ * the link core's done word back to the leader (16 bytes a slot), then link core 0's */
+#define KM_RELAY_ASK 0x0000u
+#define KM_RELAY_DONE 0x1000u
+#define KM_RELAY_ASKED 0x1400u  /* link core: asks posted (leaders add 1) */
+#define KM_RELAY_CREDIT 0x1410u /* link core: the far side's taken count */
+#define KM_RELAY_LANDED 0x1420u /* link core: requests landed from the far side */
+#define KM_RELAY_STATE 0x1430u  /* link core: served, sent, taken, failed */
+#define KM_RELAY_LINES 0x1440u  /* link core: 16-byte sources (taken, a done word) */
+#define KM_RELAY_HEADERS 0x1480u /* link core: four packet headers, 64 bytes each */
+#define KM_RELAY_DESC 0x1580u    /* link core: an ask as it crosses, 64 bytes */
+#define KM_RELAY_STAGE 0x1600u   /* link core: one chunk on its way out */
+#define KM_RELAY_CHUNK 4096u
+#define KM_RELAY_INBOX (KM_RELAY_STAGE + KM_RELAY_CHUNK) /* the far ask, its bytes */
+#define KM_RELAY_MAX 16384u /* the most bytes one ask carries */
+#define KM_RELAY_BYTES (KM_RELAY_INBOX + 64u + KM_RELAY_MAX)
 /* KM_RING_SLOTS commands, the last part of the block */
 #define KM_CONTROL_RING (KM_CONTROL_ISLANDS + KM_ISLANDS_BYTES)
 #define KM_CONTROL_BYTES (KM_CONTROL_RING + KM_RING_SLOTS * 64u)
@@ -498,6 +519,13 @@ KM_STATIC_ASSERT(
     KM_ISLAND_LINK_AREA + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
         KM_ASK_READ + 16u <= KM_ASK_HEADERS,
     "the link area word after the island table; the ask lines whole lines"
+);
+KM_STATIC_ASSERT(
+    KM_ISLAND_RELAY * 4u >= KM_ISLAND_LINK_AREA + 4u &&
+        (KM_ISLAND_RELAY_TILE + 1u) * 4u <= KM_ISLANDS_BYTES &&
+        KM_RELAY_DONE >= KM_RELAY_ASK + 64u * KM_RING_SLOTS &&
+        KM_RELAY_ASKED >= KM_RELAY_DONE + 16u * KM_RING_SLOTS,
+    "the relay words after the island table; an ask and a done word a ring slot"
 );
 KM_STATIC_ASSERT(
     KM_CONTROL_RING % 64u == 0 &&

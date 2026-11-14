@@ -50,6 +50,9 @@ class LinkPlan:
     def __init__(self, graph, island, far, core, area):
         self.graph, self.island, self.far = graph, island, far
         self.core, self.area = core, area
+        # the relay words of the island area (km_relay.hpp): this island's relay
+        # area, the far island's, the far link core 0's NoC tile x | y << 16
+        self.relay = [0, 0, 0]
 
     def line(self, dispatch):
         """The dispatcher's link line and island table (KMD_LIM_LINK). The far island's
@@ -1024,9 +1027,11 @@ class IslandSession:
         0), at one address on both islands (a link core writes the far one's)."""
         if len(self.sessions) != 2:
             return [None] * len(self.sessions)
-        bytes_ = abi.headers()["KM_LINK_AREA_BYTES"]
+        h = abi.headers()
+        bytes_ = h["KM_LINK_AREA_BYTES"]
         plans = []
         self._link_areas = []
+        relays = []
         for island, session in enumerate(self.sessions):
             far = 1 - island
             columns, rows = session.grid
@@ -1041,12 +1046,27 @@ class IslandSession:
                     f"island {island}: the link area is at {area.address:#x}, "
                     f"island 0's at {self._link_areas[0].address:#x}"
                 )
+            relay = session.tensor(  # zeros: no ask, no count, no done word
+                np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),
+                "uint32",
+                shard_grid=(columns, rows),
+            )
+            self._link_areas.append(relay)
+            relays.append(relay.address)
             core = self.link_cores[island][0]
             plans.append(LinkPlan(self.graph, island, far, core, area.address))
+            place = self.noc_of(far, self.link_cores[far][0])
+            plans[-1].relay = [
+                relays[island],
+                0,
+                (place & 0xFF) | (place >> 8) << 16,
+            ]
             self.log(
                 f"island {island}: commands across on link core {core}, channel "
                 f"{self.channels[island][0]}, area {area.address:#x}"
             )
+        for plan in plans:
+            plan.relay[1] = relays[plan.far]
         return plans
 
     def _check_links(self, runs, plans):

@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, the links between islands and what they carry, messages across a link, and what is not built.
+summary: What an island is, why ranks stay flat across islands, the island table a core holds, what a kernel can ask about it, the links between islands and what they carry, messages across a link, acting by island, and what is not built.
 tags:
   - concepts
   - islands
@@ -82,7 +82,7 @@ ask: no call sends anything.
 | `km::resolve(rank)` | its island, then the local core (this island) or this island's next link toward it | `{0, true, rank}` | the same, with the next link for a rank of the other card |
 | `km::hops(i)`, `km::neighbours()` | links crossed to island `i`; the islands one link away, a bit each | 0, 0 | 0 and 1 for the two islands; the other island's bit |
 | `km::rate(i)` | bytes a second toward `i`: `km::kRateLocal` for this island, 0 (not known) for another | `kRateLocal` | `kRateLocal` for its own, 0 for the other |
-| `group.local()`, `group.leaders()` | the group's part on this island; the first rank of each island part | the group; its first rank | the group's part on this card; ranks 0 and 120 for a group over both |
+| `group.local()`, `group.leaders()` | the group's part on this island; the first rank of each island part | the group; its first rank | the group's part on this card; ranks 0 and 119 for a group over both (one link core an island) |
 | `km::partition(items, part, parts)` | part `part` of `parts` of `items` | `partition(items, 0, 1)`: all items | the same call; a rank partitions by its flat rank |
 
 `km::local_part(view, command)` is the part of a command's group on this island in local
@@ -174,11 +174,44 @@ each way when messages wait to be batched, 0.6 million a packet a message.
 While a run's messages are served, link 0's CPU serves nothing else: with `links=1` a
 dispatcher's command line or a page on link 0 waits until the run ends.
 
+## Acting by island
+
+A program written for one island runs on several unchanged: a reduce whose group spans
+islands folds inside each island first, as a group of its own, and each island's first
+rank then sends its fold once to the group's rank 0. A program written for islands says
+so in its own words, and each word has an answer on one island:
+
+| Call | What it does | On one island |
+|---|---|---|
+| `km::reduce_*(..., km::local)` | the reduce stays inside this core's island | the whole group |
+| `group.leaders()`, `group.leader(j)` | the first rank of each island part of the group | the group's first rank |
+| `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | pages into an arrival slot of `rank` on island `i`, one on its port | a local emit |
+
+A part for another island goes through the relay: the sender asks its island's link core
+0, whose link 0 CPU reads the pages between commands, sends them over link 0 to the far
+link core 0, and tells the sender they left; the far link core writes them into the
+rank's arrival slot and adds 1 to its port. The receiving core waits on its port as it
+does for a sender of its own island ([runtime](../reference/runtime.md#islands)).
+
+Measured on two Blackhole p150a cards joined by one link, 512 integer tiles summed, the
+median of 20 commands from submit to the event on the host, every total exact:
+
+| Program | Two cards (238 ranks) | One island |
+|---|---|---|
+| [02_merge_tree](../../examples/02_merge_tree/README.md), kernels unchanged, by tree | 172.6 µs | 162.8 µs (island 0's 119 ranks) |
+| [26_islands_sum](../../examples/26_islands_sum/README.md), written for islands | 165.9 µs | 158.0 µs (card 0 alone, 120 ranks) |
+
+The rows of example 02 asked for a result word (one more pass over the total at the
+root); those of example 26 did not.
+
 ## What is not built
 
-- **Collectives over a link.** `collect` and `broadcast` over islands, a dynamic run on
-  part of the ranks of two islands, X280 ranks over a link. A kernel's own ask for pages
-  is built for two islands, its pages on one link.
+- **Over a link:** a broadcast (`km::Broadcast`) whose group spans islands, a reduce
+  over more than two islands (a part crosses one link), a part of more than 16 KiB, a
+  dynamic run on part of the ranks of two islands, X280 ranks over a link. A kernel's own ask for
+  pages is built for two islands, its pages on one link. A command that crosses
+  completes with the result word of the first part back, not of
+  the group's rank 0.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **A card split into islands.** The host's graph describes it (`islands.split_card`);
   nothing runs on it.

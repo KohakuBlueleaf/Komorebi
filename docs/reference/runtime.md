@@ -433,6 +433,30 @@ A table entry is 8 bytes, little-endian: first rank (16 bits), ranks (16), next 
 `komorebi.islands.ENTRY`; `KM_ISLANDS_MAX` (16) entries. On an X280 thread,
 `kmx_island()` and `kmx_islands()` answer the same (0 and 1 on one island).
 
+The calls that act by island (`km_group.hpp`, `km_port.hpp`):
+
+| Call | What it does | On one island |
+|---|---|---|
+| `km::reduce_arrive`, `km::reduce_emit`, `km::reduce` on a group over islands | each island's part reduces as a group of its own (owner or tree), then each part's first rank sends its fold once to the group's rank 0: by owner into the slot after its island's (port 0), by tree into the round after its island's (port and slot); the calls do not change | the flat schedule |
+| the same with `km::local` (`reduce_emit(..., km::local)`, `reduce_arrive(..., km::local)`, `reduce(compute, arrival, group, form, km::local, combine)`) | the reduce over `group.local()`: it stays in this island | the whole group |
+| `group.leader(j)` | the first rank of island part `j` of the group | `group.leader(0)`: its first rank |
+| `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | `km::emit` to `rank` after a check that island `i` holds it (else a give-up, bad item) | a local emit |
+| `km::emit` to a rank of another island | through the relay: the pages reach the rank's arrival slot and its port counts 1, so its `arrive` waits as for a local sender | never crosses |
+
+The relay (`km_relay.hpp`): the sender writes an ask (its core, the pages' L1 address,
+bytes, the rank, the arrival slot's address, the port) into the relay area of its
+island's link core 0, one ask a ring slot, and adds 1 to that core's ask count. Link core
+0's link 0 CPU serves asks between commands, from its loop: it reads the pages, sends them
+and the ask over link 0 into the far link core 0's inbox with one count, and writes a done
+word back to the sender, which then frees its pages; the far link core 0 writes the pages
+into the rank's L1, adds 1 to its port, and returns a credit. One ask crosses at a time,
+of at most `KM_RELAY_MAX` (16 KiB) bytes. The session gives every core of two islands a
+relay area of `KM_RELAY_BYTES` and writes its address, the far island's and the far link
+core 0's place into the island area (`KM_ISLAND_RELAY`, `KM_ISLAND_RELAY_FAR`,
+`KM_ISLAND_RELAY_TILE`). While link 0's CPU serves a command (a dynamic run's messages, a
+command line, pages), asks wait; a sender's wait is bounded and gives its command up
+(`emit`).
+
 ## Trace
 
 With a trace address, each core keeps 4 wall-clock words per sequence number, for

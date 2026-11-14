@@ -122,6 +122,40 @@ groups, each by both forms: 250 integer-input pairs, all bit-equal. Parts of 2 t
 (`--part 2`, by owner up to 60 cores): the five groups above by both forms, all exact
 and bit-equal pairs, 16.2 µs per job.
 
+## Over two cards
+
+`islands.py` runs the same program and kernels on two cards joined by a link
+(`Session(cards=[0, 1], links=1)`, 238 ranks: each island's last core is its link core).
+A MERGE whose group spans both islands folds inside each island first, as a group of its
+own (by owner or by tree), and each island's first rank then sends its part once to the
+group's rank 0, one more arrival at rank 0 (by owner: the slot after its island's; by
+tree: the round after its island's). The part crosses through the relay: the sender asks
+its island's link core 0, which sends the pages over link 0 to the far link core 0, which
+writes them into rank 0's arrival slot and bumps its port. The kernels do not change.
+The commands go to island 0's dispatcher, which sends island 1's part across. The link
+cores' services make the kernels larger than the runtime's default buffer, so the script
+opens the session with `kernel_bytes=76 * 1024`.
+
+```
+python islands.py --rounds 20
+```
+
+Cards 0 and 1 (Blackhole p150a, one link), T = 512 integer tiles, P = 1, 20 commands a
+case, waited one at a time, each asking for rank 0's result word (one more pass over the
+total there; the script now leaves it out); the median from submit to the event on the
+host:
+
+| Group | Form | µs a round | Total |
+|---|---|---|---|
+| all 238 ranks | tree | 172.6 | exact |
+| 59 ranks of each island (60 to 177) | owner | 195.1 | exact |
+| island 0's 119 ranks | tree | 162.8 | exact |
+| island 0's 119 ranks | owner | 188.1 | exact |
+
+A group over both islands by owner needs an arrival slot for every other rank of rank 0's
+island and one for each other island: at most 118 slots (`kArrivePages`), so the whole of
+both islands goes by tree.
+
 ## Files
 
 | File | What it is |
@@ -130,6 +164,7 @@ and bit-equal pairs, 16.2 µs per job.
 | `kernels/merge.h` | handler, buffers and command words shared by the kernels |
 | `merge.py` | builds the commands, runs them through a session, checks the outputs and result words |
 | `merge_fed.py` | the same jobs under the test feeder |
+| `islands.py` | MERGE over two cards, the kernels unchanged, checked against numpy |
 
 The calls are in `komorebi/device/km_port.hpp` (emit, arrive, take, reduce) and
 `komorebi/device/km_group.hpp` (groups of a group, the two schedules).
