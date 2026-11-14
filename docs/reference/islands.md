@@ -84,10 +84,10 @@ written for islands runs on one card unchanged.
   serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
   holds each CPU's largest text over the two groups. A program with messages, a card
   split into islands and a program placed by overlays keep the services in every
-  kernel. The session opens with a kernel buffer of 112 KiB
-  (`island_session.KERNEL_BYTES`: the largest such build, the dense grid's 82,432
-  bytes, and at least 16 KiB more, in steps of 16 KiB); one card keeps the runtime's
-  70,656 bytes. The
+  kernel. The session opens with a kernel buffer of 128 KiB
+  (`island_session.KERNEL_BYTES`: the largest such build, the dense linear layer's
+  98,592 bytes, and at least 16 KiB more, in steps of 16 KiB); one card keeps the
+  runtime's 70,656 bytes. The
   load checks each build against the buffer: one that does not fit raises
   `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
   is launched. `kernel_bytes` sets another size at the open.
@@ -551,9 +551,9 @@ island holds gives the command up. Measured on two p150a cards, one page link,
   exact, 529.3 µs a round.
 
 With the link services in the link cores' kernels only, example 11's build takes
-61,328 bytes of the two-card session's 112 KiB kernel buffer (92,192 with the services
-in every kernel) and the dense grid's 82,432 (122,752 before); the link reader's
-33,868 bytes of BRISC text are the larger of the two groups' in both.
+67,680 bytes (92,192 with the services in every kernel), the dense grid's 82,512
+(122,752 before) and the dense linear layer's 98,592 (143,440 before); the link
+reader's BRISC text is the larger of the two groups' for example 11 and the grid.
 
 ## A card split into islands
 

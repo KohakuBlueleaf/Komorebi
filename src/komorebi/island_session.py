@@ -28,9 +28,9 @@ LINK_ARGS = 9
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
 LINK_TAIL = 0x20 + 2 * 16 * 256
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
-# The kernel buffer over two cards: the largest page-link build (the dense grid's
-# 82,432 B) and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
-KERNEL_BYTES = 112 * 1024
+# Two cards' kernel buffer: the largest page-link build (the linear layer's 98,592 B)
+# and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
+KERNEL_BYTES = 128 * 1024
 # The transfer buffer's chunk a session over two cards asks for: a page CPU passes
 # pages through its chunk, one L1 slot a read in flight (15 slots of 4 KiB and their
 # headers); a run with no room for it keeps the default.
