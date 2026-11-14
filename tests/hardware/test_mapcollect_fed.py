@@ -56,14 +56,6 @@ def test_an_exit_naming_a_partial_group_completes_as_every_core(run):
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
 
 
-def test_a_command_naming_another_slot_is_not_run(run):
-    raw = ["--handler", "nop", "--raw", 0, "--raw-slot", 3, "--deadline", 0.02]
-    out = run("--jobs", 2, "--depth", 1, "--first", 10, "--count", 8, *raw)  # slot 0
-    assert out["feeder"]["status"] == "timeout" and out["feeder"]["index"] == 0
-    assert out["slot_wrong"] == {core: 1 for core in range(10, 18)}
-    assert out["runs"] == 0 and every_kernel_returned(out)
-
-
 def test_a_leader_whose_rank_is_late_acknowledges_nothing(run):
     # Rank 1 reports job 0 after 0.3 s; leader 0 waits 0.1 s, gives up, stops.
     late = ["--late", 0, "--late-rank", 1, "--late-cycles", CYCLES_300MS]

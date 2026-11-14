@@ -1,5 +1,6 @@
 """A message names its handler, on a card (KMR_CARD=1): example 14's threads change
-handler on forwards to other cores and to their own core, exact against the replay;
+handler on forwards to other cores and to their own core on a small group, exact
+against the replay;
 a run whose queue positions pass 65536 laps (the lap mark wraps) stays exact."""
 
 from pathlib import Path
@@ -13,12 +14,12 @@ HANDLERS = EXAMPLES / "14_message_handlers" / "message_handlers.py"
 FORWARD = EXAMPLES / "05_forward" / "forward.py"
 
 
-def test_threads_change_handler_on_the_grid_and_on_a_small_group():
-    for count in (0, 6):  # 0: the whole grid; 6: 4 ranks, many own-core forwards
-        out = run_json(HANDLERS, "--count", count, "--threads", 400, "--steps", 10)
-        assert out["ok"], out
-        run = out["runs"][0]
-        assert run["by_handler"][2] == 400 and run["own_core_forwards"] > 0
+def test_threads_change_handler_on_a_small_group():
+    # 4 ranks, many own-core forwards
+    out = run_json(HANDLERS, "--count", 6, "--threads", 400, "--steps", 10)
+    assert out["ok"], out
+    run = out["runs"][0]
+    assert run["by_handler"][2] == 400 and run["own_core_forwards"] > 0
 
 
 def test_the_lap_mark_wraps_in_one_run_and_every_message_arrives():

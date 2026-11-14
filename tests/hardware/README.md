@@ -41,20 +41,20 @@ They are estimates until the folder has run once as it is now.
 | --- | ---: | --- | --- | ---: |
 | `test_host.py` | 19 | | `test_movement.py` | 4 |
 | `test_engines.py` | 2 | | `test_overlays.py` | 5 |
-| `test_mapcollect_fed.py` | 13 | | `test_programs.py` | 10 |
+| `test_mapcollect_fed.py` | 11 | | `test_programs.py` | 10 |
 | `test_host_transfer.py` | 2 | | `test_swiglu_host.py` | 4 |
-| `test_raster_card.py` | 12 | | `test_thread_commands.py` | 6 |
-| `test_attention_host.py` | 3 | | `test_thread.py` | 16 |
+| `test_raster_card.py` | 10 | | `test_thread_commands.py` | 6 |
+| `test_attention_host.py` | 3 | | `test_thread.py` | 10 |
 | `test_bank_fetch.py` | 3 | | `test_thread_lifecycle.py` | 11 |
 | `test_broadcast_host.py` | 10 | | `test_x280_ports.py` | 6 |
-| `test_dense_host.py` | 13 | | `test_thread_split.py` | 6 |
+| `test_dense_host.py` | 11 | | `test_thread_split.py` | 6 |
 | `test_forward_host.py` | 5 | | `test_uop_stream.py` | 3 |
 | `test_kernel_buffer.py` | 2 | | `test_raytrace_card.py` | 6 |
 | `test_give_up.py` | 7 | | | |
 | `test_graph_host.py` | 11 | | | |
 | `test_leader.py` | 8 | | | |
 | `test_leader_overlay.py` | 3 | | | |
-| `test_message_handlers.py` | 8 | | **the folder** | **about 198 + 13** |
+| `test_message_handlers.py` | 6 | | **the folder** | **about 184 + 13** |
 
 A file run alone also pays the open. `test_raytrace_card.py` asks for a smaller kernel
 buffer than the others and `test_kernel_buffer.py` asks for 128 KiB, so the device is
