@@ -4,6 +4,7 @@
 
 #include "../dense.h"
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "linear.h"
@@ -128,12 +129,9 @@ void kernel_main() {
     constexpr auto y_args = (
         TensorAccessorArgs<w_args.next_compile_time_args_offset()>()
     );
-    constexpr uint32_t kYPlace = y_args.next_compile_time_args_offset();
     constexpr auto p_args = (
-        TensorAccessorArgs< km::Placement<kYPlace>::next_compile_time_args_offset()>()
+        TensorAccessorArgs<y_args.next_compile_time_args_offset()>()
     );
-    constexpr uint32_t kWPlace = p_args.next_compile_time_args_offset();
-    const km::Placement<kYPlace> y_place{};
     km::Writer writer;
     const auto core = [&](uint32_t word) {
         return writer.arg(kArgCore + word);
@@ -145,19 +143,22 @@ void kernel_main() {
         if (km::handler(command) != kHandlerLinear) {
             return true;
         }
-        const uint32_t w_address = command.a1, y_address = command.a2;
-        const uint32_t p_address = command.a3, k_whole = command.a4;
-        const uint32_t n_tiles = plan(kPlNt);
-        const Cover mine = cover<kWPlace>(km::island(), n_tiles);
-        const bool whole = parts<kWPlace>(k_whole, n_tiles).whole;
-        const auto y_matrix = TensorAccessor(y_args, y_address);
-        const auto p_matrix = TensorAccessor(p_args, p_address);
+        const uint32_t w = command.a1, y = command.a2, p = command.a3;
+        const uint32_t k_whole = command.a4, n_whole = command.a5;
+        const uint32_t m_tiles = plan(kPlMt), here = km::island();
+        invalidate_l1_cache();  // the tensor table
+        const Cover mine = cover(w, here, k_whole, n_whole);
+        const bool whole = parts(w, k_whole, n_whole).whole;
+        const Holding y_here = holding(y, here, m_tiles * n_whole);
+        const auto y_matrix = TensorAccessor(y_args, y_here.address);
+        const auto p_matrix = (
+            TensorAccessor(p_args, holding(p, here, m_tiles * n_whole).address)
+        );
         if (mine.k_tiles != 0 && core(kCoreRank) != 0) {
             km::Broadcast broadcast(writer, command, kArgBroadcast);
             if (!broadcast.ok()) {
                 return false;
             }
-            const uint32_t m_tiles = plan(kPlMt);
             const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
             const uint32_t k_block_tiles = plan(kPlKb);
             const uint32_t k_blocks = blocks_of(mine.k_tiles, k_block_tiles);
@@ -169,18 +170,19 @@ void kernel_main() {
             const uint32_t row_end = (
                 first_row + plan(kPlPcM) < m_tiles ? first_row + plan(kPlPcM) : m_tiles
             );
-            const uint32_t column_end = (
-                first_column + plan(kPlPcN) < n_tiles
-                    ? first_column + plan(kPlPcN)
-                    : n_tiles
-            );
-            const auto w_matrix = TensorAccessor(w_args, w_address);
+            const uint32_t column_end =
+                (  // of this island's columns of W and Y
+                    first_column + plan(kPlPcN) < mine.n_tiles
+                        ? first_column + plan(kPlPcN)
+                        : mine.n_tiles
+                );
+            const Holding w_here = holding(w, here, k_whole * n_whole);
+            const auto w_matrix = TensorAccessor(w_args, w_here.address);
             const uint32_t out = whole ? kCbYOut : kCbPartOut;
             const uint32_t out_bytes = whole ? kBf16Bytes : kPartBytes;
-            const uint32_t here = km::island();
 
             // Output block (block_row, block_column), subblocks in compute's order: Y
-            // where its pages are (here), or this island's partial sums into P.
+            // where its pages are (here, else put across), or the partial sums into P.
             const auto put = [&](uint32_t block_row, uint32_t block_column) {
                 for (
                     uint32_t subblock_row = 0; subblock_row < block_height;
@@ -208,20 +210,24 @@ void kernel_main() {
                                 const uint32_t column = (
                                     block_column + subblock_column + tile_column
                                 );
-                                const uint32_t page = row * n_tiles + column;
+                                const uint32_t page = row * n_whole + mine.n0 + column;
                                 if (row < row_end && column < column_end) {
                                     if (!whole) {
                                         noc_async_write_page(page, p_matrix, source);
-                                    } else if (km::island_of(y_place, page) == here) {
-                                        noc_async_write_page(page, y_matrix, source);
-                                    } else {  // a write across: not in this kernel
-                                        writer.gave_up(
-                                            km::kStWriter,
-                                            km::kGaveBadItem,
-                                            km::kWhereData,
-                                            km::slot(command),
-                                            command.sequence
+                                    } else if (km::island_of(y, page) == here) {
+                                        noc_async_write_page(
+                                            y_here.index(page), y_matrix, source
                                         );
+                                    } else if (!km::write_pages(
+                                        writer,
+                                        command,
+                                        y_args,
+                                        y,
+                                        page,
+                                        1,
+                                        source,
+                                        kPortY
+                                    )) {
                                         return false;
                                     }
                                 }
@@ -265,15 +271,21 @@ void kernel_main() {
                         for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
                             // W's rows this island holds: read here
                             const uint32_t page = (
-                                (mine.k0 + k_start + k_tile) * n_tiles + block_column
+                                (mine.k0 + k_start + k_tile) * n_whole + mine.n0 +
+                                block_column
                             );
-                            for (
-                                uint32_t column = 0;
-                                column < block_width && block_column + column < n_tiles;
-                                ++column
-                            ) {
+                            const uint32_t left =
+                                (  // of this island's columns
+                                    block_column < mine.n_tiles
+                                        ? mine.n_tiles - block_column
+                                        : 0
+                                );
+                            const uint32_t columns = (
+                                left < block_width ? left : block_width
+                            );
+                            for (uint32_t column = 0; column < columns; ++column) {
                                 noc_async_read_page(
-                                    page + column,
+                                    w_here.index(page + column),
                                     w_matrix,
                                     base + (k_tile * block_width + column) * kBf16Bytes
                                 );
@@ -312,15 +324,12 @@ void kernel_main() {
         }
         // Y's share of this core: the sums compute made of every island's part.
         const km::Group local = km::group_of(command, writer.me()).local();
-        const Span y_here = held<kYPlace>(km::island());
         const km::Partition share = km::partition(y_here.pages, local.rank, local.size);
         for (uint32_t tile = 0; tile < share.len; ++tile) {
             if (!writer.wait_front(kCbYOut, 1, km::kBehindPort)) {
                 return false;
             }
-            noc_async_write_page(
-                y_here.first + share.start + tile, y_matrix, get_read_ptr(kCbYOut)
-            );
+            noc_async_write_page(share.start + tile, y_matrix, get_read_ptr(kCbYOut));
             if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                 return false;
             }

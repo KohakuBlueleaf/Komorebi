@@ -1,7 +1,7 @@
 """A linear layer Y = X x W written for islands: one program, one command a call on
-every rank of the session; X, W and Y placed by the session's default (split along
-the leading dimension), never a copy. Each island computes with the part of W it
-holds (kernels/linear). Prints one JSON line; exits 1 when the check fails."""
+every rank of the session; X, W and Y placed by a hint (--split-w 0: W split along
+K, 1: along N), never a copy. Each island computes with the part of W it holds
+(kernels/linear). Prints one JSON line; exits 1 when the check fails."""
 
 import argparse
 import contextlib
@@ -34,9 +34,19 @@ L1_RUNTIME = 16_960 + 16_256
 log = run.log
 
 
-def held_rows(tensor, row_pages):
-    """The most whole rows of `row_pages` pages any island holds of `tensor`."""
-    return max(pages for _, pages in tensor.placement.parts) // row_pages
+def covers(w, k_tiles, n_tiles):
+    """Each island's block of W's [K, N] tiles, (k0, K tiles, n0, N tiles), as the
+    kernels' cover() finds it."""
+    placement = w.placement
+    out = []
+    for first, steps in placement.parts:
+        if placement.copy or placement.pages == steps * placement.inner:
+            out.append((0, k_tiles, 0, n_tiles) if steps else (0, 0, 0, 0))
+        elif placement.split == 0:
+            out.append((first, steps, 0, n_tiles))
+        else:
+            out.append((0, k_tiles, first, steps))
+    return out
 
 
 def extra_buffers(plan, islands):
@@ -106,11 +116,12 @@ class Linear:
         ranks = counts.pop()
         self.islands = len(graph.islands)
         self.nocs = session.sessions[0].nocs()
-        part_rows = held_rows(tensors["w"], n_tiles)
+        self.n_tiles = n_tiles
+        self.covers = covers(tensors["w"], k_tiles, n_tiles)
+        part_k = max(cover[1] for cover in self.covers)
+        part_n = max(cover[3] for cover in self.covers)
         budget = l1_budget(session, self.islands) - extra_bytes(self.islands)
-        self.plan = fitting_plan(
-            m_tiles, part_rows, n_tiles, self.nocs.grid, ranks, budget
-        )
+        self.plan = fitting_plan(m_tiles, part_k, part_n, self.nocs.grid, ranks, budget)
         if self.plan is None:
             raise SystemExit(f"no grid plan fits L1 and {ranks} ranks: {dimensions}")
         for name in ("kCbRow", "kCbCol", "kCbPart"):
@@ -136,17 +147,9 @@ class Linear:
                 + extra_buffers(self.plan, self.islands)
             ],
             compile_args={
-                "reader": x.accessor_args()
-                + x.placement_args()
-                + p.accessor_args()
-                + y.placement_args()
-                + w.placement_args(),
-                "writer": w.accessor_args()
-                + y.accessor_args()
-                + y.placement_args()
-                + p.accessor_args()
-                + w.placement_args(),
-                "compute": y.placement_args() + w.placement_args(),
+                "reader": x.accessor_args() + p.accessor_args(),
+                "writer": w.accessor_args() + y.accessor_args() + p.accessor_args(),
+                "compute": [],
             },
             compute={
                 "math_fidelity": "HiFi2",
@@ -162,7 +165,8 @@ class Linear:
         self.run = session.load(self.program, deadline=deadline, wait=wait)
 
     def words(self):
-        return [self.tensors[name].address for name in "xwyp"] + [self.k_tiles]
+        addresses = [self.tensors[name].address for name in "xwyp"]
+        return addresses + [self.k_tiles, self.n_tiles]
 
     def calls(self, commands, timeout=60.0):
         """`commands` LINEAR commands back to back: (host seconds from the first
@@ -187,18 +191,16 @@ class Linear:
 
     def crossed(self):
         """Bytes a call should cross, counted from the placements and the plan: X's rows
-        another island holds, read by the X readers of an island holding part of W,
-        and (no island holding all of K) every other holder's partial sums asked."""
-        x, w, y = (self.tensors[name] for name in "xwy")
-        plan, k_tiles = self.plan, self.k_tiles
+        another island holds, read by the X readers of an island holding part of W;
+        Y's pages written across; and (no island holding all of K) every other
+        holder's partial sums of the Y pages an island holds, asked."""
+        x, y, p = (self.tensors[name] for name in "xyp")
+        plan, k_tiles, n_tiles = self.plan, self.k_tiles, self.n_tiles
         places = plan.places(self.nocs.grid)
-        parts = [
-            (first // plan.nt, pages // plan.nt) for first, pages in w.placement.parts
-        ]
-        holders = [island for island, (_, k_part) in enumerate(parts) if k_part]
-        whole = any(k_part == k_tiles for _, k_part in parts)
-        total = {"x": 0, "partials": 0}
-        for island, (k0, k_part) in enumerate(parts):
+        holders = [island for island, cover in enumerate(self.covers) if cover[1]]
+        whole = all(self.covers[island][1] == k_tiles for island in holders)
+        total = {"x": 0, "y": 0, "partials": 0}
+        for island, (k0, k_part, n0, n_part) in enumerate(self.covers):
             for core in self.x_senders if k_part else ():
                 first_row = places[core][0]
                 for block in range(plan.nbh * plan.nbw):
@@ -206,17 +208,22 @@ class Linear:
                     for row in range(block_row, min(block_row + plan.bm, plan.mt)):
                         holders_x = x.holders(row * k_tiles + k0, k_part)
                         total["x"] += (
-                            sum(pages for at, _, pages in holders_x if at != island)
+                            sum(pages for at, _, pages, _ in holders_x if at != island)
                             * x.aligned_page_bytes
                         )
+            if whole and n_part:
+                for row in range(plan.mt):
+                    runs = y.holders(row * n_tiles + n0, n_part)
+                    total["y"] += (
+                        sum(pages for at, _, pages, _ in runs if at != island)
+                        * y.aligned_page_bytes
+                    )
             if not whole:
                 others = len([at for at in holders if at != island])
                 total["partials"] += (
-                    y.placement.parts[island][1]
-                    * others
-                    * self.tensors["p"].aligned_page_bytes
+                    y.placement.part_pages(island) * others * p.aligned_page_bytes
                 )
-        total["all"] = total["x"] + total["partials"]
+        total["all"] = total["x"] + total["y"] + total["partials"]
         return total
 
     def stop(self):
@@ -362,14 +369,14 @@ def partials(session, tensors, matrices):
     p, w, y = tensors["p"], tensors["w"], tensors["y"]
     n_tiles = p.shape[1] // pl.TILE
     out = []
-    for island, (k_first, k_pages) in enumerate(w.placement.parts):
-        k0, k_part = k_first // n_tiles * pl.TILE, k_pages // n_tiles * pl.TILE
+    for island, cover in enumerate(covers(w, w.shape[0] // pl.TILE, n_tiles)):
+        k0, k_part = cover[0] * pl.TILE, cover[1] * pl.TILE
         if not k_part:
             continue
-        for y_first, y_pages in y.placement.parts:
-            if not y_pages:
+        for at in range(len(y.placement.parts)):
+            if not y.placement.part_pages(at):
                 continue
-            row_tile = y_first // n_tiles
+            row_tile = int(y.placement.part(at)[0]) // n_tiles
             (raw,) = session.sessions[island].read(
                 p.parts[island], first=row_tile * n_tiles, pages=n_tiles
             )
@@ -434,6 +441,8 @@ def main():
     parser.add_argument(
         "--beside", action="store_true", help="then the project's grid kernels"
     )
+    parser.add_argument("--split-w", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--split-x", type=int, choices=[0, 1], default=0)
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     dimensions = (args.cube,) * 3 if args.cube else run.SHAPES[args.shape]
@@ -442,6 +451,7 @@ def main():
     cards = [int(value) for value in args.cards.split(",")]
     report = {"m": dimensions[0], "k": dimensions[1], "n": dimensions[2]}
     report |= {"cards": cards, "links": args.links}
+    report |= {"split_w": args.split_w, "split_x": args.split_x}
     log("building the inputs")
     x_matrix, w_matrix = ref.inputs(*dimensions, kind=args.inputs)
     log("inputs built")
@@ -450,11 +460,15 @@ def main():
     with km.Session(cards=cards, log=log, **options) as session:
         started = time.perf_counter()
         m_rows, _, n_columns = dimensions
+        # Y split as W's N is (rows when W is split along K); P, an island's
+        # partial sums of all of Y, is scratch on every island
         tensors = {
-            "x": session.tensor(x_matrix, "bfloat16", "tile"),
-            "w": session.tensor(w_matrix, "bfloat16", "tile"),
-            "y": session.empty((m_rows, n_columns), "bfloat16", "tile"),
-            "p": session.empty((m_rows, n_columns), "float32", "tile"),
+            "x": session.tensor(x_matrix, "bfloat16", "tile", split=args.split_x),
+            "w": session.tensor(w_matrix, "bfloat16", "tile", split=args.split_w),
+            "y": session.empty(
+                (m_rows, n_columns), "bfloat16", "tile", split=args.split_w
+            ),
+            "p": session.empty((m_rows, n_columns), "float32", "tile", copy=True),
         }
         report["upload_s"] = round(time.perf_counter() - started, 3)
         report["placements"] = {

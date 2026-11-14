@@ -17,10 +17,6 @@
 #include "linear.h"
 
 void kernel_main() {
-    constexpr uint32_t kYPlace = 0;
-    constexpr uint32_t kWPlace = (
-        km::Placement<kYPlace>::next_compile_time_args_offset()
-    );
     km::Compute compute;
     const auto plan = [&](uint32_t word) {
         return compute.arg(kCorePlan + word);
@@ -41,9 +37,10 @@ void kernel_main() {
         if (km::handler(command) != kHandlerLinear) {
             return;
         }
-        const uint32_t k_whole = command.a4;
-        const Cover mine = cover<kWPlace>(km::island(), plan(kPlNt));
-        const Parts held_by = parts<kWPlace>(k_whole, plan(kPlNt));
+        const uint32_t w = command.a1, y = command.a2;
+        const uint32_t k_whole = command.a4, n_whole = command.a5;
+        const Cover mine = cover(w, km::island(), k_whole, n_whole);
+        const Parts held_by = parts(w, k_whole, n_whole);
         const bool whole = held_by.whole;
         const uint32_t out = whole ? kCbYOut : kCbPartOut;
         const uint32_t k_blocks = blocks_of(mine.k_tiles, k_block_tiles);
@@ -169,7 +166,7 @@ void kernel_main() {
         // This core's share of Y: each holder's partial sum of a tile in fp32 (the
         // first in DST 0, the next in DST 1, added), packed bf16.
         const km::Group local = km::group_of(command, compute.me()).local();
-        const Span y_here = held<kYPlace>(km::island());
+        const Holding y_here = holding(y, km::island(), plan(kPlMt) * n_whole);
         const km::Partition share = km::partition(y_here.pages, local.rank, local.size);
         const uint32_t sums = __builtin_popcount(held_by.holders);
         reconfig_data_format_srca(kCbCol, kCbSums);

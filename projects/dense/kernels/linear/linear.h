@@ -7,8 +7,8 @@
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_placement.hpp"
 
-// LINEAR: a0 x_address (X, [M, K] tiles), a1 w_address (W, [K, N]), a2 y_address (Y,
-// [M, N]), a3 p_address (P, [M, N] fp32: an island's partial sums), a4 k_tiles (K).
+// LINEAR, the tensors' reference words: a0 X ([M, K] tiles), a1 W ([K, N]), a2 Y ([M,
+// N]), a3 P ([M, N] fp32 on every island: its partial sums); a4 K, a5 N tiles.
 constexpr uint32_t kHandlerLinear = 1;
 
 // Buffers: the grid plan's (row and column broadcasts, bf16 output subblocks, fp32
@@ -28,14 +28,15 @@ constexpr uint32_t kChunk = 4;  // tiles of a share read (and asked) at once
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
-// Ports: X's asked pages, P's asked pages; the island's tree up and down, the leaders'
-// crossing, and the writer's go to its own reader.
+// Ports: X's and P's asked pages; the island's tree up and down, the leaders' crossing,
+// the writer's go to its own reader; Y's pages put across.
 constexpr uint32_t kPortX = 0;
 constexpr uint32_t kPortP = 1;
 constexpr uint32_t kPortUp = 2;
 constexpr uint32_t kPortCross = 3;
 constexpr uint32_t kPortDown = 4;
 constexpr uint32_t kPortGo = 5;
+constexpr uint32_t kPortY = 6;
 
 // Arguments as the grid form's: reader, writer: broadcast words, then core words;
 // compute: core words, then the two broadcast windows.
@@ -60,54 +61,80 @@ constexpr uint32_t kPlSw = 13;
 constexpr uint32_t kPlanWords = 14;
 constexpr uint32_t kCoreWords = kCorePlan + kPlanWords;
 
-// A run of a tensor's pages: the first and the count.
-struct Span {
+// What island `at` holds of a tensor (its reference word, `pages` pages): its part's
+// bank address, steps first .. of `all` steps of `inner` pages, in `blocks` blocks.
+struct Holding {
+    uint32_t address;
     uint32_t first;
-    uint32_t pages;
+    uint32_t steps;
+    uint32_t all;
+    uint32_t inner;
+    uint32_t pages;  // the part's
+
+    // Page `index` of the part in the whole tensor, and back.
+    uint32_t page(uint32_t index) const {
+        const uint32_t block = index / (steps * inner), rest = index % (steps * inner);
+        return (block * all + first) * inner + rest;
+    }
+
+    uint32_t index(uint32_t page) const {
+        const uint32_t block = page / (all * inner), step = page / inner % all;
+        return (block * steps + step - first) * inner + page % inner;
+    }
 };
 
-// The pages of a placement that island `at` holds (one island: all of them).
-template <uint32_t Base, uint32_t I = 0>
-inline Span held(uint32_t at) {
-    if constexpr (I >= km::Placement<Base>::kIslands) {
-        return {0, 0};
-    } else {
-        if (I == at) {
-            return {
-                get_compile_time_arg_val(Base + 2 + 2 * I),
-                get_compile_time_arg_val(Base + 3 + 2 * I)
-            };
-        }
-        return held<Base, I + 1>(at);
+inline Holding holding(uint32_t tensor, uint32_t at, uint32_t pages) {
+    const km::Islands view(km::island_area());
+    const volatile uint32_t* entry = km::tensor_entry(view, tensor);
+    if (entry == nullptr) {  // a bank address: one island holds every page
+        return {tensor, 0, 1, 1, pages, pages};
     }
+    const volatile uint32_t*
+        part = (entry + KM_TENSOR_HEADER_BYTES / 4 + at * km::kPartWords);
+    if (entry[3] & 1u) {  // a copy: every island all of it
+        return {part[0], 0, 1, 1, pages, pages};
+    }
+    const uint32_t all = entry[1], inner = entry[2];
+    return {
+        part[0], part[1], part[2], all, inner, pages / (all * inner) * part[2] * inner
+    };
 }
 
-// The K tiles island `at`'s part of W covers: whole rows of W's [K, N] tiles.
+// The block of W's [K, N] tiles island `at` holds: K tiles k0 .., N tiles n0 ...
 struct Cover {
     uint32_t k0;
     uint32_t k_tiles;
+    uint32_t n0;
+    uint32_t n_tiles;
 };
 
-template <uint32_t WBase>
-inline Cover cover(uint32_t at, uint32_t n_tiles) {
-    const Span part = held<WBase>(at);
-    return {part.first / n_tiles, part.pages / n_tiles};
+inline Cover cover(uint32_t w, uint32_t at, uint32_t k_whole, uint32_t n_whole) {
+    const Holding part = holding(w, at, k_whole * n_whole);
+    if (part.pages == 0 || part.pages == k_whole * n_whole) {  // none, or all of W
+        return {0, part.pages != 0 ? k_whole : 0, 0, part.pages != 0 ? n_whole : 0};
+    }
+    if (part.all * part.inner == k_whole * n_whole && part.inner == n_whole) {
+        return {part.first, part.steps, 0, n_whole};  // whole rows: part of K
+    }
+    if (part.all == n_whole && part.inner == 1) {
+        return {0, k_whole, part.first, part.steps};  // whole columns: part of N
+    }
+    return {0, 0, 0, 0};  // no block of W's tiles: nothing computed here
 }
 
-// The islands whose part of W holds some of K, a bit each; `whole`: one holds all of
-// it (its product is Y, the others compute nothing), else each a partial sum of Y.
+// The islands whose part of W holds some of K, a bit each; `whole`: each holds all of
+// it (its product is its columns of Y), else each a partial sum of all of Y.
 struct Parts {
     uint32_t holders;
     bool whole;
 };
 
-template <uint32_t WBase>
-inline Parts parts(uint32_t k_whole, uint32_t n_tiles) {
-    Parts found = {0, false};
+inline Parts parts(uint32_t w, uint32_t k_whole, uint32_t n_whole) {
+    Parts found = {0, true};
     for (uint32_t at = 0; at < km::islands(); ++at) {
-        const uint32_t k_tiles = cover<WBase>(at, n_tiles).k_tiles;
+        const uint32_t k_tiles = cover(w, at, k_whole, n_whole).k_tiles;
         found.holders |= (k_tiles != 0 ? 1u : 0u) << at;
-        found.whole = found.whole || k_tiles == k_whole;
+        found.whole = found.whole && (k_tiles == 0 || k_tiles == k_whole);
     }
     return found;
 }
