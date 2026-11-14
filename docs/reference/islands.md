@@ -734,11 +734,13 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   put goes one link only. A copy across asks 16 KiB a line, one line a core in flight.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
-- A write of part of a page another island holds (example 09's writer gives up), a
-  tensor read by an address the kernel builds itself (`InterleavedAddrGen`: profile
-  pages, job tables, the raster and ray tracer projects, the result lines of examples
-  12 and 18), and an overlay's part (examples 12 and 18: an overlay takes no compile
-  arguments, so no `km::Tensor`) do not cross.
+- A write of part of a page another island holds (example 09's writer gives up: the
+  page calls move whole pages), a tensor read by an address the kernel builds itself
+  (`InterleavedAddrGen`: profile pages, job tables, the raster and ray tracer
+  projects), and programs of the runtime's form (`km_program`, a list or dict of
+  programs) do not cross. An overlay of the kernel form is built with its kernel's
+  defines and compile arguments, so its `km::Tensor` crosses (examples 12 and 18,
+  `--far`).
 - More than two cards: the mesh opens 1 x n; tried with two.
 - A split card: a copy across and a put over more than one link; more than one wire a
   pair with more than two islands; two cards each split (fabric links and wires in one

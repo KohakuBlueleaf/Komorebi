@@ -4,6 +4,7 @@
 
 #include "../split.h"
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_overlay.hpp"
 #include "komorebi/device/km_x280.hpp"
 
@@ -34,7 +35,14 @@ void kernel_main() {
             return;
         }
         const ts_range shared = {
-            0, 0, command.a1, command.a2, command.a3 == 0 ? 1 : command.a3, command.a4
+            0,
+            0,
+            command.a1,
+            command.a2,
+            command.a3 == 0 ? 1 : command.a3,
+            command.a4,
+            km::slot(command),
+            command.sequence
         };
         const bool pull_only = command.a7 != 0;
         uint32_t line[TS_LINE] = {};
@@ -90,14 +98,15 @@ void kernel_main() {
         for (uint32_t index = 0; index < TS_LINE; index++) {
             out[index] = line[index];
         }
-        const InterleavedAddrGen<true> lines = {
-            .bank_base_address = command.a5, .page_size = 4 * TS_LINE
-        };
-        noc_async_write(
-            get_write_ptr(TS_CB_LINE),
-            get_noc_addr(command.a6 * km::count(command) + reader.me(), lines),
-            4 * TS_LINE
-        );
+        // the tiles' arguments first (the overlays' reader parts write them)
+        using Tiles = km::Tensor<0>;
+        const km::Tensor<Tiles::next_compile_time_args_offset()> lines(command.a5);
+        const uint32_t page = command.a6 * km::count(command) + reader.me();
+        if (!km::write_pages(
+            reader, command, lines, page, 1, get_write_ptr(TS_CB_LINE)
+        )) {
+            return;
+        }
         noc_async_write_barrier();
     });
 }
