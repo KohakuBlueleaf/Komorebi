@@ -168,7 +168,7 @@ def count_check(run, own, ranks, group, rounds, reset_link=False):
     )
     if reset_link:  # the lines link's core, between two rounds that cross on it
         core = run.graph.link_cores[0][0]
-        reset = run.reset_core(0, core)
+        reset = run.reset_link(0, 0)
         report["link_reset"] = {
             key: round(value, 6) if isinstance(value, float) else value
             for key, value in reset.items()

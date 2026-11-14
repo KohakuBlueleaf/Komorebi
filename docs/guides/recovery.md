@@ -59,8 +59,9 @@ A step is tried only when the one before it was not enough.
     "read": False, "reset": False}`. The inspect does not stop anything: the dispatcher
     reads one core a pass of its loop beside the commands in flight. Only one inspect runs
     at a time; one that finds its block overwritten by the deadline's raises
-    `km.KomorebiError`, and can be made again. Over several cards it is
-    `run.inspect(island, cores)`, in the island's own core numbers.
+    `km.KomorebiError`, and can be made again. Over several cards the group is in flat
+    ranks, `run.inspect((128, 1))`, and each core's dict also has its `rank` and
+    `island`.
 
 2. **Read the time-out.** `run.wait(handle)` raises:
 
@@ -87,7 +88,9 @@ A step is tried only when the one before it was not enough.
     recorded`. The `recovered` part is there only when the dispatcher reset cores. A time-out
     that was not given up says `timed out; not reported` and lists the cores that did not
     report: the run is stopped and read back, and cannot be used again. On islands, the text
-    starts `island i:` and `error.island` is i; the cores are that island's own.
+    starts `island i:`, `error.island` is i, `<handle>` is the ticket, and the cores are
+    named by flat rank (`ranks: rank 128 (island 1, core 10) reader waits in port`;
+    `recovered (reset and loaded again): ranks [128]`).
 
     A `km.WaitTimeout` is another thing: the host stopped waiting, the run is loaded, and
     the message ends with what the dispatcher was doing, including whether core 0 still runs
@@ -126,19 +129,10 @@ A step is tried only when the one before it was not enough.
    leaves them out.
 
     On several cards each island's dispatcher holds its own island's lists, and the
-    give-up's text starts `island i:`; `run.reset_core(island, core)` and
-    `run.recoveries` (with the island) are the calls
-    ([islands](../reference/islands.md#the-run)). Link cores get no list, so the
-    dispatcher never resets one at a give-up.
-
-7. **A link core, by the host.** `run.reset_core(island, core)` of a link core
-   closes the core's fabric connections at their routers, resets it and loads it
-   again, then opens its connections again; the far link core needs nothing. On two
-   p150a cards: 101 ms (with two links) or 46 ms (one link) for the reset, 0.16 to
-   0.23 ms to open again, and the next reads across (example 01's islands script with
-   `--reset-link 1`) and the next commands that cross (example 25 with
-   `--reset-link`) are exact. Use it between commands: a line or an ask in flight on
-   that core is lost, and the command waiting for it times out at its deadline.
+    give-up's text starts `island i:` and names flat ranks, `rank 128 (island 1, core
+    10)`; `run.reset_core(rank)` and `run.recoveries` (with each give-up's ranks) are
+    the calls ([islands](../reference/islands.md#the-run)). Link cores get no list, so
+    the dispatcher never resets one at a give-up.
 
 6. **The dispatcher's own loop.** Core 2 of the dispatcher's cluster watches the loop on
    core 0. A loop that makes no pass for 100 ms is reported to the host (`run.stalls`,
@@ -146,6 +140,15 @@ A step is tried only when the one before it was not enough.
    state kept ("back", about 1.2 microseconds later in the experiment); the commands after
    it run as before. If core 0 is not back 50 ms later, the host gets "lost" and stops the
    run with `km.KernelFailed`. Nothing has to be called for this to work.
+
+7. **A link core, by the host.** `run.reset_link(island, k)` closes link core k's
+   fabric connections at their routers, resets the core and loads it again, then
+   opens its connections again; the far link core needs nothing. On two p150a cards:
+   101 ms (two links) or 46 ms (one link) for the reset, 0.16 to 0.23 ms to open
+   again, and the next reads across (example 01's islands script with `--reset-link
+   1`) and the next commands that cross (example 25 with `--reset-link`) are exact.
+   Use it between commands: a line or an ask in flight on that core is lost, and the
+   command waiting for it times out at its deadline.
 
 ## When a card reset is still the only way
 

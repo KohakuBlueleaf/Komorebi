@@ -48,14 +48,12 @@ def parse():
         help="MAP on one group of every rank, else on each island's own group",
     )
     parser.add_argument(
-        "--hang", action="store_true", help="a HANG on island 1 must name island 1"
+        "--hang", action="store_true", help="a HANG on island 1 must name its rank"
     )
     parser.add_argument(
         "--across",
-        type=int,
-        default=0,
-        metavar="LINKS",
-        help="MAP on island 0 reading an input island 1 holds, over LINKS links",
+        action="store_true",
+        help="MAP on island 0 reading an input island 1 holds",
     )
     parser.add_argument(
         "--reset-link",
@@ -103,7 +101,7 @@ def open_session(args, cards):
     if args.islands:
         (card,) = cards
         return km.Session(card=card, islands=args.islands, log=log)
-    return km.Session(cards=cards, links=args.across, log=log, kernel_bytes=84 * 1024)
+    return km.Session(cards=cards, log=log)
 
 
 def main():
@@ -155,7 +153,9 @@ def main():
         if args.across:
             report.update(across(session, run, args, source, far, output, exact))
         else:
-            report.update(commands(session, run, args, source, output, ranks, exact))
+            report.update(commands(session, run, args, source, output, ranks))
+        if args.hang:
+            report.update(hang(session, run, source, ranks, exact))
         log("stopping")
         try:
             results = run.stop()
@@ -174,15 +174,16 @@ def main():
         and report.get("kernel_errors", ["stop"]) == ["none"] * len(report["islands"])
         and report.get("hang_named_island", True)
         and report.get("read_island1_in_run_exact", True)
+        and report.get("crossings_agree", True)
         and report.get("before_reset", {}).get("wrong_tiles", 0) == 0
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 
-def commands(session, run, args, source, output, ranks, exact):
+def commands(session, run, args, source, output, ranks):
     """NOP rounds on the first island alone and on every rank; MAP rounds on each
-    island's own group (or every rank with --whole); joined tickets; a HANG."""
+    island's own group (or every rank with --whole); joined tickets."""
     out = {}
     graph = session.graph
     own = [(graph.first(i), graph.count(i)) for i in range(len(session.sessions))]
@@ -220,41 +221,53 @@ def commands(session, run, args, source, output, ranks, exact):
     )
     out["map_groups"] = [list(group) for group in groups]
     log(f"MAP on groups {groups} in turn: {out['map_groups_us']} us")
-    if args.hang:
-        # Island 1's rank 10 in a group over both islands (its core: graph.core_of). Its
-        # reader waits for a port arrival (hang_mode 1) until the deadline gives it up.
-        rank = graph.first(1) + 10
-        group = (graph.first(1) - 20, graph.count(1) + 20)
-        hang = run.submit("hang", group, [rank - group[0], 1])
-        run.send()
-        time.sleep(0.25)  # a quarter of the deadline
-        (core,) = run.inspect(1, (graph.core_of(rank)[1], 1))
-        out["inspect_island1"] = describe_core(core)
-        log(f"inspect of island 1: {out['inspect_island1']}")
-        try:
-            run.wait(hang, timeout=10.0)
-            out["hang"] = "returned"
-        except km.CommandTimeout as error:
-            out["hang"] = str(error)[:400]
-            out["hang_recovered"] = error.recovered
-            out["hang_named_island"] = error.island == 1 and error.given_up
-        log(f"HANG on group {group}: {out['hang']}")
-        out["hang_named_island"] = out.get("hang_named_island", False)
-        raw, _ = formats.to_bytes(exact, "bfloat16", "tile")
-        rows = raw.reshape(source.pages, source.page_bytes)
-        (got,) = session.read(source, first=ranks, pages=16)
-        out["read_island1_in_run_exact"] = bool(
-            np.array_equal(got, rows[ranks : ranks + 16])
+    return out
+
+
+def hang(session, run, source, ranks, exact):
+    """A HANG on a group over both islands, addressed and reported by flat rank: an
+    inspect of the hanging rank, then the deadline's give-up; island 1's pages read."""
+    out = {}
+    graph = session.graph
+    # Island 1's rank 10 in a group over both islands. Its reader waits for a port
+    # arrival (hang_mode 1) until the deadline gives it up.
+    rank = graph.first(1) + 10
+    named = f"rank {rank} (island 1, core {graph.core_of(rank)[1]})"
+    group = (graph.first(1) - 20, graph.count(1) + 20)
+    hang = run.submit("hang", group, [rank - group[0], 1])
+    run.send()
+    time.sleep(0.25)  # a quarter of the deadline
+    (core,) = run.inspect((rank, 1))
+    out["inspect_rank"] = describe_core(core)
+    log(f"inspect of rank {rank}: {out['inspect_rank']}")
+    try:
+        run.wait(hang, timeout=10.0)
+        out["hang"] = "returned"
+    except km.CommandTimeout as error:
+        out["hang"] = str(error)[:400]
+        out["hang_recovered"] = error.recovered
+        out["hang_named_island"] = (
+            error.island == 1 and error.given_up and named in str(error)
         )
-        log(f"16 pages of island 1 read in the run: {out['read_island1_in_run_exact']}")
+    log(f"HANG on group {group}: {out['hang']}")
+    out["hang_named_island"] = out.get("hang_named_island", False) and (
+        out["inspect_rank"].startswith(named)
+    )
+    raw, _ = formats.to_bytes(exact, "bfloat16", "tile")
+    rows = raw.reshape(source.pages, source.page_bytes)
+    (got,) = session.read(source, first=ranks, pages=16)
+    out["read_island1_in_run_exact"] = bool(
+        np.array_equal(got, rows[ranks : ranks + 16])
+    )
+    log(f"16 pages of island 1 read in the run: {out['read_island1_in_run_exact']}")
     return out
 
 
 def across(session, run, args, local, far, output, exact):
     """Rounds of one MAP on island 0's ranks (its own run: island 0 starts at rank 0)
-    reading `local` (their own DRAM), then `far` (island 1 holds it): the same reader,
-    whose read call asks island 1 for the tiles itself (no ask from the host). The
-    last round is checked; --reset-link checks one, resets a link core, reads again."""
+    reading `local`, then `far` (island 1 holds it; the reader asks for it itself);
+    what crossed checked against the rounds' asks and pages; the last round checked
+    (--reset-link: checked, that island's link core 0 reset, read across again)."""
     graph = session.graph
     group = (graph.first(0), graph.count(0))
     handler = run.program.handler("map")
@@ -263,23 +276,37 @@ def across(session, run, args, local, far, output, exact):
     def one_round(source, placed):
         words = map_words(source, output, [group])[0].tolist() + [placed]
         started = time.perf_counter()
-        mapped = run.island(0).submit(handler, group, words)
-        session.wait_together([(0, mapped)])
+        run.wait(run.submit(handler, group, words), timeout=10.0)
         return (time.perf_counter() - started) * 1e6
 
-    out = {"map_groups": [list(group)], "across_links": args.across}
+    out = {"map_groups": [list(group)], "links": session.links}
     tile_bytes = 2 * count * 2048
     for name, source, placed in (("local", local, 0), ("across", far, 1)):
+        before = run.crossings()
         spent = median([one_round(source, placed) for _ in range(args.map_rounds)])
+        moved = run.crossings() - before
         out[f"map_{name}_us"] = spent
         out[f"map_{name}_gb_s"] = round(tile_bytes / spent / 1e3, 3)
         log(f"MAP on {group} reading {name}: {spent} us a round, {tile_bytes:,} B")
+        log(f"crossed while reading {name}:\n{moved}")
+        out[f"crossed_{name}"] = {
+            f"{a}->{b}": moved.total(a, b) for a, b in ((0, 1), (1, 0))
+        }
+    # each rank asks once a round for its two tiles; island 1 sends them
+    asks, pages = args.map_rounds * count, args.map_rounds * 2 * count
+    went, came = out["crossed_across"]["0->1"], out["crossed_across"]["1->0"]
+    out["crossings_agree"] = (
+        went["asks"] == asks
+        and came["pages"] == pages
+        and came["bytes"] == pages * far.aligned_page_bytes
+        and not any(out["crossed_local"][way]["asks"] for way in ("0->1", "1->0"))
+    )
+    log(f"asks {went['asks']} of {asks}, pages {came['pages']} of {pages}")
     if args.reset_link >= 0:
         (got,) = session.read_bf16(output)
         out["before_reset"] = check(exact, got, [group])
         session.write(output, np.zeros((output.pages, output.page_bytes), np.uint8))
-        core = session.graph.link_cores[args.reset_link][0]
-        reset = run.reset_core(args.reset_link, core)
+        reset = run.reset_link(args.reset_link, 0)
         out["link_reset"] = {
             key: round(value, 6) if isinstance(value, float) else value
             for key, value in reset.items()
@@ -295,12 +322,23 @@ def check(exact, got, groups):
     sums = np.cumsum(exact.reshape(-1, TILE, TILE).astype(np.float64), 0)
     prefix = np.concatenate([np.zeros((1, TILE, TILE)), sums])
     got = got.reshape(-1, TILE, TILE)
-    wrong, checked = 0, 0
+    wrong, checked, ranks = 0, 0, []
     for first, count in groups:
         want = rank_sums(prefix, 2 * first, 2 * count, count)
-        wrong += int((got[first : first + count] != want).any(axis=(1, 2)).sum())
+        bad = (got[first : first + count] != want).any(axis=(1, 2))
+        wrong += int(bad.sum())
+        ranks += (first + np.flatnonzero(bad)).tolist()
         checked += count
-    return {"tiles_checked": checked, "wrong_tiles": wrong}
+    out = {"tiles_checked": checked, "wrong_tiles": wrong, "wrong_ranks": ranks[:8]}
+    if ranks:  # the first wrong tile: how far off, and whether it is zeros
+        first = ranks[0]
+        want = rank_sums(prefix, 2 * first, 2, 1)[0]
+        out["first_wrong"] = {
+            "max_error": float(np.abs(got[first] - want).max()),
+            "zeros": bool(not got[first].any()),
+            "rows_wrong": int((got[first] != want).any(axis=1).sum()),
+        }
+    return out
 
 
 if __name__ == "__main__":

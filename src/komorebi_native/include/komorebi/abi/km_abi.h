@@ -102,6 +102,9 @@
 /* link 0's CPU of link core 0 serves the messages of the RUN whose group word is a0
  * across its link until that RUN ends (km_link.hpp) */
 #define KM_PAGES_MESSAGES 5u
+/* each CPU of the link cores named: its row of what crossed (KM_LINK_CROSS) into page
+ * 2 k + c of the DRAM tensor at KM_PAGES_TO (k its link core, c the CPU) */
+#define KM_PAGES_COUNTS 6u
 #define KM_PAGES_PACKET_MAX 4352u /* a fabric packet's largest payload */
 /* LINE's words: a0 the stage, a1 the packet's number (each line of the stage holds it
  * in word 0, the count line in word 1), a2 the far tile x | y << 16, a3 the far address
@@ -152,7 +155,17 @@
 #define KM_ASK_HOLDER 8u
 #define KM_ASK_FROM 9u
 #define KM_ASK_END 15u
-#define KM_LINK_AREA_BYTES (KM_ASK_INBOX + KM_ASK_SLOTS * 64u)
+/* Then what crossed, a row a CPU of the core, counted only on a link core by that CPU:
+ * messages, command lines, asks, pages, relayed parts, bytes (low, high) it sent */
+#define KM_LINK_CROSS (KM_ASK_INBOX + KM_ASK_SLOTS * 64u)
+#define KM_CROSS_ROW 32u
+#define KM_CROSS_MESSAGES 0u
+#define KM_CROSS_LINES 1u
+#define KM_CROSS_ASKS 2u
+#define KM_CROSS_PAGES 3u
+#define KM_CROSS_PARTS 4u
+#define KM_CROSS_BYTES 5u /* the low word; the high word after it */
+#define KM_LINK_AREA_BYTES (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u

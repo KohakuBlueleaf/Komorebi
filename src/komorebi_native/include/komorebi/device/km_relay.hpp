@@ -248,6 +248,9 @@ namespace km {
                 return;  // the leader's wait gives its command up
             }
             state(kRelaySent) = state(kRelaySent) + 1;
+            cross_count(
+                Islands(island_area()).link_area(), KM_CROSS_PARTS, 1, bytes + 64
+            );
             volatile tt_l1_ptr uint32_t* line = l1(area_ + KM_RELAY_LINES + 16);
             line[0] = token;
             const uint32_t done = area_ + KM_RELAY_DONE + a[kAskSlot] * 16;
