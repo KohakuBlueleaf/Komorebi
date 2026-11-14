@@ -1,6 +1,6 @@
 # Komorebi
 
-[![Tutorial: 42 lessons](https://img.shields.io/badge/tutorial-42%20lessons-5A4FCF)](https://kohakublueleaf.github.io/Komorebi/tutorial/)
+[![Tutorial: 51 lessons](https://img.shields.io/badge/tutorial-51%20lessons-5A4FCF)](https://kohakublueleaf.github.io/Komorebi/tutorial/)
 [![Documentation](https://img.shields.io/badge/docs-website-0F52BA)](https://kohakublueleaf.github.io/Komorebi/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-4C9989)](LICENSE)
 
@@ -46,16 +46,16 @@ the card's network between them.
 | Execution control | A dispatcher on one X280 cluster submits the commands and runs streams and graphs of them on the card. C threads on the other three X280 clusters run the irregular part of a program. |
 
 What is not there in code placement: the dynamic handlers of two programs in one run; a
-message that carries a body (a message names a handler, and the handler's code is loaded
-where the message arrives); an X280 core as a rank of a run (an
-[experiment](experiments/x280_rank/README.md)); a switch of program in a run where every
+message with a body in a run that has X280 cores as ranks (a message carries a
+[body](examples/23_message_body/README.md) between Tensix cores, and X280 cores are
+[ranks](examples/24_thread_rank/README.md) of a run whose messages are one line); a switch of program in a run where every
 core holds every program; a load issued by a cast or a pull (the host issues
 `run.load`, an X280 thread `kmx_load`); a switch of a dynamic program; and what the old
 program kept in its buffers, which a switch loses.
 
 **Status: early development; 0.1.0 is a first release, for one card model.** Everything
 below runs on one P150A, from the two wheels on PyPI or from a clone against a tt-metal
-source tree. It has run on no other hardware.
+source tree; two P150As as two islands run from a clone. It has run on no other hardware.
 
 ## At a glance
 

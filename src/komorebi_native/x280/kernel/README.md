@@ -343,7 +343,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   commands' (`Run.stalls`). `KMD_H_WATCH_GAP` is the longest time it saw without a
   change. Test builds with `KMD_STALL_DEBUG` have `KMD_HANDLER_STALL` (249): PONG, then
   no pass for a0 ms (the runtime's stop still ends it).
-- **Clock.** The session runs the X280 at 1000 MHz; 1750 is an explicit opt-in that
+- **Clock.** The session runs the X280 at 1350 MHz (1000 on a runtime whose clock table
+  lacks that row; the numbers on this page were taken at 1000); 1750 is an explicit opt-in that
   loses loads when the Tensix grid is under full matrix load. At 1750 MHz, with every
   Tensix core at full matrix load (the card lowers its core voltage under it), core 0's
   loads returned wrong values (a pointer of the host ring read as 0, its base off by 12
@@ -352,7 +353,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   clusters, so thread programs on the work clusters run at the same clock. Before a
   session sets it, the runtime that opens the cluster leaves that PLL at its safe
   200 MHz; 1750 was never the card's own setting, only the session's earlier default.
-  The session's log names the clock it set (`X280 clock set: 1000 MHz`).
+  The session's log names the clock it set (`X280 clock set: 1350 MHz`).
 
   | Variant of the 8192-cubed run (a profile command, then 300 calls) | 1750 MHz | 1000 MHz |
   |---|---|---|
