@@ -224,11 +224,15 @@ def grid_broadcasts(plan, nocs, group, along, noc, buffer):
     return layout_args
 
 
-def grid_program(plan, nocs, tensors, fidelity="HiFi2"):
+def grid_program(plan, nocs, tensors, fidelity="HiFi2", first_row=0, command=None):
     """The grid form's program for `plan` on a grid whose NoCs are `nocs`: each core's
     broadcast words (row broadcast on NoC0, column broadcast on NoC1), place and plan
-    words."""
+    words. The plan's rows start at row tile `first_row` of A and Y; `command`: (the
+    cores (first, count) a command reaches here, its group word), default the rect's."""
     group = layout.Group(*plan.group(nocs.grid))
+    group_word = group.first | group.count << 16
+    if command is not None:
+        group, group_word = layout.Group(*command[0]), command[1]
     row = grid_broadcasts(
         plan,
         nocs,
@@ -247,14 +251,16 @@ def grid_program(plan, nocs, tensors, fidelity="HiFi2"):
     )
     places = plan.places(nocs.grid)
     idle = [0] * (len(BROADCAST_FIELDS) + G["kCoreWords"])
+    # the row bound of the kernels is the plan's last row tile in A and Y, plus one
+    plan_words = [first_row + plan.mt, *plan.words()[1:]]
 
     def args(core):
         if core not in group.indices:
             return idle, idle, idle[: G["kCoreWords"]] + [plan.wa, plan.ww]
-        first_row, first_column = places.get(core, (0, 0))
-        mine = [int(core in places), first_row, first_column, *plan.words()]
+        row_tile, column_tile = places.get(core, (0, 0))
+        mine = [int(core in places), first_row + row_tile, column_tile, *plan_words]
         broadcasts = [
-            [words[core][field] for field in BROADCAST_FIELDS]
+            [(words[core] | {"group": group_word})[field] for field in BROADCAST_FIELDS]
             for words in (row, column)
         ]
         return broadcasts[0] + mine, broadcasts[1] + mine, mine + [plan.wa, plan.ww]

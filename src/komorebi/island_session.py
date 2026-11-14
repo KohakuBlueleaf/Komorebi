@@ -464,6 +464,15 @@ class IslandSession:
             out.append(dram.untilize_bf16(rows, *tensor.shape))
         return out
 
+    def read_tiles_bf16(self, tensor, first, pages):
+        """Tiles first .. first + pages - 1 of a bfloat16 tile tensor as float32
+        [pages, 32, 32], as Session.read_tiles_bf16, read as read() does."""
+        if tensor.layout != "tile" or tensor.dtype != "bfloat16":
+            raise ValueError("read_tiles_bf16 takes a bfloat16 tile tensor")
+        (raw,) = self.read(tensor, first=first, pages=pages)
+        tile = dram.TILE
+        return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+
     def write(self, tensor, pages, first=0):
         """Writes `pages` ([n, page_bytes] uint8) into pages first .. first + n - 1,
         each into the island that holds it (a copy: into every island)."""
@@ -481,22 +490,32 @@ class IslandSession:
             )
 
     def load(self, program, **options):
-        """Loads `program` on every island in turn (its grid, then its dispatcher),
-        with Session.load's options; returns an IslandRun over flat ranks."""
+        """Loads `program` on every island in turn (its grid, then its dispatcher), or
+        a list of Programs, one an island in island order, with Session.load's
+        options; returns an IslandRun over flat ranks."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
-        if not isinstance(program, Program):
-            raise ValueError("an island session loads one Program (not yet a list)")
-        if program.threads:
+        programs = list(program) if isinstance(program, list | tuple) else [program]
+        if len(programs) == 1:
+            programs *= len(self.sessions)
+        if len(programs) != len(self.sessions) or not all(
+            isinstance(one, Program) for one in programs
+        ):
             raise ValueError(
-                f"{program.name}: X280 threads over islands are not done yet"
+                f"an island session loads one Program or a list of "
+                f"{len(self.sessions)}, one an island"
             )
+        for one in programs:
+            if one.threads:
+                raise ValueError(
+                    f"{one.name}: X280 threads over islands are not done yet"
+                )
         runs = []
         try:
-            for island, session in enumerate(self.sessions):
+            for island, (session, one) in enumerate(zip(self.sessions, programs)):
                 try:
                     island_of = (self.graph, island)
-                    runs.append(session.load(program, island=island_of, **options))
+                    runs.append(session.load(one, island=island_of, **options))
                 except KomorebiError as error:
                     raise _named(error, island) from None
         except BaseException:
