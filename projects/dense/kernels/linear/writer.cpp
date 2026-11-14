@@ -1,5 +1,5 @@
-// Linear writer, NoC1: the column broadcast of this island's W; Y (all of K) or the
-// partial sums into P, every island told, then this core's share of Y summed.
+// Linear writer, NoC1: W's column broadcast a window of columns; other islands' blocks
+// put to them whole (not waited for), one sync over the islands, its own Y written.
 #include <stdint.h>
 
 #include "../dense.h"
@@ -129,9 +129,6 @@ void kernel_main() {
     constexpr auto y_args = (
         TensorAccessorArgs<w_args.next_compile_time_args_offset()>()
     );
-    constexpr auto p_args = (
-        TensorAccessorArgs<y_args.next_compile_time_args_offset()>()
-    );
     km::Writer writer;
     const auto core = [&](uint32_t word) {
         return writer.arg(kArgCore + word);
@@ -143,25 +140,37 @@ void kernel_main() {
         if (km::handler(command) != kHandlerLinear) {
             return true;
         }
-        const uint32_t w = command.a1, y = command.a2, p = command.a3;
+        const uint32_t w = command.a1, y = command.a2, s = command.a3;
         const uint32_t k_whole = command.a4, n_whole = command.a5;
         const uint32_t m_tiles = plan(kPlMt), here = km::island();
+        const uint32_t islands = km::islands();
         invalidate_l1_cache();  // the tensor table
-        const Cover mine = cover(w, here, k_whole, n_whole);
-        const bool whole = parts(w, k_whole, n_whole).whole;
+        const Span mine = k_part(w, here, k_whole, n_whole);
+        bool sync = exchanging(w, y, m_tiles, k_whole, n_whole);
         const Holding y_here = holding(y, here, m_tiles * n_whole);
         const auto y_matrix = TensorAccessor(y_args, y_here.address);
-        const auto p_matrix = (
-            TensorAccessor(p_args, holding(p, here, m_tiles * n_whole).address)
-        );
-        if (mine.k_tiles != 0 && core(kCoreRank) != 0) {
+        // this core's puts not yet counted (the block they came from still held)
+        uint32_t outstanding = 0, holder = here;
+        const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
+        const uint32_t block_tiles = block_height * block_width;
+        const auto settle = [&] {
+            if (outstanding == 0) {
+                return true;
+            }
+            if (!km::put_wait(writer, command, kPortPut, outstanding, holder)) {
+                return false;
+            }
+            cb_pop_front(kCbSend, block_tiles);
+            outstanding = 0;
+            return true;
+        };
+        if (mine.count != 0 && core(kCoreRank) != 0) {
             km::Broadcast broadcast(writer, command, kArgBroadcast);
             if (!broadcast.ok()) {
                 return false;
             }
-            const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
             const uint32_t k_block_tiles = plan(kPlKb);
-            const uint32_t k_blocks = blocks_of(mine.k_tiles, k_block_tiles);
+            const uint32_t k_blocks = blocks_of(mine.count, k_block_tiles);
             const uint32_t blocks_high = plan(kPlNbh), blocks_wide = plan(kPlNbw);
             const uint32_t subblock_height = plan(kPlSh);
             const uint32_t subblock_width = plan(kPlSw);
@@ -170,196 +179,210 @@ void kernel_main() {
             const uint32_t row_end = (
                 first_row + plan(kPlPcM) < m_tiles ? first_row + plan(kPlPcM) : m_tiles
             );
-            const uint32_t column_end =
-                (  // of this island's columns of W and Y
-                    first_column + plan(kPlPcN) < mine.n_tiles
-                        ? first_column + plan(kPlPcN)
-                        : mine.n_tiles
-                );
+            const Sent sent = {
+                blocks_of(m_tiles, plan(kPlPcM)) * blocks_of(plan(kPlNt), plan(kPlPcN)),
+                blocks_high * blocks_wide,
+                block_tiles
+            };
+            const uint32_t me = (
+                first_row / plan(kPlPcM) * blocks_of(plan(kPlNt), plan(kPlPcN)) +
+                first_column / plan(kPlPcN)
+            );
             const Holding w_here = holding(w, here, k_whole * n_whole);
             const auto w_matrix = TensorAccessor(w_args, w_here.address);
-            const uint32_t out = whole ? kCbYOut : kCbPartOut;
-            const uint32_t out_bytes = whole ? kBf16Bytes : kPartBytes;
+            uint32_t step = 0;
+            for (uint32_t turn = 1; turn <= islands; ++turn) {
+                const uint32_t to = island_at(here, turn);
+                const Span window = columns(y, to, m_tiles, n_whole);
+                if (window.count == 0) {
+                    continue;
+                }
+                const bool own = to == here;
+                if (own && sync) {  // every put counted, then every island's
+                    if (!settle() || !everywhere(writer, command)) {
+                        return false;
+                    }
+                    sync = false;
+                }
+                const uint32_t column_end = (
+                    first_column + plan(kPlPcN) < window.count
+                        ? first_column + plan(kPlPcN)
+                        : window.count
+                );
+                const uint32_t s_address = holding(s, to, 1).address;
+                const uint32_t s_set = sent_set(here, to);
 
-            // Output block (block_row, block_column), subblocks in compute's order: Y
-            // where its pages are (here, else put across), or the partial sums into P.
-            const auto put = [&](uint32_t block_row, uint32_t block_column) {
-                for (
-                    uint32_t subblock_row = 0; subblock_row < block_height;
-                    subblock_row += subblock_height
+                // Output block `block` at (block_row, block_column): its own window's
+                // Y written by subblock, another island's put whole to its S, one line.
+                const auto put = [&](
+                    uint32_t block, uint32_t block_row, uint32_t block_column
                 ) {
-                    for (
-                        uint32_t subblock_column = 0; subblock_column < block_width;
-                        subblock_column += subblock_width
-                    ) {
-                        if (!writer.wait_front(out, subblock_tiles)) {
+                    if (!own) {
+                        if (!settle() || !writer.wait_front(kCbSend, block_tiles)) {
                             return false;
                         }
-                        uint32_t source = get_read_ptr(out);
-                        const uint32_t column = block_column + subblock_column;
-                        const uint32_t left = (
-                            column < column_end ? column_end - column : 0
-                        );
+                        if (block_row >= row_end || block_column >= column_end) {
+                            cb_pop_front(kCbSend, block_tiles);  // no column of Y
+                            return true;
+                        }
+                        if (!km::put_pages(
+                            writer,
+                            command,
+                            to,
+                            s_address,
+                            kBf16Bytes,
+                            sent.page(s_set, me, block),
+                            block_tiles,
+                            get_read_ptr(kCbSend),
+                            kPortPut
+                        )) {
+                            return false;
+                        }
+                        outstanding = block_tiles;
+                        holder = to;
+                        return true;
+                    }
+                    for (
+                        uint32_t subblock_row = 0; subblock_row < block_height;
+                        subblock_row += subblock_height
+                    ) {
                         for (
-                            uint32_t tile_row = 0; tile_row < subblock_height;
-                            ++tile_row
+                            uint32_t subblock_column = 0; subblock_column < block_width;
+                            subblock_column += subblock_width
                         ) {
-                            // the row's tiles: pages page .. of Y (or P), Y's here
-                            // at consecutive indices when its part holds them all
-                            const uint32_t row = block_row + subblock_row + tile_row;
-                            const uint32_t columns = (
-                                row >= row_end
-                                    ? 0
-                                    : left < subblock_width
-                                        ? left
-                                        : subblock_width
+                            if (!writer.wait_front(kCbYOut, subblock_tiles)) {
+                                return false;
+                            }
+                            uint32_t source = get_read_ptr(kCbYOut);
+                            const uint32_t column = block_column + subblock_column;
+                            const uint32_t left = (
+                                column < column_end ? column_end - column : 0
                             );
-                            const uint32_t page = row * n_whole + mine.n0 + column;
-                            const bool home = (
-                                whole && columns != 0 && y_here.holds(page, columns)
-                            );
-                            const uint32_t index = home ? y_here.index(page) : 0;
                             for (
-                                uint32_t tile_column = 0; tile_column < subblock_width;
-                                ++tile_column
+                                uint32_t tile_row = 0; tile_row < subblock_height;
+                                ++tile_row
                             ) {
-                                if (tile_column < columns) {
-                                    if (!whole) {
-                                        noc_async_write_page(
-                                            page + tile_column, p_matrix, source
-                                        );
-                                    } else if (home) {
+                                // the row's tiles: Y's pages here, consecutive
+                                const uint32_t row = (
+                                    block_row + subblock_row + tile_row
+                                );
+                                const uint32_t columns_here = (
+                                    row >= row_end
+                                        ? 0
+                                        : left < subblock_width
+                                            ? left
+                                            : subblock_width
+                                );
+                                const uint32_t index = (
+                                    columns_here == 0
+                                        ? 0
+                                        : y_here.index(
+                                            row * n_whole + window.first + column
+                                        )
+                                );
+                                for (
+                                    uint32_t tile_column = 0;
+                                    tile_column < subblock_width;
+                                    ++tile_column
+                                ) {
+                                    if (tile_column < columns_here) {
                                         noc_async_write_page(
                                             index + tile_column, y_matrix, source
                                         );
-                                    } else if (
-                                        km::island_of(y, page + tile_column) == here
-                                    ) {
-                                        noc_async_write_page(
-                                            y_here.index(page + tile_column),
-                                            y_matrix,
-                                            source
-                                        );
-                                    } else if (!km::write_pages(
-                                        writer,
-                                        command,
-                                        y_args,
-                                        y,
-                                        page + tile_column,
-                                        1,
-                                        source,
-                                        kPortY
-                                    )) {
-                                        return false;
                                     }
+                                    source += kBf16Bytes;
                                 }
-                                source += out_bytes;
                             }
+                            if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
+                                return false;
+                            }
+                            cb_pop_front(kCbYOut, subblock_tiles);
                         }
-                        if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
-                            return false;
-                        }
-                        cb_pop_front(out, subblock_tiles);
                     }
-                }
-                return true;
-            };
+                    return true;
+                };
 
-            bool pending = false;
-            uint32_t pending_row = 0, pending_column = 0, step = 0;
-            for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
-                const uint32_t block_row = (
-                    first_row + block / blocks_wide * block_height
-                );
-                const uint32_t block_column = (
-                    first_column + block % blocks_wide * block_width
-                );
-                for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
-                    if (!broadcast.sender()) {
-                        if (!broadcast.arrive(step)) {
-                            return false;
-                        }
-                    } else {
-                        const uint32_t base = broadcast.reserve(step);
-                        if (base == 0) {
-                            return false;
-                        }
-                        const uint32_t k_start = k_block * k_block_tiles;
-                        const uint32_t k_length = (
-                            mine.k_tiles - k_start < k_block_tiles
-                                ? mine.k_tiles - k_start
-                                : k_block_tiles
+                bool pending = false;
+                uint32_t pending_block = 0, pending_row = 0, pending_column = 0;
+                for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
+                    const uint32_t block_row = (
+                        first_row + block / blocks_wide * block_height
+                    );
+                    const uint32_t block_column = (
+                        first_column + block % blocks_wide * block_width
+                    );
+                    const uint32_t left =
+                        (  // of the window's columns
+                            block_column < window.count
+                                ? window.count - block_column
+                                : 0
                         );
-                        const uint32_t left =
-                            (  // of this island's columns
-                                block_column < mine.n_tiles
-                                    ? mine.n_tiles - block_column
-                                    : 0
+                    const uint32_t columns_read = (
+                        left < block_width ? left : block_width
+                    );
+                    for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
+                        if (!broadcast.sender()) {
+                            if (!broadcast.arrive(step)) {
+                                return false;
+                            }
+                        } else {
+                            const uint32_t base = broadcast.reserve(step);
+                            if (base == 0) {
+                                return false;
+                            }
+                            const uint32_t k_start = k_block * k_block_tiles;
+                            const uint32_t k_length = (
+                                mine.count - k_start < k_block_tiles
+                                    ? mine.count - k_start
+                                    : k_block_tiles
                             );
-                        const uint32_t columns = (
-                            left < block_width ? left : block_width
-                        );
-                        for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
-                            // W's rows this island holds, read here: a row's tiles
-                            // at consecutive indices of its part
-                            const uint32_t index = (
-                                w_here.index(
-                                    (mine.k0 + k_start + k_tile) * n_whole + mine.n0 +
-                                    block_column
-                                )
-                            );
-                            for (uint32_t column = 0; column < columns; ++column) {
-                                noc_async_read_page(
-                                    index + column,
-                                    w_matrix,
-                                    base + (k_tile * block_width + column) * kBf16Bytes
+                            for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
+                                // W's rows this island holds, read here: a row's
+                                // tiles at consecutive indices of its part
+                                const uint32_t index = (
+                                    w_here.index(
+                                        (mine.first + k_start + k_tile) * n_whole +
+                                        window.first + block_column
+                                    )
                                 );
+                                for (
+                                    uint32_t column = 0; column < columns_read; ++column
+                                ) {
+                                    noc_async_read_page(
+                                        index + column,
+                                        w_matrix,
+                                        base +
+                                            (k_tile * block_width + column) * kBf16Bytes
+                                    );
+                                }
+                            }
+                            if (!flushed(writer, km::kStWriter, km::kFlushReads)) {
+                                return false;
+                            }
+                            if (!broadcast.cast(step)) {
+                                return false;
                             }
                         }
-                        if (!flushed(writer, km::kStWriter, km::kFlushReads)) {
-                            return false;
-                        }
-                        if (!broadcast.cast(step)) {
-                            return false;
+                        if (k_block == 0 && pending) {
+                            if (!put(pending_block, pending_row, pending_column)) {
+                                return false;
+                            }
+                            pending = false;
                         }
                     }
-                    if (k_block == 0 && pending) {
-                        if (!put(pending_row, pending_column)) {
-                            return false;
-                        }
-                        pending = false;
-                    }
+                    pending = true;
+                    pending_block = block;
+                    pending_row = block_row;
+                    pending_column = block_column;
                 }
-                pending = true;
-                pending_row = block_row;
-                pending_column = block_column;
+                if (pending && !put(pending_block, pending_row, pending_column)) {
+                    return false;
+                }
             }
-            if (pending && !put(pending_row, pending_column)) {
-                return false;
-            }
-            if (!broadcast.finish()) {
+            if (!settle() || !broadcast.finish()) {
                 return false;
             }
         }
-        if (whole) {
-            return true;
-        }
-        if (!everywhere(writer, command)) {
-            return false;
-        }
-        // Y's share of this core: the sums compute made of every island's part.
-        const km::Group local = km::group_of(command, writer.me()).local();
-        const km::Partition share = km::partition(y_here.pages, local.rank, local.size);
-        for (uint32_t tile = 0; tile < share.len; ++tile) {
-            if (!writer.wait_front(kCbYOut, 1, km::kBehindPort)) {
-                return false;
-            }
-            noc_async_write_page(share.start + tile, y_matrix, get_read_ptr(kCbYOut));
-            if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
-                return false;
-            }
-            cb_pop_front(kCbYOut, 1);
-        }
-        return true;
+        return !sync || everywhere(writer, command);
     });
 }
