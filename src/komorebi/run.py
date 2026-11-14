@@ -30,6 +30,8 @@ from komorebi.errors import (
 from komorebi.program import Handler
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
+NO_LIST = 0xFF  # a core with no kept reset list (KMD_RESET_DIRECTORY)
+RESET_STATUS = ("BAD_LIST", "NO_WINDOW", "NO_FIRMWARE", "NO_LIST")  # KMD_RESET_*
 
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
@@ -185,6 +187,7 @@ class Run:
         self.recovery, self.recovery_refused = None, "not asked for"
         self._reserved = []  # (offset, bytes) of the upload region the run holds
         self.recoveries = []  # give-ups whose cores the dispatcher reset: handle, text
+        self._reset_failed = (-1, 0)  # a give-up's failed reset: core, KMD_RESET_*
         self.inspect_ticks = None  # mtime ticks the last inspect() took on core 0
         self._failure = None
         self._stopped = False
@@ -405,48 +408,84 @@ class Run:
         )
         return self.wait(handle, timeout)
 
-    def keep_resets(self, timeout=10.0):
-        """Hands the dispatcher every core's reset list (Session.load(recover=True)):
-        at a give-up it then resets and loads again each core that did not leave.
-        Sets `recovery`, or `recovery_refused` with the reason; True when kept."""
+    def keep_resets(self, exclude=(), timeout=10.0):
+        """Hands the dispatcher a reset list a group of cores with the same kernels and
+        each core's list number (load(recover=True)): a give-up then resets and loads
+        again each core that did not leave; `exclude` (link cores) get none. Sets
+        `recovery`, or `recovery_refused` with the reason; True when kept."""
         started = time.perf_counter()
         launch = getattr(self.backend, "launch", None)
         if launch is None:
             self.recovery_refused = "the session's backend has no launch to reload"
             return False
-        try:
-            writes = launch.reset_list(0, 0, every=True)
-        except (ValueError, RuntimeError) as error:  # semaphores, cores that differ
+        groups = list(launch.reset_groups())[: self.cores]
+        excluded = set(exclude)
+        lists, owner = [], {}
+        try:  # one list a group, built on its first core
+            for core, group in enumerate(groups):
+                if group >= 0 and core not in excluded and group not in owner:
+                    owner[group] = len(lists)
+                    x, y = core % self.grid[0], core // self.grid[0]
+                    lists.append(launch.reset_list(x, y, every=True))
+        except (ValueError, RuntimeError) as error:  # semaphores
             self.recovery_refused = str(error)
             return False
+        core_list = bytearray([NO_LIST] * self.h["KM_CORES_MAX"])
+        for core, group in enumerate(groups):
+            if group in owner and core not in excluded:
+                core_list[core] = owner[group]
+        head = self.h["KMD_RESET_DIRECTORY_ENTRIES"]
+        at = -(-(head + 16 * len(lists)) // 64) * 64
+        entries, body = [], b""
+        for writes in lists:
+            entries.append((at + len(body), len(writes)))
+            body += writes  # whole 64-byte lines
+        directory = array("I", [self.h["KMD_RESET_DIRECTORY"], len(lists), 0, 0])
+        directory = directory.tobytes() + bytes(core_list)
+        for offset, size in entries:
+            directory += array("I", [offset, size, 0, 0]).tobytes()
+        blob = directory + bytes(at - len(directory)) + body
         ready = self.h["KMD_HOST_READY"] + control.offsets(self.h)["ready_bytes"]
-        if len(writes) > self.port.host_word(ready) or self._reserved:
-            self.recovery_refused = f"{len(writes)} bytes do not fit the upload region"
+        if not lists or len(blob) > self.port.host_word(ready) or self._reserved:
+            self.recovery_refused = (
+                f"{len(blob)} bytes do not fit the upload region"
+                if lists
+                else "no core with kernels to reload"
+            )
             return False
-        self.port.upload(0, writes)
+        self.port.upload(0, blob)
         handle = self._queue_command(
-            self.h["KMD_HANDLER_RESET"], (0, 0), [0, len(writes)]
+            self.h["KMD_HANDLER_RESET"], (0, 0), [0, len(blob)]
         )
         self._counts[-1] = 0  # the kernel's own command: no sequence number
         event = self.wait(handle, timeout)
         if event.kind != "pong" or event.auxiliary != self.h["KMD_RESET_OK"]:
-            self.recovery_refused = f"the dispatcher refused the list: {event}"
+            self.recovery_refused = f"the dispatcher refused the lists: {event}"
             return False
-        self._reserved.append((0, len(writes)))
-        seconds = time.perf_counter() - started
-        self.recovery = {"offset": 0, "bytes": len(writes), "seconds": seconds}
+        self._reserved.append((0, len(blob)))
+        self.recovery = {
+            "offset": 0,
+            "bytes": len(blob),
+            "lists": entries,
+            "cores": [
+                core for core, number in enumerate(core_list) if number != NO_LIST
+            ],
+            "seconds": time.perf_counter() - started,
+        }
+        self._core_list = core_list
         self.recovery_refused = None
         return True
 
     def reset_core(self, core, timeout=10.0):
-        """Resets core `core` and loads its kernels again while the other cores run:
-        by the dispatcher from the kept list (`recovery`), else by the host. Returns
-        {core, by, seconds, x280_seconds}; KomorebiError if the core did not come back.
-        """
+        """Resets core `core` (this card's core number) and loads its kernels again
+        while the other cores run: by the dispatcher from its kept list (`recovery`),
+        else by the host. Returns {core, by, seconds, x280_seconds}; KomorebiError if
+        the core did not come back."""
         if not 0 <= core < self.cores:
             raise ValueError(f"core {core}: the grid has {self.cores}")
         started = time.perf_counter()
-        if self.recovery is None:
+        number = NO_LIST if self.recovery is None else self._core_list[core]
+        if number == NO_LIST:
             x, y = core % self.grid[0], core // self.grid[0]
             parts = self.backend.launch.reset_core(x, y, min(timeout, 2.0))
             if parts[1] < 0:
@@ -457,10 +496,9 @@ class Run:
                 "seconds": time.perf_counter() - started,
                 "x280_seconds": None,
             }
+        offset, size = self.recovery["lists"][number]
         handle = self._queue_command(
-            self.h["KMD_HANDLER_RESET"],
-            (core, 1),
-            [self.recovery["offset"], self.recovery["bytes"]],
+            self.h["KMD_HANDLER_RESET"], (core, 1), [offset, size]
         )
         self._counts[-1] = 0  # the kernel's own command: no sequence number
         event = self.wait(handle, timeout)
@@ -777,6 +815,9 @@ class Run:
         count = self._local(group)[1] if group and group[0] is not None else 0
         read = self.backend.inspect(count)
         if read["given_up"] == self._given_up_seen:
+            block = device_state.inspect(read["block"], self.h)
+            failed = block["reset_failed"] if block["kind"] == "timeout" else 0
+            self._reset_failed = (failed & 0xFFFF) - 1, failed >> 16
             return False
         self._given_up_seen += 1
         block = device_state.inspect(read["block"], self.h)
@@ -1429,11 +1470,18 @@ class Run:
             if known
             else []
         )
-        raise self._remember(
-            CommandTimeout(
-                event.handle, event.auxiliary, sequence, group, cores, result
-            )
+        error = CommandTimeout(
+            event.handle, event.auxiliary, sequence, group, cores, result
         )
+        core, status = self._reset_failed
+        if core >= 0:  # a give-up's reset that failed left the command in its core
+            names = {self.h[f"KMD_RESET_{name}"]: name for name in RESET_STATUS}
+            error.args = (
+                f"{error.args[0]}; the dispatcher's reset of core {core} failed "
+                f"({names.get(status, status)})",
+                *error.args[1:],
+            )
+        raise self._remember(error)
 
     def _fail_kernel(self, why):
         self._finish(10.0)

@@ -1158,21 +1158,22 @@ class Session:
             run._fail_start(state)
         if placed is not None and placed.switch:
             _start_loads(run, placed)
-        if (
-            recover
-            and self.island is None
-            and not several
-            and not (placed is not None and placed.switch)
-        ):
-            if run.keep_resets():
+        if recover and not (placed is not None and placed.switch):
+            # an island's link cores keep their held connection: no reset list
+            exclude = ()
+            if self.island is not None:
+                graph, here = self.island
+                exclude = set(range(run.cores)) - set(graph.rank_cores[here])
+            if run.keep_resets(exclude):
                 self.log(
-                    f"reset list kept: {run.recovery['bytes']} B in "
+                    f"reset lists kept: {len(run.recovery['lists'])}, "
+                    f"{run.recovery['bytes']} B in "
                     f"{run.recovery['seconds'] * 1e3:.1f} ms"
                 )
             else:
                 self.log(f"no reset list: {run.recovery_refused}")
         elif recover:
-            run.recovery_refused = "islands, several programs or program switches"
+            run.recovery_refused = "a run whose groups switch program"
         self.log("ready")
         if works:
             shared = {name: _host_array(value) for name, value in owner.shared.items()}
