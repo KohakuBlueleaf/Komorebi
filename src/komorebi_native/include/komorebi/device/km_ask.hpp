@@ -20,7 +20,7 @@ namespace km {
 
     // A queue of lines in link core 0's link area (offsets): the count its island's
     // cores reserve lines with, the count it took (`cursors`: a count each page CPU
-    // took, the page CPUs in the fourth word), its lines; and the asking CPU's own
+    // took, the page CPUs in the eighth word), its lines; and the asking CPU's own
     // line and its two answer words, on its own core.
     struct AskQueue {
         uint32_t tail;
@@ -120,9 +120,13 @@ namespace km {
         // before
         volatile tt_l1_ptr uint32_t* taken = l1(area + queue.read);
         const auto oldest = [&] {
-            const uint32_t cpus = queue.cursors && taken[3] != 0 ? taken[3] : 1;
+            const uint32_t cpus = (
+                queue.cursors && taken[(KM_PUT_CPUS - KM_PUT_TAKEN) / 4] != 0
+                    ? taken[(KM_PUT_CPUS - KM_PUT_TAKEN) / 4]
+                    : 1
+            );
             uint32_t behind = 0;
-            for (uint32_t j = 0; j < cpus && j < 3; j++) {
+            for (uint32_t j = 0; j < cpus && j < KM_PAGE_CPUS; j++) {
                 behind = number - taken[j] > behind ? number - taken[j] : behind;
             }
             return behind;
@@ -142,7 +146,9 @@ namespace km {
                     }
                 }
                 noc_async_read(
-                    core.core_noc(link, area + queue.taken), area + queue.read, 16
+                    core.core_noc(link, area + queue.taken),
+                    area + queue.read,
+                    queue.cursors ? 32 : 16
                 );
                 reading = true;
                 return false;

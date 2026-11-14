@@ -140,10 +140,11 @@
  * most KM_PAGE_CPUS), the bad ones; on a page CPU's core the far asks it answered
  * (a word a CPU of the core); a core's own line and two answer words; the two headers
  * of link core 0's CPUs (the far ask, the answer's count); the lines, then the far
- * asks. A page CPU is a CPU that holds a page link (links 1 on; link 0 when it is the
- * only one), page CPU j holding link j + 1; each serves its share of every ask and
- * put (partition(pages, j, page CPUs)). */
-#define KM_PAGE_CPUS 3u
+ * asks. A page CPU is a CPU that holds a page link (every link when no message
+ * service holds link 0, else links 1 on, link 0 when it is the only one: KM_PUT_CPUS
+ * of them, the last links); each serves its share of every ask and put
+ * (partition(pages, j, page CPUs)). */
+#define KM_PAGE_CPUS 4u
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
 #define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u) /* + 4 j: page CPU j's */
@@ -184,24 +185,24 @@
 #define KM_CROSS_PUTS 7u  /* put lines and their confirmations */
 /* Then a core's puts of pages into DRAM another island holds (km::write_pages), the
  * same way the other direction: on link core 0 the count its cores reserve put lines
- * with, the put lines each page CPU took (a word each) and the island's page CPUs
- * (the session writes it), the far island's count of puts confirmed written, the puts
- * confirmed here, the bad ones; the pages each far page CPU's puts wrote here (their
- * last packets add them once written), and of those the pages confirmed; a core's own
- * put line and two answer words for each of its two data-movement CPUs; page CPU 0's
- * three headers (a put line across, a confirmation's count and its done word); the
- * put lines, then the far island's (an ask line each: KM_ASK_TO the asker's L1,
- * KM_ASK_TENSOR the holder's tensor) */
+ * with, the put lines each page CPU took (a word each), the far island's count of puts
+ * confirmed written, the puts confirmed here, the bad ones, the island's page CPUs
+ * (the session writes it, on every core); the pages each far page CPU's puts wrote
+ * here (their last packets add them once written), and of those the pages confirmed;
+ * a core's own put line and two answer words for each of its two data-movement CPUs;
+ * page CPU 0's three headers (a put line across, a confirmation's count and its done
+ * word); the put lines, then the far island's (an ask line each: KM_ASK_TO the
+ * asker's L1, KM_ASK_TENSOR the holder's tensor) */
 #define KM_PUT_TAIL (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
 #define KM_PUT_TAKEN (KM_PUT_TAIL + 0x10u) /* + 4 j: page CPU j's */
-#define KM_PUT_CPUS (KM_PUT_TAIL + 0x1Cu)
 #define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)
 #define KM_PUT_CONFIRMED (KM_PUT_TAIL + 0x24u)
 #define KM_PUT_BAD (KM_PUT_TAIL + 0x28u)
+#define KM_PUT_CPUS (KM_PUT_TAIL + 0x2Cu) /* read with the counts taken: 32 bytes */
 #define KM_PUT_LANDED (KM_PUT_TAIL + 0x30u) /* + 4 j: page CPU j's */
 #define KM_PUT_USED (KM_PUT_TAIL + 0x40u)   /* + 4 j */
 #define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x60 the second CPU's */
-#define KM_PUT_OWN_BYTES 0x60u
+#define KM_PUT_OWN_BYTES 0x80u /* a line, two answer words, 32 bytes read */
 #define KM_PUT_HEADERS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES + 0x40u)
 #define KM_PUT_LINES (KM_PUT_HEADERS + 0xC0u)
 #define KM_PUT_INBOX (KM_PUT_LINES + KM_ASK_SLOTS * 64u)

@@ -1739,8 +1739,10 @@ class IslandSession:
                 area, relay = self._link_areas[:2]
             else:
                 words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
-                # the page CPUs a put line waits for (links 1 on, or link 0 alone)
-                words[:, h["KM_PUT_CPUS"] // 4] = max(self.links - 1, 1)
+                # the page CPUs (the last links): every link when no message service
+                # holds link 0, else links 1 on (link 0 alone)
+                cpus = self.links if not self._regions else max(self.links - 1, 1)
+                words[:, h["KM_PUT_CPUS"] // 4] = cpus
                 area = session.tensor(words, "uint32", shard_grid=(columns, rows))
                 relay = session.tensor(  # zeros: no ask, no count, no done word
                     np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),

@@ -638,17 +638,47 @@ namespace km {
         return code;
     }
 
-    // The island's page CPUs: those holding links 1 on, or link 0 when it is the only
-    // link; page CPU j holds link j + 1 (or link 0) and serves share j of every ask
-    // and put (partition(pages, j, page_cpus())).
-    inline uint32_t page_cpus() {
-        return pages_held.links > 1 ? pages_held.links - 1 : 1;
+    // The island's page CPUs (KM_PUT_CPUS in the link area at `area`, the session's):
+    // those holding the last links, every link when no message service holds link 0,
+    // else links 1 on (link 0 when it is the only link). Page CPU j holds link
+    // first + j and serves share j of every ask and put (partition(pages, j, cpus)).
+    inline uint32_t page_cpus(uint32_t area) {
+        const uint32_t cpus = l1(area)[KM_PUT_CPUS / 4];
+        const uint32_t links = pages_held.links;
+        if (cpus != 0 && cpus <= links) {
+            return cpus;
+        }
+        return links > 1 ? links - 1 : 1;
     }
-    inline bool page_cpu() {
-        return pages_held.links > 1 ? pages_held.link >= 1 : pages_held.link == 0;
+    inline uint32_t page_first(uint32_t area) {
+        const uint32_t cpus = page_cpus(area);
+        return pages_held.links > cpus ? pages_held.links - cpus : 0;
     }
-    inline uint32_t page_index() {
-        return pages_held.links > 1 ? pages_held.link - 1 : 0;
+    inline bool page_cpu(uint32_t area) {
+        return pages_held.link >= page_first(area);
+    }
+    inline uint32_t page_index(uint32_t area) {
+        return pages_held.link - page_first(area);
+    }
+
+    // A line's pages that link 0 takes a share of, when it is a page CPU: fewer go on
+    // the others, its CPU kept for its lines (measured: example 01's two pages a rank
+    // crossed a fifth slower with link 0 in every line).
+    constexpr uint32_t kPagesLinkZeroFrom = 64;
+
+    // The page CPU that sends a put line across, confirms and counts the bad ones: the
+    // one holding link 1 (link 0 when alone).
+    inline uint32_t page_lead(uint32_t area) {
+        return page_first(area) == 0 && pages_held.links > 1 ? 1 : 0;
+    }
+
+    // Page CPU j's share of a line of `pages` pages.
+    inline Partition page_share(uint32_t area, uint32_t pages, uint32_t j) {
+        const uint32_t cpus = page_cpus(area);
+        if (page_lead(area) == 0 || pages >= kPagesLinkZeroFrom) {
+            return partition(pages, j, cpus);
+        }
+        return j == 0 ? Partition{0, 0} : partition(pages, j - 1, cpus - 1);
     }
 
     // The island's link core 0 (the core after its ranks): where the lines are.
@@ -731,7 +761,7 @@ namespace km {
         if (l1(line)[KM_ASK_NUMBER] != taken + 1 || l1(line)[KM_ASK_END] != taken + 1) {
             return kGaveNone;  // no line yet
         }
-        for (uint32_t j = 0; j < page_cpus(); j++) {
+        for (uint32_t j = 0; j < page_cpus(area); j++) {
             if (taken - words[KM_ASK_SERVED / 4 + j] >= KM_ASK_SLOTS) {
                 return kGaveNone;  // the far asks are full
             }
@@ -861,15 +891,15 @@ namespace km {
             r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
             r.page <= KM_PAGES_PACKET_MAX && r.to % 16 == 0 && r.count % 16 == 0
         );
-        const uint32_t j = page_index();
-        const Partition share = partition(r.pages, j, page_cpus());
+        const uint32_t j = page_index(area);
+        const Partition share = page_share(area, r.pages, j);
         if (good && share.len != 0) {
             code = pages_push(kernel, r, cpu, share);
         }
         if (code != kGaveNone) {
             return code;
         }
-        if (!good && j == 0) {
+        if (!good && j == page_lead(area)) {
             words[KM_ASK_BAD / 4] += 1;
         }
         const uint32_t xy = pages_far0;  // the far link core 0
@@ -901,11 +931,12 @@ namespace km {
     ) {
         volatile tt_l1_ptr uint32_t* words = l1(area);
         invalidate_l1_cache();
-        const uint32_t j = page_index();
+        const uint32_t j = page_index(area);
         const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;
         const uint32_t taken = words[KM_PUT_TAKEN / 4 + j];
         const uint32_t slot = area + KM_PUT_LINES + taken % KM_ASK_SLOTS * 64;
-        if (j == 0 && taken - words[KM_PUT_DONE / 4] >= KM_ASK_SLOTS) {
+        const bool lead = j == page_lead(area);
+        if (lead && taken - words[KM_PUT_DONE / 4] >= KM_ASK_SLOTS) {
             return kGaveNone;  // the far puts are full
         }
         uint32_t code = kGaveNone;
@@ -941,7 +972,7 @@ namespace km {
             r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
             r.page <= KM_PAGES_PACKET_MAX && r.from % 16 == 0
         );
-        if (j == 0) {  // on link core 0: the line is its own
+        if (lead) {  // on link core 0: the line is its own
             if (!good) {
                 line[KM_ASK_PAGES] = 0;
                 words[KM_PUT_BAD / 4] += 1;
@@ -961,7 +992,7 @@ namespace km {
                 cross_count(area, KM_CROSS_PUTS, 1, 64);
             }
         }
-        const Partition share = partition(r.pages, j, page_cpus());
+        const Partition share = page_share(area, r.pages, j);
         if (code == kGaveNone && good && share.len != 0) {
             code = pages_push(kernel, r, cpu, share);
         }
@@ -1002,9 +1033,9 @@ namespace km {
         if (line[KM_ASK_NUMBER] != confirmed + 1 || line[KM_ASK_END] != confirmed + 1) {
             return kGaveNone;
         }
-        const uint32_t cpus = page_cpus();
+        const uint32_t cpus = page_cpus(area);
         for (uint32_t j = 0; j < cpus; j++) {
-            const uint32_t share = partition(pages, j, cpus).len;
+            const uint32_t share = page_share(area, pages, j).len;
             if (
                 static_cast<int32_t>(
                     words[KM_PUT_LANDED / 4 + j] - words[KM_PUT_USED / 4 + j] - share
@@ -1035,7 +1066,7 @@ namespace km {
         code = pages_packet(kernel, done, 0, 0);
         if (code == kGaveNone) {
             for (uint32_t j = 0; j < cpus; j++) {
-                words[KM_PUT_USED / 4 + j] += partition(pages, j, cpus).len;
+                words[KM_PUT_USED / 4 + j] += page_share(area, pages, j).len;
             }
             words[KM_PUT_CONFIRMED / 4] = confirmed + 1;
             cross_count(area, KM_CROSS_PUTS, 1, pages != 0 ? 8 : 4);
@@ -1115,7 +1146,7 @@ namespace km {
         if (pages_held.link == 0) {
             code = pages_forward(kernel, area);
         }
-        if (page_cpu()) {
+        if (page_cpu(area)) {
             if (code == kGaveNone) {
                 const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;
                 code = pages_far_core0(kernel, own + KM_PAGE_CPU_HEADER);
@@ -1126,7 +1157,7 @@ namespace km {
             if (code == kGaveNone) {
                 code = pages_put(kernel, cpu, area);
             }
-            if (code == kGaveNone && page_index() == 0) {
+            if (code == kGaveNone && page_index(area) == page_lead(area)) {
                 code = pages_confirm(kernel, area);
             }
         }
