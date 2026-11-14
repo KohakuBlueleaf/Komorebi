@@ -1030,20 +1030,26 @@ namespace km {
         // an island further on holds it: on by this island's link toward it (one
         // page CPU a link)
         const uint32_t toward = holder < view.count() ? view.link(holder) : 0xFFu;
+#if defined(KM_FORWARD)
         const bool onward = (
             holder != view.here() && fits && page_cpus(area) == 1 &&
             toward != KM_ISLAND_NO_LINK && toward != forward_index(view)
         );
+#else
+        const bool onward = false;
+#endif
         const bool good = holder == view.here() && fits;
         const uint32_t j = page_index(area);
         const Partition share = page_share(area, r.pages, j);
         if (onward) {
+#if defined(KM_FORWARD)
             bool later = false;
             const uint32_t core = view.base() + view.ranks() + toward;
             code = pages_requeue(kernel, line, area, core, later);
             if (later) {
                 return kGaveNone;  // its line there is not free yet
             }
+#endif
         } else if (good && share.len != 0) {
             forward_route(line[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
             code = pages_push(kernel, r, cpu, share);
@@ -1302,7 +1308,9 @@ namespace km {
         live[kLvSequence + kernel.role()] = 0;
         uint32_t code = kGaveNone;
         if (pages_held.link == 0) {
+#if defined(KM_FORWARD)
             forward_turn();
+#endif
             code = pages_forward(kernel, area);
         }
         if (page_cpu(area)) {

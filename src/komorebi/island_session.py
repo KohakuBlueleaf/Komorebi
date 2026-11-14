@@ -1186,7 +1186,12 @@ class IslandSession:
         if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
             asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
             for one in programs:
-                one.defines = {**one.defines, "KM_PAGE_LINKS": 1, **asks}
+                one.defines = {
+                    **one.defines,
+                    "KM_PAGE_LINKS": 1,
+                    **asks,
+                    **self._forward,
+                }
         plans = self._links()
         tables = self._tables_for_load()
         runs = []
@@ -1229,6 +1234,12 @@ class IslandSession:
                 raise
         return self.run
 
+    @property
+    def _forward(self):
+        """KM_FORWARD over more than two islands: the link services forward (built only
+        then, the kernels smaller without)."""
+        return {"KM_FORWARD": 1} if len(self.graph.islands) > 2 else {}
+
     def _load_split(self, program, options):
         """load() on a card split into islands: one launch, the links wires (NoC
         writes to the far island's tiles), the services as on two cards."""
@@ -1246,6 +1257,7 @@ class IslandSession:
                     **program.defines,
                     "KM_PAGE_LINKS": 1,
                     "KM_WIRE": 1,
+                    **self._forward,
                     **asks,
                     **table,
                 }

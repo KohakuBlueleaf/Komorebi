@@ -296,9 +296,11 @@ namespace km {
 
         // The packet: across, or on toward the island a route names (forward_send).
         bool send(LinkHeaderAt header, uint32_t from, uint32_t bytes) {
+#if defined(KM_FORWARD)  // the host's, over more than two islands
             if (forward_held.route != 0 && forward_needed()) {
                 return forward_send(header, from, bytes);
             }
+#endif
             return send_across(header, from, bytes);
         }
 

@@ -420,7 +420,9 @@ namespace km {
                 if (l1(area_ + KM_RELAY_LANDED)[0] != state(kRelayTaken)) {
                     place(kernel);
                 }
+#if defined(KM_FORWARD)
                 forward_turn();
+#endif
                 return l1(area_ + KM_RELAY_CREDIT)[0] == state(kRelaySent);
             });
             for (uint32_t off = 0; ok && off < bytes; off += KM_RELAY_CHUNK) {
@@ -528,16 +530,23 @@ namespace km {
                 here && bytes <= KM_RELAY_MAX &&
                 (port_index < KM_PORTS || port_index == kRelayNoPort)
             );
+            bool sent_on = false;  // a rank further on: sent on and taken there
+#if defined(KM_FORWARD)
             if (state(kRelayOnward) != 0) {
                 if (l1(area_ + KM_RELAY_DONE)[0] != state(kRelayOnward)) {
                     return;  // not taken there yet
                 }
                 state(kRelayOnward) = 0;
+                sent_on = true;
             } else if (
                 !here && bytes <= KM_RELAY_MAX &&
                 onward(kernel, view, view.island_of(a[kAskRank]))
             ) {
                 return;
+            }
+#endif
+            if (sent_on) {
+                // its credit back below, nothing placed here
             } else if (fits) {
                 noc_async_write(
                     area_ + KM_RELAY_INBOX + 64, kernel.core_noc(core, a[kAskTo]), bytes

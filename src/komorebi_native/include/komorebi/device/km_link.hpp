@@ -705,11 +705,13 @@ namespace km {
                 return;
             }
             if (landed_count == taken) {
+#if defined(KM_FORWARD)
                 if (view_.count() > 2) {
                     many_pass(taken);
-                } else {
-                    quiet_pass(taken);
+                    return;
                 }
+#endif
+                quiet_pass(taken);
                 return;
             }
             armed_ = false;
@@ -739,7 +741,11 @@ namespace km {
                 const uint32_t flat = l1(packet + index * entry_)[kLinkPrefixRank];
                 const uint32_t island = view_.island_of(flat);
                 const uint32_t link = view_.link(island);  // further on: its next link
+#if defined(KM_FORWARD)
                 const bool onward = island != view_.here();
+#else
+                const bool onward = false;  // two islands: every message is for here
+#endif
                 if (
                     onward
                         ? view_.count() <= 2 || link == index_ || link >= links_
@@ -1406,7 +1412,9 @@ namespace km {
                 if (service.ended()) {
                     break;
                 }
+#if defined(KM_FORWARD)
                 forward_turn();  // what this link core sends on for other islands
+#endif
                 service.take();
                 if (service.where() == 0) {
                     service.send();
