@@ -186,3 +186,67 @@ for context: OpenGL needs a driver stack that the host's compute GPUs do not off
 About a third of the screen is empty sky (empty tiles), a few large near spheres give
 tiles with thousands of small triangles, and the ground gives a gradient of
 triangle size with distance.
+
+## Shading: materials and textures (SHADE)
+
+On the scenes with a materials file (Sponza and the two Bistro scenes,
+[SCENES.md](../../../reference/SCENES.md)) the frame is coloured from each pixel's
+material instead of the vertex colours: a stage SHADE after FILL, defined by
+`rasterize_shaded` in `reference/raster.py` and matched by the C++ version
+(`raster_cpu --materials DIR`, the shared parts in `raster_core.hpp`). The CUDA version
+has no SHADE.
+
+1. **Two FILLs.** FILL runs once over the triangles whose material is not `masked` and
+   once over those that are (the other set's triangles are collapsed to a point, so
+   setup drops them and the rest keep their numbers), into two sets of planes. A pixel
+   takes the masked layer where its fragment is nearer (the fill's own rule: larger
+   1/z, a tie to the lower triangle number) and not a hole, otherwise the other
+   layer. There is one masked layer: a hole shows the nearest surface that is not
+   masked, never a second masked one behind it.
+2. **Setup, per triangle.** Its first piece that setup keeps (the clip of the fill's
+   setup, with the corners' u, v and light term cut along with the colour) gives the
+   planes of u/z, v/z and light/z over the screen, built from the record's edge
+   functions like the colour planes. For each of the material's textures one mip
+   level: with the piece's doubled area `A` in pixels and `T` in level-0 texels,
+   the number of `k = 1 .. levels - 1` with `T > A 2^(2k - 1)` (the level at which a
+   pixel is nearest to one texel). For `lit`, one tangent frame: the normal of its
+   positions turned toward the eye, the tangent along +u from its positions and
+   coordinates (made orthogonal to the normal), the bitangent their cross product,
+   turned toward +v.
+3. **Per pixel**, from the winner's triangle number and the 1/z FILL wrote: u, v and
+   the light term are the planes divided by that 1/z (perspective-correct); the texel
+   is the nearest one, coordinates wrapping, row 0 at v = 1. An albedo byte becomes
+   linear colour by the pictures' 2.2 gamma; the other textures' bytes are read as
+   `b / 255` (normals `2 b / 255 - 1`).
+
+| kind | colour of a pixel |
+|---|---|
+| `flat` | FILL's vertex colour |
+| `textured` | albedo x base colour x light term |
+| `masked` | as `textured`; a hole where the mask's alpha byte (or the albedo's) is under 128 |
+| `lit` | albedo x base colour x (0.25 + 0.75 max(0, n . l)) + specular colour x (specular texel) x max(0, n . h)^exponent, n the normal map's normal in the frame, l toward the scene's point light, h the half vector |
+| `emissive` | albedo x base colour, unlit |
+
+Everything is float32 in the order written (the power by squaring, low bit first),
+so the two versions agree bit for bit. Not part of it: bilinear filtering, a level per
+pixel, glass and shadows. With one level a triangle and a box-filtered mask, leaves
+far from the camera fall below the threshold at the coarser levels and thin out.
+
+What SHADE needs beyond the fill's 128-byte record, per triangle: the three planes
+of u/z, v/z and light/z (nine floats), a level per texture, the material number and,
+for `lit`, the frame (nine floats). The reference computes them from the scene and the
+materials file; the record is unchanged.
+
+```bash
+python -m reference.public materials            # once: <scene>_materials.npz
+python -m projects.raster.reference.shade agree          # numpy against C++, every view
+python -m projects.raster.reference.shade pictures --out <folder>
+python -m projects.raster.reference.shade stats --out <folder>
+```
+
+`agree` (results under `$KR_DATA/results/raster_shaded/`) on all six views (2026-11-14):
+0 differing pixels in `tri`, `depth` and `colour`, tile list sizes equal. `pictures`
+writes each view's vertex colours beside its shaded frame; `stats` the numbers a shading
+pass on the cores is sized by: the kinds, materials and winners per 32 x 32 tile, the
+kinds each of 120 cores meets with the fill's partition of the tiles, the texture pages
+(32 x 32 texels of one level) a tile reads, and the hit rate of a page cache per core.

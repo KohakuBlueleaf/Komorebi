@@ -1,7 +1,11 @@
 """Rasterization in numpy, float32 in the order written, no fused multiply-add: the
 definition the C++ and CUDA versions match (projects/raster/reference/README.md).
 Triangles are clipped at the near distance, binned to 32 x 32 tiles by pixel box, filled
-by the top-left rule; the larger 1/z wins, a tie goes to the lower triangle index."""
+by the top-left rule; the larger 1/z wins, a tie goes to the lower triangle index.
+
+SHADE (`rasterize_shaded`) colours each pixel from its winner's material: FILL runs
+once over the triangles that are not `masked` and once over those that are, and the
+masked layer's pixel is taken where it is nearer and not a hole."""
 
 import numpy as np
 
@@ -13,6 +17,17 @@ TILES_Y = HEIGHT // TILE
 BACKGROUND = np.array([0.05, 0.05, 0.08], dtype=np.float32)
 CHUNK = 128
 F = np.float32
+# SHADE: the kinds' codes (reference/public.py KINDS), texture slots, the lit kind's
+# ambient and diffuse weights, and the alpha byte under which a masked pixel is a hole.
+FLAT, TEXTURED, MASKED, LIT, EMISSIVE = range(5)
+ALBEDO, MASK, NORMAL, SPECULAR = range(4)
+AMBIENT, DIFFUSE = F(0.25), F(0.75)
+OPAQUE_BYTE = 128
+# Texel byte to value: albedo as linear colour (the pictures' 2.2 gamma undone), the
+# other textures to [0, 1] and normals to [-1, 1].
+TEXEL_LINEAR = ((np.arange(256) / 255.0) ** 2.2).astype(np.float32)
+TEXEL_UNIT = (np.arange(256) / 255.0).astype(np.float32)
+TEXEL_SIGNED = (np.arange(256) * 2.0 / 255.0 - 1.0).astype(np.float32)
 
 
 def camera_space(scene):
@@ -50,10 +65,12 @@ def clip_polygon(corners, near):
     return out
 
 
-def corners(scene):
+def corners(scene, extra=None):
     """Screen x, y, 1/z and colour (R, 3) per corner of every piece, and its triangle.
 
     Whole triangles keep their vertices; crossing ones are clipped (1 or 2 pieces).
+    extra: further values per triangle corner (T, 3, k) float32, cut with the colour
+    and returned after its three channels.
     """
     cam, idx = scene["camera"], scene["indices"]
     xc, yc, zc = camera_space(scene)
@@ -61,9 +78,12 @@ def corners(scene):
     whole = np.nonzero(beyond == 3)[0]
     pos = np.stack([xc, yc, zc], axis=1)
     pieces, src = [pos[idx[whole]]], [whole]
-    cols = [scene["colors"][idx[whole]]]
+    values = scene["colors"][idx]
+    if extra is not None:
+        values = np.concatenate([values, extra.astype(np.float32)], axis=2)
+    cols = [values[whole]]
     for t in np.nonzero((beyond == 1) | (beyond == 2))[0]:
-        tri = np.concatenate([pos[idx[t]], scene["colors"][idx[t]]], axis=1)
+        tri = np.concatenate([pos[idx[t]], values[t]], axis=1)
         poly = clip_polygon(tri, cam[15])
         for fan in ([0, 1, 2], [0, 2, 3])[: len(poly) - 2]:
             piece = np.stack([poly[i] for i in fan])
@@ -85,9 +105,14 @@ def planes(values, coef, inv_area):
     return s * inv_area
 
 
-def setup(scene):
-    """Per-triangle records of the triangles that can cover a pixel (dict of arrays)."""
-    x, y, ww, col, src = corners(scene)
+def setup(scene, extra=None):
+    """Per-triangle records of the triangles that can cover a pixel (dict of arrays).
+
+    extra (T, 3, k): also each record's corner values ("extra", (R, 3, k), in the
+    record's corner order), the planes of value times 1/z ("extra_planes", (R, 3, k),
+    [x, y, 1] like the colour planes) and the doubled area ("area2").
+    """
+    x, y, ww, col, src = corners(scene, extra)
     cand = np.ones(len(src), dtype=bool)
     area2 = (x[:, 1] - x[:, 0]) * (y[:, 2] - y[:, 0])
     area2 = area2 - (x[:, 2] - x[:, 0]) * (y[:, 1] - y[:, 0])
@@ -113,6 +138,7 @@ def setup(scene):
     cand &= (ix0 <= ix1) & (iy0 <= iy1)
     keep = np.nonzero(cand)[0]
     x, y, ww, col = x[keep], y[keep], ww[keep], col[keep]
+    col, values = col[:, :, :3], col[:, :, 3:]
     area2, ix0, ix1, iy0, iy1 = (a[keep] for a in (area2, ix0, ix1, iy0, iy1))
     a_coef, b_coef, c_coef = (
         np.empty((len(keep), 3), dtype=np.float32) for _ in range(3)
@@ -128,7 +154,7 @@ def setup(scene):
     for ch in range(3):
         for k, c in enumerate((a_coef, b_coef, c_coef)):
             cp[:, k, ch] = planes(col[:, :, ch], c, inv_area)
-    return {
+    records = {
         "tri": src[keep].astype(np.int32),
         "a": a_coef,
         "b": b_coef,
@@ -138,6 +164,14 @@ def setup(scene):
         "c_planes": cp,
         "box": np.stack([ix0, ix1, iy0, iy1], axis=1).astype(np.int32),
     }
+    if extra is not None:
+        weighted = values * ww[:, :, None]
+        ep = np.empty((len(keep), 3, values.shape[2]), dtype=np.float32)
+        for j in range(values.shape[2]):
+            for k, c in enumerate((a_coef, b_coef, c_coef)):
+                ep[:, k, j] = planes(weighted[:, :, j], c, inv_area)
+        records |= {"extra": values, "extra_planes": ep, "area2": area2}
+    return records
 
 
 def bin_triangles(records):
@@ -218,4 +252,263 @@ def rasterize(scene):
         "depth": depth,
         "tri": tri,
         "tile_counts": counts.reshape(TILES_Y, TILES_X),
+    }
+
+
+def layer_scene(scene, keep):
+    """The scene with the triangles not in `keep` collapsed to their first corner
+    (zero area: setup drops them), so the others keep their triangle numbers."""
+    indices = scene["indices"].copy()
+    indices[~keep] = indices[~keep][:, :1]
+    return {**scene, "indices": indices}
+
+
+def dot3(a, b):
+    """(a0 b0 + a1 b1) + a2 b2 over the last axis (float32, in this order)."""
+    return (a[..., 0] * b[..., 0] + a[..., 1] * b[..., 1]) + a[..., 2] * b[..., 2]
+
+
+def normalized(v):
+    """v / |v| over the last axis; zero where |v| is zero."""
+    length = np.sqrt(dot3(v, v))
+    safe = np.where(length > 0, length, F(1))
+    return np.where((length > 0)[..., None], v / safe[..., None], F(0))
+
+
+def cross3(a, b):
+    """The cross product over the last axis (float32)."""
+    return np.stack(
+        [
+            a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1],
+            a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2],
+            a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0],
+        ],
+        axis=-1,
+    )
+
+
+def mip_level(texels, area2, levels):
+    """The level (0 = largest) at which a texel is about a pixel: the number of
+    k = 1 .. levels - 1 with texels > area2 2^(2k - 1), texels = the piece's
+    doubled area in level-0 texels and area2 its doubled area in pixels."""
+    level = np.zeros(texels.shape, dtype=np.int32)
+    for k in range(1, int(levels.max(initial=1))):
+        level += (texels > area2 * F(2.0 ** (2 * k - 1))) & (k < levels)
+    return level
+
+
+def shade_setup(scene, materials):
+    """Per triangle what SHADE needs (T rows, valid where `first` >= 0): the planes of
+    u, v and light term times 1/z of its first kept piece ("planes" (T, 3, 3),
+    [x, y, 1][u, v, light]), a mip level per texture slot ("level" (T, 4)) and, for
+    `lit`, the tangent frame ("frame" (T, 3, 3): tangent, bitangent, normal facing
+    the eye; "frame_ok" false where the coordinates give no tangent)."""
+    count = len(scene["indices"])
+    extra = np.concatenate([materials["uv"], materials["light"][:, :, None]], axis=2)
+    records = setup(scene, extra)
+    first = np.full(count, -1, dtype=np.int64)
+    first[records["tri"][::-1]] = np.arange(len(records["tri"]))[::-1]
+    has = first >= 0
+    pick = np.where(has, first, 0)
+    planes_of = np.zeros((count, 3, 3), dtype=np.float32)
+    level = np.zeros((count, 4), dtype=np.int32)
+    if len(records["tri"]):
+        planes_of = np.where(has[:, None, None], records["extra_planes"][pick], F(0))
+        corner = records["extra"][pick]
+        du1, dv1 = corner[:, 1, 0] - corner[:, 0, 0], corner[:, 1, 1] - corner[:, 0, 1]
+        du2, dv2 = corner[:, 2, 0] - corner[:, 0, 0], corner[:, 2, 1] - corner[:, 0, 1]
+        uv_area2 = np.abs(du1 * dv2 - du2 * dv1)
+        texture = materials["textures"][materials["material"]]
+        for slot in range(4):
+            tex = np.maximum(texture[:, slot], 0)
+            size = materials["mip"][tex, 0]
+            texels = uv_area2 * (size[:, 1] * size[:, 2]).astype(np.float32)
+            levels = np.where(texture[:, slot] >= 0, materials["levels"][tex], 1)
+            level[:, slot] = mip_level(texels, records["area2"][pick], levels)
+    p = scene["positions"][scene["indices"]]
+    uv = materials["uv"]
+    e1, e2 = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+    normal = normalized(cross3(e1, e2))
+    to_eye = scene["camera"][None, 0:3] - p[:, 0]
+    normal = np.where((dot3(normal, to_eye) < 0)[:, None], -normal, normal)
+    du1, dv1 = uv[:, 1, 0] - uv[:, 0, 0], uv[:, 1, 1] - uv[:, 0, 1]
+    du2, dv2 = uv[:, 2, 0] - uv[:, 0, 0], uv[:, 2, 1] - uv[:, 0, 1]
+    det = du1 * dv2 - du2 * dv1
+    sign = np.where(det < 0, F(-1), F(1))[:, None]
+    tangent = (e1 * dv2[:, None] - e2 * dv1[:, None]) * sign
+    bitangent = (e2 * du1[:, None] - e1 * du2[:, None]) * sign
+    tangent = normalized(tangent - normal * dot3(normal, tangent)[:, None])
+    side = cross3(normal, tangent)
+    side = np.where((dot3(side, bitangent) < 0)[:, None], -side, side)
+    frame_ok = (det != 0) & (dot3(tangent, tangent) > 0)
+    return {
+        "first": first,
+        "planes": planes_of,
+        "level": level,
+        "frame": np.stack([tangent, side, normal], axis=1),
+        "frame_ok": frame_ok,
+    }
+
+
+def at(plane, px, py):
+    """A plane [x, y, 1] at pixel centres: (p0 px + p1 py) + p2."""
+    return (plane[:, 0] * px + plane[:, 1] * py) + plane[:, 2]
+
+
+def texel_xy(materials, tex, level, u, v):
+    """Column and row of the texel nearest to (u, v) in a level, coordinates wrapping;
+    v runs up the image (row 0 is v = 1). Also the level's (offset, width, height)."""
+    entry = materials["mip"][tex, level]
+    width, height = entry[:, 1], entry[:, 2]
+    s = u - np.floor(u)
+    t = v - np.floor(v)
+    s = np.where(np.isfinite(s), s, F(0))
+    t = np.where(np.isfinite(t), t, F(0))
+    x = np.minimum((s * width.astype(np.float32)).astype(np.int64), width - 1)
+    y = np.minimum(
+        ((F(1) - t) * height.astype(np.float32)).astype(np.int64), height - 1
+    )
+    return x, y, entry
+
+
+def fetch(materials, tex, level, u, v):
+    """The texel (n, 4) uint8 nearest to (u, v) (texel_xy)."""
+    x, y, entry = texel_xy(materials, tex, level, u, v)
+    start = entry[:, 0] + (y * entry[:, 1] + x) * 4
+    return materials["texels"][start[:, None] + np.arange(4)]
+
+
+def power(x, exponent):
+    """x ** exponent for integer exponents >= 1, by squaring (low bit first)."""
+    result = np.ones_like(x)
+    base = x.copy()
+    e = exponent.copy()
+    while (e > 0).any():
+        odd = (e & 1) == 1
+        result = np.where(odd, result * base, result)
+        base = base * base
+        e >>= 1
+    return result
+
+
+def pixel_values(layer, prepared, ys, xs):
+    """Pixel centres, 1/z and the winner's u, v and light term at pixels (ys, xs)."""
+    t = layer["tri"][ys, xs]
+    px = xs.astype(np.float32) + F(0.5)
+    py = ys.astype(np.float32) + F(0.5)
+    w = layer["depth"][ys, xs]
+    plane = prepared["planes"][t]
+    u = at(plane[:, :, 0], px, py) / w
+    v = at(plane[:, :, 1], px, py) / w
+    light = at(plane[:, :, 2], px, py) / w
+    return px, py, w, u, v, light
+
+
+def shade_layer(scene, materials, prepared, layer):
+    """Colour (H, W, 3) of one FILL layer by its winners' materials, and its holes
+    (H, W) (masked pixels whose alpha byte is under OPAQUE_BYTE)."""
+    colour = layer["colour"].copy()
+    hole = np.zeros(layer["tri"].shape, dtype=bool)
+    ys, xs = np.nonzero(layer["tri"] >= 0)
+    t = layer["tri"][ys, xs]
+    m = materials["material"][t]
+    kind = materials["kind"][m]
+    shaded = kind != FLAT
+    ys, xs, t, m, kind = ys[shaded], xs[shaded], t[shaded], m[shaded], kind[shaded]
+    px, py, w, u, v, light = pixel_values(layer, prepared, ys, xs)
+    texture = materials["textures"][m]
+    level = prepared["level"][t]
+    base = materials["base_colour"][m]
+
+    def texel(slot):
+        if len(materials["mip"]) == 0:
+            return np.zeros((len(u), 4), dtype=np.uint8)
+        tex = np.maximum(texture[:, slot], 0)
+        return fetch(materials, tex, level[:, slot], u, v)
+
+    albedo_texel = texel(ALBEDO)
+    albedo = np.where(
+        (texture[:, ALBEDO] >= 0)[:, None],
+        TEXEL_LINEAR[albedo_texel[:, :3]] * base,
+        base,
+    )
+    out = albedo * light[:, None]
+    lit = kind == LIT
+    if lit.any():
+        out[lit] = shade_lit(
+            scene, materials, prepared, t, m, px, py, w, texel, albedo
+        )[lit]
+    out = np.where((kind == EMISSIVE)[:, None], albedo, out)
+    masked = kind == MASKED
+    albedo_alpha = np.where(texture[:, ALBEDO] >= 0, albedo_texel[:, 3], 255)
+    alpha = np.where(texture[:, MASK] >= 0, texel(MASK)[:, 3], albedo_alpha)
+    hole[ys, xs] = masked & (alpha < OPAQUE_BYTE)
+    colour[ys, xs] = out
+    return colour, hole
+
+
+def shade_lit(scene, materials, prepared, t, m, px, py, w, texel, albedo):
+    """The lit kind's colour: albedo (ambient + diffuse) + Blinn-Phong specular from
+    the scene's point light, with the normal map's normal in the triangle's frame."""
+    cam = scene["camera"]
+    z = F(1) / w
+    xc = ((px - cam[13]) / cam[12]) * z
+    yc = ((cam[14] - py) / cam[12]) * z
+    position = np.stack(
+        [
+            ((cam[k] + cam[3 + k] * xc) + cam[6 + k] * yc) + cam[9 + k] * z
+            for k in range(3)
+        ],
+        axis=-1,
+    )
+    to_light = normalized(scene["light"][None, :] - position)
+    to_eye = normalized(cam[None, 0:3] - position)
+    half = normalized(to_light + to_eye)
+    frame = prepared["frame"][t]
+    texture = materials["textures"][m]
+    mapped = (texture[:, NORMAL] >= 0) & prepared["frame_ok"][t]
+    n_texel = TEXEL_SIGNED[texel(NORMAL)[:, :3]]
+    bent = normalized(
+        (frame[:, 0] * n_texel[:, 0:1] + frame[:, 1] * n_texel[:, 1:2])
+        + frame[:, 2] * n_texel[:, 2:3]
+    )
+    normal = np.where(mapped[:, None], bent, frame[:, 2])
+    diffuse = np.maximum(dot3(normal, to_light), F(0))
+    gloss = power(np.maximum(dot3(normal, half), F(0)), materials["exponent"][m])
+    specular = np.where(
+        (texture[:, SPECULAR] >= 0)[:, None],
+        materials["specular"][m] * TEXEL_UNIT[texel(SPECULAR)[:, :3]],
+        materials["specular"][m],
+    )
+    return albedo * (AMBIENT + DIFFUSE * diffuse)[:, None] + specular * gloss[:, None]
+
+
+def nearer_layer(first, second):
+    """Where the first layer's fragment wins over the second's (larger 1/z, a tie to
+    the lower triangle number; an empty second pixel always loses)."""
+    return (first["tri"] >= 0) & (
+        (first["depth"] > second["depth"])
+        | ((first["depth"] == second["depth"]) & (first["tri"] < second["tri"]))
+    )
+
+
+def rasterize_shaded(scene, materials):
+    """SHADE after two FILLs: the layers of the triangles that are not `masked` and of
+    those that are; a pixel takes the masked layer where it is nearer and not a hole.
+    Colour (H, W, 3), the taken layer's 1/z and triangle, both layers' tile counts
+    added, and the layers' own arrays ("opaque", "masked")."""
+    kind = materials["kind"][materials["material"]]
+    opaque = rasterize(layer_scene(scene, kind != MASKED))
+    masked = rasterize(layer_scene(scene, kind == MASKED))
+    prepared = shade_setup(scene, materials)
+    opaque_colour, _ = shade_layer(scene, materials, prepared, opaque)
+    masked_colour, hole = shade_layer(scene, materials, prepared, masked)
+    take = nearer_layer(masked, opaque) & ~hole
+    return {
+        "colour": np.where(take[:, :, None], masked_colour, opaque_colour),
+        "depth": np.where(take, masked["depth"], opaque["depth"]),
+        "tri": np.where(take, masked["tri"], opaque["tri"]),
+        "tile_counts": opaque["tile_counts"] + masked["tile_counts"],
+        "opaque": opaque,
+        "masked": masked,
     }

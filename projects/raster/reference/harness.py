@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from reference import native, raster, results, runner, scenes
+from reference import native, public, raster, results, runner, scenes
 
 HERE = Path(__file__).resolve().parent
 SCENES = list(scenes.PRESETS)
@@ -13,6 +13,10 @@ KEYS = ("colour", "depth", "tri", "tile_counts")
 threads_all = runner.threads_all
 REFERENCE = "numpy"
 STAGES = ("setup_ms", "bin_ms", "fill_ms", "total_ms")
+# SHADE's results (rasterize_shaded and raster_cpu --materials) have a folder of
+# their own: their colour is not FILL's.
+SHADED = "raster_shaded"
+SHADE_STAGES = ("shade_setup_ms", "shade_ms", "total_ms")
 
 
 def out_dir(scene, impl):
@@ -159,3 +163,57 @@ def compare(first, second):
         ),
         "mask": anywhere,
     }
+
+
+def materials_folder(view):
+    """The materials of a view's scene as .npy files for the C++ binary, written on
+    first use to <data>/<scene>_materials/ (with the albedo byte table)."""
+    name = public.views()[view][0]
+    folder = native.data_dir() / f"{name}_materials"
+    if not (folder / "texel_linear.npy").exists():
+        materials, _ = public.load_materials(name, native.data_dir())
+        public.export_materials(materials, folder)
+        np.save(folder / "texel_linear.npy", raster.TEXEL_LINEAR)
+    return folder
+
+
+def save_shaded(scene, folder, name, arrays, record):
+    """Stores a shaded result under results/raster_shaded/<folder>."""
+    info = {"name": name, "scene": scene}
+    info["timings_ms"] = runner.stage_medians(record, SHADE_STAGES)
+    info["seconds_per_frame"] = record["loop_ms"] / record["reps_n"] / 1000
+    results.save_result(
+        runner.results_root(SHADED) / folder, scene, "raster", arrays, info
+    )
+
+
+def run_numpy_shaded(scene):
+    """Runs FILL twice and SHADE in numpy on a view, saves and returns the arrays."""
+    native.ensure_scene(scene)
+    data = scenes.load_scene(native.data_dir() / f"{scene}.npz")
+    materials, _ = public.load_materials(scene, native.data_dir())
+    start = time.monotonic()
+    arrays = raster.rasterize_shaded(data, materials)
+    record = {"loop_ms": (time.monotonic() - start) * 1000, "reps_n": 1}
+    save_shaded(scene, "numpy", "numpy", arrays, record)
+    return arrays
+
+
+def run_cpu_shaded(scene, threads, repetitions=3):
+    """Runs the C++ binary with --materials (FILL on `threads`, SHADE on one thread);
+    saves its result and returns its record (None without a compiler)."""
+    executable = native.build(str(HERE / "cpu" / "raster_cpu.cpp"), "raster_cpu")
+    if executable is None:
+        return None
+    folder = out_dir(scene, "cpu_shaded")
+    command_line = [executable, "--scene", native.ensure_scene(scene)]
+    command_line += ["--materials", materials_folder(scene), "--threads", threads]
+    command_line += ["--reps", repetitions, "--out", folder]
+    record = runner.run_binary(command_line, None, False)
+    save_shaded(scene, "cpu", "C++", load_outputs(folder), record)
+    return record
+
+
+def collect_shaded(scene):
+    """{name: (arrays, info)} of the shaded results stored for a view."""
+    return results.find_results([runner.results_root(SHADED)], scene, "raster")

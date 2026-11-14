@@ -1,5 +1,5 @@
 // Rasterizer on the host CPU: setup and binning over triangles, fill over tiles.
-// Usage: raster_cpu --scene DIR --out DIR [--threads N] [--reps R]
+// Usage: raster_cpu --scene DIR --out DIR [--threads N] [--reps R] [--materials DIR]
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -185,6 +185,207 @@ static Times run(const Mesh& mesh, Pool& pool, Buffers& buffers) {
     return times;
 }
 
+// One FILL's frame: colour, 1/z, winner and the tile list sizes.
+struct Layer {
+    std::vector<float> colour, depth;
+    std::vector<int32_t> owner, counts;
+};
+
+static Layer fill_layer(
+    Mesh mesh, const int32_t* indices, Pool& pool, Buffers& buffers
+) {
+    mesh.indices = indices;
+    run(mesh, pool, buffers);
+    return {buffers.colour, buffers.depth, buffers.owner, buffers.counts};
+}
+
+struct Shaded {
+    std::vector<ShadeTriangle> triangles;
+    std::vector<float> colour, depth;
+    std::vector<int32_t> owner;
+};
+
+// SHADE of a frame on one thread: each pixel takes the masked layer where it is
+// nearer and not a hole, else the other layer.
+static void shade_frame(
+    const Mesh& mesh,
+    const Materials& materials,
+    const float* light,
+    const Layer& opaque,
+    const Layer& masked,
+    Shaded& out,
+    double& setup_ms,
+    double& shade_ms
+) {
+    double started = now_ms();
+    for (int triangle = 0; triangle < mesh.triangle_count; triangle++) {
+        shade_setup_triangle(mesh, materials, triangle, out.triangles[triangle]);
+    }
+    double setup_done = now_ms();
+    for (int y = 0; y < HEIGHT; y++) {
+        float py = (float)y + 0.5f;
+        for (int x = 0; x < WIDTH; x++) {
+            float px = (float)x + 0.5f;
+            size_t pixel = (size_t)y * WIDTH + x;
+            float colour[3];
+            int owner = masked.owner[pixel];
+            bool taken = false;
+            if (
+                owner >= 0 &&
+                nearer(
+                    masked.depth[pixel], owner, opaque.depth[pixel], opaque.owner[pixel]
+                )
+            ) {
+                for (int c = 0; c < 3; c++) {
+                    colour[c] = masked.colour[3 * pixel + c];
+                }
+                taken = (
+                    !shade_pixel(
+                        mesh,
+                        materials,
+                        light,
+                        out.triangles[owner],
+                        owner,
+                        masked.depth[pixel],
+                        px,
+                        py,
+                        colour
+                    )
+                );
+            }
+            const Layer& layer = taken ? masked : opaque;
+            if (!taken) {
+                for (int c = 0; c < 3; c++) {
+                    colour[c] = opaque.colour[3 * pixel + c];
+                }
+                if (opaque.owner[pixel] >= 0) {
+                    shade_pixel(
+                        mesh,
+                        materials,
+                        light,
+                        out.triangles[opaque.owner[pixel]],
+                        opaque.owner[pixel],
+                        opaque.depth[pixel],
+                        px,
+                        py,
+                        colour
+                    );
+                }
+            }
+            out.depth[pixel] = layer.depth[pixel];
+            out.owner[pixel] = layer.owner[pixel];
+            for (int c = 0; c < 3; c++) {
+                out.colour[3 * pixel + c] = colour[c];
+            }
+        }
+    }
+    double shade_done = now_ms();
+    setup_ms = setup_done - started;
+    shade_ms = shade_done - setup_done;
+}
+
+// --materials: FILL over the triangles that are not masked and over those that are,
+// then SHADE on one thread, timed; tile_counts are both layers' added.
+static int main_shaded(
+    const Args& args, Mesh& mesh, const float* light, int thread_count, int repetitions
+) {
+    std::string folder = args.get("materials"), out_folder = args.get("out");
+    Array uv = load_npy(folder + "/uv.npy", 4);
+    Array material = load_npy(folder + "/material.npy", 4);
+    Array light_term = load_npy(folder + "/light.npy", 4);
+    Array kind = load_npy(folder + "/kind.npy", 4);
+    Array base_colour = load_npy(folder + "/base_colour.npy", 4);
+    Array textures = load_npy(folder + "/textures.npy", 4);
+    Array exponent = load_npy(folder + "/exponent.npy", 4);
+    Array specular = load_npy(folder + "/specular.npy", 4);
+    Array texels = load_npy(folder + "/texels.npy", 1);
+    Array mip = load_npy(folder + "/mip.npy", 8);
+    Array levels = load_npy(folder + "/levels.npy", 4);
+    Array linear = load_npy(folder + "/texel_linear.npy", 4);
+    Materials materials;
+    materials.uv = uv.data<float>();
+    materials.material = material.data<int32_t>();
+    materials.light = light_term.data<float>();
+    materials.kind = kind.data<int32_t>();
+    materials.base_colour = base_colour.data<float>();
+    materials.textures = textures.data<int32_t>();
+    materials.exponent = exponent.data<int32_t>();
+    materials.specular = specular.data<float>();
+    materials.texels = texels.data<uint8_t>();
+    materials.mip = mip.data<int64_t>();
+    materials.levels = levels.data<int32_t>();
+    materials.linear = linear.data<float>();
+
+    // The two layers' index arrays: the other layer's triangles collapsed to their
+    // first corner, so setup drops them and the rest keep their numbers.
+    const size_t count = (size_t)mesh.triangle_count;
+    std::vector<int32_t> opaque_indices(mesh.indices, mesh.indices + 3 * count);
+    std::vector<int32_t> masked_indices(opaque_indices);
+    for (size_t triangle = 0; triangle < count; triangle++) {
+        bool is_masked = materials.kind[materials.material[triangle]] == KIND_MASKED;
+        int32_t* collapse = (
+            (is_masked ? opaque_indices.data() : masked_indices.data()) + 3 * triangle
+        );
+        collapse[1] = collapse[2] = collapse[0];
+    }
+    Pool pool(thread_count);
+    Buffers buffers;
+    const int tile_count = TILES_X * TILES_Y;
+    buffers.records.resize(2 * count);
+    buffers.pieces.resize(count);
+    buffers.counts.resize(tile_count);
+    buffers.offsets.resize(tile_count + 1);
+    buffers.chunk_counts.resize((size_t)thread_count * 2 * tile_count);
+    buffers.colour.resize((size_t)WIDTH * HEIGHT * 3);
+    buffers.depth.resize((size_t)WIDTH * HEIGHT);
+    buffers.owner.resize((size_t)WIDTH * HEIGHT);
+    Layer opaque = fill_layer(mesh, opaque_indices.data(), pool, buffers);
+    Layer masked = fill_layer(mesh, masked_indices.data(), pool, buffers);
+
+    Shaded shaded;
+    shaded.triangles.resize(count);
+    shaded.colour.resize((size_t)WIDTH * HEIGHT * 3);
+    shaded.depth.resize((size_t)WIDTH * HEIGHT);
+    shaded.owner.resize((size_t)WIDTH * HEIGHT);
+    double setup_ms, shade_ms;
+    shade_frame(mesh, materials, light, opaque, masked, shaded, setup_ms, shade_ms);
+    RepLog log(repetitions);
+    for (int repetition = 0; repetition < repetitions; repetition++) {
+        shade_frame(mesh, materials, light, opaque, masked, shaded, setup_ms, shade_ms);
+        char record[256];
+        std::snprintf(
+            record,
+            sizeof record,
+            "{\"shade_setup_ms\": %.4f, \"shade_ms\": %.4f, \"total_ms\": %.4f}",
+            setup_ms,
+            shade_ms,
+            setup_ms + shade_ms
+        );
+        log.add(record);
+    }
+    double loop_ms = log.finish();
+    std::printf(
+        "{\"impl\": \"cpu\", \"threads\": 1, \"fill_threads\": %d, "
+        "\"triangles\": %d, \"reps_n\": %d, \"loop_ms\": %.4f, \"reps\": [%s]}\n",
+        thread_count,
+        mesh.triangle_count,
+        repetitions,
+        loop_ms,
+        log.body.c_str()
+    );
+    if (!out_folder.empty()) {
+        std::vector<int32_t> counts(tile_count);
+        for (int tile = 0; tile < tile_count; tile++) {
+            counts[tile] = opaque.counts[tile] + masked.counts[tile];
+        }
+        save_f32(out_folder + "/colour.npy", shaded.colour.data(), {HEIGHT, WIDTH, 3});
+        save_f32(out_folder + "/depth.npy", shaded.depth.data(), {HEIGHT, WIDTH});
+        save_i32(out_folder + "/tri.npy", shaded.owner.data(), {HEIGHT, WIDTH});
+        save_i32(out_folder + "/tile_counts.npy", counts.data(), {TILES_Y, TILES_X});
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     Args args(argc, argv);
     std::string scene = args.get("scene"), out_folder = args.get("out");
@@ -200,6 +401,10 @@ int main(int argc, char** argv) {
     mesh.indices = indices.data<int32_t>();
     mesh.triangle_count = (int)indices.shape[0];
     std::copy(camera.data<float>(), camera.data<float>() + 16, mesh.camera);
+    if (!args.get("materials").empty()) {
+        Array light = load_npy(scene + "/light.npy", 4);
+        return main_shaded(args, mesh, light.data<float>(), thread_count, repetitions);
+    }
 
     Pool pool(thread_count);
     Buffers buffers;
