@@ -55,7 +55,7 @@ namespace km {
             const InterleavedAddrGen<true> destination = {
                 .bank_base_address = dram_, .page_size = bytes
             };
-            noc_async_write(base_, get_noc_addr(page, destination), bytes);
+            noc_async_write(base_, destination.get_noc_addr(page), bytes);
             noc_async_write_barrier();
         }
 

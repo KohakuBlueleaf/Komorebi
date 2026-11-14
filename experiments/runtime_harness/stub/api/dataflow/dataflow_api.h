@@ -24,6 +24,10 @@ template <bool DRAM>
 struct InterleavedAddrGen {
     uint32_t bank_base_address;
     uint32_t page_size;
+
+    uint64_t get_noc_addr(uint32_t page, uint32_t offset = 0) const {
+        return kmsim::noc_dram(bank_base_address + page * page_size + offset);
+    }
 };
 
 template <bool DRAM>

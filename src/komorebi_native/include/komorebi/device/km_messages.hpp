@@ -267,7 +267,7 @@ namespace km {
         for (uint32_t page = 0; page < pages; page++) {
             noc_async_write(
                 source,
-                get_noc_addr(reader.args().me * pages + page, queue_addresses),
+                queue_addresses.get_noc_addr(reader.args().me * pages + page),
                 page_bytes
             );
             if ((page & 15) == 15 || page + 1 == pages) {
@@ -634,9 +634,8 @@ namespace km {
                 uint32_t chunk = kMessagesPageMessages - in_page;
                 chunk = chunk < batch - i ? chunk : batch - i;
                 noc_async_read(
-                    get_noc_addr(
+                    queue_addresses.get_noc_addr(
                         messages_page(arguments.me, position, messages_arguments.cap),
-                        queue_addresses,
                         in_page * messages_arguments.message_bytes
                     ),
                     page + kMessagesHeader + i * messages_arguments.message_bytes,
@@ -844,11 +843,10 @@ namespace km {
                 chunk = chunk < bin_messages - i ? chunk : bin_messages - i;
                 noc_async_write(
                     base + i * messages_arguments.message_bytes,
-                    get_noc_addr(
+                    queue_addresses.get_noc_addr(
                         messages_page(
                             bin_destination[bin], position, messages_arguments.cap
                         ),
-                        queue_addresses,
                         in_page * messages_arguments.message_bytes
                     ),
                     chunk * messages_arguments.message_bytes
@@ -865,11 +863,10 @@ namespace km {
             invalidate_l1_cache();
             noc_async_write(
                 base,
-                get_noc_addr(
+                queue_addresses.get_noc_addr(
                     messages_page(
                         bin_destination[bin], first_position, messages_arguments.cap
                     ),
-                    queue_addresses,
                     (first_position & (messages_arguments.cap - 1)) %
                         kMessagesPageMessages * messages_arguments.message_bytes
                 ),

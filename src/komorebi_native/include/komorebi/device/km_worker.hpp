@@ -108,7 +108,7 @@ namespace km {
                 .bank_base_address = arguments.cores, .page_size = KM_CORES_MAX * 4
             };
             noc_async_read(
-                get_noc_addr(0, table),
+                table.get_noc_addr(0),
                 arguments.control + KM_CONTROL_CORES,
                 KM_CORES_MAX * 4
             );
