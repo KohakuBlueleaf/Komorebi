@@ -490,15 +490,16 @@ namespace {
 
     using MeshBuffer = tt::tt_metal::distributed::MeshBuffer;
 
-    // A device buffer: interleaved in DRAM, or (shard_grid set) height-sharded in L1
-    // with one page on each core of the grid, cores in row-major order.
+    // A device buffer: interleaved in DRAM, or (shard_grid set) height-sharded in L1,
+    // one page a core, cores in row-major order; `address`: where an L1 buffer goes.
     class DeviceBuffer {
     public:
         DeviceBuffer(
             const Device& device,
             uint64_t size,
             uint64_t page_size,
-            std::optional<std::array<uint32_t, 2>> shard_grid
+            std::optional<std::array<uint32_t, 2>> shard_grid,
+            std::optional<uint64_t> address
         ) :
             mesh_(device.shared()) {
             namespace distributed = tt::tt_metal::distributed;
@@ -543,7 +544,10 @@ namespace {
                 );
             }
             buffer_ = MeshBuffer::create(
-                distributed::ReplicatedBufferConfig{.size = size}, local, mesh_.get()
+                distributed::ReplicatedBufferConfig{.size = size},
+                local,
+                mesh_.get(),
+                address
             );
         }
 
@@ -1920,11 +1924,13 @@ NB_MODULE(_km_host, m) {
                 const Device&,
                 uint64_t,
                 uint64_t,
-                std::optional<std::array<uint32_t, 2>>>(),
+                std::optional<std::array<uint32_t, 2>>,
+            std::optional<uint64_t>>(),
             nb::arg("device"),
             nb::arg("size"),
             nb::arg("page_size"),
-            nb::arg("shard_grid") = nb::none()
+            nb::arg("shard_grid") = nb::none(),
+            nb::arg("address") = nb::none()
         ).def_prop_ro("address", &DeviceBuffer::address)
         .def_prop_ro("size", &DeviceBuffer::size)
         .def_prop_ro("page_size", &DeviceBuffer::page_size)

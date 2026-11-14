@@ -86,8 +86,8 @@ commands, in cycles:
 | `load()` of mix, held | 72 | 73 | 72 | 76 | |
 | `load()` of scale, loading: five parts, the meeting and one invalidation | 1,318 | 1,316 | 1,347 | 3,126 | 1,061 for five 4 KiB parts on one core; 5,778 median core on 120 (overlay_costs, "a command naming another program") |
 | `load()` of scale, held | 72 | 72 | 72 | 97 | 142 for "a command naming the program held" (overlay_costs) |
-| `call()` of mix (64 steps) | 815 to 816 | 815 to 816 | 815 to 816 | 809 to 824 | |
-| `call()` of scale on the reader (fill one tile, 1,024 values) | 25,880 to 25,923 | 25,880 to 25,925 | 25,884 to 25,925 | 51,660 to 51,727 (2 tiles) | |
+| `call()` of mix (64 steps) | 532 to 542 | 532 to 542 | 532 to 542 | 540 to 577 | |
+| `call()` of scale on the reader (fill one tile, 1,024 values) | 21,824 to 21,858 | 21,825 to 21,861 | 21,829 to 21,860 | 43,581 to 43,687 (2 tiles) | |
 
 Commands: `python overlays.py --cores 1 --rounds 10`, `--cores 12 --rounds 10`,
 `--rounds 10`, `--rounds 10 --slots 2 --tiles 2`.
@@ -105,8 +105,9 @@ What the numbers say:
   meeting. With 2 slots and the overlays in turn it costs 76 and 97.
 - With 2 slots, only the first command of each overlay loads (120 loading runs). The loading
   median on 120 cores, 3,126 cycles, is that first load on every core at once.
-- The calls cost what the same code costs in a kernel: mix's loop takes about 800 cycles
-  loaded or held.
+- The calls cost what the same code costs in a kernel: mix's loop takes about 540 cycles
+  loaded or held. The slots sit just under 1 MB of L1: a loop run from above it takes
+  about 4 cycles more an iteration (815 cycles here, 25,900 for scale, before they moved).
 
 [overlay_costs](../../experiments/overlay_costs/README.md) and
 [overlay_probe](../../experiments/overlay_probe/README.md) are the experiments these

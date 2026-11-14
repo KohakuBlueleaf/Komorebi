@@ -80,8 +80,9 @@ class Tensor:
         self.buffer.free()
 
 
-def empty(module, device, shape, dtype, layout="row", shard_grid=None):
-    """A tensor of `shape` (padded to whole tiles in a tile layout), not written."""
+def empty(module, device, shape, dtype, layout="row", shard_grid=None, address=None):
+    """A tensor of `shape` (padded to whole tiles in a tile layout), not written; an
+    L1 tensor may be given the `address` it takes in every core."""
     formats.check_dtype(dtype)
     shape = formats.padded_shape(shape, layout)
     page = formats.page_bytes(shape, dtype, layout)
@@ -90,7 +91,7 @@ def empty(module, device, shape, dtype, layout="row", shard_grid=None):
         if layout != "row" or len(shape) != 2:
             raise ValueError("an L1 tensor is [cores, words] rows, one a core")
         shard_grid = tuple(int(extent) for extent in shard_grid)
-    buffer = module.Buffer(device, size, page, shard_grid)
+    buffer = module.Buffer(device, size, page, shard_grid, address)
     return Tensor(buffer, shape, dtype, layout, shard_grid)
 
 

@@ -149,7 +149,7 @@ math core resets it again after each call.
 | Where | What |
 |---|---|
 | beside each core's control block, 3,328 bytes | the overlay area: header (table size, each part's first slot, slots and slot bytes), a record per (part, slot) (overlay held, the part's check at an epoch, calls running, the slot's address), the clock and the epoch, the reader's meet lines with each follower, the last use of each overlay, and the table (DRAM address and bytes of every part of every overlay) |
-| a sharded L1 tensor, 64-byte aligned | the slots, by part: reader, writer, unpack, math, pack |
+| a sharded L1 tensor, 64-byte aligned, just under 1 MB of L1 when it fits above the circular buffers | the slots, by part: reader, writer, unpack, math, pack. A loop runs from L1 at or above 1 MB about 4 cycles an iteration slower; the load logs a line when the slots end up there |
 | one interleaved DRAM tensor | every part, a copy in each of the 8 banks |
 
 The area is part of the control L1 tensor only when the program has overlays or the run
@@ -164,8 +164,8 @@ the broadcast reads the word with `broadcast.word()`, then names, loads and call
 overlay on its reader. Compute does not see the word; the reader hands it to its own
 compute through a small buffer, and compute's `load()` meets the reader's as above. On
 one card, from the leader's cast to the last call done, an overlay every core loads cost
-2.15 to 2.26 µs, one every core holds 1.55 to 1.67 µs, and the same code compiled in 1.00
-to 1.12 µs, on a row, a column of 10 and the whole grid
+2.12 to 2.23 µs, one every core holds 1.19 to 1.31 µs, and the same code compiled in 1.00
+to 1.13 µs, on a row, a column of 10 and the whole grid
 ([17_leader_overlay](../../examples/17_leader_overlay/README.md)).
 
 ## Costs
@@ -180,7 +180,7 @@ On one Blackhole card, AICLK 1,350 MHz, medians over cores and commands
 | `load()` of five parts (768, 832, 1,280, 1,024, 1,152 B), the meet included | 1,318 cycles | 1,347 cycles |
 | `load()` of the same, held | 72 cycles | 72 cycles |
 | `load()` held, two overlays in turn in two slots | | 76 and 97 cycles |
-| `call()` of a 64-step loop | 816 cycles | 816 cycles |
+| `call()` of a 64-step loop | 532 to 542 cycles | 532 to 542 cycles |
 
 ## A program as an overlay
 

@@ -7,7 +7,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from komorebi import OverlayError, Program, overlay
+from komorebi import OverlayError, Program, overlay, session
 
 BASE = overlay.LINK_BASE
 PERSISTENT = overlay.Persistent(
@@ -164,3 +164,10 @@ def test_the_budget_table_says_whether_it_fits():
     table, fits = overlay.budget(1000, [("slots: reader, 2 x 256 B", 512)])
     assert fits and "512 B of 1,000 B" in table
     assert not overlay.budget(500, [("slots", 512)])[1]
+
+
+def test_slots_go_just_under_the_line_where_code_runs_slower():
+    line = session.L1_FAST_CODE
+    assert session.slot_address(4800, floor=0x20000) == line - 4800
+    assert session.slot_address(4801, floor=0x20000) == line - 4864
+    assert session.slot_address(line, floor=0x20000) is None

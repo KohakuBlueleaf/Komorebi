@@ -59,6 +59,10 @@ KERNEL_BUFFER_BASE = 41088
 KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B)
 KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
 KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
+# A loop runs from L1 at or above this address about 4 cycles slower an iteration than
+# from below it: an overlay's slots are placed just under it when they fit.
+L1_FAST_CODE = 1 << 20
+SLOT_MARGIN = 1024  # kept free above the runtime's circular buffers
 TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
 
@@ -221,6 +225,13 @@ def kernel_build(program, kernel, defines):
     if level is None:
         return {"defines": defines}
     return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
+
+
+def slot_address(size, floor):
+    """Where `size` bytes of slots go in L1: just under the line above which code
+    runs slower, or None (the allocator's choice) when that is not above `floor`."""
+    address = (L1_FAST_CODE - size) // overlay.ALIGN * overlay.ALIGN
+    return address if address >= floor else None
 
 
 def visible_card():
@@ -457,11 +468,11 @@ class Session:
             self._module, self.device, data, dtype, layout, shard_grid
         )
 
-    def empty(self, shape, dtype, layout="row", shard_grid=None):
+    def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
         """A tensor as tensor() makes it, not written."""
         self._module = self._module or native.load_module(self.tree)
         return tensor_module.empty(
-            self._module, self.device, shape, dtype, layout, shard_grid
+            self._module, self.device, shape, dtype, layout, shard_grid, address
         )
 
     def launch(self):
@@ -1203,9 +1214,15 @@ class _Backend:
             raise L1BudgetError(program.name, table)
         image_rows, placed = overlay.dram_rows(built)
         image = _words(session, image_rows)
-        slots = session.empty(
-            (cores, (built.slot_bytes + overlay.ALIGN) // 4), "uint32", shard_grid=grid
-        )
+        words = (built.slot_bytes + overlay.ALIGN) // 4
+        floor = L1_BYTES - session.l1()[1] + buffers + SLOT_MARGIN
+        at = slot_address(4 * words, floor)
+        try:
+            slots = session.empty((cores, words), "uint32", shard_grid=grid, address=at)
+        except RuntimeError:  # the place is taken: where the allocator puts them
+            slots = session.empty((cores, words), "uint32", shard_grid=grid)
+        if slots.address + built.slot_bytes > L1_FAST_CODE:
+            session.log("slots above 1 MB of L1: their code runs slower")
         self.io += [image, slots]
         slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
         area = overlay.area_words(
