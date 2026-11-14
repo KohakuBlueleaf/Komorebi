@@ -954,6 +954,7 @@ class Session:
                 descriptor.run()
             except Exception as error:
                 raise ProgramError(f"{program.name}: launch failed: {error}") from error
+            backend.launch = descriptor  # its program: a core's kernels reloaded
             dispatch.start(str(image))
             self.log("dispatcher started")
             state = dispatch.wait_ready(start + 1.0)
@@ -1337,6 +1338,7 @@ class _Backend:
         self.control_offset = 0
         self.trace_tensor = None
         self.state_tensor = None
+        self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
             ""  # the runtime's error message when an abort did not restore
