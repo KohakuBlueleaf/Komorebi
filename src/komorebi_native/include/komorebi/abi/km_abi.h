@@ -33,6 +33,10 @@
  * DRAM pages into the session's region of the host channel, or pull them into DRAM */
 #define KM_HANDLER_PUSH 241u
 #define KM_HANDLER_PULL 242u
+/* Handlers 241 to 248 are the runtime's: its reader serves them, and neither the
+ * writer nor the compute kernel runs a body for one (one range check in each loop). */
+#define KM_HANDLER_SERVED_FIRST 241u
+#define KM_HANDLER_SERVED_LAST 248u
 /* A transfer's words a0 to a9: the tensor (bank address, aligned page bytes, first
  * page, pages), the channel (offsets of the data and of the word slots, the region): */
 #define KM_TRANSFER_ADDRESS 0u

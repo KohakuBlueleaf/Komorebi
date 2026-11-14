@@ -306,7 +306,10 @@ the host channel while a run is loaded ([host](host.md#the-host-channel)): 241
 (`KM_HANDLER_PUSH`, card to host) and 242 (`KM_HANDLER_PULL`, host to card). They are
 not overlays. Their code is compiled into the runtime's loop of every program
 (`komorebi/device/km_transfer.hpp`), as EXIT's is, so a program declares nothing and
-holds no slot for them. The cost is a larger reader kernel.
+holds no slot for them. The cost is a larger reader kernel, about 4.4 KB of its text in
+the ray tracer. Handlers 241 to 248 are the runtime's for this: the writer and the
+compute kernel skip them with one range check, so a later handler of the runtime in
+that range adds nothing to them, only to the reader.
 
 - **Who may issue one.** The host only: the session itself, for a read or a write. The
   dispatcher rejects them from a thread, a stream or a graph (reason 1), as `submit`

@@ -60,7 +60,9 @@ namespace km {
 
     // Every bound of a transfer by `count` ranks, checked before anything is issued:
     // the data and the words inside the region apart, the region inside the channel.
-    inline bool transfer_fits(const Transfer& t, uint32_t count) {
+    inline __attribute__((noinline)) bool transfer_fits(
+        const Transfer& t, uint32_t count
+    ) {
         const uint64_t end = static_cast<uint64_t>(t.offset) +
             uint64_t{t.pages} * t.page;
         const uint64_t words_end = static_cast<uint64_t>(t.words) +
@@ -84,10 +86,14 @@ namespace km {
         return ncrisc_noc_nonposted_writes_flushed(noc_index);
     }
 
+    inline bool reads_landed() {
+        return ncrisc_noc_reads_flushed(noc_index);
+    }
+
     // The rank's sequence word (nonce, bytes, rank, the mark ^ nonce, the wall clock at
     // its start and after its data), written after its data writes were acknowledged.
     template <typename Wait>
-    inline uint32_t transfer_word(
+    __attribute__((noinline)) uint32_t transfer_word(
         const Transfer& t, uint32_t rank, uint32_t bytes, uint64_t start, Wait wait
     ) {
         const uint64_t end = wall64();
@@ -110,17 +116,13 @@ namespace km {
     // Rank `rank` of `count` pushes its pages to the channel (set, the writes, flush,
     // clear), then its sequence word. wait(ready) polls with a bound: false on timeout.
     template <typename Wait>
-    inline uint32_t push_to_host(
-        const Transfer& t, uint32_t rank, uint32_t count, Wait wait
-    ) {
+    __attribute__((noinline)) uint32_t
+    push_to_host(const Transfer& t, uint32_t rank, uint32_t count, Wait wait) {
         static_assert(sizeof(Wait) > 0 && NOC_INDEX == 0, "PCIe coordinates of NoC 0");
         if (rank >= count || !transfer_fits(t, count)) {
             return kTransferRefused;
         }
         const uint64_t start = wall64();
-        const auto reads_landed = [] {
-            return ncrisc_noc_reads_flushed(noc_index);
-        };
         const Partition share = partition(t.pages, rank, count);
         const uint32_t bytes = share.len * t.page;
         const uint32_t at = t.offset + share.start * t.page;
@@ -130,7 +132,7 @@ namespace km {
             .bank_base_address = t.address, .page_size = t.page
         };
         // Reads chunk k into its buffer (no wait).
-        const auto read_chunk = [&](uint32_t k) {
+        const auto read_chunk = [&](uint32_t k) __attribute__((noinline)) {
             const uint32_t into = t.buffer + (k & 1) * t.chunk;
             const uint32_t from = k * chunk_pages;
             const uint32_t n = (
@@ -186,17 +188,13 @@ namespace km {
     // Rank `rank` of `count` pulls its pages from the channel (set, the reads, clear)
     // into DRAM, then once its DRAM writes were acknowledged writes its sequence word.
     template <typename Wait>
-    inline uint32_t pull_from_host(
-        const Transfer& t, uint32_t rank, uint32_t count, Wait wait
-    ) {
+    __attribute__((noinline)) uint32_t
+    pull_from_host(const Transfer& t, uint32_t rank, uint32_t count, Wait wait) {
         static_assert(sizeof(Wait) > 0 && NOC_INDEX == 0, "PCIe coordinates of NoC 0");
         if (rank >= count || !transfer_fits(t, count)) {
             return kTransferRefused;
         }
         const uint64_t start = wall64();
-        const auto reads_landed = [] {
-            return ncrisc_noc_reads_flushed(noc_index);
-        };
         const Partition share = partition(t.pages, rank, count);
         const uint32_t bytes = share.len * t.page;
         const uint32_t at = t.offset + share.start * t.page;

@@ -7,6 +7,19 @@
 #include "km_core.hpp"
 #include "km_command.hpp"
 
+namespace km {
+
+    // A command the runtime's reader serves (a transfer between DRAM and the host
+    // channel, KM_HANDLER_PUSH and KM_HANDLER_PULL), not a body: one range check.
+    inline bool served(const km_command_t& command) {
+        return (
+            static_cast<uint32_t>(handler(command)) - KM_HANDLER_SERVED_FIRST <=
+            KM_HANDLER_SERVED_LAST - KM_HANDLER_SERVED_FIRST
+        );
+    }
+
+}  // namespace km
+
 #if !defined(COMPILE_FOR_TRISC)
 #include "km_completion.hpp"
 #include "km_trace.hpp"
@@ -17,13 +30,6 @@ namespace km {
     // Word of each DONE slot: the last sequence whose reader body returned in that
     // slot (a broadcast's finish() included), read by the writer before it reports.
     constexpr uint32_t kDoneReader = 2;
-
-    // A transfer between DRAM and the host channel: the runtime serves it, not a body.
-    inline bool transfer(const km_command_t& command) {
-        return (
-            handler(command) == KM_HANDLER_PUSH || handler(command) == KM_HANDLER_PULL
-        );
-    }
 
     class Reader : public Core {
     public:
@@ -44,7 +50,7 @@ namespace km {
                     put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
-                if (transfer(*command)) {
+                if (served(*command)) {
                     serve_transfer(*command);
                 } else {
                     body(*command);
@@ -102,8 +108,18 @@ namespace km {
         template <typename Command>
         void serve_transfer(const Command& command) const {
             const bool push = handler(command) == KM_HANDLER_PUSH;
+            if (!push && handler(command) != KM_HANDLER_PULL) {  // not assigned yet
+                gave_up(
+                    kStReader,
+                    kGaveBadTransfer,
+                    kWhereFromHost,
+                    slot(command),
+                    command.sequence
+                );
+                return;
+            }
             uint32_t code = kGaveNone;
-            const auto wait = [&](auto ready) {
+            const auto wait = [&](bool (*ready)()) __attribute__((noinline)) {
                 code = poll(ready, args().wait_limit);
                 return code == kGaveNone;
             };
@@ -374,7 +390,9 @@ namespace km {
                     break;
                 }
                 result_ = 0;
-                const bool report = transfer(command) || body(command);
+                const bool report = (
+                    __builtin_expect(served(command), 0) || body(command)
+                );
                 noc_async_write_barrier();
                 trace_.timestamp(command.sequence, kTraceDone);
                 if (
@@ -607,10 +625,7 @@ namespace km {
                     end = command.sequence == 0 ? kEndAbort : kEndExit;
                     break;
                 }
-                if (
-                    handler(command) != KM_HANDLER_PUSH &&
-                    handler(command) != KM_HANDLER_PULL
-                ) {
+                if (__builtin_expect(!served(command), 1)) {
                     body(command);
                 }
                 // Math and pack tell unpack they left the body; unpack marks it.
