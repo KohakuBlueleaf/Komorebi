@@ -5,7 +5,7 @@ deadline, each followed by exact commands on the same cores."""
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = (

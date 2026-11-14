@@ -5,7 +5,7 @@ session with a 128 KiB kernel buffer runs the map/collect example exact."""
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "02_merge_tree" / "merge.py"

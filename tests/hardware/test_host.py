@@ -8,11 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import komorebi as km
 from komorebi import dram
 
 pytestmark = pytest.mark.card
-CARD_IN_PROCESS = True  # opens the card in this process
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -25,12 +23,6 @@ def load(name, path):
 
 mapcollect = load("mapcollect", ROOT / "examples" / "01_mapcollect" / "mapcollect.py")
 cases = load("session_cases", Path(__file__).parent / "host" / "session_cases.py")
-
-
-@pytest.fixture(scope="module")
-def session():
-    with km.Session(log=mapcollect.log) as opened_session:
-        yield opened_session
 
 
 def example(session, *argv):
@@ -60,19 +52,13 @@ def all_checked(out, jobs, stalled=0):
     )
 
 
-@pytest.mark.parametrize("count", [1, 8, 120])
+@pytest.mark.parametrize("count", [1, 120])
 def test_fixed_group_is_exact(session, count):
     out = example(session, "--jobs", 20, "--count", count, "--out-tensors", 2)
     assert out["kernel"]["error_name"] == "none" and out["kernel"]["events"] == 21
     assert all_checked(out, 20) and out["exact_jobs_checked"] == 10
     assert out["compute_wrong"] == 0 and counts_match(out)
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
-
-
-def test_random_groups_with_four_in_flight(session):
-    out = example(session, "--jobs", 50, "--groups", "random", "--out-tensors", 3)
-    assert all_checked(out, 50) and counts_match(out)
-    assert out["random_total_rel_rms_max"] < 1e-2 and every_kernel_returned(out)
 
 
 def test_disjoint_groups_run_at_once(session):

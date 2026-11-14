@@ -5,7 +5,7 @@ host command, kmx_parallel inside kmx_program, events nobody waited for)."""
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 ROOT = Path(__file__).resolve().parents[2]
