@@ -129,5 +129,6 @@ nav:
       - examples/15_leader/README.md
       - examples/16_two_programs/README.md
       - examples/17_leader_overlay/README.md
+      - examples/18_thread_split/README.md
   - Releases:
       - releases/0.1.0.md
