@@ -290,6 +290,35 @@ namespace km {
         }
     }
 
+    // True when the next command of rank `me` in the ring is the end of run `run`.
+    template <typename CoreType>
+    inline bool messages_ended(const CoreType& core, uint32_t run, uint32_t me) {
+        const Args& arguments = core.args();
+        const volatile km_command_t*
+            ring = (
+                reinterpret_cast<const volatile km_command_t*>(
+                    core.control(KM_CONTROL_RING)
+                )
+            );
+        volatile tt_l1_ptr uint32_t* last = core.state() + kStLast;
+        for (uint32_t slot_index = 0; slot_index < arguments.depth; slot_index++) {
+            const uint32_t sequence = ring[slot_index].sequence;
+            if (!newer(sequence, last[slot_index])) {
+                continue;
+            }
+            km_command_t candidate;
+            copy_command(&ring[slot_index], &candidate);
+            if (
+                candidate.sequence == sequence && KM_LANDED(&candidate) &&
+                handler(candidate) == KM_HANDLER_MESSAGES_END && candidate.a0 == run &&
+                in_group(candidate, me)
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Start-up, before the first command: zero-fills this core's queue (mark 0 is
     // empty) from the packet buffer's zeroed first page. False: a write stalled.
     template <typename ReaderType>
@@ -606,29 +635,7 @@ namespace km {
         };
         // True when the next command of this core in the ring is this run's end.
         auto end_command = [&] {
-            const volatile km_command_t*
-                ring = (
-                    reinterpret_cast<const volatile km_command_t*>(
-                        reader.control(KM_CONTROL_RING)
-                    )
-                );
-            volatile tt_l1_ptr uint32_t* last = reader.state() + kStLast;
-            for (uint32_t slot_index = 0; slot_index < arguments.depth; slot_index++) {
-                const uint32_t sequence = ring[slot_index].sequence;
-                if (!newer(sequence, last[slot_index])) {
-                    continue;
-                }
-                km_command_t candidate;
-                copy_command(&ring[slot_index], &candidate);
-                if (
-                    candidate.sequence == sequence && KM_LANDED(&candidate) &&
-                    handler(candidate) == KM_HANDLER_MESSAGES_END &&
-                    candidate.a0 == run && in_group(candidate, me)
-                ) {
-                    return true;
-                }
-            }
-            return false;
+            return messages_ended(reader, run, me);
         };
 
         while (where == 0) {
@@ -905,10 +912,27 @@ namespace km {
         }
     }
 
-    // Generic writer: outgoing messages in bins by destination; one atomic add per bin
-    // reserves positions, then the messages go to that queue. True: the run ended.
-    template <typename WriterType>
-    inline bool messages_writer(WriterType& writer, const km_command_t& command) {
+    // Where a writer's bins go when their destination is not a queue of this island:
+    // nowhere (every destination is local). km_link.hpp's LinkOut takes the others.
+    struct LocalOnly {
+        bool takes(uint32_t) const {
+            return false;
+        }
+
+        template <typename WriterType>
+        uint32_t put(
+            WriterType&, const km_command_t&, uint32_t, uint32_t, uint32_t, uint32_t
+        ) {
+            return 0;
+        }
+    };
+
+    // Generic writer: bins by destination, one atomic add a bin reserves positions,
+    // then the messages go to that queue, or to `away` if it takes it. True: ended.
+    template <typename WriterType, typename Away = LocalOnly>
+    inline bool messages_writer(
+        WriterType& writer, const km_command_t& command, Away away = Away()
+    ) {
         const Args& arguments = writer.args();
         const MessagesArgs messages_arguments = messages_args(writer);
         const uint32_t run = command.sequence;
@@ -1002,6 +1026,25 @@ namespace km {
         // Bin `bin` to its destination: reserve, mark, write, wait for the writes.
         auto flush = [&](uint32_t bin) {
             const uint32_t bin_messages = bin_fill[bin];
+            if (away.takes(bin_destination[bin])) {
+                where = away.put(
+                    writer,
+                    command,
+                    bin_destination[bin],
+                    store + bin * kMessagesPacket * messages_arguments.message_bytes,
+                    messages_arguments.message_bytes,
+                    bin_messages
+                );
+                if (where != 0) {
+                    return false;
+                }
+                sent += bin_messages;
+                messages[KM_MESSAGES_SENT / 4] = sent;
+                bin_fill[bin] = 0;
+                bin_destination[bin] = kMessagesEnd;
+                held--;
+                return true;
+            }
             returned[0] = kMessagesEnd;
             invalidate_l1_cache();  // a fence: the store lands before the answer can
             noc_fast_atomic_increment<noc_mode, true>(
