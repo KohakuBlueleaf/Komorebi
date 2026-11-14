@@ -4,6 +4,7 @@ pages DRAM to DRAM by the link cores) and an all-reduce of two islands' partials
 up to 4 MiB, against numpy. Prints one JSON line. See README.md."""
 
 import argparse
+import itertools
 import json
 import sys
 import time
@@ -57,7 +58,13 @@ def parse():
         default=[0],
         help="rounds of the compute's matrix loop beside each row (0: idle)",
     )
-    parser.add_argument("--issuers", type=int, default=0, help="ranks posting (0: all)")
+    parser.add_argument(
+        "--issuers",
+        type=int,
+        nargs="+",
+        default=[1],
+        help="ranks posting a gather's shares (0: all)",
+    )
     parser.add_argument("--json", help="also write the JSON line here")
     return parser.parse_args()
 
@@ -256,58 +263,57 @@ def gather_rows(bench, args, out):
     the sending island post their shares; the time added to the command (against the
     same command with no pages), the rate, every word checked."""
     rows = []
-    issuers = args.issuers
-    for kib in args.gather:
+    for kib, busy, issuers in itertools.product(args.gather, args.busy, args.issuers):
         pages = kib * 1024 // PAGE
-        for busy in args.busy:
-            base = baseline(bench, busy)
-            for way in args.ways:
-                senders = (0, 1) if way == "both" else (int(way[0]),)
-                salts = {s: bench.fill(s, bench.a[s], pages) for s in senders}
-                before = bench.crossings()
-                submitted = []
-                for s in senders:
-                    to = 1 - s
-                    words = [
-                        bench.a[s].address,
-                        0,
-                        pages,
-                        to,
-                        issuers or bench.own[s][1],
-                        bench.reports[s].address,
-                        bench.b[to].address,
-                        busy,
-                        0,
-                    ]
-                    submitted.append(bench.submit(s, "gather", words))
-                events = bench.together(submitted)
-                moved = bench.crossings() - before
-                mhz = aiclk(bench.cards)
-                row = {"call": "gather", "kib": kib, "way": way, "busy": busy}
-                row["cmd_us"] = [round(e.ticks / X280_HZ * 1e6, 1) for e in events]
-                row["base_us"] = [round(base[s], 1) for s in senders]
-                row["added_us"] = [
-                    round(c - b, 1) for c, b in zip(row["cmd_us"], row["base_us"])
+        base = baseline(bench, busy)
+        for way in args.ways:
+            senders = (0, 1) if way == "both" else (int(way[0]),)
+            salts = {s: bench.fill(s, bench.a[s], pages) for s in senders}
+            before = bench.crossings()
+            submitted = []
+            for s in senders:
+                to = 1 - s
+                words = [
+                    bench.a[s].address,
+                    0,
+                    pages,
+                    to,
+                    issuers or bench.own[s][1],
+                    bench.reports[s].address,
+                    bench.b[to].address,
+                    busy,
+                    0,
                 ]
-                row["gb_s"] = [
-                    round(pages * PAGE / (c * 1e-6) / 1e9, 2) for c in row["cmd_us"]
-                ]
-                row["span_us"] = [span(bench, s, mhz) for s in senders]
-                row["crossed"] = {
-                    f"{a}->{b}": moved.total(a, b)["bytes"] for a, b in ((0, 1), (1, 0))
-                }
-                row["bad_words"] = 0
-                for s in senders:
-                    bad, first = bench.check(1 - s, bench.b[1 - s], pages, salts[s])
-                    row["bad_words"] += bad
-                    if pages <= NUMPY_PAGES:
-                        want = pattern(0, pages, salts[s])
-                        row["bad_words"] += bench.numpy_check(
-                            1 - s, bench.b[1 - s], pages, want
-                        )
-                row["aiclk"] = mhz
-                log(f"{row}")
-                rows.append(row)
+                submitted.append(bench.submit(s, "gather", words))
+            events = bench.together(submitted)
+            moved = bench.crossings() - before
+            mhz = aiclk(bench.cards)
+            row = {"call": "gather", "kib": kib, "way": way, "busy": busy}
+            row["issuers"] = issuers or bench.own[0][1]
+            row["cmd_us"] = [round(e.ticks / X280_HZ * 1e6, 1) for e in events]
+            row["base_us"] = [round(base[s], 1) for s in senders]
+            row["added_us"] = [
+                round(c - b, 1) for c, b in zip(row["cmd_us"], row["base_us"])
+            ]
+            row["gb_s"] = [
+                round(pages * PAGE / (c * 1e-6) / 1e9, 2) for c in row["cmd_us"]
+            ]
+            row["span_us"] = [span(bench, s, mhz) for s in senders]
+            row["crossed"] = {
+                f"{a}->{b}": moved.total(a, b)["bytes"] for a, b in ((0, 1), (1, 0))
+            }
+            row["bad_words"] = 0
+            for s in senders:
+                bad, first = bench.check(1 - s, bench.b[1 - s], pages, salts[s])
+                row["bad_words"] += bad
+                if pages <= NUMPY_PAGES:
+                    want = pattern(0, pages, salts[s])
+                    row["bad_words"] += bench.numpy_check(
+                        1 - s, bench.b[1 - s], pages, want
+                    )
+            row["aiclk"] = mhz
+            log(f"{row}")
+            rows.append(row)
     out["gather"] = rows
 
 
@@ -331,7 +337,7 @@ def reduce_rows(bench, args, out):
                     bench.b[i].address,
                     bench.result.address,
                     kept,
-                    (args.issuers or bench.own[i][1]) | other << 16,
+                    bench.own[i][1] | other << 16,
                     bench.reports[i].address,
                     busy,
                     i * kept,

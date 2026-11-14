@@ -92,8 +92,8 @@ namespace {
         report(reader, command, args, command.a5, rank, words);
     }
 
-    // REDUCE (collectives.h): the partials gathered to their keepers, folded, the sums
-    // gathered back.
+    // REDUCE (collectives.h): the leader's one line of partials to the far keepers,
+    // each rank's fold of its share, the leader's one line of sums back.
     template <typename Args>
     void reduce(km::Reader& reader, const km_command_t& command, const Args& args) {
         const uint32_t partial = command.a0, staging_there = command.a1;
@@ -101,6 +101,7 @@ namespace {
         const uint32_t ranks = command.a5 & 0xFFFFu, other = command.a5 >> 16;
         const uint32_t mine = command.a8, theirs = command.a9;
         const uint32_t rank = reader.me() - km::first(command);
+        const bool leader = rank == 0;
         uint32_t words[kReportWords] = {kReportMagic, rank};
         words[kReportStart] = km::wall();
         if (rank >= ranks) {
@@ -109,17 +110,20 @@ namespace {
         const km::Partition share = km::partition(kept, rank, ranks);
         words[kReportPages] = share.len;
         km::Gather posted = {};
-        if (!km::gather_pages(
-            reader,
-            command,
-            partial,
-            theirs + share.start,
-            share.len,
-            other,
-            posted,
-            km::keeper(rank, kPortKept),
-            staging_there
-        )) {
+        if (
+            leader &&
+            !km::gather_pages(
+                reader,
+                command,
+                partial,
+                theirs,
+                kept,
+                other,
+                posted,
+                km::keeper(0, kPortKept, ranks),
+                staging_there
+            )
+        ) {
             return;
         }
         words[kReportPosted] = km::wall();
@@ -152,10 +156,31 @@ namespace {
             k += n;
         }
         words[kReportFolded] = km::wall();
-        if (!km::gather_pages(
-            reader, command, result, mine + share.start, share.len, other, posted
-        ) ||
-            !km::gather_wait(reader, command, posted)) {
+        // its fold done: one more on the leader's kPortFolded
+        noc_semaphore_inc(
+            reader.core_noc(
+                reader.core_of(km::first(command)),
+                reader.args().control + KM_CONTROL_PORT + kPortFolded * KM_PORT_STRIDE
+            ),
+            1
+        );
+        if (reader.poll_at(
+            km::kWhereAsk,
+            [] {
+                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+            },
+            reader.args().wait_limit
+        ) != km::kGaveNone) {
+            return;
+        }
+        if (
+            leader &&
+            (
+                !km::gathered(reader, command, kPortFolded, ranks) ||
+                !km::gather_pages(reader, command, result, mine, kept, other, posted) ||
+                !km::gather_wait(reader, command, posted)
+            )
+        ) {
             return;
         }
         words[kReportEnd] = km::wall();
