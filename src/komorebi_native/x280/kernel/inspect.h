@@ -36,6 +36,7 @@ static inline void inspect_begin(
     header[KMD_I_START] = (uint32_t)now;
     header[KMD_I_TICKS] = 0;
     header[KMD_I_RESET] = 0;
+    header[KMD_I_RESET_FAILED] = 0;
     kmd_inspect_t* inspect = &dispatcher->inspect;
     inspect->active = 1;
     inspect->kind = kind;
@@ -243,9 +244,15 @@ static int inspect_reset(kmd_t* dispatcher) {
         if (inspect_left(dispatcher, core, inspect->sequence)) {
             continue;
         }
-        if (reset_run(
-            dispatcher, core, dispatcher->reset_offset, dispatcher->reset_bytes
-        ) != KMD_RESET_OK) {
+        uint32_t offset = 0, bytes = 0;
+        const uint32_t status = (
+            reset_pick(dispatcher, core, &offset, &bytes)
+                ? reset_run(dispatcher, core, offset, bytes)
+                : KMD_RESET_NO_LIST
+        );
+        if (status != KMD_RESET_OK) {
+            header[KMD_I_RESET_FAILED] = (core + 1u) | status << 16;
+            x280_fence_ow();
             return 0;
         }
         volatile uint32_t* line = (

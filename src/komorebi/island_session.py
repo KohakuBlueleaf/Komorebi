@@ -325,6 +325,35 @@ class IslandRun:
         except KomorebiError as error:
             raise _named(error, island) from None
 
+    def reset_core(self, island, core, timeout=10.0):
+        """Run.reset_core of island `island`'s core `core` (its own core number): by
+        that island's dispatcher from its kept lists, else by the host. Not a link
+        core: it would lose the connection it holds open."""
+        if core in self.graph.link_cores[island]:
+            raise ValueError(f"island {island}: core {core} is a link core")
+        try:
+            return {"island": island} | self.runs[island].reset_core(core, timeout)
+        except KomorebiError as error:
+            raise _named(error, island) from None
+
+    @property
+    def recovery(self):
+        """Each island's kept reset lists (Run.recovery), None where refused."""
+        return [run.recovery for run in self.runs]
+
+    @property
+    def recoveries(self):
+        """Every island's give-ups whose cores its dispatcher reset, island order:
+        {island, ticket, handle, cores, text}, the text starting "island N: "."""
+        return [
+            {"island": island, "ticket": next(iter(tickets), None)}
+            | entry
+            | {"text": f"island {island}: {entry['text']}"}
+            for island, run in enumerate(self.runs)
+            for entry in run.recoveries
+            for tickets in [self._tickets(island, [entry["handle"]])]
+        ]
+
     def _tickets(self, island, handles):
         """The tickets whose part on `island` has one of these handles."""
         parts = self._parts[island][: self._next]

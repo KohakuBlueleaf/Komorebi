@@ -365,6 +365,7 @@ def inspect(block, abi_headers=None):
         },
         "ticks": header[abi_headers["KMD_I_TICKS"]],
         "reset": header[abi_headers["KMD_I_RESET"]],
+        "reset_failed": header[abi_headers["KMD_I_RESET_FAILED"]],
     }
     record, head = abi_headers["KMD_INSPECT_RECORD"] // 4, len(header)
     state_at, live_at, trace_at = (

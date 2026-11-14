@@ -1408,6 +1408,39 @@ namespace {
             return took;
         }
 
+        // Per core (x + y * grid x), the number of its kernels' group among the cores'
+        // groups in core order, -1 for none: one reset list (every) serves a group.
+        std::vector<int32_t> reset_groups() {
+            namespace tm = tt::tt_metal;
+            if (!workload_) {
+                throw std::runtime_error("reset_groups: the program was not launched");
+            }
+            const auto& hal = tm::MetalContext::instance().hal();
+            const uint32_t index = (
+                hal.get_programmable_core_type_index(
+                    tm::HalProgrammableCoreType::TENSIX
+                )
+            );
+            auto& program = workload_->get_programs().begin()->second;
+            const auto grid = mesh_->compute_with_storage_grid_size();
+            std::vector<const void*> seen;
+            std::vector<int32_t> out;
+            for (uint32_t core = 0; core < grid.x * grid.y; core++) {
+                const tm::CoreCoord logical{core % grid.x, core / grid.x};
+                const void* group = program.impl().kernels_on_core(logical, index);
+                const auto found = std::find(seen.begin(), seen.end(), group);
+                if (group == nullptr) {
+                    out.push_back(-1);
+                } else if (found == seen.end()) {
+                    out.push_back(static_cast<int32_t>(seen.size()));
+                    seen.push_back(group);
+                } else {
+                    out.push_back(static_cast<int32_t>(found - seen.begin()));
+                }
+            }
+            return out;
+        }
+
         // The dispatcher's reset of core (x, y) (KMD_HANDLER_RESET): reset_core's
         // writes as a write list of km_dispatch.h, in whole 64-byte lines.
         nb::bytes reset_list(uint32_t x, uint32_t y, bool every) {
@@ -1583,25 +1616,30 @@ namespace {
                 hal.get_l1_noc_offset(tensix)
             );
             // every: each core's runtime arguments, core i (x + y * grid x) the i-th
-            // part; every core must hold this core's kernels, so the rest is common.
+            // part, zero for a core with other kernels (reset_groups: not this list's).
             const auto grid = mesh_->compute_with_storage_grid_size();
             const uint32_t cores = static_cast<uint32_t>(grid.x * grid.y);
+            std::vector<bool> mine(cores);
+            for (uint32_t core = 0; core < cores; core++) {
+                const tm::CoreCoord other{core % grid.x, core / grid.x};
+                mine[core] = program.impl().kernels_on_core(other, index) == group;
+            }
             const auto each = [&](uint64_t at, tm::Kernel& kernel) {
                 size_t size = 0;
                 for (uint32_t core = 0; core < cores; core++) {
-                    const tm::CoreCoord other{core % grid.x, core / grid.x};
-                    if (program.impl().kernels_on_core(other, index) != group) {
-                        throw std::invalid_argument(
-                            "reset_list: cores differ in kernels"
-                        );
+                    if (mine[core]) {
+                        const tm::CoreCoord other{core % grid.x, core / grid.x};
+                        size = std::max(size, kernel.runtime_args(other).size() * 4);
                     }
-                    size = std::max(size, kernel.runtime_args(other).size() * 4);
                 }
                 const size_t padded = (size + 15) / 16 * 16;
                 entry(KMD_RESET_EACH, at, static_cast<uint32_t>(size), cores);
                 const size_t start = list.size();
                 list.resize(start + padded / 4 * cores, 0);
                 for (uint32_t core = 0; core < cores; core++) {
+                    if (!mine[core]) {
+                        continue;
+                    }
                     const auto& args = kernel.runtime_args(
                         tm::CoreCoord{core % grid.x, core / grid.x}
                     );
@@ -2896,7 +2934,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("x"),
             nb::arg("y"),
             nb::arg("timeout_s")
-        ).def(
+        ).def("reset_groups", &Launch::reset_groups).def(
             "reset_list",
             &Launch::reset_list,
             nb::arg("x"),
