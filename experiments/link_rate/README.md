@@ -207,7 +207,7 @@ packets of 4352 bytes a link, batch 64, card 0 to card 1, receiver kernels on ca
 every slot exact; then the session's page path (`experiments/islands_pages`,
 `pages.py --links 4 --mib 64`, 4096-byte pages read from DRAM through three L1 slots
 a CPU, a count every 64), with its two link cores in the far corner (the default) and
-in the row under the Ethernet tiles (`IslandSession(link_cores="first")`), both on the
+in the row under the Ethernet tiles (a session option written for this one run and not kept: it measured no gain), both on the
 same commit. The NoC is a torus of 17 x 12 places: NoC0 runs toward higher x and y,
 NoC1 toward lower, both wrapping; CPU 0 sends on NoC0, CPU 1 on NoC1. The routers of
 links 0 to 3 sit at NoC0 (3, 1), (4, 1), (13, 1), (12, 1); Tensix row 0 is NoC y = 2.
