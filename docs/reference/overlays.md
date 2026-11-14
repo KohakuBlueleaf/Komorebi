@@ -242,6 +242,7 @@ the reader taking a command to its completion, medians, one command at a time:
 ## A group switches program
 
 In a run loaded with a dict, `run.load(program, group=)` ([host](host.md#a-group-switches-program))
+or an X280 thread's `kmx_load` ([threads](threads.md#a-thread-gives-a-group-another-program))
 is a command with the reserved handler 240 (`KM_HANDLER_LOAD`): its program field names
 the new program, its word `a0` the program's record in DRAM (in every bank, as the parts
 are: the program field, its five overlay table entries, and per buffer index its
@@ -264,6 +265,17 @@ changes only by this command. On each core of the group:
    `compute_kernel_hw_startup` on the program's first input and output buffers, so the
    unpacker and packer take its data formats.
 
+**Who may issue a load.** The host and the thread of a work cluster; from a stream or a
+graph the dispatcher rejects it (reason 1), and a cast or a pull cannot name one. Both
+loads mean the same: exclusive (no job queued, no command in flight on a core of the
+group), and the per-core table moved when the dispatcher submits it, so it judges every
+later command from any source (reason 13). They differ only in the wait: the host's
+load waits in its ring, keeping the host's later commands behind it; a thread's that
+cannot go now is rejected at once with reason 11 and a wake owed, as every thread
+command is, and `kmx_load` sends it again after the wake
+([21_thread_load](../../examples/21_thread_load/README.md): a load to the core of a long
+command returns after that command, 37 µs after the command was sent).
+
 A load to the program a core already holds sets its buffers up again (empty) and checks
 the host's layout against the live one: the session's start-up loads do this, and a
 mismatch gives up with where 39 (`ProgramSwitch`). A data command for a program whose
@@ -280,6 +292,12 @@ What it costs, cycles from the reader taking the load to its completion (medians
 That is 2.3 to 2.6 µs at 1,350 MHz, beside `overlay_costs`' 0.68 µs for setting up the
 buffers alone and 7 to 95 µs for loading five parts on 120 cores: a load command costs the
 meeting of the five cores and the wait for their buffers to empty, not the code.
+
+From an X280 thread a load costs the dispatcher the same (submit to completion, the
+cores that change program in a round: 3.9 to 4.1 µs against 3.8 to 4.0 µs from the
+host), and `kmx_load` returns 6.1 to 6.2 µs after it is called, where the host's
+`run.load` and its wait take 134 µs
+([21_thread_load](../../examples/21_thread_load/README.md#numbers)).
 
 The experiments these numbers stand beside are
 [overlay_costs](../../experiments/overlay_costs/README.md),

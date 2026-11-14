@@ -51,6 +51,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `function` | whether the command still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
 | `int kmx_pull_run(const km_command_t* command, const kmx_pull* settings, kmx_event* event)` | the lead's 0, not nested | submits `command` and serves its pulls on every X280 core until its event: units 0 to `settings->units - 1` in ranges of `settings->per`, by `settings->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `settings->log`), `settings->pick` (the range) or `settings->pick_word` (the range and a word the core gets with it, [the pull's word](#the-pulls-word)) | as `kmx_port_run`; `KMX_BAD` also for a bad mode, both `pick` and `pick_word` set, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
 | `void kmx_command(km_command_t* command, uint32_t program, uint32_t handler, uint32_t first, uint32_t count)` | any | fills `command`: `hdr = handler \| program << 24`, `group = first \| count << 16`, every other word 0 ([several programs](#a-thread-in-a-run-of-several-programs)) | - |
+| `int kmx_load(uint32_t program, uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event)` | 0 | in a run loaded with a dict, makes cores `[first, first + count)` hold `program` (its field, `kProgram<Name>`): submits the load, waits for its event and, while the dispatcher rejects it busy, waits for the wake and sends it again, all by `deadline` ([a thread gives a group another program](#a-thread-gives-a-group-another-program)) | `KMX_OK` and `event` (may be 0) once the load is done; `KMX_BAD` when the dispatcher refused it or its timeout came (`event` says which) or the run has no record for `program`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_submit(const km_command_t* command, uint32_t* handle)` | 0 | stores `command` as the next command of the ring | `KMX_OK` and the handle (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
 | `int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event)` | 0 | waits for the handle's event until `kmx_time()` passes `deadline`; other handles' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_poll(kmx_event* event)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
@@ -184,8 +185,10 @@ uint32_t handle;
 kmx_submit(&command, &handle);
 ```
 
-A group that does not hold the program (with `{program: group}`) gives up on the
-command; in the combined form every core holds every program.
+A command to a group with a core that does not hold the program (with
+`{program: group}`) is refused by the dispatcher: `kmx_wait` returns its event,
+`KM_EVENT_REJECTED` with reason 13, and the run goes on; in the combined form every core
+holds every program.
 [19_thread_programs](../../examples/19_thread_programs/README.md) splits the grid between
 two programs every round from the thread.
 
@@ -195,6 +198,53 @@ raises `CommandRejected` naming the reason (`thread` for a full thread). A timeo
 not end the run, unlike a core group's: `run.wait` returns the event with kind
 `"timeout"` and the run goes on. A host-fed graph or stream ends with its deadline
 error, as on the X280.
+
+### A thread gives a group another program
+
+In a run loaded with a dict (`session.load({a: group, b: group})`,
+[host](host.md#a-group-switches-program)), the thread moves cores from one program to
+another as the host's `run.load` does, with one call:
+
+```c
+kmx_event event;
+if (kmx_load(kProgramWiden, k, old_k - k, kmx_time() + KMX_TICKS_PER_SECOND, &event)
+    != KMX_OK) {
+    return KMX_BAD; /* event: why */
+}
+/* cores k to old_k - 1 hold widen: commands of widen to them are taken */
+```
+
+- **The records.** A load names the program's record in DRAM, which exists only once
+  the session has built the programs. The session writes the records into the thread's
+  ring line before the thread starts (`records`, `record_step`, `programs`: program
+  field `p`'s record at `records + p * record_step` for `p` below `programs`); the
+  library reads them, the program names only the field. A run whose groups cannot
+  switch (loaded with one program or a list, or groups whose runtime kernels differ)
+  has `programs` 0, and `kmx_load` returns `KMX_BAD` without sending anything.
+- **A busy dispatcher.** A load is exclusive: it goes only when no job is queued and no
+  command in flight shares a core with it. A thread's command that cannot go now is
+  rejected at once with reason 11 and a wake owed (the thread never holds the
+  dispatcher's core 0); `kmx_load` then waits for that wake and sends the load again,
+  so a load to cores with a command in flight returns after that command. The events
+  of other commands that arrive meanwhile are kept for `kmx_wait` and `kmx_poll`.
+- **What the program sees.** The load takes effect for later commands: when `kmx_load`
+  returns `KMX_OK` the dispatcher holds the cores as the new program's, a command of
+  the old program to them is refused (reason 13) and one of the new program is taken.
+  The cores take the load after their earlier commands.
+- **What the host sees.** Its own record of which program each core holds is stale
+  once a thread loads, so in a run loaded with a dict that has a thread on the card
+  `run.check_programs` starts `False`: the host sends what it is asked to and the
+  dispatcher refuses a command for a program its cores do not hold (`CommandRejected`,
+  reason 13). `run.thread.records` holds what the thread was given.
+- **Not possible.** A load from a stream or a graph (rejected, reason 1), from a cast or
+  a pull; a load in the combined form; a load of a dynamic program.
+
+[21_thread_load](../../examples/21_thread_load/README.md): after one command from the
+host, the thread moves the boundary between two programs' groups with a load every
+round and commands both; 40 rounds on 120 cores in 1,825 µs against 16,950 µs with the
+host issuing every load and command, a load 6.2 µs from `kmx_load`'s call to its
+return against 134.9 µs for the host's `run.load` and wait, 10,345 thread-issued loads
+with every result exact.
 
 ## The image
 
@@ -251,7 +301,9 @@ aligned), `consumed` (the kernel's count of commands taken), `events` (`event_de
 (`KMX_RING_CACHED` 1: each flush or invalidate is a sweep; `KMX_RING_REMOTE` 2: `cmd` and `read`
 are NoC addresses in the tile `reserved[0]` names, `x | y << 16`, inside one 2 MiB
 window that the start-up opens in slot `KMX_RING_WINDOW` and closes after `kmx_main`),
-`reserved[0]`. Other addresses are as the thread's cluster sees them. A line that
+`reserved[0]`, `reserved[1]`, then `records`, `record_step` and `programs` for
+`kmx_load` (program field `p`'s record at `records + p * record_step`, `p` below
+`programs`; 0: none). Other addresses are as the thread's cluster sees them. A line that
 names a ring but is out of range ends the start-up with error `args`. The session's
 ring: 16 command lines and the read line in the dispatcher's LIM after its layout and
 its upload region (`KMD_LIM_BYTES` + 512 KiB, `komorebi.thread.rings_at()`; cluster
@@ -305,6 +357,7 @@ cluster's:
 | `run.thread.read(name)` | the region's bytes (`uint8`), only after `run.stop()` |
 | `run.thread.regions.address(name)` | `(bank, bank address)` for a Tensix kernel |
 | `run.thread.ring` | the `RingPlacement` the host wrote into the ring line (`None` with `thread="host"`) |
+| `run.thread.records` | `(records, record_step, programs)` written into the ring line for `kmx_load` (`None` in a run whose groups cannot switch, and with `thread="host"`) |
 | `run.stop()` | stops every thread still running, then the run |
 
 `ThreadResult`: `ran` (false when it was stopped at the timeout), `state`, `error`
@@ -317,7 +370,8 @@ remote=None)`, `work_ring(kernel_lim, kernel_coordinates, work_lim, work_coordin
 session's placement of one cluster's ring and the kernel's end of it),
 `kernel_work_args(ends)` (the kernel's `work_*` words for every ring) and
 `args_block(thread, base, check_value, run_value=0, ring=None, table=None,
-peers=None)` build the LIM block; `Peers(nonce, lead, tiles, banks)` is the peers line
+peers=None, ports=None, records=None)` build the LIM block (`records` from
+`load_records(switch)`, the run's records for `kmx_load`); `Peers(nonce, lead, tiles, banks)` is the peers line
 (tiles and banks: `{cluster: x | y << 16}`) and `peer_groups({cluster: image})` the
 clusters that run one image. They need no device; the session fills `Peers` from the
 clusters' tiles and their banks' DRAM tiles for every thread on the card.

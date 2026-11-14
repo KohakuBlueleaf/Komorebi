@@ -105,6 +105,33 @@ python a_thread_and_two_programs.py
 
 55 is 6 + 7 from `add` and 6 x 7 from `multiply`.
 
+## A thread that changes a group's program
+
+Loaded with a dict, each group holds one program, and the host moves cores to another
+with `run.load` ([[two-programs]]). The thread can do the same, with one call:
+
+```python
+run = session.load({add: (0, 60), multiply: (60, 60)})  # each group its own program
+```
+
+```c
+kmx_event event;
+if (kmx_load(kProgramMultiply, 0, 30, kmx_time() + KMX_TICKS_PER_SECOND, &event)
+    == KMX_OK) {
+    /* cores 0 to 29 hold multiply: send them multiply's commands */
+}
+```
+
+- `kmx_load` sends the load and waits for it. When the cores still run a command, the
+  dispatcher refuses the load for now and the call sends it again once they are free.
+- The session hands the thread where each program's record is; the C names only the
+  program.
+- The host can no longer tell which program a core holds, so the dispatcher alone
+  refuses a command for a program its cores do not hold (reason 13).
+
+`examples/21_thread_load` moves the boundary between two programs' groups this way
+every round, about nine times faster than the host doing the same.
+
 ## Common mistakes
 
 - Declaring a thread in both programs. Declare it in one; it can command them all.

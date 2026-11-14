@@ -146,7 +146,7 @@ run.submit(expert.handler("refine"), group=(60, 28), args=[...])
 ```
 
 `run.load(program, group=(first, count))` is a command (reserved handler 240, from the
-host only) like any other: it returns a handle, completes with an event and has the
+host or an X280 thread) like any other: it returns a handle, completes with an event and has the
 run's deadline. `program` is one of the dict's: its parts are built and in DRAM, so no
 code moves from the host. The cores of the group take it after their earlier commands;
 the dispatcher holds it until no command in flight shares a core with it and the job
@@ -165,6 +165,14 @@ commands for `program`.
   so the groups' runtime kernels must be the same build: programs of a dict share
   compute options and `opt` levels (else `run.load` raises `ProgramError` and says
   which symbol differs). A run loaded with one program or with a list has no `load`.
+- **A thread may load too.** An X280 thread of the run gives a group another program
+  with `kmx_load` ([threads](threads.md#a-thread-gives-a-group-another-program)). The
+  host then no longer knows which program each core holds, so in a run loaded with a
+  dict that has a thread on the card the host's own check is off
+  (`run.check_programs` starts `False`): a command whose cores do not hold its
+  program is refused by the dispatcher (reason 13, `CommandRejected` naming
+  `program`), which sees every load from every source. Set it `True` for a run whose
+  thread never loads.
 
 The session sends each group a load of its own program before `session.load` returns
 (the compute cores' hardware start-up on that program's formats). What it costs: the
