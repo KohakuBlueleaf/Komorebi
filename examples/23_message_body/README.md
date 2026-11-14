@@ -60,6 +60,24 @@ all exact (every word of the final body checked).
 | 12 cores (14 with the counter tiles), 1200 hops | 1.974 to 1.978 µs a hop | 2.394 to 2.397 µs | 5.452 to 5.454 µs |
 | the grid, 118 ranks (120 cores), 1180 hops | 2.081 to 2.099 µs a hop | 2.532 to 2.541 µs | 5.564 to 5.599 µs |
 
+## Over two cards
+
+`islands.py` runs the same kernels on two cards (`Session(cards=[0, 1])`): one `RUN`
+over every message rank of both islands, numbered on from island 0 to island 1, so a
+thread crosses the link twice a lap. A body crosses in the packet of its message,
+right after it; the far link core writes the body into the rank's body page, then the
+message, as a local send does. A body over a link is at most 4,224 bytes (a 64-byte
+message and its body in one packet of 4,352 bytes); the load refuses a larger one.
+
+```
+python islands.py --threads 8                # one link; 0 and 4 KiB, 1200 hops each
+```
+
+Cards 0 and 1 (Blackhole p150a, one link), 2026-11-15, 8 threads of 1200 hops over 234
+message ranks, 80 crossings each way: both cases exact (every word of every final body
+checked); 3.001 µs a hop with the 64-byte message alone, 6.109 µs with a 4 KiB body
+changed at every hop.
+
 With `--parts` the handler is an overlay part under Komorebi's own kernels
 (`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
 in one run, 6.39 µs a hop against 5.45 compiled in.

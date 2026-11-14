@@ -1950,6 +1950,15 @@ class IslandSession:
                 f"(links={self.links}), {LINK_CORES_MAX} neighbours at most"
             )
         entry = LINK_PREFIX + max(messages.message_bytes for messages in dynamic)
+        for messages in dynamic:  # a message and its body cross in one packet
+            one = LINK_PREFIX + messages.message_bytes
+            most = (LINK_PACKET_BYTES // one - 1) * one // 64 * 64
+            if messages.body_bytes > most:
+                raise ValueError(
+                    f"body_bytes {messages.body_bytes} over a link: at most {most} "
+                    f"bytes, a message of {messages.message_bytes} bytes and its body "
+                    f"cross in one packet of {LINK_PACKET_BYTES} bytes"
+                )
         size = (
             LINK_OUTBOX_AT + LINK_OUTBOX * entry + (LINK_INBOX + 1) * LINK_PACKET_BYTES
         ) + LINK_TAIL

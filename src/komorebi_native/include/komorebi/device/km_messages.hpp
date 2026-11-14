@@ -1039,7 +1039,14 @@ namespace km {
 
         template <typename WriterType>
         uint32_t put(
-            WriterType&, const km_command_t&, uint32_t, uint32_t, uint32_t, uint32_t
+            WriterType&,
+            const km_command_t&,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t = 0,
+            uint32_t = 0
         ) {
             return 0;
         }
@@ -1167,13 +1174,19 @@ namespace km {
                     bin_destination[bin],
                     store + bin * kMessagesPacket * messages_arguments.message_bytes,
                     messages_arguments.message_bytes,
-                    bin_messages
+                    bin_messages,
+                    bin_body[bin],
+                    bin_body_bytes[bin]
                 );
                 if (where != 0) {
                     return false;
                 }
                 sent += bin_messages;
                 messages[KM_MESSAGES_SENT / 4] = sent;
+                if (bin_body_bytes[bin] != 0) {  // its body has left this L1 too
+                    bin_body_bytes[bin] = 0;
+                    writer_flags[kMessagesFlagBodies] = ++bodies;
+                }
                 bin_fill[bin] = 0;
                 bin_destination[bin] = kMessagesEnd;
                 held--;
