@@ -47,7 +47,6 @@ def make_run():
 def test_the_control_block_follows_the_slot_count():
     slots = CONSTANTS["KM_RING_SLOTS"]
     assert slots == 64
-    assert CONSTANTS["KM_CONTROL_RESERVED"] == CONSTANTS["KM_CONTROL_RING"] + 64 * slots
     assert CONSTANTS["KM_CONTROL_BOOT"] == CONSTANTS["KM_CONTROL_DONE"] + 16 * slots
     assert CONSTANTS["KM_STATE_WORDS"] == 2 * slots + 16
     assert (
@@ -61,8 +60,9 @@ def test_the_control_block_follows_the_slot_count():
     )
     assert CONSTANTS["KM_CONTROL_BLOCK"] + 2 * area == CONSTANTS["KM_CONTROL_ABORT"]
     assert CONSTANTS["KM_CONTROL_LIVE"] == CONSTANTS["KM_CONTROL_ABORT"] + 4 * slots
-    live = CONSTANTS["KM_CONTROL_LIVE"] + CONSTANTS["KM_LIVE_BYTES"]
-    assert live == CONSTANTS["KM_CONTROL_BYTES"]
+    ring = CONSTANTS["KM_CONTROL_LIVE"] + CONSTANTS["KM_LIVE_BYTES"]
+    assert ring == CONSTANTS["KM_CONTROL_RING"]
+    assert ring + 64 * slots == CONSTANTS["KM_CONTROL_BYTES"]
     assert CONSTANTS["KM_CONTROL_BLOCK"] % 64 == 0
 
 

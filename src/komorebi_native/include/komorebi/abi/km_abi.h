@@ -12,7 +12,7 @@
 #endif
 
 /* Command slots of every core's ring, 64 bytes each: the most commands in flight. The
-   control block, the dispatcher's tables and the state words follow it. */
+   ring is the last part of the control block. */
 #define KM_RING_SLOTS 64u
 #define KM_CORES_MAX 128u
 #define KM_HANDLER_NOP 0u
@@ -98,10 +98,9 @@ KM_STATIC_ASSERT(
     "a cluster's group is no core's, and its low 8 bits are the cluster"
 );
 
-/* Control block in L1: the same address on every core. Offsets in bytes. */
-#define KM_CONTROL_RING 0x000u /* KM_RING_SLOTS commands */
-/* reserved, 16 bytes; not written in this version */
-#define KM_CONTROL_RESERVED (KM_CONTROL_RING + KM_RING_SLOTS * 64u)
+/* Control block in L1: the same address on every core. Offsets in bytes. The command
+   ring is last, so the words the kernels use most sit at small offsets. */
+#define KM_CONTROL_RESERVED 0x000u /* reserved, 16 bytes */
 /* nonzero: every wait gives up */
 #define KM_CONTROL_STOP (KM_CONTROL_RESERVED + 0x10u)
 /* KM_RING_SLOTS counters, 16 bytes apart: cores done */
@@ -126,10 +125,9 @@ KM_STATIC_ASSERT(
     "a slot is one bit of the dispatcher's 64-bit masks and fits the header's byte"
 );
 KM_STATIC_ASSERT(
-    KM_CONTROL_RESERVED == KM_CONTROL_RING + 64u * KM_RING_SLOTS &&
-        KM_CONTROL_BOOT == KM_CONTROL_DONE + 16u * KM_RING_SLOTS &&
+    KM_CONTROL_BOOT == KM_CONTROL_DONE + 16u * KM_RING_SLOTS &&
         KM_CONTROL_JOB == KM_CONTROL_STATE + 4u * KM_STATE_WORDS,
-    "the ring, the DONE counters and the state words follow the slot count"
+    "the DONE counters and the state words follow the slot count"
 );
 KM_STATIC_ASSERT(
     KM_CONTROL_DONE % 16u == 0 && KM_CONTROL_BOOT % 16u == 0 &&
@@ -305,7 +303,9 @@ KM_STATIC_ASSERT(
 #define KM_LIVE_TRACE 20u     /* live word: the trace's L1 address (0: none) */
 #define KM_LIVE_TRACE_CAP 21u /* live word: the sequences it holds */
 #define KM_TRACE_ENTRY 16u /* bytes of one sequence's trace entry (km::kTraceWords) */
-#define KM_CONTROL_BYTES (KM_CONTROL_LIVE + KM_LIVE_BYTES)
+/* KM_RING_SLOTS commands, the last part of the block */
+#define KM_CONTROL_RING (KM_CONTROL_LIVE + KM_LIVE_BYTES)
+#define KM_CONTROL_BYTES (KM_CONTROL_RING + KM_RING_SLOTS * 64u)
 #define KM_X280_TO_TILE 0u /* word offsets of the KM_X280_TO line */
 #define KM_X280_TO_BOX 1u  /* LIM address of this core's mailbox line; 0: not served */
 /* A core's mailbox line in its X280 core's LIM (64 bytes, the core writes it). */
@@ -328,9 +328,13 @@ KM_STATIC_ASSERT(
 );
 KM_STATIC_ASSERT(
     KM_CONTROL_ABORT % 64u == 0 && KM_CONTROL_LIVE % 64u == 0 &&
-        KM_CONTROL_LIVE + KM_LIVE_BYTES == KM_CONTROL_BYTES &&
         KM_LIVE_READ <= KM_LIVE_BYTES,
-    "abort words and live words: whole lines, the last part of the block"
+    "abort words and live words: whole lines"
+);
+KM_STATIC_ASSERT(
+    KM_CONTROL_RING % 64u == 0 &&
+        KM_CONTROL_RING + 64u * KM_RING_SLOTS == KM_CONTROL_BYTES,
+    "the ring: whole lines, the last part of the block"
 );
 
 /* Words the Tensix grid pushes into the X280's local memory. */
