@@ -202,8 +202,18 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   `submit_many` of a dynamic handler and X280 ranks). Before the RUN the session queues
   a PAGES command of mode `KM_PAGES_MESSAGES` (a0: the RUN's group word) to link core 0
   of each island; its link 0 CPU serves the run's messages until the RUN's end, and the
-  dispatcher's quiet test counts that core's line. The service grows the kernels (the
-  forward example's to 97,008 bytes), inside the kernel buffer of two cards.
+  dispatcher's quiet test counts that core's line. Between two cards with a kernel
+  buffer of 160 KiB or more (`kernel_bytes=163840`) every link has a service (link k:
+  CPU k % 2 of link core k / 2, its own region, a second region on every core for the
+  second CPUs; built with `KM_MESSAGE_SERVICES`): a rank's messages take link
+  `rank % links`, so one rank's stay in order; with less, link 0's alone (logged).
+  Example 05's 10^6 forwards over four links: 80.1 ms against 302.0 ms on link 0 alone,
+  every link about 62,500 messages each way. Link 0's service alone decides the island quiet: its own outbox
+  empty, then two passes alike over the RUN's cores and the other services' state lines
+  (each empty in this run), balanced over every service's counts; the two islands'
+  reports carry those sums. The other services write no status line; one that gives up
+  makes link 0's give up. The services grow the kernels (the forward example's two-card
+  build to about 160,000 bytes).
 
 ## What crossed
 
@@ -227,7 +237,7 @@ link core counts what it sends in plain counters of its link area (`KM_LINK_CROS
 `km_abi.h`); no other core counts anything. A read is one `PAGES` command of mode
 `KM_PAGES_COUNTS` to each island's link cores, whose CPUs copy their counters into a
 small DRAM tensor the host reads: it waits behind a command a link core runs, so while
-a dynamic run's messages are served, link 0's counts are read after its RUN. On one
+a dynamic run's messages are served, its links' counts are read after its RUN. On one
 island, `crossings()` has no row.
 
 Measured on two Blackhole p150a cards, every link (4), 2026-11-14:
@@ -781,7 +791,7 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 ## Not yet
 
 - Links: a dynamic run's messages cross only in a RUN of every rank, and while the
-  run's messages are served link 0 carries nothing else (a core's ask waits too). A
+  run's messages are served the links carry nothing else (a core's ask waits too). A
   kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
   page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
   link, and a put goes one link only. A copy with both sides placed moves a chunk at a

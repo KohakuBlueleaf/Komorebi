@@ -71,12 +71,14 @@ message and its body in one packet of 4,352 bytes); the load refuses a larger on
 
 ```
 python islands.py --threads 8                # one link; 0 and 4 KiB, 1200 hops each
+python islands.py --threads 8 --links 4 --kernel-bytes 163840  # a service a link
 ```
 
 Cards 0 and 1 (Blackhole p150a, one link), 2026-11-15, 8 threads of 1200 hops over 234
-message ranks, 80 crossings each way: both cases exact (every word of every final body
+message ranks, 40 crossings each way: both cases exact (every word of every final body
 checked); 3.001 µs a hop with the 64-byte message alone, 6.109 µs with a 4 KiB body
-changed at every hop.
+changed at every hop. Four links, a service each (232 message ranks): exact, 2.990 and
+6.056 µs a hop; the crossing ranks' messages took links 1 and 3, 40 each way.
 
 With `--parts` the handler is an overlay part under Komorebi's own kernels
 (`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact

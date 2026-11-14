@@ -44,6 +44,9 @@ def parse():
     parser.add_argument(
         "--line", action="store_true", help="the islands in a line (neighbours only)"
     )
+    parser.add_argument(
+        "--links", type=int, default=1, help="links between two cards (a service each)"
+    )
     parser.add_argument("--messages", type=int, default=16)
     parser.add_argument("--forwards", type=int, default=4, help="forwards per message")
     parser.add_argument(
@@ -54,6 +57,12 @@ def parse():
     parser.add_argument("--bins", type=int, default=16)
     parser.add_argument("--idle-cycles", type=int, default=20000)
     parser.add_argument("--counters", type=int, default=2)
+    parser.add_argument(
+        "--kernel-bytes",
+        type=int,
+        default=None,
+        help="the session's kernel buffer (163840 or more: a message service a link)",
+    )
     parser.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
     return parser.parse_args()
@@ -66,12 +75,15 @@ def message_ranks(session, counters):
 
 
 def open_session(args, cards):
-    """Two cards joined by a link, or one card split into `--islands` islands joined
-    by wires (`--line`: neighbours only); the session's default kernel buffer."""
+    """Two cards joined by `--links` links, or one card split into `--islands`
+    islands joined by wires (`--line`: neighbours only); the session's default kernel
+    buffer."""
     if args.islands:
         (card,) = cards
         return km.Session(card=card, islands=args.islands, line=args.line, log=log)
-    return km.Session(cards=cards, links=1, log=log)
+    return km.Session(
+        cards=cards, links=args.links, kernel_bytes=args.kernel_bytes, log=log
+    )
 
 
 def results_areas(session):
@@ -167,6 +179,10 @@ def main():
                 for a in range(islands)
                 for b in session.graph.neighbours(a)
             ]
+            report["messages_by_link"] = {  # link, from island, to island
+                f"{link} {source}->{target}": row["messages"]
+                for (link, source, target), row in sorted(moved.rows.items())
+            }
         try:
             results_end = run.stop() if done else None
             if results_end is not None:

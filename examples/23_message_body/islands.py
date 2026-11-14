@@ -52,6 +52,12 @@ def parse():
     parser.add_argument(
         "--counters", type=int, default=2, help="counter tiles an island"
     )
+    parser.add_argument(
+        "--kernel-bytes",
+        type=int,
+        default=None,
+        help="the session's kernel buffer (163840 or more: a message service a link)",
+    )
     parser.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
     return parser.parse_args()
@@ -179,7 +185,9 @@ def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     runs = []
-    with km.Session(cards=cards, links=args.links, log=log) as session:
+    with km.Session(
+        cards=cards, links=args.links, kernel_bytes=args.kernel_bytes, log=log
+    ) as session:
         area = areas(session)
         for body_bytes in args.bodies:
             runs.append(run_once(session, args, area, body_bytes))
