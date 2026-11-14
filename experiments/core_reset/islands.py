@@ -45,7 +45,7 @@ def main():
     step = parser.parse_args().step
     generator = np.random.default_rng(1)
     report = {"cards": [0, 1], "step": step}
-    with km.Session(cards=[0, 1], log=log, kernel_bytes=84 * 1024) as session:
+    with km.Session(cards=[0, 1], log=log) as session:
         ranks = session.ranks
         graph = session.graph
         island, core = 1, 15  # not a column leader, not core 0
@@ -78,8 +78,10 @@ def main():
             for kept in run.recovery
         ]  # per island: lists, bytes, seconds
         log(f"loaded: recovery {report['recovery']}")
-        try:  # every core of island 1, its own numbers
-            report["inspect"] = len(run.inspect(island))
+        try:  # every rank of island 1
+            report["inspect"] = len(
+                run.inspect((graph.first(island), graph.count(island)))
+            )
         except km.KomorebiError as error:
             report["inspect"] = str(error)
         log(f"inspect of island {island}: {report['inspect']}")

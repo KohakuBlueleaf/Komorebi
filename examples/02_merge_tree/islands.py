@@ -56,10 +56,7 @@ def main():
     generator = np.random.default_rng(1)
     report = {"cards": cards, "tiles": args.tiles, "part": args.part}
     links = 1 if len(cards) > 1 else 0
-    # the link cores' services (two cards) make the kernels 76.5 KB: past the default
-    with km.Session(
-        cards=cards, links=links, kernel_bytes=76 * 1024, log=log
-    ) as session:
+    with km.Session(cards=cards, links=links, log=log) as session:
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)]
             for i in range(len(session.sessions))

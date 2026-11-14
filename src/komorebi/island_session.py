@@ -388,16 +388,17 @@ class IslandRun:
 
     def reset_core(self, rank, timeout=10.0):
         """Resets the core of flat rank `rank` and loads its kernels again while the
-        other cores run, as Run.reset_core does on its island; its result with `rank`
-        and `island`. KomorebiError names the rank if the core did not come back."""
+        other cores run, as Run.reset_core does on its island (by its dispatcher from
+        its kept lists, else by the host): its result with `rank` and `island`.
+        KomorebiError names the rank if the core did not come back."""
         island, local = self.graph.resolve(rank)
+        core = self.graph.rank_cores[island][local]
         try:
-            done = self.runs[island].reset_core(
-                self.graph.rank_cores[island][local], timeout
-            )
+            done = self.runs[island].reset_core(core, timeout)
         except KomorebiError as error:
             if error.args:
-                error.args = (f"rank {rank} (island {island}), {error.args[0]}",)
+                where = f"rank {rank} (island {island}, core {core})"
+                error.args = (f"{where}: {error.args[0]}", *error.args[1:])
             error.island = island
             raise
         return {**done, "rank": rank, "island": island}
@@ -438,17 +439,6 @@ class IslandRun:
             )
         return _named(error, island)
 
-    def reset_core(self, island, core, timeout=10.0):
-        """Run.reset_core of island `island`'s core `core` (its own core number): by
-        that island's dispatcher from its kept lists, else by the host. Not a link
-        core: it would lose the connection it holds open."""
-        if core in self.graph.link_cores[island]:
-            raise ValueError(f"island {island}: core {core} is a link core")
-        try:
-            return {"island": island} | self.runs[island].reset_core(core, timeout)
-        except KomorebiError as error:
-            raise _named(error, island) from None
-
     @property
     def recovery(self):
         """Each island's kept reset lists (Run.recovery), None where refused."""
@@ -457,15 +447,23 @@ class IslandRun:
     @property
     def recoveries(self):
         """Every island's give-ups whose cores its dispatcher reset, island order:
-        {island, ticket, handle, cores, text}, the text starting "island N: "."""
-        return [
-            {"island": island, "ticket": next(iter(tickets), None)}
-            | entry
-            | {"text": f"island {island}: {entry['text']}"}
-            for island, run in enumerate(self.runs)
-            for entry in run.recoveries
-            for tickets in [self._tickets(island, [entry["handle"]])]
-        ]
+        {island, ticket, handle, cores (its own core numbers), ranks, text}, the text
+        that of the give-up, naming the flat ranks."""
+        out = []
+        for island, run in enumerate(self.runs):
+            for entry in run.recoveries:
+                tickets = self._tickets(island, [entry["handle"]])
+                given_up = run.given_up(entry["handle"])
+                text = f"island {island}: {entry['text']}"
+                if given_up is not None:
+                    text = str(self._error(given_up, island))
+                ranked = self._ranked(island, [{"core": c} for c in entry["cores"]])
+                out.append(
+                    {"island": island, "ticket": next(iter(tickets), None)}
+                    | entry
+                    | {"ranks": [core["rank"] for core in ranked], "text": text}
+                )
+        return out
 
     def _tickets(self, island, handles):
         """The tickets whose part on `island` has one of these handles."""
