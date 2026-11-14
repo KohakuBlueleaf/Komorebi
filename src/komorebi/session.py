@@ -43,9 +43,11 @@ MESSAGES_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may ta
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
-# The X280 clock: at 1750 MHz, under full Tensix load (lowered core voltage), core 0's
-# loads returned wrong values; 1000 MHz is the next step the runtime offers.
-X280_MHZ = 1000
+# The X280 clock: 1750 MHz loses loads under full Tensix load. 1350 is the default; a
+# runtime without it gets 1000 (its error: "no PLL solution") unless one was asked for.
+X280_MHZ = 1350
+X280_FALLBACK_MHZ = 1000
+NO_PLL_SOLUTION = "no PLL solution for"
 STATE_DUMP_LINES = 8  # 64-byte lines of the kernel's state logged after a failure
 CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
@@ -402,7 +404,7 @@ class Session:
         self,
         card=None,
         device=None,
-        pll_mhz=X280_MHZ,
+        pll_mhz=None,
         tree=None,
         log=None,
         grid_timeout=10.0,
@@ -412,7 +414,8 @@ class Session:
         self.card = card
         self.device = device
         self._own_device = device is None
-        self.pll_mhz = pll_mhz
+        self.pll_mhz = X280_MHZ if pll_mhz is None else pll_mhz
+        self._default_clock = pll_mhz is None  # may fall back to X280_FALLBACK_MHZ
         self.tree = tree
         self.log = log or (lambda message: None)
         self.grid_timeout = grid_timeout
@@ -794,6 +797,21 @@ class Session:
         tile = dram.TILE
         return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
 
+    def _open_dispatch(self, module):
+        """The runtime's dispatch at the session's clock. A runtime that does not offer
+        the default clock gets 1000, logged once; an asked-for clock is an error."""
+        try:
+            return module.Dispatch(self.device, self.pll_mhz)
+        except RuntimeError as error:
+            if not (self._default_clock and NO_PLL_SOLUTION in str(error)):
+                raise
+            self.log(
+                f"X280 clock {self.pll_mhz} MHz is not offered by this runtime "
+                f"({error}); using {X280_FALLBACK_MHZ} MHz"
+            )
+        self.pll_mhz = X280_FALLBACK_MHZ
+        return module.Dispatch(self.device, self.pll_mhz)
+
     def load(
         self,
         program,
@@ -861,7 +879,7 @@ class Session:
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
         regions = _bank_regions(self, owner, works)
-        dispatch = module.Dispatch(self.device, self.pll_mhz)
+        dispatch = self._open_dispatch(module)
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
         _hook_exit()
         _LIVE.add(self)

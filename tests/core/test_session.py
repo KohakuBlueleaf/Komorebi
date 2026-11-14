@@ -150,6 +150,42 @@ def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):
     assert log[-3:] == ["finish", "close", "read_back, grid stopped"]
 
 
+def offering(module, clocks):
+    """The native Dispatch of a runtime whose clock table is `clocks`."""
+    original, asked = module.Dispatch, []
+
+    def dispatch(device, pll_mhz):
+        asked.append(pll_mhz)
+        if pll_mhz not in clocks:
+            raise RuntimeError(
+                f"could not establish PLL4 on chip 0: no PLL solution for {pll_mhz} "
+                f"MHz. Supported: {' '.join(map(str, clocks))}"
+            )
+        return original(device, pll_mhz)
+
+    module.Dispatch = dispatch
+    return asked
+
+
+def test_the_default_clock_falls_back_to_1000_once_on_an_older_runtime(card, tmp_path):
+    session, _, module = card
+    asked = offering(module, [15, 200, 800, 1000, 1750])
+    messages = []
+    sess = session.Session(device=object(), log=messages.append)
+    sess.load(program(tmp_path)).stop()
+    sess.load(program(tmp_path)).stop()
+    assert asked == [1350, 1000, 1000] and sess.pll_mhz == 1000
+    assert len([m for m in messages if "not offered" in m]) == 1
+
+
+def test_a_clock_asked_for_that_the_runtime_lacks_is_an_error(card, tmp_path):
+    session, _, module = card
+    asked = offering(module, [15, 200, 800, 1000, 1750])
+    with pytest.raises(RuntimeError, match="1350 MHz. Supported: 15 200 800 1000 1750"):
+        session.Session(device=object(), pll_mhz=1350).load(program(tmp_path))
+    assert asked == [1350]
+
+
 def test_a_kernel_that_never_started_leaves_the_host_to_stop_the_grid(
     card, tmp_path, monkeypatch
 ):

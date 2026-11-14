@@ -1,0 +1,19 @@
+x280: the L2CPU clock table offers 1250, 1350 and 1500 MHz
+
+The PLL4 table held 15, 200, 800, 1000 and 1750 MHz. Three registered solutions are added on the
+12.5 MHz reference, mhz = 12.5 * fbdiv / postdiv: 1250 (fbdiv 100), 1350 (108) and 1500 (120), each with
+post-dividers 1, 1, 1, 1 as the 800, 1000 and 1750 rows. set_pll steps the divider fields one at a time and
+confirms the clock on every L2CPU, as for the other rows.
+
+--- a/tt_metal/fabric/experimental/x280/src/device/x280_pll.cpp
++++ b/tt_metal/fabric/experimental/x280/src/device/x280_pll.cpp
+@@ -32,6 +32,9 @@ constexpr PllSolution kPllSolutions[] = {
+     {200, 128, {15, 15, 15, 15}},
+     {800, 64, {1, 1, 1, 1}},
+     {1000, 80, {1, 1, 1, 1}},
++    {1250, 100, {1, 1, 1, 1}},
++    {1350, 108, {1, 1, 1, 1}},
++    {1500, 120, {1, 1, 1, 1}},
+     {1750, 140, {1, 1, 1, 1}},
+ };
+ 

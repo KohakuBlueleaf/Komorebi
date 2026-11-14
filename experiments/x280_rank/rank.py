@@ -24,7 +24,6 @@ XR = {
     )
 }
 X280_TICKS_PER_SECOND = 50_000_000
-X280_MHZ = 1000  # the session's X280 clock: the mcycle counts of the result words
 ROLE_RANK, ROLE_STAND_IN, ROLE_NONE = 0, 1, 2
 
 
@@ -183,7 +182,7 @@ def summary(pages, mhz, trips, host_seconds):
     }
 
 
-def x280_cores(results, x280):
+def x280_cores(results, x280, x280_mhz):
     """Each X280 core's result words, by "cluster.core"."""
     out = {}
     for cluster, cpu in x280:
@@ -197,12 +196,12 @@ def x280_cores(results, x280):
             "bad": row[XR["XR_RES_BAD"]],
             "gave": row[XR["XR_RES_GAVE"]],
             "asks": row[XR["XR_RES_ASKS"]],
-            "take_microseconds": round(row[XR["XR_RES_TAKE"]] * 16 / X280_MHZ, 1),
+            "take_microseconds": round(row[XR["XR_RES_TAKE"]] * 16 / x280_mhz, 1),
             "take_microseconds_per_message": round(
-                row[XR["XR_RES_TAKE"]] * 16 / X280_MHZ / consumed, 3
+                row[XR["XR_RES_TAKE"]] * 16 / x280_mhz / consumed, 3
             ),
             "store_microseconds_per_message": round(
-                row[XR["XR_RES_STORE"]] * 16 / X280_MHZ / consumed, 3
+                row[XR["XR_RES_STORE"]] * 16 / x280_mhz / consumed, 3
             ),
             "messages_per_take": round(consumed / max(row[XR["XR_RES_TAKES"]], 1), 2),
             "empty_looks": row[XR["XR_RES_POLLS"]],
@@ -241,7 +240,6 @@ def main():
     }
     ok = True
     with km.Session(log=log) as session:
-        out["x280_mhz"] = session.pll_mhz
         grid = session.grid
         if args.ranks + args.x280 > grid[0] * grid[1]:
             raise SystemExit("more cores than the grid has")
@@ -252,6 +250,7 @@ def main():
         )
         made, x280 = program(session, args, areas)
         run = session.load(made, deadline=args.deadline, wait=2.0)
+        out["x280_mhz"] = session.pll_mhz
         clocks = [aiclk_mhz()]
         log(f"loaded: {args.ranks} rank cores, X280 cores {x280}")
         group = (0, args.ranks + args.x280)
@@ -291,7 +290,7 @@ def main():
                 exact = exact and runs[name]["sent"] == runs[name]["consumed"]
             ok = ok and exact
         out["runs"] = runs
-        out["x280_cores"] = x280_cores(results, x280)
+        out["x280_cores"] = x280_cores(results, x280, session.pll_mhz)
         x280_sent = sum(core["sent"] for core in out["x280_cores"].values())
         x280_consumed = sum(core["consumed"] for core in out["x280_cores"].values())
         grid_sent = sum(r["sent"] for r in runs.values())

@@ -14,7 +14,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
-from komorebi import session as km_session  # noqa: E402
 from projects.raytrace import card, packets, planner  # noqa: E402
 from projects.raytrace import ties as ties_module  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
@@ -574,7 +573,7 @@ def main():
         meter = card.Power()
         report["power_idle_w"] = meter.idle()
         report["aiclk_mhz"] = card.aiclk_mhz()
-        report["x280_mhz"] = km_session.X280_MHZ
+        report["x280_mhz"] = session.pll_mhz
         report["load_avg"] = os.getloadavg()[0]
         if arguments.plan:
             frame_step_times, profiles_read, host_s, samples, command_microseconds = (
