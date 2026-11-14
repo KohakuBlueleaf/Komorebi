@@ -143,9 +143,8 @@ A step is tried only when the one before it was not enough.
 
 7. **A link core, by the host.** `run.reset_link(island, k)` closes link core k's
    fabric connections at their routers, resets the core and loads it again, then
-   opens its connections again; the far link core needs nothing. On two p150a cards:
-   101 ms (two links) or 46 ms (one link) for the reset, 0.16 to 0.23 ms to open
-   again, and the next reads across (example 01's islands script with `--reset-link
+   opens its connections again; the far link core needs nothing. On two p150a cards
+   with two links on the core: 95 to 98 ms for the reset, 0.24 ms to open again, and the next reads across (example 01's islands script with `--reset-link
    1`) and the next commands that cross (example 25 with `--reset-link`) are exact.
    Use it between commands: a line or an ask in flight on that core is lost, and the
    command waiting for it times out at its deadline.

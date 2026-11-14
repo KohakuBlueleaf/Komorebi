@@ -46,6 +46,6 @@ python islands_threads.py                     # all five
 `--asks` (500). `--reset-link` (with `count`): after the thread's COUNTs, the host resets
 island 0's link core 0, the lines link's core (its connection closed at the router, the
 core loaded again, the connection opened again), and the thread's COUNTs run once more,
-each rank's count exact (3 x `--counts` + 1); on two p150a cards the reset took 46.0 ms,
-opening again 0.16 ms, and the crossed COUNTs 10.97 µs a command before and after. The
+each rank's count exact (3 x `--counts` + 1); on two p150a cards the reset took 95.0 ms,
+opening again 0.24 ms, and the crossed COUNTs 10.97 µs a command before and after. The
 script exits non-zero if a check fails.
