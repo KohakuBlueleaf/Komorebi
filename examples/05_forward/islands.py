@@ -64,13 +64,11 @@ def message_ranks(session, counters):
 
 def open_session(args, cards):
     """Two cards joined by a link, or one card split into `--islands` islands joined
-    by wires. The message service on the link core makes the kernels 83.8 KB: past
-    the default."""
+    by wires (the session's default kernel buffer). The message service on the link
+    core makes the kernels 83.8 KB: past the default of two cards."""
     if args.islands:
         (card,) = cards
-        return km.Session(
-            card=card, islands=args.islands, kernel_bytes=84 * 1024, log=log
-        )
+        return km.Session(card=card, islands=args.islands, log=log)
     return km.Session(cards=cards, links=1, kernel_bytes=84 * 1024, log=log)
 
 
