@@ -192,11 +192,12 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
   [host API](../../docs/reference/host.md#program)). Two remedies: a larger buffer
   (`Session(kernel_bytes=...)`, taken from the L1 left for circular buffers) or a
   smaller build of one kernel (`km.Program(..., opt={...})`). The ray tracer's kernels
-  take 77,328 bytes (text per thread: BRISC 18,828, NCRISC 6,752, TRISC0 3,800, TRISC1
-  1,336, TRISC2 45,912; the session logs it at every load), more than the default
-  buffer, so `card.py` opens its session with 80 KiB (81,920 bytes). With the division,
-  square root, reciprocal and clamped inverse inlined at every use they took more, so
-  these are calls.
+  take 85,392 bytes (text per thread: BRISC 26,128, NCRISC 7,160, TRISC0 3,892, TRISC1
+  1,356, TRISC2 46,160; the session logs it at every load), more than the default
+  buffer, so `card.py` opens its session with 87,488 bytes, the smallest multiple of
+  64 that leaves 2 KiB to spare (16,832 bytes of L1 more than the default). With the
+  division, square root, reciprocal and clamped inverse inlined at every use they took
+  more, so these are calls.
 - Readback: reading back is slow ([host API](../../docs/reference/host.md#session));
   large results are read in 2 MB chunks with a line per chunk, and the whole frame's
   stage pages (490 MB) are checked on tiles only.

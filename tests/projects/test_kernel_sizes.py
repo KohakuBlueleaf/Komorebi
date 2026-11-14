@@ -39,14 +39,6 @@ CASES = {
         *("projects/raster/card_thread.py", "--scene", "s10k", "--steps", "4"),
     ],
 }
-# A case whose kernels do not fit yet is an expected failure, and strictly: a fix
-# turns it into a failure that asks for the entry's removal.
-OVER = {
-    "raytrace": (
-        "its 80 KiB buffer holds 1.4 KiB less than its kernels take since the host "
-        "channel's handlers and the 64 command slots"
-    ),
-}
 
 
 @pytest.fixture(scope="module")
@@ -86,17 +78,7 @@ def build_sizes(environment, arguments):
     return json.loads(rows[-1].removeprefix("SIZES "))
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        (
-            pytest.param(name, marks=pytest.mark.xfail(strict=True, reason=OVER[name]))
-            if name in OVER
-            else name
-        )
-        for name in CASES
-    ],
-)
+@pytest.mark.parametrize("name", list(CASES))
 def test_the_kernels_fit_the_buffer_with_room_to_spare(environment, name):
     row = build_sizes(environment, CASES[name])
     text = ", ".join(f"{thread} {size}" for thread, size in row["text"].items())

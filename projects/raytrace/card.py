@@ -16,7 +16,7 @@ from projects.raytrace import packets
 
 K = packets.K
 KERNELS = packets.HERE / "kernels"
-KERNEL_BYTES = 80 << 10  # kernel buffer: the default 70656 B is too small since SORT
+KERNEL_BYTES = 87488  # kernel buffer: the kernels' 85,392 B and 2 KiB to spare
 T0 = time.monotonic()
 
 
