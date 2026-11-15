@@ -777,7 +777,16 @@ namespace km {
         // The program's argument `index` (after the start-up arguments; a program's
         // part in a run of several: after the earlier programs', KM_PROGRAM_ARGS_AT).
         uint32_t arg(uint32_t index) const {
+#if defined(KM_ARGS_L1)  // an added class's: its row in L1, where its load put it
+            const uint32_t row = *l1(args_.control + KM_ARGS_L1);
+#if defined(COMPILE_FOR_NCRISC)
+            return l1(row)[KM_ARGS_WRITER + index];
+#else
+            return l1(row)[index];
+#endif
+#else
             return get_arg_val<uint32_t>(kArgs + KM_PROGRAM_ARGS_AT + index);
+#endif
         }
 
         volatile tt_l1_ptr uint32_t* control(uint32_t offset) const {
