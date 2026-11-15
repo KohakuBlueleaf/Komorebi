@@ -70,6 +70,13 @@ namespace {
         if (step_handler(km::handler(command)) && command.a4 == kChainMode) {
             return km::chain_writer(km::ChainShape{}, writer, command, product);
         }
+#if defined(KM_CHAIN_STAMPS)
+        if (
+            km::handler(command) == kHandlerStamps
+        ) {  // to page me of a1 (a bank address)
+            return km::chain_stamps_out(writer, command.a1, kChainStampBytes);
+        }
+#endif
         return product(command);
     }
 
