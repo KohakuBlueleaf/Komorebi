@@ -18,14 +18,17 @@ inside the products since stage 2 (4)):
 |---|---|---|
 | norm1 | h = rmsnorm(x) w1 | 2048 |
 | qkv | [q k v] = h [Wq Wk Wv] | 2048 x 4096 |
+| attend | a = softmax(q K^T / sqrt(128)) V over the cache (stage 3) | the cache |
 | o | x = x + a Wo | 2048 x 2048 |
 | norm2 | h = rmsnorm(x) w2 | 2048 |
 | gate_up | g = silu(h Wg) (h Wu) | 2048 x 12288 |
 | down | x = x + g Wd | 6144 x 2048 |
 
-Attention over the cache is not here yet: `a` (attention's output) is q itself, a marked
-gap. The activation is one tile row (32 rows, the first one the token's), as the card's
-tiles hold it.
+Until stage 3, `a` (attention's output) was q itself. Since stage 3 the token's query
+attends over the layer's cache of keys and values on the card; Qwen3's norms of q and k
+and the rotary position are not applied (the cache holds random keys). The activation
+is one tile row (32 rows, the first one the token's), as the card's tiles hold it; all
+32 rows attend.
 
 A layer is 100,671,488 bytes of weights, a token 2.819 GB over 28 layers: at the card's
 DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) that is
@@ -59,7 +62,12 @@ python projects/decode/bench.py --layers 1 --tokens 10 --json out.json
 python projects/decode/bench.py --tokens 10 --json out.json
 python projects/decode/bench.py --tokens 10 --cases overlap --no-check
 python projects/decode/bench.py --tokens 1 --cases parts --no-check --trace stamps.npz
+python projects/decode/bench.py --tokens 10 --no-check --loop-check --json out.json
 ```
+
+`--context` sets the cache's rows (4096), `--lengths` the cache lengths T timed and
+checked (4096, 1024, 256: the last token at row T - 1); `--loop-check` checks one token
+through every layer against the chain of `model.layer()`.
 
 `--chunk` and `--pattern` set every plan's K chunk and pattern (the default is
 `model.PATTERNS`).
@@ -359,6 +367,98 @@ the head after the merge of main, 304.7 us). None of them is changed here.
   the sum. The hook after the sum is the only place an operation is called (a
   condition of the design), so this is left as it is.
 
+## Stage 3: attention over the cache
+
+### The design
+
+- **The cache** is two tensors a layer in DRAM, keys and values, each [8 KV heads x
+  4096 rows, 128]; a tile holds 32 rows of a head. One card's DRAM pages are
+  interleaved over its banks, so no placement is nearer to a core than another.
+- **A KV head's group** is o's plan: 8 groups of 15 cores, all 120. qkv's own groups
+  (16 of 7) would leave 8 cores without a share and give each of the others twice the
+  compute; the cache read reaches the ceiling only on 120 cores on both movers.
+- **ATTEND** is one more command a layer, after qkv: the K split's command in its
+  operation mode, every core calling the `attend` overlay (`kernels/attend/`). The
+  group's full key tiles 0..t/32 - 1 are split over its 15 cores, the larger shares on
+  the higher ranks; the root (rank 0) also takes tile t/32, where the token's row goes.
+  Each core reads its query tiles (both query heads of the KV head, 8 tiles) and its
+  keys on its reader and its values on its writer, in batches of 4 key tiles.
+- **The append**: the root's reader reads the cache's tile t/32 and the token's key from
+  qkv into its L1, the core puts the key in row t mod 32, writes the tile back whole
+  and keeps it as its last key tile; its writer does the same with the value.
+- **The state**: for each query head, the scores (q against each key tile on the matrix
+  unit, the root's last tile starting from a mask of the rows past t), each row's
+  maximum m (a reduce, then broadcast to every column by a product), P = exp((s - m) /
+  sqrt(128)) in bf16, the row sums l = P times ones and O = P V, kept in fp32: 12 tiles.
+- **The merge**: the states go up the group's ports as the split's sum does (4 rounds
+  of a 48 KB message); a core merges each state it receives into its own: m = max(m1,
+  m2), then l and O as diag(a1) X1 + diag(a2) X2, a_i = exp((m_i - m) / sqrt(128)), two
+  products a tile on the matrix unit. The root divides O by l and writes its head's
+  block of `a`; o reads `a` as it read q before.
+- **Code placement**: the attention body and the merge are an overlay like the other
+  operations; the product's loop stays resident and its text is unchanged (62,160 of
+  70,656 bytes). The overlay's parts: reader 7,744, writer 7,616, unpack 12,544, math
+  12,288, pack 16,256 bytes; the slots grow to 221,760 bytes of L1, with 962,560 of
+  circular buffers, of 1,461,120. After the first token every call finds the overlay
+  held (one more check of about 72 cycles); no program change (`kmx_load`) is needed.
+- **Not done**: the cache read starting when qkv is issued.
+  A core runs one command at a time, and ATTEND's cores are qkv's.
+
+### The check
+
+One layer from a known x against `model.layer()` with `model.attention()` (float64,
+the same expressions) over a random cache, the last token at row T - 1, twice
+(`results/qwen3-1.7b-attend-layer0-x10.json`):
+
+| T | a rms | a largest | x rms | x largest |
+|---:|---:|---:|---:|---:|
+| 4096 | 1.29e-2 | 1.98e-2 | 2.8e-3 | 6.1e-3 |
+| 1024 | 1.31e-2 | 2.21e-2 | 2.7e-3 | 9.1e-3 |
+| 256 | 1.28e-2 | 1.53e-2 | 2.9e-3 | 6.1e-3 |
+
+q, k and v carry 6.4e-3 each (their product in bf16), and the scores carry q's and k's
+error into the exponent: a's error is about twice theirs. Attend alone from the host on
+a random qkv (so q, k, v exact) gives a rms 5.1e-3 to 7.8e-3 at positions 5, 1000, 2500,
+4095, one group and all 8; a model of the kernels' roundings (bf16 scores and P, fp32
+states) gives 2.4e-3 to 4.6e-3, the rest is the products' fidelity (HiFi2) on the scores
+and P V. The cache's new row equals the token's k and v bit for bit at every check.
+
+One token through all 28 layers from one command, against the float64 chain of the 28
+layers each over its own cache (T 4096): x rms 2.5e-2, largest 4.0e-2.
+
+### The account
+
+All 28 layers, 10 tokens from one command, card clock 1,350 MHz
+(`results/qwen3-1.7b-attend-x10.json`). The product terms are stage 2's (unchanged, 0.1
+us of noise); attend's cases: `attend_read` (the reads and the append only),
+`attend_local` (no merge: the root ends on its own state), `attend_exp_twice` (P's
+exponent taken twice: its time).
+
+| Term | Kind | T 4096 | T 1024 | T 256 |
+|---|---|---:|---:|---:|
+| the weights at 495.6 GB/s | HARDWARE | 203.1 | 203.1 | 203.1 |
+| the products' read below the ceiling, boundary, operations (stage 2's) | OURS | 93.2 | 93.2 | 93.1 |
+| the cache's K and V at 495.6 GB/s (4,096 bytes a row) | HARDWARE | 33.8 | 8.4 | 2.1 |
+| the busiest core's tile products (164, 56, 20) at 39.2 M a second | HARDWARE | 4.2 | 1.4 | 0.5 |
+| the busiest core's exponent tiles (18, 6, 2), measured | HARDWARE | 21.9 | 7.3 | 2.4 |
+| the cache read below the ceiling (q on every core, the append, the command) | OURS | 13.3 | 13.8 | 14.4 |
+| attend's compute not under the read | OURS | 24.5 | 18.7 | 17.3 |
+| the merge's 4 rounds | OURS | 39.7 | 37.4 | 38.9 |
+| the thread between commands (5 a layer) | OURS | 10.6 | 10.5 | 10.6 |
+| total a layer | | 444.1 | 393.8 | 382.4 |
+| unaccounted | | 0.0 | 0.0 | 0.0 |
+| a token (28 layers) | | 12.44 ms | 11.03 ms | 10.71 ms |
+| tokens a second | | 80.4 | 90.7 | 93.4 |
+
+Stage 2's layer without attention was 304.7 us, 8.53 ms a token. Attention costs 139 us
+a layer at T 4096 and 78 at T 256, of which the cache's bytes at the ceiling are 34 and
+2: the rest is a cost a layer that does not shrink with T. The merge is the largest:
+about 10 us a round, its 4 exponents (1.2 us a tile, the rate P's exponents show) half
+of it. The first merge computed the rescale on the SFPU, 4 fp32 copies to DEST and 3
+products and sums a tile: 69.9 us; on the matrix unit the rounds take 39.7. The
+exponent's rate is the next term: 1.2 us a tile at fp32 (not the approximate form),
+over all 32 rows of the tile though only the first is the token's.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
@@ -381,3 +481,11 @@ the head after the merge of main, 304.7 us). None of them is changed here.
 - An operation is called only after the sum. A norm's scale needs only the squares, not
   the sum, so it could run while the root waits for its parts if there were a hook
   before the sum.
+- A command cannot start on a core before the one ahead completes, so attention's
+  cache read (which needs nothing from qkv but the token's row) waits for qkv's end.
+- A buffer has one unpack format for every operation: the merge's fp32 states unpack
+  to DEST for its copies, and the matrix unit reads them as tf32 only after the
+  overlay reprograms the unpackers itself (`rescale_init` in `kernels/attend/compute.cpp`).
+- The math library's matmul init, outlined by the compiler, reads the buffers' tile
+  shapes from a table the persistent kernel holds, which an overlay may not copy: the
+  overlay gives the shape (32 x 32) itself.
