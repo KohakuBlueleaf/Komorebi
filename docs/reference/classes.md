@@ -435,6 +435,28 @@ or `size=`, another keyword, an item size that does not divide the page, a count
 step that is an expression (`n * 2`: the build bounds an int or a word, not this), and
 a count or step under 1.
 
+### An item put, a word bumped
+
+`t.items(size=B).put(self.f, at=i)` writes B bytes of own field f (from its start, or
+item k of it: `self.f[k]`, at k x B) to item i of t, i / P of t's pages at byte (i % P)
+x B, P = page bytes / B: one `km::put_bytes` by a mover (`on="mover_a"`, mover B when
+not given). The put is not waited for at its line: each mover that put waits for its
+puts once, at the handler's end (`km::put_wait`). A body that rewrites a source it put
+waits for the write first (`noc_async_writes_flushed()`). `slot = self.f.bump(i)` is
+word i of field f, then one more: on the mover an own field's `push=` names (its words
+in L1), or on the unpack CPU for a field of `km.u32` words; `slot` is a word of that
+CPU. The two lines stand alone or together (SETUP's record to its list's next slot):
+
+```python
+slot = self.next_slots.bump(page[1])
+lists.items(size=128).put(page, at=slot)
+```
+
+Refused: a put on a compute CPU; a source that is not an own field (or a drained
+stream's page, below); a size that is not whole words or does not divide the page;
+`at=` a word of another CPU; a bump of a field whose words are no one CPU's (an own
+field of `push=None` or found, a filled field).
+
 ## Tables of entries
 
 A page of words can be a table: `t.pages(i, 1).entries(Job, first=F, size=S,
@@ -1201,10 +1223,9 @@ from words of three CPUs (the ray tracer's profile page: the walk's counters fro
 the reader's from mover A, the writer's from mover B, written by mover B): it would
 need a mover-to-mover hand-over and a body on mover B over a write stream's page before
 the movers write it, more than 40 lines of the compiler; the class's profile page holds
-the pack CPU's words. Items with a step (one item of each of several pages, as a slice
-of every core's counters), items written one at a time to scattered places (a record
-to its list's next slot), and items of a tensor on two islands (refused when the
-kernel is built: no call moves part of another island's page).
+the pack CPU's words. Items of a tensor on two islands (refused when the kernel is
+built: no call moves part of another island's page). A range loop whose count is one
+mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
 A group switched to a class's program (`kmx_load`): a load switches between programs
 in the runtime's form, parts on the runtime's reader, writer and compute, and a class

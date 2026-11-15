@@ -123,6 +123,18 @@ NAMES = {
         "every s",
         None,
     ),
+    "put": Name(
+        "put",
+        "t.items(size=B).put(source, at=i): B bytes of L1 at item i of t, by a mover",
+        None,
+    ),
+    "put_at": Name("at", "put(source, at=i): the item the bytes go to", None),
+    "bump": Name(
+        "bump",
+        "slot = self.f.bump(i): word i of field f, then one more, on the CPU that "
+        "takes it",
+        None,
+    ),
     "tiles": Name(
         "tiles",
         "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major; [r0:r1:s, "
