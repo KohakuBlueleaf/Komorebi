@@ -183,6 +183,7 @@ struct ChainNow {
     bool on;
     bool has_before;
     bool ahead_on;
+    bool data_dram;
     uint32_t record;
     uint32_t tag_base;
     uint32_t ahead_tag;
@@ -579,8 +580,76 @@ void chain_credits(const Writer& writer, const km_command_t& command) {
     *chain_word(kChainCreditDue) = group.rank != 0 ? 1u : 0u;
 }
 
-// A group's root writer, once its output is written: the writes acknowledged, then a
-// mark on each core of the next record for each of its ranges that meets this block.
+// The L1 a core's K range of a kChainDataMark record's input lands in: its arrival
+// buffer from page kChainInputPage on; and the tiles it holds.
+inline uint32_t chain_input_area() {
+    const LocalCBInterface& arrival = get_local_cb_interface(kCbArrive);
+    return (
+        arrival.fifo_limit - arrival.fifo_size +
+        kChainInputPage * arrival.fifo_page_size
+    );
+}
+
+inline uint32_t chain_input_tiles() {
+    const LocalCBInterface& arrival = get_local_cb_interface(kCbArrive);
+    return (arrival.fifo_size - kChainInputPage * arrival.fifo_page_size) / kTileBytes;
+}
+
+// A root, a kChainDataMark next: block low .. high - 1 (kCbSplitOut's base, kept until
+// its next credits) into each next core's K range, its trid's acks waited (not DRAM's).
+template <typename Writer>
+bool chain_send_input(
+    const Writer& writer, const uint32_t* next, uint32_t low, uint32_t high
+) {
+    const uint32_t first = next[kChainGroup] & 0xFFFFu, count = next[kChainGroup] >> 16;
+    const uint32_t size = chain_plan(writer, next, kSpS), groups = count / size;
+    const LocalCBInterface& out = get_local_cb_interface(kCbSplitOut);
+    const uint32_t source = out.fifo_limit - out.fifo_size, area = chain_input_area();
+    for (uint32_t rank = 0; rank < size; rank++) {
+        const ChainRange range = chain_need(writer, next, 0, rank, 0);
+        if (
+            ((next[kChainInfo] >> 8) & 0xFFu) != kChainNeedsK ||
+            range.count > chain_input_tiles()
+        ) {
+            writer.gave_up(km::kStWriter, km::kGaveBadItem, km::kWhereData, 0xC4u, 0);
+            return false;
+        }
+        const uint32_t lo = range.first > low ? range.first : low;
+        const uint32_t end = range.first + range.count;
+        const uint32_t hi = end < high ? end : high;
+        noc_async_write_set_trid(kChainInputTrid);
+        for (uint32_t group = 0; lo < hi && group < groups; group++) {
+            noc_async_write(
+                source + (lo - low) * kTileBytes,
+                writer.core_noc(
+                    writer.core_of(first + group * size + rank),
+                    area + (lo - range.first) * kTileBytes
+                ),
+                (hi - lo) * kTileBytes
+            );
+        }
+        noc_async_write_set_trid(0);
+    }
+    const uint32_t code = writer.poll_at(
+        km::kWhereData,
+        [] {
+            return (
+                ncrisc_noc_nonposted_write_with_transaction_id_flushed(
+                    noc_index, kChainInputTrid
+                )
+            );
+        },
+        writer.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        writer.gave_up(km::kStWriter, code, km::kWhereData, 0xC4u, 0);
+        return false;
+    }
+    return true;
+}
+
+// A group's root writer, its output written: the writes acked (or its input sent), then
+// a mark on each core of the next record for each of its ranges that meets this block.
 template <typename Writer>
 bool chain_mark(const Writer& writer, const km_command_t& command) {
     const uint32_t* now = chain_now.now;
@@ -596,15 +665,22 @@ bool chain_mark(const Writer& writer, const km_command_t& command) {
     if ((next[kChainInfo] & kChainMarked) == 0) {
         return true;
     }
-    if (!writer.flushed(km::kFlushWrites, km::kStWriter)) {
-        return false;
-    }
-    CHAIN_STAMP(chain_stamp(kChainStampLast));
     const uint32_t width = chain_width(writer, now);
     const uint32_t low = (
         (writer.me() - km::first(command)) / chain_plan(writer, now, kSpS) * width
     );
     const uint32_t high = low + width;
+    const bool data = (next[kChainInfo] & kChainDataMark) != 0;
+    if (
+        (data && !chain_send_input(writer, next, low, high)) ||
+        (
+            (!data || chain_now.data_dram) &&
+            !writer.flushed(km::kFlushWrites, km::kStWriter)
+        )
+    ) {
+        return false;
+    }
+    CHAIN_STAMP(chain_stamp(kChainStampLast));
     const uint32_t first = next[kChainGroup] & 0xFFFFu, count = next[kChainGroup] >> 16;
     const uint32_t size = chain_plan(writer, next, kSpS), groups = count / size;
     const uint32_t marks = chain_address(kChainMarks);
@@ -636,6 +712,7 @@ bool chain_mark(const Writer& writer, const km_command_t& command) {
             }
         }
     }
+    CHAIN_STAMP(chain_stamp(kChainStampMarks));
     return true;
 }
 
@@ -647,6 +724,7 @@ bool chain_writer(km::Writer& writer, const km_command_t& command, Product produ
     bool ok = true;
     CHAIN_STAMP(chain_stamp_start = km::wall());
     chain_now.ahead_on = (command.a1 & kChainAheadOff) == 0;
+    chain_now.data_dram = (command.a1 & kChainDataDram) != 0;
     chain_now.ahead_tag = 0;
     for (uint32_t record = 0; ok && record < kChainRecordsMax; record++) {
         if (!chain_reached(writer, kChainReady, base + record, km::kStWriter)) {

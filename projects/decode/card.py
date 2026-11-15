@@ -34,9 +34,38 @@ DEFAULT_BODIES = ()
 # The layer as one command: each core goes on to the next product by itself (stage 6;
 # the split's SPLIT_CHAIN), its records written by the thread; off: a command a step.
 CHAIN = abi.constants(dense_card.SPLIT_KERNELS / "chain.h")
-# The kernel buffer with the chain: its code (stamped, with the next W early) is over
-# 80 K, the runtime's own 70,656; the L1 it takes is from the 217 K no buffer uses.
-CHAIN_KERNEL_BYTES = 84 * 1024
+# The kernel buffer with the chain: its code (with the next W early) is over 80 K, the
+# runtime's own 70,656; stamped, 88 K. Its L1 is from what no buffer uses.
+CHAIN_KERNEL_BYTES, STAMPED_KERNEL_BYTES = 84 * 1024, 88 * 1024
+# The chain's records (LAYERS' a4 bits 12 on, in this order) whose input the roots
+# before send into their cores' L1 (stage 8): one, or a pair whose areas never overlap.
+DATA_STEPS = ("qkv", "attend", "o", "gate_up", "down")
+DATA_PAIRS = ({"o", "down"}, {"qkv", "gate_up"})
+
+
+def data_bits(plans, model, data):
+    """LAYERS' a4 bits of `data` (DATA_STEPS' names), checked: attend's input is never
+    sent; a core's K range fits its input area."""
+    data = set(data)
+    if not (data <= set(DATA_STEPS) - {"attend"}) or (
+        len(data) > 1 and data not in DATA_PAIRS
+    ):
+        raise ValueError(
+            f"data {sorted(data)}: one of {DATA_STEPS} but attend, or o "
+            "and down, or qkv and gate_up"
+        )
+    bits = 0
+    for name in data:
+        plan = plans[md.plan_of(model, name)]
+        room = (plan.arrive - CHAIN["kChainInputPage"]) * pl.S["kSumBytes"]
+        if math.ceil(plan.kt / plan.s) * pl.TILE_BYTES > room:
+            raise ValueError(
+                f"data {name}: a K range of {plan.kt} / {plan.s} tiles "
+                f"past the {room} bytes from arrival page "
+                f"{CHAIN['kChainInputPage']}"
+            )
+        bits |= 1 << DATA_STEPS.index(name)
+    return bits << D["DC_LAYERS_DATA_SHIFT"]
 
 
 def scale_fp32(bodies):
@@ -100,10 +129,10 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
 
 
 class Decode:
-    """The model's layers loaded on a session: tensors, the program and its thread.
-    `layers` layers of weights in DRAM (write_layer()); `trace`: the commands a core
-    stamps (0: none); `chunk`, `patterns`: md.plans()'s; `context`: the cache's rows a
-    KV head and layer; `bodies`: BODIES'; `chain`: a layer as one command (stage 6)."""
+    """The model's layers on a session: tensors, program, thread. `layers` layers of
+    weights in DRAM (write_layer()); `trace` the commands a core stamps (0: none);
+    `chunk`, `patterns` md.plans()'s; `context` the cache's rows a KV head and layer;
+    `bodies` BODIES'; `chain` a layer as one command (stage 6); `data` sent inputs."""
 
     def __init__(
         self,
@@ -119,6 +148,7 @@ class Decode:
         bodies=DEFAULT_BODIES,
         chain=True,
         stamps=False,
+        data=(),
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.chain = chain
@@ -133,6 +163,8 @@ class Decode:
         halves = md.CHAIN_HALVES if chain else (md.DEPTH, 1)
         self.plans = md.plans(model, chunk=chunk, patterns=patterns, halves=halves)
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
+        self.data = tuple(data)
+        data_bits(self.plans, model, self.data)
         for name in ("o", "down"):  # their roots write a row's squares, a tile a group
             if self.plans[md.plan_of(model, name)].groups() != D["DC_PARTS"]:
                 raise ValueError(f"{name}: not {D['DC_PARTS']} groups")
@@ -153,8 +185,9 @@ class Decode:
         }
         self.tensors["constants"] = dense_card.bf16_tensor(session, md.constants())
         self.tensors["attend"] = dense_card.bf16_tensor(session, md.attend_constants())
-        if self.stamps:
-            self.stamp_tensor = dense_card.prof_tensor(session, self.cores())
+        if self.stamps:  # a page of kChainStampPage bytes a core
+            pages = np.zeros((self.cores(), CHAIN["kChainStampPage"] // 4), np.int32)
+            self.stamp_tensor = session.tensor(pages, "int32")
         if layers > D["DC_QK_LAYERS"]:
             raise ValueError(
                 f"{layers} layers: the qk tensor holds {D['DC_QK_LAYERS']}"
@@ -435,11 +468,13 @@ class Decode:
         pair=False,
         token=False,
         ahead=True,
+        data=None,
+        data_dram=False,
     ):
-        """One LAYERS command: its result word and stats slot. `bare` products only,
-        `parts` their parts only, `apart` q, k, v as three, `overlap` two in flight;
-        `rows` tokens a step from `position` (default: the cache's end); `attend` its
-        modes; `chain` a layer, `pair` 2 records, `token` a token; `ahead` W early."""
+        """One LAYERS command: result word, stats slot. `bare` products, `parts` parts
+        only, `apart` q k v as three, `overlap` two in flight; `rows` tokens a step from
+        `position` (the cache's end); `attend` modes; `chain` a layer, `pair` 2 records,
+        `token` a token; `ahead` W early; `data` sent inputs, `data_dram` DRAM acked."""
         slot = self.slot
         if slot >= D["DC_STATS_SLOTS"]:
             raise ValueError(f"job {slot}: the thread has {D['DC_STATS_SLOTS']} slots")
@@ -456,6 +491,11 @@ class Decode:
             raise ValueError("a token as one command: the chain's whole layers")
         mode |= D["DC_LAYERS_TOKEN"] if token else 0
         mode |= 0 if ahead or not chain else D["DC_LAYERS_AHEAD_OFF"]
+        data = (self.data if chain else ()) if data is None else data
+        if data and not chain:
+            raise ValueError("a sent input: the chain's records only")
+        mode |= data_bits(self.plans, self.model, data)
+        mode |= D["DC_LAYERS_DATA_DRAM"] if data and data_dram else 0
         steps = tokens * rows
         position = self.context - steps if position is None else position
         if not 0 <= position <= self.context - steps or not 1 <= rows <= md.TILE:

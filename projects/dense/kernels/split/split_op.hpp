@@ -64,7 +64,14 @@ bool split_op_run(Kernel& kernel, const km_command_t& command, bool call) {
     if (!operation.load()) {
         return false;
     }
-    return !call || operation.call(split_block(kernel, command)) != 0;
+#if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP)
+    SPLIT_STAMP(kChainStampOpLoaded);
+#endif
+    const bool called = !call || operation.call(split_block(kernel, command)) != 0;
+#if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP) && !defined(COMPILE_FOR_TRISC)
+    SPLIT_STAMP(kChainStampOpCalled);  // compute's end is its kChainStampOut
+#endif
+    return called;
 }
 
 #if !defined(COMPILE_FOR_TRISC)

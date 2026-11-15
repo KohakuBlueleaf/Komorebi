@@ -84,6 +84,14 @@ enum {
     DC_LAYERS_AHEAD_OFF = 1024
 };
 
+/* LAYERS' a4 bits 12 to 16: the records (qkv, attend, o, gate_up, down) whose input is
+ * sent (kChainDataMark, never attend's); 2048: its DRAM copy acked too (chain.h). */
+enum {
+    DC_LAYERS_DATA_SHIFT = 12,
+    DC_LAYERS_DATA_MASK = 0x1F,
+    DC_LAYERS_DATA_DRAM = 2048
+};
+
 /* A token's last record's stamp row (the others: their step's, 0 to 4). */
 enum { DC_CHAIN_LAST_ROW = 5 };
 

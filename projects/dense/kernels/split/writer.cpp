@@ -106,6 +106,7 @@ void kernel_main() {
                 }
             }
         }
+        SPLIT_STAMP(kChainStampWritten);
         if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
             return false;
         }
