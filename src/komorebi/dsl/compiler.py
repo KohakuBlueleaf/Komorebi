@@ -212,6 +212,9 @@ class Compiled:
     # overlay handler -> its overlay number; broadcast handler -> its km.Broadcast
     overlays: dict = field(default_factory=dict)
     broadcast_lines: dict = field(default_factory=dict)
+    # mover -> (the handler whose broadcast runs on it, the broadcast's line): a core
+    # holds one broadcast's arguments a mover, which every handler of the class reads
+    mover_broadcasts: dict = field(default_factory=dict)
     # handler -> (the size of its reduce's groups, the reduce's line)
     reduce_groups: dict = field(default_factory=dict)
     port_handlers: set = field(default_factory=set)  # handlers whose cores use ports
@@ -6717,6 +6720,7 @@ class HandlerCompiler:
                 "make one broadcast a mover: give the other mover=",
             )
         self.movers[mover] = name
+        self.class_mover(node, mover)
         self.compiled.broadcast_lines.setdefault(
             self.method.name, f"line {node.lineno}, `{self.text(node)}`"
         )
@@ -6748,6 +6752,25 @@ class HandlerCompiler:
                 counted[1],
             ]
         return [movement, counted[0]], [counted[1]]
+
+    def class_mover(self, node, mover):
+        """A broadcast on a mover no other handler's broadcast runs on: a core holds
+        one broadcast's arguments a mover (its buffer, its number), fixed at the load
+        and read by every handler; two handlers' broadcasts on one mover would each
+        run with the last one's."""
+        line = f"line {node.lineno}, `{self.text(node)}`"
+        handler, held = self.compiled.mover_broadcasts.setdefault(
+            mover, (self.method.name, line)
+        )
+        if handler != self.method.name:
+            other = "A" if mover == "B" else "B"
+            self.refuse(
+                node,
+                f"{handler} runs a broadcast on mover {mover} ({held}); a core holds "
+                f"one broadcast's arguments a mover, which every handler of the class "
+                f"reads, so both would run with the last one's",
+                f'give one of them mover="{other}", or make each its own class',
+            )
 
     def broadcast_place(self, node, along, placed):
         """A broadcast's mover and band: `mover="A"` (NoC 0: a column's sender at its

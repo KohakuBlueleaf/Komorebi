@@ -483,8 +483,11 @@ rectangle into bands of L cores (the last band the rest), each a broadcast of it
 whose sender is the band's first core in its NoC's direction: mover A runs on NoC 0
 (a column's top, a row's left), mover B on NoC 1 (bottom, right). Without them a row's
 broadcast is mover A's and a column's mover B's, the whole side of the rectangle a
-broadcast. L is an int the build knows (a constant or a plan value); each mover runs
-one broadcast of a handler.
+broadcast. L is an int the build knows (a constant or a plan value). Each mover runs
+one broadcast of a class: a core holds one broadcast's arguments a mover (its buffer
+and its number), fixed at the load and read by every handler, so a second handler's
+broadcast on the same mover is refused at the make, naming both handlers and their
+lines. Give it the other mover (`mover="A"`), or make each its own class.
 
 A cast inside one loop from 0 numbers its blocks by the loop's name and finishes after
 that loop, as before. Inside more than one loop (a job loop around a chunk loop whose
