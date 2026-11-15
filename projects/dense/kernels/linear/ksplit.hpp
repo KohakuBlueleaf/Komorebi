@@ -129,8 +129,8 @@ bool move_k_chunks(
     return km::move(core, x_chunks, w_chunks);
 }
 
-// The whole-K plan's X (writer, NoC 1): the sender, all buffers free, reads a cast's
-// chunks while the last is cast and marked; receivers take them. False: gave up.
+// The whole-K plan's X (writer): the sender, all buffers free, reads chunks while the
+// last is cast and marked; a receiver's compute waits for the marks. False: gave up.
 template <typename Plan, typename X>
 bool hand_x(
     const km::Writer& writer,
@@ -170,6 +170,7 @@ bool hand_x(
         noc_semaphore_inc(
             writer.core_noc(plan(kKsXSender), ports + kPortKXFree * KM_PORT_STRIDE), 1
         );
+        cb_push_back(kCbKX, pages);  // compute takes each chunk once it is marked
     } else if (!counted(writer, km::kStWriter, command, kPortKXFree, plan(kKsXWaits))) {
         return false;
     }
@@ -192,65 +193,40 @@ bool hand_x(
             return true;
         };
     const uint32_t chunks = pages / chunk_pages;
-    for (uint32_t first = 0; first < chunks; first += per) {
+    for (uint32_t first = 0; sender && first < chunks; first += per) {
         const uint32_t count = chunks - first < per ? chunks - first : per;
         const uint32_t offset = first * chunk_pages * kBf16Bytes;
-        if (sender) {
-            for (uint32_t chunk = first; chunk < first + count; ++chunk) {
-                const uint32_t k = chunk * chunk_tiles;
-                const uint32_t length = (
-                    at.k_count - k < chunk_tiles ? at.k_count - k : chunk_tiles
-                );
-                for (uint32_t row = 0; row < at.rows; ++row) {
-                    if (!km::read_pages(
-                        writer,
-                        command,
-                        x_matrix,
-                        (at.first_row + row) * k_whole + at.k_first + k,
-                        length,
-                        base +
-                            (chunk * chunk_pages + row * chunk_tiles) * kBf16Bytes
-                    )) {
-                        return false;
-                    }
+        for (uint32_t chunk = first; chunk < first + count; ++chunk) {
+            const uint32_t k = chunk * chunk_tiles;
+            const uint32_t length = (
+                at.k_count - k < chunk_tiles ? at.k_count - k : chunk_tiles
+            );
+            for (uint32_t row = 0; row < at.rows; ++row) {
+                if (!km::read_pages(
+                    writer,
+                    command,
+                    x_matrix,
+                    (at.first_row + row) * k_whole + at.k_first + k,
+                    length,
+                    base + (chunk * chunk_pages + row * chunk_tiles) * kBf16Bytes
+                )) {
+                    return false;
                 }
             }
-            if (!flushed(writer, km::kStWriter, km::kFlushReads)) {
-                return false;
-            }
-            cb_push_back(kCbKX, count * chunk_pages);
-            if (dests == 0) {
-                continue;
-            }
-            // the last multicast, cast while these reads came in, marked once landed
-            if (first != 0 && !mark(first)) {
-                return false;
-            }
-            const uint32_t bytes = count * chunk_pages * kBf16Bytes;
-            noc_async_write_multicast(
-                base + offset, panel(base + offset), bytes, dests
-            );
-            continue;
         }
-        code = writer.poll_at(
-            km::kWherePort,
-            [&] {
-                invalidate_l1_cache();
-                return (
-                    km::broadcast_reached(
-                        marker[KM_PORT_COUNT], command.sequence, first + count
-                    )
-                );
-            },
-            writer.args().wait_limit
-        );
-        if (code != km::kGaveNone) {
-            writer.gave_up(
-                km::kStWriter, code, km::kWherePort, named, command.sequence
-            );
+        if (!flushed(writer, km::kStWriter, km::kFlushReads)) {
             return false;
         }
         cb_push_back(kCbKX, count * chunk_pages);
+        if (dests == 0) {
+            continue;
+        }
+        // the last multicast, cast while these reads came in, marked once landed
+        if (first != 0 && !mark(first)) {
+            return false;
+        }
+        const uint32_t bytes = count * chunk_pages * kBf16Bytes;
+        noc_async_write_multicast(base + offset, panel(base + offset), bytes, dests);
     }
     if (sender && dests != 0 && !mark(chunks)) {
         return false;

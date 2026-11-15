@@ -33,9 +33,9 @@ G = pl.G
 L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
 # on islands the reader's slot holds the larger service overlay (the collectives')
-L1_RUNTIME_ISLANDS = 17_024 + 40_256
+L1_RUNTIME_ISLANDS = 17_024 + 40_896
 # The kernel buffer the linear kernels' code takes: one card 72 K, two 106 K, the
-# addition or gather 118,000 B (mock builds); two-card decode 114,672 B (the cards).
+# addition or gather 118,000 B (mock builds); two-card decode 115,248 B (the cards).
 KERNEL_BYTES = {
     "one": 88 * 1024,
     "two": 108 * 1024,
@@ -315,17 +315,17 @@ REDUCED_CALLS = 20
 def split_buffers(plan, adds=False):
     """(index, format, page bytes, pages) of the K-split plan's buffers (mover A's
     chunks the plan's depth, mover B's two; `adds`: both partials of a block), T's
-    slot last. The whole-K plan: X whole in kCbKX, W all in mover A's half."""
+    slot last. The whole-K plan: X whole in kCbKX, W's halves both the plan's depth."""
     block_tiles = plan.oh * plan.ow
     x_chunk, w_chunk = plan.oh * plan.kc, plan.kc * plan.ow
     both = (
         [(L["kCbKAdd"], "bfloat16", L["kBf16Bytes"], 2 * block_tiles)] if adds else []
     )
-    if plan.cast:  # X's halves unused: a page each; W's of mover B: one chunk
+    if plan.cast:  # X's halves unused: a page each
         x_whole = pl.cdiv(plan.kt, plan.kc) * x_chunk
         both += [(L["kCbKX"], "bfloat16", L["kBf16Bytes"], x_whole)]
     x_halves = (1, 1) if plan.cast else (plan.depth * x_chunk, 2 * x_chunk)
-    w_b = (1 if plan.cast else 2) * w_chunk  # a half holds whole chunks (km::move)
+    w_b = (plan.depth if plan.cast else 2) * w_chunk  # whole chunks (km::move)
     return both + [
         (L["kCbKa"], "bfloat16", L["kBf16Bytes"], x_halves[0]),
         (L["kCbKaB"], "bfloat16", L["kBf16Bytes"], x_halves[1]),
@@ -388,23 +388,30 @@ def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget, adds=False):
     return None if best is None else best[1]
 
 
-# The whole-K plan (S 1, kKsXCast; Kohaku-TT's form): a core all of K for its columns;
-# X cast once a panel by its first core's writer (NoC 1), W all on the reader (NoC 0).
+# The whole-K plan (S 1, kKsXCast; Kohaku-TT's form): a core all of K for its columns,
+# X cast a panel by its first core's writer; a receiver's W on both movers.
 CAST_X_TILES = 32  # X's tiles a multicast (Kohaku-TT's)
 CAST_W_PAGES = (32, 16, 8)  # W's pages a chunk (32: Kohaku-TT's 64 KB blocks)
 CAST_DEPTHS = (4, 3, 2)  # W's chunks a half: the most bytes in flight that fit
-# The two plans' tails (ns, the account's clocks): a hop of the tree (fixed, fp32 at
-# 80 GB/s, the combine a tile), the root's pack and Y; the whole-K plan's first cast.
+# a receiver's W chunks, their movers: 5 of 8 on the writer (NoC 0), Kohaku-TT's 5:3
+CAST_PATTERN = "BABABBAB"
+CAST_PATTERNS = ("BABABBAB", "AB", "ABABAABA")
+# the reader's and the writer's NoC (--cast-nocs): X cast on NoC 0, the sender's W on
+# NoC 1, as Kohaku-TT's (0,1: X on NoC 1, slower by the account)
+CAST_NOCS = (1, 0)
+# The tails (ns): a tree hop (fixed, fp32 at 80 GB/s, a tile's combine), the root's pack
+# and Y; the whole-K plan's first cast and its tail past the last core's W.
 HOP_NS = 1_350
 HOP_BYTES_PER_S = 80e9
 COMBINE_TILE_NS = 100
 ROOT_NS = 1_000
 ROOT_TILE_NS = 170
-CAST_FIRST_NS = 3_000
-# The reads' rates fitted to the 16 decode loops (15 picks right): the split's W and X
-# again; the whole-K plan's W by (islands, ow 1 or wider); see the README.
+CAST_FIRST_NS = 9_000
+# The reads' rates fitted to the 16 decode loops (README): the split's W and X again;
+# the whole-K plan's W by (islands, ow 1 or wider), at most a core's rate each core.
 SPLIT_READ_BYTES_PER_S = {1: 470e9, 2: 470e9}
-CAST_READ_BYTES_PER_S = {(1, 1): 340e9, (1, 2): 405e9, (2, 1): 310e9, (2, 2): 380e9}
+CAST_READ_BYTES_PER_S = {(1, 1): 400e9, (1, 2): 465e9, (2, 1): 390e9, (2, 2): 415e9}
+CAST_CORE_BYTES_PER_S = 7.2e9
 # the decode plan (--decode): "priced" the cheaper of the two by their terms, or one
 DECODE = "priced"
 
@@ -428,18 +435,23 @@ def split_terms_ns(plan, islands=1):
 
 
 def cast_ns(plan, islands=1):
-    """The whole-K plan's time by its terms: W at the rate measured for its width, the
-    first multicast before the first product, the core's sum packed and written."""
-    rate = CAST_READ_BYTES_PER_S[islands, min(plan.ow, 2)]
+    """The whole-K plan's time by its terms: W at the rate measured for its width (a
+    core's at most on each), the first multicast and the tail, the sum packed and
+    written."""
+    rate = min(
+        CAST_READ_BYTES_PER_S[islands, min(plan.ow, 2)],
+        plan.cores() * CAST_CORE_BYTES_PER_S,
+    )
     read = plan.kt * plan.ow * L["kBf16Bytes"] * plan.cores() / rate
     return 1e9 * read + CAST_FIRST_NS + root_ns(plan)
 
 
-def cast_rects(nocs, used, ranks):
+def cast_rects(nocs, used, ranks, noc=1):
     """The whole-K plan's multicasts over the first `used` cores, a panel's columns
     to its last used row each: (sender, its cores, its used cores, start, end: the
-    translated corners as x | y << 16, high first for NoC 1); None where a rect holds a
-    core of no rank or is no NoC0 box with its translated corners at the box's."""
+    translated corners as x | y << 16, high first on NoC 1, low first on NoC 0); None
+    where a rect holds a core of no rank or is no NoC0 box with its corners the box's.
+    """
     columns, rows = nocs.grid
     rects = []
     for first, last in nocs.panels:
@@ -462,7 +474,8 @@ def cast_rects(nocs, used, ranks):
         high = (max(x for x, _ in noc0), max(y for _, y in noc0))
         if (noc0.get(low), noc0.get(high)) != ((min(xs), min(ys)), (max(xs), max(ys))):
             return None
-        start, end = high[0] | high[1] << 16, low[0] | low[1] << 16
+        first, last = (high, low) if noc == 1 else (low, high)
+        start, end = first[0] | first[1] << 16, last[0] | last[1] << 16
         rects.append((cores[0], cores, mine, start, end))
     return rects
 
@@ -476,7 +489,7 @@ def cast_choice(m_tiles, k_tiles, n_tiles, ranks, budget, nocs, adds=False):
         used = pl.cdiv(n_tiles, width)
         if used > ranks:
             continue
-        rects = cast_rects(nocs, used, ranks)
+        rects = cast_rects(nocs, used, ranks, CAST_NOCS[1])
         if rects is None:
             continue
         sh, sw = pl.subblock(m_tiles, width)
@@ -493,7 +506,7 @@ def cast_choice(m_tiles, k_tiles, n_tiles, ranks, budget, nocs, adds=False):
                     chunk,
                     sh,
                     sw,
-                    pattern="A",
+                    pattern=CAST_PATTERN,
                     depth=depth,
                     cast=True,
                 )
@@ -973,6 +986,7 @@ class Linear:
                 if core in mine:
                     cores[core] |= {"kKsXRole": L["kKXReceiver"], "kKsXSender": sender}
             cores[sender] = common | {
+                "kKsPattern": pattern_word("A"),  # its writer casts X
                 "kKsXRole": L["kKXSender"],
                 "kKsXWaits": len(mine) - 1,
                 "kKsXDests": len(rect) - 1,
@@ -1025,6 +1039,11 @@ class Linear:
             | ({"LINEAR_ADD": 1} if self.adds else {})
             | ({"LINEAR_GATHER": 1} if self.gathers else {})
             | ({"LINEAR_ACCOUNT": 1} if ACCOUNT else {}),
+            **(
+                {"noc": dict(zip(("reader", "writer"), CAST_NOCS, strict=True))}
+                if self.casts and CAST_NOCS != (0, 1)
+                else {}
+            ),
         )
 
     def grid_program(self, tensors, ranks, m_tiles):
@@ -1581,7 +1600,18 @@ def main():
         "--cast-depth",
         type=int,
         default=None,
-        help="the whole-K plan: W's chunks in flight on its mover, this depth alone",
+        help="the whole-K plan: W's chunks a mover's half, this depth alone",
+    )
+    parser.add_argument(
+        "--cast-pattern",
+        choices=list(CAST_PATTERNS),
+        default=CAST_PATTERNS[0],
+        help="the whole-K plan: a receiver's W chunks, their movers",
+    )
+    parser.add_argument(
+        "--cast-nocs",
+        default="1,0",
+        help="R,W: the whole-K plan's reader's and writer's NoC (1,0: X cast on NoC 0)",
     )
     parser.add_argument(
         "--add",
@@ -1634,8 +1664,11 @@ def main():
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
     global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD, GATHER
-    global SPREAD, X_SPREAD, SPLIT_PATTERN, DECODE, CAST_DEPTHS
-    SPLIT_PATTERN, DECODE = args.pattern, args.decode
+    global SPREAD, X_SPREAD, SPLIT_PATTERN, DECODE, CAST_DEPTHS, CAST_PATTERN, CAST_NOCS
+    SPLIT_PATTERN, DECODE, CAST_PATTERN = args.pattern, args.decode, args.cast_pattern
+    CAST_NOCS = tuple(int(value) for value in args.cast_nocs.split(","))
+    if sorted(CAST_NOCS) != [0, 1]:
+        raise SystemExit(f"--cast-nocs {args.cast_nocs}: 0,1 or 1,0")
     if args.cast_depth:
         CAST_DEPTHS = (args.cast_depth,)
     ACCOUNT, SPLIT_REDUCE, ADD = args.account, args.reduce, args.add
