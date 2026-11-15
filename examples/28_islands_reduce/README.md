@@ -58,8 +58,21 @@ the call to its return:
 | 0 and 1 | float32 | 2 | 134.6 µs | 134.5 µs | 400.1 µs | exact |
 | 0 and 1 | bfloat16 | 256 (512 KiB) | | | 548.7 µs | exact |
 | 0 split in 3 (`--islands 3`) | float32 | 256 | 978.2 µs | 978.6 µs | 1339.7 µs | exact |
+| 0 (one island) | float32 | 256 | 2.2 µs | no command | 3.7 µs | exact |
 
-The bfloat16 row is from a run before the card's time was recorded.
+The bfloat16 row is from a run before the card's time was recorded. On one island the
+call returns at once: from a kernel the time is the command's own, and
+`run.all_reduce` sends nothing.
+
+## Output
+
+Two cards, then one (`python reduce.py`, `python reduce.py --cards 0`), the last line
+of each run:
+
+```
+{"cards": [0, 1], "dtype": "float32", "pages": 256, "islands": 2, "bytes": 1048576, "kernel_exact": true, "kernel_us": 500.27, "kernel_card_us": 222.11, "host_exact": true, "host_us": 491.84, "host_card_us": 220.75, "kernel_errors": ["none", "none"], "ok": true, "wall_s": 10.6}
+{"cards": [0], "dtype": "float32", "pages": 256, "islands": 1, "bytes": 1048576, "kernel_exact": true, "kernel_us": 384.45, "kernel_card_us": 2.18, "host_exact": true, "host_us": 3.72, "host_card_us": null, "kernel_errors": ["none"], "ok": true, "wall_s": 16.1}
+```
 
 ## Files
 

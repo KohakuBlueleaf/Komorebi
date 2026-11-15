@@ -856,6 +856,22 @@ slowest island) and on the host (from the call to its return):
 | all-gather | 256 (1 MiB) | 62.9 µs | 326.6 µs |
 | all-reduce | 2 | 134.6 µs | 400.1 µs |
 | all-reduce | 256 (1 MiB) | 222.1 µs | 491.8 µs |
+| all-gather | 4,096 (16 MiB) | 132.4 µs | |
+| all-gather | 16,384 (64 MiB) | 381.7 µs | |
+| all-reduce | 4,096 (16 MiB) | 1,488.3 µs | |
+| all-reduce | 16,384 (64 MiB) | 5,556.8 µs | |
+
+The rows of 16 and 64 MiB are from a kernel, the median of 3 calls, each island's copy
+checked by sample (the first, middle and last 8 pages of every share)
+(`experiments/islands_collectives/account`). An all-gather of 64 MiB moves 32 MiB each
+way in 381.7 µs, 87.9 GB/s each way; from 16 to 64 MiB, 25.2 MB more each way take
+249.3 µs, 101 GB/s each way (the links' rate the host's sends reach, 100.4 GB/s): the
+bytes cross at the path's rate, and the rest, about 49 µs, is the fixed part of 2
+pages. An all-reduce adds 80.8 µs a MB of tensor (12.4 GB/s): its two crossings at that
+rate take about 0.66 ms of the 5.56 ms at 64 MiB, and the adds, about 4.8 ms (each
+island adds half the tensor over its 118 ranks, about 90 cycles a float32 word with
+its DRAM reads and writes), are the rest: the adds in integer arithmetic on the
+movers are the reduce's largest term, and ours.
 
 Where the time goes, all-gather of 1 MiB (62.9 µs on the card):
 
@@ -876,7 +892,8 @@ separated by a measurement. On the host every call costs about 270 µs more than
 card: the host's submit and wait (ours). On one card split into three islands in a
 line, 1 MiB: all-gather from a kernel 158.7 µs on the card, exact; all-reduce 978 µs,
 exact from a kernel and from the host. The all-gather from the host was not exact
-there (2454 µs on the card): open. Four islands and one card were not run.
+there (2454 µs on the card): open. Four islands were not run. On one card as one
+island both calls return at once, exact: from a kernel the command's own 2.2 µs.
 
 ## Measured
 
