@@ -22,7 +22,8 @@ turns it into a **unit program**: the vector-unit (SFPU) instructions the math C
 issues for one unit of work (one tile, or one row of tiles), the calls around them
 (copies into `Dst`, packs), the rules applied as passes, the hazard checks, and a cost.
 `emit` writes the unit program as a C++ header: `<name>_init()` once, `<name>(dst)` per
-unit, raw Tensix words only (no floats, every immediate known when the header is built).
+unit, raw Tensix words only (no floats, every immediate known when the header is built
+but a run-time scalar's two halves, which the core builds from the call's argument).
 
 ## Writing one
 
