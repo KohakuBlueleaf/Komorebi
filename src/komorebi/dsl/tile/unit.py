@@ -25,9 +25,21 @@ PRICES = {
     "built_word": (4.14, "a word built at run time: 4.14 cycles (probe 8)"),
     "table_word": (9.37, "a word loaded from an L1 table: 9.37 cycles (probe 8)"),
     "macro_row": (1.046, "one SFPLOADMACRO a row: 1.046 cycles (probe 9)"),
+    "swap_stall": (1.0, "SFPSWAP: the unit takes only SFPNOP the next cycle (stated)"),
 }
 # SFPSHFT2 modes that take 2 cycles and stall the unit one (VectorUnit table).
 SHFT2_SLOW = (2, 3, 4)
+# The matrix unit (probe 11: Dst fp32, bf16 sources; one word a phase of fidelity).
+MATRIX_PRICES = {
+    "matrix_word": (1.0, "MVMUL, ELWMUL, ELWADD, MOVA2D, MOVB2D: 1 cycle (probe 11)"),
+    "dst_raw": (
+        6.0,
+        "a word adding into a Dst block waits 6 cycles after its last write",
+    ),
+    "matrix_sync": (8.0, "one MVMUL pushed alone: 8 cycles push to sync (probe 11)"),
+}
+# The words that add into their Dst block (the moves overwrite it: no wait).
+DST_READERS = ("MVMUL", "ELWMUL", "ELWADD")
 
 
 @dataclass(frozen=True)
@@ -88,6 +100,16 @@ OPS = {
     "SFPSETEXP": Op(0x82, _R, ("lreg_c", "lreg_dest"), ("lreg_dest",)),
     "SFPIADD": Op(0x79, _R, ("lreg_c", "lreg_dest"), ("lreg_dest",)),
     "SFPGT": Op(0x97, _R, ("lreg_c", "lreg_dest"), (), "flags"),
+    "SFPSETCC": Op(0x7B, _R, ("lreg_c",), (), "flags"),
+    # mod1 1: VC gets the larger, VD the smaller (a VD of 8 and up is not written)
+    "SFPSWAP": Op(
+        0x92,
+        (("imm12_math", 12), ("lreg_src_c", 4), ("lreg_dest", 4), ("instr_mod1", 4)),
+        ("lreg_src_c", "lreg_dest"),
+        ("lreg_src_c", "lreg_dest"),
+    ),
+    # LReg 0-3 (and 4-7): per column, the 4 lane rows across the 4 registers
+    "SFPTRANSP": Op(0x8C, _R),
     "SFPENCC": Op(0x8A, _R, (), (), "flags"),
     "SFPCAST": Op(
         0x90,
@@ -209,8 +231,11 @@ class Insn:
         return names
 
     def writes(self):
-        """The register arguments written."""
-        return [self.args[n] for n in OPS[self.op].writes]
+        """The register arguments written (SFPSWAP writes only work registers)."""
+        out = [self.args[n] for n in OPS[self.op].writes]
+        if self.op == "SFPSWAP":
+            out = [v for v in out if _work_register(v)]
+        return out
 
     def sets_flags(self):
         """True when it changes the lanes' condition flags."""
@@ -218,7 +243,17 @@ class Insn:
             return not self.args["instr_mod1"] & IADD_NO_CC
         if self.op == "SFPGT":
             return bool(self.args["instr_mod1"] & 1)
-        return self.op == "SFPENCC"
+        return self.op in ("SFPENCC", "SFPSETCC")
+
+
+def _work_register(value):
+    """True for LReg 0-7, by number, by "L<n>" or by a value's name (not a fixed or
+    programmable constant's)."""
+    if isinstance(value, int):
+        return value < WORK
+    if value[0] == "L":
+        return int(value[1:]) < WORK
+    return value not in FIXED and not value.startswith("p")
 
 
 def _arg(value):
@@ -415,6 +450,8 @@ def _issue(insn, times, terms, state, how):
         and previous.args["instr_mod1"] in SHFT2_SLOW
     ):
         stall = "shft2_stall"
+    if previous is not None and previous.op == "SFPSWAP" and insn.op != "SFPNOP":
+        stall = "swap_stall"
     if stall:
         cycles, source = PRICES[stall]
         terms.append((f"stall ({stall})", times, times * cycles, source))
@@ -424,6 +461,37 @@ def _issue(insn, times, terms, state, how):
     name = insn.op if how == "word" else f"{insn.op} {how}"
     terms.append((name, times, times * cycles, source))
     state["previous"] = insn
+
+
+def matrix_cost(words, synced=True):
+    """Cycles of matrix-unit `words` ((op, Dst block) in issue order): one a cycle, a
+    word adding into a block waits 6 cycles after that block's last write (K words
+    apart: max(1, 6 / K) a word), the last result 8 cycles to a sync."""
+    gap, _ = MATRIX_PRICES["dst_raw"]
+    t, written = -1.0, {}
+    for op, block in words:
+        t += MATRIX_PRICES["matrix_word"][0]
+        if op in DST_READERS and block in written:
+            t = max(t, written[block] + gap)
+        written[block] = t
+    if not words:
+        return 0.0
+    return t + (MATRIX_PRICES["matrix_sync"][0] if synced else 1.0)
+
+
+def rotate_blocks(words):
+    """Schedule rule: `words` reordered so a word adding into a Dst block comes as late
+    after that block's last write as the order allows (each block's own words keep
+    their order: its sum rounds the same). Returns the new order."""
+    queues, order = {}, []
+    for w in words:
+        queues.setdefault(w[1], []).append(w)
+    last = dict.fromkeys(queues, -len(words))
+    for i in range(len(words)):
+        block = min((b for b in queues if queues[b]), key=lambda b: (last[b], b))
+        order.append(queues[block].pop(0))
+        last[block] = i
+    return order
 
 
 def _merge(terms):

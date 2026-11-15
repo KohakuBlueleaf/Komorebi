@@ -34,9 +34,11 @@ CHECKED = ("q", "k", "v", "a", "x1", "gated", "x")
 # The cache's rows a KV head and layer, and the lengths T timed (the last token
 # attends over T rows) and checked (in this order: a check appends to row T - 1).
 CONTEXT, LENGTHS = 4096, (4096, 1024, 256)
-# attend alone from the host first, (KV heads' groups, the token's position): one
-# group, then all; positions inside a tile (the mask) and at a tile's last row.
-ALONE = ((1, 1000), (1, 5), (8, 4095), (8, 2500))
+# attend alone first, (groups, first position, tokens): one token in a tile, at a
+# tile's last row, 5 and 32 tokens across two tiles.
+ALONE = ((1, 1000, 1), (8, 4095, 1), (8, 30, 5), (8, 1000, 32))
+# The layer's check: one token at each length, then 32 at the first.
+CHECK_ROWS = 32
 CASES = {
     "full": {},
     "bare": {"bare": True},
@@ -98,55 +100,62 @@ def bounded(errors):
     }
 
 
-def appended(decode, caches, position, k, v, heads):
-    """Whether the cache's row `position` of the first `heads` KV heads holds the
-    token's k and v (row 0) bit for bit; the host's copy of layer 0's cache takes it."""
+def appended(decode, caches, position, k, v, heads, rows=1):
+    """Whether the cache's rows from `position` of the first `heads` KV heads hold the
+    tokens' k and v (rows 0 to rows - 1) bit for bit; the host's copy of layer 0's
+    cache takes them."""
     exact = True
-    for index, (name, token) in enumerate((("keys", k), ("values", v))):
-        rows = decode.cache_rows(0, name, position)[:heads]
-        want = np.asarray(token[0], np.float32).reshape(-1, rows.shape[1])[:heads]
-        exact &= bool(np.array_equal(rows, want))
-        caches[index][:heads, position] = rows
+    for index, (name, tokens) in enumerate((("keys", k), ("values", v))):
+        for row in range(rows):
+            got = decode.cache_rows(0, name, position + row)[:heads]
+            want = np.asarray(tokens[row], np.float32).reshape(-1, got.shape[1])[:heads]
+            exact &= bool(np.array_equal(got, want))
+            caches[index][:heads, position + row] = got
     return exact
 
 
-def attend_alone(decode, model, caches, seed, groups, position):
-    """ATTEND from the host on `groups` KV heads' groups at `position`, from a random
-    qkv, against md.attention() over layer 0's cache: errors of a, the append."""
-    rng = np.random.default_rng([seed, groups, position])
+def attend_alone(decode, model, caches, seed, groups, position, rows):
+    """ATTEND from the host on `groups` KV heads' groups, `rows` tokens from `position`,
+    from a random qkv, against md.attention() over layer 0's cache: errors of a's live
+    rows, the append."""
+    rng = np.random.default_rng([seed, groups, position, rows])
     shape = (md.TILE, model.products()["qkv"][1])
     qkv = md.bf16_random(rng, shape, np.sqrt(3.0))[1]
     decode.write_activation("qkv", qkv)
-    decode.attend(groups, position)
+    decode.attend(groups, position, rows)
     width = model.heads * model.head_dim
     q, k, v = np.split(qkv, [width, width + model.kv_heads * model.head_dim], axis=1)
-    rows = [
+    tokens = [
         np.concatenate(
-            [cache[:, :position], token[0].reshape(model.kv_heads, 1, -1)], axis=1
+            [
+                cache[:, :position],
+                token[:rows].reshape(rows, model.kv_heads, -1).swapaxes(0, 1),
+            ],
+            axis=1,
         )
         for cache, token in zip(caches, (k, v))
     ]
     columns = groups * width // model.kv_heads
-    want = md.bf16(md.attention(model, q, *rows))[:, :columns]
-    got = decode.read_activation("a")[:, :columns]
+    want = md.bf16(md.attention(model, q, *tokens, rows=rows))[:rows, :columns]
+    got = decode.read_activation("a")[:rows, :columns]
     out = bounded(md.errors(got, want))
-    out["append_exact"] = appended(decode, caches, position, k, v, groups)
-    return {"groups": groups, "position": position} | out
+    out["append_exact"] = appended(decode, caches, position, k, v, groups, rows)
+    return {"groups": groups, "position": position, "rows": rows} | out
 
 
-def check(decode, model, weights, caches, seed, length):
-    """One layer from a known x on the card against model.layer() with attention over
-    layer 0's cache at position length - 1, CHECK_RUNS times: the larger errors of the
-    runs, a tensor; whether the cache's new row is the token's k and v."""
-    position = length - 1
+def check(decode, model, weights, caches, seed, length, rows=1):
+    """One layer from a known x on the card against model.layer(), `rows` tokens ending
+    at row length - 1 of layer 0's cache, CHECK_RUNS times: the larger errors of the
+    runs on the live rows, a tensor; whether the cache's new rows are the tokens'."""
+    position = length - rows
     start = md.start(seed, model)
     cached = tuple(cache[:, :position].copy() for cache in caches)
-    want = md.layer(model, start, weights, cached)
+    want = md.layer(model, start, weights, cached, rows)
     out, exact = {}, True
     width = {name: model.shapes()[name][1] for name in ("q", "k", "v")}
     for _ in range(CHECK_RUNS):
         decode.write_activation("x", start)
-        decode.job(1, 1, position=position)
+        decode.job(1, 1, position=position, rows=rows)
         got = {
             name: decode.read_activation(name)
             for name in ("qkv", "a", "x1", "gated", "x")
@@ -154,14 +163,17 @@ def check(decode, model, weights, caches, seed, length):
         got["q"], got["k"], got["v"] = np.split(
             got["qkv"], [width["q"], width["q"] + width["k"]], axis=1
         )
-        exact &= appended(decode, caches, position, got["k"], got["v"], model.kv_heads)
+        exact &= appended(
+            decode, caches, position, got["k"], got["v"], model.kv_heads, rows
+        )
         for name in CHECKED:
-            errors = md.errors(got[name], want[name])
+            errors = md.errors(got[name][:rows], want[name][:rows])
             if name in out:
                 errors = {key: max(out[name][key], errors[key]) for key in errors}
             out[name] = errors
     return {name: bounded(errors) for name, errors in out.items()} | {
-        "append_exact": exact
+        "rows": rows,
+        "append_exact": exact,
     }
 
 
@@ -178,12 +190,12 @@ def chain(model, layers, seed, context, length):
 
 
 def loop_check(decode, model, caches, seed, layers, length, want):
-    """One token through every layer from one LAYERS command against chain()'s x;
-    the host's copy of layer 0's cache takes its new row."""
+    """One token through every layer from one LAYERS command against chain()'s x (the
+    token's row); the host's copy of layer 0's cache takes its new row."""
     position = length - 1
     decode.write_activation("x", md.start(seed, model))
     decode.job(1, layers, position=position)
-    out = md.errors(decode.read_activation("x"), want)
+    out = md.errors(decode.read_activation("x")[:1], want[:1])
     for index, name in enumerate(("keys", "values")):
         caches[index][:, position] = decode.cache_rows(0, name, position)
     return {"layers": layers, "length": length} | out
@@ -348,6 +360,25 @@ def account(model, cases, attend=()):
     return out
 
 
+def waiting(run):
+    """After a failure: each core that a kernel of is in a runtime wait, the waits by
+    kernel with their command's sequence (the dispatcher's inspect)."""
+    try:
+        cores = run.inspect(timeout=2.0)
+    except km.KomorebiError as error:
+        return f"no inspect: {error}"
+    out = []
+    for core in cores:
+        roles = {
+            role: f"{state['where']} @{state['sequence']}"
+            for role, state in core.get("live", {}).items()
+            if isinstance(state, dict) and state["where"] is not None
+        }
+        if roles:
+            out.append({"core": core["core"]} | roles)
+    return out
+
+
 def main():
     args = parse()
     model = md.from_config(args.config) if args.config else md.MODELS[args.model]
@@ -401,21 +432,24 @@ def main():
                 log(f"loop check: {json.dumps(report['loop'])}")
             if not args.no_check:
                 report["alone"] = []
-                for groups, position in ALONE:
+                for groups, position, rows in ALONE:
                     got = attend_alone(
-                        decode, model, caches, args.seed, groups, position
+                        decode, model, caches, args.seed, groups, position, rows
                     )
                     report["alone"].append(got)
                     log(f"attend alone: {json.dumps(got)}")
                     ok &= got["ok"] and got["append_exact"]
                 report["check"] = {}
-                for length in args.lengths if ok else ():
-                    got = check(decode, model, first, caches, args.seed, length)
-                    report["check"][length] = got
+                checks = [(length, 1) for length in args.lengths]
+                for length, rows in checks + [(args.lengths[0], CHECK_ROWS)]:
+                    if not ok:
+                        break
+                    got = check(decode, model, first, caches, args.seed, length, rows)
+                    report["check"][f"{length}x{rows}"] = got
                     ok &= got["append_exact"] and all(
                         errors["ok"] for name, errors in got.items() if name in CHECKED
                     )
-                    log(f"check, T {length}: {json.dumps(got)}")
+                    log(f"check, T {length}, {rows} rows: {json.dumps(got)}")
             for length in args.lengths if ok else ():
                 for case in args.cases:
                     log(f"case {case}, T {length}: {args.tokens} x {layers} layers")
@@ -430,6 +464,8 @@ def main():
             log(f"failed: {report['failed']}")
             ok = False
             report["thread_result"] = decode.run.thread_result(timeout=0.5)._asdict()
+            report["waiting"] = waiting(decode.run)
+            log(f"waiting: {json.dumps(report['waiting'])}")
         decode.run.stop()
         log("run stopped")
         stats = decode.stats()

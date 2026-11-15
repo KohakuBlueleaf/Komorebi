@@ -16,25 +16,27 @@
 constexpr uint32_t kTileRows = 32;
 constexpr uint32_t kFaceBytes = 512;  // a bf16 face: 16 rows of 16 values
 
-// A core's part of the head's attention: the head (its group), its rank, the key tiles
-// it holds (first, count; the root also the last, where the token is), the token's row.
+// A core's part of the head's attention: the head, its rank, the full key tiles it
+// holds (first, count); the root also the tokens' one or two tiles (from last).
 struct Attend {
     uint32_t head;
     uint32_t rank;
     uint32_t size;
     uint32_t first;
     uint32_t count;
-    uint32_t last;     // the token's key tile
-    uint32_t row;      // the token's row in it
+    uint32_t last;     // the first token's key tile
+    uint32_t row;      // the first token's row in it
+    uint32_t rows;     // the tokens: the query's live rows, the rows appended
+    uint32_t span;     // 1 when the tokens reach into the next tile
     uint32_t cache;    // key tiles a head in the cache
-    uint32_t keys;     // key tiles this core holds: count, and the last at the root
+    uint32_t keys;     // key tiles this core holds: count, and the tokens' at the root
     uint32_t q_tiles;  // the query heads' width in tiles: q's columns in qkv
     uint32_t flags;    // a3's DC_ATTEND_*
     km::Group group;
 };
 
 // The full key tiles 0..last-1 split over the group, the larger shares on the higher
-// ranks; the root (rank 0) also holds the last tile, which it appends to.
+// ranks; the root (rank 0) also holds the tokens' tiles, which it appends to.
 template <typename Kernel>
 Attend attend_of(const Kernel& kernel, const SplitBlock& block) {
     const km_command_t& command = *block.command;
@@ -42,6 +44,8 @@ Attend attend_of(const Kernel& kernel, const SplitBlock& block) {
     const km::Group group = km::digit_group(command, kernel.me(), 1, size);
     const uint32_t position = command.a9 & 0xFFFFu;
     const uint32_t last = position / kTileRows;
+    const uint32_t rows = decode::live_rows(command);
+    const uint32_t span = (position % kTileRows + rows - 1u) / kTileRows;
     const km::Partition share = (
         km::partition(last, group.size - 1 - group.rank, group.size)
     );
@@ -53,8 +57,10 @@ Attend attend_of(const Kernel& kernel, const SplitBlock& block) {
         share.len,
         last,
         position % kTileRows,
-        command.a9 >> 16,
-        share.len + (group.rank == 0 ? 1u : 0u),
+        rows,
+        span,
+        (command.a9 >> 16) & 0xFFu,
+        share.len + (group.rank == 0 ? 1u + span : 0u),
         kernel.arg(block.plan + kSpKt),
         command.a3 & (DC_ATTEND_READ_ONLY | DC_ATTEND_LOCAL | DC_ATTEND_EXP_TWICE),
         group
@@ -155,8 +161,8 @@ namespace attend {
         return true;
     }
 
-    // The root: the cache's last key (value) tile with the token's row put in at its
-    // position, written back to the cache, then pushed as this core's last key tile.
+    // The root: the cache's tiles of the tokens with their key (value) rows put in at
+    // their positions, written back to the cache, then pushed as this core's last.
     template <typename Kernel>
     inline bool append(
         const Kernel& core,
@@ -178,8 +184,9 @@ namespace attend {
             get_write_ptr(DC_CB_TOKEN) + (value ? DC_HEAD_TILES * kTileBytes : 0u)
         );
         const uint32_t page = cache_page(at, at.last);
+        const uint32_t pages = (1u + at.span) * DC_HEAD_TILES;
         if (
-            !km::read_pages(core, command, cache, page, DC_HEAD_TILES, slot) ||
+            !km::read_pages(core, command, cache, page, pages, slot) ||
             !km::read_pages(
                 core, command, qkv, token_page(at, value), DC_HEAD_TILES, token
             ) ||
@@ -188,28 +195,38 @@ namespace attend {
             return false;
         }
         invalidate_l1_cache();  // the core reads what the NoC wrote
-        // row 0 of the token's tiles into row `row`: two faces' rows of 16 values
-        const uint32_t face_row = (at.row >> 4) * 2 * kFaceBytes + (at.row & 15) * 32;
-        for (uint32_t tile = 0; tile < DC_HEAD_TILES; tile++) {
-            for (uint32_t face = 0; face < 2; face++) {
-                volatile tt_l1_ptr uint32_t* to = (
-                    km::l1(slot + tile * kTileBytes + face * kFaceBytes + face_row)
-                );
-                const volatile tt_l1_ptr uint32_t* from = (
-                    km::l1(token + tile * kTileBytes + face * kFaceBytes)
-                );
-                for (uint32_t word_index = 0; word_index < 8; word_index++) {
-                    to[word_index] = from[word_index];
+        // token row i into row `row` + i of the tiles: two faces' rows of 16 values a
+        // tile
+        for (uint32_t i = 0; i < at.rows; i++) {
+            const uint32_t place = at.row + i;
+            const uint32_t to_row = place % kTileRows;
+            const uint32_t to_offset = (
+                (place / kTileRows) * DC_HEAD_TILES * kTileBytes +
+                (to_row >> 4) * 2 * kFaceBytes + (to_row & 15) * 32
+            );
+            const uint32_t from_offset = (i >> 4) * 2 * kFaceBytes + (i & 15) * 32;
+            for (uint32_t tile = 0; tile < DC_HEAD_TILES; tile++) {
+                for (uint32_t face = 0; face < 2; face++) {
+                    const uint32_t at_face = tile * kTileBytes + face * kFaceBytes;
+                    volatile tt_l1_ptr uint32_t* to = (
+                        km::l1(slot + at_face + to_offset)
+                    );
+                    const volatile tt_l1_ptr uint32_t* from = (
+                        km::l1(token + at_face + from_offset)
+                    );
+                    for (uint32_t word_index = 0; word_index < 8; word_index++) {
+                        to[word_index] = from[word_index];
+                    }
                 }
             }
         }
         if (
-            !km::write_pages(core, command, cache, page, DC_HEAD_TILES, slot) ||
+            !km::write_pages(core, command, cache, page, pages, slot) ||
             !core.flushed(km::kFlushWrites, word)
         ) {
             return false;
         }
-        cb_push_back(cb, DC_HEAD_TILES);
+        cb_push_back(cb, pages);
         return true;
     }
 

@@ -48,7 +48,7 @@ def buffers(plan, most):
     attend = [
         (D["DC_CB_QUERY"], D["DC_HEAD_GROUP"] * head),
         (D["DC_CB_ATTEND_CONSTANT"], 3),
-        (D["DC_CB_MASK"], 1),
+        (D["DC_CB_MASK"], 2),
         (D["DC_CB_KEYS"], most * head),
         (D["DC_CB_VALUES"], most * head),
         (D["DC_CB_SCORES"], D["DC_HEAD_GROUP"] * most),
@@ -120,6 +120,15 @@ class Decode:
         }
         self.tensors["constants"] = dense_card.bf16_tensor(session, md.constants())
         self.tensors["attend"] = dense_card.bf16_tensor(session, md.attend_constants())
+        if layers > D["DC_QK_LAYERS"]:
+            raise ValueError(
+                f"{layers} layers: the qk tensor holds {D['DC_QK_LAYERS']}"
+            )
+        qk = md.qk_pages(model, context + md.TILE)  # a band past the cache's last row
+        self.tensors["qk"] = session.empty(
+            (md.TILE, md.TILE * len(qk)), "bfloat16", "tile"
+        )
+        session.write(self.tensors["qk"], qk)
         shapes = products | {name: model.shapes()[name] for name in md.APART}
         cache = (model.kv_heads * context, model.head_dim)
         shapes |= dict.fromkeys(("keys", "values"), cache)
@@ -185,7 +194,13 @@ class Decode:
             },
             number=D["DC_OVERLAY_GATE"],
         )
-        program.overlay("scale", KERNELS / "scale", number=D["DC_OVERLAY_SCALE"])
+        epsilon = np.array([self.model.eps], np.float32).view(np.uint32)[0]
+        program.overlay(
+            "scale",
+            KERNELS / "scale",
+            number=D["DC_OVERLAY_SCALE"],
+            defines={"DC_EPSILON": int(epsilon)},
+        )
         program.overlay(
             "attend",
             KERNELS / "attend",
@@ -236,16 +251,16 @@ class Decode:
             self.context // md.TILE,
         ]
 
-    def attend(self, groups, position, layer=0, timeout=5.0):
+    def attend(self, groups, position, rows=1, layer=0, timeout=5.0):
         """One ATTEND from the host on the first `groups` KV heads' groups, over layer
-        `layer`'s cache at `position` (q, k, v from qkv): its event."""
+        `layer`'s cache, `rows` tokens from `position` (q, k, v from qkv): its event."""
         words = self.words()
         tensors, weights = self.tensors, self.weights[layer]
         args = [
             tensors["qkv"].address,
             weights["keys"].address,
             tensors["a"].address,
-            words[D["DC_WORD_REDUCE"]],
+            words[D["DC_WORD_REDUCE"]] | rows << D["DC_ROWS_SHIFT"],
             S["kSplitOp"],
             words[D["DC_WORD_PLAN_ATTEND"]] & 0xFF,
             words[D["DC_WORD_ATTEND"]],
@@ -266,7 +281,11 @@ class Decode:
         seconds = 0.0
         for name, pages in md.fused(weights).items():
             seconds += self.write(self.weights[layer][name], pages)
-        return seconds
+        pages = md.qk_weight_pages(weights["q_norm"][1], weights["k_norm"][1])
+        started = time.perf_counter()
+        first = D["DC_QK_WEIGHTS"] + 2 * D["DC_HEAD_TILES"] * layer
+        self.session.write(self.tensors["qk"], pages, first=first)
+        return seconds + time.perf_counter() - started
 
     def write_cache(self, layer, keys, values):
         """A layer's cache ([KV heads, n, width] values each, rows past n zero) into its
@@ -321,20 +340,22 @@ class Decode:
         timeout=10.0,
         position=None,
         attend=None,
+        rows=1,
     ):
         """One LAYERS command: its result word and stats slot. `bare` products only,
         `parts` their parts only, `apart` q, k, v as three (no attention), `overlap` two
-        in flight; `position` the first token's (default: the last is the cache's last
-        row); `attend` a cut-down attention of ATTEND_MODES."""
+        in flight; `position` the first token's (default: the last ends the cache);
+        `attend` a cut-down attention of ATTEND_MODES; `rows` tokens a step."""
         slot = self.slot
         self.slot += 1
         mode = 3 if parts else int(bare)
         mode |= (4 if apart or overlap else 0) | (8 if overlap else 0)
         mode |= ATTEND_MODES[attend]
-        position = self.context - tokens if position is None else position
-        if not 0 <= position <= self.context - tokens:
-            raise ValueError(f"position {position}: {tokens} tokens past the cache")
-        args = [tokens, layers, slot, first, mode, position]
+        steps = tokens * rows
+        position = self.context - steps if position is None else position
+        if not 0 <= position <= self.context - steps or not 1 <= rows <= md.TILE:
+            raise ValueError(f"position {position}: {steps} rows past the cache")
+        args = [tokens, layers, slot, first, mode, position, rows]
         handle = self.run.submit("layers", cluster=CLUSTER, args=args, result=True)
         event = self.run.wait(handle, timeout=timeout)
         if event.kind != "done" or event.result >= 0xFFFFFFF0:

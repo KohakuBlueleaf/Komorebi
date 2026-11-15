@@ -8,16 +8,17 @@ model lets a decode step run at that floor, and where every microsecond above it
 ## What a layer is here
 
 The shapes are Qwen3-1.7B's (`model.py`, from its `config.json`): hidden 2048, MLP 6144,
-16 query heads and 8 KV heads of 128, 28 layers, RMS norm with eps 1e-6. The weights are
-random (bf16, variance 1 / K; the two output projections also / sqrt(2 x layers) so the
-residual keeps its scale; the norm weights in [0.5, 1.5)). A layer, in order, as the
+16 query heads and 8 KV heads of 128, 28 layers, RMS norm with eps 1e-6, rotary base
+1e6. The bench's weights are random (bf16, variance 1 / K; the two output projections
+also / sqrt(2 x layers) so the residual keeps its scale; the norm weights in [0.5,
+1.5)); `real.py` runs the model's own (stage 4). A layer, in order, as the
 card runs it since stage 2 (one product for q, k and v, one for gate and up; the norms
 inside the products since stage 2 (4)):
 
 | Step | What | Weight (K x N) |
 |---|---|---|
 | norm1 | h = rmsnorm(x) w1 | 2048 |
-| qkv | [q k v] = h [Wq Wk Wv] | 2048 x 4096 |
+| qkv | [q k v] = h [Wq Wk Wv]; q and k: each head's norm, the rotation (stage 4) | 2048 x 4096 |
 | attend | a = softmax(q K^T / sqrt(128)) V over the cache (stage 3) | the cache |
 | o | x = x + a Wo | 2048 x 2048 |
 | norm2 | h = rmsnorm(x) w2 | 2048 |
@@ -25,10 +26,10 @@ inside the products since stage 2 (4)):
 | down | x = x + g Wd | 6144 x 2048 |
 
 Until stage 3, `a` (attention's output) was q itself. Since stage 3 the token's query
-attends over the layer's cache of keys and values on the card; Qwen3's norms of q and k
-and the rotary position are not applied (the cache holds random keys). The activation
-is one tile row (32 rows, the first one the token's), as the card's tiles hold it; all
-32 rows attend.
+attends over the layer's cache of keys and values on the card; since stage 4 with
+Qwen3's norm of each head of q and k and the rotary position applied first. The
+activation is one tile row (32 rows): the first M rows are M tokens (1 to 32, a word of
+every command, stage 4); the rest are carried but not computed by the vector unit.
 
 A layer is 100,671,488 bytes of weights, a token 2.819 GB over 28 layers: at the card's
 DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) that is
@@ -71,6 +72,16 @@ through every layer against the chain of `model.layer()`.
 
 `--chunk` and `--pattern` set every plan's K chunk and pattern (the default is
 `model.PATTERNS`).
+
+The model's own weights and a prompt: `torch_reference.py` (in an environment with
+torch and transformers, on the host CPU) tokenizes the prompt and writes the prompt's
+tokens, torch's greedy continuation and its hidden states at the first positions;
+`real.py` runs them on the card from the checkpoint's safetensors and compares:
+
+```
+python projects/decode/torch_reference.py --hub <hub cache> --out ref.npz
+python projects/decode/real.py --snapshot <the model's snapshot> --reference ref.npz
+```
 
 It writes each layer's weights through the host channel (6.2 GB/s), checks one layer
 from a known x against `model.layer()` (numpy, float64, each output rounded to bf16 as
@@ -459,6 +470,135 @@ products and sums a tile: 69.9 us; on the matrix unit the rounds take 39.7. The
 exponent's rate is the next term: 1.2 us a tile at fp32 (not the approximate form),
 over all 32 rows of the tile though only the first is the token's.
 
+## Stage 4: the model itself
+
+### Tokens a command
+
+The rows that hold tokens, M (1 to 32), are a word of every command: a3's bits 16 to
+21, and the `layers` command's a6 (M a step, positions a5 + step x M). Tokens t to t +
+M - 1 are rows 0 to M - 1 of the activation; ATTEND's root takes the tokens' one or two
+cache tiles (t/32 and the next when they cross it), each with its mask (63 masks: row i
+keeps the columns up to i + k - 31), and the append puts the M rows in.
+
+The vector unit runs only the bands of 4 rows that hold tokens (2 iterations a band in
+faces 0 and 1; the whole tile past 16 rows): P's subtract, scale and exponent, the
+merge's maximum, subtracts, exponents and diagonal products, the root's division, the
+norms' epsilon and rsqrt (scale, gate, the heads' norms) and the gate's silu. The
+matrix unit's products stay whole tiles. P's rows past M are 0 (DEST is filled with 0
+first, the subtract writes the live bands only), so nothing that is not finite reaches
+the merge's diagonal products, which mix rows.
+
+One layer at T 4096, one token, before and after (`results/qwen3-1.7b-rows-layer0-x10.json`):
+
+| Term | before | after |
+|---|---:|---:|
+| P's exponent tiles (18) | 21.9 | 3.9 |
+| the merge's 4 rounds | 39.7 | 21.5 |
+| attend's compute not under the read | 24.5 | 19.6 |
+| gate_up's operation | 9.2 | 4.0 |
+| qkv's operation | 3.4 | 2.6 |
+| the layer | 444.1 | 398.7 |
+
+At T 1024 and 256 the layer is 360.8 and 351.5 us (393.8 and 382.4 before). The check
+with 32 tokens a command at T 4096 gives a rms 1.31e-2, x 2.8e-3, the append exact.
+
+### The norms of q and k and the rotation
+
+The model's attention as its library computes it (`transformers`, Qwen3's modeling
+file: `Qwen3RMSNorm` on each head of q and k, then `apply_rotary_pos_emb` with
+`rotate_half`; the table's frequencies 1 / 1e6^(2i/128) and angles in float32, cos and
+sin cast to bf16). On the card it runs at the hook the other operations use: qkv's
+`scale` overlay, on the roots of the blocks of q's and k's columns (a3's bit 22, set by
+the thread on qkv), after the norm's scale and before attend appends k. A root holds 2
+heads; for each: the squares of its 4 tiles summed on the live rows, a product with a
+tile of 1/128 (each row's mean in every column), epsilon and rsqrt; each tile times it
+and times the head's weight (a tile row of it); then tile j becomes tile j times cos_j
+plus tile (j + 2) mod 4 times sin_j, with the sin's first half negated as `rotate_half`
+takes it.
+
+The table comes from the host, as one tile tensor: the identity and mean tiles, a tile
+of 1/128, each layer's q and k norm weights (4 tiles each), then a 512-byte row a
+position (cos's 128 values, then the signed sin's), 4 rows a page: 2.1 MB for 4,128
+positions. The host computes it once with the reference's own float32 expression; on
+the X280 the thread would compute cos and sin each step in another float library. It
+differs from torch's table in 10 of 528,384 values, by one bf16 step. The core's
+reader reads the live rows' band of 4 (one 512-byte read a row, the rows of a page in
+one), puts each row's 16 pieces of 32 bytes into row i of 8 tiles (4 of cos, 4 of sin)
+and hands them to compute. The command's words are full with it: a8 is the qk tensor
+for qkv, a9 the position and the layer, so the norm's epsilon became the overlay's
+compile-time value.
+
+The plan, off the card, against `model.heads_norm_rotated` (float64, the same
+expressions): 1.3e-16 at 6 positions and token counts, q and k; with the card's two
+bf16 roundings (the squares and the normed tiles) 1.7e-3. On the card
+(`results/qwen3-1.7b-qk-layer0-x10.json`), against `model.layer()` with them:
+
+| T | q rms | k rms | v rms | a rms | x rms |
+|---:|---:|---:|---:|---:|---:|
+| 4096 | 6.1e-3 | 6.6e-3 | 5.9e-3 | 1.24e-2 | 2.6e-3 |
+| 1024 | 6.4e-3 | 6.5e-3 | 5.9e-3 | 1.67e-2 | 2.8e-3 |
+| 256 | 6.1e-3 | 6.6e-3 | 5.9e-3 | 1.01e-2 | 2.8e-3 |
+| 4096, 32 tokens | 6.0e-3 | 6.1e-3 | 6.4e-3 | 1.11e-2 | 2.8e-3 |
+
+The append is exact in every case. qkv's operation takes 13.8 us (2.6 before): a q or
+k root runs per head about 20 copies to DEST, 17 vector steps, 1 product, 8
+multiplies, 6 packs and the reconfiguration between each kind, about 7,500 cycles; its
+reads (5 tiles and the table's rows) are under the sum.
+
+### Real weights and a prompt
+
+`real.py` reads the checkpoint (two safetensors files, bf16) with numpy, transposes
+each W to K x N and folds the norm weights into the products as stage 2 does (W' =
+diag(w) W, in bf16). The embedding, the final norm and the head run on the host: the
+head is 151,936 x 2,048 (622 MB in bf16), one product of 311 M multiply-adds a token,
+about 0.1 s in numpy; on the card it would read 1.6 times a layer stack's weights a
+token. The prompt's tokens are fed one a step (the cache starts empty), each step one
+`layers` command of 28 layers, the largest logit taken greedily.
+
+The prompt "The tallest mountain in the world is" (7 tokens), 16 tokens continued
+(`results/qwen3-1.7b-real-prompt.json`): the card's are torch's, all 16: " Mount
+Everest, which is 8848 meters high. The second tallest". Torch runs the model in bf16
+on the CPU (its eager attention). The hidden state after each layer at the first
+positions, against torch's (rms error over rms; the last after the final norm):
+
+| Position | layer 0 | the largest (layer) | layer 27 | numpy, the same expressions: the largest |
+|---:|---:|---:|---:|---:|
+| 0 | 1.24e-2 | 4.95e-2 (27) | 4.95e-2 | 1.56e-2 |
+| 1 | 1.03e-2 | 3.52e-2 (27) | 3.52e-2 | 3.86e-2 |
+| 2 | 1.14e-2 | 6.06e-2 (14) | 4.34e-2 | 3.97e-2 |
+| 3 | 1.05e-2 | 4.27e-2 (14) | 1.53e-2 | 3.76e-2 |
+
+The numpy column is `model.layer()` (float64, bf16 outputs, the same folds) run as the
+card: it and the card differ from torch by the same order, the folds and the roundings
+torch does in other places. A token takes 10.08 to 10.11 ms at the cache lengths 7 to
+22 the prompt reaches: 99.0 tokens a second.
+
+### The account with all of it in
+
+All 28 layers, 10 tokens from one command, random weights with random head norm
+weights (`results/qwen3-1.7b-qk-x10.json`):
+
+| Term | Kind | T 4096 | T 1024 | T 256 |
+|---|---|---:|---:|---:|
+| the weights at 495.6 GB/s | HARDWARE | 203.1 | 203.1 | 203.1 |
+| the products' read below the ceiling and boundary | OURS | 77.4 | 77.3 | 77.1 |
+| the products' operations (qkv's with the heads' norms and rotation: 13.8) | OURS | 21.0 | 21.2 | 21.1 |
+| the cache's K and V at 495.6 GB/s | HARDWARE | 33.8 | 8.4 | 2.1 |
+| the busiest core's tile products | HARDWARE | 4.2 | 1.4 | 0.5 |
+| the busiest core's exponent tiles (live rows only) | HARDWARE | 4.0 | 1.3 | 0.5 |
+| the cache read below the ceiling (q on every core, the append, the command) | OURS | 14.3 | 14.8 | 14.9 |
+| attend's compute not under the read | OURS | 19.3 | 12.4 | 10.9 |
+| the merge's 4 rounds | OURS | 21.6 | 20.9 | 21.5 |
+| the thread between commands (5 a layer) | OURS | 10.9 | 10.9 | 10.9 |
+| total a layer | | 409.7 | 371.7 | 362.6 |
+| unaccounted | | 0.0 | 0.0 | 0.0 |
+| a token (28 layers) | | 11.47 ms | 10.41 ms | 10.15 ms |
+| tokens a second | | 87.2 | 96.1 | 98.5 |
+| stage 3 | | 80.4 | 90.7 | 93.4 |
+
+One token through all 28 layers against the float64 chain (T 4096): x rms 2.6e-2,
+largest 3.8e-2.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
@@ -489,3 +629,13 @@ over all 32 rows of the tile though only the first is the token's.
 - The math library's matmul init, outlined by the compiler, reads the buffers' tile
   shapes from a table the persistent kernel holds, which an overlay may not copy: the
   overlay gives the shape (32 x 32) itself.
+- A command has ten words and qkv's uses them all (the inputs, the plan, the operation,
+  the squares, the qk tensor, the position and the layer); the norm's epsilon became a
+  compile-time value of the overlay to make room.
+- A program has 29 buffers of its own (0 to 28; the runtime's are above). The
+  operations' new buffers are the ones other operations use, taken while those are
+  idle, each still filled by the same kind of kernel (a clear after a give-up looks up
+  a buffer's producer).
+- A first form of the rotation's table tilized the rows on compute (tt-metal's tilize
+  inside the overlay); its first command did not end and the cause was not located.
+  The reader now puts the rows into the tiles itself.

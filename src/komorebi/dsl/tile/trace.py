@@ -386,12 +386,31 @@ def _unary(kind, doc):
     return fn
 
 
-exp = _unary("exp", "e^x on the vector unit.")
-exp2 = _unary(
+def _transcendental(kind, doc):
+    def fn(x, error=None, over=None, exact_at_zero=False):
+        attrs = {} if error is None else {"error": float(error)}
+        if over is not None:
+            if error is None:
+                fail(f"{kind}: an input range is stated with an error")
+            attrs["over"] = (float(over[0]), float(over[1]))
+        if exact_at_zero:
+            attrs["exact_at_zero"] = True
+        return _op(kind, x, **attrs)
+
+    fn.__name__, fn.__doc__ = kind, doc
+    return fn
+
+
+exp = _transcendental(
+    "exp",
+    "e^x on the vector unit; `error`: the relative error the program accepts over "
+    "inputs in `over` (lo, hi), the cheapest template meeting it (default accurate); "
+    "`exact_at_zero`: 1 exactly at 0 (a factor that must be none when x is 0).",
+)
+exp2 = _transcendental(
     "exp2",
-    "2^x as Kohaku-TT's flash attention computes it under default numerics (its "
-    "exponent and a degree-2 polynomial of the fraction, relative error up to "
-    "1.75e-3), exactly 1 at 0; 0 for x below -127, x below 129.",
+    "2^x on the vector unit; `error`, `over` as for exp (2e-3 over (-inf, 0]: "
+    "Kohaku-TT's flash attention exp).",
 )
 sigmoid = _unary("sigmoid", "1 / (1 + e^-x) on the vector unit.")
 silu = _unary("silu", "x * sigmoid(x) on the vector unit.")
@@ -484,12 +503,57 @@ def reduce_sum(x, dim=-1, exact=False):
     return _op("reduce", x, op="sum", exact=bool(exact), dim=-2 if dim == -2 else -1)
 
 
-def reduce_max(x, dim=-1):
+def reduce_max(x, dim=-1, exact=False):
     """The largest value of loaded row `x` along its last dim, one value per row, on
-    the matrix unit (rows of whole tiles: padding is not masked)."""
+    the matrix unit (rows of whole tiles: padding is not masked), or with
+    `exact=True` on the vector unit (any row block)."""
     if dim not in (-1, 1):
         fail("reduce_max is along the last dim (dim=-1 or 1)")
-    return _op("reduce", x, op="max", exact=False)
+    return _op("reduce", x, op="max", exact=bool(exact), dim=-1)
+
+
+class State:
+    """A state tile loaded with `load_state`: `st[k]` is per-row value k (k < 4),
+    one value per row held as the lanes of slot k of the tile."""
+
+    __slots__ = ("node",)
+
+    def __init__(self, node):
+        self.node = node
+
+    def __getitem__(self, k):
+        if not isinstance(k, int) or not 0 <= k < STATE_SLOTS:
+            fail(f"a state tile has slots 0 .. {STATE_SLOTS - 1}, not {k!r}")
+        return Block(Node("slot", (self.node,), {"slot": k}))
+
+
+STATE_SLOTS = 4  # per-row values a state tile holds (a word takes the last slot)
+
+
+def load_state(view):
+    """A state tile read as per-row values (see State): `view` is x.tiles[t]."""
+    _check_view(view)
+    if view.kind != "tile":
+        fail("a state tile is one tile: x.tiles[t]")
+    return State(load(view).node)
+
+
+def word_max(x):
+    """Per-row value `x` reduced to one word, the largest over the tile's rows (> 0
+    when any row's is): stored by store_state(word=...), read by a core as a word."""
+    return _op("word", x, op="max")
+
+
+def store_state(view, values, word=None):
+    """Writes per-row values `values` (slots 0 ..) and the word `word` (from
+    word_max, in the last slot) as one state tile of output `view`."""
+    values = list(values)
+    if len(values) > STATE_SLOTS - (word is not None):
+        fail("a state tile holds 4 per-row values, or 3 and a word")
+    args = [_node(v) for v in values] + ([] if word is None else [_node(word)])
+    if word is not None and args[-1].kind != "word":
+        fail("word= takes tile.word_max(...)")
+    store(view, Block(Node("state", tuple(args), {"word": word is not None})))
 
 
 def cat(blocks, dim=-1):
@@ -541,6 +605,7 @@ __all__ = [
     "grid",
     "lagging_max",
     "load",
+    "load_state",
     "maximum",
     "minimum",
     "num_tile_rows",
@@ -558,5 +623,7 @@ __all__ = [
     "sqrt",
     "square",
     "store",
+    "store_state",
     "tanh",
+    "word_max",
 ]

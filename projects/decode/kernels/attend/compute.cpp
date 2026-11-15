@@ -75,12 +75,20 @@ namespace {
         MATH((llk_math_matmul<MathFidelity::HiFi4, MM_THROTTLE>(dst)));
     }
 
-    // DEST `dst` = exp(DEST `dst` / sqrt(128)).
-    ATTEND_STEP void scaled_exp(uint32_t dst) {
+    // DEST `dst` = exp(DEST `dst` / sqrt(128)) on the live rows.
+    ATTEND_STEP void scaled_exp(uint32_t dst, uint32_t live) {
         binop_with_scalar_tile_init();
-        mul_unary_tile(dst, DC_SCALE_BITS);
+        DC_ROWS(live, rows::times, dst, DC_SCALE_BITS);
         exp_tile_init<false>();
-        exp_tile<false>(dst);
+        DC_ROWS(live, rows::exp, dst);
+    }
+
+    // DEST `dst` all zeros, so its rows past the live ones stay 0.
+    ATTEND_STEP void zeros(uint32_t dst, uint32_t live) {
+        if (live < kTileRows) {
+            fill_tile_init();
+            fill_tile(dst, 0.0f);
+        }
     }
 
     // The section's DEST tile `dst` into tile `index` of `cb` (reserved).
@@ -99,8 +107,8 @@ namespace {
             }
             for (uint32_t head = 0; head < DC_HEAD_GROUP; head++) {
                 tile_regs_acquire();
-                if (at.rank == 0 && key + 1 == at.keys) {
-                    copy(DC_CB_MASK, 0, 0);
+                if (at.rank == 0 && key >= at.count) {
+                    copy(DC_CB_MASK, key - at.count, 0);
                 }
                 product_init(DC_CB_QUERY, DC_CB_KEYS, 1);
                 for (uint32_t tile = 0; tile < DC_HEAD_TILES; tile++) {
@@ -172,14 +180,15 @@ namespace {
         }
         const bool room = compute.reserve_back(DC_CB_PROBABILITIES, DC_KEYS_MOST);
         for (uint32_t key = 0; key < at.keys; key++) {
-            tile_regs_acquire();
-            copy(DC_CB_SCORES, 2 * key + head, 0);
-            copy(DC_CB_REFERENCE, 0, 1);
+            tile_regs_acquire();  // P's rows past the live ones are 0
+            zeros(0, at.rows);
+            copy(DC_CB_SCORES, 2 * key + head, 1);
+            copy(DC_CB_REFERENCE, 0, 2);
             sub_binary_tile_init();
-            sub_binary_tile(0, 1, 0);
-            scaled_exp(0);
+            DC_ROWS(at.rows, rows::sub, 1, 2, 0);
+            scaled_exp(0, at.rows);
             if ((at.flags & DC_ATTEND_EXP_TWICE) != 0) {
-                scaled_exp(0);
+                scaled_exp(0, at.rows);
             }
             tile_regs_commit();
             tile_regs_wait();
@@ -254,7 +263,8 @@ namespace {
         const km::Compute& compute,
         const km::Arrival& arrival,
         uint32_t slot,
-        uint32_t cb
+        uint32_t cb,
+        uint32_t live
     ) {
         const uint32_t base = km::slot_page(arrival, slot);
         if (
@@ -270,15 +280,15 @@ namespace {
             copy(kCbArrive, base + state, 1);
             copy(DC_CB_ATTEND_CONSTANT, kIdentity, 3);
             binary_max_tile_init();
-            binary_max_tile(0, 1, 2);
+            DC_ROWS(live, rows::max, 0, 1, 2);
             sub_binary_tile_init();
-            sub_binary_tile(0, 2, 0);
-            sub_binary_tile(1, 2, 1);
-            scaled_exp(0);
-            scaled_exp(1);
+            DC_ROWS(live, rows::sub, 0, 2, 0);
+            DC_ROWS(live, rows::sub, 1, 2, 1);
+            scaled_exp(0, live);
+            scaled_exp(1, live);
             mul_binary_tile_init();
-            mul_binary_tile(0, 3, 0);
-            mul_binary_tile(1, 3, 1);
+            DC_ROWS(live, rows::mul, 0, 3, 0);
+            DC_ROWS(live, rows::mul, 1, 3, 1);
             tile_regs_commit();
             tile_regs_wait();
             const bool rescale = compute.reserve_back(DC_CB_RESCALE, 2);
@@ -317,8 +327,9 @@ namespace {
         return true;
     }
 
-    // The root: each output tile over its head's sum, bf16, for the writer.
-    ATTEND_STEP bool finish(const km::Compute& compute) {
+    // The root: each output tile over its head's sum on the live rows (the others 0),
+    // in bf16 for the writer.
+    ATTEND_STEP bool finish(const km::Compute& compute, uint32_t live) {
         if (
             !compute.wait_front(DC_CB_STATE, DC_STATE_ITEM) ||
             !compute.reserve_back(kCbSplitOut, kQueryTiles)
@@ -329,10 +340,11 @@ namespace {
             const uint32_t state = head * DC_STATE_TILES;
             for (uint32_t tile = 0; tile < DC_HEAD_TILES; tile++) {
                 tile_regs_acquire();
-                copy(DC_CB_STATE, state + kOutput + tile, 0);
-                copy(DC_CB_STATE, state + kSum, 1);
+                zeros(0, live);
+                copy(DC_CB_STATE, state + kOutput + tile, 1);
+                copy(DC_CB_STATE, state + kSum, 2);
                 div_binary_tile_init();
-                div_binary_tile(0, 1, 0);
+                DC_ROWS(live, rows::div, 1, 2, 0);
                 tile_regs_commit();
                 tile_regs_wait();
                 pack_at(0, kCbSplitOut, head * DC_HEAD_TILES + tile);
@@ -378,7 +390,7 @@ namespace {
         if (
             !compute.wait_front(DC_CB_QUERY, kQueryTiles) ||
             !compute.wait_front(DC_CB_ATTEND_CONSTANT, kConstants) ||
-            (root && !compute.wait_front(DC_CB_MASK, 1))
+            (root && !compute.wait_front(DC_CB_MASK, 2))
         ) {
             return false;
         }
@@ -415,16 +427,16 @@ namespace {
                 ok = false;
                 break;
             }
-            ok = merge(compute, arrival, port, into);
+            ok = merge(compute, arrival, port, into, at.rows);
             km::untake(arrival);
         }
         if (ok && root && (at.flags & DC_ATTEND_READ_ONLY) == 0) {
-            ok = finish(compute);
+            ok = finish(compute, at.rows);
         }
         cb_pop_front(DC_CB_QUERY, kQueryTiles);
         cb_pop_front(DC_CB_ATTEND_CONSTANT, kConstants);
         if (root) {
-            cb_pop_front(DC_CB_MASK, 1);
+            cb_pop_front(DC_CB_MASK, 2);
         }
         return ok;
     }

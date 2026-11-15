@@ -4,7 +4,9 @@ body, the host checks run on made-up results; `rules.py card --cases ..`: values
 against float64 and cycles of each body."""
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import secrets
 import statistics
@@ -23,6 +25,8 @@ from komorebi import session as km_session
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.dsl.tile.rows import row_program
+from komorebi.dsl.tile.steps import SLOT, WORD, step_program
+from komorebi.dsl.tile.unit import matrix_cost
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -30,6 +34,7 @@ GENERATED = KERNELS / "generated"
 # rules.hpp's layout.
 CB_A, CB_B, CB_P, CB_OUT, CB_INFO, MAX_UNITS = 0, 1, 2, 16, 24, 32
 CB_SQUARES, CB_SCALE, CB_Y = 3, 4, 5  # the hand norm's
+CB_KV, CB_Q, CB_PROB, CB_ST, CB_ONES = 0, 1, 2, 3, 4  # the attention body's
 NONCE, ERROR, UNITS, BODY, LOOP, SYNC, SYNCS = 0, 1, 2, 64, 128, 192, 16
 TILE_WORDS = 1024
 DESCRIPTOR = (
@@ -41,10 +46,33 @@ WIDTH = 2  # tiles in a row of the norm
 P_TILE, ROWS_TILE = 4, 2  # the norm's Dst tiles: per-column operand, per-row value
 # Largest relative error against float64 of an emitted body (README.md, "The gate");
 # hand bodies are reported against it too.
-TOLERANCE = {"silu": 1e-6, "add": 2**-23, "scale": 2**-23, "gate": 1e-6, "norm": 1e-5}
+TOLERANCE = {
+    **{"silu": 1e-6, "add": 2**-23, "scale": 2**-23, "gate": 1e-6, "norm": 1e-5},
+    "exp": 1e-5,
+}
+# The hand bodies held to their own bound: attention's exp polynomial is 1.75e-3.
+HAND_TOLERANCE = {"exp": 2e-3}
+# The exp the program states (the hand body's: 2e-3 over s scale - m <= 0); the
+# "stated" form is emitted at it, held to it, the accurate one beside it.
+STEP_EXP = {"error": 2e-3, "over": (-math.inf, 0.0)}
+STATED_TOLERANCE = {"exp": STEP_EXP["error"]}
+# The softmax step (base 2, both bodies' exp2 polynomial): P, the rescale factor and
+# the sum within 2e-3, the reference m within 1e-6, the word's sign exact.
+STEP_TOLERANCE = {"p": 2e-3, "alpha": 2e-3, "l": 2e-3, "m": 1e-6, "m_abs": 1e-4}
+# (the hand body keeps 639 - A m: its m to within an fp32 step at 639, 6.1e-5)
+STEP_WIDTH, STEP_LAG = 3, 16.0  # key tiles a step; the reference's lag (ktt's tau)
+STEP_TILE = 3  # the state's Dst tile (the hand body's ST)
+ATTENTION = HERE.parents[1] / "projects" / "attention" / "kernels"
+EXP_SCALE = 0.125  # 1 / sqrt(64), exact in fp32
+EXP_A = EXP_SCALE * 1.4426950408889634  # the hand body's A = scale log2 e
+EXP_TILE = {
+    12: 3,
+    13: 1,
+    16: 1,
+}  # the row state's Dst tile: the hand body's, the emitted
 
-# BODY: (case, form "hand", "emitted" or "macro": emitted with the load-macro rule).
-# Hand: tt-metal's vector library (silu, add, scale), projects/decode (gate, norm).
+# BODY: (case, form); "macro": the load-macro rule, "stated": at STEP_EXP, "accurate":
+# the default exp. Hand: tt-metal's library, projects/decode, projects/attention.
 BODIES = {
     0: ("silu", "hand"),
     1: ("silu", "emitted"),
@@ -58,12 +86,33 @@ BODIES = {
     9: ("gate", "emitted"),
     10: ("norm", "hand"),
     11: ("norm", "emitted"),
+    12: ("exp", "hand"),
+    13: ("exp", "emitted"),
+    14: ("softmax", "hand"),
+    15: ("softmax", "emitted"),
+    16: ("exp", "stated"),
+    17: ("softmax", "accurate"),
+    18: ("attn", "hand"),
+    19: ("attn", "emitted"),
 }
-CASES = ("silu", "add", "scale", "gate", "norm")
+FORMS = ("hand", "emitted", "macro", "stated", "accurate")
+CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax", "attn")
 # Run on the card already, over the same inputs (the tile-front experiment): built
 # and checked here, not run again.
-ALREADY_RUN = {0}
-INPUTS = {"silu": 1, "add": 2, "scale": 1, "gate": 2, "norm": 1}
+ALREADY_RUN = {0, 12}
+INPUTS = {
+    **{"silu": 1, "add": 2, "scale": 1, "gate": 2, "norm": 1, "exp": 1},
+    "softmax": 1,
+    "attn": 1,
+}
+# The per-core attention body (kernels/attention.cpp): one query row of tiles, steps
+# of 3 key tiles (--units steps), head and value dims of 2 tiles.
+HEAD_TILES = VALUE_TILES = 2
+# O / l against float64 (of the row's largest |O|): exp 1.75e-3, TF32 P and V 2^-11.
+ATTN_TOLERANCE = 4e-3
+ATTN_FIDELITY = "HiFi2"  # projects/attention/card.py's
+# Words a step on the matrix unit: 16 MVMUL a tile product a phase (HiFi2: 2).
+ATTN_WORDS = {"score": HEAD_TILES * 3 * 32, "pv": 3 * VALUE_TILES * 32, "sum": 3 * 32}
 
 
 def log(message):
@@ -104,6 +153,47 @@ def norm_ir():
     return ir
 
 
+def expstep_ir(name="expstep", **exp):
+    """p = exp(s scale - m), m a per-row value: the row state tile (each row's scaled
+    reference in all its lanes), broadcast along the row with .col(); `exp`: the
+    error the program states (trace.exp's error and over)."""
+    s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
+    p = TensorParam("p", True, F32)
+    ir = KernelIR(name, [s, m, p], [], {})
+    with trace.Tracer(ir):
+        ss, ms, ps = (trace.TensorProxy(t) for t in (s, m, p))
+        for t in trace.grid(trace.num_tiles(ss)):
+            x, state = trace.load(ss.tiles[t]), trace.load(ms.tiles[t])
+            trace.store(ps.tiles[t], trace.exp(x * EXP_SCALE - state.col(), **exp))
+    return ir
+
+
+def softmax_ir(name="softstep", exp=STEP_EXP):
+    """The online softmax step in base 2 over a row of STEP_WIDTH score tiles: the
+    new reference (lagging by up to STEP_LAG), the old state's rescale factor, P and
+    the new sum; the state tile in and out (m, l, alpha) and whether a row moved."""
+    s, st = TensorParam("s", False, F32), TensorParam("st", False, F32)
+    p, out = TensorParam("p", True, F32), TensorParam("out", True, F32)
+    ir = KernelIR(name, [s, st, p, out], [], {})
+    with trace.Tracer(ir):
+        ss, sts, ps, outs = (trace.TensorProxy(t) for t in (s, st, p, out))
+        for t in trace.grid(trace.num_tile_rows(ss)):
+            x = trace.load(ss.tiles[t, :]) * EXP_A
+            state = trace.load_state(sts.tiles[t])
+            m_old, l_old = state[0], state[1]
+            r = trace.reduce_max(x, exact=True)
+            m_new = trace.lagging_max(m_old, r, STEP_LAG)
+            alpha = trace.exp2(
+                m_old - m_new, **exp, exact_at_zero=True
+            )  # none if unmoved
+            prob = trace.exp2(x - m_new.col(), **exp)
+            l_new = alpha * l_old + trace.reduce_sum(prob, exact=True)
+            trace.store(ps.tiles[t, :], prob)
+            moved = trace.word_max(m_new - m_old)
+            trace.store_state(outs.tiles[t], [m_new, l_new, alpha], word=moved)
+    return ir
+
+
 def units():
     """{header name: unit program} of every emitted body."""
     out = {}
@@ -120,12 +210,39 @@ def units():
         unit = unit_program(stream(f"{name}_macro", inputs, fn), load_macro=True)
         out[f"{name}_macro"] = unit
     out["norm"] = row_program(norm_ir(), WIDTH, ROWS_TILE, P_TILE)
+    out["expstep"] = unit_program(expstep_ir())
+    out["expstep_flash"] = unit_program(expstep_ir("expstep_flash", **STEP_EXP))
+    out["softstep"] = step_program(softmax_ir(), STEP_WIDTH, STEP_TILE)
+    accurate = softmax_ir("softstep_accurate", {})
+    out["softstep_accurate"] = step_program(accurate, STEP_WIDTH, STEP_TILE)
     return out
 
 
+def sources_hash():
+    """The hash of the sources the headers come from (the tile package, this file)."""
+    tile = Path(km.__file__).resolve().parent / "dsl" / "tile"
+    digest = hashlib.sha256()
+    for path in sorted(tile.glob("*.py")) + [Path(__file__).resolve()]:
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def generated_costs():
+    """The costs `build` wrote beside the headers; a card job compiles nothing (the
+    watcher kills a silent start). Refuses headers built from other sources."""
+    try:
+        saved = json.loads((GENERATED / "costs.json").read_text())
+    except (OSError, ValueError):
+        sys.exit("no generated headers: run `rules.py build` first, outside the job")
+    if saved["sources"] != sources_hash():
+        sys.exit("the generated headers are stale: run `rules.py build` again")
+    log(f"estimates {json.dumps(saved['costs'])} (from build)")
+    return saved["costs"]
+
+
 def generate():
-    """Writes every emitted header into kernels/generated; returns the units' costs
-    and the load-macro rule's verdict on the bodies it refuses."""
+    """Writes every emitted header into kernels/generated (and their costs, for the
+    card job); returns the units' costs; logs the load-macro rule's refusals."""
     GENERATED.mkdir(exist_ok=True)
     costs = {}
     for name, unit in units().items():
@@ -141,6 +258,8 @@ def generate():
         refused[name] = next(p.done for p in unit.passes if p.name == "load_macro")
     log(f"estimates {json.dumps(costs)}")
     log(f"load-macro refusals {json.dumps(refused)}")
+    saved = {"sources": sources_hash(), "costs": costs}
+    (GENERATED / "costs.json").write_text(json.dumps(saved))
     return costs
 
 
@@ -157,38 +276,108 @@ def aiclk_mhz():
 def p_pages(body):
     """Pages of P: the emitted norm's per-column operand tile; the hand norm's
     identity, mean and weight tiles (decode's constant tiles, and g in every row)."""
-    return {10: 2 + WIDTH, 11: 1}.get(body, 0)
+    return {10: 2 + WIDTH, 11: 1}.get(body, int(body >= 12))
 
 
 def setting(body):
     """The compile-time setting of BODY `body`."""
     case, form = BODIES[body]
-    unit_tiles = WIDTH if case == "norm" else 1
+    unit_tiles = {"norm": WIDTH, "softmax": STEP_WIDTH}.get(case, 1)
     copy_b = INPUTS[case] == 2 and (case, form) != ("gate", "hand")
     return {
         "BODY": body,
         "UNIT_TILES": unit_tiles,
+        "PACK_STATE": int(case == "softmax"),
+        "STEP_THRESHOLD": f"{bits(639.0 + STEP_LAG)}u",
         "INPUTS": INPUTS[case],
         "COPY_B": int(copy_b),
         "HAS_P": p_pages(body),
-        "P_TILE": P_TILE,
+        "P_TILE": STEP_TILE if case == "softmax" else EXP_TILE.get(body, P_TILE),
+        "EXP_A": f"{float(np.float32(EXP_A))!r}f",
         "SCALE_BITS": f"{bits(SCALE)}u",
         "INV_N_BITS": f"{bits(1.0 / (32 * WIDTH))}u",
         "EPS_BITS": f"{bits(EPS)}u",
     }
 
 
+def launch_attn(session, body, data):
+    """The per-core attention body (BODY 18, 19) on core (0, 0) over `data`."""
+    steps = len(data["kv"]) // (3 * (HEAD_TILES + VALUE_TILES))
+    columns = VALUE_TILES + (1 if BODIES[body][1] == "hand" else 0)
+    nonce = secrets.randbits(32) | 1
+    first = data["st_hand"] if BODIES[body][1] == "hand" else data["st"]
+
+    def bf16_tiles(words):  # fp32 tiles in face order as a bf16 tile tensor
+        tiles = words.view(np.float32)
+        return session.tensor(
+            np.concatenate([matrix_of(t[None]) for t in tiles]), "bfloat16", "tile"
+        )
+
+    tensors = [bf16_tiles(data["kv"]), bf16_tiles(data["q"])]
+    tensors += [session.tensor(first, "uint32"), bf16_tiles(data["ones"])]
+    t_out = session.tensor(np.zeros((columns + 1, TILE_WORDS), np.uint32), "uint32")
+    t_info = session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32")
+    core, page = [(0, 0, 0, 0)], 4 * TILE_WORDS
+    block = 3 * (HEAD_TILES + VALUE_TILES)
+    run = session.launch()
+    for cb, pages, dtype in (
+        (CB_KV, 2 * block, "bfloat16"),
+        (CB_Q, HEAD_TILES, "bfloat16"),
+        (CB_PROB, 6, "bfloat16"),
+        (CB_ST, 2, "float32"),
+        (CB_ONES, 1, "bfloat16"),
+        (CB_OUT, columns + 1, "float32"),
+        (CB_INFO, 1, "float32"),
+    ):
+        size = page if dtype == "float32" else page // 2
+        run.cb(core, cb, dtype, size, pages * size)
+    accessors = [w for t in tensors for w in t.accessor_args()]
+    words = [t.address for t in tensors] + [steps, block, HEAD_TILES]
+    run.kernel(
+        str(KERNELS / "attn_reader.cpp"), core, 1, accessors, [], [], [(0, 0, words)]
+    )
+    accessors = t_out.accessor_args() + t_info.accessor_args()
+    words = [t_out.address, t_info.address, columns + 1]
+    run.kernel(str(KERNELS / "writer.cpp"), core, 0, accessors, [], [], [(0, 0, words)])
+    defines = {
+        "BODY": body,
+        "HEAD_TILES": HEAD_TILES,
+        "VALUE_TILES": VALUE_TILES,
+        "STEP_THRESHOLD": f"{bits(639.0 + STEP_LAG)}u",
+        "EXP_A": f"{float(np.float32(EXP_A))!r}f",
+    }
+    options = {
+        "math_fidelity": ATTN_FIDELITY,
+        "fp32_dest_acc_en": True,
+        "unpack_to_dest_mode": {CB_ST: "UnpackToDestFp32"},
+    }
+    run.kernel(
+        str(KERNELS / "attention.cpp"),
+        core,
+        2,
+        [],
+        [(k, str(v)) for k, v in defines.items()],
+        [str(GENERATED), str(ATTENTION)],
+        [(0, 0, [nonce, steps])],
+        **km_session.compute_config(options),
+    )
+    return run, t_out, t_info, nonce
+
+
 def launch(session, body, data):
     """One program on core (0, 0) running BODY `body` over `data` (a, b, p: uint32
     words of fp32 tiles); returns (the Launch, the output, the info tensor, nonce)."""
     case, form = BODIES[body]
+    if case == "attn":
+        return launch_attn(session, body, data)
     defines = setting(body)
     unit_tiles = defines["UNIT_TILES"]
     count = len(data["a"]) // unit_tiles
     nonce = secrets.randbits(32) | 1
     keys = ("a", "b", "p_hand" if form == "hand" else "p")
     tensors = [session.tensor(data[k], "uint32") for k in keys]
-    t_out = session.tensor(np.zeros_like(data["a"]), "uint32")
+    out_tiles = count * (unit_tiles + defines["PACK_STATE"])
+    t_out = session.tensor(np.zeros((out_tiles, TILE_WORDS), np.uint32), "uint32")
     t_info = session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32")
     core = [(0, 0, 0, 0)]
     page = 4 * TILE_WORDS
@@ -199,7 +388,7 @@ def launch(session, body, data):
     run.cb(core, CB_SQUARES, "float32", page, page)
     run.cb(core, CB_SCALE, "float32", page, page)
     run.cb(core, CB_Y, "float32", page, 2 * unit_tiles * page)
-    run.cb(core, CB_OUT, "float32", page, 2 * unit_tiles * page)
+    run.cb(core, CB_OUT, "float32", page, 2 * (unit_tiles + 1) * page)
     run.cb(core, CB_INFO, "float32", page, page)
 
     def args(words):
@@ -210,14 +399,14 @@ def launch(session, body, data):
     words += [count, unit_tiles, INPUTS[case], defines["HAS_P"], int(body == 10)]
     run.kernel(str(KERNELS / "reader.cpp"), core, 1, accessors, [], [], args(words))
     accessors = t_out.accessor_args() + t_info.accessor_args()
-    words = [t_out.address, t_info.address, len(data["a"])]
+    words = [t_out.address, t_info.address, out_tiles]
     run.kernel(str(KERNELS / "writer.cpp"), core, 0, accessors, [], [], args(words))
     # Unpacked to Dst: the buffers copy_tile reads. Not the hand norm's P (the matrix
     # unit's operands: such a buffer unpacks Float32 into its source registers).
     unpack = {CB_A: "UnpackToDestFp32"}
     if defines["COPY_B"]:
         unpack[CB_B] = "UnpackToDestFp32"
-    if body == 11:
+    if body == 11 or body >= 12:
         unpack[CB_P] = "UnpackToDestFp32"
     options = {
         "math_fidelity": "HiFi4",
@@ -232,7 +421,7 @@ def launch(session, body, data):
         2,
         [],
         [(k, str(v)) for k, v in defines.items()],
-        [str(GENERATED)],
+        [str(GENERATED), str(ATTENTION)],
         args([nonce, count]),
         **km_session.compute_config(options),
     )
@@ -272,10 +461,175 @@ def p_tile(g):
     return out.reshape(1, TILE_WORDS)
 
 
+def state_tile(slots):
+    """The emitted step's state tile (fp32 words in face order) holding per-row
+    values `slots` ({k: 32 values}): slot k of row group (h, q) at Dst + 16 h + 4 q +
+    SLOT[k], lane l for row 16 h + 4 q + l / 8 (steps.py)."""
+    dst = np.zeros((64, 16), np.float32)
+    lanes = np.arange(32)
+    for k, values in slots.items():
+        for h in range(2):
+            for q in range(4):
+                address = 16 * h + 4 * q + SLOT[k]
+                rows = (address & ~3) + lanes // 8
+                cols = 2 * (lanes % 8) + (1 if address & 2 else 0)
+                dst[rows, cols] = np.asarray(values)[16 * h + 4 * q + lanes // 8]
+    return dst.reshape(1, TILE_WORDS)
+
+
+def state_slot(tile, k):
+    """(32 values of slot k, the largest spread among the 8 lanes of a row)."""
+    dst = tile.view(np.float32).reshape(64, 16).astype(np.float64)
+    lanes, out, spread = np.arange(32), np.zeros(32), 0.0
+    for h in range(2):
+        for q in range(4):
+            address = 16 * h + 4 * q + SLOT[k]
+            rows = (address & ~3) + lanes // 8
+            cols = 2 * (lanes % 8) + (1 if address & 2 else 0)
+            got = dst[rows, cols].reshape(4, 8)
+            out[16 * h + 4 * q : 16 * h + 4 * q + 4] = got[:, 0]
+            spread = max(spread, float(np.abs(got - got[:, :1]).max()))
+    return out, spread
+
+
+def bf16(values):
+    """fp32 values rounded to bf16 (nearest even), as fp32."""
+    u = np.asarray(values, np.float32).view(np.uint32).astype(np.uint64)
+    u = (u + 0x7FFF + ((u >> 16) & 1)) & 0xFFFF0000
+    return u.astype(np.uint32).view(np.float32)
+
+
+def attn_inputs(steps, seed):
+    """The query row, the steps' K and V blocks (pages in the hand body's order),
+    the ones tile (bf16 tiles as fp32 words) and the first state of each body."""
+    rng = np.random.default_rng(seed)
+    d = 32 * HEAD_TILES
+    q = bf16(rng.standard_normal((32, d)))
+    k = bf16(rng.standard_normal((96 * steps, d)))
+    v = bf16(rng.standard_normal((96 * steps, 32 * VALUE_TILES)))
+    pages = []
+    for s in range(steps):
+        keys = range(3 * s, 3 * s + 3)
+        pages += [
+            tiles_of(k[32 * j : 32 * j + 32])[h]
+            for h in range(HEAD_TILES)
+            for j in keys
+        ]
+        pages += [
+            tiles_of(v[32 * j : 32 * j + 32])[c]
+            for j in keys
+            for c in range(VALUE_TILES)
+        ]
+    first = state_tile({0: np.full(32, -1e4), 1: np.zeros(32), 2: np.zeros(32)})
+    return {
+        "kv": np.stack(pages).view(np.uint32),
+        "q": tiles_of(q).view(np.uint32),
+        "ones": np.ones((1, TILE_WORDS), np.float32).view(np.uint32),
+        "st": first.view(np.uint32),
+        "st_hand": np.zeros((1, TILE_WORDS), np.uint32),
+        "q64": q.astype(np.float64),
+        "k64": k.astype(np.float64),
+        "v64": v.astype(np.float64),
+    }
+
+
+def attn_reference(data):
+    """float64 softmax(q k^T / sqrt(d)) v of the row, and whether any row's lagging
+    reference moved after the first step (the bodies do not rescale O)."""
+    s = data["q64"] @ data["k64"].T * EXP_SCALE
+    p = np.exp(s - s.max(axis=1, keepdims=True))
+    o = p @ data["v64"] / p.sum(axis=1, keepdims=True)
+    a = s / EXP_SCALE * float(np.float32(EXP_A))
+    first = a[:, :96].max(axis=1)
+    moved = bool((a[:, 96:].max(axis=1, initial=-np.inf) > first + STEP_LAG).any())
+    return o, moved
+
+
+def attn_words(data, form):
+    """The outputs a correct body would give (build mode's made-up results)."""
+    o, _ = attn_reference(data)
+    tiles = list(tiles_of(o.astype(np.float32)))
+    if form == "hand":
+        tiles.append(np.ones(TILE_WORDS, np.float32))
+        tiles.append(np.zeros(TILE_WORDS, np.float32))
+    else:
+        tiles.append(state_tile({0: np.zeros(32), 1: np.ones(32)})[0])
+    return np.stack(tiles).astype(np.float32).view(np.uint32)
+
+
+def attn_estimates(costs):
+    """A step's estimate per unit: the emitted vector step's cost, the matrix unit's
+    words at one a cycle (6 or more Dst blocks rotating) and at 6 (none): the
+    rotation inside the library's own word order is not known (stated)."""
+    out = {"vector emitted": costs["softstep"]}
+    for name, words in ATTN_WORDS.items():
+        rotating = [("MVMUL", i % 8) for i in range(words)]
+        alone = [("MVMUL", 0)] * words
+        out[f"matrix {name}"] = [matrix_cost(rotating), matrix_cost(alone)]
+    return out
+
+
+def check_attn(data, outputs, infos, nonces):
+    """The record of the per-core body: per body its cycles a step (score products,
+    vector step, P V products, the step), O / l against float64, the verdict."""
+    ref, moved = attn_reference(data)
+    rec = {"case": "attn", "tolerance": ATTN_TOLERANCE, "rows_moved_later": moved}
+    for body, info in infos.items():
+        form = BODIES[body][1]
+        got = _cycles(info, nonces[body])
+        steps = min(int(info[UNITS]), MAX_UNITS)
+        for name, at in (("score", 64), ("vector", 256), ("pv", 320), ("step", LOOP)):
+            spans = [int(x) for x in info[at + 1 : at + steps]] or [int(info[at])]
+            # Only the vector step sits between two syncs; the products run from issue.
+            less = got.get("sync_span", 0) if name == "vector" else 0
+            got[name] = statistics.median(spans) - less
+        out = outputs[body].view(np.float32)
+        o = matrix_of(out[:VALUE_TILES]).astype(np.float64)
+        if form == "hand":
+            l_row = matrix_of(out[VALUE_TILES : VALUE_TILES + 1])[:, 0].astype(float)
+        else:
+            l_row, _ = state_slot(outputs[body][VALUE_TILES], 1)
+        y = o / l_row[:, None]
+        err = np.abs(y - ref).max(axis=1) / np.abs(ref).max(axis=1)
+        got["o_error"], got["not_finite"] = float(err.max()), int(
+            (~np.isfinite(y)).sum()
+        )
+        got["ok"] = (
+            got["nonce_ok"]
+            and int(info[ERROR]) == 0
+            and not got["not_finite"]
+            and got["o_error"] <= ATTN_TOLERANCE
+            and not moved
+        )
+        rec[form] = got
+    return rec
+
+
 def inputs_of(case, count, seed):
     """{a, b, p} uint32 words of fp32 tiles for `count` units and float64 inputs."""
+    if case == "attn":
+        return attn_inputs(count, seed)
     rng = np.random.default_rng(seed)
     one = np.zeros((1, TILE_WORDS), np.float32)
+    if case == "softmax":
+        # Scores; even units: one large score in row 0 (rows 0-3 move by more than
+        # the lag), odd units: small scores (no row moves). l: positive sums.
+        s = (rng.standard_normal((count, 32, 32 * STEP_WIDTH)) * 8).astype(np.float32)
+        s[0::2, 0, 0] = 40.0
+        s[1::2] *= np.float32(0.1)
+        m = np.where(np.arange(32) < 4, -13.0, 8.0)
+        l_old = rng.uniform(1, 5, 32).astype(np.float32).astype(np.float64)
+        a = np.concatenate([tiles_of(s[u]) for u in range(count)])
+        hand = tiles_of(np.broadcast_to((639.0 - m)[:, None], (32, 32)))
+        return {
+            "a": a.view(np.uint32),
+            "b": one.view(np.uint32),
+            "p": state_tile({0: m, 1: l_old}).view(np.uint32),
+            "p_hand": hand.astype(np.float32).view(np.uint32),
+            "s": s,
+            "m": m,
+            "l": l_old,
+        }
     if case == "norm":
         x = rng.standard_normal((count * 32, 32 * WIDTH)).astype(np.float32)
         x[:32] *= 100.0  # one row of tiles with large values
@@ -293,6 +647,21 @@ def inputs_of(case, count, seed):
             "x": x,
             "g": g,
         }
+    if case == "exp":
+        # Scores; m each row's max over every unit (the state tile is one page).
+        s = (rng.standard_normal((count * 32, 32)) * 8).astype(np.float32)
+        m = s.reshape(count, 32, 32).max(axis=(0, 2)).astype(np.float64)
+        a = np.concatenate([tiles_of(s[32 * u : 32 * u + 32]) for u in range(count)])
+        lanes = np.ones((1, 32))
+        state = (EXP_SCALE * m)[:, None] * lanes
+        bias = (639 - np.float32(EXP_A) * m)[:, None] * lanes
+        return {
+            "a": a.view(np.uint32),
+            "b": one.view(np.uint32),
+            "p": tiles_of(state.astype(np.float32)).view(np.uint32),
+            "p_hand": tiles_of(bias.astype(np.float32)).view(np.uint32),
+            "m": m,
+        }
     a = (rng.standard_normal((count, TILE_WORDS)) * 8).astype(np.float32)
     if count > 1:
         e = rng.uniform(-40, 40, TILE_WORDS)
@@ -302,6 +671,114 @@ def inputs_of(case, count, seed):
         b = one
     p = one.view(np.uint32)
     return {"a": a.view(np.uint32), "b": b.view(np.uint32), "p": p, "p_hand": p}
+
+
+def softmax_reference(data):
+    """float64 of the step per unit: P [32, 96], m, l, alpha [32], the word."""
+    x = data["s"].astype(np.float64) * float(np.float32(EXP_A))
+    m_old = data["m"][None, :]
+    r = x.max(axis=2)
+    m_new = np.where(r > m_old + STEP_LAG, r, m_old)
+    alpha = np.exp2(m_old - m_new)
+    p = np.exp2(x - m_new[:, :, None])
+    l_new = alpha * data["l"][None, :] + p.sum(axis=2)
+    return {
+        "p": p,
+        "m": m_new,
+        "l": l_new,
+        "alpha": alpha,
+        "word": (m_new - m_old).max(1),
+    }
+
+
+def softmax_words(data, form):
+    """The outputs a correct body would give (build mode's made-up results)."""
+    ref = softmax_reference(data)
+    out = []
+    for u in range(len(data["s"])):
+        out.append(tiles_of(ref["p"][u].astype(np.float32)))
+        if form == "hand":
+            v = np.broadcast_to((639.0 - ref["m"][u])[:, None], (32, 32))
+            st = tiles_of(v.astype(np.float32))
+            st[0, 257] = np.float32(ref["word"][u] > 0)
+        else:
+            st = state_tile({0: ref["m"][u], 1: ref["l"][u], 2: ref["alpha"][u]})
+            st[0, WORD] = ref["word"][u]
+        out.append(st)
+    return np.concatenate(out).astype(np.float32).view(np.uint32)
+
+
+def _rel(got, ref):
+    """Max relative error of float64 `got` against `ref` (|ref| > 1e-30), and the
+    count of non-finite values."""
+    keep = np.abs(ref) > 1e-30
+    rel = np.abs(got[keep] - ref[keep]) / np.abs(ref[keep])
+    return float(rel.max()) if rel.size else 0.0, int((~np.isfinite(got)).sum())
+
+
+def check_softmax(data, outputs, infos, nonces):
+    """The record of the step: per body its cycles, P and m against float64, the
+    emitted body's l, alpha and word too, the hand body's flag; the verdict."""
+    ref = softmax_reference(data)
+    rec = {"case": "softmax", "tolerance": STEP_TOLERANCE}
+    count = len(data["s"])
+    for body, info in infos.items():
+        form = BODIES[body][1]
+        got = _cycles(info, nonces[body])
+        out = outputs[body].reshape(count, STEP_WIDTH + 1, TILE_WORDS)
+        p = np.stack(
+            [matrix_of(out[u, :STEP_WIDTH].view(np.float32)) for u in range(count)]
+        ).astype(np.float64)
+        errs, bad = {}, 0
+        errs["p"], bad = _rel(p, ref["p"])
+        if form == "hand":
+            st = np.stack(
+                [matrix_of(out[u, -1:].view(np.float32)) for u in range(count)]
+            )
+            m = 639.0 - st[:, :, 0].astype(np.float64)
+            flag = out[:, -1].view(np.float32)[:, 257]
+            errs["m_abs"] = float(np.abs(m - ref["m"]).max())
+            got["flag_ok"] = bool(np.array_equal(flag > 0, ref["word"] > 0))
+        else:
+            slots = [
+                [state_slot(out[u, -1], k) for k in range(3)] for u in range(count)
+            ]
+            spread = max(sp for row in slots for _, sp in row)
+            m, l_new, alpha = (np.stack([row[k][0] for row in slots]) for k in range(3))
+            errs["m"], _ = _rel(m, ref["m"])
+            errs["l"], _ = _rel(l_new, ref["l"])
+            errs["alpha"], _ = _rel(alpha, ref["alpha"])
+            word = out[:, -1].view(np.float32)[:, WORD].astype(np.float64)
+            got["word_ok"] = bool(np.array_equal(word > 0, ref["word"] > 0))
+            got["word_rel"], _ = _rel(word, ref["word"])
+            got["lane_spread"] = spread
+        got["errors"], got["not_finite"] = errs, bad
+        within = all(v <= STEP_TOLERANCE[k] for k, v in errs.items())
+        flags = got.get("flag_ok", True) and got.get("word_ok", True)
+        got["ok"] = (
+            got["nonce_ok"] and got["error"] == 0 and not bad and within and flags
+        )
+        rec[form] = got
+    return rec
+
+
+def _cycles(info, nonce):
+    """The nonce, error word and cycles (body, unit) of one body's info page."""
+    got = {"nonce_ok": int(info[NONCE]) == nonce, "error": int(info[ERROR])}
+    n = min(int(info[UNITS]), MAX_UNITS)
+    if n:
+        sync = statistics.median(int(v) for v in info[SYNC : SYNC + SYNCS])
+        spans = [int(v) for v in info[BODY : BODY + n]]
+        loops = [int(v) for v in info[LOOP : LOOP + n]]
+        got["sync_span"] = sync
+        got["body"] = {
+            "min": min(spans),
+            "median": statistics.median(spans),
+            "max": max(spans),
+            "less_sync": statistics.median(spans) - sync,
+        }
+        got["unit_median"] = statistics.median(loops[1:] or loops)
+    return got
 
 
 def reference(case, data):
@@ -317,6 +794,9 @@ def reference(case, data):
             return a * float(np.float32(SCALE))
         if case == "gate":
             return a / (1 + np.exp(-a)) * b
+    if case == "exp":
+        shift = tiles_of(np.broadcast_to(data["m"][:, None], (32, 32)))
+        return np.exp(EXP_SCALE * (a - shift))
     x, g = data["x"].astype(np.float64), data["g"].astype(np.float64)
     y = x / np.sqrt((x * x).mean(axis=1, keepdims=True) + EPS) * g
     count = len(x) // 32
@@ -335,31 +815,27 @@ def errors(out, ref):
 def check(case, data, outputs, infos, nonces):
     """The record of one case: per body its nonce, error word, cycles of the body
     and of the whole unit, its error against float64 and the verdict."""
+    if case == "softmax":
+        return check_softmax(data, outputs, infos, nonces)
+    if case == "attn":
+        return check_attn(data, outputs, infos, nonces)
     ref = reference(case, data)
     rec = {"case": case, "tolerance": TOLERANCE[case]}
     hand = None
     for body, info in infos.items():
         form = BODIES[body][1]
-        got = {"nonce_ok": int(info[NONCE]) == nonces[body], "error": int(info[ERROR])}
-        n = min(int(info[UNITS]), MAX_UNITS)
-        if n:
-            sync = statistics.median(int(v) for v in info[SYNC : SYNC + SYNCS])
-            spans = [int(v) for v in info[BODY : BODY + n]]
-            loops = [int(v) for v in info[LOOP : LOOP + n]]
-            got["sync_span"] = sync
-            got["body"] = {
-                "min": min(spans),
-                "median": statistics.median(spans),
-                "max": max(spans),
-                "less_sync": statistics.median(spans) - sync,
-            }
-            got["unit_median"] = statistics.median(loops[1:] or loops)
+        got = _cycles(info, nonces[body])
         got["vs_float64"] = errors(outputs[body], ref)
+        bound = TOLERANCE[case]
+        if form == "hand":
+            bound = HAND_TOLERANCE.get(case, bound)
+        elif form == "stated":
+            bound = STATED_TOLERANCE[case]
         got["ok"] = (
             got["nonce_ok"]
             and got["error"] == 0
             and got["vs_float64"]["not_finite"] == 0
-            and got["vs_float64"]["max"] <= TOLERANCE[case]
+            and got["vs_float64"]["max"] <= bound
         )
         if form == "hand":
             hand = outputs[body]
@@ -396,9 +872,14 @@ def build(args):
             log(f"built {case} {form}: kernel buffer {got.total} of {got.limit} B")
     for case in args.cases:
         data = inputs_of(case, args.units, args.seed)
-        ref = reference(case, data).astype(np.float32).view(np.uint32)
+        if case not in ("softmax", "attn"):
+            ref = reference(case, data).astype(np.float32).view(np.uint32)
         outputs, infos, nonces = {}, {}, {}
         for body in bodies_of([case]):
+            if case == "softmax":
+                ref = softmax_words(data, BODIES[body][1])
+            if case == "attn":
+                ref = attn_words(data, BODIES[body][1])
             info = np.zeros(TILE_WORDS, np.uint32)
             info[NONCE], info[UNITS] = 7, args.units
             info[SYNC : SYNC + SYNCS] = 10
@@ -412,7 +893,7 @@ def build(args):
 
 def card(args):
     """One core: each body of `args.cases` over the same inputs; values, cycles."""
-    costs = generate()
+    costs = generated_costs()
     with open("/proc/loadavg") as f:
         load = f.read().split()[:3]
     started = time.time()
@@ -425,21 +906,24 @@ def card(args):
             for body in bodies_of([case], card=True):
                 if args.forms and BODIES[body][1] not in args.forms:
                     continue
+                if args.bodies and body not in args.bodies:
+                    continue
                 run, t_out, t_info, nonce = launch(session, body, data)
                 log(f"launch {case} {BODIES[body][1]}")
                 run.run()
                 session.device.finish()
                 log(f"done {case} {BODIES[body][1]}; reading back")
-                outputs[body] = t_out.read().reshape(data["a"].shape).copy()
+                outputs[body] = t_out.read().reshape(-1, TILE_WORDS).copy()
                 infos[body] = t_info.read().reshape(-1).copy()
                 nonces[body] = nonce
                 clock.append(aiclk_mhz())
             rec = check(case, data, outputs, infos, nonces)
             saved.update({f"{case}_{BODIES[b][1]}": out for b, out in outputs.items()})
             saved.update({f"{case}_input_{k}": v for k, v in data.items()})
-            rec["estimates"] = {
-                k: v for k, v in costs.items() if k.split("_")[0] == case
-            }
+            unit = {"softmax": "softstep"}.get(case, case)
+            rec["estimates"] = {k: v for k, v in costs.items() if k.startswith(unit)}
+            if case == "attn":
+                rec["estimates"] = attn_estimates(costs)
             log(json.dumps(rec))
             records.append(rec)
     if args.save:
@@ -449,7 +933,7 @@ def card(args):
     clean = all(
         r[form]["nonce_ok"] and r[form]["error"] == 0
         for r in records
-        for form in ("hand", "emitted", "macro")
+        for form in FORMS
         if form in r
     )
     return 0 if clean else 1
@@ -463,6 +947,9 @@ def main():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--save", help="card: the outputs and inputs into this .npz file")
     p.add_argument("--forms", nargs="+", help="card: only these forms (hand, ...)")
+    p.add_argument(
+        "--bodies", nargs="+", type=int, help="card: only these BODY numbers"
+    )
     args = p.parse_args()
     if not 1 <= args.units <= MAX_UNITS:
         p.error(f"--units is 1 .. {MAX_UNITS}")
