@@ -213,7 +213,9 @@ by +0.3 / -0.1 / +0.2 us, inside the run-to-run spread) and 288 bytes of kernel 
 the header set from the record and the next word's row masked off, at every place a
 record's command or its next address is read, in all five kernels. With the chain's
 stamps compiled in (`KM_CHAIN_STAMPS`) the decode kernels are 90,240 bytes, 128 over
-their 90,112: that build needs a larger kernel buffer than it has.
+88 K (90,112), so the stamped build alone takes a 92 K kernel buffer (94,208 B); its
+L1 still fits with the plans of T 4096 to 256, 112 bytes left. The plain build keeps
+84 K.
 
 ## A handler as an overlay
 
