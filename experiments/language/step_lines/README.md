@@ -46,3 +46,39 @@ The same products in the same order give the same words: the block's form change
 where W comes from, not the sums. `down` reads W once a column (8 x 4 tiles) where
 `streams` reads it on every core. `window` casts twice the tiles and multiplies half
 of them. Its time is not split by term: no part was run.
+
+## A step function on DST sums: a row softmax
+
+Question: does `pages.write(f(acc, self.state[r]))`, f a tile function in the step form,
+carry a row's reference and sum through a state tile in L1 from one chunk to the
+next, and give the softmax float64 gives?
+
+`row_softmax.py` computes Z = X W on 12 cores, each core's 32 rows in C = 4 chunks of
+N = 2 tiles (K = 8 tiles, X normal and W normal x 3 / sqrt(K x 32), both bfloat16). Each
+chunk's step is `softmax_step` (classes.md): x = Z log2 e, m = max(m, the row's max),
+P = 2^(x - m) written, l = 2^(m_old - m) l + the row's sum of P. The state starts as a
+tile of zeros (m = 0, l = 0: the reference only has to bound each chunk), and is
+written after the last chunk. The host takes m and l from the state tile's slots
+(`state_slot` of tile_rules) and checks P against 2^(x - m_c), m and l against float64,
+and P 2^(m_c - m) / l against the softmax.
+
+| | Card (5 commands) |
+|---|---|
+| P, relative RMS / largest error | 1.79e-3 / 5.8e-3 |
+| m, largest error (log2 units) | 4.8e-3 |
+| l, largest relative error | 6.7e-3 |
+| softmax, largest error | 5.7e-3 |
+| a state's 8 lanes of a row, largest spread | 1.4e-6 |
+| time a command | 20.5 to 21.4 us |
+
+Kernel text (mock): 52,352 B.
+
+The products carry 3e-4 of relative error (the broadcast product's proof above
+measured the same), so m is off by up to 4.8e-3 in log2 units. That moves each
+probability by up to 2^0.0048 - 1 = 3.3e-3, and the exp template adds up to 1.75e-3:
+together the l and softmax errors. The first card run gave l up to 11 times too large:
+the step form had inlined alpha = exp2(m_old - m_new) into l's level, which reloaded
+slot 0 after m's store, so alpha was 1. A model with alpha = 1 gives that run's l
+(10.07 against the card's 10.09) and softmax (0.7641 against 0.7643). The step form now
+keeps such a value in a free slot (tile.md); tile_rules' step units are emitted
+unchanged.

@@ -459,6 +459,7 @@ and 9.42 µs loaded at the start; the gate 22.84 µs before the add, 22.40 after
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
+| `pages.write(g(acc, self.s[r]))`, g a step function, `self.s` an fp32 field of states | as `pages.write(acc)`; `t.pages(first, n).write(self.s)`: mover B a page at a time | the token taken, state r copied into DST after acc, g's body, the row packed, the state packed into page r and the token pushed (A step function on DST sums) |
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
 | `y.tiles[r0:r1, c0:c1].write(gate(self.h, self.g))`, gate a tile function, h and g fields of sums of one shape | as the field's write | tile by tile each field's tile copied into the DST tile of its operand, gate's body on the math CPU, DST 0 packed into Y's format; both fields freed, both counts reset |
@@ -1144,6 +1145,42 @@ against one: 83.70 us a command against 86.68, the hand program's 76.24. A tile 
 for the copies into DST, the acquire and the pack. What is left of the difference is
 the body: the emitted silu and product in float32 on the vector unit against the hand
 program's library silu and its product by b on the matrix unit, which copies no b.
+
+### A step function on DST sums
+
+A tile function of two parameters, a row and its state, that returns the row and the
+state's per-row values, `return p, (m, l)` (or a third, `km.word_max(...)`'s word), is
+traced in the tile compiler's step form ([tile](tile.md)). Written as
+`pages.write(f(acc, self.s[r]))`, acc DST sums of 1 to 3 tiles and self.s a float32
+field of states (`km.L1[km.fp32, n, 32, 32]`, a state tile a page, filled before the
+first step), state r is copied into the DST tile after the row, f's body runs on the
+row and the state in place, the row is written as `pages.write(acc)` writes it and
+the state is packed back into page r. A token buffer orders a state's pack before the
+next step's copy: pack pushes after each state and unpack takes before the next; one
+is pushed at the handler's start and the last taken at its end.
+`t.pages(first, n).write(self.s)` writes the states after the last step. A word index
+r is checked at run time (a give-up past n). The step's row sums stay on the vector
+unit (`step_program(..., matrix_sum=False)`: a class makes no products with a tile of
+ones). From [step lines](../../experiments/language/step_lines/README.md), a row
+softmax over chunks of a product:
+
+```python
+@km.tile_function
+def softmax_step(row, state):
+    x = row * LOG2E
+    m_old, l_old = state[0], state[1]
+    m_new = km.lagging_max(m_old, km.reduce_max(x, exact=True), 0.0)
+    alpha = km.exp2(m_old - m_new, error=2e-3, over=(-math.inf, 0.0))
+    p = km.exp2(x - m_new.col(), error=2e-3, over=(-math.inf, 0.0))
+    l_new = alpha * l_old + km.reduce_sum(p, exact=True)
+    return p, (m_new, l_new)
+```
+
+`p.pages(self.rank * C * N + c * N, N).write(softmax_step(acc, self.state[0]))` in a
+loop over C chunks, acc the chunk's sums. Refused at the line: a row past 3 tiles or
+not from DST 0, a field not filled above in the handler, a field not of float32
+pages, a constant index past its pages, and a function that does not return the row
+and its state.
 
 ## Products
 
