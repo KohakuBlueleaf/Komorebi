@@ -2058,7 +2058,9 @@ namespace {
                 work_cmds &&
                 (
                     work_cmds % 64 != 0 || work_cmds < KMD_LIM_BYTES ||
-                    base_ + work_cmds + work_bytes > tile_->available_lim().end
+                    base_ > tile_->available_lim().end ||
+                    work_cmds > tile_->available_lim().end - base_ ||
+                    work_bytes > tile_->available_lim().end - base_ - work_cmds
                 )
             ) {
                 throw std::runtime_error("the work ring's lines are not inside LIM");
@@ -2637,7 +2639,8 @@ namespace {
             Work& cluster_state = work(cluster, true);
             if (
                 offset % 64 != 0 || data.size() % 64 != 0 ||
-                offset + data.size() > cluster_state.bytes
+                data.size() > cluster_state.bytes ||
+                offset > cluster_state.bytes - data.size()
             ) {
                 throw std::runtime_error("LIM writes are whole lines inside the area");
             }
@@ -2649,7 +2652,10 @@ namespace {
 
         nb::bytes work_read(uint32_t cluster, uint64_t offset, uint64_t n) const {
             const Work& cluster_state = work(cluster, true);
-            if (offset % 4 != 0 || n % 4 != 0 || offset + n > cluster_state.bytes) {
+            if (
+                offset % 4 != 0 || n % 4 != 0 || n > cluster_state.bytes ||
+                offset > cluster_state.bytes - n
+            ) {
                 throw std::runtime_error("LIM reads are whole words inside the area");
             }
             const auto got = (
