@@ -600,9 +600,12 @@ The giver writes the taking body's words into one 64 B page of a buffer of its o
 (`kHandover`) and pushes it before the taker's place; the taker waits for the page,
 gets the words by name and frees the page after its body. The build's report names
 each: `hand-over: count, line 16: pages from mover A to mover B by the hand-over
-buffer`. Refused: more than 16 words of the other mover in one body (the most a page
-holds), words of both movers handed into one body, and a taker with no `on=` (a word
-of a mover taken on compute).
+buffer`. Its cost is one 64 B page of that added buffer, and the taker waits for the
+giver: mover B's body does not start before mover A has pushed the page. A word given
+and taken on the same mover is the plain take, with no hand-over. Refused: more than
+16 words of the other mover in one body (the most a page holds), words of both movers
+handed into one body, a giver or a taker with no `on=` (a compute word taken on a
+mover, or a mover's word taken on compute).
 
 ### A stream compute fills and a mover drains
 
