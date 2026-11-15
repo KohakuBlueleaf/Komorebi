@@ -92,7 +92,7 @@ reading of them. The thread is stage 7's, as one command a token.
 | the next record's input read, to its first chunk in compute | 7.7 | HARDWARE about 2.4, the rest OURS |
 | its first chunk's product | 2.4 | HARDWARE 1.6 |
 | the thread: one submit and wait a token, the records once a job | 1.0 | OURS |
-| the medians' overlap (pieces partly under one another) | -4.1 | |
+| the remainder: the terms above are medians of pieces that partly run under one another, so their sum is 4.1 over the measured layer; not measured on its own | -4.1 | |
 | **a layer** | **315.2** | |
 
 ## What is left, and why
