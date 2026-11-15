@@ -8,9 +8,9 @@ tags:
 
 # Programs written as classes
 
-Status: experimental. The lines of this page are those of level 1; six example scripts
-run as classes beside their hand programs, on one Blackhole card and on two
-([below](#measured)).
+Status: experimental. The lines of this page are those of levels 1 and 2 (tile
+functions); the scripts [below](#measured) run as classes beside their hand programs
+or the tile compiler's measurements, on one Blackhole card and on two.
 
 A class deriving `km.Program` whose methods are decorated with `km.handler` is a
 program written as a class. Made, it is compiled: each handler's body is read with
@@ -113,10 +113,12 @@ words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, 
 | `w = km.cxx(..., gives=int)` | `uint32_t w = 0;` then the body, which sets it | the same |
 | `t = km.cxx(..., gives=km.Tile)` | | `tile_regs_acquire()` then the body, which leaves the tile in DST 0 |
 | `self.f.fill(km.Stream(t.pages(first, n)))` | mover A: `reserve` of the field, `km::read_pages` of its n tiles, the barrier, `cb_push_back` | |
+| `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
 the group's size and its rank 0; `self.x` and `self.y` its column and row in the
-rectangle.
+rectangle; `self.core` its place in the grid, whatever the group (`me()` of the
+runtime).
 
 A broadcast's rectangle is fixed at load (a program argument), and `Run.submit`
 refuses a broadcast's command whose group is not the rectangle's, naming the
@@ -154,6 +156,111 @@ owner); a broadcast's buffer `window` blocks of the pages it casts. Buffer indic
 are the runtime's. Compute's tiles are in DST as float32; a float32 buffer is unpacked
 to it unrounded.
 
+## Tile functions
+
+A **tile function** is a Python function of tiles that the tile compiler
+([Tile functions](tile.md)) traces and emits for compute: decorated with
+`@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
+called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
+stream form: `+`, `-`, `*`, number constants, `trace.silu`, `trace.sigmoid`,
+`trace.rsqrt`, `trace.exp` (`error=`, `over=`) of up to three tiles, one result. From
+[22 gate](../../examples/22_gate/as_class/gate_class.py):
+
+```python
+@km.tile_function(tolerance=TOLERANCE)
+def silu_gate(a, b):
+    """The gate of two tiles: what the tile compiler emits for compute."""
+    return trace.silu(a) * b
+
+
+class Gate(km.Program):
+    """gate: each core's `tiles` pages of a and b from rank x tiles, silu(a) * b into
+    the same pages of out, block by block in the command's pattern."""
+
+    @km.handler
+    def gate(
+        self,
+        a: km.Tensor,
+        b: km.Tensor,
+        out: km.Tensor,
+        tiles: int,
+        pattern: km.Pattern,
+    ):
+        first = self.rank * tiles
+        results = km.Stream(
+            out.pages(first, tiles), write=True, block=BLOCK, pattern=pattern
+        )
+        for x, g in zip(
+            km.Stream(a.pages(first, tiles), block=BLOCK, pattern=pattern),
+            km.Stream(b.pages(first, tiles), block=BLOCK, pattern=pattern),
+        ):
+            results.push(silu_gate(x, g))
+```
+
+| Line | Movers | Compute |
+|---|---|---|
+| `for x, g in zip(km.Stream(...), km.Stream(...)):` | the read streams in one `movement.move` with the write streams the loop pushes to | block k of each stream from the half its mover filled; the streams have one count, block and repeat |
+| `results.push(f(x, g))`, `t = f(x, g)` | | once before the blocks `copy_init` and the body's setup (`km_tile::f_init()`); a tile: DST held, each operand copied into DST in the order of the unit program's operands, `km_tile::f(0)` on the math CPU, DST 0 packed into the write stream at the tile's place |
+| `for row in km.Stream(pages, block=4, row=2):` | one read stream, as without `row=` | each item a row of 2 tiles of the block; the block a multiple of the row |
+| `results.push(self.f(row, self.w))`, `self.w` a field | | the row form: the field filled above the loop waited for before its blocks and freed after them; a row: its tiles copied into DST 0 and 1, the field's tile into DST 4, `km_tile::f(0)`, DST 0 and 1 packed; DST in full-sync mode |
+
+A function called on a row of a stream of `row=` tiles is traced in the tile
+compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows of the
+streams, its last the fields it holds as resident rows, and its arithmetic the row
+form's, the sum of a row (`trace.reduce_sum`) and a value a row (`.col()`) or a column
+(`.row()`) among it. From
+[tile rules](../../experiments/tile_rules/as_class/norm_class.py), the row norm:
+
+```python
+class RowNorm(km.Program):
+    """norm: each core's `rows` rows of WIDTH tiles of x from rank x rows, y = x
+    rsqrt(mean(x^2) + eps) g into the same pages of out; g's tile filled from w."""
+
+    weight: km.L1[km.fp32, 1, 32, 32]
+
+    @km.tile_function(tolerance=TOLERANCE)
+    def norm(row, weight):
+        ms = trace.reduce_sum(row * row, exact=True) * (1.0 / (32 * WIDTH))
+        r = trace.rsqrt(ms + rules.EPS)
+        return row * r.col() * weight.row()
+
+    @km.handler(stamps="stamps")
+    def norm_rows(
+        self, x: km.Tensor, w: km.Tensor, out: km.Tensor, stamps: km.Tensor, rows: int
+    ):
+        first = self.rank * rows * WIDTH
+        self.weight.fill(km.Stream(w.pages(0, 1)))
+        results = km.Stream(out.pages(first, rows * WIDTH), write=True, block=BLOCK)
+        for row in km.Stream(x.pages(first, rows * WIDTH), block=BLOCK, row=WIDTH):
+            results.push(self.norm(row, self.weight))
+```
+
+The weight's tile is the row form's per-column operand, laid out by the host
+(`p_tile` of [rules.py](../../experiments/tile_rules/rules.py)): the tile compiler's
+row form reads it so.
+
+The build traces the function on tiles of the streams' formats (`unit_program(ir,
+load_macro=True)`), writes the body as `tile_<f>.hpp` and its unit program as text,
+`tile_<f>.txt`, and prints its cost beside the buffers: the instructions and cycles a
+tile on the math CPU by the cost model (the vector unit only, the copies and the pack
+not priced), the rules that fired, and the tolerance the decorator states
+(`tolerance=`, the largest relative error against float64). A loop that calls a tile
+function holds no other tile line: the body's setup holds the vector unit's constant
+registers for the loop.
+
+`@km.handler(stamps="t")` on a handler that calls a tile function makes the math CPU
+read the wall clock around each call between two `tensix_sync()`, as the tile
+compiler's measurements do, and writes page `rank` of `t` (uint32 pages of 19 words or
+more): the command's sequence, the calls, 16 empty spans, then each call's span. From
+the same example on the card: 768 calls, a median span of 1,606 cycles less the empty
+span of 10, 1,596 cycles a tile, against the 1,597.6 the build prints. In the row form
+the cost and the span are a row's.
+
+What the tile compiler does not lower is refused, naming the handler's line, the
+function and the compiler's sentence, with "write this body inline: km.cxx(...,
+gives=km.Tile)". A matrix product `a @ b` in a tile function is refused: the tile
+compiler has no lowering of one yet.
+
 ## Fields
 
 A field is declared on the class with its format and shape; a symbol of the shape is
@@ -165,6 +272,23 @@ the fields and the buffers fit `l1`, and the report prints it.
 A field is filled from a stream of a page range, of its own tiles' count, and one
 `km.cxx` body in the same block takes it; every core that fills it frees it. `@`,
 slices and `.columns` of a field are level 2.
+
+A field of fewer than 1,024 `km.u32` words, `km.L1[km.u32, n]`, is words the host
+reads after the run: the class is made with a tensor of the field's name, one row of
+at least n words in each core's L1 (`shard_grid`), whose address is compute's program
+argument. A line sets a word, `self.f[i] = x` or `self.f[i] += x`, and is the unpack
+CPU's alone (one write, not one a compute CPU); its value may read the field's words,
+and no other line reads them. From
+[14 message handlers](../../examples/14_message_handlers/as_class/handlers_class.py):
+
+```python
+totals = session.tensor(np.zeros((cores, WORDS), np.uint32), "uint32", shard_grid=grid)
+program = MessageHandlers(totals=totals, log=log).dynamic(
+    "lookup", "value", "report", **hand.options(args)
+)
+```
+
+and after the run `totals.read()`, a row a core.
 
 ## Overlays
 
@@ -196,8 +320,7 @@ A broadcast's handler is resident.
 A handler with `for message in self.arrive():` is [dynamic](dynamic.md): its lines are
 compute's alone and the runtime's movers carry its messages (`messages_reader.cpp`,
 `messages_writer.cpp`); the program is made dynamic as any program is, with
-`.dynamic(name, **options)`. A class has at most one dynamic handler, and a move in one
-is refused. A message is a class deriving `km.Message` whose int annotations are its
+`.dynamic(name, **options)`. A move in a dynamic handler is refused. A message is a class deriving `km.Message` whose int annotations are its
 words, 1 up (word 0 is the runtime's). From
 [05 forward](../../examples/05_forward/as_class/forward_class.py):
 
@@ -245,6 +368,43 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 | `message.state`, `message.sum += x` | the message's word |
 | `self.forward(rank, message)` | `messages.forward(rank, message)` |
 | `self.consume()` | `messages.consume()` |
+
+A class may have several dynamic handlers. One, the RUN command's (the program's
+`.dynamic(name, ...)` names it first), has lines besides its loop: the seeding, a
+word field's zeroing; each other is its loop alone, no words. Their loops are one
+loop: each message is taken by the loop of the handler it names, and
+`self.forward(rank, message, to=Class.handler)` (or `self.send(..., to=)`) names the
+handler at the rank it goes to; without `to=` a message keeps its handler (a seed:
+the RUN command's). From
+[14 message handlers](../../examples/14_message_handlers/as_class/handlers_class.py):
+
+```python
+@km.handler
+def value(self):
+    for message in self.arrive():
+        self.totals[VALUES] += 1
+        message.sum += message.value
+        message.steps -= 1
+        if message.steps != 0:
+            key = message.value ^ 0x85EBCA6B  # the next key
+            key ^= key >> 16
+            key *= 0x7FEB352D
+            key ^= key >> 15
+            key *= 0x846CA68B
+            key ^= key >> 16
+            message.key = key
+            owner = key % self.size
+            self.totals[OWN] += owner == self.rank
+            self.forward(owner, message, to=MessageHandlers.lookup)
+        else:
+            self.totals[OWN] += message.origin == self.rank
+            self.forward(message.origin, message, to=MessageHandlers.report)
+```
+
+| Line | Compute |
+|---|---|
+| the loops of `lookup`, `value`, `report` | one loop; a message's case by `messages.handler()`: `case kHandlerValue:` and the loop's lines; a message of no handler of the class consumed |
+| `self.forward(rank, message, to=MessageHandlers.lookup)` | `messages.forward(rank, message, kHandlerLookup)` |
 
 In a dynamic handler `self.rank` and `self.size` are the message loop's
 (`messages.rank()`, `messages.count()`): the group without its counter tiles. A core's
@@ -298,6 +458,7 @@ made, naming the handler, the line and what to write instead (the classes of
 Sliced.copy, line 30, `km.Stream(source[1:4]).drain()`: a tensor is in DRAM: a slice is not a value; take a part: source[self.partition(...)], or use a stream or read()
 Unled.merge, line 40, `output.pages(0, 1).write(whole)`: whole is the reduce's sum, which only the leader holds; write it under `if self.rank == self.leader:`
 Unsolved.count, line 45, `count: km.L1[km.fp32, TILES, 32, 32]`: TILES is solved against the L1 the buffers leave; make the program with l1=session.l1()[1]
+Product.multiply, line 89, `results.push(product(x, y))`: the tile function product, line 81, has a matrix product (`@`), and the tile compiler has no lowering of one yet; make the product in a km.cxx body (gives=km.Tile) until it has
 ```
 
 A `CommandTimeout` of a program made from a class names, for each core that did not
@@ -320,12 +481,16 @@ the packed text of the five CPUs, of 70,656 B.
 | [07 work cluster](../../examples/07_work_cluster/as_class/README.md) | the same: 204 rounds, sum 1,004,917, every state word | 21,200 / 21,424 B (mock) | the thread's loop 10.55 / 10.75 ms |
 | [11 movement](../../examples/11_movement/as_class/README.md) | the same: every copy exact (level 1a) | 38,288 / 36,720 B | READ AAAB 308.74 / 310.44 GB/s (level 1a) |
 | [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
+| [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,536 / 38,640 B | 86.68 / 76.06 us a command (bfloat16, 12 cores, 64 tiles a core, the tile compiler's first body); the emitted body 1,596 cycles a tile on the math CPU, 1,597.6 printed (the first body 1,656, 1,657.6 printed; the hand body 1,901.5 in the one-core harness) |
+| [14 message handlers](../../examples/14_message_handlers/as_class/README.md) | the same: exact in 3 of 3 runs, 1,013,360 messages of three handlers | 42,640 / 43,568 B (mock) | 10,987 / 11,149 us a run (median of 3) |
+| [tile rules](../../experiments/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
+| [tile rules](../../experiments/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,248 B (stamped) | the emitted body 687.0 cycles a row of 2 tiles on the math CPU, 677.0 printed, 689.5 in the one-core harness (the first body 771.0, 753.0 printed); the hand norm 3,201.5 |
 
 ## Not in this version
 
-A rectangle per command; tile expressions (`tile * factors`, `block @ self.weight`);
-`@`, slices and `.columns` of a field; a message that names its handler (several
-dynamic handlers of one loop).
+A rectangle per command; tile arithmetic outside a tile function (`tile * factors`
+in a handler's line); a matrix product (`block @ self.weight`); slices and `.columns`
+of a field; a word field with a rectangle (`self.x`, a broadcast).
 
 A group switched to a class's program (`kmx_load`): a load switches between programs
 in the runtime's form, parts on the runtime's reader, writer and compute, and a class

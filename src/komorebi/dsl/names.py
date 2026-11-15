@@ -28,7 +28,8 @@ NAMES = {
     "stamps": Name(
         "stamps",
         'km.handler(overlay=True, stamps="t"): its load and call cycles, a page a '
-        "mover of tensor t",
+        'mover of tensor t; km.handler(stamps="t") of a handler calling a tile '
+        "function: the math CPU's cycles of each call, a page a rank",
         None,
     ),
     "field": Name("L1", "km.L1[format, *shape]: a field resident in the L1", None),
@@ -48,6 +49,9 @@ NAMES = {
         "self.partition(pages): this core's part by rank; b.partition(pages): "
         "by its place along broadcast b's row or column",
         None,
+    ),
+    "core": Name(
+        "core", "self.core: this core's place in the grid (its worker index)", "me"
     ),
     "x": Name("x", "self.x: this core's column in the broadcasts' rectangle", None),
     "y": Name("y", "self.y: this core's row in the broadcasts' rectangle", None),
@@ -113,6 +117,36 @@ NAMES = {
         "Tile", "gives=km.Tile: the tile a body leaves in DST 0", "tile"
     ),
     "on": Name("on", "the CPU of an inline body", None),
+    "tile_function": Name(
+        "tile_function",
+        "@km.tile_function: a function of tiles, traced and emitted for compute by "
+        "the tile compiler; a handler calls it on the tiles of its streams",
+        None,
+    ),
+    "tolerance": Name(
+        "tolerance",
+        "@km.tile_function(tolerance=1e-6): its stated largest relative error "
+        "against float64, printed with its cost",
+        None,
+    ),
+    "row": Name(
+        "row",
+        "km.Stream(pages, row=2): each item a row of 2 tiles, for a tile function "
+        "in the row form",
+        "row",
+    ),
+    "to": Name(
+        "to",
+        "self.forward(rank, message, to=Class.handler), self.send(..., to=): the "
+        "dynamic handler the message names there",
+        "handler",
+    ),
+    "zip": Name(
+        "zip",
+        "for a, b in zip(km.Stream(..), km.Stream(..)): streams read in step, a "
+        "tile of each a turn",
+        None,
+    ),
     "tile_buffer": Name(
         "_buffer",
         "tile_buffer in a body: a stream tile's buffer (the loop's name)",
