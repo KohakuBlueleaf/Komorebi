@@ -441,6 +441,8 @@ class Decode:
         `rows` tokens a step from `position` (default: the cache's end); `attend` its
         modes; `chain` a layer, `pair` 2 records, `token` a token; `ahead` W early."""
         slot = self.slot
+        if slot >= D["DC_STATS_SLOTS"]:
+            raise ValueError(f"job {slot}: the thread has {D['DC_STATS_SLOTS']} slots")
         self.slot += 1
         mode = 3 if parts else int(bare)
         mode |= (4 if apart or overlap else 0) | (8 if overlap else 0)
