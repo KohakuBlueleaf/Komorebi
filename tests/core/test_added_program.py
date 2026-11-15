@@ -127,7 +127,7 @@ def test_a_class_beside_the_added_one_takes_it_and_the_refusals_name_each_cause(
         added_program.add(run_of(loaded, switch=False), other)
 
 
-def test_per_core_args_go_in_a_row_a_core_and_word_fields_and_overlays_are_refused():
+def test_per_core_args_and_word_fields_go_in_a_row_a_core_and_overlays_are_refused():
     other = project(form="runtime")
     loaded = twice(form="runtime", beside=other)
     other.args = lambda core: ([core, 7], [core + 100], [2 * core, 3, 4])
@@ -145,9 +145,12 @@ def test_per_core_args_go_in_a_row_a_core_and_word_fields_and_overlays_are_refus
     )
     other.args = None
     assert added_program.args_defines(other, 3) == ([], 0)
-    other.word_fields = {"counts": 1}
-    assert "word fields" in added_program.refused(run_of(loaded), other)
-    other.word_fields = {}
+    other.word_fields = {"counts": 4}  # its tensor's address: compute's word 0
+    other.args = lambda core: ([], [], [0x1F000])
+    assert added_program.refused(built, other) == ""
+    assert added_program.args_defines(other, 2) == ([[0x1F000]] * 2, programs.CB_ALIGN)
+    assert other.defines["KM_ARGS_COMPUTE"] == "0"
+    other.args, other.word_fields = None, {}
     other.overlays = {"extra": object()}
     assert "overlays of its own" in added_program.refused(run_of(loaded), other)
 

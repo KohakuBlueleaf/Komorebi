@@ -415,10 +415,14 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    only when a class with per-core args is named with `Program.ahead(other)` before
    the load (412 B of the reader's text, about 40 B of each other CPU's); a load
    without one pays nothing, and an add of a class with per-core args to it is refused
-   by name. Word fields stay refused (their L1 tensors are made with the class).
+   by name. A word field (`km.L1[km.u32, n]`) is one more per-core arg: its tensor's
+   address, compute's word, goes in the row, so a class with word fields is added as
+   one with args (named ahead); its tensor, one row in each core's L1, may be made
+   before the load or while the run is live (it takes the L1 the area leaves, 64 KiB
+   by default).
 
 Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
-`opt` levels or NoCs, word fields, overlays of its own or a dynamic handler, buffers
+`opt` levels or NoCs, overlays of its own or a dynamic handler, buffers
 past the switch area or a part past its slot, an island run, a traced run and a merged
 program. The slots cannot grow under a live run: the load sizes them by the parts of the
 classes named with `Program.ahead(other)`, which the load also builds, or by

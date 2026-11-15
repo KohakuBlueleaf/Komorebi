@@ -402,11 +402,6 @@ def refused(run, program):
             "the load command's row read, built only when a class with them is named "
             "with Program.ahead(...) before the load"
         )
-    if getattr(program, "word_fields", None):
-        return (
-            f"{program.name}: word fields (their L1 tensors are made with the class "
-            "and named in its args at the load)"
-        )
     if program.overlays or program.messages is not None:
         return f"{program.name}: overlays of its own or a dynamic handler"
     runtime = {cb[0] for cb in run.backend._runtime_cbs()} | {run.backend.slot_index}
