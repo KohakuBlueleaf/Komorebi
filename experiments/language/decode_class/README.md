@@ -1,5 +1,10 @@
 # The decode layer, as a class
 
+**Warning.** `layer_class.py` runs only qkv and o by default. gate_up and down, run
+after another product, gave wrong sums that changed from run to run, and a run of the
+four in a mixed order hung the card (2026-11-16); this is under investigation, and
+`--known-wrong` is needed to run them.
+
 Question: can the decode project's layer
 ([projects/decode](../../../projects/decode/README.md)) be written as a class
 ([Programs written as classes](../../../docs/reference/classes.md)): its five calls
@@ -86,8 +91,9 @@ made the slots overlap. It is now sized for the largest reduce
 of 8 tiles for all four products: that is not what made gate_up and down wrong.
 
 ```bash
-python layer_class.py                   # the hand's four products, then the class's
+python layer_class.py                   # qkv and o: the hand's, then the class's
 python layer_class.py --skip-hand       # the class alone
+python layer_class.py --products qkv o gate_up down --known-wrong  # see the warning
 ```
 
 ## The lines the layer still needs
