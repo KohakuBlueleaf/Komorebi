@@ -108,9 +108,7 @@ Tensix runtime's device headers and the map/collect kernels unchanged against a 
 the tt-metal calls they use, runs them as host threads on a simulated grid, and forces
 failure paths on it: stop flags, give-ups, lost or late command chunks, mailbox races,
 items past a buffer's end. It is a tool run by hand (`python
-experiments/runtime_harness/run.py`), not part of the test suite;
-`tests/core/test_runtime_harness.py` runs four of its scenarios that pin known
-behaviour.
+experiments/runtime_harness/run.py`), not part of the test suite.
 
 The rule: a new wait in the runtime comes with a scenario there that makes it give up,
 by the stop flag and by its timeout, and shows that every kernel of the tile still
