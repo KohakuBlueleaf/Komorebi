@@ -227,6 +227,66 @@ Code that is not in the kernels is an [overlay](docs/reference/overlays.md), loa
 into a slot of a core's L1 while the run lives. Every example is a page under
 [examples](examples/README.md), with what it measured.
 
+### The same gate as a class
+
+The gate above is two C++ kernels, a header, three buffer pairs and compile arguments.
+The same program can be written as one Python class (experimental, on `main` after
+0.2.0). A method marked as a handler is compiled, when the class is made, into those
+files: its streams become the movers' code and the buffers, its parameters the
+command's words. The arithmetic is a tile function, which the tile compiler turns into
+the vector unit's instructions for the compute kernel. Reduced from
+[22_gate/as_class](examples/22_gate/as_class/README.md):
+
+```python
+import komorebi as km
+
+BLOCK = 8  # tiles a block
+
+
+@km.tile_function(tolerance=1e-6)  # the largest relative error against float64
+def silu_gate(a, b):
+    return km.silu(a) * b
+
+
+class Gate(km.Program):
+    @km.handler
+    def gate(
+        self,
+        a: km.Tensor,
+        b: km.Tensor,
+        out: km.Tensor,
+        tiles: int,
+        pattern: km.Pattern,
+    ):
+        first = self.rank * tiles  # this core's share
+        results = km.Stream(
+            out.pages(first, tiles), write=True, block=BLOCK, pattern=pattern
+        )
+        for x, g in zip(
+            km.Stream(a.pages(first, tiles), block=BLOCK, pattern=pattern),
+            km.Stream(b.pages(first, tiles), block=BLOCK, pattern=pattern),
+        ):
+            results.push(silu_gate(x, g))
+
+
+program = Gate(a=a, b=b, out=out)  # compiled here: the kernels and the header
+run = session.load(program)
+words = (a, b, out, tiles, km.Pattern("AAAB"))
+run.wait(run.submit(Gate.gate, (0, 120), args=words))
+```
+
+On the card the class gives the hand program's result (0 values of 786,432 outside its
+bound) in 83.7 µs a command against the hand's 76.2 (bfloat16, 12 cores, 64 tiles a
+core), with 37,632 B of kernel text against 38,640. The emitted arithmetic takes 1,597
+cycles a tile against 1,901.5 for the hand-written body. Nine of the examples have a
+class beside the hand program (`as_class/` in each), and so have a linear layer and
+the ray tracer's trace pass under [experiments](experiments/README.md); each README
+gives the class's result, time and kernel text beside the hand's. What a handler's
+lines may be is in [classes](docs/reference/classes.md), what a tile function may
+contain in [tile functions](docs/reference/tile.md). A program whose movers walk a
+table of jobs (attention, the rasterizer, the decode chain) is still written as C++
+kernels.
+
 ## The programming model
 
 ### The card as Komorebi runs it
