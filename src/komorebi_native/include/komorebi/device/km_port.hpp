@@ -80,6 +80,16 @@ namespace km {
             cb_pop_front(cb, pages);
             return true;
         }
+        const Islands view(island_area());
+        if (
+            writer.core_of(destination) >= KM_CORES_MAX ||
+            (view.ranks() != 0 && destination - view.first() >= view.ranks())
+        ) {  // a rank no island holds: not this island's either
+            writer.gave_up(
+                kStWriter, kGaveBadItem, kWhereEmit, named, command.sequence
+            );
+            return false;
+        }
         const uint32_t limit = writer.args().wait_limit;
         noc_async_write(
             get_read_ptr(cb),

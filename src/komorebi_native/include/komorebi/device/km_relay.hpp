@@ -208,6 +208,8 @@ namespace km {
             }
             if (l1(area + KM_RELAY_LANDED)[0] != relay.state(kRelayTaken)) {
                 relay.place(kernel);
+            } else if (l1(area + KM_RELAY_LINES)[0] != relay.state(kRelayTaken)) {
+                relay.credit(kernel);  // owed since its packet failed
             }
 #else
             uint32_t served = 0;
@@ -477,15 +479,18 @@ namespace km {
             volatile tt_l1_ptr uint32_t* a = l1(ask);
             const uint32_t bytes = a[kAskBytes], token = a[kAskValid];
             const uint32_t from = a[kAskAddress], source = a[kAskSource];
-            bool ok = bytes <= KM_RELAY_MAX && wait(kernel, [&] {
-                if (l1(area_ + KM_RELAY_LANDED)[0] != state(kRelayTaken)) {
-                    place(kernel);
-                }
+            bool ok =
+                bytes <= KM_RELAY_MAX && wait(kernel, [&] {
+                    if (l1(area_ + KM_RELAY_LANDED)[0] != state(kRelayTaken)) {
+                        place(kernel);
+                    } else if (l1(area_ + KM_RELAY_LINES)[0] != state(kRelayTaken)) {
+                        credit(kernel);  // owed since its packet failed
+                    }
 #if defined(KM_FORWARD)
-                forward_turn();
+                    forward_turn();
 #endif
-                return l1(area_ + KM_RELAY_CREDIT)[0] == state(kRelaySent);
-            });
+                    return l1(area_ + KM_RELAY_CREDIT)[0] == state(kRelaySent);
+                });
             for (uint32_t off = 0; ok && off < bytes; off += KM_RELAY_CHUNK) {
                 const uint32_t n = (
                     bytes - off < KM_RELAY_CHUNK ? bytes - off : KM_RELAY_CHUNK
@@ -625,6 +630,13 @@ namespace km {
                 state(kRelayFailed) = state(kRelayFailed) + 1;
             }
             state(kRelayTaken) = state(kRelayTaken) + 1;
+            credit(kernel);
+        }
+
+        // The credit (Taken) back to the far side. A failed packet leaves it owed
+        // (KM_RELAY_LINES not Taken): the next turn sends it again.
+        template <typename Kernel>
+        void credit(const Kernel& kernel) {
             l1(area_ + KM_RELAY_LINES)[0] = state(kRelayTaken);
             if (!packet(
                 kernel,
@@ -633,6 +645,7 @@ namespace km {
                 16
             )) {
                 state(kRelayFailed) = state(kRelayFailed) + 1;
+                l1(area_ + KM_RELAY_LINES)[0] = state(kRelayTaken) - 1;
             }
         }
 

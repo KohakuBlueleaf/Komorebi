@@ -225,7 +225,7 @@ int kmx_port_answer(
 int kmx_port_told(int core, kmx_message* message);
 
 /* X280 core 0 of the lead: submits command, runs function as kmx_parallel_all does
- * until its event: KMX_OK and `event` once all returned; FULL, LATE, STOPPED, BAD. */
+ * until its event: KMX_OK and `event`; FULL (nothing sent), LATE, STOPPED, BAD. */
 int kmx_port_run(
     const km_command_t* command,
     void (*function)(int cluster, int x280_core, uint64_t arg),
@@ -261,7 +261,7 @@ typedef struct {
 #define KMX_PULL_LOG_BYTES(per_core) (4u * KMX_PORTS_CORES * (1u + (per_core)))
 
 /* X280 core 0 of the lead: submits `command`, serves its pulls on every X280 core until
- * its event, as kmx_port_run; KMX_BAD also when it ran but a log ran out of room. */
+ * its event, as kmx_port_run; KMX_BAD too: a log full, or a cluster lacks it. */
 int kmx_pull_run(
     const km_command_t* command, const kmx_pull* settings, kmx_event* event
 );
