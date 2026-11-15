@@ -783,7 +783,10 @@ def choose(built, declared_slots, room, log=lambda message: None):
     else:
         pick = "own" if built.service_part > largest else "shared"
         why = "its part is the largest" if pick == "own" else "no slot is larger"
-    made = fitted(own if pick == "own" else common, declared_slots, room, log)
+    chosen = (
+        replace(built, service=built.service_part) if pick == "own" else shared(built)
+    )
+    made = fitted(chosen, declared_slots, room, log)  # its lowering logged
     log(f"service overlay: {'its own slot' if pick == 'own' else 'the reader slots'}"
         f" ({why})")  # fmt: skip
     return replace(made, why=why)
