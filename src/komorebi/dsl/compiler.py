@@ -3210,7 +3210,7 @@ class HandlerCompiler:
             )
         if call.keywords or not call.args:
             self.refuse(node, "a tile function takes tiles", "call f(tile, ...)")
-        if function.fidelity is not None:
+        if function.fidelity is not None and matrix_product(function.function) is None:
             self.refuse(
                 node,
                 f"fidelity= is a product's (the matrix unit's), and {function.name} "
@@ -3269,19 +3269,48 @@ class HandlerCompiler:
                 "make one tile function of the two",
             )
         parameters = list(inspect.signature(function.function).parameters)
+        products = [  # each product's operands: (a's tile, w's tile)
+            (operands[parameters.index(p.a)][0], operands[parameters.index(p.w)][0])
+            for p in unit.products
+        ]
+        if any(item.buffer.dtype != "bfloat16" for pair in products for item in pair):
+            self.refuse(
+                node,
+                "a product's operands are bfloat16 tiles (the matrix unit's), and "
+                f"{function.name}'s are not",
+                "stream bfloat16 tensors into the product",
+            )
+        if products:
+            fidelity = unit.fidelity
+            if self.compiled.fidelity not in (None, fidelity):
+                self.refuse(
+                    node,
+                    f"{function.name}'s fidelity is {fidelity} and another product's "
+                    f"{self.compiled.fidelity}: the fidelity is the compute kernel's",
+                    "give the class's products one fidelity",
+                )
+            self.compiled.fidelity = fidelity
+            self.compiled.includes.add("matmul_custom")
         if state["function"] is None:
             state["function"] = cxx
             for field in fields:
                 state["inits"].append(self.held_field(node, field))
                 buffer = f"kField{camel(field)}"
                 state["after"].append(Line(f"cb_pop_front({buffer}, {buffer}Pages);"))
-            state["inits"].append(
-                Line(
-                    f"KM_UNPACK_FORMAT_A({streamed[0].buffer.name}.mover_a);\n"
-                    f"copy_init({streamed[0].buffer.name}.mover_a);\n"
-                    f"MATH((km_tile::{cxx}_init()));  // {function.name}'s setup"
-                )
-            )
+            init = []
+            if any(operand is not None for operand in unit.operands):
+                init += [
+                    f"KM_UNPACK_FORMAT_A({streamed[0].buffer.name}.mover_a);",
+                    f"copy_init({streamed[0].buffer.name}.mover_a);",
+                ]
+            if products:  # the first product's buffers: a into SrcB, w into SrcA
+                a, w = (item.buffer.name + ".mover_a" for item in products[0])
+                init += [
+                    f"KM_UNPACK_FORMATS({w}, {a});",
+                    f"mm_no_mop_init_short({a}, {w}, false, 1, 1, 1);",
+                ]
+            init.append(f"MATH((km_tile::{cxx}_init()));  // {function.name}'s setup")
+            state["inits"].append(Line("\n".join(init)))
         timed = self.method.stamps is not None and not self.method.overlay
         count = len(unit.operands)
         slots = DST_HALF // count if width == 1 else 1
@@ -3296,7 +3325,14 @@ class HandlerCompiler:
                 "tile_regs_acquire();",
                 f"for (uint32_t {slot} = 0; {slot} < {batch}; {slot}++) {{",
             ]
+            for a, w in products:  # unpacked in the unit's issue order
+                lines.append(
+                    f"    UNPACK((llk_unpack_AB_matmul({a.cxx}, {w.cxx}, {a.first} + "
+                    f"{slot}, {w.first} + {slot}, 1, 1, 1)));"
+                )
             for dst, operand in enumerate(unit.operands):
+                if operand is None:  # a product's Dst tile
+                    continue
                 item, _ = operands[parameters.index(operand)]
                 lines.append(
                     f"    copy_tile({item.cxx}, {item.first} + {slot}, "
@@ -3305,7 +3341,14 @@ class HandlerCompiler:
             call_ = [f"MATH((km_tile::{cxx}({count} * {slot})));"]
             lines += ["    " + line for line in self.timed_call(call_, timed)] + ["}"]
         elif width == 1:
+            for a, w in products:  # unpacked in the unit's issue order
+                lines.append(
+                    f"UNPACK((llk_unpack_AB_matmul({a.cxx}, {w.cxx}, {a.first}, "
+                    f"{w.first}, 1, 1, 1)));"
+                )
             for dst, operand in enumerate(unit.operands):
+                if operand is None:  # a product's Dst tile
+                    continue
                 item, _ = operands[parameters.index(operand)]
                 lines.append(f"copy_tile({item.cxx}, {item.first}, {dst});")
         else:  # the row form: the row in DST 0 .. width - 1, the field's tile after
@@ -3389,12 +3432,14 @@ class HandlerCompiler:
                 "pass one tile a parameter",
             )
         product = matrix_product(function.function)
-        if product is not None:
+        if product is not None and width > 1:
             self.refuse(
                 node,
                 f"the tile function {function.name}, line {product}, has a matrix "
-                "product (`@`), and the tile compiler has no lowering of one yet",
-                "make the product in a km.cxx body (gives=km.Tile) until it has",
+                "product (`@`) and is called on a row: a product of one K step of "
+                "32 x 32 tiles a side is lowered, a K loop over a row is not",
+                "call it on a stream's tiles, one tile a side, or make the row's "
+                "product with `acc += self.f(block, self.w)`",
             )
         cxx = function.name
         while cxx in self.compiled.units:
@@ -3420,7 +3465,8 @@ class HandlerCompiler:
                         value = function.function(*loads, *rows)
                         trace.store(out.tiles[t, :], value)
             if width == 1:
-                unit = unit_program(ir, load_macro=True)
+                fidelity = function.fidelity or "HiFi4"  # its products'
+                unit = unit_program(ir, load_macro=True, fidelity=fidelity)
             else:
                 unit = row_program(ir, width, width, 2 * width)
                 self.compiled.full_dst = True

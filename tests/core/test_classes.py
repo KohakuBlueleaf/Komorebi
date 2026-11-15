@@ -94,12 +94,18 @@ class Product(km.Program):
             results.push(product(x, y))
 
 
-def test_a_matrix_product_in_a_tile_function_is_refused_by_its_line():
+def test_a_product_in_a_tile_function_is_unpacked_and_issued_by_the_body():
+    tensors = {"a": tensor("bfloat16"), "b": tensor("bfloat16")}
+    compiled = compile_class(Product, {}, {**tensors, "out": tensor("float32")})
+    compute = "\n".join(render(prune(compiled.compute["multiply"]), 0))
+    assert "mm_no_mop_init_short(kRead0.mover_a, kRead1.mover_a, false, 1, 1, 1);" in (
+        compute
+    )
+    assert "UNPACK((llk_unpack_AB_matmul(km_half0, km_half1, km_tile0 + " in compute
+    assert "copy_tile(" not in compute  # no copy into a product's Dst tile
+    assert compute_options(compiled)["math_fidelity"] == "HiFi4"
     line = line_of("results.push(product(x, y))")
-    product_line = line_of("return a @ b")
-    with pytest.raises(
-        Refused, match=rf"^Product.multiply, line {line}, .*line {product_line}, has a"
-    ):
+    with pytest.raises(Refused, match=rf"^Product.multiply, line {line}, .*bfloat16"):
         made(Product, a=tensor("float32"), b=tensor("float32"), out=tensor("float32"))
 
 

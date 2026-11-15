@@ -405,10 +405,18 @@ the cost and the span are a row's.
 
 What the tile compiler does not lower is refused, naming the handler's line, the
 function and the compiler's sentence, with "write this body inline: km.cxx(...,
-gives=km.Tile)". A matrix product `a @ b` is taken in two forms, a sum over K of the
-products of a stream's tiles by a field, and a sum of two broadcasts' blocks in a
-float32 field (Products, below); a tile function with `@` called in any other line is
-refused.
+gives=km.Tile)". A matrix product `a @ b` is taken in three forms: a sum over K of the
+products of a stream's tiles by a field and a sum of two broadcasts' blocks in a
+float32 field (Products, below), and a product of one K step inside a tile function,
+`km.silu(a @ w1) * (a @ w3)` of three streams' bfloat16 tiles. There the unpack CPU
+unpacks each product's two tiles (`llk_unpack_AB_matmul`, a into SrcB, w into SrcA)
+after `mm_no_mop_init_short` once a loop, the body issues the products' words before
+its vector code, nothing is copied into a product's `Dst` tile, and the compute
+kernel's fidelity is the function's (`fidelity=`, HiFi4 if not given). A product of one
+32 x 32 tile a side is lowered; the function called on a row (a K loop) is refused.
+From experiments/tile_rules/as_class (`mm_gate_class.py`, card 0, 12 cores, 64 tiles a
+core): within 5.6e-4 of float64 (2^-7 stated), 1,706 cycles a call less the empty span
+against the tile experiment's BODY 29 at 1,707 and the build's 1,678.6.
 
 From the 22 gate on the card (12 cores, 64 tiles a core, bfloat16), 2 tiles an acquire
 against one: 83.70 us a command against 86.68, the hand program's 76.24. A tile takes
@@ -807,7 +815,7 @@ made, naming the handler, the line and what to write instead (the classes of
 Sliced.copy, line 34, `km.Stream(source[1:4]).drain()`: a tensor is in DRAM: a slice is not a value; take a part: source[self.partition(...)], or use a stream or read()
 Unled.merge, line 44, `output.pages(0, 1).write(whole)`: whole is the reduce's sum, which only the leader holds; write it under `if self.rank == self.leader:`
 Unsolved.count, line 49, `count: km.L1[km.fp32, TILES, 32, 32]`: TILES is solved against the L1 the buffers leave; make the program with session=session (or l1=session.l1()[1])
-Product.multiply, line 91, `results.push(product(x, y))`: the tile function product, line 83, has a matrix product (`@`), and the tile compiler has no lowering of one yet; make the product in a km.cxx body (gives=km.Tile) until it has
+Product.multiply, line 94, `results.push(product(x, y))`: a product's operands are bfloat16 tiles (the matrix unit's), and product's are not; stream bfloat16 tensors into the product
 OtherFunction.apply, line 121, `acc += scaled(block, self.weight)`: acc += f(...) adds a product, and the tile function scaled (line 103 of test_classes.py) is not `return a @ b`; write scaled as `return a @ b`, a the stream's block, b a field
 Unfilled.apply, line 131, `acc += project(block, self.weight)  # unfilled`: self.weight is not filled above in this handler, and no other handler of the class fills it; write self.weight.fill(km.Stream(...)) before, or in a handler of its own
 Narrow.apply, line 142, `acc += project(block, self.weight)  # narrow`: self.weight is K rows of 2 tiles and acc holds 1; declare self.weight: km.L1[km.bf16, K, 1, 32, 32] or make acc km.tile.zeros(km.fp32, 2)
@@ -872,6 +880,7 @@ the packed text of the five CPUs, of 70,656 B.
 | [tile rules](../../experiments/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
 | [ray tracer's trace pass](../../experiments/raytrace_class/README.md) (TRACE, tiny scene, the tree in L1) | the hand program's hit pages word for word: 0 of 18,874,368 words differ (the cycles vector apart), the walk's counts equal on every core; against numpy's trace 658,018 hits, none differs | 48,240 / 85,808 B (mock) | 3,294.9 / 3,259.9 us a command (120 cores, 32,768 packets; the tree loaded once, 23.7 us) |
 | [tile rules](../../experiments/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,248 B (stamped) | the emitted body 687.0 cycles a row of 2 tiles on the math CPU, 677.0 printed, 689.5 in the one-core harness (the first body 771.0, 753.0 printed); the hand norm 3,201.5 |
+| [tile rules](../../experiments/tile_rules/as_class/README.md): silu(a @ w1) (a @ w3), two products in the body | float32 against float64: 5.64e-4 (tolerance 2^-7) | 40,800 B (stamped) | the emitted body 1,706 cycles a tile on the math CPU, 1,678.6 printed, BODY 29's 1,707 in the one-core harness; 92.96 us a command (12 cores, 64 tiles a core) |
 
 ## Not in this version
 

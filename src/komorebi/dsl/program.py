@@ -864,6 +864,7 @@ COMPUTE_INCLUDES = [
     ("api/compute/compute_kernel_hw_startup.h", None),
     ("api/compute/eltwise_binary_sfpu.h", "add"),
     ("api/compute/eltwise_unary/fill.h", "fill"),
+    ("api/compute/experimental/matmul_custom.h", "matmul_custom"),
     ("api/compute/matmul.h", "matmul"),
     ("api/compute/pack.h", None),
     ("api/compute/reg_api.h", None),
@@ -971,11 +972,16 @@ def tile_costs(compiled):
             if p.done and p.name in ("load_macro", "replay", "fuse_mad")
         ]
         code = function.function.__code__
-        operands = list(unit.operands)
+        products = {p.dst: p for p in unit.products}  # a product's Dst tile: a @ w
+        operands = [
+            f"{products[k].a} @ {products[k].w}" if name is None else name
+            for k, name in enumerate(unit.operands)
+        ]
+        taken = set(unit.operands) | {n for p in unit.products for n in (p.a, p.w)}
         operands += [
             f"{name} (resident)"
             for name in code.co_varnames[: code.co_argcount]
-            if name not in operands
+            if name not in taken
         ]
         each = "a tile" if width == 1 else f"a row of {width} tiles"
         tolerance = (
