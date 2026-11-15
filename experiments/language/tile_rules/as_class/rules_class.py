@@ -14,7 +14,6 @@ import numpy as np
 import komorebi as km
 
 STARTED = time.monotonic()
-BLOCK = 8  # tiles a block
 SPANS_EMPTY, SPANS_FIRST = 16, 18  # a stamps page: the empty spans, then each call's
 SCALE = 0.08838834764831845  # 1 / sqrt(128), rounded to fp32 by the body
 TOLERANCE = 2.0**-23  # one fp32 rounding, as ../rules.py states it
@@ -29,6 +28,8 @@ class Rules(km.Program):
     """add: out = a + b; scale: out = a x SCALE; each over the core's `tiles` pages
     from rank x tiles, the math CPU's cycles of each call to page rank of stamps."""
 
+    BLOCK = km.constant(8)  # tiles a block
+
     @km.tile_function(tolerance=TOLERANCE)
     def residual(a, b):
         return a + b
@@ -42,18 +43,18 @@ class Rules(km.Program):
         self, a: km.Tensor, b: km.Tensor, out: km.Tensor, stamps: km.Tensor, tiles: int
     ):
         first = self.rank * tiles
-        results = km.Stream(out.pages(first, tiles), write=True, block=BLOCK)
+        results = km.Stream(out.pages(first, tiles), write=True, block=self.BLOCK)
         for x, y in zip(
-            km.Stream(a.pages(first, tiles), block=BLOCK),
-            km.Stream(b.pages(first, tiles), block=BLOCK),
+            km.Stream(a.pages(first, tiles), block=self.BLOCK),
+            km.Stream(b.pages(first, tiles), block=self.BLOCK),
         ):
             results.push(self.residual(x, y))
 
     @km.handler(stamps="stamps")
     def scale(self, a: km.Tensor, out: km.Tensor, stamps: km.Tensor, tiles: int):
         first = self.rank * tiles
-        results = km.Stream(out.pages(first, tiles), write=True, block=BLOCK)
-        for x in km.Stream(a.pages(first, tiles), block=BLOCK):
+        results = km.Stream(out.pages(first, tiles), write=True, block=self.BLOCK)
+        for x in km.Stream(a.pages(first, tiles), block=self.BLOCK):
             results.push(self.scaled(x))
 
 
@@ -103,8 +104,9 @@ def main():
     parser.add_argument("--tiles", type=int, default=64, help="tiles a core takes")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
-    if args.tiles % BLOCK or not BLOCK <= args.tiles <= 256 - SPANS_FIRST:
-        parser.error(f"--tiles is a multiple of {BLOCK} up to {256 - SPANS_FIRST}")
+    block = Rules.BLOCK.default
+    if args.tiles % block or not block <= args.tiles <= 256 - SPANS_FIRST:
+        parser.error(f"--tiles is a multiple of {block} up to {256 - SPANS_FIRST}")
     report, ok = {"tolerance": TOLERANCE}, True
     with km.Session(log=log) as session:
         cores, pages = args.cores, args.cores * args.tiles

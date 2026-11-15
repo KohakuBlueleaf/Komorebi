@@ -3,16 +3,26 @@
 
 #include <stdint.h>
 
-// Every handler: a1 the input, a2 the output, a3 ADD's second input (SUM's input
-// tiles), a4 the chain mode or 0, a5 SCALE's factor, a6 a group's output tiles.
+#include "komorebi/device/km_group.hpp"
+
+// a1 in, a2 out, a3 ADD's second input (SUM: tiles a group, TOTAL: scratch), a4 the
+// chain mode, a5 the factor, a6 tiles a core, a7 SUM's and TOTAL's group, a8 ADD's.
 constexpr uint32_t kHandlerScale = 1;  // output tile = factor x input tile
-constexpr uint32_t kHandlerAdd = 2;    // output tile = input tile + second input's tile
+constexpr uint32_t kHandlerAdd = 2;    // input + second input's tile (a8 1: page 0)
 constexpr uint32_t kHandlerSum = 3;    // the group's input tiles summed, at its root
+constexpr uint32_t kHandlerTotal = 4;  // a copy's page 0 summed over the islands
 constexpr uint32_t kChainMode = 1;
 
 // One of this program's handlers (a chain command names any of them).
 inline bool step_handler(uint32_t handler) {
-    return handler >= kHandlerScale && handler <= kHandlerSum;
+    return handler >= kHandlerScale && handler <= kHandlerTotal;
+}
+
+// SUM's and TOTAL's group of core `me`: groups of a7 cores (0: one of every core).
+inline km::Group step_group(const km_command_t& command, uint32_t me) {
+    const uint32_t size = command.a7 != 0 ? command.a7 : km::count(command);
+    const uint32_t local = me - km::first(command);
+    return {km::first(command) + local / size * size, 1, size, local % size};
 }
 
 constexpr uint32_t kCbIn = 0;         // a tile read, worked on in place

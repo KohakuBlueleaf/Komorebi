@@ -51,7 +51,8 @@ namespace {
             }
             if (km::handler(command) == kHandlerAdd) {
                 const uint32_t other = get_write_ptr(kCbOther);
-                if (!read_tile(reader, command, command.a3, tile, other)) {
+                const uint32_t page = command.a8 != 0 ? 0 : tile;
+                if (!read_tile(reader, command, command.a3, page, other)) {
                     return;
                 }
                 add_words(out, other);
@@ -66,11 +67,15 @@ namespace {
         }
     }
 
-    // SUM: this rank's share of the a3 input tiles summed, then the part of each round
-    // whose sender this rank receives from, in round order.
+    // SUM: this rank's share of its group's a3 input tiles summed, then the part of
+    // each round whose sender this rank receives from, in round order.
     void sum_tiles(km::Reader& reader, const km_command_t& command) {
-        const km::Group group = km::group_of(command, reader.me());
-        const km::Partition share = km::partition(command.a3, group.rank, group.size);
+        const km::Group group = step_group(command, reader.me());
+        const uint32_t base = (
+            (group.base - km::first(command)) / group.size * command.a3
+        );
+        km::Partition share = km::partition(command.a3, group.rank, group.size);
+        share.start += base;
         if (!reader.reserve(kCbOut, 1)) {
             return;
         }
@@ -99,6 +104,27 @@ namespace {
         cb_push_back(kCbOut, 1);
     }
 
+    // TOTAL: copy a1's page 0 summed over the islands (km::all_reduce, scratch a3),
+    // then a token to the writer, which marks the next record once the sum is in.
+    void total(km::Reader& reader, const km_command_t& command) {
+        const km::Arrival arrival = {kCbArrive, kArrivePages, 1};
+        if (!km::all_reduce(
+            reader,
+            command,
+            command.a1,
+            0,
+            1,
+            command.a3,
+            km::Sum::Int32,
+            km::slot_addr(arrival, 0),
+            kArrivePages * kTileBytes
+        ) ||
+            !reader.reserve(kCbOut, 1)) {
+            return;
+        }
+        cb_push_back(kCbOut, 1);
+    }
+
     // A step: in a chain's record, once its input is marked.
     void step(km::Reader& reader, const km_command_t& command) {
         if (!step_handler(km::handler(command))) {
@@ -109,6 +135,8 @@ namespace {
         }
         if (km::handler(command) == kHandlerSum) {
             sum_tiles(reader, command);
+        } else if (km::handler(command) == kHandlerTotal) {
+            total(reader, command);
         } else {
             map_tiles(reader, command);
         }

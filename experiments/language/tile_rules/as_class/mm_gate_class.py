@@ -20,7 +20,6 @@ sys.path.insert(0, str(HERE.parent))
 import rules  # noqa: E402  (BODY 29's values, reference and tolerance)
 
 STARTED = time.monotonic()
-BLOCK = 8  # tiles a block
 SPANS_EMPTY, SPANS_FIRST = 16, 18  # a stamps page: the empty spans, then each call's
 TOLERANCE = rules.TOLERANCE["mm_gate"]  # 2^-7, as ../rules.py states it
 
@@ -34,6 +33,8 @@ class MmGate(km.Program):
     """gate: each core's `tiles` pages of a, w1 and w3 from rank x tiles, the gate of
     each tile's two products into the same pages of out, the math CPU's cycles of
     each call to page rank of stamps."""
+
+    BLOCK = km.constant(8)  # tiles a block
 
     @km.tile_function(tolerance=TOLERANCE)
     def gate(a, w1, w3):
@@ -50,11 +51,11 @@ class MmGate(km.Program):
         tiles: int,
     ):
         first = self.rank * tiles
-        results = km.Stream(out.pages(first, tiles), write=True, block=BLOCK)
+        results = km.Stream(out.pages(first, tiles), write=True, block=self.BLOCK)
         for x, p, q in zip(
-            km.Stream(a.pages(first, tiles), block=BLOCK),
-            km.Stream(w1.pages(first, tiles), block=BLOCK),
-            km.Stream(w3.pages(first, tiles), block=BLOCK),
+            km.Stream(a.pages(first, tiles), block=self.BLOCK),
+            km.Stream(w1.pages(first, tiles), block=self.BLOCK),
+            km.Stream(w3.pages(first, tiles), block=self.BLOCK),
         ):
             results.push(self.gate(x, p, q))
 
@@ -80,8 +81,9 @@ def main():
     parser.add_argument("--tiles", type=int, default=64, help="tiles a core takes")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
-    if args.tiles % BLOCK or not BLOCK <= args.tiles <= 256 - SPANS_FIRST:
-        parser.error(f"--tiles is a multiple of {BLOCK} up to {256 - SPANS_FIRST}")
+    block = MmGate.BLOCK.default
+    if args.tiles % block or not block <= args.tiles <= 256 - SPANS_FIRST:
+        parser.error(f"--tiles is a multiple of {block} up to {256 - SPANS_FIRST}")
     report = {"tolerance": TOLERANCE}
     with km.Session(log=log) as session:
         cores, pages = args.cores, args.cores * args.tiles
