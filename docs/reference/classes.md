@@ -1425,13 +1425,17 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 
 | Line | Compute |
 |---|---|
-| `if self.seeding():` | `messages.seeding()`, its lines, then `messages.seeded()` |
+| `if self.seeding():` | `km_messages.seeding()`, its lines, then `km_messages.seeded()` |
 | `seed = Visit(id=..., ...)` | 16 words, the named ones set, the others 0 |
-| `self.send(rank, seed)` | `messages.send(rank, seed)` |
-| `for message in self.arrive():` | each packet of `messages.next()`, each message of it copied, then `messages.done(packet)` |
+| `self.send(rank, seed)` | `km_messages.send(rank, seed)` |
+| `for message in self.arrive():` | each packet of `km_messages.next()`, each message of it copied, then `km_messages.done(km_packet)` |
 | `message.state`, `message.sum += x` | the message's word |
-| `self.forward(rank, message)` | `messages.forward(rank, message)` |
-| `self.consume()` | `messages.consume()` |
+| `self.forward(rank, message)` | `km_messages.forward(rank, message)` |
+| `self.consume()` | `km_messages.consume()` |
+
+A `km.cxx` body in a dynamic handler can call the handler's `km::Messages` by its name,
+`km_messages`. For example, `km_messages.quota()` gives the sends this core has left,
+as 05 forward's body reads it.
 
 A class may have several dynamic handlers. One, the RUN command's (the program's
 `.dynamic(name, ...)` names it first), has lines besides its loop: the seeding, a
