@@ -1,0 +1,225 @@
+{
+ "model": "Qwen/Qwen3-1.7B",
+ "position": 4095,
+ "calls": 8,
+ "plain": {
+  "x_joint_spin_0us": {
+   "pages": 72,
+   "write_us": [
+    261.0,
+    221.5
+   ],
+   "read_us": [
+    262.6,
+    224.5
+   ]
+  },
+  "x_joint_spin_300us": {
+   "pages": 72,
+   "write_us": [
+    214.6,
+    210.9
+   ],
+   "read_us": [
+    219.5,
+    216.7
+   ]
+  },
+  "y_spin_0us": {
+   "pages": 64,
+   "write_us": [
+    211.6,
+    208.9
+   ],
+   "read_us": [
+    215.6,
+    213.0
+   ]
+  },
+  "y_spin_300us": {
+   "pages": 64,
+   "write_us": [
+    211.4,
+    209.5
+   ],
+   "read_us": [
+    216.2,
+    213.0
+   ]
+  }
+ },
+ "guard": {
+  "right_region_round_trip": true,
+  "refused": [
+   {
+    "handler": 242,
+    "run": "executor: Event(handle=267, kind='done', auxiliary=2, ticks=4294967285, result=4294967285)",
+    "entry": 1026,
+    "slot": 1,
+    "data_unchanged": true,
+    "words_unchanged": true,
+    "event_word": 259
+   },
+   {
+    "handler": 241,
+    "run": "executor: Event(handle=268, kind='done', auxiliary=2, ticks=4294967285, result=4294967285)",
+    "entry": 1027,
+    "slot": 2,
+    "data_unchanged": true,
+    "words_unchanged": true,
+    "event_word": 259
+   }
+  ],
+  "ok": true
+ },
+ "results": {
+  "a": {
+   "cpu_us": 7535.4,
+   "joint": {
+    "errors": {
+     "max_rel": 0.007538293841614217,
+     "rms_rel": 0.003180074321286696
+    },
+    "ok": true,
+    "account": {
+     "wall_us": 1571.5,
+     "terms_us": {
+      "in_write": 608.7,
+      "run": 405.6,
+      "out_read": 310.6
+     },
+     "python_us": 246.5,
+     "card_commands_us": 204.0,
+     "thread_us": 206.9,
+     "thread_idle_us": 0.0,
+     "lists_a_call": 1.0,
+     "fallbacks_a_call": {},
+     "first_call_us": 960180.9
+    }
+   },
+   "one": {
+    "errors": {
+     "max_rel": 0.007538293841614217,
+     "rms_rel": 0.003180074321286696
+    },
+    "ok": true,
+    "spans": [
+     314689,
+     314285,
+     311549,
+     315353,
+     314491,
+     314219,
+     314861,
+     314359
+    ],
+    "account": {
+     "wall_us": 999.2,
+     "terms_us": {
+      "in_pages": 440.2,
+      "copy_in": 18.8,
+      "submit": 58.7,
+      "spin": 281.6,
+      "copy_out": 13.6,
+      "out_values": 93.8
+     },
+     "python_us": 92.5,
+     "card_commands_us": 230.2,
+     "thread_us": 237.6,
+     "thread_idle_us": 0.0,
+     "lists_a_call": 1.0,
+     "fallbacks_a_call": {},
+     "first_call_us": 205287.5,
+     "one": {
+      "pull_us": 14.24,
+      "push_us": 12.31,
+      "thread_terms_us": {
+       "total": 237.62,
+       "fetch": 1.87,
+       "submit": 1.59,
+       "wait": 233.01,
+       "command": 230.16,
+       "idle": 0.0,
+       "check": 0.0
+      },
+      "card_span_cycles": 314225.8
+     }
+    }
+   }
+  },
+  "b": {
+   "cpu_us": 11408.2,
+   "joint": {
+    "errors": {
+     "max_rel": 0.0074084246622783114,
+     "rms_rel": 0.004669971470549375
+    },
+    "ok": true,
+    "account": {
+     "wall_us": 1573.4,
+     "terms_us": {
+      "in_write": 573.1,
+      "run": 553.1,
+      "out_read": 310.7
+     },
+     "python_us": 136.5,
+     "card_commands_us": 352.5,
+     "thread_us": 355.4,
+     "thread_idle_us": 0.0,
+     "lists_a_call": 1.0,
+     "fallbacks_a_call": {},
+     "first_call_us": 1170801.7
+    }
+   },
+   "one": {
+    "errors": {
+     "max_rel": 0.0074084246622783114,
+     "rms_rel": 0.004669971470549375
+    },
+    "ok": true,
+    "spans": [
+     517646,
+     504760,
+     517464,
+     517385,
+     520049,
+     517160,
+     511222,
+     510611
+    ],
+    "account": {
+     "wall_us": 1203.1,
+     "terms_us": {
+      "in_pages": 363.0,
+      "copy_in": 19.2,
+      "submit": 57.2,
+      "spin": 567.7,
+      "copy_out": 13.2,
+      "out_values": 88.4
+     },
+     "python_us": 94.4,
+     "card_commands_us": 378.5,
+     "thread_us": 386.0,
+     "thread_idle_us": 0.0,
+     "lists_a_call": 1.0,
+     "fallbacks_a_call": {},
+     "first_call_us": 289621.7,
+     "one": {
+      "pull_us": 14.39,
+      "push_us": 12.44,
+      "thread_terms_us": {
+       "total": 385.96,
+       "fetch": 1.9,
+       "submit": 1.58,
+       "wait": 381.35,
+       "command": 378.52,
+       "idle": 0.0,
+       "check": 0.0
+      },
+      "card_span_cycles": 514537.1
+     }
+    }
+   }
+  }
+ }
+}
