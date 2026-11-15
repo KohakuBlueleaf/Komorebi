@@ -50,7 +50,7 @@ GENERATED |= {"self_x", "self_y", "self_core", "rect_columns", "rect_rows"}
 GENERATED |= {"messages", "packet", "arrived", "incoming", "word_page", "stamp"}
 GENERATED |= {"spans", "spans_page", "called", "page_words"}
 GENERATED_NUMBERED = re.compile(
-    r"(block|half|valid|tile|read|write|out|room|page|address|batch|slot)\d+"
+    r"(block|half|valid|tile|read|write|out|room|page|address|batch|slot|moved)\d+"
 )
 # The runtime's where names (komorebi.state) of each kind of wait.
 WAIT_DATA, WAIT_INPUT, WAIT_OUTPUT = "data", "cinput", "coutput"
@@ -162,6 +162,10 @@ class Value:
     sides: tuple | None = None  # a rectangle's rows (C++) and columns (int or C++)
     items: tuple | None = None  # a range of items: (bytes an item, items a page)
     summed: str = ""  # a reduce of a field of sums: the field
+    letters: str = ""  # a write stream's stated or default pattern letters
+    # a write stream's move outside a loop, or a stream loop's move (kind "moved"):
+    # its line, rewritten when a mover's body takes it
+    move: Line | None = None
 
     def first_text(self, name):
         """A partition's first page: its range's first page plus its start."""
@@ -2614,7 +2618,12 @@ class HandlerCompiler:
         pattern_text = self.pattern_cxx(buffer, pattern, letters)
         variable = f"write{number}"
         self.scope[name] = Value(
-            "write", variable, count=pages.count, buffer=buffer, pattern=pattern_text
+            "write",
+            variable,
+            count=pages.count,
+            buffer=buffer,
+            pattern=pattern_text,
+            letters=letters or "",
         )
         text = self.stream_cxx("write", variable, pages, buffer, pattern_text, repeat)
         uses = range_uses(pages, self) | pattern_uses(pattern)
@@ -2852,12 +2861,12 @@ class HandlerCompiler:
             )
         variables = [read["variable"] for read in reads] + [v.cxx for v in pushed]
         moved = ", ".join(variables)
-        movement.append(
-            Line(
-                f"if (!movement.move({moved})) {{\n    return false;\n}}",
-                set(variables),
-            )
+        move = Line(
+            f"if (!movement.move({moved})) {{\n    return false;\n}}", set(variables)
         )
+        movement.append(move)
+        for read in reads:  # after the loop: what each mover moved (a mover's body)
+            self.scope[read["name"]] = Value("moved", f"moved{number}", move=move)
         self.wait(node, "mover A", WAIT_DATA)
         self.wait(node, "mover B", WAIT_DATA)
         self.wait(node, "compute", WAIT_INPUT)
@@ -4888,11 +4897,23 @@ class HandlerCompiler:
         if value.kind == "write" and where == "pack":
             self.take_write(node, item.id, value, bound, before, after)
             return set()
+        if value.kind == "write" and where == "B":
+            self.take_page(node, item.id, value, bound, before, after)
+            return set()
         if value.kind == "write":
             self.refuse(
                 node,
                 f"{item.id} is a write stream: its pages are pack's to fill",
-                'take it in a body on="pack"',
+                'take it in a body on="pack" (and after it, on="mover_b")',
+            )
+        if value.kind == "moved" and where in ("A", "B"):
+            self.take_moved(item.id, value, bound)
+            return set()
+        if value.kind == "moved":
+            self.refuse(
+                node,
+                f"{item.id} after its loop is what a mover moved",
+                'take it in a body on="mover_a" or on="mover_b"',
             )
         if value.kind == "tensor" and where in ("A", "B"):
             word = f"km_word_{item.id}"
@@ -5025,12 +5046,63 @@ class HandlerCompiler:
         after.append(
             Line(f"if ({room}) {{\n    cb_push_back({out}, {buffer}Block);\n}}")
         )
-        self.body_moves.append(
-            Line(f"if (!movement.move({value.cxx})) {{\n    return false;\n}}",
-                 {value.cxx})
-        )  # fmt: skip
+        value.move = Line(
+            f"if (!movement.move({value.cxx})) {{\n    return false;\n}}", {value.cxx}
+        )
+        self.body_moves.append(value.move)
         self.wait(node, "compute", WAIT_OUTPUT)
         self.wait(node, "mover B", WAIT_DATA)
+
+    def take_page(self, node, name, value, bound, before, after):
+        """A write stream's page for a body on mover B, after pack's body filled it
+        outside a stream loop: mover B waits for the page, the body gets its L1
+        address, and the movers write it after this body, not at pack's line."""
+        if value.move is None or self.stream_loops:
+            self.refuse(
+                node,
+                f"{name}'s page is mover B's after pack's body fills it, outside a "
+                "stream loop",
+                f"take {name} on pack first, then on mover B, outside the loop",
+            )
+        if not value.letters.startswith("B"):
+            self.refuse(
+                node,
+                f"{name}'s block is not mover B's to write",
+                'give the write stream pattern="B"',
+            )
+        if value.waited:
+            self.refuse(
+                node,
+                f"{name}'s page is taken on mover B above",
+                "take it in one body on mover B",
+            )
+        value.waited = True
+        buffer, half = value.buffer.name, f"out_{name}"
+        given = value.pattern if value.pattern in self.scope else None
+        before.append(
+            Line(
+                f"const uint32_t {half} = "
+                f"km::block_half({buffer}, {value.pattern}, 0);\n"
+                f"if (!movement.wait_front({half}, {buffer}Block)) {{\n"
+                "    return false;\n}\ninvalidate_l1_cache();",
+                uses=pattern_uses(given),
+                mover="B",
+            )
+        )
+        bound.append(f"const uint32_t {name} = get_read_ptr({half});")
+        after.append(Line(value.move.text, set(value.move.uses)))  # both movers
+        value.move.text = f"// {name}: written after mover B's body below"
+
+    def take_moved(self, name, value, bound):
+        """A stream loop's name after the loop, for a body on a mover: what that mover
+        moved in the loop's move (km::Moved), `name_tiles` and `name_cycles`."""
+        moved, move = value.cxx, value.move
+        if not move.text.startswith("km::Moved"):
+            move.text = f"km::Moved {moved} = {{0, 0}};\n" + move.text.replace(
+                "movement.move(", f"movement.move({moved}, ", 1
+            )
+        bound.append(f"const uint32_t {name}_tiles = {moved}.tiles;")
+        bound.append(f"const uint32_t {name}_cycles = {moved}.cycles;")
 
     def page_wait(self, value, pages=1):
         """The opening of mover B's wait for the page(s) compute packs of `value`."""

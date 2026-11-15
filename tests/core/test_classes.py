@@ -578,6 +578,63 @@ def test_an_own_field_is_a_buffer_of_bodies_with_one_producer():
             compile_class(cls, {}, {"source": tensor("bfloat16")})
 
 
+class Assembled(km.Program):
+    words: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_a")
+
+    @km.handler
+    def page(self, source: km.Tensor, out: km.Tensor):
+        for tile in km.Stream(source.pages(0, 8), pattern="A"):
+            km.cxx("look(tile);", takes=[tile], on="pack")
+        km.cxx("hand(words, tile_tiles, tile_cycles);", takes=[tile, self.words],
+               on="mover_a")  # fmt: skip
+        report = km.Stream(out.pages(self.rank, 1), write=True, pattern="B")
+        km.cxx("fill(report);", takes=[report], on="pack")
+        km.cxx("add(report, words);", takes=[report, self.words], on="mover_b")
+
+
+class AssembledOnA(km.Program):
+    @km.handler
+    def page(self, out: km.Tensor):
+        report = km.Stream(out.pages(self.rank, 1), write=True, pattern="B")
+        km.cxx("fill(report);", takes=[report], on="pack")
+        km.cxx("add(report);", takes=[report], on="mover_a")
+
+
+class AssembledFirst(km.Program):
+    @km.handler
+    def page(self, out: km.Tensor):
+        report = km.Stream(out.pages(self.rank, 1), write=True, pattern="B")
+        km.cxx("add(report);", takes=[report], on="mover_b")
+
+
+class AssembledByA(km.Program):
+    @km.handler
+    def page(self, out: km.Tensor):
+        report = km.Stream(out.pages(self.rank, 1), write=True, pattern="A")
+        km.cxx("fill(report);", takes=[report], on="pack")
+        km.cxx("add(report);", takes=[report], on="mover_b")
+
+
+def test_mover_b_adds_words_to_a_page_before_the_movers_write_it():
+    tensors = {"source": tensor("bfloat16"), "out": tensor("uint32")}
+    compiled = compile_class(Assembled, {}, tensors)
+    movement = "\n".join(render(prune(compiled.movement["page"]), 0))
+    assert "km::Moved moved0 = {0, 0};\nif (!movement.move(moved0, read0))" in movement
+    assert "const uint32_t tile_cycles = moved0.cycles;" in movement  # mover A's
+    waited = movement.index("if (!movement.wait_front(out_report, kWrite0Block))")
+    body = movement.rindex("add(report, words);")  # the body, not its comment
+    assert waited < body < movement.index("if (!movement.move(write0))")
+    assert "const uint32_t report = get_read_ptr(out_report);" in movement
+    assert "const uint32_t words = kFieldWords;" in movement  # A to B by an own field
+    for cls, match in (
+        (AssembledOnA, "report is a write stream: its pages are pack's to fill"),
+        (AssembledFirst, "report's page is mover B's after pack's body fills it"),
+        (AssembledByA, "report's block is not mover B's to write"),
+    ):
+        with pytest.raises(Refused, match=match):
+            compile_class(cls, {}, {"out": tensor("uint32")})
+
+
 class Patterned(km.Program):
     @km.handler
     def copy(self, source: km.Tensor):

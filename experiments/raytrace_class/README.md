@@ -25,7 +25,7 @@ first, count = directory.pages(self.rank, 1).read()[0:2]
 hit = km.Stream(hits.items(first, count, size=HIT), write=True, pattern="B")
 image = km.cxx("image = tree;", takes=[self.tree], gives=int, on="pack")
 km.cxx("...setup...", takes=[image], on="pack", include=[".../walk.hpp"])
-for rays in km.Stream(packets.items(first, count, size=PACKET)):
+for rays in km.Stream(packets.items(first, count, size=PACKET), pattern="A"):
     km.cxx("...the walk of one packet...", takes=[rays, hit, mode], on="pack")
 report = km.Stream(profile.pages(self.rank, 1), write=True, pattern="B")
 km.cxx("...finish, the profile page...", takes=[report], on="pack")
@@ -55,7 +55,9 @@ the same tensors in one load, also one command at a time (`depth=1`).
 
 ## Results
 
-Card 1, a Blackhole p150a, AICLK 1,350 MHz; the median of 5 commands of each.
+Card 1, a Blackhole p150a, AICLK 1,350 MHz; the median of 5 commands of each. These
+are the class before its profile page held the movers' words; the class with them is
+in the section The profile page from three CPUs' words.
 
 | | Class | Hand |
 |---|---|---|
@@ -67,8 +69,8 @@ Card 1, a Blackhole p150a, AICLK 1,350 MHz; the median of 5 commands of each.
 
 The hand's 3,259.9 us is today's; the project's README records 3.007 ms (2026-11-13) and
 3.263 in its frame. The class's kernels hold the trace alone, the hand's all of its
-handlers. The class's profile page holds the pack CPU's counters; the reader's and the
-writer's counters are not in it (the last section).
+handlers. The class's profile page now holds the reader's and the writer's words too (The
+profile page from three CPUs' words).
 
 The 35.0 us between them. On the slowest core (core 41 in both, 288 packets) the pack
 CPU's span is 29.4 us longer:
@@ -132,14 +134,75 @@ this class does not need it: its tensors are moved by streams and a word read. A
 class's compute kernel now starts the unit with its own first read and write buffers
 (this class: its packets' and its hit pages'), not buffers 0 and 16.
 
-## What is still not said
+## The profile page from three CPUs' words
 
-The reader's and the writer's counters in the profile page (their waits, their reads,
-their pages): the hand puts three CPUs' words into one page, compute's from its output
-page, the reader's from its own L1, and the writer writes it. A class line for it needs
-a word handed from mover A to mover B and a body on mover B over a write stream's page
-before the movers write it, more than 40 lines of the compiler: not built. The class's
-page holds the pack CPU's words, so `check.py` compares the walk's counts alone.
+The hand's page holds three CPUs' words. Compute's are words 0 to 31, and the reader's
+wait, read, total and pages are words 32 to 35. The writer's wait, write, total and
+pages are words 48 to 51. The reader keeps its words in its own L1 page and the writer
+copies them from there. The class says the same page with these lines:
+
+```python
+handoff: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_a")  # the reader's words
+...
+for rays in km.Stream(packets.items(first, count, size=PACKET), pattern="A"):
+    ...
+km.cxx(
+    "...wait, read, total, pages into handoff...",
+    takes=[rays, self.handoff],
+    on="mover_a",
+)
+report = km.Stream(profile.pages(self.rank, 1), write=True, pattern="B")
+km.cxx("...the walk's words...", takes=[report], on="pack")
+km.cxx(
+    "...handoff's words, then the writer's...",
+    takes=[report, rays, self.handoff],
+    on="mover_b",
+)
+```
+
+Mover B owns the page. Its body waits for the page pack pushed, then copies mover A's
+words from the own field. Mover A pushed them after its move. Then it adds its own
+words, and the movers write the page after the body. Each mover stamps the wall clock
+in bodies before the directory's read and before the loop. `rays` taken on a mover
+after the loop gives `rays_tiles` and `rays_cycles`, what that mover moved in the
+loop's move (its tiles, and the cycles of the passes that moved a block). So pages is
+tiles, read or write is cycles, and wait is the move's span less cycles. The packets
+are read by mover A alone (`pattern="A"`), as the hand's reader reads them, so the
+counts can be equal.
+
+Card 0, AICLK 1,350 MHz, one job: the hand, the class, then the hand again in one
+session, 5 commands each. Each time word is summed over the 120 cores. The spread was
+stated before the job: the larger of 2 % and the hand's difference between its two
+runs.
+
+| Word | Hand | Class | Class against hand | Hand against itself |
+|---|---|---|---|---|
+| reader pages, writer pages | | | 0 cores differ | |
+| reader wait (cycles) | 399,225,410 | 397,124,624 | -0.5 % | +0.1 % |
+| reader read | 22,624,811 | 30,671,655 | **+35.6 %** | -1.3 % |
+| reader total | 422,487,278 | 427,885,312 | +1.3 % | +0.05 % |
+| writer wait | 419,305,441 | 414,195,668 | -1.2 % | +0.02 % |
+| writer write | 11,094,769 | 20,607,799 | **+85.7 %** | +1.3 % |
+| writer total | 431,044,591 | 435,554,328 | +1.0 % | +0.05 % |
+
+The counts, the waits and the totals are within the spread. The read and write words
+are not. The class's movers spend 8.0 and 9.5 million cycles more over the cores in
+passes that move a block, about 50 and 59 us a core, out of a total of about 3,300 us.
+That cost is not chased here, and the job that would chase it was not run. One
+difference is how the words are defined. The class's word counts a whole pass of the
+move engine, from its start to its hand-on (the L1 invalidate, the offers of every
+stream, the barrier, the push or pop). The hand's word counts its own read loop less
+its reserve's wait. Each of the walk's counts is still equal, and 0 of 18,874,368 hit
+words differ.
+
+| | Class | Hand | Class without the movers' words (card 1) |
+|---|---|---|---|
+| Time a command (median of 5) | 3,289.4 us | 3,259.6 us, again 3,260.0 | 3,294.9 us |
+| Kernel text, B (mover A, mover B, unpack, math, pack) | 15,392, 12,836, 6,268, 1,224, 13,368: 49,792 | 85,808 (every handler) | 48,240 |
+
+The page's lines add 1,552 B to the total: by CPU, mover A +224, mover B +1,508,
+unpack -196 (the packets now come from one half, pattern "A"). check.py compares the reader's and
+the writer's words beside the walk's counts.
 
 ## The lines in the rasterizer
 

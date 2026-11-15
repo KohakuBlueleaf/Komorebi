@@ -127,6 +127,7 @@ words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, 
 | `class P(km.Program, compute={...})` | | the compute kernel's options, by the host API's names, over the ones the class's lines set |
 | `w = km.cxx(..., gives=int)` | `uint32_t w = 0;` then the body, which sets it | the same |
 | `t = km.cxx(..., gives=km.Tile)` | | `tile_regs_acquire()` then the body, which leaves the tile in DST 0 |
+| `km.cxx(..., takes=[report], on="mover_b")` after pack's body over `report` | mover B: the page waited for, the body, then the movers' write of it | (A page from several CPUs' words) |
 | `self.f.fill(km.Stream(t.pages(first, n)))` | mover A: `reserve` of the field, `km::read_pages` of its n tiles, the barrier, `cb_push_back` | |
 | `self.f.fill(km.Stream(t.tiles[r0:r1, c0:c1]))` | the same, a read a row; refused on the card when the rows are more than the field holds | |
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
@@ -192,8 +193,8 @@ What a body takes, by where it runs:
 |---|---|---|---|
 | an int, a partition, a pattern, a page's words (`.read()[0:2]`) | by its name | by its name | by its name |
 | a body's word (`w = km.cxx(..., gives=int)`) | a word of compute's three | a word of that CPU, or of compute's three | a word of that mover |
-| a stream's tile or item (the loop's name) | `name_buffer` and `name_index`, its buffer and place | `name`, its L1 address: unpack's own; math and pack are handed it by mailbox before the body and hand a release back after it, and unpack frees the block only then | |
-| a write stream | | on pack: `name`, the L1 address of the page it fills (0 when compute gave up); in a stream loop the loop's page, reserved with the block and pushed after it (block= the loop's); outside one, one block reserved, pushed after the body and moved by the movers at that line | |
+| a stream's tile or item (the loop's name) | `name_buffer` and `name_index`, its buffer and place | `name`, its L1 address: unpack's own; math and pack are handed it by mailbox before the body and hand a release back after it, and unpack frees the block only then | after the loop: `name_tiles` and `name_cycles`, what this mover moved in the loop's move (`km::Moved`: its tiles, the cycles of its passes that moved a block) |
+| a write stream | | on pack: `name`, the L1 address of the page it fills (0 when compute gave up); in a stream loop the loop's page, reserved with the block and pushed after it (block= the loop's); outside one, one block reserved, pushed after the body and moved by the movers at that line | mover B, outside a loop, after pack's body: `name`, the L1 address of the page pack pushed, waited for; the movers write it after this body, not at pack's line (A page from several CPUs' words) |
 | a field filled above in the handler | its buffer, freed after the body | its L1 address (unpack's own, handed to math or pack), freed after the body | mover B: its L1 address, freed after the body |
 | a field another handler fills (kept) | its buffer, waited for, never freed (the filler frees its last fill before the next) | its L1 address, waited for once, handed to math or pack | mover B: its L1 address |
 | an own field (`km.own()`) | `name`, its buffer, no wait, no free | the same | the same |
@@ -246,6 +247,38 @@ refused. The pack and unpack CPUs share no variable, so state written in place n
 token from the writer to the reader (`step` above), as the attention pass's has. A
 body that copies from buffers of two formats sets the unpacker's format before each
 copy (`reconfig_data_format_srca(total)`): `copy_init` keeps the one it finds.
+
+### A page from several CPUs' words
+
+A page written once can hold the words of pack, mover A and mover B, as the ray
+tracer's profile page does. Pack's body fills the page of a write stream outside a
+loop. A body on mover B then takes the same stream: mover B waits for the page, the
+body gets its L1 address and adds its words, and the movers write the page after that
+body. Mover A's words reach mover B through an own field that mover A pushes
+(`km.own(push="mover_a")`). The time words come from the loop's move: a mover's body
+after a stream loop takes the loop's name and gets `name_tiles` and `name_cycles`. From
+[raytrace_class](../../experiments/raytrace_class/trace_class.py):
+
+```python
+handoff: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_a")  # the reader's words
+...
+km.cxx(
+    "...wait, read, total, pages into handoff...",
+    takes=[rays, self.handoff],
+    on="mover_a",
+)
+report = km.Stream(profile.pages(self.rank, 1), write=True, pattern="B")
+km.cxx("...the walk's words...", takes=[report], on="pack")
+km.cxx(
+    "...the reader's words from handoff, then the writer's...",
+    takes=[report, rays, self.handoff],
+    on="mover_b",
+)
+```
+
+The page is mover B's: a body on mover A that takes it, a body on mover B before
+pack's, and a stream whose block is not mover B's (pattern other than `"B"`) are
+refused.
 
 ## Tile functions
 
