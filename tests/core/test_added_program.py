@@ -131,7 +131,9 @@ def test_per_core_args_go_in_a_row_a_core_and_word_fields_and_overlays_are_refus
     other = project(form="runtime")
     loaded = twice(form="runtime", beside=other)
     other.args = lambda core: ([core, 7], [core + 100], [2 * core, 3, 4])
-    assert added_program.refused(run_of(loaded), other) == ""
+    assert "named with Program.ahead" in added_program.refused(run_of(loaded), other)
+    built = run_of(loaded, backend=backend(switch_args=True))
+    assert added_program.refused(built, other) == ""
     rows, row_bytes = added_program.args_defines(other, 3)
     assert rows[2] == [2, 7, 102, 4, 3, 4] and row_bytes == programs.CB_ALIGN
     c = overlay.constants()
@@ -197,7 +199,7 @@ def test_a_class_named_ahead_takes_the_next_field_and_sizes_the_area():
     reserve = added_program.pad_reserve(made, placed, 0x20000)
     assert reserve >= end + programs.CB_ALIGN
     assert made.switch_pad not in {b.index for b in [*loaded.buffers, *other.buffers]}
-    assert made.switch_loaded == 1
+    assert made.switch_loaded == 1 and made.switch_args is False
     made.session._module = native_module()
     (part,) = added_program.ahead_overlays(made, placed, 0, {})
     assert part.number == overlay.constants()["kOverlayService"] - 2

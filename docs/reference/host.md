@@ -276,7 +276,9 @@ live); `session.load(..., buffers=N)` makes the area N bytes from the runtime's 
 live run: `gate.ahead(project)` before the load sizes them by its parts and builds them,
 so the add takes milliseconds; else `Program.slots(bytes=)`. Its per-core args (a
 rectangle, a broadcast, `self.x`) go in a DRAM table, one row per core, which its load
-command copies into the switch area; nothing of it is reserved at the launch
+command copies into the switch area; nothing of it is reserved at the launch, and
+the load's kernels hold that copy only when such a class is named with `ahead` before
+the load
 ([classes](classes.md#another-class-added-to-a-live-run), item 6). A thread reaches it with `kmx_load`
 and its handler with the words `run.thread_words(handler, args)` gives
 ([threads](threads.md#a-class-added-to-the-live-run)). The refusals:

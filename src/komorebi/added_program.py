@@ -109,6 +109,8 @@ def pad_reserve(backend, placed, reserve):
     # the highest free index: a class made later takes the low ones first
     backend.switch_pad = max(set(range(programs.SWITCH_BUFFERS)) - used)
     backend.switch_loaded = len(placed.programs)
+    # the load command's row read is built only for a class named ahead with args
+    backend.switch_args = any(other.args is not None for other in ahead)
     for other in ahead:
         backend.session._hand_nocs(other)
         _, row_bytes = args_defines(other, placed.cores)
@@ -394,6 +396,12 @@ def refused(run, program):
         loaded.kernel_noc("writer"),
     ):
         return f"{program.name}: other NoCs than the loaded kernels'"
+    if program.args is not None and not getattr(run.backend, "switch_args", False):
+        return (
+            f"{program.name}: per-core args (a rectangle, a broadcast, self.x) need "
+            "the load command's row read, built only when a class with them is named "
+            "with Program.ahead(...) before the load"
+        )
     if getattr(program, "word_fields", None):
         return (
             f"{program.name}: word fields (their L1 tensors are made with the class "

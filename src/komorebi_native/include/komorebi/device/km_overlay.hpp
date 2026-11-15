@@ -422,7 +422,9 @@ namespace km {
             limit,
             0
         );
+#if defined(KM_ADDED_ARGS)
         invalidate_l1_cache();  // an added class's row, written by the reader's read
+#endif
         if (code != kGaveNone) {
             const uint32_t word = follower == 0 ? kStWriter : kStCompute;
             command_gave_up(control, word, code, kWhereProgramSwitch, 0, sequence);
@@ -502,6 +504,7 @@ namespace km {
         if (!reader.flushed(kFlushReads, kStReader) && code == kGaveNone) {
             code = kGaveStop;  // recorded by flushed: the tile stops
         }
+#if defined(KM_ADDED_ARGS)  // a class named ahead has per-core args (added_program)
         // An added class's row, landed before the go below: the four other CPUs park
         // until the go (program_follow), so none runs the class's next command before.
         if (code == kGaveNone && record[kRecordArgs] != 0) {
@@ -517,6 +520,7 @@ namespace km {
                 code = kGaveStop;
             }
         }
+#endif
         const uint32_t mask = record[kRecordMask], both = mask | line[kSwitchMask];
         if (code == kGaveNone && record[kRecordField] != field) {
             code = kGaveOverlay;

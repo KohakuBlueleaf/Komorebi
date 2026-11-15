@@ -409,8 +409,11 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    them unchecked (only their compute refuses it, `program start`). The row costs the
    load command little: 6.80 and 4.78 µs (first load, second) with a 64 B row and 7.86
    and 4.60 µs with a 128 B row, against 8.02 and 4.34 µs for a class without args and
-   7.84 and 4.38 µs for the loaded gate. Word fields stay refused (their
-   L1 tensors are made with the class).
+   7.84 and 4.38 µs for the loaded gate. The row read is built into the load's kernels
+   only when a class with per-core args is named with `Program.ahead(other)` before
+   the load (412 B of the reader's text, about 40 B of each other CPU's); a load
+   without one pays nothing, and an add of a class with per-core args to it is refused
+   by name. Word fields stay refused (their L1 tensors are made with the class).
 
 Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
 `opt` levels or NoCs, word fields, overlays of its own or a dynamic handler, buffers
