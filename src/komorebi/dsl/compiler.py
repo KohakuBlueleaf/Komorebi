@@ -5863,7 +5863,7 @@ class HandlerCompiler:
             dtype,
             page_bytes,
             block,
-            READ_ITEMS,
+            1,  # one block a half: the block is held until the end of its lines
             f"line {node.lineno}: {self.text(node)}",
         )
         pattern_text = self.pattern_cxx(buffer, pattern, letters)

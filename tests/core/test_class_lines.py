@@ -604,6 +604,10 @@ def test_a_read_stream_bodies_take_is_held_across_the_loops_inside():
     assert compute.index(wait) < compute.index("score(") < compute.index("finish(")
     assert compute.index("finish(") < compute.index(free)
     assert compute.count(free) == 1
+    # one block a half: the block is held, so no second is read ahead into it
+    compiled = compile_class(Held, {}, tensors)
+    (pair,) = [b for b in compiled.buffers if b.name == "kRead0"]
+    assert pair.pages == (8, 8)
 
 
 class HeldLarge(km.Program):
