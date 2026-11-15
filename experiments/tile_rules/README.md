@@ -46,6 +46,7 @@ reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.
 | writer (RISCV_0): the output tiles, then the info page | `kernels/writer.cpp` |
 | shared layout of buffers and the info page | `kernels/rules.hpp` |
 | the per-core attention body (BODY 18, 19) and its reader | `kernels/attention.cpp`, `kernels/attn_reader.cpp` |
+| the attention body in stages (score product, + the step, the whole body, body 19), one session, each stage's name printed before its launch | `attn_stages.py` |
 | driver: emits `kernels/generated/*.hpp`, builds, runs, checks | `rules.py` |
 
 ```
@@ -166,3 +167,13 @@ the accurate softmax step (-12%: 26 KB of straight-line code, unexplained).
   (Float32 for the unpacker, wrong for products). The first hand norm gave even
   columns 0 and odd columns scaled by about 10^3 or 10^-19; the first hand gate gave 58
   non-finite values. With `reconfig_data_format` before each product both are right.
+
+## The row state is not a queue
+
+The attention body keeps its row state in one page of `kCbSt`, written in place by the
+pack CPU and never pushed or popped. A buffer with two producers (the reader's first
+page, then the pack CPU's) hangs: the pack CPU's push writes its own count of pushes
+into the buffer's received counter, not an increment, so after its first push the
+counter reads 1 although two pages were pushed, equals the pops, and the unpacker's wait
+for the next page never returns. The first version of the body did that and left the
+core stuck twice.
