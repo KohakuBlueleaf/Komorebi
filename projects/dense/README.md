@@ -124,7 +124,14 @@ the whole partition, at most 32 tiles) and `--reduce owner|tree`.
 
 | Handler | Arguments |
 |---|---|
-| `SPLIT` | a0 a_address (A), a1 w_address (W), a2 y_address (Y), a3 reduce_form (0 owner, 1 tree), a4 mode: 0 full, 1 parts only (each core's part packed and dropped: no reduce, no writes) |
+| `SPLIT` | a0 a_address (A), a1 w_address (W), a2 y_address (Y), a3 reduce_form (0 owner, 1 tree), a4 mode: 0 full, 1 parts only (each core's part packed and dropped: no reduce, no writes), a5 the plan: its index in the program's table of plans (0, the first, when a command leaves it out) |
+
+One loaded program can take several shapes: `card.split_program` takes a list of plans that
+share their buffers (the same `oh`, `ow`, `kc`, subblock and arrival pages:
+`split_plan(..., arrive=)`), and puts them in the kernels' arguments one after the other
+(`plan.split_table`, at most 8); a command's a5 names the plan it runs
+(`split_args(..., index=, plans=)`). The kernels read their plan words at a5 x 11 for each
+command, so a command without a5 runs the first plan as before.
 
 Measured on 2026-11-13 at 13:00 to 13:06 (X280 at 1,000 MHz, card clock 1,350 MHz
 throughout), each against Kohaku-TT's best route in the same session, every check

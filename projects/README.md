@@ -18,3 +18,6 @@ rather than staying in the project.
   float64 and measured against Kohaku-TT's routes on the same card.
 - [attention](attention/README.md): scaled dot-product attention on broadcasts of cores,
   K / V multicast down each broadcast, Kohaku-TT's flash compute body, checked against float64.
+- [decode](decode/README.md): an LLM decode step, Qwen3-1.7B's 28 layers on the K split
+  with the operations as overlays, walked by an X280 thread from one command, with an
+  account of every microsecond above the DRAM read.
