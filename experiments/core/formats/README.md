@@ -167,6 +167,43 @@ each operand (5 and 7 kept at LoFi, 7 and 10 at HiFi2), and measure alike; at Hi
 the 16-bit Dst's sums are the error. The 16-bit Dst's transpose back costs about
 0.2 us a command here, the broadcasts' 0.1 us.
 
+### A tile function of the A family
+
+`tile_a_family.py`: the gate `silu(a @ w1) * (a @ w3)` of each 32 x 32 tile (its two
+products traced into the unit program), 64 tiles a core on 12 cores, a normal, w1 and
+w3 normal / sqrt(32), the result packed to float32; fp16 tensors and fp16 a with bfp8
+w (a 16-bit Dst) beside bf16 and bf16 a with bfp8_b w (an fp32 Dst). "computed": the
+card's result against the float64 gate of the values the tensors hold; "inputs": that
+float64 gate against the float64 gate of the float32 inputs (the host's encode alone).
+The median of 3 commands.
+
+| tensors | computed rms rel | max / rms | inputs rms rel | us |
+| --- | --- | --- | --- | --- |
+| fp16 | 1.48e-3 | 0.050 | 4.35e-4 | 87.6 |
+| fp16, bfp8 w | 1.16e-3 | 0.035 | 9.94e-3 | 87.0 |
+| bf16 | 4.57e-4 | 0.012 | 3.48e-3 | 87.2 |
+| bf16, bfp8_b w | 4.56e-4 | 0.016 | 1.02e-2 | 86.7 |
+
+The same words in both families (1336 a tile), so the same time. The A family's
+products' sums and its result are truncated to 11 bits in the 16-bit Dst: x * y of fp16
+tiles, an exact product in the vector registers, read back equal to it rounded toward
+zero in 99.998 % of datums (to nearest even in 50 %), rms rel 4.13e-4.
+
+`--set fix`: x * y of two streams of two formats, which the call read wrong before
+it set SrcA's format before each copy (the second operand read in the first's
+format: rms rel 2.9e4 for fp16 x bfp8, infinite for bf16 x bfp8_b); after it, fp16 x
+bfp8 3.95e-4 (the store's truncation) and bf16 x bfp8_b exact.
+
+`--set edges`, fp16 tensors in three groups of tiles: a product's sums of std 45,000
+(37,700 above 65,504), values of magnitude 10^U(-6, -1) (under 2^-14 and around it),
+and ordinary ones. A sum above 65,504 never read infinity: each read as itself
+truncated up to 131,008 and saturated there (read / want 0.558 to 1.003; the largest
+read 131,008), and x * y above 65,504 (22 datums) read as itself truncated (0.9991 to
+0.99995). Under 2^-14: every x * y under it read 0 (236,536 of 236,536); a product's
+sums lose the terms whose operands are under 2^-14 (read 0 at the unpack): 8,344 sums
+of 2^-14 or more read 0, and the rest of that group is 2.46e-2 off. The ordinary
+group: 8.7e-4 (a @ w1) and 4.1e-4 (x * y).
+
 ## Running it
 
     python experiments/core/formats/probe.py build [--set 2]   # mock device: builds every case
@@ -180,3 +217,5 @@ cache, runs each case once and writes `results/card<set>.json`.
     python experiments/core/formats/placement.py card    # one card: results/placement.json
     python experiments/core/formats/placement_more.py build   # mock device: the five programs
     python experiments/core/formats/placement_more.py card    # one card: results/placement_more.json
+    python experiments/core/formats/tile_a_family.py build [--set fix|edges]   # mock device
+    python experiments/core/formats/tile_a_family.py card [--set fix|edges]    # one card: results/tile_a_family*.json

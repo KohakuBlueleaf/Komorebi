@@ -697,6 +697,22 @@ command reaches other than as a tensor argument is the programmer's.
 
 Described in [Tile formats, placement](formats.md#placement).
 
+### An A-family tile function's values at the 16-bit Dst's edges
+
+**The hazard.** A tile function of the A family keeps its products' sums and its result
+in a 16-bit `Dst`, truncated to 11 significant bits: sums above 65,504 read as
+themselves up to 131,008 and saturate there (never infinity), values under 2^-14 read
+0 (an operand under 2^-14 is 0 from its unpack), and a result above 65,504 packed to an
+fp16 tensor reads as infinity or NaN on the host.
+
+**The rule.** Scale an A-family function's operands so its products' sums and its
+result lie between 2^-14 and 65,504, or give its result a float32 tensor, or compute
+it in the B family.
+
+**The guard.** Nothing.
+
+Described in [Tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function).
+
 ## X280 threads
 
 ### A thread that never polls the stop flag
