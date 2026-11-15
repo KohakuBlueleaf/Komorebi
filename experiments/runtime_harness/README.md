@@ -37,7 +37,8 @@ Each compute thread is compiled as its own object, as it is its own program on t
 card. The build renames the runtime's namespace per thread (`-Dkm=km_unpack`, and so
 on), and the compute stub's functions are `static`. Without that, the linker keeps one
 thread's copy of an inline function for all three. At `-O0`, where little is inlined,
-that made pack run unpack's buffer calls. Each scenario prints `ok` or `FAIL`, followed by any failed checks, kernels
+that made pack run unpack's buffer calls. A link's transport is built as NoC writes
+(`KM_WIRE`): the stub has no fabric headers. Each scenario prints `ok` or `FAIL`, followed by any failed checks, kernels
 that did not return, and broken stub rules. `--tree` builds another checkout's runtime
 headers and example kernels against this harness.
 

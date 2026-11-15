@@ -25,6 +25,12 @@ NAMES = {
         "km.handler(overlay=True): its code an overlay, loaded and called",
         None,
     ),
+    "stamps": Name(
+        "stamps",
+        'km.handler(overlay=True, stamps="t"): its load and call cycles, a page a '
+        "mover of tensor t",
+        None,
+    ),
     "field": Name("L1", "km.L1[format, *shape]: a field resident in the L1", None),
     "symbol": Name(
         "symbol", "K = km.symbol(): a size the plan gives or the build solves", None
@@ -45,6 +51,26 @@ NAMES = {
     ),
     "x": Name("x", "self.x: this core's column in the broadcasts' rectangle", None),
     "y": Name("y", "self.y: this core's row in the broadcasts' rectangle", None),
+    # messages (a dynamic handler: compute alone, the runtime's movers)
+    "message": Name(
+        "Message",
+        "class Visit(km.Message): a message's named words (int annotations)",
+        "message",
+    ),
+    "arrive_messages": Name(
+        "arrive",
+        "for message in self.arrive(): each message this core is given; the loop's "
+        "handler is dynamic",
+        None,
+    ),
+    "seeding": Name(
+        "seeding", "if self.seeding(): the run's first messages, sent from here", None
+    ),
+    "send": Name("send", "self.send(rank, message): a first message to rank", "send"),
+    "forward": Name(
+        "forward", "self.forward(rank, message): the message, on to rank", "forward"
+    ),
+    "consume": Name("consume", "self.consume(): the message, ended here", "consume"),
     # moves
     "stream": Name("Stream", "km.Stream(pages, block=, pattern=): a stream", "stream"),
     "write_stream": Name("write", "km.Stream(..., write=True): a write stream", None),
@@ -54,8 +80,18 @@ NAMES = {
     "push": Name("push", "out.push(tile): a tile into a write stream", None),
     "fill": Name("fill", "self.field.fill(km.Stream(pages)): pages into a field", None),
     "pages": Name("pages", "tensor.pages(first, count): a range of pages", "page"),
-    "read": Name("read", "pages.read(): the pages, read", "read"),
-    "write": Name("write", "pages.write(tile): the tile, written there", "write"),
+    "read": Name(
+        "read",
+        "pages.read(): the pages, read (a cast's block); word = pages.read() of one "
+        "page: its first word, on mover B",
+        "read",
+    ),
+    "write": Name(
+        "write",
+        "pages.write(tile): the tile, written there; pages.write(word): a mover's "
+        "word as the page's first word",
+        "write",
+    ),
     "reduce": Name("reduce", "km.reduce(tile, form=): the group's sum", "reduce"),
     "form": Name("form", "a reduce's form: owner or tree", "form"),
     "broadcast": Name("Broadcast", "km.Broadcast(self, along=): a broadcast", None),

@@ -19,9 +19,11 @@ step, written at the call's return to its page of a copy tensor) and adds each
 island's steps, from its first rank's entry, to the row. A NoC write reads L1 only, and
 a kernel's statics are the core's own local memory: so the service overlay keeps the
 stamps in its slot, and a kernel gives the calls 128 bytes of its L1
-(`km::coll_stamps_in`, here the buffer `kCbStamps`). The stamps of the host's form
-were run (the account in `docs/reference/islands.md`); those of the kernel form were
-not yet run.
+(`km::coll_stamps_in`, here the buffer `kCbStamps`). Both forms' stamps were run
+(the account in `docs/reference/islands.md`). `--store` stores the kernel form's
+command by the wait (one native call for every island), or island by island from
+Python (`old`); `--inspect` reads every rank's state once after the load
+(`run.inspect()`), each island's in its own ranks.
 
 ## Results
 

@@ -15,8 +15,6 @@
 
 namespace km {
 
-    constexpr uint32_t kWhereRelay = 61;  // link core 0: an ask it could not serve
-
     // An ask's words (64 bytes, the asking core's line for its NoC): the first 48
     // bytes, then its valid word on a line of its own, written last.
     constexpr uint32_t kAskSource = 0;   // the asking core, local

@@ -167,6 +167,6 @@ while (const uint32_t count = port.next(first, word)) {
 ```
 
 **When a side does not answer.** Every wait times out at the wait limit and sees the
-stop flag. A give-up commands `where` = `kWhereX280Answer` (37), `kWhereX280Tell` (38)
-or `kWhereX280Send` (36) for a store that did not leave, `kWhereX280None` (39) when the
+stop flag. A give-up commands `where` = `kWhereX280Answer` (54), `kWhereX280Tell` (55)
+or `kWhereX280Send` (53) for a store that did not leave, `kWhereX280None` (56) when the
 program gave the core no X280 core. The command then ends as any command whose core gave up.

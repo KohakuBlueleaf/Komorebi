@@ -725,9 +725,11 @@ program has to be written around is under
    dynamic run on part of the ranks, a put to an island two links away.
 2. **Collectives across islands at the links' rate.** An all-gather and an all-reduce
    are calls, from a kernel and from the host (on `main`, after 0.2.0). A gather of two
-   pages takes 19.7 µs where a message crosses in 4.7 µs, a larger one moves 14 to 23
-   GB/s each way where puts on the same links reach 72.5 GB/s, and the reduce's
-   addition is made by the movers in integer instructions, not by the compute units.
+   pages takes 12.7 µs where a message crosses in 4.7 µs; a larger one moves 15 to 25
+   GB/s each way where puts from every core on the same links reach 72.5 GB/s (one
+   line from DRAM a share, bound by the reads a link core keeps in flight); and the
+   reduce's addition is made by the movers in integer instructions, not by the compute
+   units.
 3. **Tensors an island cannot hold yet.** A tensor is placed by pages of one size set
    at build. A range of one DRAM bank (an X280 thread's region) and a stream whose page
    size is set by the command are named by bank address, so only their own island

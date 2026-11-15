@@ -251,14 +251,12 @@ class Run:
         block=None,
         part=False,
     ):
-        """Queues a command for `handler` on cores [first, first + count) (default all),
-        or on cluster `cluster`'s X280 thread; returns its handle. `result`: the event
-        has the result word; `queued`: the kernel picks the cores; `block`: bytes or an
-        array its handlers read; `part`: an island's part of a split group. A handler
-        of a program written as a class takes its arguments (tensors, ints, patterns)
-        in `args`, made into its words."""
+        """Queues a command for `handler` on cores [first, first + count) (default all)
+        or cluster `cluster`'s X280 thread; returns its handle. `result`: ask the result
+        word; `queued`: the kernel picks the cores; `block`: bytes its handlers read;
+        `part`: an island's part. A class's handler makes `args` into its words."""
         started = time.perf_counter()
-        program_field = 0
+        program_field, method = 0, None
         if isinstance(handler, HandlerMethod | ClassHandler):
             method = handler if isinstance(handler, HandlerMethod) else handler.method
             result = result or method.returns
@@ -279,6 +277,8 @@ class Run:
         elif cluster is None:
             group = self._group(group)
             self._check_holds(program_field, handler, *group)
+            if method is not None:
+                self._check_rectangle(method, program_field, group)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(word) <= M32 for word in args):
@@ -298,6 +298,22 @@ class Run:
             self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
         return handle
+
+    def _check_rectangle(self, method, program_field, group):
+        """Refuses a broadcast's command of a class whose group is not the group of
+        the rectangle the program was loaded with (fixed at load)."""
+        program = self.programs[program_field]
+        line = getattr(program, "broadcast_lines", {}).get(method.name)
+        rectangle = getattr(program, "rectangle", None)
+        if line is None or rectangle is None or rectangle["group"] is None:
+            return
+        if tuple(group) != rectangle["group"]:
+            raise ValueError(
+                f"{type(program).__name__}.{method.name}, {line}: the broadcast's "
+                f"rectangle {rectangle['rect'] or 'the whole grid'} is the group "
+                f"{rectangle['group']}, fixed at load; submit it to that group "
+                f"(not {tuple(group)}), or make the program with rect="
+            )
 
     def _block_words(self, block, args, cluster):
         """The arguments with a block's address and bytes in a7 and a8, and the block
@@ -589,11 +605,16 @@ class Run:
         return self._given_up_error(handle) if handle in self._given_up else None
 
     def inspect(self, group=None, timeout=10.0):
-        """While the run goes on: the dispatcher reads each core of `group` (default
-        every core): core_state's dict, `live` (each kernel's runtime wait and command)
-        and `trace` (the latest commands' entries); `read` False for a core it could
-        not reach. inspect_ticks: the X280 timer ticks the read took on core 0."""
-        first, count = self._group(group) if group is not None else (0, self.cores)
+        """While the run goes on: the dispatcher reads each rank of `group` (flat, of
+        this island; default every core): core_state's dict, `live` (each kernel's wait
+        and command), `trace` (the latest commands' entries); `read` False for a core
+        it could not reach. inspect_ticks: X280 ticks the read took on core 0."""
+        first, count = (0, self.cores)
+        if group is not None:  # flat ranks, of this island: the dispatcher reads cores
+            low, high = self._part(*self._group(group))
+            first, count = int(low), int(high - low)
+            if count != group[1]:
+                raise ValueError(f"group {tuple(group)}: not this island's ranks")
         handle = self._queue_command(
             self.h["KMD_HANDLER_INSPECT"], (first, count), flags=self._flag_dispatcher
         )
@@ -1015,8 +1036,12 @@ class Run:
         """Stores the commands already handed to the port (one native round, no wait);
         returns the events read meanwhile, not yet filed."""
         if self.port.queued and self._handed > self._base:
-            return self.port.wait(_NO_HANDLES, (self._handed - 1) & M32, 0.0)
+            return self.port.wait(_NO_HANDLES, self._store_upto(), 0.0)
         return ()
+
+    def _store_upto(self):
+        """The number of the last command handed: what _store_handed stores up to."""
+        return (self._handed - 1) & M32
 
     def wait_any(self, handles, timeout=10.0):
         """Sends what is queued and waits for the first event among the handles;

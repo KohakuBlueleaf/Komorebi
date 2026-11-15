@@ -56,6 +56,16 @@ Most of a call is fixed: 254 more pages add 9.2 µs. On the host each call costs
 returns at once: from a kernel the time is the command's own, and `run.all_gather`
 sends nothing.
 
+These rows are from before two changes: the leader now releases its island's other
+ranks with one multicast (it took 4.4 µs as an atomic a rank, now 0.9), and the wait
+stores every island's command by one native call (the second island's store, about
+5 µs, is gone). Measured since by the account experiment
+(`experiments/islands_collectives/account`, two cards, from a kernel, every share
+exact): 2 pages 12.7 µs (the command 2.3, the entries and the meeting 1.4, the lines
+out 2.0, the other island's share 5.3, the confirm 0.1, the release 0.9); 272 pages
+(557 KB each way) 22.6 µs, of which the share's line 16.2 (51 GB/s past its first
+page: the link cores' reads in flight). `docs/reference/islands.md` has the account.
+
 ## Output
 
 Two cards, then one (`python gather.py`, `python gather.py --cards 0`), the last line

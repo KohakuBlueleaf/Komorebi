@@ -2359,6 +2359,47 @@ namespace {
             }
         }
 
+        // Each dispatcher's batch up to its upto (as its wait(.., 0.0)), back to back:
+        // every line, every read count, one fence; then each one's events.
+        static std::vector<std::vector<uint32_t>> store_together(
+            const std::vector<Dispatch*>& ports, const std::vector<uint32_t>& uptos
+        ) {
+            if (ports.size() != uptos.size()) {
+                throw std::runtime_error("a dispatcher's upto each");
+            }
+            std::vector<uint32_t> counts(ports.size());
+            for (size_t i = 0; i < ports.size(); i++) {
+                ports[i]->require_open();
+                counts[i] = ports[i]->batch_upto(uptos[i]);
+                if (counts[i] != 0) {
+                    ports[i]->settle();
+                }
+            }
+            for (size_t i = 0; i < ports.size(); i++) {
+                Dispatch& port = *ports[i];
+                port.store_lines(port.queue_.data() + 16 * port.head_, counts[i]);
+            }
+            for (size_t i = 0; i < ports.size(); i++) {
+                if (counts[i] != 0) {
+                    ports[i]->store_read();
+                }
+            }
+            _mm_sfence();
+            const auto now = Clock::now();
+            std::vector<std::vector<uint32_t>> out(ports.size());
+            for (size_t i = 0; i < ports.size(); i++) {
+                Dispatch& port = *ports[i];
+                if (counts[i] != 0) {
+                    port.fenced_ = now;
+                    port.next_ += counts[i];
+                    port.taken(counts[i]);
+                }
+                port.read_events(out[i]);
+                port.publish_if_held();
+            }
+            return out;
+        }
+
         // The events that have arrived since the last call, in order.
         std::vector<uint32_t> poll() {
             require_open();
@@ -2782,6 +2823,15 @@ namespace {
                 return;
             }
             settle();
+            store_lines(commands, count);
+            store_read();
+            _mm_sfence();
+            fenced_ = Clock::now();
+            next_ += count;
+        }
+
+        // The lines of k commands as commands next .. next + k - 1, no fence.
+        void store_lines(const uint32_t* commands, uint32_t count) const {
             alignas(64) uint32_t line[16];
             for (uint32_t index = 0; index < count; index++) {
                 const uint32_t number = next_ + index;
@@ -2791,15 +2841,10 @@ namespace {
                     KMD_LIM_HRING + (number % host_depth_) * 64u, line, 64
                 );
             }
-            store_read();
-            _mm_sfence();
-            fenced_ = Clock::now();
-            next_ += count;
         }
 
-        // One batch from the queue: the commands up to upto that fit. An exclusive one
-        // is stored as any other; the kernel's KM_FLAG_EXCLUSIVE check orders it.
-        void store_queued(uint32_t upto) {
+        // The batch store_queued(upto) takes from the queue: those up to upto that fit.
+        uint32_t batch_upto(uint32_t upto) const {
             const int64_t due = static_cast<int32_t>(upto - next_) + int64_t{1};
             size_t count = std::min<size_t>({queued(), batch_, room()});
             count = (
@@ -2807,7 +2852,19 @@ namespace {
                     static_cast<int64_t>(count), std::max<int64_t>(0, due)
                 )
             );
-            store(queue_.data() + 16 * head_, static_cast<uint32_t>(count));
+            return static_cast<uint32_t>(count);
+        }
+
+        // One batch from the queue: the commands up to upto that fit. An exclusive one
+        // is stored as any other; the kernel's KM_FLAG_EXCLUSIVE check orders it.
+        void store_queued(uint32_t upto) {
+            const uint32_t count = batch_upto(upto);
+            store(queue_.data() + 16 * head_, count);
+            taken(count);
+        }
+
+        // `count` commands left the queue's head.
+        void taken(size_t count) {
             head_ += count;
             if (head_ == queue_.size() / 16) {
                 queue_.clear();
@@ -3351,6 +3408,22 @@ NB_MODULE(_km_host, m) {
             nb::arg("wanted"),
             nb::arg("upto"),
             nb::arg("timeout_s")
+        ).def_static(
+            "store_together",
+            [](std::vector<Dispatch*> ports, std::vector<uint32_t> uptos) {
+                std::vector<std::vector<uint32_t>> out;
+                {
+                    nb::gil_scoped_release release;
+                    out = Dispatch::store_together(ports, uptos);
+                }
+                nb::list events;
+                for (auto& words : out) {
+                    events.append(as_array(std::move(words)));
+                }
+                return events;
+            },
+            nb::arg("ports"),
+            nb::arg("uptos")
         ).def(
             "poll",
             [](Dispatch& device) {

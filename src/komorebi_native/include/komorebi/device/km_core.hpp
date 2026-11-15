@@ -175,6 +175,107 @@ namespace km {
     // A core's ask for pages another island holds (km_ask.hpp): its line, the answer;
     // the gave-up word's top byte is the island asked.
     constexpr uint32_t kWhereAsk = 52;
+    // Where codes of the X280 port (km_x280.hpp, the gave-up word of the kernel).
+    constexpr uint32_t kWhereX280Send = 53;    // a store to the X280 core did not leave
+    constexpr uint32_t kWhereX280Answer = 54;  // no answer to an ask in time
+    constexpr uint32_t kWhereX280Tell = 55;    // no tell from the X280 core in time
+    constexpr uint32_t kWhereX280None = 56;  // the program gave this core no X280 core
+    // Where codes of a link (km_link.hpp; KM_MESSAGES_GAVE and kLinkGave word 0).
+    constexpr uint32_t kWhereLinkArgs = 57;    // its arguments, or the router's packet
+    constexpr uint32_t kWhereLinkSpace = 58;   // a writer: no outbox space in time
+    constexpr uint32_t kWhereLinkCredit = 59;  // no far inbox packet free
+    constexpr uint32_t kWhereLinkRouter = 60;  // no space at the router
+    constexpr uint32_t kWhereLinkSent = 61;    // a packet's writes did not leave
+    constexpr uint32_t kWhereLinkGap = 62;     // a reserved entry not written
+    constexpr uint32_t kWhereLinkSequence = 63;  // a landed packet's sequence, count
+    constexpr uint32_t kWhereLinkIsland = 64;    // an entry for no rank of this island
+    constexpr uint32_t kWhereLinkOverflow = 65;  // more landed than the inbox holds
+    constexpr uint32_t kWhereLinkRunFound = 66;  // the RUN's counter tile not ready
+    constexpr uint32_t kWhereLinkUp = 67;        // no hello from the far side
+    constexpr uint32_t kWhereRelay = 68;  // link core 0 (km_relay.hpp): an ask not served
+
+    // Every where code is in this one table, each once: the list rises (the host names
+    // them from this header).
+    static_assert(
+        [] {
+            const uint32_t codes[] = {
+                kWhereCheckin,
+                kWhereToken,
+                kWhereNext,
+                kWhereStall,
+                kWhereComplete,
+                kWhereWriter,
+                kWhereData,
+                kWhereCToken,
+                kWhereCInput,
+                kWhereCOutput,
+                kWhereCDone,
+                kWhereBroadcastBegin,
+                kWhereBroadcastDone,
+                kWhereBroadcastValid,
+                kWhereBroadcastFree,
+                kWherePort,
+                kWhereEmit,
+                kWhereMessagesGap,
+                kWhereMessagesOverflow,
+                kWhereMessagesAtomic,
+                kWhereMessagesFlush,
+                kWhereMessagesRead,
+                kWhereMessagesInPage,
+                kWhereMessagesLine,
+                kWhereMessagesBadDest,
+                kWhereMessagesNext,
+                kWhereMessagesOutPage,
+                kWhereMessagesOutbox,
+                kWhereMessagesStopped,
+                kWhereMessagesAlign,
+                kWhereMessagesLost,
+                kWhereMessagesFill,
+                kWhereMessagesFull,
+                kWhereMessagesCounter,
+                kWhereOverlayFind,
+                kWhereOverlayLoad,
+                kWhereOverlayMeet,
+                kWhereProgramSwitch,
+                kWhereMessagesHandler,
+                kWhereMessagesLoad,
+                kWhereProgramStart,
+                kWhereToHost,
+                kWhereFromHost,
+                kWhereCopy,
+                kWhereNocFlush,
+                kWhereCMailbox,
+                kWhereCConfirm,
+                kWhereClear,
+                kWhereMessagesBody,
+                kWherePages,
+                kWhereAsk,
+                kWhereX280Send,
+                kWhereX280Answer,
+                kWhereX280Tell,
+                kWhereX280None,
+                kWhereLinkArgs,
+                kWhereLinkSpace,
+                kWhereLinkCredit,
+                kWhereLinkRouter,
+                kWhereLinkSent,
+                kWhereLinkGap,
+                kWhereLinkSequence,
+                kWhereLinkIsland,
+                kWhereLinkOverflow,
+                kWhereLinkRunFound,
+                kWhereLinkUp,
+                kWhereRelay
+            };
+            for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
+                if (codes[k] <= codes[k - 1]) {
+                    return false;
+                }
+            }
+            return true;
+        }(),
+        "where codes: one table, disjoint"
+    );
 
     // What Core::flushed waits for: reads landed, writes sent from L1, writes or
     // atomics acknowledged.

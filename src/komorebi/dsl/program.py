@@ -6,9 +6,10 @@ the sizes printed, and the made object is a Program of those files.
 from dataclasses import dataclass
 from pathlib import Path
 
-from komorebi import abi, layout, overlay
+from komorebi import _env, abi, layout, overlay
 from komorebi import program as km_program
 from komorebi.dsl import compiler
+from komorebi.dsl.front import MESSAGE_WORDS
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
 from komorebi.errors import ProgramError
@@ -70,13 +71,17 @@ def prepare(cls):
 def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **tensors):
     """Compiles the class: `tensors` an example tensor of each tensor parameter (by
     name), `plan` sizes by name, `l1` the L1 left for buffers (Session.l1()[1]); with
-    broadcasts, `rect` (x, y, columns, rows) and `nocs` (Session.nocs())."""
+    broadcasts, `rect` (x, y, columns, rows; the whole grid when not given) and `nocs`
+    (Session.load gives the session's when not given)."""
     cls = type(self)
     plan = dict(plan or {})
     compiled = compiler.compile_class(cls, plan, tensors, l1)
     program_args = None
+    # The rectangle's state, shared by the copies a session of islands runs.
+    self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
+    self.broadcast_lines = compiled.broadcast_lines
     if compiled.rectangle:
-        program_args = rectangle_args(compiled, rect, nocs)
+        program_args = rectangle_of(self, compiled)
     built = write(cls, compiled, l1)
     for line in built.report:
         log(line)
@@ -105,10 +110,18 @@ def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **t
     movement_args = []
     for name in compiled.tensors:
         movement_args += tensors[name].tensor_args()
+    kernels = built.folder
+    if compiled.dynamic:
+        reader, writer = runtime_kernels()
+        kernels = {
+            "reader": reader,
+            "compute": built.folder / "compute.cpp",
+            "writer": writer,
+        }
     km_program.Program.__init__(
         self,
         name=compiled.name.lower(),
-        kernels=built.folder,
+        kernels=kernels,
         buffers=buffers,
         compile_args={"movement": movement_args} if movement_args else {},
         compute=compute_options(compiled),
@@ -188,7 +201,7 @@ def may_cross(compiled, tensors):
         placement = tensors[move.tensor].placement
         direction = (
             "read"
-            if move.how in ("read stream", "fill", "broadcast's read")
+            if move.how in ("read stream", "fill", "broadcast's read", "word read")
             else "write"
         )
         holders = [i for i, (_, steps) in enumerate(placement.parts) if steps]
@@ -215,15 +228,38 @@ def may_cross(compiled, tensors):
     return lines
 
 
+def rectangle_of(program, compiled):
+    """The program arguments of a class with a rectangle, made at their first use
+    (the load), once the session gave its NoCs."""
+    state = program.rectangle
+
+    def args(core):
+        if state["args"] is None:
+            nocs = state["nocs"]
+            if nocs is None:
+                raise ProgramError(
+                    f"{compiled.name} uses self.x, self.y or a broadcast: load it with "
+                    f"Session.load, or make it with {spelling('nocs')}=session.nocs()"
+                )
+            rect = state["rect"] or (0, 0, *nocs.grid)
+            state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
+        return state["args"](core)
+
+    return args
+
+
+def session_nocs(program, nocs):
+    """Session.load's hand-over: the session's NoCs, unless the class was made with
+    its own."""
+    state = getattr(program, "rectangle", None)
+    if state is not None and state["nocs"] is None:
+        state["nocs"] = nocs
+
+
 def rectangle_args(compiled, rect, nocs):
     """Each core's program arguments (a function of the core, as Program takes): its
-    column and row in `rect`, whether it is there, its mover's broadcast arguments."""
-    if rect is None or nocs is None:
-        raise ProgramError(
-            f"{compiled.name} uses self.x, self.y or a broadcast: make it with "
-            f"{spelling('rect')}=(x, y, columns, rows) and {spelling('nocs')}="
-            "session.nocs()"
-        )
+    column and row in `rect`, whether it is there, its mover's broadcast arguments;
+    and the rectangle's group (first, count)."""
     first_x, first_y, columns, rows = rect
     grid_width = nocs.grid[0]
     first = first_y * grid_width + first_x
@@ -260,7 +296,7 @@ def rectangle_args(compiled, rect, nocs):
             movers.append(common + ([words[name] for name in fields] if words else []))
         return movers[0], movers[1], common
 
-    return program_args
+    return program_args, (group.first, group.count)
 
 
 def compute_options(compiled):
@@ -290,10 +326,14 @@ def write(cls, compiled, l1):
     folder.mkdir(parents=True, exist_ok=True)
     files = {
         header_name(compiled): header(compiled),
+        thread_header_name(compiled): thread_header(compiled),
         "movement.cpp": movement_source(compiled),
         "compute.cpp": compute_source(compiled),
         **parts(compiled),
     }
+    if compiled.dynamic:  # compute alone: the runtime's movers carry the messages
+        del files["movement.cpp"]
+        files["compute.cpp"] = dynamic_source(compiled)
     for name, text in files.items():
         text = resume_lines(text, name)
         files[name] = text
@@ -311,6 +351,35 @@ def resume_lines(text, name):
         if line.strip() == "#line RESUME":
             lines[index] = f'#line {index + 2} "{name}"'
     return "\n".join(lines)
+
+
+def thread_header_name(compiled):
+    return f"{compiled.name.lower()}_thread.h"
+
+
+def thread_header(compiled):
+    """The C header of an X280 thread that submits the class's commands: each
+    handler's number, the place of each of its words, their count, and whether its
+    command asks for the leader's result."""
+    prefix = compiled.name.upper()
+    lines = [
+        f"/* {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
+        " * its handlers' numbers and each command word's place (a0 is 0), for a",
+        " * thread's commands (kmx_submit). */",
+        "#pragma once",
+    ]
+    for name, number in compiled.handlers.items():
+        handler = f"{prefix}_{name.upper()}"
+        words = compiled.words[name]
+        lines += ["", f"/* {name.upper()}, line {compiled.lines[name]}. */"]
+        lines.append(f"#define {prefix}_HANDLER_{name.upper()} {number}u")
+        for place, (word, kind) in enumerate(words):
+            suffix = "_PAGES" if kind == "pages" else ""
+            lines.append(f"#define {handler}_{word.upper()}{suffix} {place}u")
+        lines.append(f"#define {handler}_WORDS {len(words)}u")
+        if name in compiled.results:
+            lines.append(f"#define {handler}_RESULT 1u /* KM_FLAG_RESULT */")
+    return "\n".join(lines) + "\n"
 
 
 def header(compiled):
@@ -354,6 +423,12 @@ def header(compiled):
                 f"constexpr uint32_t kOverlay{camel(name)} = "
                 f"{compiled.overlays[name]};  // its code: an overlay"
             )
+    if compiled.messages:
+        lines += ["", f"constexpr uint32_t kMessageWords = {MESSAGE_WORDS};"]
+    for cls, words in compiled.messages.items():
+        lines += [f"// {cls}: a message's words (word 0 the runtime's mark)."]
+        for word, index in words.items():
+            lines.append(f"constexpr uint32_t k{cls}{camel(word)} = {index};")
     for buffer in compiled.buffers:
         lines.append("")
         lines.append(f"// {buffer.what}")
@@ -375,6 +450,11 @@ def header(compiled):
                     f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
                     f"constexpr uint32_t {buffer.name}Pages = {buffer.block};",
                     f"constexpr uint32_t {buffer.name}Window = {window};",
+                ]
+            elif buffer.role == "word":
+                lines += [
+                    f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
+                    f"constexpr uint32_t {buffer.name}Bytes = {buffer.page_bytes};",
                 ]
             else:
                 lines.append(f"constexpr uint32_t {buffer.name} = {buffer.index_a};")
@@ -423,6 +503,10 @@ def cases(compiled, nodes_of, ending, depth, kernel):
                 f"{inner}{INDENT}{gave_up}",
                 f"{inner}}}",
             ]
+            if kernel == "movement" and name in compiled.stamps:
+                lines[-4:] = stamped(compiled, name, inner)
+                lines.append(f"{pad}{INDENT}}}")
+                continue
             if kernel == "movement":
                 lines.append(f"{inner}return part.call(command) != 0;")
                 lines.append(f"{pad}{INDENT}}}")
@@ -434,6 +518,44 @@ def cases(compiled, nodes_of, ending, depth, kernel):
     lines.append(f"{pad}{INDENT * 2}{ending}")
     lines.append(pad + "}")
     return lines
+
+
+def stamped(compiled, name, inner):
+    """An overlay's resident case with its stamps: the wall clock around load and
+    call, then the mover's page of the stamps tensor, written and settled."""
+    tensor, word = compiled.stamps[name]
+    overlay = f"kOverlay{camel(name)}"
+    body = [
+        f"km::Overlay part(movement, {overlay});",
+        "const bool held = part.held();",
+        "const uint64_t started = km::wall64();",
+        "if (!part.load()) {",
+        f"{INDENT}return false;",
+        "}",
+        "const uint64_t loaded = km::wall64();",
+        "const bool called_ok = part.call(command) != 0;",
+        "const uint64_t called = km::wall64();",
+        "#if defined(COMPILE_FOR_BRISC)",
+        "const uint32_t mover = 0;",
+        "#else",
+        "const uint32_t mover = 1;",
+        "#endif",
+        "const uint32_t stamp = get_write_ptr(kStamps) + mover * kStampsBytes;",
+        "volatile tt_l1_ptr uint32_t* stamped = km::l1(stamp);",
+        "stamped[0] = command.sequence;",
+        f"stamped[1] = {overlay};",
+        "stamped[2] = static_cast<uint32_t>(loaded - started);",
+        "stamped[3] = static_cast<uint32_t>(called - loaded);",
+        "stamped[4] = held;",
+        f"const {camel(tensor)} stamps(command.a{word});",
+        "if (!km::write_pages(movement, command, stamps, 2 * movement.me() + mover, 1,",
+        "                     stamp)) {",
+        f"{INDENT}return false;",
+        "}",
+        "noc_async_write_barrier();",
+        "return called_ok;",
+    ]
+    return [line if line.startswith("#") else inner + line for line in body]
 
 
 def has_part(nodes):
@@ -522,6 +644,41 @@ def parts(compiled):
                 + "\n"
             )
     return files
+
+
+def dynamic_source(compiled):
+    """The compute kernel of a dynamic class: its handler's message loop (the reader
+    and writer are the runtime's, messages_reader.cpp and messages_writer.cpp)."""
+    name = compiled.dynamic
+    lines = [
+        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
+        "// the compute kernel: the message loop of its dynamic handler.",
+        "#include <stdint.h>",
+        "",
+        '#include "api/compute/common.h"',
+        '#include "komorebi/device/km_messages.hpp"',
+        '#include "komorebi/device/km_worker.hpp"',
+        *compiled.body_includes["compute"],
+        f'#include "{header_name(compiled)}"',
+        "",
+        "void kernel_main() {",
+        f"{INDENT}km::Compute compute;",
+        f"{INDENT}compute.run([&](const km_command_t& command) {{",
+        f"{INDENT * 2}if (km::handler(command) != kHandler{camel(name)}) {{  "
+        f"// line {compiled.lines[name]}",
+        f"{INDENT * 3}return;",
+        f"{INDENT * 2}}}",
+        *render(prune(compiled.compute[name]), 2),
+        f"{INDENT}}});",
+        "}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def runtime_kernels():
+    """The runtime's message movers, the reader and writer of a dynamic class."""
+    folder = _env.include_directory().parent / "kernels"
+    return folder / "messages_reader.cpp", folder / "messages_writer.cpp"
 
 
 def movement_source(compiled):
