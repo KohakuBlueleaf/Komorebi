@@ -15,7 +15,7 @@ from torch._functorch.aot_autograd import aot_function, aot_module_simplified
 from torch.fx.passes.utils.matcher_utils import SubgraphMatcher
 from torch.utils._pytree import tree_map
 
-from komorebi import dram
+from komorebi import formats
 from projects.decode import model as md
 from projects.nn import table
 
@@ -439,10 +439,11 @@ def trace(function, examples):
 
 def backend(gm, example_inputs, options=None):
     """torch.compile's backend "komorebi": options `device` (table.Device) and the
-    stages (STAGES, DEFAULTS)."""
+    stages (STAGES, DEFAULTS) and `spin` (one: the wait's spin in seconds)."""
     options = dict(options or {})
     device = options.pop("device")
     stages = {name: bool(options.pop(name, DEFAULTS[name])) for name in STAGES}
+    spin = float(options.pop("spin", table.SPIN_S))
     if options:
         raise ValueError(f"unknown options {sorted(options)}")
     names = [node.name for node in gm.graph.nodes if node.op == "placeholder"]
@@ -450,12 +451,22 @@ def backend(gm, example_inputs, options=None):
     weights |= {i for i, name in enumerate(names) if "_buffers_" in name}
 
     def compiler(graph, inputs):
-        return Compiled(device, graph, weights, stages)
+        return Compiled(device, graph, weights, stages, spin=spin)
 
     return aot_module_simplified(gm, example_inputs, fw_compiler=compiler)
 
 
 torch._dynamo.register_backend(backend, name="komorebi")
+
+
+def bf16_bits(value):
+    """A tensor's values as bf16 bits, uint16 [rows, columns]: a bf16 tensor's own
+    bits, else rounded (formats.bf16_bits)."""
+    if isinstance(value, torch.Tensor) and value.dtype == torch.bfloat16:
+        bits = value.contiguous().view(torch.int16).numpy().view(np.uint16)
+        return bits.reshape(-1, bits.shape[-1])
+    values = host_values(value)
+    return formats.bf16_bits(values.reshape(-1, values.shape[-1]))
 
 
 def whole(tensor):
@@ -470,8 +481,8 @@ class Compiled:
     weights are prepared and uploaded, tensors given (with `once`, kept), lists written;
     each call writes the inputs, runs the lists and host ops, reads the outputs."""
 
-    def __init__(self, device, gm, weights, stages, rules=RULES):
-        self.device, self.gm, self.stages = device, gm, stages
+    def __init__(self, device, gm, weights, stages, rules=RULES, spin=table.SPIN_S):
+        self.device, self.gm, self.stages, self.spin = device, gm, stages, spin
         self.model = device.decode.model
         self.nodes = list(gm.graph.nodes)
         self.inputs = [node for node in self.nodes if node.op == "placeholder"]
@@ -665,33 +676,42 @@ class Compiled:
         ]
         inputs = [whole(self.tensors[node]) for node in self.pulled]
         pushed = [whole(self.tensors[node]) for node in outputs]
-        return table.OneSubmission(self.device, self.steps[0][1], inputs, pushed)
+        one = table.OneSubmission(self.device, self.steps[0][1], inputs, pushed)
+        self.writers = []
+        for node, move in zip(self.pulled, one.pulls, strict=True):
+            tensor = self.tensors[node]
+            joint = isinstance(tensor.card, table.Part)
+            columns = tensor.card.shape[1]
+            self.writers.append(
+                (node, move, table.TileWriter(tensor.rows, columns, joint))
+            )
+        self.takes = []
+        for node, move in zip(outputs, one.pushes, strict=True):
+            shape = tuple(node.meta["val"].shape)
+            rows = math.prod(shape) // shape[-1]
+            if shape[-1] != self.tensors[node].card.shape[1]:
+                raise ValueError(f"{shape}: an output narrower than its tile rows")
+            self.takes.append((move, rows, shape))
+        return one
 
     def call_one(self, host):
-        """A call of the one-submission form: inputs' pages in, outputs' pages out."""
-        started = time.perf_counter()
-        pages = []
-        for node in self.pulled:
-            tensor, values = self.tensors[node], host_values(host[node])
-            if isinstance(tensor.card, table.Part):
-                pages.append(table.joint_pages(tensor, values))
-            else:
-                pages.append(table.tensor_pages(tensor, values))
-        built = time.perf_counter()
-        raws = self.one(pages)
-        out_started = time.perf_counter()
-        outputs = []
-        for node, raw in zip(self.output.args[0], raws, strict=True):
-            tensor = self.tensors[node]
-            rows, columns = tensor.card.shape
-            flat = dram.untilize_bf16(raw, rows, columns)
-            shape = tuple(node.meta["val"].shape)
-            values = flat.reshape(-1)[: math.prod(shape)].reshape(shape)
-            outputs.append(torch.from_numpy(values).to(torch.bfloat16))
-        clock = self.device.clock
-        clock["in_pages"] += built - started
-        clock["out_values"] += time.perf_counter() - out_started
-        return tuple(outputs)
+        """A call of the one-submission form: the inputs' bf16 bits tiled into the
+        region, the outputs' bits out of it as bf16 tensors, nothing else made."""
+        one = self.one
+
+        def fill():
+            for node, move, writer in self.writers:
+                writer(one.tiles(move), bf16_bits(host[node]))
+
+        def take():
+            return tuple(
+                torch.from_numpy(table.tile_bits(one.tiles(move), rows).view(np.int16))
+                .view(torch.bfloat16)
+                .reshape(shape)
+                for move, rows, shape in self.takes
+            )
+
+        return one(fill, take, self.spin)
 
     def operand(self, operand, host):
         """A call's operand as a Tensor: a node's, or a prepared weight's (cached)."""
@@ -762,9 +782,12 @@ class Compiled:
             host = {node: args[i] for i, node in enumerate(self.inputs)}
             self.prepare(args)
         else:
-            host = {node: args[i] for i, node in enumerate(self.inputs)}
             if self.one is not None:
-                return self.call_one(host)
+                started = time.perf_counter()
+                out = self.call_one(dict(zip(self.inputs, args, strict=True)))
+                device.clock["call_body"] += time.perf_counter() - started
+                return out
+            host = {node: args[i] for i, node in enumerate(self.inputs)}
             self.write_inputs(host)
         values = dict(host)
         for step in self.steps:

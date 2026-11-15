@@ -36,6 +36,14 @@ STAGES = {
     "joint": {"fuse": True, "chain": True, "joint": True},  # the compile's removal
     # a call as one host submission: the list pulls x and pushes y
     "one": {"fuse": True, "chain": True, "joint": True, "one": True},
+    # the same with the plain transfers' spin (300 us), the long one's comparison
+    "one_spin300": {
+        "fuse": True,
+        "chain": True,
+        "joint": True,
+        "one": True,
+        "spin": 3e-4,
+    },
 }
 TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
     "in_write",
@@ -60,9 +68,20 @@ TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
     "in_pages",
     "copy_in",
     "submit",
+    "submit_queue",
+    "submit_hand",
+    "submit_store",
     "spin",
     "copy_out",
     "out_values",
+)
+INSIDE_BODY = (
+    "copy_in",
+    "submit_queue",
+    "submit_hand",
+    "submit_store",
+    "spin",
+    "copy_out",
 )
 INSIDE_DISPATCH = (  # what the eager dispatch's own time holds besides itself
     "planner",
@@ -156,7 +175,8 @@ def series(device, call, count):
             {
                 "wall": wall,
                 "clock": {
-                    name: device.clock[name] - clock.get(name, 0.0) for name in TERMS
+                    name: device.clock[name] - clock.get(name, 0.0)
+                    for name in (*TERMS, "call_body")
                 },
                 "fallbacks": dict(Counter(device.fallbacks) - fallbacks),
                 "runs": list(range(runs, len(device.runs))),
@@ -258,7 +278,11 @@ def guard(device):
     rng = np.random.default_rng(5)
     pages = random_pages(rng, 2048)
     one = table.OneSubmission(device, nn.Entries(0), [tensor], [tensor])
-    (back,) = one([pages])
+    pull, push = one.local[id(one.pulls[0])], one.local[id(one.pushes[0])]
+    (back,) = one(
+        lambda: pull.__setitem__(slice(None), pages.reshape(-1)),
+        lambda: [push.reshape(pages.shape).copy()],
+    )
     device.collect()
     out = {"right_region_round_trip": bool(np.array_equal(back, pages))}
     out["refused"] = []
@@ -307,6 +331,9 @@ def account(result, stats):
     }
     if terms["dispatch"]:
         terms["dispatch"] -= sum(terms[name] for name in INSIDE_DISPATCH)
+    body = sum(row["clock"].get("call_body", 0.0) for row in rows) * 1e6 / count
+    if body:  # one submission: the call's own Python beside torch's wrappers
+        terms["call_python"] = body - sum(terms[name] for name in INSIDE_BODY)
     wall = sum(row["wall"] for row in rows) * 1e6 / count
     runs = [index for row in rows for index in row["runs"]]
     if all(index in stats for index in runs):
@@ -336,6 +363,7 @@ def account(result, stats):
         "wall_us": round(wall, 1),
         "terms_us": {name: round(value, 1) for name, value in terms.items() if value},
         "python_us": round(wall - host, 1),
+        **({"outside_call_us": round(wall - body, 1)} if body else {}),
         "card_commands_us": None if card_us is None else round(card_us, 1),
         "thread_us": None if thread_us is None else round(thread_us, 1),
         "thread_idle_us": None if idle_us is None else round(idle_us, 1),
