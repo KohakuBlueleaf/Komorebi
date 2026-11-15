@@ -10,7 +10,17 @@ from komorebi.dsl.tile import UnitError, emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import step_program
-from komorebi.dsl.tile.unit import OPS, Call, Insn, Loop, decode, encode, insns
+from komorebi.dsl.tile.unit import (
+    OPS,
+    Call,
+    Insn,
+    Loop,
+    decode,
+    encode,
+    insns,
+    matrix_cost,
+    rotate_blocks,
+)
 
 
 def stream(name, inputs, fn, **options):
@@ -148,3 +158,17 @@ def test_softmax_step_state_lanes_and_word():
     code = list(insns(unit.tile["math"]))
     assert [x.op for x in code].count("SFPTRANSP") == 1  # the word's lanes
     assert code[-1].op == "SFPSTORE" and code[-1].args["dest_reg_addr"] == 3 * 64 + 34
+
+
+def test_matrix_unit_rotation_prices_and_rule():
+    # probe 11: a block added into again after K words costs max(1, 6 / K) a word
+    n = 24 * 64
+    for k, want in ((1, 6.0), (2, 3.0), (3, 2.0), (4, 1.5), (5, 1.2), (6, 1.0)):
+        words = [("MVMUL", i % k) for i in range(n)]
+        assert matrix_cost(words, synced=False) / n == pytest.approx(want, abs=0.01)
+    assert matrix_cost([("MVMUL", 0)]) == 8.0
+    assert matrix_cost([("MOVA2D", 0)] * 4, synced=False) == 4.0  # moves wait for none
+    inner_fastest = [("MVMUL", b) for b in range(8) for _ in range(2)]
+    rotated = rotate_blocks(inner_fastest)
+    assert [b for _, b in rotated] == list(range(8)) * 2
+    assert matrix_cost(inner_fastest) == 63.0 and matrix_cost(rotated) == 23.0

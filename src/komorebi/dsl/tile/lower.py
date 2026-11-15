@@ -56,6 +56,7 @@ NOT_CHECKED = (
     "dst-window: Dst accesses inside the window (the walk of rows is not checked)",
     "dst-tiles: Dst tiles per acquire (the caller's index)",
     "placement: code placement and the kernel buffer's size",
+    "src-banks: an unpack of more faces than Src has banks (2) waits for a release",
 )
 
 
