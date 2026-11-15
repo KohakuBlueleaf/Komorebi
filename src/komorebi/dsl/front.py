@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from komorebi import abi
 from komorebi.dsl.names import NAMES, spelling
+from komorebi.dsl.tile import trace
 from komorebi.errors import ProgramError
 from komorebi.movement import Pattern
 from komorebi.program import Handler
@@ -270,6 +271,12 @@ class TileNamespace:
         raise AttributeError(f"km.{spelling('tile')} has no {name!r}")
 
 
+def tile_math(kind):
+    """The tile compiler's trace function a km. name of a tile function's arithmetic
+    resolves to."""
+    return getattr(trace, NAMES[kind].released.removeprefix("trace."))
+
+
 def exports():
     """The module-level names of `komorebi` for programs written as classes."""
     made = {
@@ -286,5 +293,6 @@ def exports():
         "cxx": line_only("cxx"),
         "tile": TileNamespace(),
         **{kind: FORMATS[kind] for kind in FORMATS},
+        **{kind: tile_math(kind) for kind in NAMES if kind.startswith("math_")},
     }
     return {NAMES[kind].spelling: value for kind, value in made.items()}
