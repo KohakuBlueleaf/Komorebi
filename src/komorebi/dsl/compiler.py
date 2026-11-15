@@ -16,7 +16,7 @@ from pathlib import Path
 
 from komorebi.dsl import front
 from komorebi.dsl.names import kind_of, spelling
-from komorebi.dsl.nodes import Block, Glue, Group, Line
+from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
 from komorebi.dsl.tile import trace, unit_program
 from komorebi.dsl.tile.ir import BF16, F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.rows import row_program
@@ -6303,6 +6303,11 @@ class HandlerCompiler:
         self.scope.pop(name)
         for word in cls.words:
             self.scope.pop(f"km_{name}_{word}")
+        mover = None
+        if call is not None:  # a table read at this line: only where it is used
+            movement, compute, pop, mover = self.entries_users(
+                movement, compute, pop, body_m, body_c
+            )
         alone = count == "1" and lower is None and upper is None
         offset = (
             str(info["first"])
@@ -6335,7 +6340,7 @@ class HandlerCompiler:
                     f"{index}++) {{"
                 )
         if body_m:
-            movement.append(Block(head, "}", [*entry, *body_m], uses))
+            movement.append(Block(head, "}", [*entry, *body_m], uses, mover=mover))
         if body_c:
             compute.append(Block(head_c, "}", [*entry, *body_c], uses | {"km_ok"}))
         if pop is not None:
@@ -6348,6 +6353,40 @@ class HandlerCompiler:
         movement, compute = movement + m, compute + c
         movement += self.fed_moves(node, loop, body_m)
         return movement, compute
+
+    def entries_users(self, movement, compute, pop, body_m, body_c):
+        """A table's read kept on the CPUs whose lines in its loop use it: mover B
+        reads its own copy, mover A one for itself and compute; (movement, compute,
+        compute's pop, the loop's mover: "A", "B" or None for both)."""
+
+        def mover_has_line(nodes, mover, inherited=None):
+            for node in nodes:
+                own = node.mover or inherited
+                if isinstance(node, Line) and own in (None, mover):
+                    return True
+                if (
+                    isinstance(node, Block | Group)
+                    and own in (None, mover)
+                    and mover_has_line(node.children, mover, own)
+                ):
+                    return True
+            return False
+
+        on_compute = any(has_line(node) for node in body_c)
+        on_a = on_compute or mover_has_line(body_m, "A")
+        on_b = mover_has_line(body_m, "B")
+        if on_a == on_b:  # both movers (or no line at all): the read as it is
+            return movement, compute, pop, None
+        mover = "A" if on_a else "B"
+        kept = []
+        for node in movement:
+            if node.mover not in (None, mover):
+                continue
+            node.mover = mover
+            kept.append(node)
+        if not on_compute:
+            compute, pop = [], None
+        return kept, compute, pop, mover
 
     def entries_word(self, node, value):
         """The C++ of `e.word` (a word of an entry) or `table.count`."""

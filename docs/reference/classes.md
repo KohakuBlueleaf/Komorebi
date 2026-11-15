@@ -417,10 +417,18 @@ Refused at the line:
 ## Tables of entries
 
 A page of words can be a table: `t.pages(i, 1).entries(Job, first=F, size=S,
-count=C)` is page i of t read on every CPU of the handler, its entries S words each
+count=C)` is page i of t read on the CPUs of the handler that use it, its entries S words each
 from word F, as many as word C says; `fixed=N` in place of `count=` says N entries,
 known at build. `Job` is a class of int annotations, `class Job(km.Entry)`, its words
 0, 1, ... of an entry in order (an entry may have more words than it names).
+
+Where the page is read follows from the lines inside the loop: when only one mover's
+lines use the entries (a body on that mover, a put, a bump), that mover reads the page
+alone and compute and the other mover skip the loop; when compute's lines use them,
+mover A reads it for compute and mover B its own copy, as below. The rasterizer's HIST,
+whose tile list only mover B's body reads, went from 33.06 us (the page read on all
+CPUs) to 24.80 us, beside the hand's 23.96 us
+([raster_class](../../experiments/language/raster_class/README.md)).
 
 ```python
 class Job(km.Entry):
