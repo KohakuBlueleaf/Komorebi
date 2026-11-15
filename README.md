@@ -57,14 +57,15 @@ kmr doctor
 
 A program's kernels are loaded once and stay on the cores. After that a kernel is a
 call: the host submits commands and the card runs them. Three handlers of one class
-(`scale`, `add`, `sum`; reduced from [29_chain](examples/29_chain/README.md)):
+(`scale`, `add`, `sum`; this block is
+[quick.py](examples/29_chain/as_class/quick.py) of [29_chain](examples/29_chain/README.md)):
 
 ```python
 import numpy as np
 import komorebi as km
 from steps_class import Steps, bits  # examples/29_chain/as_class: the kernels
 
-with km.Session() as session:
+with km.Session(kernel_bytes=84 * 1024) as session:  # room for the chain's code
     x = session.tensor(np.ones((16, 1024), np.float32), "float32")  # 16 tiles in DRAM
     y, z, s = (
         session.tensor(np.zeros((16, 1024), np.float32), "float32") for _ in "yzs"
@@ -94,7 +95,8 @@ with km.Session() as session:
     )
     for _ in range(100):
         run.wait(run.submit(layer))
-    print(t.read()[0, :4])
+    run.stop()  # a tensor is read back once the run is stopped
+    print(t.read()[0, :4])  # [128. 128. 128. 128.]
 ```
 
 The card can also decide what runs next by itself: a C thread on an X280 cluster
@@ -436,6 +438,27 @@ one; the cores' work is the same either way (126 against 131 µs on the card), a
 goes is three round trips to the host. A record names its handler, or leaves it to the
 chain's command, as the decode's records do. A class states the same chain as a list of
 its handlers' calls or an `@km.chain` method ([classes](docs/reference/classes.md#chains)).
+
+### Kernels in: the host appends, the card runs
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/kernelin-dark.svg">
+  <img src="docs/images/kernelin-light.svg" width="830" alt="Two timelines of five kernel calls: linear, norm, attend, swiglu and out. First, the host submits each kernel and waits, on two rows (the host, the cores): for every kernel the host works, submits a command, the cores compute, and an event goes back to the host before the next command; between two kernels the cores wait for the host. Second, kernels in, on four rows (the host, the list in DRAM, an X280 thread, the cores): the host appends an entry for each call to a list in DRAM, ahead of the cores, and for one call that has no kernel yet it first compiles the kernel and adds it to the live run; each entry waits in the list until the X280 thread takes it and submits its command; the cores compute the five kernels one after another with no host between them; the last kernel, out, pushes the result's pages to the host's memory, and only then does the host read y. A note gives the nn project's measurement on one card, its cheapest kernel on 120 cores: 140.9 microseconds a call with the host submitting and waiting, 23.0 with the host appending to an open list, 4.4 replaying a written list; time in the figure is schematic.">
+</picture>
+
+A chain fixes its calls ahead. When the next call is only known as the program runs,
+as with a framework's eager calls, the host can still stay off the path between two
+kernels: it appends kernel calls to a list in DRAM and never waits for one, and a
+thread on an X280 cluster walks the list and submits each. A call whose kernel is not
+built yet is compiled and added to the live run. Getting a result out is one more
+kernel, which pushes its pages to the host's memory.
+
+In the [nn project](projects/nn/README.md) a call takes 140.9 µs with the host
+submitting and waiting, 23.0 µs with the host appending to an open list, and 4.4 µs
+replaying a written list. The list and its thread are that project's; a kernel added
+to a live run is the framework's ([30_add_overlay](examples/30_add_overlay/),
+[a set compiled on its first use](docs/reference/classes.md#a-set-compiled-on-its-first-use)).
+The two have not run as one program yet.
 
 ### One program on the grid
 
