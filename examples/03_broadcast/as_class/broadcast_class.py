@@ -20,14 +20,14 @@ sys.path.insert(0, str(HERE.parent))
 
 import broadcast as hand  # noqa: E402  (the hand program's data and checks)
 
-PAGES = 2  # tiles a block; the plan gives the run's (--pages)
-WINDOW = 2  # blocks in flight; the plan gives the run's (--window)
-
 
 class Broadcasts(km.Program):
     """Each core of the rectangle adds every tile of `blocks` blocks of its row's
     `rows` pages and of its column's `columns` pages into one tile, stored at output
     page first_page + rank; block k is data block k mod `data_blocks`."""
+
+    PAGES = km.constant(2)  # tiles a block; the make gives the run's (--pages)
+    WINDOW = km.constant(2)  # blocks in flight; the make gives the run's (--window)
 
     @km.handler
     def broadcast(
@@ -39,20 +39,22 @@ class Broadcasts(km.Program):
         first_page: int,
         data_blocks: int,
     ):
-        row = km.Broadcast(self, along="row", window=WINDOW)
-        column = km.Broadcast(self, along="column", window=WINDOW)
+        row = km.Broadcast(self, along="row", window=self.WINDOW)
+        column = km.Broadcast(self, along="column", window=self.WINDOW)
         total = km.tile.zeros(km.fp32)
         for block in range(blocks):
-            first_row = (self.y * data_blocks + block % data_blocks) * PAGES
+            first_row = (self.y * data_blocks + block % data_blocks) * self.PAGES
             if row.sender():
-                along_row = row.cast(rows.pages(first_row, PAGES).read())
+                along_row = row.cast(rows.pages(first_row, self.PAGES).read())
             else:
                 along_row = row.arrive()
             for tile in along_row:
                 total += tile
-            first_column = (self.x * data_blocks + block % data_blocks) * PAGES
+            first_column = (self.x * data_blocks + block % data_blocks) * self.PAGES
             if column.sender():
-                down_column = column.cast(columns.pages(first_column, PAGES).read())
+                down_column = column.cast(
+                    columns.pages(first_column, self.PAGES).read()
+                )
             else:
                 down_column = column.arrive()
             for tile in down_column:
@@ -73,7 +75,8 @@ def run(session, args, generator):
         rows=inputs[0][0],
         columns=inputs[0][1],
         output=output,
-        plan={"PAGES": args.pages, "WINDOW": args.window},
+        PAGES=args.pages,
+        WINDOW=args.window,
         rect=rect,
         log=hand.log,
     )

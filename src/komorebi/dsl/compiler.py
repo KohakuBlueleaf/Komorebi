@@ -5,6 +5,7 @@ line. `komorebi.dsl.program` writes the files and makes the Program.
 """
 
 import ast
+import copy
 import importlib
 import inspect
 import keyword
@@ -14,6 +15,7 @@ import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from komorebi import abi
 from komorebi.dsl import front
 from komorebi.dsl.names import kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
@@ -245,34 +247,59 @@ class Compiled:
     # The inline bodies at a kernel's start or end (at=): (at, kernel) -> texts.
     kernel_bodies: dict = field(default_factory=dict)
     startup: object = None  # the class's km.Startup, or None (the default start-up)
+    # A handler with constant parameters -> [(its set of values, the handler built
+    # for them)] (handler_variants).
+    variants: dict = field(default_factory=dict)
+    # The class's constants (km.constant) by name: this program's values; a symbol's
+    # only where the plan gives it (declared_constants).
+    class_constants: dict = field(default_factory=dict)
+    declared: dict = field(default_factory=dict)  # name -> its front.Constant
 
 
 def handler_methods(cls):
-    """The class's handler methods in the order of their definitions."""
-    found = [
-        value for value in vars(cls).values() if isinstance(value, front.HandlerMethod)
-    ]
-    return sorted(found, key=lambda method: method.function.__code__.co_firstlineno)
+    """The class's handler methods in the order of their definitions: its parents'
+    first, a subclass's handler of a parent's name in that one's place."""
+    found = {}
+    for klass in reversed(cls.__mro__):
+        own = [
+            value
+            for value in vars(klass).values()
+            if isinstance(value, front.HandlerMethod)
+        ]
+        for method in sorted(own, key=lambda m: m.function.__code__.co_firstlineno):
+            found[method.name] = method
+    return list(found.values())
 
 
-def compile_class(cls, plan, tensors, l1=None):
+def class_annotations(cls):
+    """The annotations of the class and its parents, a subclass's over its
+    parents'."""
+    merged = {}
+    for klass in reversed(cls.__mro__):
+        merged.update(inspect.get_annotations(klass))
+    return merged
+
+
+def compile_class(cls, plan, tensors, l1=None, constants=None, handlers=None):
     """Compiles each handler of `cls`; `plan` the program's sizes by name, `tensors`
-    an example tensor of each tensor parameter (its format and page), `l1` the bytes
-    left for buffers (a field's unknown symbol takes what the others leave)."""
+    an example tensor of each tensor parameter, `l1` the bytes left for buffers (an
+    unknown symbol takes what the others leave), `constants` the class's constants'
+    values, `handlers` the sets of the constant parameters (handler_variants)."""
     methods = handler_methods(cls)
     compiled = Compiled(cls.__name__, inspect.getsourcefile(methods[0].function))
+    declared_constants(compiled, cls, constants)
     compiled.fields = {
         name: front.Field(
             value.format,
-            tuple(n.name if isinstance(n, front.Symbol) else n for n in value.shape),
+            tuple(shape_size(compiled, name, n) for n in value.shape),
         )
-        for name, value in inspect.get_annotations(cls).items()
+        for name, value in class_annotations(cls).items()
         if isinstance(value, front.Field)
     }
     compiled.own = {
-        name: cls.__dict__[name].push
+        name: inspect.getattr_static(cls, name).push
         for name in compiled.fields
-        if isinstance(cls.__dict__.get(name), front.Own)
+        if isinstance(inspect.getattr_static(cls, name, None), front.Own)
     }
     for name, value in list(compiled.fields.items()):
         if word_field(value) and name in compiled.own:
@@ -301,16 +328,99 @@ def compile_class(cls, plan, tensors, l1=None):
             )
         run = loops[0] if loops else dynamic[0]
         compiled.folded = {m.name: m for m in dynamic if m is not run}
-    for number, method in enumerate(methods, start=1):
+    for number, method in handler_variants(compiled, methods, handlers):
         compiled.handlers[method.name] = number
         if method.overlay:
             compiled.overlays[method.name] = len(compiled.overlays) + 1
-        names = method.function.__globals__
+        names = handler_names(method)
         HandlerCompiler(compiled, method, names, plan, tensors).run()
     bind_fields(compiled, plan, l1)
     compiled.compute_options = class_compute(cls, compiled)
     compiled.startup = getattr(cls, "startup_given", None)
     return compiled
+
+
+def declared_constants(compiled, cls, constants):
+    """The class's declared constants and this program's values of them on
+    `compiled` (a symbol's where the plan or the make gives it)."""
+    compiled.declared = front.constants_of(cls)
+    compiled.class_constants = dict(constants or {})
+
+
+def handler_variants(compiled, methods, handlers):
+    """(number, method) of each handler built: a handler without constant
+    parameters, or with none of its sets listed, itself (its defaults), numbered as
+    the class numbers it; each listed set of one a handler of its own, named by its
+    values, the first at the handler's number and the others after the class's."""
+    handlers = handlers or {}
+    built, after = [], len(methods) + 1
+    for number, method in enumerate(methods, start=1):
+        parameters = front.constant_parameters(method.function)
+        sets = handlers.get(method.name)
+        if not parameters or not sets:
+            method.constant_set = {n: default for n, (_, default) in parameters.items()}
+            if parameters:
+                compiled.variants[method.name] = [(method.constant_set, method)]
+            built.append((number, method))
+            continue
+        compiled.variants[method.name] = []
+        for index, values in enumerate(sets):
+            variant = copy.copy(method)
+            variant.constant_set = dict(values)
+            variant.name = f"{method.name}_" + "_".join(
+                f"{n}{variant_word(v)}" for n, v in values.items()
+            )
+            variant.number = number if index == 0 else after
+            after += index > 0
+            compiled.variants[method.name].append((variant.constant_set, variant))
+            built.append((variant.number, variant))
+    user_max = abi.headers()["KM_HANDLER_USER_MAX"]
+    if after - 1 > user_max:
+        raise Refused(
+            f"{compiled.name}: {after - 1} handlers with the listed sets of their "
+            f"constant parameters, {user_max} most"
+        )
+    return built
+
+
+def variant_word(value):
+    """A constant parameter's value as a part of a C++ name."""
+    return str(value).replace(".", "p").replace("-", "m")
+
+
+def handler_names(method):
+    """The names a handler's lines read: its module's, and its constant parameters'
+    values as module constants."""
+    if not method.constant_set:
+        return method.function.__globals__
+    return {**method.function.__globals__, **method.constant_set}
+
+
+def shape_size(compiled, field_name, size):
+    """One size of a field's shape: an int; a constant of the class, this program's
+    value; a symbol, its name (the plan's or the build's)."""
+    if not isinstance(size, front.Constant):
+        return size
+    if isinstance(size, front.Symbol):  # as before constants: the plan's by name
+        return size.name
+    try:
+        value = size.value(compiled.class_constants)
+    except KeyError as missing:
+        raise field_refused(
+            compiled,
+            field_name,
+            f"its size {size!r} needs {missing.args[0]}, which the build solves "
+            "after the shapes",
+            f"give {missing.args[0]} in the {spelling('plan')}",
+        ) from None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise field_refused(
+            compiled,
+            field_name,
+            f"its size {size!r} is {value!r}",
+            "a size is an int of 1 or more",
+        )
+    return value
 
 
 def class_compute(cls, compiled):
@@ -1205,13 +1315,19 @@ class HandlerCompiler:
         """Each parameter after self is a command word: a tensor's reference word, an
         int, a pattern's word; a tensor whose pages are counted gets a word more."""
         args = self.definition.args
-        if args.vararg or args.kwarg or args.kwonlyargs or args.defaults:
+        constants = self.constant_parameters(args)
+        if (
+            args.vararg
+            or args.kwarg
+            or args.kwonlyargs
+            or (len(args.defaults) > len(constants))
+        ):
             self.refuse(
                 self.definition,
                 "a handler's parameters are plain, one a command word",
                 "write `def name(self, a: km.Tensor, b: int, ...)`",
             )
-        parameters = args.args[1:]
+        parameters = [p for p in args.args[1:] if p.arg not in constants]
         words = []
         for word, parameter in enumerate(parameters):
             kind = self.parameter_kind(parameter)
@@ -1263,6 +1379,24 @@ class HandlerCompiler:
             )
         self.method.words = words
         self.compiled.words[self.method.name] = words
+
+    def constant_parameters(self, args):
+        """The handler's constant parameters (km.constant[int] = n): each with its
+        default, after the command words."""
+        constants = front.constant_parameters(self.method.function)
+        defaulted = [p.arg for p in args.args[len(args.args) - len(args.defaults) :]]
+        for parameter in args.args[1:]:
+            if parameter.arg in constants and parameter.arg not in defaulted:
+                self.refuse(
+                    parameter,
+                    f"{parameter.arg} is a constant parameter: the handler is built "
+                    "for its default when no set of it is listed",
+                    f"give it a default, {parameter.arg}: "
+                    f"km.{spelling('constant')}[int] = n",
+                )
+        if any(name not in constants for name in defaulted):
+            return {}  # a default of a command word: refused by bind_parameters
+        return constants
 
     def parameter_kind(self, parameter):
         annotation = parameter.annotation
@@ -1705,14 +1839,19 @@ class HandlerCompiler:
         """An int known at build: a literal, a module constant or a plan value."""
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
             return node.value
+        if self.is_class_constant(node):
+            return self.class_constant(node)
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return self.constant(node, node.value)  # a symbol: the plan's
         if isinstance(node, ast.Name) and node.id not in self.scope:
             return self.constant(node, node.id)
+        self.word_given(node, "a size the build needs")
         self.refuse(node, "a size the build needs", "give an int, or a plan name")
 
     def attribute(self, node):
         base = node.value
+        if self.is_class_constant(node):
+            return str(self.class_constant(node))
         if isinstance(base, ast.Name) and base.id == "self":
             kind = kind_of(node.attr, ("rank", "size", "leader", "x", "y", "core"))
             if kind == "core":
@@ -1742,6 +1881,57 @@ class HandlerCompiler:
             if value.kind == "tensor" and node.attr == spelling("pages"):
                 return self.counts[base.id]
         self.refuse(node, "an attribute level 1 does not know", "use .start, .count")
+
+    def is_class_constant(self, node):
+        """Whether `node` is self.X of a constant the class declares."""
+        return (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and node.attr in self.compiled.declared
+        )
+
+    def class_constant(self, node):
+        """self.X of a constant of the class: this program's value, lowered as a
+        module constant is (a non-negative int)."""
+        name = node.attr
+        if name not in self.compiled.class_constants:
+            self.refuse(
+                node,
+                f"self.{name} is a symbol the build solves after the handlers' lines",
+                f"give {name} in the {spelling('plan')}, or as {name}= at the make",
+            )
+        value = self.compiled.class_constants[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            self.refuse(node, f"self.{name} = {value!r}: not a word", "make it an int")
+        return value
+
+    def word_given(self, node, what):
+        """Refuses a command word where `what` needs a constant: the tier's error."""
+        if isinstance(node, ast.Name) and any(p.name == node.id for p in self.params):
+            self.refuse(
+                node,
+                f"{node.id} is a word of the command, known only when the command "
+                f"runs, and {what} is fixed when the program is built: it needs a "
+                "constant of the class",
+                f"declare {node.id.upper()} = km.{spelling('constant')}(n) in the "
+                f"class and write self.{node.id.upper()}",
+            )
+
+    def stated_words(self, node, what):
+        """word_given of each `n` a rectangle's side states as its most (r:r + n,
+        r:min(r + n, e))."""
+        if not isinstance(node, ast.Subscript):
+            return
+        sides = node.slice.elts if isinstance(node.slice, ast.Tuple) else []
+        for side in sides:
+            if not isinstance(side, ast.Slice) or side.upper is None:
+                continue
+            upper = side.upper
+            ends = upper.args if isinstance(upper, ast.Call) else [upper]
+            for end in ends:
+                if isinstance(end, ast.BinOp) and isinstance(end.op, ast.Add):
+                    self.word_given(end.right, what)
 
     def uses(self, node):
         """The names an expression reads (scope names and generated ones)."""
@@ -1973,6 +2163,8 @@ class HandlerCompiler:
         None."""
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
             return node.value
+        if self.is_class_constant(node):
+            return self.class_constant(node)
         if isinstance(node, ast.Name) and node.id not in self.scope:
             value = self.plan.get(node.id, self.names.get(node.id))
             return value if isinstance(value, int) else None
@@ -4629,6 +4821,7 @@ class HandlerCompiler:
         if pages.rect is not None and isinstance(pages.rect[1], str):  # field's
             pitch = self.field_sides(node, field)[1]
             if pages.bounds[1] is None or pages.bounds[1] > pitch:
+                self.stated_words(stream.args[0], "a fill of a field")
                 self.refuse(
                     node,
                     f"the rectangle's columns are a word and self.{field}'s rows are "
@@ -5059,8 +5252,8 @@ class HandlerCompiler:
             f"pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
             f"for (uint32_t {tile} = 0; {tile} < {tiles}; {tile}++) {{\n"
             "    tile_regs_acquire();\n"
-            f"    copy_tile({arrival.name}.cb, km::slot_page({arrival.name}, slot) + "
-            f"{tile}, 0);\n"
+            f"    copy_tile({arrival.name}.cb, km::slot_page({arrival.name}, "
+            f"km_slot) + {tile}, 0);\n"
             "    tile_regs_commit();\n"
             "    tile_regs_wait();\n"
             f"    pack_tile<true>(0, {buffer}, {tile});\n"
@@ -5553,6 +5746,7 @@ class HandlerCompiler:
                 if pages.count.isdigit():
                     most = int(pages.count)
                 elif None in pages.bounds:
+                    self.stated_words(source, "a cast's slot")
                     self.refuse(
                         cast,
                         "a cast's slot holds the rectangle's most rows and columns, "

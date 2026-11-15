@@ -19,19 +19,21 @@ sys.path.insert(0, str(HERE.parent))
 
 import movement as hand  # noqa: E402  (the hand program's data and timing)
 
-BLOCK = 16  # tiles a block; the plan gives the run's (--block)
-
 
 class Movement(km.Program):
     """Every core reads its `tiles` pages, from page rank x tiles, through one stream
     both movers carry; READ drops them, COPY writes each block to the output."""
+
+    BLOCK = km.constant(16)  # tiles a block; the make gives the run's (--block)
 
     @km.handler
     def read(
         self, source: km.Tensor, tiles: int, pattern: km.Pattern, repetitions: int
     ):
         pages = source.pages(self.rank * tiles, tiles)
-        for _ in km.Stream(pages, block=BLOCK, pattern=pattern, repeat=repetitions):
+        for _ in km.Stream(
+            pages, block=self.BLOCK, pattern=pattern, repeat=repetitions
+        ):
             pass
 
     @km.handler
@@ -40,9 +42,11 @@ class Movement(km.Program):
     ):
         first = self.rank * tiles
         out = km.Stream(
-            output.pages(first, tiles), write=True, block=BLOCK, pattern=pattern
+            output.pages(first, tiles), write=True, block=self.BLOCK, pattern=pattern
         )
-        for tile in km.Stream(source.pages(first, tiles), block=BLOCK, pattern=pattern):
+        for tile in km.Stream(
+            source.pages(first, tiles), block=self.BLOCK, pattern=pattern
+        ):
             out.push(tile)
 
 
@@ -108,7 +112,9 @@ def parse():
     parser.add_argument("--pattern", nargs="+", default=["AB"])
     parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
     parser.add_argument("--tiles", type=int, default=256, help="tiles a core reads")
-    parser.add_argument("--block", type=int, default=BLOCK, help="tiles per block")
+    parser.add_argument(
+        "--block", type=int, default=Movement.BLOCK.default, help="tiles per block"
+    )
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--beside", action="store_true", help="the hand program first")
     parser.add_argument("--seed", type=int, default=1)
@@ -142,7 +148,7 @@ def main():
         programs["class"] = Movement(
             source=tensors["input"],
             output=tensors["output"],
-            plan={"BLOCK": args.block},
+            BLOCK=args.block,
             log=hand.log,
         )
         for name, program in programs.items():
