@@ -1503,22 +1503,22 @@ class IslandSession:
                 owned[id(each)] = each
         owned = list(owned.values())
         defines = [one.defines for one in owned]
-        if len(self.sessions) > 1:  # a tensor's word may name its table entry
-            for one, own in zip(owned, defines):
-                one.defines = {**own, "KM_TENSOR_TABLE": 1}
-        if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
-            asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
-            for one in owned:
-                one.defines = {
-                    **one.defines,
-                    "KM_PAGE_LINKS": 1,
-                    **asks,
-                    **self._forward,
-                }
-        plans = self._links(programs)
-        tables = self._tables_for_load()
         runs = []
         try:
+            if len(self.sessions) > 1:  # a tensor's word may name its table entry
+                for one, own in zip(owned, defines):
+                    one.defines = {**own, "KM_TENSOR_TABLE": 1}
+            if self.links:  # link cores' CPUs serve PAGES (km_pages.hpp), while built
+                asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
+                for one in owned:
+                    one.defines = {
+                        **one.defines,
+                        "KM_PAGE_LINKS": 1,
+                        **asks,
+                        **self._forward,
+                    }
+            plans = self._links(programs)
+            tables = self._tables_for_load()
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
                 try:
                     # one island: the card's run as it is without islands
