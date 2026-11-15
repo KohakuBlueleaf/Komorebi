@@ -8,7 +8,7 @@ import pytest
 from komorebi.dsl.tile import UnitError, emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.dsl.tile.rows import row_program
-from komorebi.dsl.tile.unit import OPS, Call, Insn, Loop, decode, encode
+from komorebi.dsl.tile.unit import OPS, Call, Insn, Loop, decode, encode, insns
 
 
 def stream(name, inputs, fn, **options):
@@ -103,3 +103,21 @@ def test_row_norm_lanes_and_broadcast():
     assert checks["lanes"].startswith("ok") and checks["broadcast"].startswith("ok")
     # each lane rotation of a sum waits a cycle: the unit does not stall it
     assert checks["mad-reader"] == "repaired: 32 SFPNOP"
+
+
+def test_exp_step_per_row_operand():
+    s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
+    p = TensorParam("p", True, F32)
+    ir = KernelIR("expstep", [s, m, p], [], {})
+    with trace.Tracer(ir):
+        ss, ms, ps = (trace.TensorProxy(t) for t in (s, m, p))
+        for t in trace.grid(trace.num_tiles(ss)):
+            x, state = trace.load(ss.tiles[t]), trace.load(ms.tiles[t])
+            trace.store(ps.tiles[t], trace.exp(x * 0.125 - state.col()))
+    unit = unit_program(ir)
+    code = [x for x in insns(unit.tile["math"]) if x.op == "SFPLOAD"]
+    # per 4-row block: the state once (tile 1), the two column groups of s
+    assert [x.args["dest_reg_addr"] for x in code[:3]] == [0, 64, 2]
+    fused = [x for x in insns(unit.tile["math"]) if x.op == "SFPMAD"][0]
+    assert fused.args["lreg_src_c"] == code[1].args["lreg_ind"]
+    assert fused.args["instr_mod1"] == 2  # s 0.125 - m in one multiply-add

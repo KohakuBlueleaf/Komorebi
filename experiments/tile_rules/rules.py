@@ -41,7 +41,16 @@ WIDTH = 2  # tiles in a row of the norm
 P_TILE, ROWS_TILE = 4, 2  # the norm's Dst tiles: per-column operand, per-row value
 # Largest relative error against float64 of an emitted body (README.md, "The gate");
 # hand bodies are reported against it too.
-TOLERANCE = {"silu": 1e-6, "add": 2**-23, "scale": 2**-23, "gate": 1e-6, "norm": 1e-5}
+TOLERANCE = {
+    **{"silu": 1e-6, "add": 2**-23, "scale": 2**-23, "gate": 1e-6, "norm": 1e-5},
+    "exp": 1e-5,
+}
+# The hand bodies held to their own bound: attention's exp polynomial is 1.75e-3.
+HAND_TOLERANCE = {"exp": 2e-3}
+ATTENTION = HERE.parents[1] / "projects" / "attention" / "kernels"
+EXP_SCALE = 0.125  # 1 / sqrt(64), exact in fp32
+EXP_A = EXP_SCALE * 1.4426950408889634  # the hand body's A = scale log2 e
+EXP_TILE = {12: 3, 13: 1}  # the row state's Dst tile: the hand body's, the emitted
 
 # BODY: (case, form "hand", "emitted" or "macro": emitted with the load-macro rule).
 # Hand: tt-metal's vector library (silu, add, scale), projects/decode (gate, norm).
@@ -58,12 +67,14 @@ BODIES = {
     9: ("gate", "emitted"),
     10: ("norm", "hand"),
     11: ("norm", "emitted"),
+    12: ("exp", "hand"),
+    13: ("exp", "emitted"),
 }
-CASES = ("silu", "add", "scale", "gate", "norm")
+CASES = ("silu", "add", "scale", "gate", "norm", "exp")
 # Run on the card already, over the same inputs (the tile-front experiment): built
 # and checked here, not run again.
 ALREADY_RUN = {0}
-INPUTS = {"silu": 1, "add": 2, "scale": 1, "gate": 2, "norm": 1}
+INPUTS = {"silu": 1, "add": 2, "scale": 1, "gate": 2, "norm": 1, "exp": 1}
 
 
 def log(message):
@@ -104,6 +115,20 @@ def norm_ir():
     return ir
 
 
+def expstep_ir():
+    """p = exp(s scale - m), m a per-row value: the row state tile (each row's scaled
+    reference in all its lanes), broadcast along the row with .col()."""
+    s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
+    p = TensorParam("p", True, F32)
+    ir = KernelIR("expstep", [s, m, p], [], {})
+    with trace.Tracer(ir):
+        ss, ms, ps = (trace.TensorProxy(t) for t in (s, m, p))
+        for t in trace.grid(trace.num_tiles(ss)):
+            x, state = trace.load(ss.tiles[t]), trace.load(ms.tiles[t])
+            trace.store(ps.tiles[t], trace.exp(x * EXP_SCALE - state.col()))
+    return ir
+
+
 def units():
     """{header name: unit program} of every emitted body."""
     out = {}
@@ -120,6 +145,7 @@ def units():
         unit = unit_program(stream(f"{name}_macro", inputs, fn), load_macro=True)
         out[f"{name}_macro"] = unit
     out["norm"] = row_program(norm_ir(), WIDTH, ROWS_TILE, P_TILE)
+    out["expstep"] = unit_program(expstep_ir())
     return out
 
 
@@ -157,7 +183,7 @@ def aiclk_mhz():
 def p_pages(body):
     """Pages of P: the emitted norm's per-column operand tile; the hand norm's
     identity, mean and weight tiles (decode's constant tiles, and g in every row)."""
-    return {10: 2 + WIDTH, 11: 1}.get(body, 0)
+    return {10: 2 + WIDTH, 11: 1, 12: 1, 13: 1}.get(body, 0)
 
 
 def setting(body):
@@ -171,7 +197,8 @@ def setting(body):
         "INPUTS": INPUTS[case],
         "COPY_B": int(copy_b),
         "HAS_P": p_pages(body),
-        "P_TILE": P_TILE,
+        "P_TILE": EXP_TILE.get(body, P_TILE),
+        "EXP_A": f"{float(np.float32(EXP_A))!r}f",
         "SCALE_BITS": f"{bits(SCALE)}u",
         "INV_N_BITS": f"{bits(1.0 / (32 * WIDTH))}u",
         "EPS_BITS": f"{bits(EPS)}u",
@@ -217,7 +244,7 @@ def launch(session, body, data):
     unpack = {CB_A: "UnpackToDestFp32"}
     if defines["COPY_B"]:
         unpack[CB_B] = "UnpackToDestFp32"
-    if body == 11:
+    if body in (11, 12, 13):
         unpack[CB_P] = "UnpackToDestFp32"
     options = {
         "math_fidelity": "HiFi4",
@@ -232,7 +259,7 @@ def launch(session, body, data):
         2,
         [],
         [(k, str(v)) for k, v in defines.items()],
-        [str(GENERATED)],
+        [str(GENERATED), str(ATTENTION)],
         args([nonce, count]),
         **km_session.compute_config(options),
     )
@@ -293,6 +320,21 @@ def inputs_of(case, count, seed):
             "x": x,
             "g": g,
         }
+    if case == "exp":
+        # Scores; m each row's max over every unit (the state tile is one page).
+        s = (rng.standard_normal((count * 32, 32)) * 8).astype(np.float32)
+        m = s.reshape(count, 32, 32).max(axis=(0, 2)).astype(np.float64)
+        a = np.concatenate([tiles_of(s[32 * u : 32 * u + 32]) for u in range(count)])
+        lanes = np.ones((1, 32))
+        state = (EXP_SCALE * m)[:, None] * lanes
+        bias = (639 - np.float32(EXP_A) * m)[:, None] * lanes
+        return {
+            "a": a.view(np.uint32),
+            "b": one.view(np.uint32),
+            "p": tiles_of(state.astype(np.float32)).view(np.uint32),
+            "p_hand": tiles_of(bias.astype(np.float32)).view(np.uint32),
+            "m": m,
+        }
     a = (rng.standard_normal((count, TILE_WORDS)) * 8).astype(np.float32)
     if count > 1:
         e = rng.uniform(-40, 40, TILE_WORDS)
@@ -317,6 +359,9 @@ def reference(case, data):
             return a * float(np.float32(SCALE))
         if case == "gate":
             return a / (1 + np.exp(-a)) * b
+    if case == "exp":
+        shift = tiles_of(np.broadcast_to(data["m"][:, None], (32, 32)))
+        return np.exp(EXP_SCALE * (a - shift))
     x, g = data["x"].astype(np.float64), data["g"].astype(np.float64)
     y = x / np.sqrt((x * x).mean(axis=1, keepdims=True) + EPS) * g
     count = len(x) // 32
@@ -355,11 +400,14 @@ def check(case, data, outputs, infos, nonces):
             }
             got["unit_median"] = statistics.median(loops[1:] or loops)
         got["vs_float64"] = errors(outputs[body], ref)
+        bound = TOLERANCE[case]
+        if form == "hand":
+            bound = HAND_TOLERANCE.get(case, bound)
         got["ok"] = (
             got["nonce_ok"]
             and got["error"] == 0
             and got["vs_float64"]["not_finite"] == 0
-            and got["vs_float64"]["max"] <= TOLERANCE[case]
+            and got["vs_float64"]["max"] <= bound
         )
         if form == "hand":
             hand = outputs[body]
@@ -437,9 +485,7 @@ def card(args):
             rec = check(case, data, outputs, infos, nonces)
             saved.update({f"{case}_{BODIES[b][1]}": out for b, out in outputs.items()})
             saved.update({f"{case}_input_{k}": v for k, v in data.items()})
-            rec["estimates"] = {
-                k: v for k, v in costs.items() if k.split("_")[0] == case
-            }
+            rec["estimates"] = {k: v for k, v in costs.items() if k.startswith(case)}
             log(json.dumps(rec))
             records.append(rec)
     if args.save:

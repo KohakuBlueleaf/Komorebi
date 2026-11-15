@@ -285,7 +285,7 @@ def rsqrt(b, x):
     return b.mad(e, half, y, "y + (1 - y x y) y / 2")
 
 
-FUNCTIONS = {"sigmoid": sigmoid, "rsqrt": rsqrt}
+FUNCTIONS = {"exp": exp, "sigmoid": sigmoid, "rsqrt": rsqrt}
 
 
 def _value(b, node, done, source=None):
@@ -296,7 +296,7 @@ def _value(b, node, done, source=None):
         return done[key]
     k = node.kind
     if k == "operand":
-        if node.value[1] is not None or node.along:
+        if source is None and (node.value[1] is not None or node.along):
             fail("the unit program reads whole-tile operands")
         if source is None:
             if node.value[0] >= OPERANDS:
@@ -358,8 +358,23 @@ def fold_negation(code):
                 done.append(f"a negation into its consumer ({users[0].note})")
                 del code[i]
                 continue
+        if users and all(_addend_only(x, out) for x in users):
+            for x in users:
+                x.args["lreg_src_c"] = source
+                x.args["instr_mod1"] ^= 2
+            done.append(f"a negation into the addend of {len(users)} multiply-add(s)")
+            del code[i]
+            continue
         i += 1
     return done
+
+
+def _addend_only(insn, value):
+    """True when multiply-add `insn` reads `value` once, as its addend (VC)."""
+    if insn.op not in ("SFPMAD", "SFPADD"):
+        return False
+    reads = [insn.args[f] for f in ("lreg_src_a", "lreg_src_b", "lreg_src_c")]
+    return reads.count(value) == 1 and insn.args["lreg_src_c"] == value
 
 
 def fuse_mad(code):
@@ -386,7 +401,10 @@ def fuse_mad(code):
         add.args["lreg_src_a"] = insn.args["lreg_src_a"]
         add.args["lreg_src_b"] = insn.args["lreg_src_b"]
         add.args["lreg_src_c"] = c if b == out else b
-        add.args["instr_mod1"] |= insn.args["instr_mod1"] & 1
+        if c == out and add.args["instr_mod1"] & 2:
+            # the add negated the product: the product's sign flips, not the addend's
+            add.args["instr_mod1"] ^= 3
+        add.args["instr_mod1"] ^= insn.args["instr_mod1"] & 1
         add.note = f"{insn.note or 'a b'} + c, one rounding".strip()
         done.append(f"a product into its add ({add.note})")
         del code[i]
@@ -754,7 +772,7 @@ def stream_chain(ir):
     loads = {id(n): n for n in nodes if n.kind in ("load", "resident")}
 
     def leaf_of(node, offset, kind):
-        if id(node) not in loads or kind != "copy" or offset is not None:
+        if id(node) not in loads or kind not in ("copy", "bcast_col") or offset:
             return None
         return chains.Leaf(node, kind, offset)
 
@@ -777,8 +795,28 @@ def unit_program(ir, dest="fp32", load_macro=False):
     if not dtypes <= {BF16, F32}:
         fail(f"{ir.name}: tensors are bf16 or fp32")
     body = Body()
-    result = _value(body, chain.fn.result, {})
-    body.store(result)
+    per_row = [k for k, leaf in enumerate(chain.operands) if leaf.kind == "bcast_col"]
+    if per_row:
+        # A per-row operand (a state tile, each row's value in all its lanes): a row
+        # step takes a 4-row block's even and odd vectors, the state loaded once.
+        shared = {}
+
+        def source(k, p):
+            if k in per_row:
+                if k not in shared:
+                    shared[k] = body.load(TILE * k, f"per-row operand {k}")
+                return shared[k]
+            return body.load(TILE * k + 2 * p, f"operand {k}, {'odd' if p else 'even'}")
+
+        results = [
+            _value(body, chain.fn.result, {}, lambda k, p=p: source(k, p))
+            for p in (0, 1)
+        ]
+        for p, result in enumerate(results):
+            body.store(result, 2 * p, f"the result to Dst ({'odd' if p else 'even'})")
+    else:
+        result = _value(body, chain.fn.result, {})
+        body.store(result)
     unit = UnitProgram(ir.name, dest)
     unit.operands = [leaf.source.attrs["view"].tensor.name for leaf in chain.operands]
     setup = []
@@ -809,7 +847,7 @@ def unit_program(ir, dest="fp32", load_macro=False):
         PROGRAMMABLE[i]: value for i, value in enumerate(body.prog.values())
     }
     plan = None
-    if load_macro:
+    if load_macro and not per_row:
         try:
             plan = macro.fit(body.code)
         except macro.Refused as e:
@@ -828,7 +866,11 @@ def unit_program(ir, dest="fp32", load_macro=False):
         Insn("SETRWC", {**_setrwc(), "BitMask": 0xF}, "reset the counters"),
         *setup,
     ]
-    if plan is None:
+    if plan is None and per_row:
+        row = [*body.code, Insn("INCRWC", _rwc(rwc_d=4), "next 4-row block")]
+        face = Loop("row", ROWS // 2, row, unroll=True)
+        drained = []
+    elif plan is None:
         row = [*body.code, Insn("INCRWC", _rwc(rwc_d=2), "next 4 rows")]
         face = Loop("row", ROWS, row, unroll=True)
         drained = []

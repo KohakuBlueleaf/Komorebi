@@ -30,6 +30,11 @@
 #include "gate.hpp"
 #elif BODY == 11
 #include "norm.hpp"
+#elif BODY == 13
+#include "expstep.hpp"
+#endif
+#if BODY == 12 && defined(TRISC_MATH)
+#include "sfpu.hpp"  // projects/attention/kernels
 #endif
 
 namespace {
@@ -150,6 +155,11 @@ namespace {
         MATH((km_tile::gate_init()));
 #elif BODY == 11
         MATH((km_tile::norm_init()));
+#elif BODY == 12
+        MATH((flash::init(EXP_A)));
+        MATH((flash::addr_init()));
+#elif BODY == 13
+        MATH((km_tile::expstep_init()));
 #endif
     }
 
@@ -181,6 +191,16 @@ namespace {
         MATH((km_tile::gate(0)));
 #elif BODY == 11
         MATH((km_tile::norm(0)));
+#elif BODY == 12
+        // The attention project's exponent step for one score tile (Dst 0), its row
+        // state in Dst 3, on the math CPU (the project issues it from the pack CPU).
+        MATH((ckernel::math::set_dst_write_addr<
+              DstTileShape::Tile32x32,
+              UnpackDestination::SrcRegs>(0)));
+        MATH((TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH)));
+        MATH((flash::exp_step<1>()));
+#elif BODY == 13
+        MATH((km_tile::expstep(0)));
 #endif
     }
 
@@ -250,6 +270,9 @@ void kernel_main() {
 #endif
         PACK(info[rules::kLoop + u] = rules::wall() - started);
     }
+#if BODY == 12
+    MATH((flash::restore_constants()));
+#endif
     MATH(asm volatile("fence" :: : "memory"); info[rules::kMathDone] = nonce);
 #ifdef TRISC_PACK
     uint32_t error = 0, polls = 0;
