@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "kmx.h"
+#include "chain.h"
 #include "decode.h"
 
 #define WAIT_TICKS KMX_TICKS_PER_SECOND /* one command's submit or wait */
@@ -28,6 +29,8 @@ typedef struct {
     uint32_t index; /* the layer's number: its head norms' weights in the qk tensor */
     uint32_t rows;  /* the tokens a step: a3's DC_ROWS field of every command */
     uint64_t span_ticks; /* q's submit to o's event, summed over the layers */
+    uint32_t chain;      /* the layer as one command: the cores go on by themselves */
+    uint32_t records;    /* the chain's records: its first steps */
 } job_t;
 
 /* Overlapped, q, k, v and o alternate the sum's two sets: k and o the second. */
@@ -43,7 +46,7 @@ static int runs(const job_t* job, uint32_t step) {
     if (step >= DC_STEP_Q && step <= DC_STEP_V) {
         return job->apart;
     }
-    return 1;
+    return step != DC_STEP_CHAIN; /* the chain's: only its own command (run_chain) */
 }
 
 /* A SPLIT command on the product's cores: A, W, Y, the plan, the operation and its
@@ -235,6 +238,105 @@ static int run_attention(job_t* job) {
     return status;
 }
 
+/* The fused layer's steps in order, as a chain's records. */
+static const uint32_t chain_steps[] = {
+    DC_STEP_QKV, DC_STEP_ATTEND, DC_STEP_O, DC_STEP_GATE_UP, DC_STEP_DOWN
+};
+#define CHAIN_STEPS 5u
+
+/* Whether step `step`'s command writes the output the step after it reads. */
+static int chain_writes(const job_t* job, uint32_t step) {
+    if (step == DC_STEP_ATTEND) {
+        return (job->attend & DC_ATTEND_READ_ONLY) == 0u;
+    }
+    return !job->parts;
+}
+
+/* Whether step `step`'s parts go up its group's tree (its receivers send credits). */
+static int chain_sends(const job_t* job, uint32_t step) {
+    if (step == DC_STEP_ATTEND) {
+        return (job->attend & (DC_ATTEND_READ_ONLY | DC_ATTEND_LOCAL)) == 0u;
+    }
+    return !job->parts;
+}
+
+/* The layer as one command: its records (chain.h) into region 3, then one SPLIT in
+ * the chain's mode on every core of the records, waited for once. */
+static int run_chain(job_t* job) {
+    uint64_t bytes = 0;
+    uint32_t* records = (uint32_t*)kmx_region(3, &bytes);
+    const uint32_t* words = job->words;
+    if (records == 0 || bytes < (uint64_t)job->records * kChainRecordBytes) {
+        return KMX_BAD;
+    }
+    km_command_t command;
+    km_command_t chain;
+    uint32_t cores = 0u, address = 0u;
+    for (uint32_t i = job->records; i-- > 0u;) { /* last first: each knows the next */
+        const uint32_t step = chain_steps[i];
+        uint32_t* record = records + kChainWords * i;
+        step_command(job, step, &command);
+        if (
+            kmx_block(&chain, 3, (uint64_t)i * kChainRecordBytes, kChainRecordBytes) !=
+            KMX_OK
+        ) {
+            return KMX_BAD;
+        }
+        const uint32_t arguments[10] = {
+            command.a0,
+            command.a1,
+            command.a2,
+            command.a3,
+            command.a4,
+            command.a5,
+            command.a6,
+            command.a7,
+            command.a8,
+            command.a9
+        };
+        for (uint32_t word = 0u; word < 10u; word++) {
+            record[kChainArguments + word] = arguments[word];
+        }
+        record[kChainGroup] = command.group;
+        uint32_t flags = 0u;
+        if (i > 0u && chain_writes(job, chain_steps[i - 1u])) {
+            flags |= kChainMarked;
+        }
+        if (chain_sends(job, step)) {
+            flags |= kChainSends;
+        }
+        const uint32_t needs = (
+            step == DC_STEP_ATTEND ? kChainNeedsRanges : kChainNeedsK
+        );
+        const uint32_t width = (
+            step == DC_STEP_GATE_UP && !job->bare ? words[DC_WORD_GATE_TILES] : 0u
+        );
+        record[kChainInfo] = flags | needs << 8 | width << 16;
+        for (uint32_t range = 0u; range < kChainRangeCount; range++) {
+            record[kChainRanges + range] = (
+                step == DC_STEP_ATTEND ? words[DC_WORD_ATTEND_NEEDS + range] : 0u
+            );
+        }
+        record[kChainNext] = address;
+        address = chain.a7;
+        cores = (command.group >> 16) > cores ? command.group >> 16 : cores;
+    }
+    kmx_flush(3);
+    kmx_command(&chain, 0u, words[DC_WORD_SPLIT], 0u, cores);
+    chain.hdr |= words[DC_WORD_EXCLUSIVE] << 8;
+    if (kmx_block(&chain, 3, 0u, kChainRecordBytes) != KMX_OK) {
+        return KMX_BAD;
+    }
+    chain.a4 = kChainMode;
+    uint32_t handle = 0u;
+    uint64_t deadline = kmx_time() + WAIT_TICKS;
+    int status = kmx_submit(&chain, &handle);
+    while (status == KMX_FULL && kmx_time() < deadline && !kmx_stop_requested()) {
+        status = kmx_submit(&chain, &handle);
+    }
+    return status != KMX_OK ? status : wait_step(job, DC_STEP_CHAIN, handle);
+}
+
 /* LAYERS: a0 steps, a1 layers, a2 stats slot, a3 first layer, a4 bits, a5 the first
  * position, a6 rows a step (decode.h). Result: the ticks, or 0xFFFFFFF0 | status. */
 static uint32_t layers(const km_command_t* command) {
@@ -263,6 +365,8 @@ static uint32_t layers(const km_command_t* command) {
     job.parts = job.bare && (command->a4 & 2u) != 0u;
     job.apart = (command->a4 & 4u) != 0u;
     job.overlap = job.apart && (command->a4 & 8u) != 0u;
+    job.chain = !job.apart && (command->a4 & DC_LAYERS_CHAIN) != 0u;
+    job.records = (command->a4 & DC_LAYERS_PAIR) != 0u ? 2u : CHAIN_STEPS;
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |
@@ -283,6 +387,10 @@ static uint32_t layers(const km_command_t* command) {
             job.index = first + layer;
             job.position = command->a5 + token * job.rows;
             kmx_progress(token << 16 | layer);
+            if (job.chain) {
+                status = run_chain(&job);
+                continue;
+            }
             for (uint32_t step = 0; step < DC_STEPS && status == KMX_OK; step++) {
                 if (job.overlap && step == DC_STEP_Q) {
                     status = run_attention(&job);
