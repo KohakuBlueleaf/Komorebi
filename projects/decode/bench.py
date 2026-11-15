@@ -36,9 +36,6 @@ STAGES = (("commands", {"chain": False}), ("pair", {"chain": True, "pair": True}
 # The cache's rows a KV head and layer, and the lengths T timed (the last token
 # attends over T rows) and checked (in this order: a check appends to row T - 1).
 CONTEXT, LENGTHS = 4096, (4096, 1024, 256)
-# attend alone first, (groups, first position, tokens): one token in a tile, at a
-# tile's last row, 5 and 32 tokens across two tiles.
-ALONE = ((1, 1000, 1), (8, 4095, 1), (8, 30, 5), (8, 1000, 32))
 # The layer's check: one token at each length, then 32 at the first.
 CHECK_ROWS = 32
 CASES = {
@@ -57,6 +54,15 @@ SPANNED = ("q", "k", "v", "o")  # overlapped: one span
 TRACED = 512  # commands a core stamps with --trace (16 bytes of L1 each)
 TRACE_FIELDS = ("kTraceSeen", "kTraceDone", "kTraceSent", "kTraceExtra")
 STARTED = time.monotonic()
+
+
+def alone(context):
+    """attend alone's cases, (groups, first position, tokens), in a cache of `context`
+    rows: one token in a tile, at the last row, 5 and 32 tokens across two tiles (each
+    that fits; at 4096 rows from 1000)."""
+    middle = context * 1000 // 4096
+    cases = ((1, middle, 1), (8, context - 1, 1), (8, 30, 5), (8, middle, 32))
+    return tuple(case for case in cases if case[1] + case[2] <= context)
 
 
 def log(message):
@@ -690,7 +696,7 @@ def main():
                 log(f"loop check: {json.dumps(report['loop'])}")
             if not args.no_check:
                 report["alone"] = []
-                for groups, position, rows in ALONE:
+                for groups, position, rows in alone(args.context):
                     got = attend_alone(
                         decode, model, caches, args.seed, groups, position, rows
                     )

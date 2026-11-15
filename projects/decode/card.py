@@ -319,6 +319,8 @@ class Decode:
     def attend(self, groups, position, rows=1, layer=0, timeout=5.0):
         """One ATTEND from the host on the first `groups` KV heads' groups, over layer
         `layer`'s cache, `rows` tokens from `position` (q, k, v from qkv): its event."""
+        if not 0 <= position <= self.context - rows or not 1 <= rows <= md.TILE:
+            raise ValueError(f"position {position}: {rows} rows past the cache")
         words = self.words()
         tensors, weights = self.tensors, self.weights[layer]
         args = [
