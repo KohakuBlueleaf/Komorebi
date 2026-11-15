@@ -1930,9 +1930,21 @@ call that reads a chain-written tensor with it is refused.
 
 **km.direct.** `km.direct(t)` at a call marks an input sent by the call before's roots
 into L1. The handler declares which of its parameters may arrive so,
-`@km.handler(direct=("b",))`; the mark is checked against that and against the call
-before's output. The class's kernels do not take an input from the arrival area in this
-version (each read is a stream from DRAM), so a call with a direct mark is refused.
+`@km.handler(direct=("b",))`. The mark is checked against that declaration and against
+the call before's output, which the call reads by a share of K. A chain build of a
+class with such a declaration gets one landing area a core: buffer `kDirectArea`, the
+size of the largest declared tensor given at the make. A class without a declaration
+generates the same text as before.
+
+In a record marked direct, the call before's roots keep their block in their write
+buffer rather than writing it to DRAM. Each root sends the block's part to every
+reading core whose share meets it, and marks that core after its own writes are
+acknowledged. The reading core's stream of that parameter reads its area
+(`km::direct_or`, a local read into its stream buffer) rather than DRAM. In any other
+record, the same kernels read and write DRAM. One direct input is allowed a chain.
+
+Example 31's SwiGLU sends the hidden from up's 12 roots to down's 4 cores in this way
+(`examples/31_swiglu/swiglu_direct.py`, README "## the hidden sent direct").
 
 **A `km.chain` method** holds calls of the class's handlers in order (`self.scale(...)`),
 assignments, and `for _ in range(N)` of a constant N, unrolled. It is read when the class
@@ -1952,7 +1964,10 @@ island 0's program and `cores` in flat ranks.
 | a `kc.Call` among a class's calls | `run.chain` | the call |
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
 | `km.past` of the call before's output, or of a tensor the handler does not read | `run.chain` | the call, the tensor |
-| `km.direct` of a parameter the handler does not declare, of a tensor other than the call before's output; any direct mark (kernels) | `run.chain` | the call, the parameter, the declaration |
+| `km.direct` of a parameter the handler does not declare, of a tensor other than the call before's output, of one not read by a share of K | `run.chain` | the call, the parameter, the declaration |
+| two direct inputs in one chain; a direct input from an overlay handler's call; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
+| a direct input declared on an overlay handler; declared inputs of different tile bytes | the make | the handler, the parameter, the bytes |
+| a host read (`session.read`, `tensor.read`) of a tensor a submitted chain sent direct, before a write or a chain writes it | the read | the tensor and the call that sent it |
 | `prefetch=True` on a read of a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |

@@ -17,6 +17,7 @@ import numpy.ma
 from komorebi import abi, added, added_program, overlay
 from komorebi import chain as chain_module
 from komorebi import state as device_state
+from komorebi import tensor as tensor_module
 from komorebi.dsl import front
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
@@ -266,6 +267,7 @@ class Run:
         without cores=, `prefetch` False: every read waits for its input's marks."""
         if any(isinstance(call, front.HandlerCall) for call in calls):
             calls = self._class_calls(calls, cores, prefetch)
+        in_dram = (getattr(calls, "direct", []), getattr(calls, "written", []))
         walk = self._walk(calls)
         report, word = chain_module.build(calls)
         calls = [  # a class's handler: the one built for its words' constants
@@ -292,7 +294,7 @@ class Run:
         )
         self._unfenced = True
         handler = self.field_handler(*numbers[0]) if walk is None else walk
-        return chain_module.Chain(
+        made = chain_module.Chain(
             handler,  # a number: submit makes no words of it
             (first, end - first),
             mode,
@@ -302,6 +304,8 @@ class Run:
             report,
             calls,
         )
+        made.direct, made.written = in_dram
+        return made
 
     def _class_calls(self, calls, cores, prefetch, group=None):
         """The framework's calls of a chain stated with a class's handler calls
@@ -341,9 +345,11 @@ class Run:
         # a chain (run.chain): one exclusive command, `words` its per-submit word
         if isinstance(handler, chain_module.Chain):
             chain = handler
-            return self.submit(
+            handle = self.submit(
                 chain.handler, chain.group, chain.args(words), exclusive=True
             )
+            tensor_module.sent_direct(chain.written, chain.direct)
+            return handle
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         started = time.perf_counter()

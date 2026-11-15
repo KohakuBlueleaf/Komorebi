@@ -23,6 +23,7 @@ class Tensor:
         self.transposed_tiles = False
         self.freed = False
         self.kept = None  # what is written, kept by a session before its first load
+        self.sent = None  # the chain's call that sent it direct: not in DRAM
 
     def __repr__(self):
         where = "DRAM" if self.shard_grid is None else f"L1 of {self.shard_grid}"
@@ -72,6 +73,7 @@ class Tensor:
         if shape != self.shape:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
         self.buffer.write(raw)
+        self.sent = None
         if self.kept is not None:
             self.kept.append(("data", data, None))
 
@@ -88,6 +90,7 @@ class Tensor:
 
     def read_bytes(self):
         """The whole buffer's bytes (uint8), read as read() reads them."""
+        in_dram(self)
         return np.asarray(self.buffer.read())
 
     def free(self):
@@ -117,3 +120,24 @@ def from_array(module, device, data, dtype, layout="row", shard_grid=None):
     tensor = empty(module, device, shape, dtype, layout, shard_grid)
     tensor.buffer.write(raw)
     return tensor
+
+
+def sent_direct(written, sent):
+    """A chain submitted: the tensors its calls write are in DRAM again, those it
+    sends direct ((tensor, the call)) are not until a later write."""
+    for tensor in written:
+        tensor.sent = None
+    for tensor, call in sent:
+        tensor.sent = call
+
+
+def in_dram(*tensors):
+    """Refuses a host read of a tensor a chain sent direct and nothing wrote since:
+    its DRAM holds what it held before (a silent wrong)."""
+    for tensor in tensors:
+        if getattr(tensor, "sent", None) is not None:
+            raise RuntimeError(
+                f"a tensor of shape {tensor.shape} at {tensor.address:#x} was sent "
+                f"direct by {tensor.sent}, not to DRAM: drop km.direct, or read the "
+                "next tensor; a write or a chain that writes it makes it readable"
+            )

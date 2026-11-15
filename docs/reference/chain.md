@@ -163,9 +163,17 @@ call before it that wrote that tile must be in what the core knows; otherwise
 
 **A direct input** is sent by the call before's roots into the L1 of the cores that read
 it, in place of a read from DRAM. `run.chain` checks that it is the call before's
-output, read by a share of K tiles; that each reading core's share comes from one
-root; and that it fits the landing area the program declares. It reports the bytes each
-root sends and to how many cores.
+output, read by a share of K tiles, and that each share fits the landing area the
+program declares. It reports the bytes each root sends and to how many cores. A
+reading core's share may come from several roots. Each root writes the part of its
+block that meets the share at that part's own offset in the area, waits for its own
+writes' acknowledgements (its transaction id), and only then marks the core. The core
+waits for one mark from each block its share meets, the same count as for a DRAM
+read. So no core reads its area before every part has landed, whatever order the
+roots run in. A tensor sent direct has no DRAM copy: a host read of it
+(`session.read`, `tensor.read`) after the chain raises, naming the call that sent it,
+until a write or a later chain writes it. A later call of the same chain that reads it
+is refused.
 
 ## What is refused
 
@@ -175,7 +183,7 @@ root sends and to how many cores.
 | an earlier input a core reads before anything tells it complete | the call, the core, the tensor and tile, the call and block that wrote it |
 | an outside tensor that a call of the chain writes | the call, the tensor, the call that writes it |
 | an earlier input that the call before writes (it is this call's input) | the call, the tensor |
-| a direct input not read by a share of K, from more than one root, or past its landing area | the call, the core, the tiles |
+| a direct input not read by a share of K, or past its landing area | the call, the core, the tiles |
 | a group size that does not divide the call's cores, over 127, or a width over 255 | the call |
 | a call of a handler of another program than the first call's | the call, both program fields |
 | a handler number over 255, a stamp row over 63 | the call |
