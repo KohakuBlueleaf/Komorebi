@@ -30,6 +30,16 @@ constexpr uint32_t kPortAdd = 7;
 constexpr uint32_t kCbWSlice = 13;  // bf16, a receiver's K rows of a W block
 constexpr uint32_t kPortReady = 0;  // a receiver: the sender's slot reserved (a marker)
 constexpr uint32_t kPortSlices = 1;  // the sender: the receivers' rows landed
+// Built with X's read spread over the row's ranks (LINEAR_XSPREAD, grid plan): each
+// rank of the row broadcast reads its share of a block's tiles, the sender casts it.
+#if defined(LINEAR_XSPREAD)
+#define LINEAR_XSPREADS true
+#else
+#define LINEAR_XSPREADS false
+#endif
+constexpr uint32_t kCbXSlice = 14;    // bf16, a receiver's tiles of an X block
+constexpr uint32_t kPortXReady = 2;   // as kPortReady, the row broadcast's
+constexpr uint32_t kPortXSlices = 3;  // as kPortSlices, the row broadcast's
 // Built for the output dim sharded form into a copy of Y (LINEAR_GATHER, K-split
 // plan): each island writes its columns, then every rank's km::all_gather.
 #if defined(LINEAR_GATHER)
@@ -98,6 +108,97 @@ inline void lap(uint32_t& counter, uint32_t& since) {
     since = now;
 }
 
+#if defined(COMPILE_FOR_TRISC)
+// Compute's view of T's row (the unpacker's and packer's threads): each sets up only
+// its own end of a buffer, the unpacker the read pointer, the packer the write pointer.
+inline volatile uint32_t* stamp_row() {
+    const LocalCBInterface& row = get_local_cb_interface(kCbStamp);
+#if defined(TRISC_UNPACK)
+    return reinterpret_cast<volatile uint32_t*>(row.fifo_rd_ptr << 4);
+#else
+    return reinterpret_cast<volatile uint32_t*>(row.fifo_wr_ptr << 4);
+#endif
+}
+#endif
+
+#if !defined(COMPILE_FOR_TRISC)
+
+// Waits until port `port` of this core has counted `wanted` arrivals, then clears
+// it. False: gave up (recorded in state word `state`).
+inline bool counted(
+    const km::Core& mover,
+    uint32_t state,
+    const km_command_t& command,
+    uint32_t port,
+    uint32_t wanted
+) {
+    volatile tt_l1_ptr uint32_t* words = km::port_words(mover, port);
+    words[KM_PORT_WANT] = wanted;
+    const uint32_t code = mover.poll_at(
+        km::kWherePort,
+        [&] {
+            invalidate_l1_cache();
+            return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
+        },
+        mover.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        mover.gave_up(
+            state, code, km::kWherePort, km::slot(command) | port << 8, command.sequence
+        );
+        return false;
+    }
+    words[KM_PORT_COUNT] = 0;
+    words[KM_PORT_WANT] = 0;
+    return true;
+}
+
+// Waits until word COUNT of port `port` of this core holds `marker`. False: gave
+// up (recorded in state word `state`).
+inline bool marked(
+    const km::Core& mover,
+    uint32_t state,
+    const km_command_t& command,
+    uint32_t port,
+    uint32_t marker
+) {
+    volatile tt_l1_ptr uint32_t* words = km::port_words(mover, port);
+    const uint32_t code = mover.poll_at(
+        km::kWherePort,
+        [&] {
+            invalidate_l1_cache();
+            return words[KM_PORT_COUNT] == marker;
+        },
+        mover.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        mover.gave_up(
+            state, code, km::kWherePort, km::slot(command) | port << 8, command.sequence
+        );
+        return false;
+    }
+    return true;
+}
+
+// This CPU's writes have landed (acknowledged), so other cores may read them. False:
+// gave up (recorded in state word `state`).
+inline bool landed(const km::Core& mover, uint32_t state, const km_command_t& command) {
+    const uint32_t code = mover.poll_at(
+        km::kWhereData,
+        [] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        },
+        mover.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        mover.gave_up(state, code, km::kWhereData, km::slot(command), command.sequence);
+        return false;
+    }
+    return true;
+}
+
+#endif
+
 // The K-split plan (LINEAR_SPLIT, few rows of X): groups of S ranks, a block a group,
 // each rank 1/S of K on both movers, the parts summed into the group's first rank.
 constexpr uint32_t kCbKa = 2;        // the reader's X chunks: oh x kc tiles
@@ -108,8 +209,9 @@ constexpr uint32_t kCbKArrive = 11;  // fp32, a slot of oh x ow tiles a sender
 constexpr uint32_t kCbKSum = 25;     // fp32, this rank's part: oh x ow tiles
 constexpr uint32_t kCbKOut = 18;     // bf16, the group's sum at its first rank
 constexpr uint32_t kCbKAdd = 12;     // bf16, its block of both partials (LINEAR_ADD)
-// Its words (every CPU's, from 0): S, oh, ow, kc, subblock sh x sw, blocks a row of the
-// window, the arrival buffer's pages, the reduce form, M tiles, a set of S's pages.
+constexpr uint32_t kCbKX = 15;       // bf16, the whole-K plan's X: all its K chunks
+// Its words (every CPU's): S, oh, ow, kc, subblock sh x sw, blocks a row of the window,
+// arrival pages, reduce form, M tiles, a set of S's pages, the chunks' pattern word.
 constexpr uint32_t kKsS = 0;
 constexpr uint32_t kKsOh = 1;
 constexpr uint32_t kKsOw = 2;
@@ -121,7 +223,23 @@ constexpr uint32_t kKsArrive = 7;
 constexpr uint32_t kKsForm = 8;
 constexpr uint32_t kKsMt = 9;
 constexpr uint32_t kKsSetPages = 10;
-constexpr uint32_t kKsWords = 11;
+constexpr uint32_t kKsPattern = 11;
+// The whole-K plan (S 1, Kohaku-TT's decode form): X multicast once a panel by the
+// panel's sender (its writer, NoC 1) into every rank's kCbKX, a marker after each.
+constexpr uint32_t kKsXCast = 12;    // 1: this plan
+constexpr uint32_t kKsXRole = 13;    // this core's: 0 none, 1 the sender, 2 a receiver
+constexpr uint32_t kKsXWaits = 14;   // sender: the receivers whose free it counts
+constexpr uint32_t kKsXDests = 15;   // sender: the multicast's cores but itself
+constexpr uint32_t kKsXSender = 16;  // receiver: its sender's core
+constexpr uint32_t kKsXStart = 17;   // the panel's NoC 1 multicast corners, x | y << 16
+constexpr uint32_t kKsXEnd = 18;
+constexpr uint32_t kKsXChunks = 19;  // K chunks a multicast
+constexpr uint32_t kKsWords = 20;
+constexpr uint32_t kKXSender = 1;
+constexpr uint32_t kKXReceiver = 2;
+// Ports (the split plan's grid ports): a receiver's X buffer free, X's marker
+constexpr uint32_t kPortKXFree = 2;
+constexpr uint32_t kPortKXGot = 3;
 // T's words of the K-split plan (with the account): the movers' chunks moved (reader,
 // writer), the reduce (writer: its part sent, or the sum taken), Y written.
 constexpr uint32_t kAcKMoveA = 16;
@@ -129,6 +247,13 @@ constexpr uint32_t kAcKMoveB = 17;
 constexpr uint32_t kAcKReduce = 18;
 constexpr uint32_t kAcKWrite = 19;
 constexpr uint32_t kAcKReaderReduce = 20;
+// wall clocks: compute's own part packed, each round's part taken and added; the
+// writer's part to send in hand
+constexpr uint32_t kAcKOwn = 21;
+constexpr uint32_t kAcKTaken = 22;  // rounds 0 to kKRounds - 1
+constexpr uint32_t kAcKAdded = 26;  // the same
+constexpr uint32_t kAcKHeld = 30;
+constexpr uint32_t kKRounds = 4;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
