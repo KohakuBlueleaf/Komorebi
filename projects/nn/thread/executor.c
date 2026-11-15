@@ -131,9 +131,8 @@ static int entry_command(
     return KMX_OK;
 }
 
-/* Runs the entry at `offset`, started at `started` (its fetch's start): its command
- * submitted (retrying a full ring) and waited for. `kind` its kind, `next` the list's
- * next entry. KMX_OK once done; an END entry runs nothing. */
+/* Runs the entry at `offset` (fetch begun at `started`): its command submitted, a full
+ * ring retried, and waited for. KMX_OK once done; an END entry runs nothing. */
 static int run_entry(
     walk_t* walk, uint32_t offset, uint64_t started, uint32_t* kind, uint32_t* next
 ) {

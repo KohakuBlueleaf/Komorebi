@@ -25,17 +25,12 @@ enum {
  * check left out. An open list's entry is new once its sequence and its check hold. */
 #define NN_CHECK_FACTOR(word) (2u * (word) + 1u)
 
-/* What the executor does with an entry. COMMAND: words 0 to 10 and the header, one
- * command, submitted and waited for. CHAIN: one command in the chain's mode from this
- * entry's record on (a7, a8 its block), waited for once. END: an open list's drain
- * returns (a sync). NONE: an open list's anchor, never run. */
+/* An entry's kind: one command; a chain from this entry's record on, waited for once;
+ * the end of an open list's drain (a sync); an open list's anchor, never run. */
 enum { NN_KIND_NONE = 0, NN_KIND_COMMAND = 1, NN_KIND_CHAIN = 2, NN_KIND_END = 3 };
 
-/* The executor's handlers. RUN, the closed list: a0 the first entry (bank address), a1
- * the times it is run, a2 the stats slot. DRAIN, the open list: a0 the anchor (bank
- * address; what follows it runs), a1 the stats slot, a2 the idle ticks it waits at most
- * for the next link or a new entry, a3 the open list's number. Each returns its ticks,
- * or NN_FAILED | its status. */
+/* The executor's handlers: RUN a closed list, DRAIN an open one; their words are in
+ * the README ("The thread"). Each returns its ticks, or NN_FAILED | its status. */
 enum { NN_HANDLER_RUN = 1, NN_HANDLER_DRAIN = 2 };
 
 #define NN_FAILED 0xFFFFFFF0u
@@ -45,9 +40,8 @@ enum { NN_REGION_LIST = 0, NN_REGION_STATS = 1 };
 
 enum { NN_ENTRIES_MAX = 2048, NN_LIST_BYTES = NN_ENTRIES_MAX * NN_ENTRY_BYTES };
 
-/* A stats slot a run: its status, the entries run, the polls of the next link and the
- * reads of an entry not yet new; the terms' ticks (low, high); each entry's command
- * ticks. */
+/* A stats slot a run: status, entries run, polls and stale reads, then the terms'
+ * ticks (low, high) and each entry's command ticks. */
 enum {
     NN_ST_STATUS = 0,
     NN_ST_ENTRIES = 1,
