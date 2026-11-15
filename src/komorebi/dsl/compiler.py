@@ -4070,6 +4070,8 @@ class HandlerCompiler:
         construct = self.construct(call)
         if construct == "cxx":
             return self.inline(node, call)
+        if construct == "reduce":
+            return self.reduce(node, None, call)
         if construct == "result":
             self.refuse(
                 node,
@@ -5628,6 +5630,21 @@ class HandlerCompiler:
         group (by owner or by tree) at its rank 0, a slot of n tiles a sender;
         `km.reduce(self.part, ...)`: a field of sums, the same in L1."""
         field_ = self.field_name(call.args[0]) if len(call.args) == 1 else None
+        merging = any(keyword_.arg == spelling("combine") for keyword_ in call.keywords)
+        if name is None and not merging:
+            self.refuse(
+                node,
+                "a reduce's sum is a value: it is assigned",
+                f"write whole = km.reduce(...), or merge a state in place with "
+                f"{spelling('combine')}=",
+            )
+        if field_ is None and merging:
+            self.refuse(
+                node,
+                f"a reduce with {spelling('combine')}= merges a state written in "
+                "place: an own field of fp32 tiles",
+                f"write km.reduce(self.state, ..., {spelling('combine')}=MERGE)",
+            )
         if field_ is None:
             if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
                 self.refuse(
@@ -5643,8 +5660,11 @@ class HandlerCompiler:
                     "reduce the tile held in DST",
                     "write km.reduce(total, form=form)",
                 )
-        form, size = None, None
+        form, size, combine = None, None, None
         for keyword_ in call.keywords:
+            if keyword_.arg == spelling("combine"):
+                combine = keyword_.value
+                continue
             if keyword_.arg == spelling("group"):
                 size = self.constant_int(keyword_.value)
                 if size < 1:
@@ -5656,7 +5676,9 @@ class HandlerCompiler:
                 continue
             if keyword_.arg != spelling("form"):
                 self.refuse(
-                    node, f"a reduce has no {keyword_.arg}=", "use form= and group="
+                    node,
+                    f"a reduce has no {keyword_.arg}=",
+                    f"use form=, group= and {spelling('combine')}=",
                 )
             value = keyword_.value
             if isinstance(value, ast.Constant) and value.value in ("owner", "tree"):
@@ -5685,6 +5707,16 @@ class HandlerCompiler:
             group = f"km::digit_group(command, {{cpu}}.me(), 1, {size})"
             uses_group = set()
             self.leader_text = f"(km_rank - km_rank % {size})"
+        if combine is not None or name is None:
+            return self.merge_reduce(
+                node,
+                name,
+                field_,
+                (form, form_uses),
+                size,
+                (group, uses_group),
+                combine,
+            )
         if field_ is not None:
             return self.field_reduce(
                 node, name, field_, (form, form_uses), size, (group, uses_group)
@@ -5763,6 +5795,131 @@ class HandlerCompiler:
         tile.kind = "written"
         self.scope[name] = Value("reduced", name, buffer=out, width=width)
         self.reduced.append(name)
+        self.wait(node, "mover A", WAIT_PORT)
+        self.wait(node, "mover B", WAIT_EMIT)
+        self.wait(node, "compute", WAIT_INPUT)
+        return movement, compute
+
+    def merge_reduce(self, node, name, field_, form, size, group, combine):
+        """`km.reduce(self.state, form="tree", group=S, combine=MERGE)`: an own fp32
+        field written in place, merged up the group: the MERGE body on compute's three
+        for each arrival slot (`arrival_buffer`, `arrival_index`, the field by name); a
+        sender pushes the state for mover B's send, the root's stays in place."""
+        combine_ = spelling("combine")
+        if combine is None:
+            self.refuse(
+                node,
+                "a reduce's sum is a value: it is assigned",
+                f"write whole = km.reduce(...), or merge a state in place with "
+                f"{combine_}=",
+            )
+        if name is not None:
+            self.refuse(
+                node,
+                f"a reduce with {combine_}= leaves the merged state in place, at the "
+                "group's rank 0: it gives no value",
+                f"write km.reduce(self.state, ..., {combine_}=MERGE) on its own line",
+            )
+        own = f"km.{spelling('own')}(push=None)"
+        stored = self.compiled.fields.get(field_) if field_ else None
+        if (
+            stored is None
+            or field_ not in self.compiled.own
+            or self.compiled.own[field_] is not None
+        ):
+            self.refuse(
+                node,
+                f"{combine_}= merges a state written in place: an own field of fp32 "
+                "tiles that only bodies write",
+                f"declare it state: km.L1[km.fp32, n, 32, 32] = {own}",
+            )
+        if stored.format.dtype != "float32":
+            self.refuse(
+                node,
+                f"self.{field_} is {stored.format.dtype}: a merged state is fp32 "
+                "tiles, as the arrival's slots are",
+                f"declare self.{field_}: km.L1[km.fp32, ...] = {own}",
+            )
+        tiles = 1
+        for side in stored.shape[:-2]:
+            tiles *= side
+        merge = textwrap.dedent(
+            self.body_text(node, ast.Call(func=None, args=[combine], keywords=[]))
+        ).strip("\n")
+        form, form_uses = form
+        group, uses_group = group
+        if form == "km::kReduceOwner":
+            if size is None:
+                self.refuse(
+                    node,
+                    f"a merge by owner holds a slot of self.{field_}'s {tiles} tiles "
+                    "for each other core of the group, and the group's size is the "
+                    "command's",
+                    f'give {spelling("group")}=S, or merge by tree: form="tree"',
+                )
+            slots = max(1, size - 1)
+        elif form == "km::kReduceTree":
+            slots = TREE_ROUNDS if size is None else max(1, (size - 1).bit_length())
+        else:
+            self.refuse(
+                node,
+                f"a merge of self.{field_} sizes its slots by the form",
+                'write form="owner" or form="tree"',
+            )
+        number = self.arrivals
+        self.arrivals += 1
+        arrival = self.arrival_buffer(
+            number, slots, tiles, f"line {node.lineno}: {self.text(node)}"
+        )
+        self.compiled.unpack_fp32.add(arrival.name)
+        self.compiled.unpack_fp32.add(f"kField{camel(field_)}")
+        buffer = f"kField{camel(field_)}"
+        self.compiled.includes |= {"port", "pack"}
+        self.compiled.port_handlers.add(self.method.name)
+        uses = uses_group | form_uses
+        moving = group.format(cpu="movement")
+        movement = [
+            Line(
+                f"if (!km::reduce_arrive(movement, command, {arrival.name}, {moving}, "
+                f"{form})) {{\n    return false;\n}}",
+                uses,
+                mover="A",
+            ),
+            Line(
+                f"if (!km::reduce_emit(movement, command, {arrival.name}, {moving}, "
+                f"{form}, {buffer}, {buffer}Pages)) {{\n    return false;\n}}",
+                uses,
+                mover="B",
+            ),
+        ]
+        start = combine.lineno + 1 if isinstance(combine, ast.Constant) else node.lineno
+        body = (
+            f"const uint32_t arrival{spelling('tile_buffer')} = {arrival.name}.cb;\n"
+            f"const uint32_t arrival{spelling('tile_index')} = "
+            f"km::slot_page({arrival.name}, km_slot);\n"
+            f"const uint32_t {field_} = {buffer};\n"
+            f'#line {start} "{self.compiled.source}"\n{merge}\n#line RESUME'
+        )
+        inner = "\n".join("    " + line for line in body.split("\n"))
+        compute_group = group.format(cpu="compute")
+        compute = [
+            Line(
+                f"// self.{field_} merged with the group's: each arrival by the "
+                f"{combine_} body\n"
+                f"km_ok = km_ok && km::reduce(compute, {arrival.name}, "
+                f"{compute_group}, {form}, [&](uint32_t km_slot) {{\n{inner}\n}});\n"
+                f"if (km_ok && !km::reduce_send({compute_group}, {form}).root) {{  "
+                "// to mover B's send\n"
+                f"    const bool km_room_{field_} = compute.reserve_back({buffer}, "
+                f"{buffer}Pages);\n"
+                f"    if (km_room_{field_}) {{\n"
+                f"        cb_push_back({buffer}, {buffer}Pages);\n"
+                "    }\n"
+                "}",
+                uses | {"km_ok"},
+            ),
+        ]
+        self.compute_waits = True
         self.wait(node, "mover A", WAIT_PORT)
         self.wait(node, "mover B", WAIT_EMIT)
         self.wait(node, "compute", WAIT_INPUT)
