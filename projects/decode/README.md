@@ -62,9 +62,16 @@ DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) 
 python projects/decode/bench.py --layers 1 --tokens 10 --json out.json
 python projects/decode/bench.py --tokens 10 --json out.json
 python projects/decode/bench.py --tokens 10 --cases overlap --no-check
-python projects/decode/bench.py --tokens 1 --cases parts --no-check --trace stamps.npz
+python projects/decode/bench.py --tokens 1 --cases parts --no-check --no-chain --trace stamps.npz
 python projects/decode/bench.py --tokens 10 --no-check --loop-check --json out.json
+python projects/decode/bench.py --layers 1 --tokens 10 --staged --cases --json out.json
+python projects/decode/bench.py --tokens 10 --no-check --commands --json out.json
 ```
+
+Since stage 6 a layer is one command (the chain); `--no-chain` builds the program of
+stage 5 (a command a step), `--commands` also times every case a command a step on the
+chain's program, and `--staged` checks the layer a command a step, then qkv and attend
+as a chain of two, before the chain's own checks.
 
 `--context` sets the cache's rows (4096), `--lengths` the cache lengths T timed and
 checked (4096, 1024, 256: the last token at row T - 1); `--loop-check` checks one token
@@ -740,6 +747,102 @@ With the model's weights and the prompt (`results/qwen3-1.7b-emitted-real-prompt
 torch's, the errors against torch's the whole tiles' bit for bit, a token 10.16 to 10.19
 ms, 98.2 tokens a second.
 
+## Stage 6: a core goes on to the next kernel by itself
+
+Until stage 5 the X280 thread submitted a layer's five commands (qkv, attend, o,
+gate_up, down) one by one and waited for each: every core waited for the slowest of
+the command before it, then for the thread's next submit. Now a core holds what the
+current command is, its weight, and where the next one is, and goes on by itself.
+
+### The design
+
+- **The records.** For each command of a layer the thread writes a record of 64 bytes
+  (`../dense/kernels/split/chain.h`): the command's ten words (a1 its weight), its
+  cores, an info word (whether its input is marked, whether its parts go up a tree,
+  how it reads the output before it) and the next record's address (0: the last). They
+  sit in a region of the thread's (DRAM, the bank its command blocks use), written
+  before each layer: the position changes every token and the layer every command, so
+  a table the host writes once would need words patched on the core.
+- **One command a layer.** The thread submits one SPLIT command on all 120 cores in the
+  chain's mode (a4 3), a7 and a8 the first record as a block, and waits for it once
+  (`run_chain` in `thread/layers.c`). The dispatcher starts the layer and nothing else.
+- **The core goes on.** Its reader reads record r + 1 into a ring of two slots at r's
+  start, once the writer and compute have taken r - 1 (`chain.hpp`); the writer takes
+  each record from the ring, compute's unpack takes it and hands its words to math and
+  pack. A core outside a record's cores skips it. The operation of a record is an
+  overlay, loaded per call as before.
+- **B's weight first.** The weight's read is a stream of its own, not paired with the
+  activation's (`chunks.hpp`): once the mover's W half is empty of A (compute has
+  taken every chunk), it reads B's W into it until B's input is marked, then reads A's
+  chunks with the rest of W. A core that A does not use (gate_up takes 96 of 120)
+  reads its share of down's W while gate_up runs elsewhere.
+- **B's input.** Each root of A, once its block is written (the writes acknowledged),
+  adds one to a marks word on every core of B whose part of B's input that block
+  meets: by K range for a product, by the three ranges of qkv attend reads (a KV
+  head's q rows, its k and v); a core waits until its marks reach its total. Only
+  compute's input waits; nothing waits for the thread.
+- **The ports.** Two records' sums meet in one port and arrival slot (a port does not
+  tell two commands apart), so a tree's receiver sends a credit to each of its senders
+  when it starts a record; a sender emits after the credit.
+- **The end.** The last record has no next; the command completes as any command does,
+  and a give-up in the middle records its where code (0xC0 to 0xC3 the chain's own
+  waits) as before.
+
+Every wait has a releaser: the marks (A's roots), the ring (the reader; the writer's
+and compute's takes), the credits (the receivers). The chain's words and the two slots
+sit in buffer 31, the runtime's trace buffer's index (0 to 27 are the program's, 28 the
+overlay slots', 29 and 30 the runtime's), so a chain's program runs untraced. The chain's kernels take 78,128 B of code
+against the runtime's 70,656 B kernel buffer, so the program takes 80 K (from the
+212 K no buffer uses). Off (`--no-chain`), the program is stage 5's byte for byte: its
+five kernel images (and the dense project's K split's) are main's.
+
+### The check
+
+The layer against `model.layer()` (`results/qwen3-1.7b-chain-layer0-x10.json`), staged:
+a command a step on the chain's program, then qkv and attend as a chain of two, then
+the layer as one command. Every tensor of the chain equals the commands' to the last
+digit (the sums are the same in the same order): at T 4096 q 6.1e-3, k 6.6e-3, v
+5.9e-3, a 1.24e-2, x1 1.2e-3, gated 1.22e-2, x 2.6e-3 (rms), the hand's of stage 5;
+T 1024, 256 and 32 tokens alike; the append is exact.
+
+With the model's weights and the prompt (`results/qwen3-1.7b-chain-real-prompt.json`):
+16 of 16 tokens torch's, every layer's error against torch's the hand's of stage 4 to
+the last digit; a token 8.78 to 8.85 ms at cache lengths 7 to 22, 113.4 tokens a
+second (stage 4: 10.08 to 10.11 ms, 99.0).
+
+### The account
+
+All 28 layers, 10 tokens, the same program a command a step and as one command
+(`results/qwen3-1.7b-chain-x10.json`; us a layer). In one command the steps have no
+events of their own, so its rows are the cases' differences as before (operations:
+full less bare; exponents: exp_twice less full) and the rest of the command as one
+row: what it holds cannot be split without stamps of each record.
+
+| Term | Kind | T 4096 commands | chain | T 1024 commands | chain | T 256 commands | chain |
+|---|---|---:|---:|---:|---:|---:|---:|
+| the weights at 495.6 GB/s | HARDWARE | 203.1 | 203.1 | 203.1 | 203.1 | 203.1 | 203.1 |
+| the cache's K and V at 495.6 GB/s | HARDWARE | 33.8 | 33.8 | 8.4 | 8.4 | 2.1 | 2.1 |
+| the busiest core's tile products | HARDWARE | 4.2 | 4.2 | 1.4 | 1.4 | 0.5 | 0.5 |
+| the busiest core's exponent tiles | HARDWARE | 4.0 | 3.5 | 1.3 | 1.1 | 0.5 | 0.2 |
+| the products' operations | OURS | 21.3 | 18.2 | 21.2 | 17.7 | 21.1 | 17.8 |
+| the reads below the ceiling, the boundaries, attend's read, compute and merge | OURS | 132.6 | 82.7 | 126.2 | 83.5 | 125.7 | 82.8 |
+| the thread (submit, wait) | OURS | 11.2 | 11.1 | 11.2 | 11.1 | 11.2 | 11.1 |
+| total a layer | | 410.3 | 356.6 | 373.0 | 326.4 | 364.2 | 317.6 |
+| unaccounted | | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| a token (28 layers) | | 11.49 ms | 9.98 ms | 10.44 ms | 9.14 ms | 10.20 ms | 8.89 ms |
+| tokens a second | | 87.1 | 100.2 | 95.7 | 109.4 | 98.1 | 112.4 |
+
+A command a step on the chain's program is stage 5's within 1.6 us (409.7 / 371.7 /
+362.6). The commands' large row is, at T 4096, the products' reads below the ceiling
+47.7, their boundaries 30.5, attend's read below the ceiling 14.0, its compute not
+under the read 19.3 and its merge 21.3. The chain's is 82.7 to 83.5 at every T: 49.9 /
+42.7 / 42.9 us less, more than the four boundaries: most likely a core reads B's weight
+while the slower cores finish A, and o's while attend's merge runs on others. The thread
+did not move: one submit and wait a layer takes what five did (11.1 against 11.2), so
+it is not a cost a command. The operations' row is 3.1 to 3.5 smaller (likely their
+tails under the next record's reads on other cores). The chain's unaccounted is zero by
+its form: its large row is the rest.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
@@ -788,3 +891,11 @@ ms, 98.2 tokens a second.
 - An emitted body reads every operand from DEST, so each is a copy, where the hand
   operations read all but the first on the matrix unit's source: the tile compiler has
   no body that takes an operand there, most of what is left against the hand.
+- A chain of commands is the decode project's by hand: the record's form, the reader's
+  ring and the hand-off of its words to the compute threads, the marks (who meets
+  which block of whose input, counted per core) and the ports' credits are in the
+  split's kernels (`chain.hpp`), and the thread builds the records. The playbook and
+  the compiler could derive each from the products' inputs and outputs.
+- A program has no buffer index left for words a core keeps across commands: the
+  chain's take the trace buffer's, so a chain's program cannot be traced; and in one
+  command the steps have no events of their own.
