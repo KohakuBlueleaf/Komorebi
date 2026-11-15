@@ -231,6 +231,7 @@ class Run:
         self._ticks = np.zeros(0, np.uint32)
         self._has = np.zeros(0, bool)  # the event arrived
         self._gone = np.zeros(0, bool)  # returned by wait() or forgotten
+        self._ports = {}  # a port command without its event yet: handle -> group
         self._unsent()
 
     def _unsent(self):
@@ -312,6 +313,7 @@ class Run:
             raise ValueError(
                 f"handler {handler}: not NOP and not in 1..KM_HANDLER_USER_MAX"
             )
+        ports = False
         if cluster is None and queued:
             if exclusive:
                 raise ValueError("a queued command cannot be exclusive")
@@ -320,6 +322,7 @@ class Run:
         elif cluster is None:
             group = self._group(group)
             self._check_holds(program_field, handler, *group)
+            ports = self._check_ports(program_field, handler, group, exclusive)
             if method is not None:
                 self._check_rectangle(method, program_field, group)
                 self._check_reduce_groups(method, program_field, group)
@@ -338,6 +341,8 @@ class Run:
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
         )
+        if ports:
+            self._ports[handle] = group
         if kept is not None:
             self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
@@ -358,6 +363,35 @@ class Run:
                 f"{rectangle['group']}, fixed at load; submit it to that group "
                 f"(not {tuple(group)}), or make the program with rect="
             )
+
+    def _port_numbers(self, program_field):
+        """The handler numbers of the program's port_handlers."""
+        program = self.programs[program_field] if self.programs else None
+        return {
+            program.handlers.get(name, -1) if isinstance(name, str) else int(name)
+            for name in getattr(program, "port_handlers", ())
+        }
+
+    def _check_ports(self, program_field, handler, group, exclusive, handle=None):
+        """Whether `handler` is one of its program's port_handlers; such a command on
+        cores a port command without its event still holds is refused unless it is
+        exclusive (a group's port commands do not overlap: ports.md)."""
+        if handler not in self._port_numbers(program_field):
+            return False
+        handle = self._next if handle is None else int(handle)
+        first, count = group
+        for held, (low, cores) in list(self._ports.items()):
+            row = held - self._base
+            if held < self._base or (held < self._handed and self._has[row]):
+                del self._ports[held]  # its event came: the cores are free
+            elif not exclusive and low < first + count and first < low + cores:
+                raise ValueError(
+                    f"command {handle} (handler {handler}, cores {first} to "
+                    f"{first + count - 1}) uses ports on cores that command {held} "
+                    f"(cores {low} to {low + cores - 1}) still holds; submit it "
+                    f"exclusive=True, or wait for command {held} first"
+                )
+        return True
 
     def _check_reduce_groups(self, method, program_field, group):
         """Refuses a command of a class's handler that reduces in groups of S ranks
@@ -753,6 +787,23 @@ class Run:
                 self._check_holds(
                     program_field, int(handlers[i]), int(first[i]), int(count[i])
                 )
+        numbers = self._port_numbers(program_field)
+        rows = np.flatnonzero(np.isin(handlers, list(numbers))) if numbers else []
+        try:  # each port row checked against those before it too
+            for row in rows:
+                group = (int(first[row]), int(count[row]))
+                self._check_ports(
+                    program_field,
+                    int(handlers[row]),
+                    group,
+                    exclusive,
+                    self._next + row,
+                )
+                self._ports[self._next + int(row)] = group
+        except ValueError:
+            for row in rows:
+                self._ports.pop(self._next + int(row), None)
+            raise
         words = np.zeros((shape[0], 16), np.uint32)
         words[:, self._hdr] = handlers & 0xFF | program_field << 24
         words[:, self._group_at] = first | count << 16
