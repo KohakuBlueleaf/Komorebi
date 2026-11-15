@@ -1,7 +1,7 @@
 """Tile probes: single-core Metalium kernels that time the vector unit and the compute
 RISC-V cores of one Blackhole tile (see README.md); prints one JSON line per run.
 
-Usage: python probes.py <probe> [options]   (probe: smoke pred anycc gather slab riscv)
+Usage: python probes.py <probe>[,<probe>...] [options]   (probe names: PROBES below)
 """
 
 import argparse
@@ -29,6 +29,13 @@ PROBES = {
     "riscv": 5,
     "walk": 6,
     "nocread": 7,
+    "push": 8,
+    "macro": 9,
+    "sfpcfg": 10,
+    "fpu": 11,
+    "icache": 12,
+    "sfpi": 13,
+    "ties": 14,
 }
 # probe.hpp layout
 NONCE, ERROR, NUM_TIMES, DONE0, TIMES, DATA = 0, 1, 2, 4, 16, 2048
@@ -55,9 +62,12 @@ def to_dev(session, words):
     return session.tensor(np.asarray(words, dtype=np.uint32).reshape(1, -1), "uint32")
 
 
-def run_kernel(session, probe, in_words, params, defines=(), rvv=False, peer=None):
+def run_kernel(
+    session, probe, in_words, params, defines=(), rvv=False, peer=None, extra_cbs=None
+):
     """Runs one probe on core (0, 0); returns (out words as uint32, nonce). With peer
-    (x, y), the reader and the CBs also run on that core."""
+    (x, y), the reader and the CBs also run on that core; extra_cbs maps more CB
+    indices to (format, page bytes), one page each."""
     in_buf = np.zeros(IN_WORDS, dtype=np.uint32)
     in_buf[: len(in_words)] = in_words
     nonce = secrets.randbits(32) | 1
@@ -69,6 +79,8 @@ def run_kernel(session, probe, in_words, params, defines=(), rvv=False, peer=Non
     sizes = {CB_IN: IN_WORDS, CB_OUT: OUT_WORDS, CB_SCRATCH: SCRATCH_WORDS}
     for index, words in sizes.items():
         launch.cb(both, index, "float32", words * 4, words * 4)
+    for index, (fmt, page) in (extra_cbs or {}).items():
+        launch.cb(core, index, fmt, page, page)
 
     def args(words, ranges=core):
         return [(x, y, list(words)) for x, y, _, _ in ranges]
@@ -647,9 +659,343 @@ def nocread(session, args):
     )
 
 
+# ---- probe 8 ------------------------------------------------------------------------
+
+PUSH_FORMS = ["empty", "tti_x16", "tti_x64", "stored_x16", "stored_x64", "built",
+              "table"]  # fmt: skip
+LOOP_FORMS = ["pushed", "replay16", "replay4", "mop_replay16", "mop_replay4", "mop_two"]
+
+
+def f32_bits(x):
+    return np.asarray(x, dtype=np.float32).view(np.uint32)
+
+
+def push(session, args):
+    r, k = args.push_reps, args.k
+    if r % 32 or not 32 <= r <= 512:
+        raise SystemExit("push: --push-reps must be a multiple of 32 in 32..512")
+    out, nonce = run_kernel(session, "push", [], [r, k])
+    t = times_of(out)
+    n_push = len(PUSH_FORMS) * k
+    per = {n: t[i * k : (i + 1) * k] for i, n in enumerate(PUSH_FORMS)}
+    for i, n in enumerate(LOOP_FORMS):
+        per[n] = t[n_push + i * k : n_push + (i + 1) * k]
+    base = statistics.median(per["empty"]) if per["empty"] else 0
+    rec = {
+        "reps": r,
+        "k": k,
+        "empty_cycles": stats(per["empty"]) if per["empty"] else None,
+    }
+    bad = {}
+    for f, name in enumerate(PUSH_FORMS):
+        want = int(out[DATA + 2048 + f])
+        got = lane_words(out, 128 * f)
+        nb = int((got != want).sum())
+        if nb:
+            bad[name] = {"n": nb, "want": hex(want), "got0": hex(int(got[0]))}
+        if f and per[name]:
+            rec[name] = {
+                "cycles": stats(per[name]),
+                "per_push": stats([(c - base) / (16 * r) for c in per[name]]),
+            }
+    lane = np.arange(32, dtype=np.float32) * 2
+    for f, name in enumerate(LOOP_FORMS):
+        inc = [4 * r] * 4 if name != "mop_two" else [8 * r, 8 * r, 0, 0]
+        want = np.stack([f32_bits(lane + np.float32(i)) for i in inc])
+        got = out[DATA + 128 * (8 + f) : DATA + 128 * (9 + f)].reshape(4, 32)
+        nb = int((got != want).sum())
+        if nb:
+            bad[name] = {
+                "n": nb,
+                "want0": hex(int(want[0, 0])),
+                "got0": hex(int(got[0, 0])),
+            }
+        if per[name]:
+            rec[name] = {
+                "cycles": stats(per[name]),
+                "per_instr": stats([(c - base) / (16 * r) for c in per[name]]),
+            }
+    rec["values_bad"] = bad
+    return rec, out, nonce
+
+
+# ---- probe 9 ------------------------------------------------------------------------
+
+MACRO_FORMS = ["one_by_one", "interleaved4", "load_macro"]
+
+
+def macro(session, args):
+    p, k = args.macro_passes, args.k
+    rng = np.random.default_rng(args.seed)
+    x = rng.integers(-1000, 1000, 64 * 32).astype(np.float32)
+    out, nonce = run_kernel(session, "macro", f32_bits(x), [p, k])
+    t = times_of(out)
+    d = out[DATA:]
+    rec = {"passes": p, "k": k, "rows_per_pass": 64}
+    for f, name in enumerate(MACRO_FORMS):
+        span = t[f * k : (f + 1) * k]
+        rec[name] = {
+            "cycles": stats(span) if span else None,
+            "per_row_gross": stats([c / (64 * p) for c in span]) if span else None,
+            "kernel_bad_lanes": int(d[3 * f]),
+            "kernel_first_bad": int(d[3 * f + 1]) if int(d[3 * f]) else None,
+            "n": int(d[3 * f + 2]),
+        }
+    n = 3 * k * p
+    want = f32_bits(x + np.float32(n))
+    got = d[64 : 64 + 64 * 32]
+    rec["host_bad_lanes"] = int((got != want).sum())
+    return rec, out, nonce
+
+
+# ---- probe 10 -----------------------------------------------------------------------
+
+
+def sfpcfg(session, args):
+    out, nonce = run_kernel(session, "sfpcfg", [], [])
+    slot = [lane_words(out, 32 * s) for s in range(10)]
+    first = [int(v[0]) for v in slot]
+    uniform = [bool((v == v[0]).all()) for v in slot]
+    misc = [v & 0xFFF for v in first[:6] + first[8:9]]
+    readings = {  # value each source predicts for slots 3, 4 (Misc), 6, 7 (LaneConfig)
+        "isa_or2_and4": {"m3": 0x0FC, "m4": 0x0C0, "l6": 0x0101, "l7": 0x0001},
+        "sfpi_and2_or4": {"m3": 0x0C0, "m4": 0x0FC, "l6": 0x0000, "l7": 0x0101},
+    }
+    seen = {"m3": first[3] & 0xFFF, "m4": first[4] & 0xFFF,
+            "l6": first[6] & 0xFFFF, "l7": first[7] & 0xFFFF}  # fmt: skip
+    match = [k for k, v in readings.items() if v == seen]
+    return (
+        {
+            "slots_hex": [hex(v) for v in first],
+            "slots_uniform": uniform,
+            "misc_12bit": [hex(v) for v in misc],
+            "after_replace_0x0f0": hex(first[2] & 0xFFF),
+            "xor_mode6": hex(first[5] & 0xFFF),
+            "seen": {k: hex(v) for k, v in seen.items()},
+            "matches": match,
+            "restored": first[8] == first[0] and first[9] == first[1],
+        },
+        out,
+        nonce,
+    )
+
+
+# ---- probe 11 -----------------------------------------------------------------------
+
+FPU_CONFIGS = (
+    [("none", 1, 0)]
+    + [("mvmul", k, 0) for k in (1, 2, 3, 4, 5, 6, 8)]
+    + [
+        ("mvmul", 8, 1),
+        ("mvmul", 8, 2),
+        ("mvmul", 8, 3),
+        ("elwmul", 1, 0),
+        ("elwmul", 8, 0),
+        ("elwadd", 1, 0),
+        ("elwadd", 8, 0),
+        ("elwsub", 8, 0),
+        ("gapool", 1, 0),
+        ("gapool", 8, 0),
+        ("gmpool", 1, 0),
+        ("gmpool", 8, 0),
+        ("mova2d", 1, 0),
+        ("mova2d", 8, 0),
+        ("movb2d", 8, 0),
+        ("movd2a", 8, 0),
+        ("movd2b", 8, 0),
+    ]
+)  # fmt: skip  (fpu.hpp kConfigs)
+FPU_A = 1 + 2**-6  # every SrcA and SrcB value
+
+
+def fpu(session, args):
+    words = np.full(1024, f32_bits(FPU_A), dtype=np.uint32)
+    out, nonce = run_kernel(session, "fpu", words, [])
+    d = out[DATA:]
+    rows = []
+    empty = [int(v) for v in d[0:3]]
+    base = statistics.median(empty)
+    for c, (op, k, phase) in enumerate(FPU_CONFIGS):
+        w = d[32 * c : 32 * c + 32]
+        n = 64 * (20 if k == 5 else 24)  # kReplays x the body (fpu.hpp)
+        spans = [int(v) for v in w[0:3]]
+        hist = [(float(np.uint32(w[5 + 2 * q]).view(np.float32)), int(w[6 + 2 * q]))
+                for q in range(4) if int(w[6 + 2 * q])]  # fmt: skip
+        rows.append({
+            "op": op, "k": k, "phase": phase, "instr": n, "spans": spans,
+            "per_instr": round((statistics.median(spans) - base) / n, 3) if c else None,
+            "len_ok": int(w[3]) == n // 64,
+            "nonzero": int(w[4]), "values": hist,
+        })  # fmt: skip
+    # Expected Dst contents per MVMUL phase: 16 products of A x B slices.
+    ah, al = 1.0, 2**-6  # SrcA: implicit 1 + top 4 bits, then the rest
+    bh, bl = FPU_A, 0.0  # SrcB: implicit 1 + top 6 bits, then the rest
+    per_phase = [16 * ah * bh, 16 * al * bh, 16 * ah * bl, 16 * al * bl]
+    return (
+        {"empty_cycles": empty, "rows": rows,
+         "mvmul_add_per_phase_model": per_phase},  # fmt: skip
+        out,
+        nonce,
+    )
+
+
+# ---- probe 12 -----------------------------------------------------------------------
+
+ICACHE_SIZES = [64, 120, 124, 126, 128, 136, 192, 256, 480, 520]  # icache.hpp kSizes
+
+
+def icache(session, args):
+    mask, n = args.mask, args.icache_passes
+    out, nonce = run_kernel(session, "icache", [], [mask, n])
+    rec = {"mask": mask, "passes": n}
+    for t in range(3):
+        if not (mask >> t) & 1:
+            continue
+        r = out[DATA + 256 * t :]
+        rows = []
+        for i, s in enumerate(ICACHE_SIZES):
+            cyc, x = int(r[2 * i]), int(r[2 * i + 1])
+            rows.append(
+                {
+                    "adds": s,
+                    "body_bytes": 4 * s + 8,
+                    "cycles": cyc,
+                    "per_pass": round(cyc / n, 2),
+                    "per_instr": round(cyc / (n * (s + 2)), 3),
+                    "count_ok": x == (s * n) & 0xFFFFFFFF,
+                }
+            )
+        rec[f"trisc{t}"] = rows
+    return rec, out, nonce
+
+
+# ---- probe 13 -----------------------------------------------------------------------
+
+
+def sfpi(session, args):
+    rng = np.random.default_rng(args.seed)
+    a, b, c = (rng.integers(-64, 64, 32).astype(np.float32) / 4 for _ in range(3))
+    out, nonce = run_kernel(
+        session, "sfpi", np.concatenate([f32_bits(v) for v in (a, b, c)]), []
+    )
+    got = [lane_words(out, 32 * i) for i in range(7)]
+    want = {
+        "mad": f32_bits(a * b + c),
+        "sub": f32_bits(a - b),
+        "const": f32_bits(a * np.float32(1.5) + np.float32(0.25)),
+        "if": f32_bits(np.where(a < b, c, a)),
+    }
+    bad = {k: int((got[3 + i] != v).sum()) for i, (k, v) in enumerate(want.items())}
+    inputs_ok = all((got[i] == f32_bits(v)).all() for i, v in enumerate((a, b, c)))
+    return {"values_bad": bad, "inputs_kept": bool(inputs_ok)}, out, nonce
+
+
+# ---- probe 14 -----------------------------------------------------------------------
+
+TIE_CBS = {17: ("bfloat16", 2048), 18: ("bfloat16", 2048)}  # probe.hpp kCbRne, kCbSr
+TIE_A = 2.0**-12  # products 1 and A * A = 2^-24: sums at half an FP32 unit of 1
+
+
+def tie_tile():
+    """Face 0 of the input tile (row-major 16 x 16): a few rows of 1 and A whose
+    product with the same tile gives 1 + 2^-24 and -(1 + 2^-24), the two halves in one
+    multiplier lane (k = 4, 5) or in two (k = 6, 9 and 7, 10)."""
+    t = np.zeros((16, 16), dtype=np.float64)
+    a = TIE_A
+    t[0, 4], t[4, 0], t[0, 5], t[5, 0] = 1, 1, a, a
+    t[1, 4], t[4, 1], t[1, 5], t[5, 1] = 1, -1, a, -a
+    t[2, 6], t[6, 2], t[2, 9], t[9, 2] = 1, 1, a, a
+    t[3, 7], t[7, 3], t[3, 10], t[10, 3] = 1, -1, a, -a
+    return t
+
+
+def pack_values():
+    """1024 FP32 values for the packer, element e of tile 1: kind e >> 8 (0 a tie of
+    BF16, 1 just above it, 2 just below, 3 exact), sign bit 7, BF16 mantissa e & 127."""
+    e = np.arange(1024)
+    m, sign, kind = e & 127, (e >> 7) & 1, e >> 8
+    step = [2**-8, 2**-8 + 2**-16, 2**-8 - 2**-16]
+    v = 1 + m / 128 + np.select([kind == 0, kind == 1, kind == 2], step, 0.0)
+    return np.where(sign == 1, -v, v), kind
+
+
+def round_f32(x, mode):
+    """x (float64, exact) to FP32 under 'rne' or 'away' (ties away from zero)."""
+    f = np.float32(x)
+    if mode == "rne":
+        return f
+    out = []
+    for xi in np.atleast_1d(x):
+        lo = np.float32(xi)
+        if float(lo) == xi:
+            out.append(lo)
+            continue
+        hi = np.nextafter(lo, np.float32(np.inf if xi > float(lo) else -np.inf))
+        a, b = sorted([lo, hi], key=float)
+        if xi - float(a) == float(b) - xi:  # a tie: away from zero
+            out.append(b if xi > 0 else a)
+        else:
+            out.append(lo)
+    return np.array(out, dtype=np.float32)
+
+
+def ties(session, args):
+    t = tie_tile()
+    tile = np.zeros(1024, dtype=np.float64)
+    tile[:256] = t.reshape(-1)
+    pv, kind = pack_values()
+    words = np.concatenate([f32_bits(tile), f32_bits(pv)])
+    out, nonce = run_kernel(session, "ties", words, [], extra_cbs=TIE_CBS)
+    d = out[DATA:]
+    dst = d[0:1024].view(np.float32).reshape(64, 16)
+    exact = t[:8, :] @ t  # Dst[i][j] = sum_k B[i][k] A[k][j], B = rows 0..7
+    exact_t = t.T[:8, :] @ t.T  # the transposed reading, in case
+    rec = {}
+    for name, ex in [("b_at_a", exact), ("transposed", exact_t)]:
+        r = {m: int((dst[:8] != round_f32(ex.reshape(-1), m).reshape(8, 16)).sum())
+             for m in ("rne", "away")}  # fmt: skip
+        rec[f"mvmul_mismatch_{name}"] = r
+    ties = [(0, 0), (1, 1), (2, 2), (3, 3)]
+    rec["mvmul_ties"] = {
+        f"{i},{j}": [float(dst[i, j]), float(exact[i, j])] for i, j in ties
+    }
+    sr = {f"{i},{j}": [float(dst[8 * b + i, j]) for b in range(1, 8)] for i, j in ties}
+    rec["mvmul_ties_srnd"] = sr
+    rec["srnd_rows_nontie_equal"] = int(
+        sum((dst[8 * b : 8 * b + 8] == dst[:8]).sum() for b in range(1, 8))
+    )
+
+    def bf(words16):
+        return (words16.astype(np.uint32) << 16).view(np.float32).astype(np.float64)
+
+    p_rne = bf(d[1024:1536].view(np.uint16))
+    p_sr = bf(d[1536:2048].view(np.uint16))
+    lo = np.sign(pv) * (1 + (np.arange(1024) & 127) / 128)
+    hi = np.sign(pv) * (1 + ((np.arange(1024) & 127) + 1) / 128)
+    pk = {}
+    for name, got in [("rne", p_rne), ("srnd", p_sr)]:
+        res = {}
+        for kd, label in enumerate(["tie", "above", "below", "exact"]):
+            sel = kind == kd
+            g = got[sel]
+            res[label] = {
+                "to_larger_magnitude": int((g == hi[sel]).sum()),
+                "to_smaller_magnitude": int((g == lo[sel]).sum()),
+                "other": int(((g != hi[sel]) & (g != lo[sel])).sum()),
+            }
+            if kd == 0:
+                even = (np.arange(1024)[sel] & 1) == 0  # BF16 mantissa m even: lo even
+                res[label]["to_even"] = int(
+                    ((g == lo[sel]) & even).sum() + ((g == hi[sel]) & ~even).sum()
+                )
+        pk[name] = res
+    rec["packer_bf16"] = pk
+    return rec, out, nonce
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("probe", choices=list(PROBES))
+    p.add_argument("probe", help="a probe name or a comma list run in one session")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--reps", type=int, default=1000)
     p.add_argument("--k", type=int, default=5)
@@ -666,31 +1012,56 @@ def main():
     p.add_argument("--mask", type=int, default=4, help="probe riscv: TRISCs (bit t)")
     p.add_argument("--loops", type=int, default=63, help="probe riscv: loops (bit i)")
     p.add_argument("--n", type=int, default=100000)
+    p.add_argument("--push-reps", type=int, default=256, help="push: loops of 16")
+    p.add_argument(
+        "--macro-passes", type=int, default=16, help="macro: passes of 64 rows"
+    )
+    p.add_argument(
+        "--icache-passes", type=int, default=1000, help="icache: loop passes"
+    )
+    p.add_argument(
+        "--allow-unproven",
+        action="store_true",
+        help="run fpu and ties, whose only run did not finish (README section 8)",
+    )
     p.add_argument("--n-float", type=int, default=10000)
     p.add_argument("--rays", type=int, default=32, help="walk: multiple of 32, <= 1024")
     p.add_argument("--ray-set", choices=["camera", "random"], default="random")
     p.add_argument("--form", choices=["a", "b"], default="a")
     p.add_argument("--copy", choices=["rvv", "scalar"], default="rvv")
     args = p.parse_args()
-    if args.probe == "slab":
+    names = args.probe.split(",")
+    for name in names:
+        if name not in PROBES:
+            p.error(f"unknown probe {name!r}; one of {', '.join(PROBES)}")
+    unproven = {"fpu", "ties"} & set(names)
+    if unproven and not args.allow_unproven:
+        p.error(f"{', '.join(sorted(unproven))}: not proven safe (README section 8)")
+    if "slab" in names:
         args.nodes = min(args.nodes, 64)
 
     t_start = time.time()
     with open("/proc/loadavg") as f:
         load = f.read().split()[:3]
+    status = 0
     with km.Session() as session:
         log(f"device open {time.time() - t_start:.1f}s")
-        mhz = [aiclk_mhz()]
-        rec, out, nonce = globals()[args.probe](session, args)
-        mhz.append(aiclk_mhz())
-    rec = {"probe": args.probe, **rec}
-    rec["nonce_ok"] = int(out[NONCE]) == nonce
-    rec["kernel_error"] = int(out[ERROR])
-    rec["aiclk_mhz"] = mhz
-    rec["load"] = load
-    rec["wall_s"] = round(time.time() - t_start, 1)
-    print(json.dumps(rec), flush=True)
-    return 0 if rec["nonce_ok"] and rec["kernel_error"] == 0 else 1
+        for name in names:
+            mhz = [aiclk_mhz()]
+            log(f"probe {name}")
+            rec, out, nonce = globals()[name](session, args)
+            mhz.append(aiclk_mhz())
+            rec = {"probe": name, **rec}
+            rec["nonce_ok"] = int(out[NONCE]) == nonce
+            rec["kernel_error"] = int(out[ERROR])
+            rec["aiclk_mhz"] = mhz
+            rec["load"] = load
+            rec["wall_s"] = round(time.time() - t_start, 1)
+            print(json.dumps(rec), flush=True)
+            if not (rec["nonce_ok"] and rec["kernel_error"] == 0):
+                status = 1
+                break
+    return status
 
 
 if __name__ == "__main__":

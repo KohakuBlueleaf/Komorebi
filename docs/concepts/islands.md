@@ -299,6 +299,10 @@ across the islands (the rows inside), 535.5 µs with its 4 row broadcasts across
 columns inside), against 186.1 µs on card 0 alone. Each block that crosses costs two
 relay asks and a marker back, one ask a way at a time.
 
+Two calls gather and reduce a whole tensor across the islands with nothing about
+links in the caller: `km::all_gather` and `km::all_reduce`, from a kernel or from the
+host ([reference](../reference/islands.md#collectives-across-islands)).
+
 ## When a core stops
 
 Each island's dispatcher holds its own island's reset lists. A command given up on

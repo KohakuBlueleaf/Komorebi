@@ -214,12 +214,14 @@ def test_a_programs_header_reads_the_package_constants_by_their_km_names(tmp_pat
         "#endif\n",
         "program.h",
     )
+    broadcast = HEADERS.core.with_name("km_broadcast.hpp")
+    args = len(abi.struct_fields(broadcast, "BroadcastArgs"))
     assert (
-        HEADERS["kBroadcastArgs"] == 11 and HEADERS["kWherePort"] == 17
+        HEADERS["kBroadcastArgs"] == args and HEADERS["kWherePort"] == 17
     )  # device headers too
     assert abi.constants(header, known=HEADERS.constants) == {
         "kArgBroadcast": 0,
-        "kArgIndex": 12,
+        "kArgIndex": args + 1,
     }
     with pytest.raises(abi.HeaderError, match="km::kBroadcastArgs"):
         abi.constants(header)
