@@ -347,7 +347,7 @@ counts what crossed (`run.crossings()`), so a program can be placed to cross les
 
 | Part | On main | Page | Example |
 |---|---|---|---|
-| Persistent kernel: commands, 16 mailbox slots per core, the reader, compute and writer loops, every wait with a timeout, the trace | implemented | [Tensix runtime](docs/reference/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
+| Persistent kernel: commands, 64 mailbox slots per core, the reader, compute and writer loops, every wait with a timeout, the trace | implemented | [Tensix runtime](docs/reference/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
 | Groups per command, several in flight, completion per group, a result word per command | implemented | [Tensix runtime](docs/concepts/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
 | Channels: `emit`, `arrive`, `take`, groups, reduce by owner and by tree | implemented | [ports](docs/reference/ports.md) | [02_merge_tree](examples/02_merge_tree/) |
 | Channels: broadcast along a row or a column, two broadcasts at once | implemented | [broadcasts](docs/reference/broadcast.md) | [03_broadcast](examples/03_broadcast/) |
@@ -675,8 +675,8 @@ src/komorebi_native/
   x280/kernel/                 the dispatcher for X280 cluster 0
   x280/engines/  x280/kmx/     the plain-C graph engine; the X280 thread library
   csrc/host/                   the native module: X280 runtime, commands, events
-examples/                      01_mapcollect to 08_parallel_thread
-projects/                      raster, raytrace, dense (with SwiGLU), attention
+examples/                      01_mapcollect to 28_islands_reduce
+projects/                      raster, raytrace, dense (with SwiGLU), attention, decode
 experiments/                   hardware and design probes (see its README)
 reference/                     CPU, C++ and CUDA references the programs are checked against
 tests/core/  tests/projects/   tests with no card: the framework; the programs
@@ -752,9 +752,11 @@ program has to be written around is under
 7. **Debugging on the card.** `run.inspect` shows each core's state, the wait it is in
    and its trace. Nothing reads a core's registers, its buffers' contents or a
    program's own variables, and tt-metal's watcher cannot run beside the X280 runtime.
-8. **A language above the kernels.** A program is C++ kernels and a Python script
-   today. A Python layer that writes the kernels from classes, and compiles tile
-   arithmetic, is designed and not built.
+8. **A language above the kernels.** A Python layer that writes the kernels from
+   classes and compiles tile arithmetic is on `main`, after 0.2.0
+   ([classes](docs/reference/classes.md), [tile functions](docs/reference/tile.md)).
+   A program whose compute side keeps buffers of its own, or whose movers walk a
+   table of jobs, is still written as C++ kernels.
 9. **Loading TT-NN's kernels.** A TT-NN operation is a tt-metal program, which is what
    a program loaded as overlays is; nothing loads an operation's kernels as they are.
 10. **Starting without tt-metal's launch.** The session opens the card in slow dispatch
