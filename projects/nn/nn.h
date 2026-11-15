@@ -2,13 +2,11 @@
  * (thread/executor.c); shared by the thread and Python (nn.py). Plain C. */
 #pragma once
 
+#include "komorebi/abi/km_chain.h"
+
 /* An entry: 32 words, 128 bytes, at a multiple of 128 of the list region. Words 0 to
- * 15 are a chain's record as the split's chain reads it (chain.h), unchanged. */
+ * 15 are a chain's record (komorebi/abi/km_chain.h), unchanged. */
 enum {
-    NN_ENTRY_ARGUMENTS = 0,    /* words 0 to 9: the command's a0 to a9 */
-    NN_ENTRY_GROUP = 10,       /* its cores: first | count << 16 */
-    NN_ENTRY_RECORD = 11,      /* words 11 to 14: the chain's info and range words */
-    NN_ENTRY_RECORD_NEXT = 15, /* the next record of the same chain; 0: its last */
     NN_ENTRY_HEADER = 16,      /* the command's: handler | flags << 8 | program << 24 */
     NN_ENTRY_KIND = 17,        /* NN_KIND_* */
     NN_ENTRY_NEXT = 18,        /* the list's next entry: its bank address; 0: the end */

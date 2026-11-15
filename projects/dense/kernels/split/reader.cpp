@@ -53,7 +53,7 @@ void kernel_main() {
 #if defined(SPLIT_CHAIN)
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) == kHandlerSplit && command.a4 == kChainMode) {
-            chain_reader(reader, command, product);
+            split_chain_reader(reader, command, product);
 #if defined(SPLIT_CHAIN_STAMPS)
         } else if (
             km::handler(command) == kHandlerSplit && command.a4 == kChainStampsMode

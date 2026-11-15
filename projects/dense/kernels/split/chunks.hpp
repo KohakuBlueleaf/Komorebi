@@ -172,7 +172,7 @@ bool move_chunks(
     const uint32_t ahead = chain_ahead_taken();
     uint32_t words[kChainWords];
     const bool next = chain_next(core, words);
-    const km_command_t after = chain_command(command, words);
+    const km_command_t after = km::chain_command(command, words);
     uint32_t skip = 0, after_skip = 0;
     if (!chain_weight_first(
         core,

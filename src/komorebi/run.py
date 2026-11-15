@@ -14,6 +14,7 @@ import numpy as np
 import numpy.ma
 
 from komorebi import abi
+from komorebi import chain as chain_module
 from komorebi import state as device_state
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
@@ -239,6 +240,23 @@ class Run:
 
     # Submitting --------------------------------------------------------------------
 
+    def chain(self, calls, mode, flags=0):
+        """Calls (chain.Call) as one chain's records, written once: their inputs proven
+        or checked first (chain.ChainRefused names the call, the tensor, the core).
+        `mode`: the program's chain mode (the command's a4), `flags` its a1."""
+        report, word = chain_module.build(calls)
+        number, _ = self._handler(calls[0].handler)
+        first = min(call.group[0] for call in calls)
+        end = max(call.group[0] + call.group[1] for call in calls)
+        tensor = self.backend.block(
+            bytes(64 * len(calls)),
+            lambda address: chain_module.records(calls, address).view(np.uint8).ravel(),
+        )
+        self._unfenced = True
+        return chain_module.Chain(
+            number, (first, end - first), mode, flags, word, tensor, report, calls
+        )
+
     def submit(
         self,
         handler,
@@ -250,11 +268,20 @@ class Run:
         cluster=None,
         block=None,
         part=False,
+        **words,
     ):
         """Queues a command for `handler` on cores [first, first + count) (default all)
         or cluster `cluster`'s X280 thread; returns its handle. `result`: ask the result
         word; `queued`: the kernel picks the cores; `block`: bytes its handlers read;
         `part`: an island's part. A class's handler makes `args` into its words."""
+        # a chain (run.chain): one exclusive command, `words` its per-submit word
+        if isinstance(handler, chain_module.Chain):
+            chain = handler
+            return self.submit(
+                chain.handler, chain.group, chain.args(words), exclusive=True
+            )
+        if words:
+            raise TypeError(f"submit: unknown arguments {sorted(words)}")
         started = time.perf_counter()
         program_field, method = 0, None
         if isinstance(handler, HandlerMethod | ClassHandler):

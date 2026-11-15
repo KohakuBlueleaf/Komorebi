@@ -706,6 +706,7 @@ Komorebi has run on Blackhole P150A cards, one and two together, and on no other
 | [X280 threads](docs/threads.md) | C on a work cluster with kmx |
 | [host API](docs/reference/host.md) | `Program`, `Session`, `Run`, errors, builds |
 | [classes](docs/reference/classes.md), [tile functions](docs/reference/tile.md) | kernels written as Python classes; arithmetic compiled for the vector and matrix units |
+| [the chain](docs/reference/chain.md) | calls written once as records and run as one command, each input waiting for marks, not for the host |
 | [measured](docs/measured.md) | every program's tables, with conditions and where the time goes |
 | [examples](examples/README.md), [projects](projects/README.md) | runnable examples; the five programs and their results |
 | [install](docs/install.md), [development](docs/development.md) | building from a clone; layout, checks, conventions |

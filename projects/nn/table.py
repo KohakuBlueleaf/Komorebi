@@ -20,7 +20,7 @@ from projects.decode import model as md
 from projects.dense import plan as pl
 from projects.nn import nn
 
-D, S, CHAIN = nn.D, nn.S, nn.card.CHAIN
+D, S, CHAIN, RECORD = nn.D, nn.S, nn.card.CHAIN, nn.RECORD
 TILE = md.TILE
 EXCLUSIVE = nn.EXCLUSIVE
 # Products beyond the decode layer's, as (K tiles, N tiles): 2048 x 6144 (x @ w1 and
@@ -177,7 +177,7 @@ def product(device, a, weight, y, operation=0, other=(0, 0, 0), a3=0, info=0):
         EXCLUSIVE,
         0,
         operation & 0xFF,
-        (CHAIN["kChainSends"] | info, 0, 0, 0),
+        (RECORD["kChainSends"] | info, 0, 0, 0),
     )
 
 
@@ -253,7 +253,11 @@ def plan_attend(device, inputs, out, position):
         EXCLUSIVE,
         0,
         D["DC_OVERLAY_ATTEND"],
-        (CHAIN["kChainSends"] | CHAIN["kChainNeedsRanges"] << 8, *needs),
+        (
+            RECORD["kChainSends"]
+            | RECORD["kChainNeedsRanges"] << RECORD["kChainNeedsShift"],
+            *needs,
+        ),
     )
 
 
@@ -331,7 +335,7 @@ def chained(calls):
         if (
             runs
             and runs[-1][-1].args[2] == call.args[0]
-            and len(runs[-1]) < CHAIN["kChainRecordsMax"]
+            and len(runs[-1]) < RECORD["kChainRecordsMax"]
         ):
             runs[-1].append(call)
         else:
@@ -344,7 +348,9 @@ def chained(calls):
         marked = [run[0]]
         for call in run[1:]:
             info, *ranges = call.record
-            marked.append(call._replace(record=(info | CHAIN["kChainMarked"], *ranges)))
+            marked.append(
+                call._replace(record=(info | RECORD["kChainMarked"], *ranges))
+            )
         items.append(("chain", marked))
     return items
 
@@ -562,7 +568,7 @@ class Device:
                 self.executor.slot = 0
             self.list = self.executor.open(0, fence=self.fence)
             self.clock["open"] += time.perf_counter() - started
-        elif self.list.next + 2 * CHAIN["kChainRecordsMax"] > OPEN_ENTRIES:
+        elif self.list.next + 2 * RECORD["kChainRecordsMax"] > OPEN_ENTRIES:
             self.sync()
             return self.append(call, outputs)
         before = dict(self.list.times)
