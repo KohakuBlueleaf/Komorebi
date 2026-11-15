@@ -407,7 +407,7 @@ exp = _transcendental(
 exp2 = _transcendental(
     "exp2",
     "2^x on the vector unit; `error`, `over` as for exp (2e-3 over (-inf, 0]: "
-    "Kohaku-TT's flash attention exp, exactly 1 at 0).",
+    "Kohaku-TT's flash attention exp).",
 )
 sigmoid = _unary("sigmoid", "1 / (1 + e^-x) on the vector unit.")
 silu = _unary("silu", "x * sigmoid(x) on the vector unit.")

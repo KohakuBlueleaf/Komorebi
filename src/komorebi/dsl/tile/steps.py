@@ -19,6 +19,7 @@ from komorebi.dsl.tile.lower import (
     _value,
     allocate,
     check_mad_readers,
+    common_values,
     constant_registers,
     drop_copies,
     fold_negation,
@@ -219,6 +220,7 @@ def _attempt(name, dest, plan, cacheable):
         Pass("algebra", "fold_negation", _tally(fold_negation(body.code))),
         Pass("algebra", "fuse_mad", _tally(fuse_mad(body.code))),
         Pass("algebra", "drop_copies", drop_copies(body.code)),
+        Pass("algebra", "common_values", _tally(common_values(body.code))),
     ]
     moved = 0
     for pair in body.pairs:

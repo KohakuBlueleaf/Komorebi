@@ -427,22 +427,38 @@ class Template:
 
 
 LOG2E, LN2 = 1.4426950408889634, 0.6931471805599453
-# Each transcendental's templates, cheapest first, the default last. flash: Kohaku-TT's
-# flash attention 2^(u - 639), u = x + 639; exp2's is exactly 1 at x = 0.
+
+
+def _scaled(v, k):
+    """v k, the factor folded into a product with a constant (one rounding fewer)."""
+    if k == 1.0:
+        return v
+    if v.kind == "mul":
+        x, c = v.args
+        if c.kind == "const":
+            return x * (c.value * k)
+        if x.kind == "const":
+            return c * (x.value * k)
+    return v * k
+
+
+def _flash(a, k=1.0):
+    """2^(a k) by Kohaku-TT's flash attention: u = a k + 639, the bias folded into a's
+    subtracted term (a = p - r: p k + (639 - r k), r per row: one MAD a vector)."""
+    if a.kind == "sub":
+        p, r = a.args
+        return f.flash_exp2(_scaled(p, k) + (639.0 - _scaled(r, k)))
+    return f.flash_exp2(_scaled(a, k) + 639.0)
+
+
+# Each transcendental's templates, cheapest first, the default last (accurate).
 TEMPLATES = {
     "exp": (
-        Template(
-            "flash", 1.75e-3, (-87.0, 88.0), lambda a: f.flash_exp2(a * LOG2E + 639.0)
-        ),
+        Template("flash", 1.75e-3, (-87.0, 88.0), lambda a: _flash(a, LOG2E)),
         Template("accurate", 3e-7, (-math.inf, math.inf), f.exp),
     ),
     "exp2": (
-        Template(
-            "flash",
-            1.75e-3,
-            (-126.0, 127.0),
-            lambda a: f.select(a == 0.0, 1.0, f.flash_exp2(a + 639.0)),
-        ),
+        Template("flash", 1.75e-3, (-126.0, 127.0), _flash),
         Template("accurate", 6e-6, (-math.inf, math.inf), lambda a: f.exp(a * LN2)),
     ),
 }  # fmt: skip

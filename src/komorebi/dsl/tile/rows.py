@@ -295,11 +295,31 @@ def _apply_phase(b, stored, layouts, width):
 
 
 def interleave(code, start, end):
-    """Schedule: reorders code[start:end] (straight line; a run under lane flags, from
-    the flag-setting instruction to its SFPENCC, moves as one) so that an
-    instruction reading the MAD result issued just before it waits behind another
-    ready one. Returns how many instructions moved."""
-    block = code[start:end]
+    """Schedule: reorders code[start:end] (a run under lane flags moves as one) so a
+    reader of the MAD result issued just before it waits behind another ready word;
+    a constant's loads go in front of its first reader. Returns how many moved."""
+    whole = code[start:end]
+    loaded = {}
+    for x in code:
+        for v in x.writes():
+            loaded[v] = loaded.get(v, True) and x.op == "SFPLOADI"
+    consts = {}
+    for x in whole:
+        v = x.args.get("lreg_ind") if x.op == "SFPLOADI" else None
+        if isinstance(v, str) and v.startswith("v") and loaded.get(v):
+            consts.setdefault(v, []).append(x)
+    # a constant register's setup (loads into L0, SFPCONFIG) stays whole, in front
+    setup = []
+    for i, x in enumerate(whole):
+        if x.op == "SFPCONFIG":
+            j = i
+            while j > 0 and whole[j - 1].op == "SFPLOADI":
+                if whole[j - 1].args["lreg_ind"] != "L0":
+                    break
+                j -= 1
+            setup += whole[j : i + 1]
+    held = {id(x) for ws in consts.values() for x in ws} | {id(x) for x in setup}
+    block = [x for x in whole if id(x) not in held]
     units = _units(block)
     if units is None:
         return 0
@@ -317,19 +337,49 @@ def interleave(code, start, end):
                 height[i] = max(height[i], height[j] + 1)
     later = {v for x in code[end:] for v in x.reads()}
     written = {v for x in block for v in x.writes()}
-    outside = {v for x in block for v in x.reads() if _work(v) and v not in written}
+    outside = {
+        v
+        for x in block
+        for v in x.reads()
+        if _work(v) and v not in written and v not in consts
+    }
     outside |= {v for x in code[:start] for v in x.writes() if v in later}
     left = {}
     for x in block:
         for v in x.reads():
             left[v] = left.get(v, 0) + 1
-    live = {v for v in outside if left.get(v) or v in later}
+    start_live = {v for v in outside if left.get(v) or v in later}
+    # a constant loaded at its reader is live beside the estimate: a tighter bound
+    for limit in range(WORK, 2, -1):
+        order = _schedule(
+            units, preds, height, set(start_live), dict(left), later, limit
+        )
+        placed, out = set(), []
+        for x in (x for i in order for x in units[i]):
+            for v in x.reads():
+                if v in consts and v not in placed:
+                    out += consts[v]
+                    placed.add(v)
+            out.append(x)
+        unread = [w for v, ws in consts.items() if v not in placed for w in ws]
+        code[start:end] = setup + unread + out
+        if _pressure(code) <= WORK:
+            break
+    else:
+        code[start:end] = whole
+        return 0
+    return sum(1 for k, i in enumerate(order) if k != i)
+
+
+def _schedule(units, preds, height, live, left, later, limit):
+    """The issue order of `units`: the tallest ready one that keeps at most `limit`
+    values live, else the one leaving fewest; not a reader of the MAD just issued."""
     order, issued, previous = [], set(), None
     while len(order) < len(units):
         ready = [i for i in range(len(units)) if i not in issued and preds[i] <= issued]
         ready.sort(key=lambda i: (-height[i], i))
         after = {i: len(_unit_after(units[i], live, left, later)) for i in ready}
-        fits = [i for i in ready if after[i] <= WORK]
+        fits = [i for i in ready if after[i] <= limit]
         # none fits: the one that leaves the fewest values live
         ready = fits or sorted(ready, key=lambda i: after[i])
         pick = ready[0]
@@ -342,11 +392,7 @@ def interleave(code, start, end):
         order.append(pick)
         issued.add(pick)
         previous = units[pick][-1]
-    code[start:end] = [x for i in order for x in units[i]]
-    if _pressure(code) > WORK:
-        code[start:end] = block
-        return 0
-    return sum(1 for k, i in enumerate(order) if k != i)
+    return order
 
 
 def _units(block):

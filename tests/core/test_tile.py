@@ -7,7 +7,7 @@ import random
 import pytest
 
 from komorebi.dsl.tile import UnitError, emit, trace, unit_program
-from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
+from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import (
@@ -113,8 +113,8 @@ def test_row_norm_lanes_and_broadcast():
             trace.store(ys.tiles[t, :], row * r.col() * weight.row())
     checks = {c.rule: c.verdict for c in row_program(ir, 2, 2, 4).checks}
     assert checks["lanes"].startswith("ok") and checks["broadcast"].startswith("ok")
-    # each lane rotation of a sum waits a cycle: the unit does not stall it
-    assert checks["mad-reader"] == "repaired: 32 SFPNOP"
+    # a lane rotation reading a sum is not held: the interleave puts other work between
+    assert checks["mad-reader"] == "ok"
 
 
 def test_exp_step_per_row_operand():
@@ -133,6 +133,30 @@ def test_exp_step_per_row_operand():
     fused = [x for x in insns(unit.tile["math"]) if x.op == "SFPMAD"][0]
     assert fused.args["lreg_src_c"] == code[1].args["lreg_ind"]
     assert fused.args["instr_mod1"] == 2  # s 0.125 - m in one multiply-add
+
+
+def _exp_ir(**exp):
+    s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
+    p = TensorParam("p", True, F32)
+    ir = KernelIR("expflash", [s, m, p], [], {})
+    with trace.Tracer(ir):
+        ss, ms, ps = (trace.TensorProxy(t) for t in (s, m, p))
+        for t in trace.grid(trace.num_tiles(ss)):
+            x, state = trace.load(ss.tiles[t]), trace.load(ms.tiles[t])
+            trace.store(ps.tiles[t], trace.exp(x * 0.125 - state.col(), **exp))
+    return ir
+
+
+def test_exp_at_a_stated_error_takes_the_flash_template():
+    unit = unit_program(_exp_ir(error=2e-3, over=(-math.inf, 0.0)))
+    done = {p.name: p.done for p in unit.passes}
+    assert done["templates"][0].split(": ", 1)[1].startswith("flash, relative")
+    # the bias folded into m's term: 639 - m log2 e once a block, one MAD a vector
+    assert done["common_values"] and not done["interleave"][0].startswith("0 ")
+    mads = [x for x in insns(unit.tile["math"]) if x.op == "SFPMAD"]
+    assert len(mads) == 7  # per block: the state's term, then 3 for each vector
+    with pytest.raises(PlanError, match="no template meets"):
+        unit_program(_exp_ir(error=1e-9))
 
 
 def test_softmax_step_state_lanes_and_word():

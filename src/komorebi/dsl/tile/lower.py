@@ -426,6 +426,60 @@ def drop_copies(code):
     return [f"{done} copies of values read no more"] if done else []
 
 
+def common_values(code):
+    """Algebra: an instruction computing what an earlier one computed from the same
+    values is dropped, its readers take the earlier result (a per-row value computed
+    once a block, not once a vector). Values written once only. Returns what it did."""
+    writes, loaders = {}, {}
+    for insn in code:
+        for v in insn.writes():
+            writes[v] = writes.get(v, 0) + 1
+            loaders.setdefault(v, []).append(insn)
+    # a constant is known by its bits, whichever value loads it
+    bits = {
+        v: _bits_of(words)
+        for v, words in loaders.items()
+        if all(w.op == "SFPLOADI" for w in words)
+    }
+    seen, alias, keep, depth = {}, {}, [], 0
+    for insn in code:
+        for arg, _ in OPS[insn.op].args:
+            value = insn.args[arg]
+            if isinstance(value, str) and value in alias:
+                insn.args[arg] = alias[value]
+        if insn.sets_flags():
+            depth = 0 if insn.op == "SFPENCC" else depth + 1
+        # constants stay loaded where read (the constant passes place them)
+        out, kind = insn.writes(), OPS[insn.op].kind
+        if (
+            not depth
+            and not insn.sets_flags()
+            and kind in ("mad", "simple")
+            and insn.op != "SFPSWAP"
+            and len(out) == 1
+            and isinstance(out[0], str)
+            and out[0].startswith("v")
+            and writes[out[0]] == 1
+            and all(writes.get(v, 0) <= 1 or bits.get(v) for v in insn.reads())
+        ):
+            fields = [a for a, _ in OPS[insn.op].args if a not in OPS[insn.op].writes]
+            known = [
+                ("bits", bits[v]) if bits.get(v) else v
+                for v in (insn.args[a] for a in fields)
+            ]
+            key = (insn.op, *zip(fields, known, strict=True))
+            if key in seen:
+                alias[out[0]] = seen[key]
+                continue
+            seen[key] = out[0]
+        keep.append(insn)
+    read = {v for insn in keep for v in insn.reads() if insn.op != "SFPLOADI"}
+    keep = [x for x in keep if x.op != "SFPLOADI" or x.writes()[0] in read]
+    done = len(code) - len(keep)
+    code[:] = keep
+    return [f"{done} instructions computed once for their readers"] if done else []
+
+
 def fold_negation(code):
     """Algebra: a negation (SFPMOV mod1 1) disappears into a multiply-add, into its
     producer (one reader: both signs flipped) or its consumer (one reader, as a
@@ -943,6 +997,7 @@ def unit_program(ir, dest="fp32", load_macro=False):
         from komorebi.dsl.tile.rows import interleave  # noqa: PLC0415 (rows imports us)
 
         unit.passes.append(Pass("algebra", "drop_copies", drop_copies(body.code)))
+        unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
         moved = interleave(body.code, 0, len(body.code))
         done = [f"{moved} instructions moved in the even and odd chains"]
         unit.passes.append(Pass("schedule", "interleave", done))
