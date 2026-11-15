@@ -701,8 +701,58 @@ flight and then multicasts it down its column (W cast, not overlapped with the n
 read). That term is ours and the largest: at 1024 x 8192 x 8192 853 of 1,408 us. At
 M = 4096 the matrix unit is the floor (509 to 2,720 us on the slowest core) and the
 call is 1.09 to 1.29 of
-it: the multicast and the senders' waits for free buffers fill the rest. M = 4096 ran on
-the square shapes and the 5120 / 17408 pair only (the other pairs not run).
+it: the multicast and the senders' waits for free buffers fill the rest. The table is
+the sender reading alone, as it ran before the spread below.
+
+**W's read spread over the column** (`--spread`, `auto` by default). Every rank of a
+column reads its share of the K rows of each W block into its own slice buffer, ahead,
+while the block before arrives; once the column's sender has reserved the slot for the
+block it marks that in each rank's ready port, the ranks write their rows into the
+slot and count themselves at the sender's port, and the sender, having read its own
+share, multicasts the whole block down the column as before. `auto` takes it for the
+grid plan where a column has more than one rank, the block is at most 7 tile rows high
+and the K block at least 2 tiles: the sender alone reads a W tile in 199 ns (10.3 GB/s
+a core, the account above: 360 KB in 35 us a block) and a rank's matrix unit makes a
+tile product in 25.5 ns, so the lone read is the longer of the two below 7.8 rows.
+`--spread on` and `off` force it. Card 0, the same columns as the table above:
+
+| M x K x N | Plan: cores, block, K block | Hardware: DRAM / matrix unit | Measured | Loop | Before (above) | Way in and out | Rows into the sender's slot | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1024 x 4096 x 4096 | 8 x 12, 4 x 11, 16 | 67.7 / 111.6 | 221.7 | 222.6 | 382.4 | 2.5 | 106.0 | 61.2 | 3.5 | 24.5 + 16.0 | 2.9 | 143.7 | the column's step |
+| 1024 x 8192 x 8192 | 8 x 12, 4 x 22, 8 | 270.8 / 446.2 | 693.0 | 698.8 | 1,408.0 | 2.5 | 349.3 | 248.3 | 25.7 | 25.1 + 37.4 | 3.0 | 574.7 | the column's step |
+| 1024 x 5120 x 17408 | 8 x 12, 4 x 23, 8 | 359.7 / 592.6 | 956.1 | 961.5 | 1,864.6 | 2.5 | 418.6 | 330.4 | 56.2 | 27.7 + 111.0 | 4.1 | 751.0 | the column's step |
+| 1024 x 17408 x 5120 | 8 x 12, 4 x 14, 14 | 359.7 / 592.6 | 918.5 | 924.0 | 1,859.3 | 2.5 | 514.8 | 327.5 | 32.2 | 25.5 + 12.7 | 3.3 | 777.2 | the column's step |
+| 1024 x 3840 x 15360 | 7 x 12, 5 x 20, 8 | 238.0 / 392.2 | 766.0 | 772.5 | 1,289.4 | 2.5 | 361.3 | 218.4 | 67.9 | 38.9 + 70.7 | 7.6 | 612.3 | the column's step |
+| 1024 x 15360 x 3840 | 8 x 12, 4 x 10, 16 | 238.0 / 392.2 | 592.6 | 602.5 | 1,300.0 | 2.5 | 340.4 | 205.1 | 11.1 | 22.2 + 8.1 | 3.2 | 489.8 | the column's step |
+| 1024 x 2560 x 9216 | 8 x 12, 4 x 12, 16 | 95.2 / 156.9 | 352.7 | 356.3 | 536.1 | 2.4 | 190.1 | 80.6 | 9.0 | 27.7 + 36.8 | 3.5 | 195.9 | the column's step |
+| 1024 x 9216 x 2560 | 8 x 12, 4 x 7, 16 | 95.2 / 156.9 | 282.1 | 284.1 | 528.4 | 2.4 | 141.2 | 94.5 | 4.5 | 18.8 + 12.6 | 3.5 | 205.7 | the column's step and X's read |
+
+The call is 0.46 to 0.66 of the lone read's. Its bound is now the column's step on the
+sender, all OURS: the seven other ranks' rows (315 KB at 1024 x 8192 x 8192) go into
+one core at about 28 GB/s, and the whole block goes back down the column at about
+46 GB/s, so W crosses the column twice; the ranks' DRAM reads are hidden (read ahead).
+A step costs 7.7 us and 70 ns a W tile on every spread row measured (16 sender chains
+on one card and two, within 0.8 us). The matrix unit is 0.84 to 0.95 of the step's
+time (0.70 at 1024 x 2560 x 9216), the next term. At 1024 x 9216 x 2560 X's read is as long: the row's sender reads
+its 4 x 288 tiles of X alone at the same 10.3 GB/s (229 us). 1024 x 3840 x 15360 plans
+7 rows of cores where the lone read had 8: the slice buffer took the L1 of the larger
+plan.
+
+The pairs at M = 4096 (the lone read: no plan there has blocks under 13 rows):
+
+| M x K x N | Plan: cores, block, K block | Hardware: DRAM / matrix unit | Measured | Loop | Way in and out | W read | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 4096 x 3840 x 15360 | 10 x 12, 14 x 10, 6 | 238.0 / 1,568.7 | 2,134.0 | 2,166.3 | 6.5 | 522.8 | 1,203.8 | 180.0 | 51.7 + 106.6 | 67.5 | 1,714.3 | the matrix unit |
+| 4096 x 15360 x 3840 | 10 x 12, 14 x 10, 7 | 238.0 / 1,568.7 | 1,875.9 | 1,916.7 | 2.5 | 1,040.3 | 291.3 | 404.8 | 32.4 + 13.6 | 89.7 | 1,714.3 | the matrix unit |
+| 4096 x 2560 x 9216 | 10 x 12, 13 x 12, 5 | 95.2 / 627.5 | 882.8 | 893.5 | 2.6 | 258.8 | 335.8 | 76.6 | 33.5 + 125.4 | 50.1 | 636.8 | the matrix unit, then Y |
+| 4096 x 9216 x 2560 | 10 x 10, 13 x 8, 10 | 95.2 / 627.5 | 938.9 | 978.3 | 2.5 | 460.8 | 342.3 | 13.6 | 24.2 + 30.0 | 42.3 | 764.1 | the matrix unit and X's read (744) |
+
+At M = 4096 the matrix unit is the floor (1.01 to 1.22 of the hardware time on the
+slowest core, which holds more tiles than the average) and the call 1.20 to 1.50 of
+the hardware time: the cast waits for the column to free its slots, at the matrix
+unit's pace, and Y is written after the last block. Every check passed (relative RMS
+3.96e-3 to 3.97e-3). These and the two-card rows below are the first card runs after
+the K form left the kernels; all were exact.
 
 ### Two cards
 
@@ -738,11 +788,47 @@ the terms over half the one-card hardware time are the same terms as on one card
 about halved (decode: W read under the ceiling 7 to 26 us, the reduce 9 to 19 us;
 prefill: the column senders' read at 109 to 118 GB/s). The islands' plans are an
 island's (118 ranks, 10 columns at prefill where one card has 12). Nothing is left
-unaccounted at decode; at prefill 3.8 to 12.9 us of the writer's span is. At M = 4096
-only 5120 x 17408 ran on two cards: 4096 x 4096, 8192 x 8192 and 17408 x 5120 were
-refused at the load (the bench had counted an island's reader slot at its one-card size,
-so the plan was over the island's L1 budget; fixed, not run again) and the other pairs
-were not run.
+unaccounted at decode; at prefill 3.8 to 12.9 us of the writer's span is. The prefill
+rows of this table are the column's sender reading alone.
+
+Prefill with W's read spread over the column (the default, `auto`), and M = 4096 (no
+spread: blocks of 13 to 16 rows). "Of one card" is over the one-card call of the same
+setting (the spread rows above); the terms are the slower island's:
+
+| M x K x N | Plan an island: cores, block, K block | Hardware an island: DRAM / matrix unit | Measured | Loop | Before (above) | Of one card | Way in and out | W read (spread: rows into the sender's slot) | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1024 x 4096 x 4096 | 6 x 10 + 6 x 1, 6 x 6, 16 | 33.9 / 55.8 | 158.7 | 162.3 | 216.3 | 0.72 | 2.6 | 47.4 | 52.7 | 21.9 | 16.2 + 3.5 | 13.5 | 117.6 | X's read (6 x 128 tiles a row sender, 153) |
+| 1024 x 8192 x 8192 | 8 x 10 + 8 x 2, 4 x 11, 16 | 135.4 / 223.1 | 376.1 | 380.6 | 734.3 | 0.54 | 2.6 | 199.0 | 124.0 | 9.0 | 24.4 + 13.1 | 3.6 | 287.4 | the column's step |
+| 1024 x 5120 x 17408 | 8 x 10 + 8 x 2, 4 x 23, 7 | 179.8 / 296.3 | 512.0 | 518.8 | 964.2 | 0.54 | 2.8 | 247.8 | 173.2 | 13.2 | 20.7 + 50.2 | 4.1 | 375.5 | the column's step |
+| 1024 x 17408 x 5120 | 8 x 10 + 8 x 2, 4 x 7, 16 | 179.8 / 296.3 | 554.0 | 549.6 | 1,006.2 | 0.60 | 2.6 | 223.3 | 262.4 | 18.6 | 14.2 + 9.7 | 4.7 | 388.6 | the column's step, X's read (433) |
+| 1024 x 3840 x 15360 | 8 x 12, 4 x 20, 8 | 119.0 / 196.1 | 350.3 | 355.0 | 668.7 | 0.46 | 2.7 | 171.3 | 106.8 | 4.5 | 22.4 + 39.1 | 3.5 | 244.9 | the column's step |
+| 1024 x 15360 x 3840 | 8 x 10 + 8 x 2, 4 x 5, 16 | 119.0 / 196.1 | 437.6 | 442.8 | 671.3 | 0.74 | 2.8 | 130.4 | 306.4 | 7.2 | 9.5 + 3.7 | 10.7 | 244.9 | X's read (4 x 480 tiles, 382) |
+| 1024 x 2560 x 9216 | 4 x 10 + 4 x 2, 8 x 12, 10 | 47.6 / 78.4 | 304.7 | 309.1 | 288.7 | 0.86 | 2.5 | 211.3 | 33.9 | 5.6 | 40.4 + 8.4 | 3.7 | 195.9 | the sender's lone read (not spread, below) |
+| 1024 x 9216 x 2560 | 8 x 10, 4 x 4, 16 | 47.6 / 78.4 | 241.0 | 238.1 | 286.8 | 0.85 | 2.7 | 77.1 | 122.8 | 3.5 | 7.6 + 1.5 | 11.4 | 117.6 | X's read (4 x 288 tiles, 229) |
+| 4096 x 4096 x 4096 | 10 x 8, 13 x 8, 10 | 33.9 / 223.1 | 451.0 | 455.9 | | 0.69 | 2.8 | 164.2 | 203.8 | 11.9 | 24.1 + 19.1 | 39.9 | 339.6 | the matrix unit and X's read (331) |
+| 4096 x 8192 x 8192 | 8 x 10 + 8 x 2, 16 x 11, 5 | 135.4 / 892.4 | 1,309.3 | 1,321.9 | | 0.58 | 2.6 | 574.8 | 326.4 | 268.5 | 16.2 + 114.9 | 5.2 | 1,149.4 | the matrix unit |
+| 4096 x 17408 x 5120 | 10 x 10, 13 x 8, 10 | 179.8 / 1,185.2 | 1,851.2 | 1,834.9 | | 0.62 | 5.8 | 764.2 | 968.1 | 17.0 | 13.5 + 34.9 | 39.2 | 1,443.3 | the matrix unit and X's read (1,406) |
+| 4096 x 3840 x 15360 | 10 x 10, 13 x 12, 6 | 119.0 / 784.3 | 1,163.1 | 1,174.4 | | 0.55 | 2.7 | 368.8 | 492.7 | 123.5 | 38.4 + 88.5 | 48.2 | 955.1 | the matrix unit |
+| 4096 x 15360 x 3840 | 10 x 8, 13 x 8, 10 | 119.0 / 784.3 | 1,654.6 | 1,603.5 | | 0.88 | 2.7 | 617.3 | 933.1 | 18.7 | 29.4 + 18.8 | 34.6 | 1,273.5 | X's read (13 x 480 tiles, 1,241) and the matrix unit |
+| 4096 x 2560 x 9216 | 9 x 12, 15 x 12, 4 | 47.6 / 313.7 | 522.5 | 528.8 | | 0.59 | 2.6 | 205.9 | 60.6 | 97.1 | 29.8 + 117.2 | 9.2 | 367.4 | the matrix unit, then Y |
+| 4096 x 9216 x 2560 | 10 x 10, 13 x 4, 12 | 47.6 / 313.7 | 955.9 | 949.2 | | 1.02 | 2.7 | 205.1 | 671.2 | 14.3 | 17.7 + 6.1 | 21.8 | 382.1 | X's read (13 x 288 tiles, 744) |
+
+The spread halves the M = 1024 rows where W's column is wide (0.51 to 0.55 of the lone
+read at 8192 x 8192, 5120 x 17408, 17408 x 5120, 3840 x 15360). Where an island's half
+of N is narrow (bn 4 to 7) the next read shows: X's, by the one sender of each row of
+cores, alone, at the same 10.3 GB/s a core (bm x K tiles of X a row sender; the figure
+in brackets is that read's time). It is the same term as W's was, on the row
+broadcast, and it is OURS; it bounds 4096 x 4096 at M = 1024 too, where the island's
+plan is 6 rows of 6 x 6 blocks. At M = 4096 the matrix unit is the floor (1.17 to 1.62
+of an island's hardware time on the slowest core; 1.52 and 1.62 on the plans of 80
+cores) except where X's read is longer
+(9216 x 2560: 744 us of X against 382 of products). 1024 x 2560 x 9216 is the one row
+the default made slower (304.7 against 288.7): the spread plan the lone read used
+(8 x 12 cores, 4 x 12 blocks, K block 16) is 6,416 B over the island's L1 budget with
+its slice buffer (1,262,592 + 65,728 B against 1,321,904), and the planner, whose cost
+model knows nothing of the spread, then takes 4 x 12 cores of 8 x 12 blocks, which do
+not spread (8 rows). Every check passed (relative RMS 3.96e-3 to 3.97e-3), nothing
+crossed in the products; the island builds were 96,240 B of 110,592.
 
 **A chain of two layers**, as a model's MLP runs them at decode: layer 1 output dim
 sharded (hidden to mlp, W1 split along N), its Y gathered to a copy on both islands,
@@ -868,14 +954,18 @@ It runs and is exact everywhere it can be placed; it is slow because W (and with
 hints X) crosses the link at 1 to 19 GB/s a call, where the aware kernel's forms cross
 nothing in the product.
 
-**Not measured.** The prefill rows are bound by the column senders' read of W (one
-row of senders, one block in flight). The fix, built and off by default (`--spread
-on`): each rank of a column reads its share of the K rows of each W block into the
-sender's slot, and the sender multicasts the block once all have landed. Its one card
-run did not finish: every writer waited at a port (cause inferred: the ready marker was
-multicast from a word other than the one it landed on; fixed, not run again). Not run
-either: Kohaku-TT at the shapes its recorded tables lack, the one-card M = 4096 rows of
-the 3840 / 15360 and 2560 / 9216 pairs, and the two-card M = 4096 rows named above.
+**What is left, with its term** (all OURS):
+- *The column's step* (prefill with the spread, M = 1024): the column's rows go into
+  the sender's slot at about 28 GB/s and the block back down at about 46 GB/s, so W
+  crosses the column twice (7.7 us and 70 ns a W tile a step). A multicast from each
+  rank's own rows would cross it once.
+- *X's read by the row senders* (narrow N, mostly on two cards): one core of each row
+  reads its bm x K tiles of X alone at 10.3 GB/s, the term W's read was before the
+  spread (153 to 1,406 us where it bounds).
+- *The planner's model knows no spread*: at 1024 x 2560 x 9216 on two cards it takes a
+  plan that does not spread (304.7 against 288.7 us).
+- *Decode*: the group's reduce (5.6 to 47 us) and W's read under the ceiling where a
+  block's K rows lie on fewer banks.
 
 Measured on 2026-11-15 between 06:20 and 07:15, X280 at 1,350 MHz. JSON:
 `results/ceilings-0.json`, `results/linear-shapes-0.json` (one card),
@@ -884,14 +974,72 @@ Measured on 2026-11-15 between 06:20 and 07:15, X280 at 1,350 MHz. JSON:
 08:14), `results/linear-out-rest-0x1.json` (the output form's other shapes) and
 `results/linear-chain-0x1.json` (the chains, with the gather by the host and in the
 kernel; measured between 08:25 and 08:36),
-`results/flat-forms-0x1.json`.
+`results/flat-forms-0x1.json`. The spread and the M = 4096 pairs, at 09:36 to 09:48:
+`results/linear-spread-0.json` (one card, 8192 x 8192 and 5120 x 17408),
+`results/linear-left-0.json` (one card, the other spread rows and the M = 4096 pairs),
+`results/linear-spread-0x1.json` (two cards, M = 1024) and
+`results/linear-4096-0x1.json` (two cards, M = 4096).
 
 ```
 python projects/dense/linear.py --shapes "32,4096,4096;1024,8192,8192" --cards 0 --account
+python projects/dense/linear.py --shapes "1024,8192,8192" --cards 0 --account --spread off
 python projects/dense/linear.py --shapes "32,4096,4096:out;32,4096,4096:in" --cards 0,1 --account
 python projects/dense/flat.py --m 1024 --k 4096 --n 4096 --cards 0,1 --hints
 python projects/dense/linear.py --shapes "32,5120,17408:chain" --cards 0,1 --gather kernel
 ```
+
+### Beside Kohaku-TT, the same shapes and forms
+
+[Kohaku-TT](https://github.com/KohakuBlueleaf/Kohaku-TT) (commit ac81ff2) at the
+table's shapes, in the form ours takes: on one card its default `x @ w`; on two cards
+X a copy on both and W and Y split along N (its `colwise` placement, the output dim
+sharded form). Loops, microseconds a call (calls back to back, the last output checked;
+Kohaku-TT's card clock 1,333 to 1,350 MHz on average in every loop). Ours is the
+tables above (the spread by default); two marked rows are single calls, where our loop
+was throttled (4096 cubed, recorded at 1,018 MHz for Kohaku-TT too, and 4096 x 17408 x
+5120, AICLK down to 1,075 MHz in ours). Every point exact (Kohaku-TT relative RMS
+3.96e-3 to 3.97e-3).
+
+| M x K x N | One card: ours | Kohaku-TT | Ours / Kohaku-TT | Two cards: ours | Kohaku-TT | Ours / Kohaku-TT | Where ours is slower: the term |
+|---|---|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | 95.3 | 81.0 (recorded) | 1.18 | 58.0 | 44.7 | 1.30 | the group's reduce (11.0 / 9.0) and W's read under the ceiling (12.6 / 7.2), one card / two |
+| 32 x 8192 x 8192 | 314.7 | 302.7 | 1.04 | 176.1 | 155.5 | 1.13 | the same: reduce 11.0 / 12.0, W read OURS 27.6 / 21.9 |
+| 32 x 5120 x 17408 | 412.3 | 400.4 | 1.03 | 227.0 | 204.3 | 1.11 | the reduce at ow 23 (47.2) / 13.1 and W read OURS 25.8 |
+| 32 x 17408 x 5120 | 425.3 | 414.7 | 1.03 | 231.4 | 224.7 | 1.03 | W read OURS 42.7 / 26.3, the reduce 17.2 / 18.3 |
+| 32 x 3840 x 15360 | 293.2 | 273.4 | 1.07 | 156.5 | 134.3 | 1.17 | W read OURS 42.3 / 16.7, the reduce 5.6 / 13.7 |
+| 32 x 15360 x 3840 | 294.9 | 262.9 | 1.12 | 156.0 | 145.6 | 1.07 | W read OURS 46.0 / 9.8, the reduce 7.5 / 19.3 |
+| 32 x 2560 x 9216 | 124.9 | 108.2 | 1.15 | 71.8 | 54.1 | 1.33 | W read OURS 13.9 / 7.8, the reduce 9.6 / 9.0 |
+| 32 x 9216 x 2560 | 127.0 | 128.6 | 0.99 | 75.6 | 64.9 | 1.16 | two cards: the reduce 12.3, W read OURS 7.4 |
+| 1024 x 4096 x 4096 | 222.6 | 190.3 | 1.17 | 162.3 | 110.3 | 1.47 | one card: the column's step (106.0 into the slot); two: X's read (153) |
+| 1024 x 8192 x 8192 | 698.8 | 711.2 | 0.98 | 380.6 | 382.7 | 0.99 | |
+| 1024 x 5120 x 17408 | 961.5 | 1,015.9 | 0.95 | 518.8 | 500.4 | 1.04 | two cards: the column's step (247.8 into the slot, 173.2 cast) |
+| 1024 x 17408 x 5120 | 924.0 | 884.3 | 1.04 | 549.6 | 485.5 | 1.13 | the column's step (514.8 / 223.3 into the slot); two: X's read (433) |
+| 1024 x 3840 x 15360 | 772.5 | 697.5 | 1.11 | 355.0 | 340.2 | 1.04 | the column's step (361.3 / 171.3 into the slot) |
+| 1024 x 15360 x 3840 | 602.5 | 655.4 | 0.92 | 442.8 | 328.9 | 1.35 | two cards: X's read (382) |
+| 1024 x 2560 x 9216 | 356.3 | 307.6 | 1.16 | 309.1 | 159.2 | 1.94 | one card: the column's step (190.1); two: the sender's lone read (211.3, the plan does not spread) |
+| 1024 x 9216 x 2560 | 284.1 | 271.2 | 1.05 | 238.1 | 153.4 | 1.55 | X's read (229 on both) |
+| 4096 x 4096 x 4096 | 656.7 (single) | 819.8 (single) | 0.80 | 455.9 | 412.9 | 1.10 | two cards: X's read (331) beside the matrix unit (339.6) |
+| 4096 x 8192 x 8192 | 2,312.7 | 2,371.3 | 0.98 | 1,321.9 | 1,428.0 | 0.93 | |
+| 4096 x 5120 x 17408 | 3,011.7 | 6,192.8 | 0.49 | 1,762.9 | 2,665.6 | 0.66 | |
+| 4096 x 17408 x 5120 | 2,965.8 (single) | 3,510.0 (single) | 0.84 | 1,834.9 | 1,542.2 | 1.19 | two cards: X's read (1,406) |
+| 4096 x 3840 x 15360 | 2,166.3 | 3,613.6 | 0.60 | 1,174.4 | 1,758.5 | 0.67 | |
+| 4096 x 15360 x 3840 | 1,916.7 | 1,921.4 | 1.00 | 1,603.5 | 1,009.9 | 1.59 | two cards: X's read (1,241) |
+| 4096 x 2560 x 9216 | 893.5 | 1,035.9 | 0.86 | 528.8 | 537.0 | 0.98 | |
+| 4096 x 9216 x 2560 | 978.3 | 875.7 | 1.12 | 949.2 | 436.8 | 2.17 | X's read (744 on both) |
+
+Where ours is slower the term is one of the list above, all OURS. At decode the group's
+reduce and W's read under the ceiling: 11 to 32 us on one card (7 shapes of 8), 7 to 23
+on two.
+At M = 1024 on one card the column's step: W crosses the column twice. On two cards,
+wherever an island's half of N is narrow, X's read by the row senders; Kohaku-TT's
+two-card calls there are about half its one-card calls (0.50 to 0.58 at M = 1024, 0.50
+to 0.53 at M = 4096 for 15360 x 3840 and 9216 x 2560), and ours are 0.72 to 1.02 of
+our one-card calls ("of one card" above). At M = 4096 with wide N ours is 0.49 to 0.98 of Kohaku-TT's.
+
+Measured on 2026-11-15 between 09:53 and 09:59, Kohaku-TT's side in one process a
+card set (its `compare/ktt_shapes.py` point, one session for many shapes), cards 0 and
+0, 1; JSON in `results/shape-<M>x<K>x<N>-ktt-<0|0x1>-<default|colwise>.json`. The
+4096 cubed and 32 x 4096 x 4096 one-card points are the ones recorded above.
 
 ## Shapes, one card and two, against Kohaku-TT
 
