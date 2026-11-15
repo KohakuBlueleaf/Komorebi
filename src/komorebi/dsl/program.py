@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
-from komorebi import _env, abi, layout, overlay
+from komorebi import _env, abi, formats, layout, overlay
 from komorebi import program as km_program
 from komorebi.dsl import compiler, front
 from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
@@ -169,6 +169,9 @@ def make(
     report = may_cross(compiled, tensors)
     setattr(self, spelling("may_cross"), report)
     for line in report:
+        log(line)
+    self.placements = placements_of(compiled, tensors)
+    for line in self.placements:
         log(line)
     buffers = []
     for buffer in compiled.buffers:
@@ -570,6 +573,65 @@ def may_cross(compiled, tensors):
     return lines
 
 
+def placements_of(compiled, tensors):
+    """The build's report of each product's two placements and the significand bits
+    (of 11) each operand keeps in each (formats.bits_used), the one built; refuses a
+    turned product's W tensor not stored with transposed tiles, a plain one's so."""
+    fidelity = compiled.fidelity or "HiFi4"
+    lines = []
+    for handler, line, text, left, right, placement, weight in compiled.placements:
+        where = f"{compiled.name}.{handler}, line {line}: {text}"
+        plain = (
+            formats.bits_used(left, "srcb", fidelity),
+            formats.bits_used(right, "srca", fidelity),
+        )
+        turned = (
+            formats.bits_used(left, "srca", fidelity),
+            formats.bits_used(right, "srcb", fidelity),
+        )
+        built = {"none": "plain, no marker", "plain": "plain, marked"}.get(
+            placement, "turned, marked: W's tiles stored transposed, X's read so"
+        )
+        lines.append(
+            f"  {where}: left {left}, right {right}, {fidelity}; plain (left in "
+            f"SrcB): left keeps {plain[0]}, right {plain[1]}; turned (right in "
+            f"SrcB): left {turned[0]}, right {turned[1]}; built {built}"
+        )
+        for name in weight_tensors(compiled, weight):
+            stored = getattr(tensors.get(name), "transposed_tiles", False)
+            if stored != (placement == "turned"):
+                raise ProgramError(
+                    f"{where}: the product is {built.split(',')[0]} and tensor {name} "
+                    f"is {'' if stored else 'not '}stored with its tiles transposed; "
+                    f"write it with session.tensor(..., transposed_tiles={not stored})"
+                )
+    if lines:
+        lines.insert(
+            0,
+            "placements (each product: the significand bits of 11 each operand keeps "
+            "in the matrix unit, either way):",
+        )
+    return lines
+
+
+def weight_tensors(compiled, weight):
+    """The tensor parameters of a product's W: its stream's, or those that fill its
+    field."""
+    if weight is None:
+        return []
+    kind, name = weight
+    if kind == "tensor":
+        return [name]
+    lines = {(handler, line) for f, _, handler, line in compiled.fills if f == name}
+    return sorted(
+        {
+            m.tensor
+            for m in compiled.moves
+            if m.how == "fill" and (m.handler, m.line) in lines
+        }
+    )
+
+
 def rectangle_of(program, compiled):
     """The program arguments of a class with a rectangle, made at their first use
     (the load), once the session gave its NoCs."""
@@ -671,13 +733,31 @@ def rectangle_args(compiled, rect, nocs):
     return program_args, (group.first, group.count)
 
 
+def dst_is_fp32(compiled):
+    """Whether the class's compute has an fp32 Dst: yes, unless its buffers are of
+    the A family, which the card reads right only into a 16-bit Dst; such a class
+    has no float32 tile unpacked to Dst (a sum in a field, an own fp32 field)."""
+    family = [b for b in compiled.buffers if formats.FAMILY.get(b.dtype) == "a"]
+    if not family:
+        return True
+    fp32 = [b for b in compiled.buffers if b.name in compiled.unpack_fp32]
+    if fp32:
+        raise ProgramError(
+            f"{compiled.name}: {family[0].what or family[0].name} is of the A family, "
+            "whose compute has a 16-bit Dst, and "
+            f"{fp32[0].what or fp32[0].name} is float32 tiles unpacked to Dst (fp32 "
+            "only): give the class's tiles the B family, or no float32 sum"
+        )
+    return False
+
+
 def compute_options(compiled):
     """The compute kernel's options: fp32 in DST; float32 buffers unpacked to it;
     DST in full-sync mode for a row-form tile function; then the class's own
     (compute=), over these."""
     options = {
         "math_fidelity": compiled.fidelity or "HiFi4",
-        "fp32_dest_acc_en": True,
+        "fp32_dest_acc_en": dst_is_fp32(compiled),
     }
     if compiled.full_dst:  # a row-form tile function's DST tiles past the half
         options["dst_full_sync_en"] = True
@@ -1333,6 +1413,7 @@ COMPUTE_INCLUDES = [
     ("api/compute/pack.h", None),
     ("api/compute/reg_api.h", None),
     ("api/compute/tile_move_copy.h", None),
+    ("api/compute/transpose_dest.h", "transpose_dest"),
     ("komorebi/device/km_broadcast.hpp", "broadcast"),
     ("komorebi/device/km_movement.hpp", None),
     ("komorebi/device/km_port.hpp", "port"),

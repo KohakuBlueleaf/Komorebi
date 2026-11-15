@@ -46,6 +46,7 @@ from komorebi.errors import (
     ChannelError,
     GridTimeout,
     KernelSizeError,
+    KomorebiError,
     L1BudgetError,
     ProgramError,
     SlowCodeError,
@@ -149,6 +150,25 @@ def compute_config(options):
 # hooks never keep a session alive
 _LIVE = weakref.WeakSet()
 _HOOKED = []  # [True] once the exit hooks are installed
+# What this process opened: "mesh" (cards as a fabric mesh), "alone" (a card by itself)
+_OPENED = {"mesh": [], "alone": []}
+
+
+def refuse_reopen(kind, cards):
+    """Refuses opening `cards` as `kind` ("mesh" or "alone") in a process that already
+    opened the other kind; then records the attempt (see the hazards page)."""
+    other = "alone" if kind == "mesh" else "mesh"
+    if _OPENED[other]:
+        was = ",".join(str(card) for card in _OPENED[other][0])
+        now = ",".join(str(card) for card in cards)
+        said = {"mesh": f"cards {was} as a fabric mesh", "alone": f"card {was} alone"}
+        raise KomorebiError(
+            f"{'cards ' + now + ' as a mesh' if kind == 'mesh' else 'card ' + now}: "
+            f"this process opened {said[other]}; tt-metal would re-initialise its "
+            "context over every card the process holds, which left both cards' "
+            "Ethernet cores inactive until a board reset: open it in a new process"
+        )
+    _OPENED[kind].append(tuple(cards))
 
 
 def _release_all(why, close_device=True):
@@ -648,6 +668,7 @@ class Session:
                 "an open would wait until that process exits",
                 pid=holder,
             )
+        refuse_reopen("alone", [card])
         self._module = self._module or native.load_module(self.tree)
         if self._region is None:
             self.device = self._module.Device(self._worker_l1)  # program cache off
@@ -747,16 +768,19 @@ class Session:
         """The Tensix grid (x, y) of the open device."""
         return tuple(self.device.grid())
 
-    def tensor(self, data, dtype, layout="row", shard_grid=None):
+    def tensor(
+        self, data, dtype, layout="row", shard_grid=None, transposed_tiles=False
+    ):
         """A tensor on the card holding `data` (anything np.asarray takes) as `dtype`
-        ("bfloat16", "float32", "int32", "uint32", "uint16", "uint8") in `layout`
-        ("row" or "tile"); in DRAM, or one row in each core's L1 of `shard_grid`.
-        Written before the grid starts, or (DRAM, the host channel) while it runs."""
+        (formats.DTYPES; a block format in tiles) in `layout` ("row" or "tile"), each
+        tile transposed if `transposed_tiles`; in DRAM, or a row in each core's L1 of
+        `shard_grid`. Written before the grid starts, or (DRAM) while it runs."""
         self._module = self._module or native.load_module(self.tree)
-        raw, shape = formats.to_bytes(data, dtype, layout)
+        raw, shape = formats.to_bytes(data, dtype, layout, transposed_tiles)
         tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid
         )
+        tensor.transposed_tiles = transposed_tiles
         self._note_page(tensor)
         if self._transfer_way([tensor], 0, None) is None:
             tensor.buffer.write(raw)
