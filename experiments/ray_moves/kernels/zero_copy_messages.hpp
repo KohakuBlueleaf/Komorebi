@@ -74,13 +74,17 @@ namespace km {
         return count(command) > counter_tiles ? count(command) - counter_tiles : 0;
     }
 
-    // The counter tile that holds the tail of core `core`.
+    // The counter tile (a core index) that holds the tail of core `core`; `offset`:
+    // the flat rank of the island's core 0 (the command's first is a flat rank).
     inline uint32_t messages_counter(
-        const km_command_t& command, uint32_t counter_tiles, uint32_t core
+        const km_command_t& command,
+        uint32_t counter_tiles,
+        uint32_t core,
+        uint32_t offset
     ) {
+        const uint32_t low = first(command) - offset;
         return (
-            first(command) + messages_ranks(command, counter_tiles) +
-            (core - first(command)) % counter_tiles
+            low + messages_ranks(command, counter_tiles) + (core - low) % counter_tiles
         );
     }
 
@@ -208,6 +212,7 @@ namespace km {
     ) {
         const Args& arguments = reader.args();
         const MessagesArgs messages_arguments = messages_args(reader);
+        const uint32_t offset = islands_at(arguments.control).offset();  // flat - core
         const uint32_t run = command.sequence;
         volatile tt_l1_ptr uint32_t* messages = reader.control(KM_CONTROL_MESSAGES);
         volatile tt_l1_ptr uint32_t* tail = messages + KM_MESSAGES_IN_TAIL / 4;
@@ -282,7 +287,7 @@ namespace km {
             where == 0 &&
             !messages_ready(
                 reader,
-                messages_counter(command, counter_tiles, arguments.me),
+                messages_counter(command, counter_tiles, arguments.me, offset),
                 KM_TAILS_READER,
                 run
             )
@@ -294,7 +299,10 @@ namespace km {
                 ? 0
                 : reader.core_noc(
                     messages_counter(
-                        command, counter_tiles == 0 ? 1 : counter_tiles, arguments.me
+                        command,
+                        counter_tiles == 0 ? 1 : counter_tiles,
+                        arguments.me,
+                        offset
                     ),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * arguments.me
@@ -548,6 +556,7 @@ namespace km {
     inline bool messages_writer(WriterType& writer, const km_command_t& command) {
         const Args& arguments = writer.args();
         const MessagesArgs messages_arguments = messages_args(writer);
+        const uint32_t offset = islands_at(arguments.control).offset();  // flat - core
         const uint32_t run = command.sequence;
         const uint32_t words = messages_arguments.message_bytes / 4;
         const uint32_t bins = (
@@ -608,7 +617,7 @@ namespace km {
                 noc_index,
                 write_at_cmd_buf,
                 writer.core_noc(
-                    messages_counter(command, counter_tiles, destination),
+                    messages_counter(command, counter_tiles, destination, offset),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * destination
                 ),
