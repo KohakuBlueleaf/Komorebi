@@ -1,6 +1,6 @@
 """One trace pass on the card from prepare.py's inputs: the hand program (the project's
-run_handler: LOAD, then the TRACE commands) or the class (its command fills the tree
-itself; then the fill alone); hit pages, profile pages, times to build/<program>.npz.
+run_handler: LOAD, then the TRACE commands) or the class (load_tree once, then the
+trace_rays commands); hit pages, profile pages, times to build/<program>.npz.
 Example: python run_trace.py --program class --reps 5"""
 
 import argparse
@@ -40,7 +40,7 @@ def hand(session, inputs, reps):
 
 
 def of_class(session, inputs, reps):
-    """The class: the same tensors, one load, `reps` commands of trace_rays."""
+    """The class: the same tensors, one load_tree, `reps` commands of trace_rays."""
     rows = len(inputs["packets"])
     words = K["kPagePackets"] * packets.hit_vectors(False) * packets.VEC
     workers = card.workers(session)
@@ -55,15 +55,14 @@ def of_class(session, inputs, reps):
     }
     program = made(session, len(inputs["image"]), tensors, card.log)
     args = tuple(tensors[name] for name in ("directory", "packets", "hits"))
-    args += (K["kModeNearest"], tensors["profile"], tensors["image"])
+    args += (K["kModeNearest"], tensors["profile"])
     run = session.load(program, deadline=5.0)
     try:
         handles = [
-            run.submit(TracePass.trace_rays, (0, workers), args=args)
-            for _ in range(reps)
+            run.submit(TracePass.load_tree, (0, workers), args=(tensors["image"],))
         ]
         handles += [
-            run.submit(TracePass.fill_tree, (0, workers), args=(tensors["image"],))
+            run.submit(TracePass.trace_rays, (0, workers), args=args)
             for _ in range(reps)
         ]
         events = run.wait(handles, timeout=10.0 + 5.0 * reps)
@@ -74,8 +73,8 @@ def of_class(session, inputs, reps):
     output = card.read_rows(session, tensors["hits"], "hits")
     (profile,) = card.read(session, tensors["profile"])
     microseconds = card.command_microseconds(ran)
-    print(json.dumps({"fill_tree_microseconds": microseconds[reps:].tolist()}))
-    return output, profile, ran, microseconds[:reps]
+    print(json.dumps({"load_tree_microseconds": microseconds[:1].tolist()}))
+    return output, profile, ran, microseconds[1:]
 
 
 def main():
