@@ -803,6 +803,7 @@ namespace {
                 tt::tt_fabric::FabricManagerMode::DEFAULT,
                 router
             );
+            fabric_set_ = true;
             try {
                 mesh_ = MeshDevice::create(
                     distributed::MeshDeviceConfig(distributed::MeshShape(1, count)),
@@ -894,7 +895,10 @@ namespace {
             if (mesh_) {
                 mesh_->close();
                 mesh_.reset();
+            }
+            if (fabric_set_) {  // also after a failed open: no mesh, the config set
                 tt::tt_fabric::SetFabricConfig(tt::tt_fabric::FabricConfig::DISABLED);
+                fabric_set_ = false;
             }
         }
 
@@ -960,6 +964,7 @@ namespace {
         std::shared_ptr<MeshDevice> mesh_;
         std::vector<std::shared_ptr<MeshDevice>> islands_;
         std::shared_ptr<IslandRuntime> x280_;
+        bool fabric_set_ = false;  // FABRIC_1D set by this open, not yet turned off
     };
 
     using MeshBuffer = tt::tt_metal::distributed::MeshBuffer;
