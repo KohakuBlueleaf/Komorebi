@@ -22,15 +22,9 @@ CLUSTER = 2  # the executor's work cluster, beside the decode's own thread on 1
 TICKS_PER_MICROSECOND = 50  # kmx_time() and the events count the 50 MHz timer
 # A run's terms in a stats slot, NN_TERM_* in order
 TERMS = ("total", "fetch", "submit", "wait", "command", "idle", "check")
-RECORD = ("kChainArguments", "kChainGroup", "kChainInfo", "kChainNext")
-if [card.CHAIN[name] for name in RECORD] + [card.CHAIN["kChainRecordBytes"]] != [
-    NN["NN_ENTRY_ARGUMENTS"],
-    NN["NN_ENTRY_GROUP"],
-    NN["NN_ENTRY_RECORD"],
-    NN["NN_ENTRY_RECORD_NEXT"],
-    LINE_BYTES,
-]:
-    raise ImportError("an entry's first line is not the chain's record (chain.h)")
+RECORD = abi.constants(abi.headers().chain)  # an entry's first line: the record
+if RECORD["kChainRecordBytes"] != LINE_BYTES or RECORD["kChainWords"] != 16:
+    raise ImportError("an entry's first line is not the chain's record (km_chain.h)")
 
 
 # An entry's check (nn.h): the sum of word i x (2 i + 1), the link and the check out
@@ -64,9 +58,9 @@ def entry(call, kind):
         raise ValueError("a call has ten words and a record of four")
     first, count = call.cores
     words = np.zeros(ENTRY_WORDS, np.uint32)
-    words[: NN["NN_ENTRY_GROUP"]] = call.args
-    words[NN["NN_ENTRY_GROUP"]] = first | count << 16
-    words[NN["NN_ENTRY_RECORD"] : NN["NN_ENTRY_RECORD_NEXT"]] = call.record
+    words[RECORD["kChainArguments"] : RECORD["kChainGroup"]] = call.args
+    words[RECORD["kChainGroup"]] = first | count << 16
+    words[RECORD["kChainInfo"] : RECORD["kChainNext"]] = call.record
     words[NN["NN_ENTRY_HEADER"]] = call.handler | call.flags << 8 | call.program << 24
     words[NN["NN_ENTRY_KIND"]] = kind
     words[NN["NN_ENTRY_OVERLAY"]] = call.overlay
@@ -125,7 +119,7 @@ class Entries:
                 0 if last else address[self.items[number + 1][0]]
             )
             for record in range(row, row + count - 1):
-                out[record, NN["NN_ENTRY_RECORD_NEXT"]] = address[record + 1]
+                out[record, RECORD["kChainNext"]] = address[record + 1]
         out[:, NN["NN_ENTRY_SEQUENCE"]] = sequence
         out[:, NN["NN_ENTRY_CHECK"]] = checks(out)
         return out
@@ -354,8 +348,8 @@ def layer_calls(decode, layer, position, rows=1, token=False):
     w = {name: tensor.address for name, tensor in decode.weights[layer].items()}
     reduce = words[D["DC_WORD_REDUCE"]] | rows << D["DC_ROWS_SHIFT"]
     epsilon = words[D["DC_WORD_EPSILON"]]
-    marked, sends = card.CHAIN["kChainMarked"], card.CHAIN["kChainSends"]
-    from_a0 = card.CHAIN["kChainTokenMask"] << card.CHAIN["kChainTokenShift"]
+    marked, sends = RECORD["kChainMarked"], RECORD["kChainSends"]
+    from_a0 = RECORD["kChainTokenMask"] << RECORD["kChainTokenShift"]
     if token:
         position = 0
 
@@ -406,7 +400,7 @@ def layer_calls(decode, layer, position, rows=1, token=False):
         (
             marked
             | sends
-            | card.CHAIN["kChainNeedsRanges"] << 8
+            | RECORD["kChainNeedsRanges"] << RECORD["kChainNeedsShift"]
             | (from_a0 if token else 0),
             *words[D["DC_WORD_ATTEND_NEEDS"] : D["DC_WORD_ATTEND_NEEDS"] + 3],
         ),
@@ -452,7 +446,7 @@ def token_calls(decode, layers, rows=1):
         for layer in range(layers)
         for call in layer_calls(decode, layer, 0, rows, True)
     ]
-    marked = card.CHAIN["kChainMarked"]
+    marked = RECORD["kChainMarked"]
     for at in range(len(STEPS), len(calls), len(STEPS)):
         info, *ranges = calls[at].record
         calls[at] = calls[at]._replace(record=(info | marked, *ranges))
