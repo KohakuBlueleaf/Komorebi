@@ -12,6 +12,7 @@
 #include "api/compute/eltwise_unary/rsqrt.h"
 #include "api/compute/matmul.h"
 #include "api/compute/pack.h"
+#include "api/compute/reconfig_data_format.h"
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
 #include "rules.hpp"
@@ -38,10 +39,10 @@ namespace {
 #if BODY == 8 || BODY == 10
     constexpr auto kReuse = EltwiseBinaryReuseDestType::DEST_TO_SRCA;
 
-    // The decode project's element-wise product at HiFi4 (projects/decode ops.hpp):
-    // Dst tile `dst` times tile `tile` of `input_buffer`.
+    // Decode's product at HiFi4 (ops.hpp), Dst tile `dst` times `tile` of the buffer;
+    // its state_configure does nothing here, so the source formats are set explicitly.
     inline void mul_hifi4_init(uint32_t input_buffer) {
-        state_configure(input_buffer, __LINE__);
+        reconfig_data_format(input_buffer, input_buffer);
         UNPACK((llk_unpack_A_init<BroadcastType::NONE, true, kReuse>(
             false, false, input_buffer
         )));
@@ -87,6 +88,7 @@ namespace {
     // product) for one row of tiles, then the product with the weight tile.
     inline void norm_unit() {
         cb_wait_front(rules::kCbY, kUnitTiles);
+        reconfig_data_format(rules::kCbY, rules::kCbY);
         tile_regs_acquire();
         matmul_init(rules::kCbY, rules::kCbY, 1);
         for (uint32_t t = 0; t < kUnitTiles; ++t) {
@@ -96,6 +98,7 @@ namespace {
         mul_hifi4(rules::kCbP, rules::kPIdentity, 0);
         pack_one(rules::kCbSquares);
         cb_pop_front(rules::kCbY, kUnitTiles);
+        reconfig_data_format(rules::kCbP, rules::kCbSquares);
         tile_regs_acquire();
         matmul_init(rules::kCbSquares, rules::kCbP, 0);
         matmul_tiles(rules::kCbSquares, rules::kCbP, 0, rules::kPMean, 0);
@@ -107,6 +110,7 @@ namespace {
         pack_one(rules::kCbScale);
         for (uint32_t t = 0; t < kUnitTiles; ++t) {
             tile_regs_acquire();
+            reconfig_data_format(rules::kCbA, rules::kCbA);
             copy_init(rules::kCbA);
             copy_tile(rules::kCbA, t, 0);
             mul_hifi4_init(rules::kCbScale);
@@ -216,6 +220,7 @@ void kernel_main() {
 #else
         tile_regs_acquire();
 #if BODY == 8
+        reconfig_data_format(rules::kCbA, rules::kCbA);
         copy_init(rules::kCbA);
 #endif
         for (uint32_t t = 0; t < kUnitTiles; ++t) {
