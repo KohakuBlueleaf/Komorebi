@@ -88,6 +88,22 @@ one line. The only limit a program meets is a core's L1; inside it the buffer is
   160 KiB). A merged class that does not fit places its largest handler as an overlay
   only after such a refusal: a session that follows its kernels gives them the room
   first.
+- **What the session already holds.** A load's L1 budget table has a row "L1 held by
+  the session": the L1 top down to the session's lowest L1 buffer (its L1 tensors, a
+  run not stopped), less what an island session keeps. A table that does not fit with
+  it raises `km.L1BudgetError` before the launch, saying to free those tensors or to
+  load the program of most L1 first. A stopped run gives its L1 back (its host transfer
+  buffer, control blocks and trace, all read back), so a second program loads after it.
+- **Remembered** (no `kernel_bytes`). Each load keeps the buffer its kernels needed in
+  the build cache's `kernel_buffer.json`: by program (its kernels' sources, defines and
+  compile arguments) and by script (the running file and the session's shape), the
+  script's entry grown at each load and set at close to that run's largest. The next
+  run of the script opens at it, or at `Session(expect=program)`'s entry for a made
+  hand program, and the log's first line says which size and why. A class is made on
+  its session, so its hint is the script's entry. A stale entry costs one reopen (one
+  card), or, on islands, which open at 160 KiB when nothing is remembered, the refusal
+  with the size, written so the next run opens right; a file that cannot be read is no
+  entry (logged once), and code with no file (`python -c`) keeps none.
 
 Lowering the reader and writer to `"Os"` (and the compute kernel only when that is not
 enough, since its hot loops are what `O3` is for) makes the kernels smaller in either
@@ -816,7 +832,7 @@ All derive from `km.KomorebiError`.
 |---|---|---|
 | `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
-| `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core |
+| `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core; `taken`: the bytes of its row "L1 held by the session" |
 | `L1LayoutError` | programs that share cores declare one buffer index two ways; an `L1BudgetError` | `table` |
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
 | `SlowCodeError` | the overlay slots, which sit just above the kernel buffer, would end above 1 MB of L1 (a kernel buffer near 1 MB); a `ProgramError`, raised before anything is launched. `Session(slow_code=True)` loads it anyway | `end`: the slots' end in L1 |

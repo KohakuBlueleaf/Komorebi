@@ -3349,6 +3349,15 @@ NB_MODULE(_km_host, m) {
         nb::arg("device")
     );
     m.def(
+        "lowest_l1",
+        [](const Device& device) -> uint64_t {
+            // the lowest address of an L1 buffer on the Tensix cores; 0: none
+            const auto lowest = device.mesh().lowest_occupied_compute_l1_address();
+            return lowest.has_value() ? *lowest : 0;
+        },
+        nb::arg("device")
+    );
+    m.def(
         "read_dram",
         [](const Device& device, std::vector<std::array<uint64_t, 3>> spans) {
             return read_dram(device.mesh(), spans);
