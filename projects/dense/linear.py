@@ -56,14 +56,9 @@ ADD = "kernel"
 # output dim sharded into a copy of Y: the kernels' all-gather at the call's end
 # (kernel) or the host's after it (host) (--gather)
 GATHER = "kernel"
-# the grid plan: W's read spread over the column broadcast's ranks (--spread): "auto"
-# where the column's sender reading each block alone bounds a step (spreads())
+# the grid plan: W's read spread over the column broadcast's ranks (--spread), and X's
+# over the row's (--xspread): "auto" where the plan's model (k_block_ns) says it wins
 SPREAD = "auto"
-# the sender alone reads a W tile in 199 ns, a rank makes a tile product in 25.5 ns:
-# that read bounds a step below 7.8 tile rows of block height (bm)
-SPREAD_HEIGHT_MOST = 7
-# the grid plan: X's read spread over the row broadcast's ranks (--xspread): "auto"
-# by the same rates as W's, below 7.8 tile columns of block width (x_spreads())
 X_SPREAD = "auto"
 # the island grid's panels (first, last column; layout.panels): a row broadcast lies in
 # one, so an X block is shared by the ranks of the row's part in a panel
@@ -206,12 +201,40 @@ def extra_buffers(plan):
 
 
 def spreads(plan):
-    """Whether W's read is spread over the column's ranks (--spread): the 2d layout,
-    a column broadcast of more than one rank; "auto" also blocks of at most
-    SPREAD_HEIGHT_MOST tile rows and at least two K tiles (rows to share)."""
-    if SPREAD == "off" or plan.layout != "2d" or plan.rows < 2:
-        return False
-    return SPREAD == "on" or (plan.bm <= SPREAD_HEIGHT_MOST and plan.kb >= 2)
+    """Whether W's read is spread over the column's ranks (the plan's, by
+    with_spreads)."""
+    return plan.w_spread
+
+
+def spread_choices(mode, allowed):
+    """The settings of one spread the planner tries: --spread / --xspread `mode`, and
+    whether the plan has ranks to share it."""
+    if not allowed or mode == "off":
+        return (False,)
+    return (True,) if mode == "on" else (False, True)
+
+
+def with_spreads(plans, budget):
+    """`plans` (one program's pieces) with the spreads the model (plan_ns, the slowest
+    piece) prices lowest with every piece inside `budget`, the same in every piece (the
+    program's buffers and defines are one); no spread on a tie, None when none fits. A
+    spread needs the 2d layout, a broadcast of more than one rank and tiles to share."""
+    two = all(plan.layout == "2d" for plan in plans)
+    w_ok = two and all(plan.rows > 1 and plan.kb > 1 for plan in plans)
+    x_ok = two and all(plan.cols > 1 and plan.bm * plan.kb > 1 for plan in plans)
+    best = None
+    for w_spread in spread_choices(SPREAD, w_ok):
+        for x_spread in spread_choices(X_SPREAD, x_ok):
+            options = [
+                dataclasses.replace(plan, w_spread=w_spread, x_spread=x_spread)
+                for plan in plans
+            ]
+            if any(o.l1_bytes() + extra_bytes(o) > budget for o in options):
+                continue
+            cost = max(plan_ns(option) for option in options)
+            if best is None or cost < best[0]:
+                best = (cost, options)
+    return None if best is None else best[1]
 
 
 def slice_pages(plan):
@@ -220,14 +243,9 @@ def slice_pages(plan):
 
 
 def x_spreads(plan):
-    """Whether X's read is spread over the row's ranks (--xspread): the 2d layout, a
-    row broadcast of more than one rank; "auto" also blocks of at most
-    SPREAD_HEIGHT_MOST tile columns and at least two tiles of X (tiles to share)."""
-    if X_SPREAD == "off" or plan.layout != "2d" or plan.cols < 2:
-        return False
-    return X_SPREAD == "on" or (
-        plan.bn <= SPREAD_HEIGHT_MOST and plan.bm * plan.kb >= 2
-    )
+    """Whether X's read is spread over the row's ranks (the plan's, by
+    with_spreads)."""
+    return plan.x_spread
 
 
 def x_slice_pages(plan):
@@ -343,7 +361,7 @@ def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget):
             over = plan.l1_bytes() + extra_bytes(plan) - budget
             if over <= 0:
                 if plan.group(grid)[1] <= ranks:
-                    return plan
+                    return with_spreads([plan], budget)[0]
                 break
             room -= over
     return None
@@ -383,18 +401,36 @@ PRODUCT_NS = 24.5
 SUBBLOCK_NS = 51
 FEED_BLOCK_NS = 4_750
 FEED_TILE_NS = 203
+# A spread block's feed: the ranks' tiles into the sender, then its cast; fitted to the
+# rows a spread bounds, W's (13 rows) and X's (5; the row's hand-over is the slower)
+SPREAD_BLOCK_NS = {"w": 3_250, "x": 0}
+SPREAD_TILE_NS = {"w": 116, "x": 180}
 
 
-def k_block_ns(bm, bn, kb):
+def k_block_ns(bm, bn, kb, x_spread=False, w_spread=False):
+    """The larger of a K block's compute and its two feeds (X's bm x kb tiles, W's kb x
+    bn), each read by its sender alone or spread."""
     sh, sw = pl.subblock(bm, bn)
     compute = bm * bn * kb * PRODUCT_NS + bm * bn // (sh * sw) * SUBBLOCK_NS
-    feed = FEED_BLOCK_NS + max(bm, bn) * kb * FEED_TILE_NS
-    return max(compute, feed)
+    feeds = [
+        (
+            SPREAD_BLOCK_NS[name] + tiles * SPREAD_TILE_NS[name]
+            if spread
+            else FEED_BLOCK_NS + tiles * FEED_TILE_NS
+        )
+        for name, tiles, spread in (("x", bm * kb, x_spread), ("w", kb * bn, w_spread))
+    ]
+    return max(compute, *feeds)
 
 
 def plan_ns(plan):
     """A core's time for its blocks of `plan` by k_block_ns."""
-    return plan.nbh * plan.nbw * plan.nk * k_block_ns(plan.bm, plan.bn, plan.kb)
+    return (
+        plan.nbh
+        * plan.nbw
+        * plan.nk
+        * k_block_ns(plan.bm, plan.bn, plan.kb, plan.x_spread, plan.w_spread)
+    )
 
 
 def piece_plan(m_tiles, k_tiles, n_tiles, rect_size, block):
@@ -471,11 +507,14 @@ def island_pieces(m_tiles, k_tiles, n_tiles, grid, ranks, budget, kb):
                     for pieces in split_pieces(
                         form, a, b, m_tiles, k_tiles, n_tiles, (bm, bn, k_block)
                     ):
-                        if any(  # the pieces' own buffers, not the probe's
-                            p.plan.l1_bytes() + extra_bytes(p.plan) > budget
-                            for p in pieces
-                        ):
+                        # the pieces' own buffers, not the probe's
+                        plans = with_spreads([p.plan for p in pieces], budget)
+                        if plans is None:
                             continue
+                        pieces = [
+                            dataclasses.replace(p, plan=plan)
+                            for p, plan in zip(pieces, plans, strict=True)
+                        ]
                         cost = (
                             max(plan_ns(p.plan) for p in pieces),
                             -bm * bn,
@@ -1332,14 +1371,14 @@ def main():
         choices=["auto", "on", "off"],
         default="auto",
         help="the grid plan: W's read spread over the column's ranks (auto: where the "
-        "sender's read bounds a step), or the column's sender reads it all",
+        "plan's model prices it lower), or the column's sender reads it all",
     )
     parser.add_argument(
         "--xspread",
         choices=["auto", "on", "off"],
         default="auto",
         help="the grid plan: X's read spread over the row's ranks (auto: where the "
-        "sender's read bounds a step), or the row's sender reads it all",
+        "plan's model prices it lower), or the row's sender reads it all",
     )
     parser.add_argument(
         "--shapes",

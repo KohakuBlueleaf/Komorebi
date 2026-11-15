@@ -197,6 +197,9 @@ class Grid:
     wa: int = 2
     ww: int = 2
     layout: str = "2d"
+    # the linear kernels' reads of W and of A spread over a column's or a row's ranks
+    w_spread: bool = False
+    x_spread: bool = False
 
     @property
     def nk(self):
