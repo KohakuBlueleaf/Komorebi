@@ -185,7 +185,8 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   events) until every part arrived, so the islands run their parts at once; all within
   the one timeout.
   A ticket completes when every part has; its result is the tuple of its parts' events
-  in island order. `run.drain`, `run.stop` and `run.abort` act on every island within
+  in island order, which also reads as one card's event (`kind` "done" only if every
+  part is, else the first other part's; `microseconds` the slowest part's; `reason`). `run.drain`, `run.stop` and `run.abort` act on every island within
   one timeout; `run.state()` lists every rank in flat order, each with its `rank` and
   `island`, `run.result()` every island's result block.
 - The run is addressed and reported by flat rank. An error from an island starts
@@ -320,7 +321,8 @@ are in the kernel's own words:
 
 `session.tensor(data, dtype, layout="row", split=None, group=None, like=None,
 copy=False)` makes it and writes it; `session.empty(shape, dtype, layout, ...)` takes
-the same hints and writes nothing. `islands.place(graph, shape, layout, split, group,
+the same hints and writes nothing; `t.read()` and `t.write(data)` do what a one-card
+tensor's do, each island's part through its own channel. `islands.place(graph, shape, layout, split, group,
 copy)` is the rule on the host: a `Placement` whose pages are `outer` blocks of `steps`
 steps of the split dimension, `inner` pages a step, and whose `parts[i]` are the
 (first step, steps) island `i` holds of every block. `placement.where(page)` gives the

@@ -242,6 +242,21 @@ class IslandTensor:
         self.aligned_page_bytes = first.aligned_page_bytes
         self.address = word
         self.in_dram = True
+        self.session = None  # the IslandSession that made it: read() and write()
+
+    def write(self, data):
+        """Writes `data` (this shape) over the whole tensor, as a one-card tensor's
+        write: each island's part through its own host channel."""
+        raw, shape = formats.to_bytes(data, self.dtype, self.layout)
+        if shape != self.shape:
+            raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
+        self.session.write(self, raw.reshape(self.pages, self.page_bytes))
+
+    def read(self):
+        """The whole tensor as a numpy array (bfloat16 as float32), as a one-card
+        tensor's read: each island's pages gathered."""
+        (rows,) = self.session.read(self)
+        return formats.from_bytes(rows.reshape(-1), self.shape, self.dtype, self.layout)
 
     @property
     def addresses(self):
@@ -324,6 +339,28 @@ def _check_reduce_islands(graph, handler, group):
                 f"{island - 1} and {island}; start the command so that island "
                 f"{island}'s first rank {edge} begins a group"
             )
+
+
+class IslandEvent(tuple):
+    """A finished command of an island run: the tuple of its parts' events in island
+    order, which also reads as one card's event (docs/reference/islands.md#runs)."""
+
+    @property
+    def parts(self):
+        return tuple(self)
+
+    def _worst(self):
+        """The first part that is not done, else the slowest."""
+        undone = [event for event in self if event.kind != "done"]
+        return undone[0] if undone else max(self, key=lambda event: event.ticks)
+
+    kind = property(lambda self: self._worst().kind)  # "done" only if every part is
+    ticks = property(lambda self: max(event.ticks for event in self))
+    microseconds = property(lambda self: max(event.microseconds for event in self))
+    reason = property(lambda self: self._worst().auxiliary)  # rejected: its reason
+    handle = property(lambda self: self[0].handle)  # the group's first rank's part
+    auxiliary = property(lambda self: self[0].auxiliary)
+    result = property(lambda self: self[0].result)
 
 
 class IslandRun:
@@ -619,7 +656,7 @@ class IslandRun:
                 raise self._error(error, island) from None
             for ticket, event in zip(wanted[mine].tolist(), got):
                 events.setdefault(ticket, []).append(event)
-        out = [tuple(events[ticket]) for ticket in wanted.tolist()]
+        out = [IslandEvent(events[ticket]) for ticket in wanted.tolist()]
         return out[0] if single else out
 
     def _store(self, wanted, deadline):
@@ -1238,9 +1275,11 @@ class IslandSession:
         placement = islands.place(self.graph, shape, layout, split, group, copy)
         if self.card_dram:  # one tensor in the card's DRAM, every page local
             part = self.sessions[0].empty(shape, dtype, layout)
-            return IslandTensor(
+            tensor = IslandTensor(
                 [part] * self.split, placement, shape, dtype, layout, part.address
             )
+            tensor.session = self
+            return tensor
         word = None
         if len(self.sessions) > 1:
             free = [i for i, held in enumerate(self._entries) if held is None]
@@ -1265,6 +1304,7 @@ class IslandSession:
         tensor = IslandTensor(
             parts, placement, shape, dtype, layout, word, self._release_entry
         )
+        tensor.session = self
         if word is None:
             tensor.address = parts[0].address  # one island: its bank address
         else:
