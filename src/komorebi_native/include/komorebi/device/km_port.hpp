@@ -212,9 +212,14 @@ namespace km {
         const Group& group,
         uint32_t form
     ) {
-        if (reduce_slots(group, form) > arrival_slots(arrival)) {  // a slot per sender
+        // a slot per sender and a port per round: else the root gives up as well
+        const uint32_t ports = reduce_ports(group, form);
+        if (reduce_slots(group, form) > arrival_slots(arrival) || ports > KM_PORTS) {
+            const uint32_t named = (
+                slot(command) | (ports > KM_PORTS ? ports - 1 : 0) << 8
+            );
             reader.gave_up(
-                kStReader, kGaveBadItem, kWherePort, slot(command), command.sequence
+                kStReader, kGaveBadItem, kWherePort, named, command.sequence
             );
             return false;
         }
@@ -323,7 +328,7 @@ namespace km {
     }
 
     // Compute side of a reduce: each arrival in round order; combine(slot) for its
-    // slots in rank order (owner: 0 to size - 2; tree: the round's), from slot_page().
+    // slots in rank order (owner: 0 to size - 2; tree: from the port's, one each).
     template <typename Combine>
     inline bool reduce(
         const Compute& compute,
@@ -345,7 +350,12 @@ namespace km {
                     combine(arrival_slot);
                 }
             } else {
-                combine(port);
+                for (
+                    uint32_t arrival_slot = port; arrival_slot < port + wanted;
+                    arrival_slot++
+                ) {
+                    combine(arrival_slot);
+                }
             }
             untake(arrival);
         }

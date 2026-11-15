@@ -3,12 +3,10 @@ made, with a sentence that names the handler and the line (no card)."""
 
 import inspect
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import komorebi as km
-from komorebi import overlay
 from komorebi.dsl.compiler import Refused, compile_class
 from komorebi.dsl.nodes import prune, render
 from komorebi.errors import ProgramError
@@ -492,23 +490,6 @@ def test_a_class_built_for_a_session_leaves_the_loads_rows():
             plan={"TILES": 240},
             source=tensor("bfloat16"),
         )
-
-
-def test_the_load_refuses_a_service_part_over_the_reserve(monkeypatch, tmp_path):
-    most = overlay.SERVICE_SLOT_MOST
-    for extent, refused in ((most, False), (most + 1, True)):
-        linked = SimpleNamespace(image=b"", extent=extent)
-
-        def made_part(*args, part=linked, **kw):
-            return part
-
-        monkeypatch.setattr(overlay, "build_part", made_part)
-        build = [[overlay.service()], overlay.Slots(), {"brisc": None}, tmp_path]
-        if refused:
-            with pytest.raises(overlay.OverlayError, match="over SERVICE_SLOT_MOST"):
-                overlay.build_overlays(*build)
-        else:
-            assert overlay.build_overlays(*build).slots == {"reader": (1, most)}
 
 
 class Patterned(km.Program):

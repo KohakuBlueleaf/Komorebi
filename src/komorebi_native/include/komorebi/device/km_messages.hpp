@@ -198,15 +198,17 @@ namespace km {
     }
 
     // The counter tile that holds the tail of flat rank `rank`, as this island's core
-    // (`island_first`: the island's first rank).
+    // (`island_first`: the island's first rank, held by its core `island_base`).
     inline uint32_t messages_counter(
         const km_command_t& command,
         uint32_t counter_tiles,
         uint32_t rank,
-        uint32_t island_first
+        uint32_t island_first,
+        uint32_t island_base
     ) {
         return (
-            first(command) - island_first + messages_ranks(command, counter_tiles) +
+            island_base + first(command) - island_first +
+            messages_ranks(command, counter_tiles) +
             (rank - first(command)) % counter_tiles
         );
     }

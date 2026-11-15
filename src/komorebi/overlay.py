@@ -5,6 +5,7 @@ the overlay area and DRAM image the session writes. The device side is km_overla
 
 import functools
 import hashlib
+import os
 import re
 import shlex
 import subprocess
@@ -45,8 +46,8 @@ OVERLAY = re.compile(
     r"constexpr\s+uint32_t\s+kOverlay(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;"
 )
 ALIGN = 64  # slots, images and DRAM copies are whole 64-byte lines
-# The service overlay's slot at its most: a class's build counts it, the load refuses a
-# larger part. Built 8,640 B (8,840 B with KM_CHECK_NOC_SOURCES), rounded up to 9 KiB.
+# The service overlay's slot a class's build reserves on a one-island session: built
+# 8,640 B (8,840 B with KM_CHECK_NOC_SOURCES), rounded up to 9 KiB.
 SERVICE_SLOT_MOST = 9216
 LINK_BASE = 0x100000  # the first of the two links; the second is one line above
 LINK_LENGTH = 1 << 20
@@ -362,6 +363,17 @@ def run(command, cwd=None):
     return done.stdout
 
 
+def run_into(out, command_of, cwd=None):
+    """Runs the build step command_of(path) into a temporary name beside `out`, moved
+    to `out` only when it returned 0: a stopped step never leaves a partial `out`."""
+    temporary = out.with_name(f".{out.stem}-{os.getpid()}{out.suffix}")
+    try:
+        run(command_of(temporary), cwd=cwd)
+        os.replace(temporary, out)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def elf_symbols(recipe, elf, own=False):
     """{name: (value, kind, binding)} of an ELF's defined symbols; `own`: only those
     in its own sections (not the absolute ones another ELF's symbols gave it)."""
@@ -449,8 +461,11 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
     work.mkdir(exist_ok=True)
     obj = work / "part.o"
     if not obj.is_file():
-        run(
-            recipe.compile_command(wrapper, obj, defines, compile_args=compile_args),
+        run_into(
+            obj,
+            lambda path: recipe.compile_command(
+                wrapper, path, defines, compile_args=compile_args
+            ),
             cwd=work,
         )
     names = run([recipe.tool("gcc-nm"), "-u", str(obj)]).split()
@@ -460,7 +475,9 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
         script, elf = work / f"part-{base:x}.ld", work / f"part-{base:x}.elf"
         script.write_text(SCRIPT.format(base=base, length=LINK_LENGTH) + provided)
         if not elf.is_file():
-            run(recipe.link_command(obj, script, elf), cwd=work)
+            run_into(
+                elf, lambda path, ld=script: recipe.link_command(obj, ld, path), work
+            )
         links.append(linked_facts(recipe, elf, base, undefined))
     check(overlay.name, part, *links, persistent_facts(recipe), slot_bytes)
     return links[0]
@@ -527,11 +544,11 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
             extents.setdefault(part, []).append(linked.extent)
             if overlay.number == number:
                 served[part] = linked.extent
-                if linked.extent > SERVICE_SLOT_MOST:
-                    raise OverlayError(
+                if linked.extent > SERVICE_SLOT_MOST:  # the load's L1 table decides
+                    log(
                         f"the service overlay's {part} part takes {linked.extent:,} "
-                        f"B, over SERVICE_SLOT_MOST ({SERVICE_SLOT_MOST:,} B), which a "
-                        "class's build counts for it: raise it"
+                        f"B, over SERVICE_SLOT_MOST ({SERVICE_SLOT_MOST:,} B): a "
+                        "class built with session= reserved less than this load takes"
                     )
             log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
     slots = {}

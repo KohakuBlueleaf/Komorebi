@@ -203,10 +203,10 @@ def load_records(switch):
     if not switch or switch["refused"] or not switch["records"]:
         return None
     records = switch["records"]
+    if sorted(records) != list(range(len(records))):
+        raise ValueError(f"program records {records}: not one step apart")
     step = records[1] - records[0] if len(records) > 1 else 0
-    if sorted(records) != list(range(len(records))) or any(
-        address != records[0] + field * step for field, address in records.items()
-    ):
+    if any(address != records[0] + field * step for field, address in records.items()):
         raise ValueError(f"program records {records}: not one step apart")
     return records[0], step, len(records)
 

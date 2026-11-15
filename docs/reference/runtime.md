@@ -361,7 +361,7 @@ at small offsets.
 | 0x780 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
 | 0x7C0 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
 | 0x800 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
-| 0xA00 | `KM_CONTROL_PORT` | 10 ports of 16 bytes: count, wanted count; ports 0 to 7 a kernel names ([ports](ports.md)), 8 and 9 (`KM_PORT_PAGES`) the reader's and the writer's page calls' ([islands](islands.md)) |
+| 0xA00 | `KM_CONTROL_PORT` | 12 port slots of 16 bytes: count, wanted count; ports 0 to 7 a kernel names ([ports](ports.md)), 8 and 9 (`KM_PORT_PAGES`) the reader's and the writer's page calls' ([islands](islands.md)), 10 and 11 (`KM_PORT_LEFT`, `KM_PORT_RIGHT`) the collectives' counts from the island before and after on the line |
 | 0xAC0 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
 | 0xD40 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
 | 0xE00 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
@@ -440,7 +440,7 @@ The calls that act by island (`km_group.hpp`, `km_port.hpp`):
 
 | Call | What it does | On one island |
 |---|---|---|
-| `km::reduce_arrive`, `km::reduce_emit`, `km::reduce` on a group over islands | each island's part reduces as a group of its own (owner or tree), then each part's first rank sends its fold once to the group's rank 0: by owner into the slot after its island's (port 0), by tree into the round after its island's (port and slot); the calls do not change | the flat schedule |
+| `km::reduce_arrive`, `km::reduce_emit`, `km::reduce` on a group over islands | each island's part reduces as a group of its own (owner or tree), then each part's first rank sends its fold once to the group's rank 0: by owner into the slot after its island's (port 0), by tree on the one port after the root part's rounds, part j into slot j - 1 after the root part's (rank 0 waits there for all of them); where the port or the slots do not fit, every core gives up (`kGaveBadItem`); the calls do not change | the flat schedule |
 | the same with `km::local` (`reduce_emit(..., km::local)`, `reduce_arrive(..., km::local)`, `reduce(compute, arrival, group, form, km::local, combine)`) | the reduce over `group.local()`: it stays in this island | the whole group |
 | `group.leader(j)` | the first rank of island part `j` of the group | `group.leader(0)`: its first rank |
 | `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | `km::emit` to `rank` after a check that island `i` holds it (else a give-up, bad item) | a local emit |

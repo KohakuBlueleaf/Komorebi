@@ -68,8 +68,8 @@ and float32, plain and timed, the body above.
 
 | Program | Values | Values wrong | Largest relative error | Card time | Kernel text |
 |---|---|---|---|---|---|
-| hand (`../gate.py`) | bfloat16 | 0 of 786,432 | 1.45e-2 (values of 2^-4 or more) | 76.24 µs | 37,936 B |
-| class | bfloat16 | 0 of 786,432 | 3.89e-3 (values of 2^-4 or more) | 83.70 µs | 36,996 B |
+| hand (`../gate.py`) | bfloat16 | 0 of 786,432 | 1.45e-2 (values of 2^-4 or more) | 76.24 µs | 38,640 B |
+| class | bfloat16 | 0 of 786,432 | 3.89e-3 (values of 2^-4 or more) | 83.70 µs | 37,632 B |
 | class, timed | bfloat16 | 0 of 786,432 | 3.89e-3 | 88.84 µs | 39,512 B |
 | class | float32 | 0 of 786,432 | 2.46e-7 against float64 | 94.76 µs | 36,984 B |
 | class, timed | float32 | 0 of 786,432 | 2.46e-7 | 100.16 µs | 39,504 B |

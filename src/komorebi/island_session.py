@@ -1503,22 +1503,22 @@ class IslandSession:
                 owned[id(each)] = each
         owned = list(owned.values())
         defines = [one.defines for one in owned]
-        if len(self.sessions) > 1:  # a tensor's word may name its table entry
-            for one, own in zip(owned, defines):
-                one.defines = {**own, "KM_TENSOR_TABLE": 1}
-        if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
-            asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
-            for one in owned:
-                one.defines = {
-                    **one.defines,
-                    "KM_PAGE_LINKS": 1,
-                    **asks,
-                    **self._forward,
-                }
-        plans = self._links(programs)
-        tables = self._tables_for_load()
         runs = []
         try:
+            if len(self.sessions) > 1:  # a tensor's word may name its table entry
+                for one, own in zip(owned, defines):
+                    one.defines = {**own, "KM_TENSOR_TABLE": 1}
+            if self.links:  # link cores' CPUs serve PAGES (km_pages.hpp), while built
+                asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
+                for one in owned:
+                    one.defines = {
+                        **one.defines,
+                        "KM_PAGE_LINKS": 1,
+                        **asks,
+                        **self._forward,
+                    }
+            plans = self._links(programs)
+            tables = self._tables_for_load()
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
                 try:
                     # one island: the card's run as it is without islands
@@ -2428,14 +2428,24 @@ class IslandSession:
 
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'
-        sessions, then the mesh (not while a grid did not return)."""
+        sessions, then the mesh (not while a grid did not return). Every island's
+        session is tried; the first error is raised after, its island counted stuck."""
+        failed, first = [], None
         try:
             if self.split > 1 and self.run is not None and not self.run.stopped:
                 self.run.abort()
-            for session in self.sessions:
-                session.close()
+            for island, session in enumerate(self.sessions):
+                try:
+                    session.close()
+                except BaseException as error:  # noqa: BLE001 (raised after the rest)
+                    failed.append(island)
+                    first = error if first is None else first
         finally:
-            stuck = [i for i, session in enumerate(self.sessions) if session.stuck]
+            stuck = [
+                i
+                for i, session in enumerate(self.sessions)
+                if session.stuck or i in failed
+            ]
             if self.mesh is not None and not stuck:
                 self.log("closing the mesh")
                 self.mesh.close()
@@ -2445,6 +2455,8 @@ class IslandSession:
                 self.log(f"mesh not closed: the grid of islands {stuck} did not return")
             if self.mesh is None and not stuck:
                 session_module._LIVE.discard(self)
+        if first is not None:
+            raise first
 
     def _release(self, why, close_device):
         """The exit hooks' clean-up: every island's session first, then the mesh."""

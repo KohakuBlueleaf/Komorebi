@@ -836,7 +836,7 @@ namespace km {
 #endif
 
     // The reader waits until the count at r.count reaches r.pages, then takes that
-    // much off it (one request a count at a time). kGave* code.
+    // much off it by an atomic (one request a count at a time). kGave* code.
     template <typename Kernel>
     inline uint32_t pages_wait(const Kernel& kernel, const PagesRequest& r) {
         volatile tt_l1_ptr uint32_t* count = l1(r.count);
@@ -848,10 +848,20 @@ namespace km {
             },
             kernel.args().wait_limit
         );
-        if (code == kGaveNone) {
-            count[0] -= r.pages;
+        if (code != kGaveNone) {
+            return code;
         }
-        return code;
+        // taken off by an atomic: a count landing meanwhile is not lost
+        noc_semaphore_inc(
+            get_noc_addr(reinterpret_cast<uint32_t>(count)), 0u - r.pages
+        );
+        return kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
     }
 
     // The island's page CPUs (KM_PUT_CPUS at `area`): those of the last links (1 on

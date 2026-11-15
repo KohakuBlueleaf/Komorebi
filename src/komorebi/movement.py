@@ -73,8 +73,10 @@ class Pattern:
 # them; the first argument is the buffer.
 FILLING = re.compile(r"\b(?:cb_reserve_back|cb_push_back|reserve_back|reserve)\s*\(")
 DRAINING = re.compile(r"\b(?:cb_wait_front|cb_pop_front|wait_front)\s*\(")
-ARGUMENT = re.compile(r"\s*([A-Za-z_]\w*|0x[0-9A-Fa-f]+|\d+)u?\s*[,)]")
-CONSTANT = re.compile(r"constexpr\s+uint32_t\s+(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?\s*;")
+ARGUMENT = re.compile(r"\s*(\w+)\s*[,)]")
+CONSTANT = re.compile(r"constexpr\s+uint32_t\s+(\w+)\s*=\s*(\w+)\s*;")
+# an integer literal as C reads it: hexadecimal, binary, octal or decimal, a suffix
+NUMBER = re.compile(r"(?:0[xX]([0-9A-Fa-f]+)|0[bB]([01]+)|0([0-7]*)|([1-9]\d*))[uUlL]*")
 INCLUDE = re.compile(r'#include\s+"([^"]+)"')
 COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
 
@@ -93,6 +95,16 @@ def _texts(path, seen=None):
     return found
 
 
+def _number(text):
+    """The value of a C integer literal, or None when `text` is not one."""
+    matched = NUMBER.fullmatch(text)
+    if not matched:
+        return None
+    for base, digits in zip((16, 2, 8, 10), matched.groups()):
+        if digits is not None:
+            return int(digits or "0", base)
+
+
 def buffer_roles(path):
     """{buffer index: {"fill", "drain"}} of the calls in a kernel source whose buffer
     argument is a number or a `constexpr uint32_t` constant of the source or its
@@ -101,7 +113,8 @@ def buffer_roles(path):
     constants = {}
     for text in texts:
         for name, value in CONSTANT.findall(text):
-            constants[name] = int(value, 0)
+            if _number(value) is not None:
+                constants[name] = _number(value)
     source = texts[0] if texts else ""
     roles = {}
     for role, call in (("fill", FILLING), ("drain", DRAINING)):
@@ -110,7 +123,7 @@ def buffer_roles(path):
             if not argument:
                 continue
             name = argument[1]
-            index = constants.get(name) if name[0].isalpha() else int(name, 0)
+            index = constants.get(name) if not name[0].isdigit() else _number(name)
             if index is not None:
                 roles.setdefault(index, set()).add(role)
     return roles

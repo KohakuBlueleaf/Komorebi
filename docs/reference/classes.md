@@ -66,7 +66,7 @@ run.submit(
 |---|---|
 | a tensor by each tensor parameter's name | an example of the tensor: its format and page size (the buffers', the movers' compile arguments); a tensor of an island session too |
 | `plan` | the sizes by name: a module constant the handlers use (`BLOCK`), a field's symbol |
-| `session`, `trace` | the session it is loaded on and the trace pages its load is given: the build checks the load's L1 table of a core (`Session.l1_rows`: the buffers with the token and trace pages, the control block and overlay area, the host transfer buffer, what the session keeps) with the service overlay's slot at its most (`overlay.SERVICE_SLOT_MOST`, which the load enforces), so a class that builds loads; a class's own overlays' slots are the load's; a field's last symbol takes what is left |
+| `session`, `trace` | the session it is loaded on and the trace pages its load is given: the build checks the load's L1 table of a core (`Session.l1_rows`: the buffers with the token and trace pages, the control block and overlay area, the host transfer buffer, what the session keeps) with the service overlay's slot at its most (`overlay.SERVICE_SLOT_MOST`), so a class that builds loads; a class's own overlays' slots are the load's; a field's last symbol takes what is left |
 | `l1` | without a session, the bytes left for buffers (`Session.l1()[1]`): the buffers alone must fit, a field's last symbol takes what they leave |
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
@@ -74,9 +74,12 @@ run.submit(
 The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
 service's reader part built for every example and project that builds without a card
 is 8,640 B (with the islands defines too), and 8,840 B in the build that checks the
-core-table indices (`KM_CHECK_NOC_SOURCES`); rounded up to 9 KiB. The load refuses a
-larger service part, naming the constant. The build's table shows the reserve, the
-load's the real slot (8,640 B), so a class has the 576 B between them to spare.
+core-table indices (`KM_CHECK_NOC_SOURCES`); rounded up to 9 KiB. The load does not
+refuse on it: it refuses only by its own L1 table, made from the real sizes, and logs a
+service part over the constant. The build's table shows the reserve, the load's the real
+slot (8,640 B), so a class has the 576 B between them to spare. An island session's
+service part is larger (39,512 B on a card split in three): a class's build for such a
+session reserves less than the load takes today.
 
 The build writes `build/<name>/` beside the class's source: `<name>.h` (the handler
 numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
@@ -780,12 +783,12 @@ the packed text of the five CPUs, of 70,656 B.
 | [01 map/collect](../../examples/01_mapcollect/as_class/README.md) | the same: 20 jobs checked, 10 exact | 33,584 / 34,288 B | on the cores 1.77 / 1.91 us a command (120 cores, 1,000 jobs, trace stamps) |
 | [01 on two islands](../../examples/01_mapcollect/as_class/README.md) | the same: every tile exact; 2,360 asks and 4,720 pages over the links in 20 rounds, as the hand's | 60,048 / 61,152 B (mock, islands' build) | own groups 2.88 / 3.04 us a command; island 0 reading its own input 198.4 / 190.6 us a round, island 1's 626.0 / 615.5 (20 rounds): the dispatcher's 4.82 / 4.62 and 448.4 / 448.1, the class's submit 8 us longer |
 | [02 merge tree](../../examples/02_merge_tree/as_class/README.md) | the same: 40 jobs, exact ones bit-equal, 40 result words | 42,240 / 36,176 B | on the cores 15.33 / 15.14 us a command (first seen to sent, median) |
-| [03 broadcast](../../examples/03_broadcast/as_class/README.md) | the same: 960 ranks, all exact (level 1a) | 48,736 / 53,424 B (mock) | 109.0 / 99.8 us a job, exclusive (level 1a) |
+| [03 broadcast](../../examples/03_broadcast/as_class/README.md) | the same: 960 ranks, all exact (level 1a) | 48,720 / 53,408 B (mock) | 109.0 / 99.8 us a job, exclusive (level 1a) |
 | [05 forward](../../examples/05_forward/as_class/README.md) | the same: exact in 3 of 3 runs, 10^6 forwards | 41,600 / 43,040 B | 12,162 / 12,297 us a run (median of 3) |
 | [07 work cluster](../../examples/07_work_cluster/as_class/README.md) | the same: 204 rounds, sum 1,004,917, every state word | 21,200 / 21,424 B (mock) | the thread's loop 10.55 / 10.75 ms |
 | [11 movement](../../examples/11_movement/as_class/README.md) | the same: every copy exact (level 1a) | 38,288 / 36,720 B | READ AAAB 308.74 / 310.44 GB/s (level 1a) |
-| [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
-| [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 36,996 / 37,936 B | 83.70 / 76.24 us a command (bfloat16, 12 cores, 64 tiles a core, 2 tiles an acquire; one tile an acquire and the first body 86.68 / 76.06); the emitted body 1,597 cycles a tile on the math CPU, 1,597.6 printed (the first body 1,656, 1,657.6 printed; the hand body 1,901.5 in the one-core harness) |
+| [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 33,296 / 28,016 B (mock), and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
+| [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,632 / 38,640 B (mock) | 83.70 / 76.24 us a command (bfloat16, 12 cores, 64 tiles a core, 2 tiles an acquire; one tile an acquire and the first body 86.68 / 76.06); the emitted body 1,597 cycles a tile on the math CPU, 1,597.6 printed (the first body 1,656, 1,657.6 printed; the hand body 1,901.5 in the one-core harness) |
 | [14 message handlers](../../examples/14_message_handlers/as_class/README.md) | the same: exact in 3 of 3 runs, 1,013,360 messages of three handlers | 42,640 / 43,568 B (mock) | 10,987 / 11,149 us a run (median of 3) |
 | [linear layer](../../experiments/dense_class/README.md), 32 x 4096 x 4096, the K split | Y equal to the host's product (integers); 4.38e-3 relative RMS (normal bfloat16, HiFi2) | 90,192 / 61,584 B (mock) | 94.2 / 92.4 us a command (112 cores, the hand's groups of 14 and blocks of 16) |
 | [linear layer](../../experiments/dense_class/README.md), 1024 x 4096 x 4096, the grid form | the same | 90,192 / 69,296 B (mock) | 358.6 / 382.4 us (12 x 8 cores, as the hand's) |

@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 from komorebi import _env, build
+from komorebi.errors import KomorebiError
 
 IMAGE = "km-dispatch.bin"
 MODULE = "_km_host"
@@ -166,12 +167,15 @@ def thread_image(thread, tree=None, programs=()):
     key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]
     out = cache_directory() / f"thread-{key}" / "thread.bin"
     if not out.is_file():
-        build.build_image(
-            tree,
+        build_whole(
             out,
-            sources,
-            includes=[kmx_directory(), *includes(), *extra],
-            defines=defines,
+            lambda path: build.build_image(
+                tree,
+                path,
+                sources,
+                includes=[kmx_directory(), *includes(), *extra],
+                defines=defines,
+            ),
         )
     return out
 
@@ -200,9 +204,18 @@ def module_path(tree=None):
     return out
 
 
+_LOADED_TREE = {}  # {MODULE: the tree the loaded native module was built for}
+
+
 def load_module(tree=None):
-    """Imports the native host module (building it first if needed)."""
+    """Imports the native host module (building it first if needed); a later call
+    naming another tree than the loaded module's raises KomorebiError."""
     if MODULE in sys.modules:
+        loaded = _LOADED_TREE.get(MODULE)
+        if tree is not None and loaded not in (None, _tree(tree).resolve()):
+            raise KomorebiError(
+                f"the native module is loaded for {loaded}; it cannot load for {tree}"
+            )
         return sys.modules[MODULE]
     path = module_path(tree)
     loader = importlib.machinery.ExtensionFileLoader(MODULE, str(path))
@@ -210,6 +223,7 @@ def load_module(tree=None):
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     module.set_idle_image(str(_env.x280_idle_image(_tree(tree))))
+    _LOADED_TREE[MODULE] = _tree(tree).resolve()
     sys.modules[MODULE] = module
     return module
 

@@ -29,7 +29,7 @@ load and the call and writes the cycles to its page of `stamps` (page 2 x core +
 mover), read after the turn's time.
 
 Measured on one Blackhole card (`--beside`): both exact, 40 commands each (every mix
-word and every scaled value). Kernel text 32,584 B against 27,324 B. The parts: mix
+word and every scaled value). Kernel text 33,296 B against 28,016 B (mock build). The parts: mix
 reader 64 B, writer 384 B; scale reader 3,968, writer 3,968, unpack 2,624, math 1,664,
 pack 1,664 B (the hand program's: mix reader 128 B; scale 1,088, 1,408, 1,728, 1,088,
 1,728 B); the class has a slot for each overlay with a part, the hand program's run

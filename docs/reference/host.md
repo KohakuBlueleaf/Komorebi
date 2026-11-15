@@ -695,8 +695,8 @@ the kernel's header; `reason_name` is the lower-case suffix):
 
 | `reason` | `reason_name` | The command |
 |---|---|---|
-| 1 | `handler` | has a handler above 239 that its source may not send: the host's own commands may carry 240 to 242, 245 and 248 (and `EXIT`), a work cluster's thread 240 and 245 |
-| 2 | `flags` | sets the reserved flag bit 0 |
+| 1 | `handler` | has a handler above 239 that its source may not send: the host's own commands may carry 240 to 245 and 248 (and `EXIT`), a work cluster's thread 240 and 245 |
+| 2 | `flags` | sets the reserved flag bit 0, or the dispatcher's flag (`KMD_FLAG_DISPATCHER`) on a command that is none of the dispatcher's own |
 | 3 | `group` | has a group of 0 cores, or one that does not lie inside the cores |
 | 4 | `exited` | came after EXIT |
 | 9 | `queue` | is queued (`queued=True`) while the kernel's job queue holds 64 commands |
