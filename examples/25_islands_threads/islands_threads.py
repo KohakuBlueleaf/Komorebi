@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 
 HERE = Path(__file__).resolve().parent
 MAPCOLLECT = HERE.parent / "01_mapcollect"
@@ -370,7 +371,7 @@ def main():
         and report.get("host_counts_exact", True)
         and report.get("thread_counts_exact", True)
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

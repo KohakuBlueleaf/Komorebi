@@ -272,7 +272,7 @@ def main():
     report["check"] = check(y_rows, rows, x, w1, w3, w2)
     report["ok"] = report["check"]["ok"] and report["run"]["ok"]
     report["load_avg"] = Path("/proc/loadavg").read_text().split()[:3]
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

@@ -327,3 +327,18 @@ temperature, the card's power limit and the idle mean from before the block. The
 sensor of a card updates every 0.1 s, so the default period is 0.05 s, and a section
 shorter than five updates (0.5 s) says so and reports no mean. A sensor that disappears
 ends the sampling; the result covers the time before it and says it was lost.
+
+**The clock beside a time.** `power.aiclk_mhz(card)` reads the Tensix clock (AICLK)
+from the driver (`/sys/class/tenstorrent/tenstorrent!N/tt_aiclk`). The clock is
+800 MHz while no process holds the card. tt-metal's UMD raises it to the busy clock
+(1,350 MHz on a p150a) when a process opens the card: `Cluster::start_device` sets the
+busy state. It keeps that clock until the process exits, even after the session
+closes. A reading taken before a session therefore says nothing about that session's
+times. Every example's and project's driver puts the clock beside its times in its
+JSON line as `aiclk_mhz`, read in the process that ran the session:
+
+```python
+from komorebi import power
+
+print(json.dumps(power.clocked(result)))  # adds "aiclk_mhz" unless already there
+```

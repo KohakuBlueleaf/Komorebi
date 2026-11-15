@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import native
+from komorebi import native, power
 from komorebi import session as km_session
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
@@ -249,7 +249,7 @@ def build(args):
     info = np.zeros(TILE_WORDS, np.uint32)
     info[NONCE], info[TILES], info[SYNC : SYNC + SYNCS] = 7, len(a), 10
     info[BODY : BODY + len(a)] = 100
-    print(json.dumps(check(case, words_of(made), info, 7)), flush=True)
+    print(json.dumps(power.clocked(check(case, words_of(made), info, 7))), flush=True)
     return 0
 
 
@@ -286,7 +286,7 @@ def card(args):
         "wall_s": round(time.time() - started),
     }
     out["cost_model"] = saved["cost"]
-    print(json.dumps(out), flush=True)
+    print(json.dumps(power.clocked(out)), flush=True)
     return 0 if all(r["ok"] for r in records) else 1
 
 

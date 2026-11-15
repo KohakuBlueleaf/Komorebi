@@ -677,6 +677,14 @@ class Run:
         (`part`: an island's part of a flat group, as submit's)."""
         program_field = self.load_field(program)
         first, count = self._group(group)
+        rectangle = getattr(program, "rectangle", None) or {}
+        if rectangle.get("group") is not None:  # its per-core args are its rect's
+            low, cores = rectangle["group"]
+            if not first <= low or low + cores > first + count:
+                raise ProgramError(
+                    f"run.load: {program.name}'s rectangle {rectangle['rect']} is the "
+                    f"cores ({low}, {cores}), not inside the group ({first}, {count})"
+                )
         record = self._switch["records"][program_field]
         flags = self._flag_part if part else 0
         handle = self._queue_command(

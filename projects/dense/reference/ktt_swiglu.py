@@ -101,7 +101,7 @@ def main():
         "aiclk_mhz": [min(clock), round(statistics.mean(clock), 1), max(clock)],
     }
     report["load_avg"] = os.getloadavg()[0]
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report))
 

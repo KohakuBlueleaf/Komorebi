@@ -57,8 +57,8 @@ In a chain, an overlay handler's record loads its overlay, waits for its input w
 then calls the part ([classes, overlay handlers in the walk](../../docs/reference/classes.md#chains)).
 The resident `down` reads its W2 columns while `up`'s blocks are still being marked;
 as an overlay it reads nothing until every block of the hidden it reads is marked.
-Card 0, 2026-11-16, AICLK 800 MHz, one job, 50 timed chains a form after a first
-command; hidden and y equal word for word to the resident chain's in every form:
+Card 0, 2026-11-16, AICLK 1,350 MHz in the session, one job, 50 timed chains a form
+after a first command; hidden and y equal word for word to the resident chain's in every form:
 
 | The chain | us on the card | us from the host | Slots a part |
 |---|---:|---:|---:|
@@ -99,8 +99,7 @@ after the direct chain, so `hidden.read()` then raises, naming `up`'s call.
 
 Card 0, 2026-11-16, one job. Each chain was run once after its own load, and y was
 equal word for word in both. Then both chains ran in turn in one load, 50 timed each
-after a first command. The AICLK was 800 MHz before the job and 1,350 MHz after it.
-The two chains alternated, so they compare with each other, not with the table above.
+after a first command, AICLK 1,350 MHz in the session.
 
 | The chain | us on the card |
 |---|---:|

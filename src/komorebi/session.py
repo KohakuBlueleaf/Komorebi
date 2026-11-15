@@ -2831,6 +2831,8 @@ class _Backend:
                     ("KM_PROGRAM_SWITCH", "1"),
                     *queue,
                 ]
+                if getattr(self, "switch_args", False):  # the row read: pay for use
+                    defines.append(("KM_ADDED_ARGS", "1"))
             defines += island
             defines += self._one_island()
             defines += added_path(placed.programs)

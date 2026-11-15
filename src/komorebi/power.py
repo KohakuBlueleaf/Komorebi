@@ -131,6 +131,32 @@ def cards(root=None):
     return sorted(found, key=lambda card: card.index)
 
 
+# A driver's JSON key for the clock its times were taken at (aiclk_mhz, clocked).
+CLOCK_KEY = "aiclk_mhz"
+
+
+def aiclk_mhz(card=None, root=None):
+    """The Tensix clock (AICLK) of `card` (None: the first of TT_VISIBLE_DEVICES, else
+    0) in MHz, from the driver's sysfs entry; None where it cannot be read. UMD raises
+    it to the busy clock when a process opens the card and keeps it until that process
+    exits; a reading before any open is the idle clock, not a session's."""
+    if card is None:
+        card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0] or 0)
+    path = Path(SYS if root is None else root) / "class" / "tenstorrent"
+    try:
+        return int(read_number(path / f"tenstorrent!{card}" / "tt_aiclk"))
+    except SensorLost:
+        return None
+
+
+def clocked(result, card=None):
+    """A driver's JSON result (a dict) with the clock its times were taken at under
+    CLOCK_KEY, read now: call it in the process that ran the session."""
+    if isinstance(result, dict) and CLOCK_KEY not in result:
+        result[CLOCK_KEY] = aiclk_mhz(card)
+    return result
+
+
 class Gpu(Source):
     """One GPU, read through nvidia-smi (a process per sample, about 40 ms)."""
 

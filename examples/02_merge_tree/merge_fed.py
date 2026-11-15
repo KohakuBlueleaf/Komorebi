@@ -19,6 +19,7 @@ import commands as feeder_commands  # noqa: E402
 import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi import power  # noqa: E402
 
 RUNTIME_CONSTANTS = feeder_commands.K
 KERNELS = HERE / "kernels"
@@ -266,7 +267,7 @@ def main():
         fed.log(f"device open {time.time() - started:.1f}s")
         result = run(session, args, generator)
     result["wall_s"] = round(time.time() - started, 1)
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 
