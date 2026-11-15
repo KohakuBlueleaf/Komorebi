@@ -938,6 +938,56 @@ Read together:
 - What is ours and not about DRAM: attend above its hardware 41.8, the operations
   31.7 (qkv's norms and rotation 14.8, the gate 9.6), the tree's rounds 23.1.
 
+### A token as one command
+
+`--token` (LAYERS' a4 512): the thread writes the records of all 28 layers once, 140
+of them, the last of each layer naming the next layer's qkv, whose input is marked by
+the previous layer's down like any other record's. They hold everything that does not
+change from token to token; they are written again only when a job's form changes
+(its flags, first layer, layer count, rows). The one word a token changes is the
+position, in qkv's a9 (its rotation's place) and attend's a9 (the cache's new row; the
+length it attends over follows from it): the token's one command carries it in its a0,
+and a record's info word names the word of its command the core ORs it into
+(`kChainTokenShift`). The thread submits once a token and waits once.
+
+The check: one token through 2 layers and through 28 as one command, against the
+chain a layer a command from the same x: every tensor the card keeps (qkv, a, x1,
+gated, x) equal to the last digit, both times. The real prompt: 16 of 16 of torch's
+tokens, every layer's error equal to the commands' to the last digit
+(`results/qwen3-1.7b-real-prompt-token.json`), 117.2 tokens a second at T <= 256.
+
+Beside each other in one job (`results/qwen3-1.7b-chain-token-x10.json`, stamped, 28
+layers, 10 tokens; "layer": the chain a layer a command; a token's spans folded over
+its 28 layers, qkv's from the previous layer's down):
+
+| us a layer | T 4096 token | T 4096 layer | T 1024 token | T 1024 layer | T 256 token | T 256 layer |
+|---|---:|---:|---:|---:|---:|---:|
+| qkv | 47.1 | 73.5 | 43.6 | 64.5 | 43.1 | 63.3 |
+| attend | 94.6 | 86.5 | 58.6 | 56.8 | 52.0 | 51.3 |
+| o | 31.0 | 18.0 | 37.8 | 31.1 | 36.2 | 29.1 |
+| gate_up | 147.7 | 138.9 | 147.5 | 136.5 | 148.2 | 138.2 |
+| down | 24.8 | 25.7 | 24.6 | 24.5 | 24.5 | 24.4 |
+| the end (the last record to the event) | 0.2 | 3.0 | 0.2 | 2.8 | 0.2 | 1.2 |
+| **the command** | **345.4** | **345.6** | **312.3** | **316.2** | **304.2** | **307.6** |
+| the thread: records written | 0.81 | 12.06 | 0.81 | 12.05 | 0.82 | 12.05 |
+| submit | 0.04 | 1.05 | 0.04 | 1.05 | 0.04 | 1.05 |
+| wake after the event | 0.04 | 1.13 | 0.04 | 1.12 | 0.04 | 1.11 |
+| the rest | 0.11 | 2.96 | 0.11 | 2.97 | 0.11 | 2.96 |
+| **a layer** | **346.4** | **362.8** | **313.3** | **333.4** | **305.2** | **324.8** |
+| tokens a second | 103.1 | 98.4 | 114.0 | 107.1 | 117.0 | 109.9 |
+
+- **The thread's 11 to 17 us a layer are gone.** The 140 records are written once a
+  job (227 us; over 10 tokens 0.81 a layer, and none when the form is the one already
+  written); submit and wake are 2.2 us a token, the rest 3.1.
+- **The command itself gained almost nothing** (T 4096: 345.4 against 345.6; T 1024 and
+  256: 3.5 to 3.9). qkv's span fell by 26 us, its W read under the previous down's
+  tail, but its cores now wait 35 us with the W half full (112 of them), and attend,
+  o and gate_up took the time back: the layer's DRAM reads still stop while cores wait
+  for their marks (o 120 cores, 40 us; gate_up 94, 20; down 95, 56).
+- The layer chain beside it here has a slower thread than in the table above (17.2
+  against 11.3 us a layer): its rest, 3.0 against 0.3, is the command's cores computed
+  once more from five commands; its records, 12.1 against 8.8, are not explained yet.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
