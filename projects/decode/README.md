@@ -34,7 +34,7 @@ DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) 
 
 - Every product is the dense project's K split (`../dense/kernels/split`): a group of s
   cores per 1 x 8 block of output tiles, each core reading 1/s of K in chunks of 2 tiles
-  on both movers, the parts summed by a tree over the cores' ports. The shapes are plans
+  on both movers (AB, gate_up AAAB), the parts summed by a tree over the cores' ports. The shapes are plans
   in one table in the program's arguments; a command's a5 picks one. The plans share
   every buffer; a group has at most 16 cores (a sum of 4 rounds, half of a core's 8
   ports): qkv 16 groups of 7 (112 cores), o and down 8 of 15 (120), gate_up 48 of 2
@@ -57,7 +57,11 @@ DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) 
 python projects/decode/bench.py --layers 1 --tokens 10 --json out.json
 python projects/decode/bench.py --tokens 10 --json out.json
 python projects/decode/bench.py --tokens 10 --cases overlap --no-check
+python projects/decode/bench.py --tokens 1 --cases parts --no-check --trace stamps.npz
 ```
+
+`--chunk` and `--pattern` set every plan's K chunk and pattern (the default is
+`model.PATTERNS`).
 
 It writes each layer's weights through the host channel (6.2 GB/s), checks one layer
 from a known x against `model.layer()` (numpy, float64, each output rounded to bf16 as
@@ -218,6 +222,66 @@ costs 2.0 us more than on 120. qkv against q, k, v overlapped: the three reads' 
 costs go (16.2 against 28.3 below the ceiling) but the overlap of o goes too; fused
 is 2.1 us ahead. The account takes the fused case's own bare and parts runs, and for
 the overlapped column the parts of q, k, v apart (`parts_apart`).
+
+### The read below the ceiling
+
+`bench.py --cases parts --trace stamps.npz` saves the runtime's stamps of every core and
+command: when the reader took it, when the writer (mover B) ended, when the core reported.
+Over 28 layers of parts, medians in us from the first core's start:
+
+| Product (cores) | start spread | first core ends | last core ends | W and A at 495.6 GB/s |
+|---|---:|---:|---:|---:|
+| qkv (112) | 0.19 | 13.9 | 39.3 | 38.1 |
+| o (120) | 0.18 | 5.8 | 19.5 | 19.0 |
+| gate_up (96) | 0.19 | 67.6 | 125.7 | 114.3 |
+| down (120) | 0.18 | 22.5 | 60.2 | 57.1 |
+
+The cores start together, and they do not end together: each core of gate_up has 32 K
+tiles, and they end from 68 to 125 us in the order of their place on the grid. So it is
+neither compute (the same work on every core) nor the partition. The read also moves
+more than the weights: every group reads all of A, and A's tiles are 32 rows (N/8
+groups x K tiles x 2 KB: qkv 2.1 MB, o 1.05, gate_up 6.3, down 3.1, together 25.3 us at
+the ceiling). On the bytes it moves, the read ends at the ceiling for qkv and o, 5% above
+it for down and 10% above it for gate_up. Two runs tested the size of a block. With
+chunks of 4 tiles (twice the bytes in flight on a mover), gate_up took 144.9 us (was
+128.0). With chunks of 1, the cores' ends drew closer (the first at 94 us) and the last
+did not move (127.8). The end is set by the whole grid's rate, not by one core's reads in
+flight. On 96 cores, AB gives what gate_up gets: about 445 GB/s (the movement probe: AB
+375 GB/s on 60 cores, 485 on 120; AAAB 500 and 503). Under AB, mover B carries half of
+the bytes on NoC 1, which is the slower NoC.
+
+The change is the chunks' pattern, a plan word (`kSpPattern`; `../dense/plan.py`
+`pattern`, `depth`). Under AAAB mover A takes three chunks of four. Mover A's half holds
+three chunks, so A does not wait for compute's pop. With one chunk a half, AAAB had gained
+nothing. On every product, AAAB took gate_up from 128.0 to 121.2 us (parts). It cost qkv
+1.2 us, o 1.8 and down 2.6, because on 112 and 120 cores AB is already near its rate. So
+gate_up runs on AAAB and the rest on AB (`model.PATTERNS`). Every plan's mover A half is 3
+chunks deep, because the plans share buffers; AB is unchanged by the depth. The dense
+project's plans stay AB with a depth of 1: dec4096's single call took 91.78 us after the
+change and 91.82 before, and its parts 81.84 (exact). The layer, all cases, both check
+runs exact (`results/qwen3-1.7b-x10-pattern.json`):
+
+| Term | Kind | before (fused) | gate_up on AAAB |
+|---|---|---:|---:|
+| the weights read at 495.6 GB/s | HARDWARE | 203.1 | 203.1 |
+| qkv: the read below the ceiling | OURS | 8.8 | 9.2 |
+| o: the read below the ceiling | OURS | 7.4 | 6.8 |
+| gate_up: the read below the ceiling | OURS | 26.3 | 19.7 |
+| down: the read below the ceiling | OURS | 11.9 | 11.8 |
+| the boundaries: qkv 7.0, o 8.4, gate_up 6.2, down 8.5 (before 6.8, 7.9, 4.6, 8.5) | OURS | 27.8 | 30.1 |
+| the operations: o's add, the gate (4.7; before 5.7), down's add, qkv noise | OURS | 8.0 | 6.7 |
+| norm1, norm2 | OURS | 28.0 | 28.0 |
+| the thread between commands | OURS | 12.2 | 12.2 |
+| total | | 333.4 | 327.5 |
+| unaccounted | | 0.0 | 0.0 |
+
+The layer now takes 327.5 us: **9.17 ms a token, 109.0 tokens a second, 307 GB/s** of
+weights. gate_up's full command went from 138.1 to 132.2 us. Its boundary and its
+operation together took 10.9 us (before 10.3): the split between those two terms is
+within a run's noise. Of the 47.4 us still below the ceiling, 25.3 is A's re-read, a cost
+of the 1 x 8 blocks, which every plan shares. The rest is each product's fixed start and
+end (about 5 us; o's parts end 3.7 us before its completion) and gate_up's and down's
+remaining rate.
 
 ## What the framework lacked
 

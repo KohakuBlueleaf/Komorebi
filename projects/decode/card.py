@@ -49,11 +49,23 @@ def buffers(plan):
 
 class Decode:
     """The model's layers loaded on a session: tensors, the program and its thread.
-    `layers` distinct layers of weights in DRAM, written by write_layer()."""
+    `layers` distinct layers of weights in DRAM, written by write_layer(); `trace`:
+    the commands each core stamps (the runtime's trace, 0: none); `chunk`, `patterns`:
+    md.plans()'s."""
 
-    def __init__(self, session, model, layers, deadline, log):
+    def __init__(
+        self,
+        session,
+        model,
+        layers,
+        deadline,
+        log,
+        trace=0,
+        chunk=md.CHUNK,
+        patterns=None,
+    ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
-        self.plans = md.plans(model)
+        self.plans = md.plans(model, chunk=chunk, patterns=patterns)
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
         hidden = model.hidden
         products = model.products()
@@ -77,7 +89,9 @@ class Decode:
             }
             for _ in range(layers)
         ]
-        self.run = session.load(self.program(), deadline=deadline, wait=1.0)
+        self.run = session.load(
+            self.program(), deadline=deadline, wait=1.0, trace=trace
+        )
         self.slot = 0
 
     def program(self):

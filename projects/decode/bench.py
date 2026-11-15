@@ -38,6 +38,8 @@ CASES = {
 }
 PRODUCT_STEPS = ("qkv", "o", "gate_up", "down")
 SPANNED = ("q", "k", "v", "o")  # overlapped: one span
+TRACED = 512  # commands a core stamps with --trace (16 bytes of L1 each)
+TRACE_FIELDS = ("kTraceSeen", "kTraceDone", "kTraceSent", "kTraceExtra")
 STARTED = time.monotonic()
 
 
@@ -57,7 +59,19 @@ def parse():
     parser.add_argument("--pause", type=float, default=1.0, help="x a case's time")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--json", default=None)
+    parser.add_argument("--chunk", type=int, default=md.CHUNK, help="K tiles a chunk")
+    parser.add_argument(
+        "--pattern", choices=("AB", "AAAB"), default=None, help="every product's"
+    )
+    parser.add_argument(
+        "--trace", default=None, help="an .npz of every core's stamps of each command"
+    )
     return parser.parse_args()
+
+
+def patterns(args):
+    """md.plans()'s patterns: --pattern on every product, else the model's."""
+    return None if args.pattern is None else dict.fromkeys(md.PRODUCTS, args.pattern)
 
 
 def check(decode, model, weights, seed):
@@ -211,13 +225,25 @@ def main():
     report = {"model": model.name, "layers": layers, "tokens": args.tokens}
     report["layer_bytes"] = model.layer_bytes()
     report["plans"] = {
-        f"{k}x{n}": plan.words() for (k, n), plan in md.plans(model).items()
+        f"{k}x{n}": plan.words()
+        for (k, n), plan in md.plans(
+            model, chunk=args.chunk, patterns=patterns(args)
+        ).items()
     }
     index = visible_card()
     deadline = round(max(1.0, args.tokens * layers * 2e-3 + 0.5), 3)
     results, ok = [], True
     with km.Session(log=log) as session:
-        decode = card.Decode(session, model, layers, deadline, log)
+        decode = card.Decode(
+            session,
+            model,
+            layers,
+            deadline,
+            log,
+            trace=TRACED if args.trace else 0,
+            chunk=args.chunk,
+            patterns=patterns(args),
+        )
         log(f"loaded: {len(decode.plans)} plans, deadline {deadline} s")
         write_s, first = 0.0, None
         for layer in range(layers):
@@ -247,6 +273,10 @@ def main():
         decode.run.stop()
         log("run stopped")
         stats = decode.stats()
+        if args.trace:
+            trace = decode.run.trace()
+            fields = {name: trace.h[name] for name in TRACE_FIELDS}
+            np.savez(args.trace, rows=trace.rows, mhz=trace.mhz, **fields)
     layered = {}
     for result in results:
         slot = card.decode_slot(stats[result["stats_slot"]])
