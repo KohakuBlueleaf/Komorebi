@@ -9,6 +9,7 @@ import copy
 import importlib
 import inspect
 import keyword
+import linecache
 import math
 import re
 import textwrap
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from komorebi import abi
 from komorebi.dsl import front
-from komorebi.dsl.names import kind_of, spelling
+from komorebi.dsl.names import NAMES, kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
 from komorebi.dsl.tile import trace, unit_program
 from komorebi.dsl.tile.ir import (
@@ -1059,6 +1060,7 @@ class HandlerCompiler:
         # Per read loop around the statement: its tile function, its other tile
         # lines, and the lines compute runs once before its blocks.
         self.loop_states = []
+        self.expression_calls = {}  # id of a tile expression's call: (call, function)
         self.blocks = []  # the statement lists around the statement, innermost last
         self.body_moves = []  # the movers' lines of an inline body's write stream
         self.held = {}  # a statement list -> its read streams bodies take (held_stream)
@@ -1836,6 +1838,7 @@ class HandlerCompiler:
         made = self.message_class(node, value)
         if made is not None:
             return self.made_message(node, name, made, value)
+        value = self.tile_expression(node, value) or value
         if self.tile_function_of(value) is not None:
             return self.tile_call(node, value, name)
         if (
@@ -4094,6 +4097,8 @@ class HandlerCompiler:
         class, or `f(...)` of the module's), or None."""
         if not isinstance(node, ast.Call):
             return None
+        if id(node) in self.expression_calls:
+            return self.expression_calls[id(node)][1]
         func = node.func
         if (
             isinstance(func, ast.Attribute)
@@ -4135,6 +4140,68 @@ class HandlerCompiler:
                 "write the loop's tile arithmetic in that tile function",
             )
         state["other"] = node
+
+    def tile_expression(self, node, value):
+        """`out.push(x * y)`, `t = km.silu(x) * y`: an expression of the loop's tiles,
+        numbers and km's tile arithmetic, made a tile function of those tiles (its
+        parameters in the order the expression names them) and returned as that
+        function's call; None when `value` names no tile of the loop."""
+        if not isinstance(value, (ast.BinOp, ast.UnaryOp, ast.Call)):
+            return None
+        if self.tile_function_of(value) is not None:
+            return None
+        arithmetic = {spelling(k) for k in NAMES if k.startswith("math_")}
+        for call in ast.walk(value):
+            if isinstance(call, ast.Call) and not (
+                (isinstance(call.func, ast.Name) and call.func.id == "abs")
+                or (
+                    isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "km"
+                    and call.func.attr in arithmetic
+                )
+            ):
+                return None  # a call of no tile arithmetic: not a tile expression
+        names = [n for n in ast.walk(value) if isinstance(n, ast.Name)]
+        tiles = []
+        for n in names:
+            kind = self.scope.get(n.id, Value("")).kind
+            if kind == "streamed" and n.id not in tiles:
+                tiles.append(n.id)
+        if not tiles:
+            return None
+        for n in names:
+            kind = self.scope.get(n.id, Value("")).kind if n.id in self.scope else None
+            if n.id == "self" or kind not in (None, "streamed"):
+                what = "self" if n.id == "self" else f"`{n.id}` ({kind})"
+                self.refuse(
+                    node,
+                    f"a tile expression reads the loop's tiles, numbers, module "
+                    f"constants and km's tile arithmetic, and {what} is none of them: "
+                    "the unit program's numbers are immediates built into its code",
+                    "write a number or a module constant there; a word of the "
+                    "command's line is a body's (km.cxx(..., gives=km.Tile))",
+                )
+        text = ast.unparse(value)
+        name = f"tile_line_{node.lineno}"
+        filename = (
+            f"<the tile expression of {Path(self.compiled.source).name}, "
+            f"line {node.lineno}>"
+        )
+        source = f"def {name}({', '.join(tiles)}): return {text}\n"
+        lines = ["\n"] * (node.lineno - 1) + [source]
+        linecache.cache[filename] = (len(source), None, lines, filename)
+        names_of = dict(self.names)
+        exec(compile("".join(lines), filename, "exec"), names_of)
+        function = front.TileFunction(names_of[name])
+        call = ast.Call(
+            func=ast.Name(id=name, ctx=ast.Load()),
+            args=[ast.Name(id=t, ctx=ast.Load()) for t in tiles],
+            keywords=[],
+        )
+        ast.copy_location(call, value)
+        self.expression_calls[id(call)] = (call, function)
+        return call
 
     def tile_call(self, node, call, name):
         """`t = self.f(a, b)` (or pushed): a, b the loop's stream tiles (or a row of
@@ -4517,6 +4584,9 @@ class HandlerCompiler:
                 f"{target.id} is not a write stream",
                 "open it with km.Stream(..., write=True)",
             )
+        pushed = call.args and self.tile_expression(node, call.args[0])
+        if len(call.args) == 1 and pushed:
+            call.args[0] = pushed
         if len(call.args) == 1 and self.tile_function_of(call.args[0]) is not None:
             _, made = self.tile_call(node, call.args[0], None)
             _, pushed = self.push_made(

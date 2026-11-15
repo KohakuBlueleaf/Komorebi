@@ -941,8 +941,9 @@ A **tile function** is a Python function of tiles that the tile compiler
 ([Tile functions](tile.md)) traces and emits for compute: decorated with
 `@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
 called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
-stream form: `+`, `-`, `*`, number constants, `km.silu`, `km.sigmoid`,
-`km.rsqrt`, `km.exp` (`error=`, `over=`) of up to three tiles, one result. From
+stream form: `+`, `-`, `*`, `/`, `abs`, number constants, `km.silu`, `km.sigmoid`,
+`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.exp`
+(`error=`, `over=`) of up to four tiles, one result. From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
@@ -984,6 +985,22 @@ class Gate(km.Program):
 | `results.push(f(x, g))`, `t = f(x, g)` | | once before the blocks `copy_init` and the body's setup (`km_tile::f_init()`); DST held for as many tiles as half of DST takes (4 float32 tiles over the operands: 2 tiles of a gate an acquire), each tile's operands copied into its DST tiles in the order of the unit program's operands and `km_tile::f(d)` on the math CPU, then each tile's first DST tile packed into the write stream at its place |
 | `for row in km.Stream(pages, block=4, row=2):` | one read stream, as without `row=` | each item a row of 2 tiles of the block; the block a multiple of the row |
 | `results.push(self.f(row, self.w))`, `self.w` a field | | the row form: the field filled above the loop waited for before its blocks and freed after them; a row: its tiles copied into DST 0 and 1, the field's tile into DST 4, `km_tile::f(0)`, DST 0 and 1 packed; DST in full-sync mode |
+
+**A tile expression in a handler's line.** `results.push(x / y)`, `t = km.silu(x) * y *
+SCALE`: an expression of the loop's tiles, numbers, module constants and the tile
+arithmetic above is the tile function of the tiles it names, in the order it names
+them, and is emitted as that function's call is (`tile_line_N` in the build's list,
+N the line): its unit program is the same, word for word, as the one a
+`@km.tile_function` of the same expression gives. A word of the command, a field or
+`self` in such an expression is refused at its line (the unit program's numbers are
+immediates built into its code); a call that is no tile arithmetic (`km.cxx(...)`)
+leaves the line to its own form. On the card
+([tile lines](../../experiments/language/tile_lines/README.md), bf16 tiles, 768 a
+command on 12 cores): `results.push(km.silu(x) * y)` equal datum for datum to the tile
+function's call, 82.1 us both; `x / y` within 1.6e-7 of float64 at 30.3 us against
+75.5 us for the inline body of tt-metal's `div_binary_tile`; `km.sqrt(x)` within 9.5e-8
+at 40.2 us against 53.9 us for `sqrt_tile`; `km.minimum(abs(x), y)` exact; four tiles
+`x * y + z * w` within 6.0e-8.
 
 A function called on a row of a stream of `row=` tiles is traced in the tile
 compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows of the
@@ -2056,8 +2073,7 @@ the packed text of the five CPUs, of 70,656 B.
 
 ## Not in this version
 
-A rectangle per command; tile arithmetic outside a tile function (`tile * factors`
-in a handler's line); slices and `.columns` of a field; a rectangle of tiles with a
+A rectangle per command; slices and `.columns` of a field; a rectangle of tiles with a
 step on its columns; a transposed rectangle outside a cast; a stream of a rectangle
 of more than one row whose columns are words; a field
 filled from a broadcast; a product's operands other than a stream's tile and a field,
