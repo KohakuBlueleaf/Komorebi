@@ -1489,13 +1489,13 @@ class HandlerCompiler:
             op = OPERATORS.get(type(node.op))
             if op is None:
                 self.refuse(node, "an operator level 1 has no C++ for", "use + - * //")
-            return f"({self.integer(node.left)} {op} {self.integer(node.right)})"
+            return f"({self.operand(node.left)} {op} {self.operand(node.right)})"
         if isinstance(node, ast.Compare) and len(node.ops) == 1:
             op = COMPARISONS.get(type(node.ops[0]))
             if op is None:
                 self.refuse(node, "a comparison level 1 has no C++ for", "use == < >")
             left, right = node.left, node.comparators[0]
-            return f"{self.integer(left)} {op} {self.integer(right)}"
+            return f"{self.operand(left)} {op} {self.operand(right)}"
         if isinstance(node, ast.BoolOp):
             op = " && " if isinstance(node.op, ast.And) else " || "
             return "(" + op.join(self.integer(v) for v in node.values) + ")"
@@ -1514,12 +1514,18 @@ class HandlerCompiler:
                     f"write {node.func.id}(a, b)",
                 )
             op = "<" if node.func.id == spelling("min") else ">"
-            text = self.integer(node.args[0])
+            text = self.operand(node.args[0])
             for arg in node.args[1:]:
-                other = self.integer(arg)
+                other = self.operand(arg)
                 text = f"({text} {op} {other} ? {text} : {other})"
             return text
         self.refuse(node, "not an integer of level 1", "write ints, names, + - * //")
+
+    def operand(self, node):
+        """integer() of an operator's operand: a comparison in parentheses, which C++
+        binds looser than arithmetic (`a + (b < c)`)."""
+        text = self.integer(node)
+        return f"({text})" if isinstance(node, ast.Compare) else text
 
     def constant(self, node, name):
         """A name of the module: an int constant, or the plan's value for it."""

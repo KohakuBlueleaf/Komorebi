@@ -468,6 +468,18 @@ def test_a_stated_pattern_is_used_and_an_unstated_one_is_the_default():
     ]
 
 
+class Compared(km.Program):
+    @km.handler
+    def copy(self, source: km.Tensor, n: int):
+        km.Stream(source.pages(0, n + (n < 4) * 2)).drain()
+
+
+def test_a_comparison_inside_arithmetic_keeps_its_parentheses():
+    compiled = compile_class(Compared, {}, {"source": tensor("bfloat16")})
+    movement = "\n".join(render(prune(compiled.movement["copy"]), 0))
+    assert "Source(source), 0, (n + ((n < 4) * 2))," in movement
+
+
 class Unpacked(km.Program):
     @km.handler
     def copy(self, items: km.Tensor):
