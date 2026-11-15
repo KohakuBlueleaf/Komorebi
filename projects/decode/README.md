@@ -611,22 +611,26 @@ other sources than the tile package's and that file's of the moment).
 `kernels/emitted.hpp` is the operations' compute on them: each operand tile copied into
 DEST with its own buffer's format, a body, a pack. Each operation is a switch of its
 overlays (`DC_EMIT_ADD`, `_NORM`, `_GATE`, `_QK`; `card.BODIES`; `bench.py` and
-`real.py --bodies add norm gate qk`):
+`real.py --bodies add norm gate qk`). Each body runs the live rows only: it is emitted
+with the tile compiler's band (`rows=True`), `<name>(dst, rows)`, and the operations
+pass the command's live rows (`decode::live_rows`), as the hand bodies do:
 
-| Body | Expression (operand k in DEST tile dst + k) | Form | Math cycles a tile |
-|---|---|---|---:|
-| add | a + b | stream, load macro | 91.6 |
-| square | a a | stream | 150.4 |
-| square_add | a + b b | stream | 182.6 |
-| squares3 | a a + b b + c c | stream | 310.9 |
-| sum3 | a + b + c | stream | 246.8 |
-| mul | a b | stream, load macro | 91.6 |
-| mul3 | a b c | stream | 246.8 |
-| mad | a + b c | stream | 214.7 |
-| gate | silu(a b) c | stream | 1,693.6 |
-| rms_row, rms_head | each row's 1 / sqrt(sum / n + 1e-6), n = 2048, 128 | row | 429.0 |
+| Body | Expression (operand k in DEST tile dst + k) | Form | Math cycles a tile | At 1 live row |
+|---|---|---|---:|---:|
+| add | a + b | stream, load macro | 91.6 | 24.2 |
+| square | a a | stream | 118.3 | 24.0 |
+| square_add | a + b b | stream, load macro | 91.6 | 24.2 |
+| squares3 | a a + b b + c c | stream | 278.8 | 44.1 |
+| sum3 | a + b + c | stream | 214.7 | 36.0 |
+| mul | a b | stream, load macro | 91.6 | 24.2 |
+| mul3 | a b c | stream | 214.7 | 36.0 |
+| mad | a + b c | stream, load macro | 123.7 | 28.2 |
+| gate | silu(a b) c | stream | 1,635.6 | 222.3 |
+| rms_row, rms_head | each row's 1 / sqrt(sum / n + 1e-6), n = 2048, 128 | row | 425.0 | 107.0 |
 
-The cycles are the compiler's estimates. The operations on them:
+The cycles are the compiler's estimates (a body that runs one band took about 10 cycles
+more on the card than its estimate; see the tile compiler's reference). The operations
+on them:
 
 - **add** (o's and down's): y = s + b (the sum in fp32, the residual's block), packed to
   bf16; the block's squares as one tile, the elementwise sum of y^2 over its 8 tiles,
@@ -662,8 +666,8 @@ stored and the macro runs the template the previous body left (add's or mul's).
 `bodies.py` kept a load macro only when every template write had VD 12 or more;
 square_add and mad ran plain in the results here. The tile compiler's setup now keeps
 VD, and `emit` refuses a macro whose template its setup does not store: the other
-bodies' headers are unchanged, square_add and mad take the load macro again (not run on
-a card). Each body is followed by the matrix
+bodies' headers are unchanged, square_add and mad take the load macro again; with it
+every check below is the plain form's to the last digit. Each body is followed by the matrix
 unit's wait for the vector unit (`DC_VECTOR_DONE`; the headers leave the wait to the
 caller); on the card it changed no value.
 
@@ -681,33 +685,60 @@ against `results/qwen3-1.7b-qk-layer0-x10.json`):
 | 4096, 32 tokens | emitted | 5.1e-3 | 5.1e-3 | 5.0e-3 | 9.5e-3 | 4.9e-4 | 8.2e-3 | 2.6e-3 |
 
 The largest errors over the largest values are 1.1e-2 (a) or less at T 4096; the append
-is exact in every case. The emitted bodies are closer: the scale and the products by
+is exact in every case. With the band (`results/qwen3-1.7b-band-x10.json`) every error
+of the table, rms and largest, is the whole tiles' to the last digit: the band computes
+the live rows' words as the whole tile does and leaves the others. The emitted bodies are closer: the scale and the products by
 1 / rms are fp32 vector multiplies where the hand ones are the matrix unit's (tf32
 operands), and DC_CB_SCALE is fp32.
 
-All 28 layers, 10 tokens from one command (`results/qwen3-1.7b-emitted-x10.json`), the
-operations' term (us a layer) and the layer:
+All 28 layers, 10 tokens from one command, the operations' term (us a layer) and the
+layer: the hand bodies, the emitted ones on whole tiles
+(`results/qwen3-1.7b-emitted-x10.json`) and on the live rows' band
+(`results/qwen3-1.7b-band-x10.json`):
 
-| | T 4096 hand | emitted | T 1024 hand | emitted | T 256 hand | emitted |
-|---|---:|---:|---:|---:|---:|---:|
-| qkv's operation (norm, scale, heads) | 13.8 | 16.6 | 13.8 | 16.7 | 13.8 | 16.6 |
-| o's (the add, its squares) | 1.6 | 3.5 | 1.6 | 3.4 | 1.6 | 3.5 |
-| gate_up's (norm, gate) | 4.1 | 9.0 | 4.2 | 8.9 | 4.2 | 8.9 |
-| down's (the add, its squares) | 1.5 | 3.5 | 1.6 | 3.3 | 1.5 | 3.4 |
-| the operations | 21.0 | 32.5 | 21.2 | 32.3 | 21.1 | 32.4 |
-| a layer | 409.7 | 421.1 | 371.7 | 383.1 | 362.6 | 373.9 |
-| tokens a second | 87.2 | 84.8 | 96.1 | 93.2 | 98.5 | 95.5 |
+| | T 4096 hand | whole | band | T 1024 hand | whole | band | T 256 hand | whole | band |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| qkv's operation (norm, scale, heads) | 13.8 | 16.6 | 15.2 | 13.8 | 16.7 | 15.1 | 13.8 | 16.6 | 15.2 |
+| o's (the add, its squares) | 1.6 | 3.5 | 2.3 | 1.6 | 3.4 | 2.3 | 1.6 | 3.5 | 2.4 |
+| gate_up's (norm, gate) | 4.1 | 9.0 | 4.0 | 4.2 | 8.9 | 4.1 | 4.2 | 8.9 | 3.9 |
+| down's (the add, its squares) | 1.5 | 3.5 | 2.2 | 1.6 | 3.3 | 2.3 | 1.5 | 3.4 | 2.2 |
+| the operations | 21.0 | 32.5 | 23.7 | 21.2 | 32.3 | 23.8 | 21.1 | 32.4 | 23.7 |
+| a layer | 409.7 | 421.1 | 412.4 | 371.7 | 383.1 | 374.5 | 362.6 | 373.9 | 365.4 |
+| tokens a second | 87.2 | 84.8 | 86.6 | 96.1 | 93.2 | 95.4 | 98.5 | 95.5 | 97.7 |
 
-The rest of the account is unchanged to 0.5 us a term. Every emitted operation is slower:
-the bodies run all 32 rows of a tile where the hand bodies run only the live rows'
-bands, each operand is a copy into DEST, and the gate's silu is 1,694 cycles a tile for
-4 tiles. The default is therefore the hand bodies (`card.DEFAULT_BODIES` is
-empty).
+The rest of the account is unchanged to 0.5 us a term. The band takes 8.8 of the
+whole tiles' 11.5 us a layer back; gate_up's operation is now under the hand's. What
+is left against the hand, 2.7 us a layer, is in qkv's (1.4), o's (0.7) and down's
+(0.8) operations. In cycles a tile of a block (8 tiles a core, 1,350 MHz), hand
+against band: o 273 against 395, down 245 against 373, qkv 2,332 against 2,562,
+gate_up 695 against 673. The terms:
+
+- **The copies into DEST.** Each operand of a body is a copy (`copy_tile`, and an
+  unpack reconfiguration where the buffer changes); the hand operations copy the first
+  operand and read the others on the matrix unit's source (an elementwise add or
+  multiply onto DEST). The emitted ones copy 3 tiles a tile in the add (the hand 1), 11
+  in qkv's operation, 3.5 in gate_up's. The model does not price them. In the add, with
+  the hand's vector work taken as the bodies' 48.4 cycles a tile and the loop's term
+  below, the 2 extra copies are about 100 cycles a tile, about 50 a copy (an inference
+  from the totals, not a measurement).
+- **The loop.** A body that runs one band took about 10 cycles more than its words on
+  the card (the add 35.0 against 24.2, the gate 220 against 210, the norm 183 against
+  173): 2 bodies a tile in the add (about 22 cycles), 5.4 in qkv's (about 58). The
+  model has no such term; it prices the band's loop and tests at nothing, as they ran.
+- **The gate's silu.** 222.3 cycles a tile at one row (the card's 1-row silu(a) b
+  220), 4 a block: with the band the gate is no longer a term (gate_up's operation is
+  0.1 us under the hand's).
+
+The default stays the hand bodies (`card.DEFAULT_BODIES` is empty): the emitted
+operations are 2.7 us a layer over them.
 
 With the model's weights and the prompt (`results/qwen3-1.7b-emitted-real-prompt.json`):
 16 of 16 tokens torch's; the hidden state's rms error against torch's at positions 0 to
 3 at most 2.4e-2, 3.3e-2, 7.3e-2 (layer 14), 5.3e-2 (14) (hand: 4.95e-2, 3.5e-2, 6.1e-2,
-4.3e-2); a token 10.41 to 10.43 ms, 96.0 tokens a second (hand 99.0).
+4.3e-2); a token 10.41 to 10.43 ms, 96.0 tokens a second (hand 99.0). With the band
+(`results/qwen3-1.7b-band-real-prompt.json`, a cache of 4,096 rows): 16 of 16 tokens
+torch's, the errors against torch's the whole tiles' bit for bit, a token 10.16 to 10.19
+ms, 98.2 tokens a second.
 
 ## What the framework lacked
 
@@ -749,8 +780,11 @@ With the model's weights and the prompt (`results/qwen3-1.7b-emitted-real-prompt
 - A first form of the rotation's table tilized the rows on compute (tt-metal's tilize
   inside the overlay); its first command did not end and the cause was not located.
   The reader now puts the rows into the tiles itself.
-- The tile compiler's forms run whole tiles: neither the stream form nor the row form
-  can be told to run the first M rows (the live rows' bands), which is most of why the
-  emitted operations are slower than the hand ones.
-- The tile compiler's load macro stores no template whose instruction writes a plain
-  operand's register (square_add, mad); `bodies.py` falls back to the plain form there.
+- The tile compiler's forms ran whole tiles: neither form could be told to run the
+  first M rows (the live rows' bands), most of why the emitted operations were slower
+  than the hand ones. The band (`rows=True`) now takes the live rows at run time.
+- The tile compiler's load macro stored no template whose instruction writes a plain
+  operand's register (square_add, mad); its setup now keeps the template's VD.
+- An emitted body reads every operand from DEST, so each is a copy, where the hand
+  operations read all but the first on the matrix unit's source: the tile compiler has
+  no body that takes an operand there, most of what is left against the hand.

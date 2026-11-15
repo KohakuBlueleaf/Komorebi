@@ -10,10 +10,12 @@
 #endif
 
 // The sum's tiles times DC_CB_SCALE into `out` (reserved and pushed here).
-static bool scaled(km::Compute& compute, uint32_t tiles, uint32_t out) {
+static bool scaled(
+    km::Compute& compute, uint32_t tiles, uint32_t out, [[maybe_unused]] uint32_t live
+) {
 #if DC_EMIT_NORM
     const bool room = compute.reserve_back(out, tiles);
-    decode::emitted::scale_tiles(0, tiles, out, room);
+    decode::emitted::scale_tiles(0, tiles, out, room, live);
 #else
     const bool room = compute.reserve_back(out, tiles);
     pack_reconfig_data_format(out);
@@ -133,7 +135,9 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
         compute.arg(block.plan + kSpOh) * compute.arg(block.plan + kSpOw)
     );
 #if DC_EMIT_NORM
-    if (!compute.wait_front(kCbSum, tiles) || !decode::emitted::rms_scale(compute)) {
+    if (
+        !compute.wait_front(kCbSum, tiles) || !decode::emitted::rms_scale(compute, live)
+    ) {
         return 0;
     }
 #else
@@ -145,10 +149,10 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     }
 #endif
     if (!decode::qk_block(compute, block)) {
-        return scaled(compute, tiles, kCbSplitOut) ? 1 : 0;
+        return scaled(compute, tiles, kCbSplitOut, live) ? 1 : 0;
     }
     if (
-        !scaled(compute, tiles, DC_CB_Y) || !compute.wait_front(DC_CB_Y, tiles) ||
+        !scaled(compute, tiles, DC_CB_Y, live) || !compute.wait_front(DC_CB_Y, tiles) ||
         !compute.wait_front(DC_CB_HEAD, DC_HEAD_ITEM) ||
         !compute.wait_front(DC_CB_ROPE, 2 * DC_HEAD_TILES)
     ) {
@@ -158,7 +162,7 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     bool done = true;
 #if DC_EMIT_QK
     for (uint32_t head = 0; done && head < tiles / DC_HEAD_TILES; head++) {
-        done = decode::emitted::head(compute, head, out);
+        done = decode::emitted::head(compute, head, out, live);
     }
 #else
     reconfig_data_format_srca(kCbSum, DC_CB_Y);

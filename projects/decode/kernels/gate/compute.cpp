@@ -13,7 +13,9 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     [[maybe_unused]] const uint32_t half = tiles / 2;
     [[maybe_unused]] const uint32_t live = decode::live_rows(*block.command);
 #if DC_EMIT_NORM
-    if (!compute.wait_front(kCbSum, tiles) || !decode::emitted::rms_scale(compute)) {
+    if (
+        !compute.wait_front(kCbSum, tiles) || !decode::emitted::rms_scale(compute, live)
+    ) {
         return 0;
     }
 #else
@@ -25,7 +27,7 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     }
 #endif
 #if DC_EMIT_GATE
-    const bool gated = decode::emitted::gate(compute, tiles);
+    const bool gated = decode::emitted::gate(compute, tiles, live);
     cb_pop_front(DC_CB_SCALE, 1);
     cb_pop_front(kCbSum, tiles);
     return gated ? 1 : 0;
