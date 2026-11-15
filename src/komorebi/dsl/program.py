@@ -121,14 +121,15 @@ def make(
     defines=None,
     handlers=None,
     broadcast_wait=False,
+    guard=True,
     chain=False,
     form="kernel",
     beside=(),
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
-    by name; `session` (L1 table checked; `trace` the load's) or `l1`; `rect`, `nocs` a
-    broadcast's; `defines`; `handlers` constant parameters' sets; `broadcast_wait` a
+    by name; `session` (`trace` the load's) or `l1`; `rect`, `nocs` a broadcast's;
+    `defines`; `handlers` constant parameters' sets; `broadcast_wait`, `guard` a
     Program's; `chain` the walk (a km.chain's); `form`; `beside` programs beside it."""
     cls = type(self)
     thread_words = class_thread.words_given(tensors)
@@ -159,6 +160,7 @@ def make(
         "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
         "session": session, "l1": l1, "trace": trace, "depth": depth, "rect": rect,
         "nocs": nocs, "defines": defines, "broadcast_wait": broadcast_wait,
+        "guard": guard,
     }  # fmt: skip
     constants_made(self, cls, values, compiled)
     self.constant_handlers = compiled.variants
@@ -186,7 +188,9 @@ def make(
     if found:
         keyed[spelling("first_use")] = first_use.keyed(found)
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}
-    key = sources_key(plan, tensors, solved, depth, rect, nocs, broadcast_wait, keyed)
+    key = sources_key(
+        plan, tensors, solved, depth, rect, nocs, broadcast_wait, keyed, guard
+    )
     key = form_key(key, form, reserved)
     built = write(cls, compiled, room, key, form)
     for line in built.report:
@@ -248,6 +252,7 @@ def make(
         depth=depth,
         handlers=built.folder / header_name(compiled),
         broadcast_wait=broadcast_wait,
+        guard=guard,
     )
     self.built = built
     self.log = log
@@ -1025,14 +1030,18 @@ def start_formats(compiled):
     return lines if len(lines) > 1 else []
 
 
-def sources_key(plan, tensors, solved, depth, rect, nocs, wait=False, constants=None):
+def sources_key(
+    plan, tensors, solved, depth, rect, nocs, wait=False, constants=None, guard=True
+):
     """A short hash of what changes a class's generated sources: the plan, the field
-    sizes solved from the L1 left (`solved`; not that L1, a mock session's and the
-    card's differ), each tensor's format, page and shape, the make's options (a
-    broadcast_wait of True too) and the class's constants (constants_keyed)."""
+    sizes solved from the L1 left (`solved`), each tensor's format, page and shape, the
+    make's options (a broadcast_wait of True or a guard of False too) and the class's
+    constants (constants_keyed)."""
     made = [sorted(plan.items()), sorted((solved or {}).items()), depth, rect, nocs]
     if wait:
         made.append("broadcast_wait=True")
+    if not guard:
+        made.append("guard=False")
     if constants:  # none: the key of a class without constants as before them
         made.append(sorted(constants.items()))
     for name, tensor in sorted(tensors.items()):

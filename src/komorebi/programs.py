@@ -84,6 +84,7 @@ def plan(spec, cores):
         raise ValueError(f"{len(programs)} programs; a run holds at most {most}")
     for program in programs:
         check(program, len(programs))
+    same_guard(programs)
     owners = [p for p in programs if p.threads or p.x280_ports is not None]
     if len(owners) > 1:
         raise ProgramError(
@@ -254,6 +255,19 @@ def _range(program, group, cores):
             f"{program.name}: group ({first}, {count}) is not inside {cores} cores"
         )
     return first, count
+
+
+def same_guard(programs):
+    """Refuses programs of different guard: a run of programs in the runtime's form
+    (and a merge) builds the runtime's kernels once, with or without the guard."""
+    first = programs[0]
+    for program in programs[1:]:
+        if program.guard != first.guard:
+            raise ProgramError(
+                f"{first.name} has guard={first.guard} and {program.name} "
+                f"guard={program.guard}: programs of one run (or one merge) share the "
+                "runtime's kernels, built one way; give them the same guard"
+            )
 
 
 def _same(programs, attribute, what):

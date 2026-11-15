@@ -52,7 +52,13 @@ from komorebi.errors import (
     SlowCodeError,
     StartError,
 )
-from komorebi.program import KernelSizes, Program, messages_header
+from komorebi.program import (
+    KernelSizes,
+    Program,
+    guard_says,
+    messages_header,
+    unguarded,
+)
 from komorebi.run import Run
 
 CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
@@ -351,6 +357,13 @@ def added_path(placed):
     if placed and all("KM_ADDED_HANDLERS" in p.defines for p in placed):
         return [("KM_ADDED_HANDLERS", "1")]
     return []
+
+
+def guard_path(programs):
+    """The runtime's kernels' define of KM_GUARD 0 when the load's programs are built
+    with guard=False (programs.same_guard: they all are, or none); a program's own
+    parts get it from its defines."""
+    return [("KM_GUARD", "0")] if unguarded(programs) else []
 
 
 def slot_area(base, size, used, slow_code):
@@ -1445,6 +1458,8 @@ class Session:
                 self.log(f"no reset list: {run.recovery_refused}")
         elif recover:
             run.recovery_refused = "a run whose groups switch program"
+        if unguarded(run.programs):
+            self.log(guard_says(unguarded(run.programs), recover))
         self.log("ready")
         if works:
             shared = {name: _host_array(value) for name, value in owner.shared.items()}
@@ -2630,6 +2645,7 @@ class _Backend:
             defines += island
             defines += self._one_island()
             defines += added_path(placed.programs)
+            defines += guard_path(placed.programs)
             first = held[0] if held else None
             if placed.switch and first is None:
                 first = placed.programs[0]  # one build for every group's kernels

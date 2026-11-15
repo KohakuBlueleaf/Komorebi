@@ -290,7 +290,8 @@ class Shared:
 
 def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None,
                session=None, trace=0, defines=None, handlers=None,
-               broadcast_wait=False, overlay=(), resident=(), **given):  # fmt: skip
+               broadcast_wait=False, guard=True, overlay=(), resident=(),
+               **given):  # fmt: skip
     """Makes a class merging classes: the make's keywords as one class's (a constant
     to each class that declares it; a constant two classes declare differently is
     refused naming both), then the classes compiled as one program."""
@@ -338,6 +339,7 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
                     "plan": own_plan, "tensors": tensors, "constants": values,
                     "sets": {}, "depth": depth, "rect": rect, "nocs": nocs,
                     "defines": kept, "broadcast_wait": broadcast_wait,
+                    "guard": guard,
                 },  # fmt: skip
             )
         )
@@ -505,6 +507,14 @@ def build(self):
     if len(waits) > 1:
         raise ProgramError(f"{self.cname}: broadcast_wait differs between the classes")
     wait = waits.pop()
+    for source in sources[1:]:
+        if source.given.get("guard", True) != sources[0].given.get("guard", True):
+            raise ProgramError(
+                f"{self.cname}: {sources[0].name} has guard="
+                f"{sources[0].given.get('guard', True)} and {source.name} guard="
+                f"{source.given.get('guard', True)}: one merged program, one guard"
+            )
+    guard = sources[0].given.get("guard", True)
     depth = sources[0].given.get("depth", 4)
     plan = {}
     for source in sources:
@@ -516,7 +526,7 @@ def build(self):
     }
     keyed["overlays"] = sorted(compiled.overlays)
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}
-    key = made.sources_key(plan, tensors, solved, depth, rect, nocs, wait, keyed)
+    key = made.sources_key(plan, tensors, solved, depth, rect, nocs, wait, keyed, guard)
     built = made.write(None, compiled, room, key)
     for line in self.report():
         log(line)
@@ -563,6 +573,7 @@ def build(self):
         depth=depth,
         handlers=built.folder / made.header_name(compiled),
         broadcast_wait=wait,
+        guard=guard,
     )
     self.built = built
     class_thread.merged(self, compiled, tensors)

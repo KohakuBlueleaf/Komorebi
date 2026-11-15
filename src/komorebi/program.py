@@ -164,6 +164,39 @@ def broadcast_defines(name, defines, wait):
     return {**defines, "KM_BROADCAST_WAIT": 1} if wait else defines
 
 
+def guard_defines(name, defines, guard):
+    """`defines` with KM_GUARD 0 when `guard` is False (the header's default is 1, so
+    a program with the guard adds nothing); a define that says otherwise raises."""
+    given = defines.get("KM_GUARD")
+    if given is not None and (str(given) != "0") != bool(guard):
+        raise ProgramError(
+            f"{name}: defines KM_GUARD={given} and guard={guard}; give guard alone"
+        )
+    return defines if guard else {**defines, "KM_GUARD": 0}
+
+
+def unguarded(programs):
+    """The names of those of `programs` built with guard=False."""
+    return [program.name for program in programs if not program.guard]
+
+
+def guard_says(names, recover=True):
+    """What a load of programs built with guard=False tells its log, once."""
+    return (
+        f"guard=False ({', '.join(names)}): commands are not given up at a deadline. "
+        "The kernels read no abort word and keep no live words: at the deadline the "
+        "dispatcher takes each core as having left and frees the command, a core held "
+        "in a wait stays held, and a NoC barrier has no limit at all, so a hang then "
+        "costs a card reset. run.inspect refuses these cores"
+        + (
+            "; the reset lists (recover=True) reset only a core whose own wait limit "
+            "ended its kernels"
+            if recover
+            else ""
+        )
+    )
+
+
 @dataclass(eq=False)  # one program is one object: a key of session.load's dict
 class Program:
     """What the persistent kernel runs on every core: `kernels` a directory with
@@ -192,6 +225,8 @@ class Program:
     # True: a word-only broadcast's caster waits at finish for every receiver's
     # clear of VALID (KM_BROADCAST_WAIT 1, km_broadcast.hpp); False (default): none
     broadcast_wait: bool = False
+    # False: no deadline, give-up or inspect in its kernels (KM_GUARD 0, km_core.hpp)
+    guard: bool = True
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
     pairs: list = field(default_factory=list, init=False)  # the BufferPairs given
     overlays: dict = field(default_factory=dict, init=False)  # name -> Overlay
@@ -225,6 +260,7 @@ class Program:
             if not 1 <= number <= user_max:
                 raise ValueError(f"handler {name} = {number}: not in 1..{user_max}")
         self.defines = broadcast_defines(self.name, self.defines, self.broadcast_wait)
+        self.defines = guard_defines(self.name, self.defines, self.guard)
         if not 1 <= self.depth <= abi.headers()["KM_RING_SLOTS"]:
             raise ValueError(f"depth {self.depth}: not in 1..KM_RING_SLOTS")
         self.pairs = [item for item in self.buffers if isinstance(item, BufferPair)]
