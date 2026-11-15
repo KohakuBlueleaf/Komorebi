@@ -73,6 +73,8 @@ run.submit(
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
 | `broadcast_wait` | as a `Program`'s ([host](host.md#program)), `False` by default: `True` builds the kernels with a word broadcast's wait at `finish` (the guard), in a build folder of its own |
+| `form` | `"kernel"` (the default): the class owns its kernels; `"runtime"`: the class is a program in the runtime's form, in parts the runtime's kernels call, which loads in a list or a dict and which a group switches to ([The runtime's form](#the-runtimes-form)); each form has its build folder |
+| `beside` | with `form="runtime"`, a program or a list of them that share the run's cores: the class leaves their buffer indices and takes their unpack modes ([The runtime's form](#the-runtimes-form)) |
 
 The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
 service's reader part built for every example and project that builds without a card
@@ -93,10 +95,12 @@ transfer buffer 82,000 B in both (the build counted 32,848 B before).
 
 The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` eight hex
 digits of what changes the generated sources (the plan, each tensor's format, page
-bytes, shape and layout, the L1 and the trace depth, the rectangle and the NoCs, the
-class's constants by name and value, the listed sets of the constant parameters): two
-instances of one class built differently have a folder each, and two built alike share
-one. In it: `<name>.h` (the
+bytes, shape and layout, the field sizes solved from the L1 (not the L1 itself) and the
+trace depth, the rectangle and the NoCs, the class's constants by name and value, the
+listed sets of the constant parameters): two instances of one class built differently
+have a folder each, and two built alike share one. So a class built on a mock device is
+the card's build: the mock session's L1 left is the card's (it counts the host transfer
+buffer the card's channel takes), and a job that loads it compiles no kernel. In it: `<name>.h` (the
 handler numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
 handler's parts in `<handler>/`, and `program.txt`, the report it also prints: each
 buffer with its indices, format, pages, bytes and the Python line that made it, and the
@@ -239,8 +243,115 @@ Gate.gate with size=2: no handler was built for it (built: size=4; size=8); list
 
 Refused besides: a constant parameter without a default (at its line), `handlers=`
 naming no handler of the class or one without constant parameters, a parameter a set
-names that is not one, a value of another type, and a set listed twice. A set compiled
-when a submit first names it is not built.
+names that is not one, a value of another type, and a set listed twice.
+
+### A set compiled on its first use
+
+```python
+sets = [{"block": 8}, km.ANY(block=16)]  # block 8 built; any other at its first use
+program = GateBlocks(a=a, b=b, out=out, handlers={"gate": sets})
+run = session.load(program)
+words = (a, b, out, tiles, pattern, 4)  # block 4: compiled, added, submitted
+run.submit(program.gate, (0, cores), args=words)
+```
+
+`km.ANY` among a handler's sets (`{"gate": km.ANY}` alone, or after listed sets) lets
+`run.submit` take any set of that handler's constant parameters. A set that was built
+runs as above. A set that was not is compiled at the submit by the class compiler,
+from the make's own inputs (plan, tensors, constants, the L1 left), with the wanted
+set in place of the handler's first set, its **template** (the first listed set, or
+the defaults). So it gets the template's number and its buffers' indices. Its code
+becomes the handler's overlay parts (`<set>/movement.cpp`, `<set>/compute.cpp`), which
+are added to the run by `run.addon(..., handler=True)`
+([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
+with the added number. Later submits of the set find it added. The files go into
+`build/<class>-use<key>/`: the key holds the load's build key, the handler, the set's
+values and the class's source files. A later process that makes the same program finds
+them there and reads the set's words from `first_use.json`, so nothing is compiled.
+Its parts are then found in the parts' cache, so nothing is built either.
+
+What the opt-in costs and requires, checked at the make:
+
+- The kernels get the added handlers' path (`KM_ADDED_HANDLERS`, with
+  `Program.slots(bytes=)`). On the gate's kernels it costs 5,072 B of text
+  (BRISC 408, NCRISC 1,064, TRISC0 1,160, TRISC1 1,240, TRISC2 1,228; 2,560 B on the
+  decode program). The kernels' sizes are checked when they are built, at the load,
+  before any submit.
+- Each kernel part gets a slot of 16 KiB (`first_use.SLOT_BYTES`; the reader's beside
+  the service part, the larger), 80 KiB of L1. A make with `session=` whose buffers
+  and those slots do not fit is refused there (`L1BudgetError`, with the table).
+- `km.ANY(p=n)` also sizes the template's buffers for the set with `p=n`: each buffer
+  takes the larger page count of the two compiles. `km.ANY` alone sizes them for the
+  template only. Buffers that no longer fit the L1 left are refused at the make, with
+  their bytes. A program pays for the reserve even if it never submits a larger set.
+  The gate's buffers take 327,680 B of L1 for block 8 alone and 655,360 B with
+  `km.ANY(block=16)`: 327,680 B more on every core.
+
+A set compiled this way may use only what the load has: the buffers, fields and
+streams of the class's L1 layout. It is refused at its first submit, naming the buffer
+or field and why, when its compile needs any of these:
+
+- a buffer the load does not have;
+- a buffer of another format or page size;
+- more pages than the load's buffer holds;
+- a page count that the load's pages are not a multiple of (a block must not wrap);
+- a field of another shape.
+
+The message says to list the set or to name it in `km.ANY(...)`:
+
+```text
+Gate.gate_size16: buffer kWrite0 (index 16): it would hold 32 + 32 pages, the load's holds 16 + 16; the L1 layout is the load's: list the set at the make, or make it with km.ANY(...) naming the largest set
+```
+
+A handler with `stamps=` or a broadcast is resident only, so a set of one is refused.
+So are: `km.ANY` twice for one handler; `km.ANY(p=n)` naming no constant parameter;
+and the opt-in on a handler without constant parameters. A first use is reached from
+`run.submit` only. `submit_many`, `Graph.command`, a stream's `submit` and a chain's
+call take command words today and cannot name a set, so they run the template. Once
+they take a handler's constants, an unbuilt set reaching them is refused with:
+
+```text
+Gate.gate with size=4: no handler was built for it, and a first use (km.ANY) is reached from run.submit only, not from this submit; submit it once with run.submit first, or list the set
+```
+
+Without `km.ANY` the refusal of a set not built is the one above, unchanged.
+
+The gate ([22_gate/as_class](../../examples/22_gate/as_class/README.md)) on 120 cores,
+64 tiles a core, made with block 8 listed and `km.ANY(block=16)`. Blocks 4, 16 and 2
+ran by first use, 0 wrong. The time of a command at each step, beside the same block
+listed in a load of its own:
+
+| Step | Block 4 | Block 16 | Block 2 |
+|---|---|---|---|
+| the class compile (a fresh process; found built: 0.3 ms) | 13.9 ms | 13.9 ms | 14.1 ms |
+| the parts' build (fresh; found in the cache: 49 to 52 ms) | 7.25 s | 7.07 s | 7.31 s |
+| the parts' write, the entry commands | 0.6, 3.4 ms | 0.6, 3.5 ms | 0.5, 3.3 ms |
+| the first submit, warm cache (compile look, add) | 54.6 ms | 56.8 ms | 53.6 ms |
+| the first command (loads the parts) | 174.86 µs | 169.48 µs | 171.66 µs |
+| later commands, median | 169.70 µs | 158.62 µs | 169.74 µs |
+| the block listed, later commands, median | 171.80 µs | 156.78 µs | 167.02 µs |
+
+The later commands run as the listed block's, within 1.6 %. Block 16's row is from 20
+commands of each kind in one process, and the same block resident in kernels with the
+added handlers' path took 158.08 µs. Five commands of each, in another process, gave
+166.36 against 155.41 µs, so five is too few to tell 16's difference from the card's
+spread (150 to 169 µs over the 20). The first-use load's block 8 took 161.68 µs.
+
+Sets with different blocks share the template's ring. A block never wraps the ring's
+end, so a ring left at a position that is not a multiple of the next set's block makes
+that command give up ([hazards](hazards.md#sets-of-a-handler-on-one-ring-with-blocks-that-do-not-divide-each-others)).
+
+A handler of **another** class added to a live run is not built. It would need:
+
+1. its own buffers and fields, which the load's L1 layout does not have, placed in L1
+   the load left free and given to every core's circular buffer table by a command;
+2. its streams' buffer indices free in the loaded kernels, and its fields' L1
+   addresses as command words, not program arguments;
+3. its tensors' compile arguments (`km::Tensor<n>`) equal to the loaded kernel's, or
+   carried as words;
+4. its class's header (handlers, buffers, formats) built against the loaded kernels'
+   recipe, the formats in one exponent family with the load's;
+5. its compute options (fidelity, accumulation) equal to the load's, set once a kernel.
 
 ## The lines of a handler
 
@@ -598,9 +709,12 @@ The giver writes the taking body's words into one 64 B page of a buffer of its o
 (`kHandover`) and pushes it before the taker's place; the taker waits for the page,
 gets the words by name and frees the page after its body. The build's report names
 each: `hand-over: count, line 16: pages from mover A to mover B by the hand-over
-buffer`. Refused: more than 16 words of the other mover in one body (the most a page
-holds), words of both movers handed into one body, and a taker with no `on=` (a word
-of a mover taken on compute).
+buffer`. Its cost is one 64 B page of that added buffer, and the taker waits for the
+giver: mover B's body does not start before mover A has pushed the page. A word given
+and taken on the same mover is the plain take, with no hand-over. Refused: more than
+16 words of the other mover in one body (the most a page holds), words of both movers
+handed into one body, a giver or a taker with no `on=` (a compute word taken on a
+mover, or a mover's word taken on compute).
 
 ### A stream compute fills and a mover drains
 
@@ -1181,7 +1295,89 @@ call's cycles and whether it was held to page 2 x core + mover of `stamps` (move
 B 1). From the same example, mix on mover B, median cycles (load, call): held 67 /
 967, loading 1,779 / 1,007.
 
-A broadcast's handler is resident.
+A broadcast's handler is resident. `@km.handler(overlay=False)` keeps a handler
+resident also where a merged program's build would move it (below).
+
+## Classes merged into one
+
+Several classes become ONE program in the kernel form: one program field, one handler
+numbering, one L1 layout. Two ways give the same program:
+
+```python
+merged = km.merge(gate, linear, session=session)  # programs already made
+run = session.load(merged)
+run.submit(gate.gate, (0, 12), args=(a, b, out, 64, pattern))  # a source's handler
+
+
+class Layer(Gate, Linear):  # the classes themselves
+    pass
+
+
+layer = Layer(x=x, w=w, y=y, a=a, b=b, out=out, session=session)
+run.submit(Layer.split, (0, 112), args=(x, w, y))
+```
+
+`km.merge(a, b, ..., overlay=[...], resident=[...], name=None, session=None, l1=None,
+log=print)` takes made class programs: each handler is compiled again with what its
+own program was made with (its constants, plan and example tensors). A class deriving
+two or more classes with handlers, adding no handler, constant or field of its own, is
+made as one class is (`Layer(x=x, ..., session=session)`): the make's keywords go to
+each class, a constant to each class that declares it.
+
+- **Numbering.** The first class keeps its numbers; each next one takes the next
+  numbers in its own order. The build prints them (`4: linear.gate as linear_gate
+  (linear's 3)`). A name two classes have is named `<class>_<name>` in the kernels and
+  the header; `merged.handler("gate")` is refused naming both, `merged.handler(gate,
+  "gate")`, `layer.handler(Gate, "gate")` or the merged name pick one, and on a merged
+  class `Layer.gate` is refused the same way. A source's own handler (`gate.gate`,
+  `linear.split`) given to a run of the merged program is mapped to its number there.
+  More handlers than a program numbers (239) is refused with the count.
+- **Constants.** Each class keeps its own: two classes' `K_TILES` are two values, each
+  handler's `self.K_TILES` its own class's. On a merged class a keyword for a name two
+  classes declare differently is refused naming both (merge made programs to give each
+  its own value); declared alike, the one value goes to both. The plan's names are
+  shared: one name with two values is refused.
+- **Tensors.** A tensor parameter is a compile argument of the movement kernel, by its
+  name. Two classes whose parameter of one name has two different example tensors (the
+  gate's `a` of 768 pages, Linear's `a` of 1,024 x 4,096 tiles) each keep theirs: the
+  second class's is the kernel's `<class>_<name>`, and its handlers' lines name it in
+  a block of their own (`using A = LinearA;`).
+- **Fields and buffers.** A field of one name in two classes is one field when declared
+  alike (format and shape, by each class's constants), else refused naming both:
+  `field sums is Field(...) in Sums and Field(...) in Wider`. The streams' buffers are
+  one class's: a pair is shared by handlers of one role, format, page and block, as
+  between the handlers of one class, so the L1 they take is at least each class's.
+  The build's L1 check refuses what does not fit, with the bytes: the gate class's
+  `BLOCK = 8` merged with Linear asks 1,642,496 B of the 1,414,272 B left; at
+  `BLOCK = 2` the gate's streams share Linear's pairs and add nothing.
+- **Where the code lives.** Resident unless marked: `overlay=[...]` and
+  `resident=[...]` name handlers (a name, a merged name, a source's handler) or whole
+  sources (a made program, a class), and `@km.handler(overlay=True / False)` is a
+  handler's own marker; the merge's markers override it. When the kernels do not fit
+  the session's kernel buffer, the load places the largest resident handler that may
+  move (unmarked, not a broadcast's; by its generated C++: its lines in both kernels
+  and the tile functions only it calls) as an overlay, prints its choice and loads
+  again, until they fit; a handler whose part the overlay builder refuses stays
+  resident and the next is tried; with none left, the load's `KernelSizeError` gives
+  the bytes. At every load the session prints where each handler's code lives,
+  resident ones too.
+
+Measured: [merged_class](../../experiments/language/merged_class/README.md), the gate
+class (`BLOCK = 2`) and Linear merged, on one card: every handler exact or within its
+bound as alone; the gate 80.84 us against 80.54 alone, Linear's split 93.86 against
+93.70, its gate 7.74 against 7.30. The kernels 98,656 B (Linear's alone 92,304, the gate's
+38,064), so a kernel buffer of 97 KiB; at 91 KiB the load's pick moved `split`, then
+`linear_gate`, then `gate_gate`, and the overlay builder refused each part (a stream's
+handler keeps its own copy of `km::move_filled` and `km::move_drained`), so all four
+stay resident and the load is refused with the bytes.
+
+Not merged, each refused with its reason: a dynamic handler (its message loop is its
+program's own kernels); a handler with constant parameters (built once a set in its own
+program), and `handlers=` on a merged class; classes whose compute options or start-ups
+differ; a define or the rectangle given two values; a merged program as a source; a
+class with a hand program (a class is in the kernel form, a hand program merges in the
+runtime's form: [Programs merged into one](host.md#programs-merged-into-one)). A chain
+over handlers of several classes is not built: a class has no chain on this version.
 
 ## Dynamic handlers and messages
 
@@ -1229,13 +1425,17 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 
 | Line | Compute |
 |---|---|
-| `if self.seeding():` | `messages.seeding()`, its lines, then `messages.seeded()` |
+| `if self.seeding():` | `km_messages.seeding()`, its lines, then `km_messages.seeded()` |
 | `seed = Visit(id=..., ...)` | 16 words, the named ones set, the others 0 |
-| `self.send(rank, seed)` | `messages.send(rank, seed)` |
-| `for message in self.arrive():` | each packet of `messages.next()`, each message of it copied, then `messages.done(packet)` |
+| `self.send(rank, seed)` | `km_messages.send(rank, seed)` |
+| `for message in self.arrive():` | each packet of `km_messages.next()`, each message of it copied, then `km_messages.done(km_packet)` |
 | `message.state`, `message.sum += x` | the message's word |
-| `self.forward(rank, message)` | `messages.forward(rank, message)` |
-| `self.consume()` | `messages.consume()` |
+| `self.forward(rank, message)` | `km_messages.forward(rank, message)` |
+| `self.consume()` | `km_messages.consume()` |
+
+A `km.cxx` body in a dynamic handler can call the handler's `km::Messages` by its name,
+`km_messages`. For example, `km_messages.quota()` gives the sends this core has left,
+as 05 forward's body reads it.
 
 A class may have several dynamic handlers. One, the RUN command's (the program's
 `.dynamic(name, ...)` names it first), has lines besides its loop: the seeding, a
@@ -1334,6 +1534,115 @@ may cross (each move: its tensor's placement; what it lowers to):
 ```
 
 A copy's read never crosses: each island reads its own.
+
+## The runtime's form
+
+`Class(..., form="runtime")` builds the class's handlers, their lines unchanged, as a
+program in the runtime's form ([host](host.md#several-programs-in-one-run)): the
+runtime owns the kernels and the command loop, and the class's code is the program's
+parts, which the loop calls for a command of that program. Such a program loads
+alone, in a list or in a dict beside other programs of that form (written by hand or as
+classes), and a group switches to it (`run.load`, or a thread's `kmx_load`). From the
+dense experiment's Linear and example 22's Gate:
+
+```python
+linear = Linear(form="runtime", plan={"OH": 1}, session=session, **tensors)
+gate = Gate(form="runtime", BLOCK=1, beside=linear, a=a, b=b, out=out, log=print)
+run = session.load({linear: (0, 112), gate: (112, 8)})
+run.wait(run.load(gate, group=(0, 112)))  # cores 0 to 111 now run the gate
+```
+
+How the class runs in this form:
+
+- **The movement lines.** `movement.cpp` holds the handler switch as one function over
+  the mover's runtime, used as the kernel form's `km::Movement` (as an overlay handler's
+  part uses it). The reader's `km_program` (mover A) and the writer's (mover B) call it,
+  each built from that file. A line lowers to the same code in both forms.
+- **Compute.** `compute.cpp`'s switch is compute's `km_program`. The runtime runs the
+  hardware start-up on the program's first buffer below 16 and its first from 16 when a
+  group loads it. Each command first sets those two buffers' formats again
+  (`reconfig_data_format`, `pack_reconfig_data_format`): in a list, the core's last
+  command may have been another program's
+  ([hazards](hazards.md#formats-another-program-left-on-the-same-cores)).
+- **Buffers.** The class's buffers are the program's (the same indices, formats and
+  pages). A dict's load sets them up for the group; a list holds every program's in one
+  layout.
+- **State.** A part keeps nothing from one call to the next (its `.bss` is zeroed at
+  every call), and a class keeps nothing there: a field is a buffer, whose pages stay in
+  L1 between commands; a stream's place is its buffer's pointers, which the runtime's
+  kernels keep; everything else is a handler's local.
+- **Arguments.** The movers' compile arguments (each tensor's accessor) are the reader's
+  and the writer's parts'. A rectangle's per-core arguments are given at the program's
+  place among the run's ([host](host.md#several-programs-in-one-run)).
+- **Overlay handlers** are the program's own overlays, numbered after those of the
+  programs before it ([overlays](overlays.md#several-programs-with-overlays)) and built
+  with the program's compile arguments.
+
+`beside=` is for a list: its programs' buffers are in one layout, with indices disjoint,
+and a class picks its indices from 0, 8 and 16 as if alone. Made beside programs, it
+leaves their indices and takes their `unpack_to_dest_mode` at those indices, so the run
+has one set of compute options. The fidelity is the programs' to agree on: a class
+whose tile functions have no product gives `compute={"math_fidelity": ...}`.
+
+Refused when the class is made in this form (`ProgramError`, naming the handler's
+line), each with what lifting it would need (none of it is built):
+
+- **A body at a kernel's start** (`km.cxx(..., at="start")`): the runtime owns the
+  kernels' start. The place exists in a dict's run: every part of a program is called
+  with the load command (`KM_HANDLER_LOAD`) when a group takes the program, where
+  compute runs the start-up today, so the body would run there. A list's run sends no
+  load, so it would need one sent to every core at the run's start.
+- **A body at a kernel's end** (`at="end"`): no part is called when the run stops; it
+  would need the runtime's loop to call each program's parts once at the stop.
+- **`startup=`** (a start-up of the class's own, `km.Startup`): the start-up is the
+  runtime's, on the first buffer below 16 and the first from 16. The same load call
+  has the place: the start-up there would take the class's buffers and order, and
+  each command's two format calls the same buffers.
+- **A dynamic handler**: the runtime's form has no message loop of a program's own;
+  it would need the runtime's message kernels to serve a program field, and two
+  programs' dynamic handlers in one run are not built either
+  ([overlays](overlays.md#not-in-this-version)).
+
+An overlay handler is not refused: it is one of the program's own overlays (above).
+
+A class made in the kernel form and given to a list or a dict is refused at the load
+(`ProgramError`) with `form="runtime"` named, and with what that form would refuse in
+the class when it uses one of the above, so it is not rebuilt only to be refused
+again.
+
+On the card (card 0, AICLK 1,350 MHz), each figure a command's time on the events,
+the median of 5:
+
+| Class | Kernel form | The runtime's form |
+|---|---|---|
+| [22 gate](../../examples/22_gate/as_class/README.md), 12 cores, 64 tiles a core (AAAB) | 81.14 us | 81.78 us; every word of the output equal |
+| [linear layer](../../experiments/language/dense_class/README.md), the K split, 32 x 4096 x 4096 | 94.20 us (a kernel buffer of 94,208 B) | 95.58 us; Y's words equal (exact on integers; 4.38e-3 relative RMS on normal values, both); the first command 114.6 us (it loads the five parts, 71 KB) |
+| kernel text | gate 38,080 B, Linear 92,304 B (mock) | the runtime's kernels 30,416 B (gate) and 30,592 B (Linear); parts, reader / writer / unpack / math / pack: gate 4,928 / 4,992 / 4,032 / 2,176 / 2,048 B, Linear 18,240 / 20,096 / 13,824 / 8,704 / 10,176 B |
+
+The runtime's form costs 0.64 us a command of the gate and 1.38 us of Linear. A held
+program's `load()` is part of it (113 cycles a command in
+[example 16](../../examples/16_two_programs/README.md), 0.08 us); the rest is the parts'
+code, called through a part's entry instead of inlined into the kernel's loop, and
+not split further by measurement. These two rows were measured before each command set
+its start-up's formats again; with those two calls a command, a later run gave 81.64 us
+and 95.16 us: no cost above the noise, so every command makes them.
+
+Two classes in one run, both in this form (the Linear above with one row tile a block,
+the Gate at Linear's fidelity with blocks of one tile):
+
+- **A dict**, Linear on cores 0 to 111 and the Gate on 112 to 119: the split exact
+  (96.2 us), the gate 0 wrong (23.12 us); `run.load(gate, group=(0, 112))` 10.64 us
+  from the host's submit to its event, then the gate on those 112 cores 0 wrong
+  (47.9 us); `run.load(linear, ...)` back 4.68 us, and the split exact again (95.5 us).
+  Example 16 measures a load on the cores: 3,529 to 3,791 cycles (2.6 to 2.8 us).
+- **A list**, every core both: the split exact (113.4 us, its first command), then the
+  gate on 120 cores 0 wrong (52.1 us). Before each command set its formats again, the
+  gate's output after the split was wrong
+  ([hazards](hazards.md#formats-another-program-left-on-the-same-cores)).
+
+[12 overlays](../../examples/12_overlays/as_class/README.md)' class in this form (its two
+handlers are overlays): 40 commands, every word as the example checks it; mix on mover
+B, held, 116 / 982 cycles (load, call), scale on mover B 132 / 2,502.
 
 ## Refusals
 
@@ -1435,9 +1744,7 @@ the pack CPU's words. Items of a tensor on two islands (refused when the kernel 
 built: no call moves part of another island's page). A range loop whose count is one
 mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
-A group switched to a class's program (`kmx_load`): a load switches between programs
-in the runtime's form, parts on the runtime's reader, writer and compute, and a class
-is built in the kernel form, its streams moved by `km::Movement`. A class in that form
-needs its movement lines to run in parts on the runtime's reader and writer, and the
-runtime's switch to give each part its buffers; that is a change of the runtime, not of
-the compiler.
+A class in the runtime's form with a dynamic handler, a body at a kernel's start or
+end, or a start-up of its own (`startup=`): refused ([The runtime's
+form](#the-runtimes-form)); the runtime's form has a message loop of no program, and
+the runtime owns the kernels' start, end and start-up.

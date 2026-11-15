@@ -204,6 +204,22 @@ class ConstantSpelling:
         return ConstantParameter(kind)
 
 
+class FirstUse:
+    """`km.ANY` in a make's handlers=: any set of the handler's constant parameters
+    is taken at submit, a set not built compiled then (komorebi.dsl.first_use);
+    `km.ANY(p=n)`: the load's buffers also sized for the set with p=n (`reserve`)."""
+
+    def __init__(self, reserve=None):
+        self.reserve = dict(reserve or {})
+
+    def __call__(self, **reserve):
+        return FirstUse(reserve)
+
+    def __repr__(self):
+        given = ", ".join(f"{k}={v!r}" for k, v in self.reserve.items())
+        return f"km.{spelling('first_use')}" + (f"({given})" if given else "")
+
+
 def constants_of(cls):
     """The constants declared on `cls` and its parents by name, a subclass's over
     its parent's; a name a parent declared rebound to a plain value is refused."""
@@ -369,9 +385,11 @@ class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
 
-    def __init__(self, function, overlay=False, stamps=None):
+    def __init__(self, function, overlay=None, stamps=None):
         self.function = function
-        self.overlay = overlay  # its code is an overlay: loaded into a slot, called
+        # its code is an overlay (loaded into a slot, called); False: resident, kept
+        # so in a merged program too; None: resident, which a merged build may move
+        self.overlay = overlay
         self.stamps = stamps  # the tensor parameter its load and call cycles go to
         self.name = function.__name__
         self.number = None
@@ -517,10 +535,11 @@ def word_of(handler, parameter, kind, value):
     return value
 
 
-def handler(function=None, *, overlay=False, stamps=None):
+def handler(function=None, *, overlay=None, stamps=None):
     """Makes a method of a class deriving km.Program a handler; `overlay=True`: its
-    code is built apart as an overlay, loaded into a slot when a command needs it;
-    `stamps="t"`: each mover's load and call cycles to tensor parameter t."""
+    code is built apart as an overlay, loaded into a slot when a command needs it
+    (False: resident, also in a merged program); `stamps="t"`: each mover's load and
+    call cycles to tensor parameter t."""
     if function is None:
         return lambda function: HandlerMethod(function, overlay, stamps)
     return HandlerMethod(function, overlay, stamps)
@@ -620,6 +639,7 @@ def exports():
         "field": L1,
         "symbol": symbol,
         "constant": ConstantSpelling(),
+        "first_use": FirstUse(),
         "own": own,
         "tile_value": Tile,
         "startup": Startup,

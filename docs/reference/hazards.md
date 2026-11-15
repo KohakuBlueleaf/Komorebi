@@ -284,6 +284,29 @@ the L1 budget table.
 Described in [Host API, several programs in one run](host.md#several-programs-in-one-run)
 and [movement, the NoC of each CPU](movement.md#the-noc-of-each-cpu).
 
+### Formats another program left on the same cores
+
+**The hazard.** In a run loaded with a list, every core holds every program and nothing
+runs between one program's command and the next program's: the unpacker's and the
+packer's data formats are what the last command left. A program that sets no format
+itself (all its buffers of one format, as the runtime's start-up left them) reads or
+packs its tiles in the other program's formats. You see wrong values, NaN among them,
+and no error: on the card, example 22's Gate after the dense Linear's K split on the
+same cores (Linear's reduce leaves the unpacker on float32).
+
+**The rule.** A compute part in a run of several programs sets the formats it relies on
+at the start of its command (`reconfig_data_format`, `pack_reconfig_data_format`), or
+before each unpack and pack. A group that switches program has no such hazard: its
+load runs the start-up again on the new program's buffers.
+
+**The guard.** For a class in the runtime's form: each command starts by setting the
+formats of the runtime's start-up on the program's buffers again (two calls on
+compute, no cost above the noise on the card). For a hand-written part, nothing: a hand
+program in a list must do the same.
+
+Described in [Programs written as classes, the runtime's form](classes.md#the-runtimes-form)
+and [Host API, several programs in one run](host.md#several-programs-in-one-run).
+
 ### An instruction the Tensix cores lack
 
 **The hazard.** The compiler may emit an instruction a Tensix core does not implement
@@ -444,6 +467,28 @@ exactly an `.end()` at that place.
 neither `.end()` nor a `with` ends above it, and `.end()` twice).
 
 Described in [Programs written as classes, a stream compute fills and a mover drains](classes.md#a-stream-compute-fills-and-a-mover-drains).
+
+### Sets of a handler on one ring, with blocks that do not divide each other's
+
+**The hazard.** A handler's sets compiled on their first use (`km.ANY`) run on the
+template's buffers. Several sets with different blocks then use one ring, and its
+position carries over from one command to the next. A block is one item, and an item
+never wraps the ring's end (`km::item_fits`). If a mover's earlier commands left the
+position at a place that is not a multiple of the next set's block, and the block
+does not fit before the end, the mover gives up (`move_offer`) and the command misses
+its deadline. Nothing is written wrong.
+
+**The rule.** The pages each half takes in a command are a multiple of the largest
+block among the sets in use. For example, a command's tiles split by its pattern into
+blocks whose count per half keeps every half's position at a multiple of that block.
+Or the sets that differ that way are listed at the make, each with buffers of its own.
+
+**The guard.** At the first submit a set is refused when its pages exceed the load's or
+do not divide them (so the ring holds whole blocks). The position across commands is
+not checked: the rule is the programmer's. The gate's sets (blocks 2 to 16, 64 tiles
+a core, `AAAB`) keep every half at a multiple of 16 pages.
+
+Described in [Programs written as classes, a set compiled on its first use](classes.md#a-set-compiled-on-its-first-use).
 
 ## Tile formats and the matrix unit
 

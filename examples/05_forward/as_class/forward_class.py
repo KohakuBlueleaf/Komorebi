@@ -82,7 +82,7 @@ class Forward(km.Program):
                 words[1] = total_low;
                 words[2] = total_high;
                 words[3] = visits;
-                words[8] = messages.quota();
+                words[8] = km_messages.quota();
                 words[9] = command.sequence;
             }));
             """,
