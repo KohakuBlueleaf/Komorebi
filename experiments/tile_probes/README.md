@@ -20,9 +20,9 @@ that keeps 32 rays in the 32 lanes of the vector unit (SFPU) and a small tree in
    pushing one Tensix instruction word, replay and MOP loops against pushing, a
    load-macro chain against the same work one instruction at a time, the code the SFPI
    compiler emits, which numbering of `SFPCONFIG`'s combine modes the hardware uses, and
-   loop bodies around 512 bytes on a compute core (probes 8 to 10, 12, 13). Two more
-   probes, the matrix unit's issue cost (11) and its ties rule (14), are in the tree but
-   have no result: see section 8.
+   loop bodies around 512 bytes on a compute core (probes 8 to 10, 12, 13), the matrix
+   unit's issue cost and Dst read-after-write stall (11), and how the matrix unit (14) and
+   the packer (15) round exact ties (section 8).
 
 Every result value is checked against a CPU reference by the driver.
 
@@ -94,8 +94,8 @@ export HANGWATCH=<hang watcher> LOCK_DIR=<lock directory> CARD=0
 ```
 
 A comma list of probes runs in one session and stops at the first one that does not
-finish cleanly. Probes 11 (`fpu`) and 14 (`ties`) are refused unless
-`--allow-unproven` is given (section 8).
+finish cleanly. Probe 11 (`fpu`) takes `--first N --count M`, the configurations to run
+(section 8).
 
 Without the hang watcher: `python probes.py <probe> [options]` with tt-metal's Python
 environment and `TT_METAL_SLOW_DISPATCH_MODE=1`. Each run prints one JSON line;
@@ -448,14 +448,60 @@ then 1000 timed passes:
 N + 2 cycles a pass at every size: one instruction a cycle, and no step at 512 bytes or
 anywhere up to 2088 bytes for straight-line code.
 
-**Not measured.** The matrix-unit probe (11: `MVMUL` per fidelity phase, the
-elementwise instructions, the pools and the moves between `Dst` and the source
-registers, with 1 to 8 `Dst` blocks in rotation for the read-after-write stall)
-stopped the card in its only run: the program never finished, and the card had to be
-reset. The ties probe (14: exact halves through `MVMUL` and the packer, with and
-without stochastic rounding) shares its path (unpack to both source registers, then
-the matrix unit on the math thread) and was not run. Both are refused by the driver
-unless `--allow-unproven` is given.
+**The order of the three cores in the matrix-unit probes.** Probes 11, 14 and 15 follow
+the order of a matrix-product compute kernel on all three cores: a `Dst` section is
+acquired, the unpack core hands a tile to the source registers, the math core issues its
+instructions and then releases both source registers, the section is committed, and the
+pack core packs it to a buffer and reads that buffer. No core waits for a word that
+another writes. An earlier version unpacked a whole 32 x 32 tile (four faces, each a
+hand-over of a source bank, with two banks per source register) and made the math core
+wait for the unpack core's done word before releasing a bank: the unpack stalled at the
+third face for a bank only the math core could free, and the program never ended. The
+instruction words were never reached.
+
+**The matrix unit** (probe 11, one core, one run of each; `Dst` in FP32, SrcA and SrcB
+one bf16 tile of 1 + 2^-6, HiFi4 setting, a body of 24 words, replayed 64 times a span,
+three spans; the empty span is 10 cycles and is subtracted; the pack read back every
+`Dst` word and all were as the model says, 128 x K words each):
+
+| instruction, K blocks in rotation | 1 | 2 | 3 | 4 | 5 | 6 | 8 |
+|---|---|---|---|---|---|---|---|
+| `MVMUL` (cycles a word) | 6.00 | 3.00 | 2.00 | 1.50 | 1.20 | 1.00 | 1.00 |
+| `ELWMUL` | 6.00 | | | | | | 1.00 |
+| `ELWADD` (with accumulate) | 6.00 | | | | | | 1.01 |
+| `MOVA2D` (8 rows) | 1.00 | | | | | | 1.00 |
+| `MOVB2D` (4 rows) | | | | | | | 1.00 |
+
+- Throughput is one word a cycle for all five. A single `MVMUL` pushed alone, after the
+  hand-over, takes 8 cycles from push to the sync's return (span 18, empty span 10).
+- A word that adds into a `Dst` block that the instruction 1 to 5 words before it also
+  wrote waits until 6 cycles after that word: a block written again after K words costs
+  max(1, 6 / K) cycles a word, so rotating over 6 or more blocks hides it. `ELWMUL` and
+  `ELWADD` do the same. The moves do not read `Dst` and show no stall.
+- The `Dst` block is chosen by the counter and an address mode that steps it (8 rows,
+  4 for `MOVB2D`); the row field of the word was not used.
+- Phases: one `MVMUL` is one fidelity phase, and a phase costs one word; the number of
+  phases is the number of words. The pools (`GAPOOL`, `GMPOOL`) were not measured.
+- `ELWADD` with its accumulate bit adds SrcA + SrcB to `Dst` (2.03125 for two values of
+  1.015625); `ELWMUL` adds their product; the moves copy.
+
+**Ties** (probes 14 and 15, one run each). Exact sums built to lie half way between two
+neighbours:
+
+- `MVMUL` (SrcA = SrcB = a tile whose products sum to 1 + 2^-24, half an FP32 unit):
+  of four such sums, three came out as 1.0 and -1.0 (the sum rounded toward zero, which
+  here is also to even) and one, with the two terms in two multiplier lanes, as
+  1.0000001192 (up). No one rule of round-to-nearest-even or ties-away fits all four, so
+  the matrix unit does not round the exact sum once. With stochastic rounding of the
+  matrix unit enabled, seven further blocks matched the nearest block at those four sums
+  in all 28 cases, and 13 of the 896 words of the seven blocks differed from it.
+- The packer, FP32 to BF16, on 512 ties and 512 exact values: round to nearest sent all
+  512 ties to the larger magnitude (256 of them to the even neighbour: away from zero,
+  not to even) and kept all 512 exact values. With stochastic rounding, ties went to the
+  larger magnitude 329 times and to the smaller 183 times, and 6 of the 512 exact values
+  moved to the larger magnitude.
+- Values reached `Dst` whole: the tie inputs have no bit below 2^-10, which SrcA's TF32
+  keeps. Ties just above or below a half were not tested.
 
 ## Limits
 
