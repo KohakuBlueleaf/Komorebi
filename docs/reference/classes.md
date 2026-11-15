@@ -1525,22 +1525,93 @@ is a command word).
 
 ## X280 threads
 
-Each build also writes `<name>_thread.h`, a C header for a thread's commands: each
-handler's number, the place of each of its words (a0 is 0) and their count, and
-whether its command asks for the leader's result. A thread that includes it (the
-build folder, `program.built.folder`, in its `includes`) submits the class's commands
-with `kmx_submit` and waits with `kmx_wait`. From
+A thread stays C, built for the X280 and calling `kmx_*`. Each build writes
+`<name>_thread.h`, a C header for a thread's commands, from the same build as the
+kernels, so the C and the class cannot drift apart. It holds:
+
+- each built handler's number (a constant set's under its set's name, a merged
+  program's at the merged number), the place of each of its words (a0 is 0), their
+  count, and whether its command asks for the leader's result, as before;
+- the program field (`kProgram<Name>` in a run of several programs, else 0) and the
+  class's constants at this make (`WORKCLUSTER_MAX_ROUNDS`);
+- the load's words: each tensor of the make, its address, as a word the load gives the
+  thread after the thread's own (`<NAME>_WORD_STATE`), its pages, and
+  `<name>_state_dram(first)`, the `kmx_dram` that `kmx_fetch` and `kmx_store` take;
+- the thread's regions: each one's id for `kmx_region` and its bytes, and a region's
+  bank address and bank, a region parameter's two words;
+- a function for each built handler that fills its whole command (`kmx_command`, the
+  flags, the group, each word) from typed arguments: the make's tensors and the
+  thread's regions come from the load, so they are not arguments.
+
+The class states its thread in its body: its regions with `km.region(bytes)` (an int
+or of the class's constants; ids in body order), and its C with
+`km.x280_thread(*sources, cluster=1, deadline=, includes=, defines=, prefetch=,
+host_fallback=)`, sources and includes relative to the class's file.
+`thread_words=[...]` at the make gives the thread's own words. From
 [07 work cluster](../../examples/07_work_cluster/as_class/README.md):
 
-```c
-/* SUM, line 35. */
-#define WORKCLUSTER_HANDLER_SUM 2u
-#define WORKCLUSTER_SUM_STATE 0u
-#define WORKCLUSTER_SUM_CORES 1u
-#define WORKCLUSTER_SUM_FIRST 2u
-#define WORKCLUSTER_SUM_WORDS 3u
-#define WORKCLUSTER_SUM_RESULT 1u /* KM_FLAG_RESULT */
+```python
+class WorkCluster(km.Program):
+    MAX_ROUNDS = km.constant(1000)
+    groups = km.region(4 * MAX_ROUNDS)
+    thread = km.x280_thread(
+        "thread/driver.c", "../decide.c", cluster=1, includes=[".."], deadline=10.0
+    )
+
+    @km.handler
+    def step(self, state: km.Tensor, round: int, first: int): ...
+
+
+program = WorkCluster(state=state, MAX_ROUNDS=rounds, thread_words=words)
 ```
+
+```c
+/* STEP, line 35: state the make's tensor, round, first. */
+static inline void workcluster_step(
+    km_command_t* km_command,
+    uint32_t km_flags,
+    uint32_t km_first,
+    uint32_t km_count,
+    uint32_t round,
+    uint32_t first
+) {
+    kmx_command(km_command, WORKCLUSTER_PROGRAM, WORKCLUSTER_HANDLER_STEP, km_first, km_count);
+    km_command->hdr |= km_flags << 8;
+    km_command->a0 = workcluster_word(WORKCLUSTER_WORD_STATE);
+    km_command->a1 = round;
+    km_command->a2 = first;
+}
+```
+
+The thread is made and its C built at the make, before any card job: the header the
+thread was built with is in a folder of its own (`build/<name>-<key>/thread-<hash>/`),
+put first among its includes. The make refuses a region parameter that names no
+region of the class. It also refuses C that names a handler, a tensor or a region
+the program lacks. The message gives the class's line, the C's errors with their
+lines, and what the program has:
+
+```
+Missing, line 97: the thread's C does not build with missing_thread.h:
+  .../missing.c:10:5: error: implicit declaration of function 'missing_nothing'; ...
+  missing_nothing: the program has no handler nothing (['total'])
+```
+
+`program.thread(...)` after the make, as a hand program's (`Program.thread`), keeps
+working: the thread gets the same header, its words come first and the load's follow,
+and it is built at that call. A class declares one thread, and `program.thread` is
+refused on a class that declares one. On a made program, `program.thread` (the
+declaration's name) is the `komorebi.thread.Thread`, and `program.threads` holds it as
+a hand program's. `km.thread` is the module `komorebi.thread`, so the class's spelling
+is `km.x280_thread`.
+
+What stays out: nothing makes the thread anything but C, and no Python runs on the
+X280. A set added on its first use (`km.ANY`) has no number at the build: the host
+submits it, never the thread, and the header says so. Chain records and `kmx_load`'s
+programs are not in the header. A merged program takes its thread after the merge
+(`program.thread`); a class that declares one is refused in a merge. A region's size
+is not checked against the pages a handler reads of it. In a run of several programs
+the load builds the thread again with the programs' defines (`kProgram<Name>`); the
+image is built at that load.
 
 ### A thread's region as a parameter
 
@@ -1885,7 +1956,10 @@ of more than one row whose columns are words; a field
 filled from a broadcast; a product's operands other than a stream's tile and a field,
 two streams' blocks, or two broadcasts' blocks into a float32 field; a field of sums of
 more than one row from two streams; a product and a tile function in one body; the fidelity derived from a tile function's tolerance (it is
-given as `fidelity=`); a word field with a rectangle (`self.x`, a broadcast).
+given as `fidelity=`); a word field with a rectangle (`self.x`, a broadcast). Of a
+class's X280 thread: a thread in a merged class's body, shared regions, a region's
+size checked against the pages a handler reads of it, chain records in its header
+(see [X280 threads](#x280-threads)).
 
 A body's own buffer (a field only bodies fill, as a hand kernel's scratch or a page it
 builds for the movers): not needed by the lines above, not built. A page assembled

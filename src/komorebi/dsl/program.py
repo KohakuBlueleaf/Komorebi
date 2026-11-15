@@ -12,7 +12,7 @@ from types import MappingProxyType
 
 from komorebi import _env, abi, formats, layout, overlay
 from komorebi import program as km_program
-from komorebi.dsl import compiler, first_use, front
+from komorebi.dsl import class_thread, compiler, first_use, front
 from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
@@ -96,6 +96,7 @@ def prepare(cls, compute=None, defines=None, startup=None):
     for number, method in enumerate(methods, start=1):
         method.number = number
     cls.__init__ = make
+    class_thread.prepared(cls)  # km.x280_thread, km.region; program.thread
     cls.built_handlers = [method.name for method in methods]
     cls.overlays_built = property(overlays_built, set_overlays_built)
 
@@ -130,6 +131,7 @@ def make(
     broadcast's; `defines`; `handlers` constant parameters' sets; `broadcast_wait` a
     Program's; `chain` the walk (a km.chain's); `form`; `beside` programs beside it."""
     cls = type(self)
+    thread_words = class_thread.words_given(tensors)
     if form not in FORMS:
         raise ProgramError(
             f"{cls.__name__}: {spelling('program_form')}={form!r}: one of "
@@ -196,7 +198,7 @@ def make(
     for line in report:
         log(line)
     self.placements = placements_of(compiled, tensors)
-    cls.placed_parameters = placed_parameters(compiled)
+    place_handlers(compiled, {m.name: [m] for m in compiler.handler_methods(cls)})
     for line in self.placements:
         log(line)
     buffers = []
@@ -251,6 +253,7 @@ def make(
     self.log = log
     self.runtime_refused = refused  # what form="runtime" would refuse ("": nothing)
     self.load_start = form == "runtime" and load_started(compiled)  # programs.plan
+    class_thread.made(self, cls, compiled, tensors, thread_words, found)
     for name in compiled.overlays:
         sources = {"reader": built.folder / name / "movement.cpp"}
         sources["writer"] = sources["reader"]
@@ -718,6 +721,16 @@ def placed_parameters(compiled):
     return placed
 
 
+def place_handlers(compiled, methods):
+    """Sets each handler method's `placed` (HandlerMethod.placed_check): `methods`
+    {the handler's name in `compiled`: the method objects a command reaches it by}."""
+    placed = placed_parameters(compiled)
+    for name, objects in methods.items():
+        mine = {p: value for (h, p), value in placed.items() if h == name}
+        for method in objects:
+            method.placed = mine
+
+
 def rectangle_of(program, compiled):
     """The program arguments of a class with a rectangle, made at their first use
     (the load), once the session gave its NoCs."""
@@ -1142,7 +1155,7 @@ def thread_header(compiled):
         lines += ["", f"/* {name.upper()}, line {compiled.lines[name]}. */"]
         lines.append(f"#define {prefix}_HANDLER_{name.upper()} {number}u")
         for place, (word, kind) in enumerate(words):
-            suffix = "_PAGES" if kind == "pages" else ""
+            suffix = {"pages": "_PAGES", "bank": "_BANK"}.get(kind, "")
             lines.append(f"#define {handler}_{word.upper()}{suffix} {place}u")
         lines.append(f"#define {handler}_WORDS {len(words)}u")
         if name in compiled.results:

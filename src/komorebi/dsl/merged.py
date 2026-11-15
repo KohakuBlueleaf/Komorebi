@@ -7,7 +7,7 @@ import copy
 import inspect
 
 from komorebi import program as km_program
-from komorebi.dsl import compiler, front
+from komorebi.dsl import class_thread, compiler, front
 from komorebi.dsl import program as made
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.dsl.names import spelling
@@ -396,8 +396,9 @@ def start(self, sources, name, overlay, resident, session, l1, trace, log):
     self.build()
 
 
-def handler_method(cls, name):
-    return next(m for m in compiler.handler_methods(cls) if m.name == name)
+def own_handler(cls, name):
+    """[the class's handler of that name], or [] (a listed set's name)."""
+    return [m for m in compiler.handler_methods(cls) if m.name == name]
 
 
 def numbered(name, sources):
@@ -517,6 +518,13 @@ def build(self):
     self.compiled = compiled
     compiled.handler_sources = handler_sources(self, compiled)
     walked = made.chain_made(self, type(self), compiled, self.chain_wanted)
+    made.place_handlers(  # a command by the merged copy or by its class's handler
+        compiled,
+        {  # a listed set's copy alone: its class's handler names several sets
+            method.name: [method, *own_handler(sources[index].cls, own)]
+            for (index, own), method in self.methods.items()
+        },
+    )
     defines, rect, nocs = {}, None, None
     for source in sources:
         for key, value in (source.given.get("defines") or {}).items():
@@ -600,13 +608,15 @@ def build(self):
         broadcast_wait=wait,
     )
     self.built = built
+    class_thread.merged(self, compiled, tensors)
     self.built_handlers = list(compiled.handlers)
     for key, method in getattr(type(self), "merged_methods", {}).items():
         mine = self.methods[key]  # the class's handler gives a call's words too
-        method.words, method.widths, method.returns = (
+        method.words, method.widths, method.returns, method.placed = (
             mine.words,
             mine.widths,
             mine.returns,
+            mine.placed,
         )
     for name in compiled.overlays:
         sources_of = {"reader": built.folder / name / "movement.cpp"}
@@ -641,3 +651,4 @@ def set_overlays_built(self, built):
 
 
 MergedClass.overlays_built = property(made.overlays_built, set_overlays_built)
+MergedClass.thread = class_thread.added  # its header written, its C built

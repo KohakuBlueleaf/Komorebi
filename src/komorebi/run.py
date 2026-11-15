@@ -30,6 +30,7 @@ from komorebi.errors import (
     StartError,
     ThreadFailed,
     WaitTimeout,
+    describe_core,
 )
 from komorebi.merge import lifted, merged_holds
 from komorebi.program import Handler
@@ -215,6 +216,7 @@ class Run:
         self._reserved = []  # (offset, bytes) of the upload region the run holds
         self.recoveries = []  # give-ups whose cores the dispatcher reset: handle, text
         self._reset_failed = (-1, 0)  # a give-up's failed reset: core, KMD_RESET_*
+        self._timeout_cores = []  # a deadline's inspect, not given up: its cores
         self.inspect_ticks = None  # mtime ticks the last inspect() took on core 0
         self._failure = None
         self._stopped = False
@@ -1226,6 +1228,7 @@ class Run:
             block = device_state.inspect(read["block"], self.h)
             failed = block["reset_failed"] if block["kind"] == "timeout" else 0
             self._reset_failed = (failed & 0xFFFF) - 1, failed >> 16
+            self._timeout_cores = block["cores"] if block["kind"] == "timeout" else []
             return False
         self._given_up_seen += 1
         block = device_state.inspect(read["block"], self.h)
@@ -1891,7 +1894,13 @@ class Run:
         return error
 
     def _fail_timeout(self, event):
-        self._finish(10.0)
+        seen = self._timeout_seen()  # before the stop: a grid that does not return
+        try:
+            self._finish(10.0)
+        except KomorebiError as error:
+            if seen:
+                error.args = (f"{error.args[0]}; {seen}", *error.args[1:])
+            raise
         result = self._result
         group = self.group(event.handle)
         sequence = (
@@ -1913,6 +1922,19 @@ class Run:
             event.handle, event.auxiliary, sequence, group, cores, result
         )
         self._name_lines(error)
+        if seen:
+            error.args = (f"{error.args[0]}; {seen}", *error.args[1:])
+        raise self._remember(error)
+
+    def _timeout_seen(self):
+        """What the deadline's inspect read, as text: the cores where a kernel waited
+        or gave up, and the dispatcher's failed reset of a core that did not leave
+        ("" when it read nothing)."""
+        named = [describe_core(core) for core in self._timeout_cores]
+        waited = [text for text in named if not text.endswith("no give-up recorded")]
+        parts = [f"at the deadline: {'; '.join(waited)}"] if waited else []
+        if len(waited) < len(named):
+            parts.append(f"{len(named) - len(waited)} cores read at it named no wait")
         core, status = self._reset_failed
         if core >= 0:  # a give-up's reset that failed left the command in its core
             names = {self.h[f"KMD_RESET_{name}"]: name for name in RESET_STATUS}
@@ -1923,8 +1945,8 @@ class Run:
                     f"core {core} was not reset: other commands in flight are in "
                     "its ring, which a reset would clear"
                 )
-            error.args = (f"{error.args[0]}; {why}", *error.args[1:])
-        raise self._remember(error)
+            parts.append(why)
+        return "; ".join(parts)
 
     def _fail_kernel(self, why):
         self._finish(10.0)

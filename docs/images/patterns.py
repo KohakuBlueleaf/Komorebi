@@ -2126,6 +2126,101 @@ def figure_chain(theme):
     return s.finish(int(end + 2))
 
 
+# ---------------------------------------------------------------------------
+# Figure 7: kernels in (the host appends calls, the card runs them).
+# ---------------------------------------------------------------------------
+
+CALLS = ["linear", "norm", "attend", "swiglu", "out"]
+
+
+def panel_host_calls(s, y):
+    """The host submits each kernel and waits for it."""
+    c = s.c
+    names = ["host", "the cores"]
+    lanes = Lanes(s, y + 52, names, BOX_X + 176, pitch=26)
+    end = lanes.axis()
+    height = end + 34 - y
+    panel_frame(s, y, height, "the host submits each kernel and waits", "", "a")
+    for k, call in enumerate(CALLS):
+        start = 6 + 19 * k
+        lanes.bar(names[0], start - 5.5, start - 0.5, "", "w")
+        lanes.hop(names[0], names[1], start, "a", sw=1.8)
+        lanes.bar(names[1], start + 1, start + 11, call, "a")
+        lanes.hop(names[1], names[0], start + 11.6, "g", sw=1.8)
+    line = (
+        "Between two kernels the cores wait for the host: an event goes up, the host "
+        "decides, the next command comes down."
+    )
+    s.text(BOX_X + 14, end + 22, line, 12, c["mute"])
+    check(BOX_X + 14 + width(line), LIMIT, line)
+    return height
+
+
+def panel_kernel_in(s, y):
+    """The host appends calls to a list; an X280 thread runs it."""
+    c = s.c
+    names = ["host", "the list in DRAM", "X280 thread", "the cores"]
+    waits, thread, cores = names[1], names[2], names[3]
+    lanes = Lanes(s, y + 52, names, BOX_X + 176, pitch=26)
+    end = lanes.axis()
+    height = end + 52 - y
+    panel_frame(
+        s, y, height, "kernels in: the host appends, the card runs", "projects/nn", "b"
+    )
+    appended = [(1, 4), (5, 8), (15, 18), (20, 31), (45, 48)]  # the host's work a call
+    starts = [6, 19.5, 33, 46.5, 60]
+    for k, call in enumerate(CALLS):
+        begin, finish = appended[k]
+        if k == 3:  # a call with no kernel yet: compiled, added to the live run
+            lanes.bar(names[0], begin, finish, "compile", "y", "loading")
+        else:
+            lanes.bar(names[0], begin, finish, "", "w")
+        lanes.hop(names[0], waits, finish + 0.4, "w", sw=1.8)
+        start = starts[k]
+        length = 9.5 if k == 4 else 12.5
+        if start - 2.6 > finish + 1.6:
+            lanes.bar(waits, finish + 1, start - 2.4, call, "g", "plain")
+        lanes.bar(thread, start - 2, start - 0.4, "", "w")
+        lanes.hop(thread, cores, start, "a", sw=1.8)
+        lanes.bar(cores, start + 0.6, start + length, call, "a")
+    last = starts[-1] + 9.5
+    lanes.hop(cores, names[0], last + 0.6, "b", sw=1.8)
+    lanes.bar(names[0], last + 1.2, last + 12, "reads y", "w")
+    notes = [
+        "The host appends kernel calls to a list in DRAM, ahead of the cores; a call "
+        "with no kernel yet is compiled and added to the live run.",
+        "An X280 thread takes each entry and submits it. The way out is a kernel "
+        "too: it pushes the result's pages to the host's memory.",
+    ]
+    for i, line in enumerate(notes):
+        s.text(BOX_X + 14, end + 22 + 18 * i, line, 12, c["mute"])
+        check(BOX_X + 14 + width(line), LIMIT, line)
+    return height
+
+
+def figure_kernelin(theme):
+    s = Svg(theme, "Kernels in: the host appends, the card runs", markers="abwyg")
+    bottom = stack(s, [panel_host_calls, panel_kernel_in])
+    items = [
+        ("decide", "the host or the thread works"),
+        ("w", "an entry appended"),
+        ("a", "a command submitted"),
+        ("g", "an event back"),
+        ("group", "a kernel computes"),
+        ("wait", "an entry waiting in the list"),
+        ("loading", "a kernel compiled on its first use"),
+        ("b", "pages to the host's memory"),
+    ]
+    note = (
+        "Measured in the nn project (one card, its cheapest kernel on 120 cores): "
+        "140.9 µs a call with the host submitting and waiting,",
+        "23.0 µs a call with the host appending to an open list, 4.4 µs replaying a "
+        "written list. Time in the figure is schematic.",
+    )
+    end = key_row(s, bottom + 2, items, note)
+    return s.finish(int(end + 2))
+
+
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "docs" / "images"
     out.mkdir(parents=True, exist_ok=True)
@@ -2136,6 +2231,7 @@ def main():
         "groups": figure_groups,
         "mapcollect": figure_mapcollect,
         "chain": figure_chain,
+        "kernelin": figure_kernelin,
     }
     for theme in THEMES:
         for name, draw in figures.items():

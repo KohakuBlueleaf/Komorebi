@@ -19,7 +19,6 @@ from projects.dense import plan as pl
 
 STARTED = time.monotonic()
 PRODUCTS = ("qkv", "o", "gate_up", "down")
-RIGHT = ("qkv", "o")  # the products a run gives right; gate_up and down: README.md
 GROUPS = {"qkv": 7, "o": 15, "gate_up": 2, "down": 15}  # md.plans' on 120 cores
 KERNEL_BYTES = 84 * 1024  # the hand's program, as its bench opens it with the chain
 
@@ -175,14 +174,7 @@ def parse():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=list(md.MODELS), default="qwen3-1.7b")
     parser.add_argument(
-        "--products", nargs="*", default=list(RIGHT), choices=list(PRODUCTS)
-    )
-    parser.add_argument(
-        "--known-wrong",
-        action="store_true",
-        help="allow gate_up and down: run after another product they gave wrong sums, "
-        "changing run to run, and a run of the four hung the card (2026-11-16); "
-        "under investigation",
+        "--products", nargs="*", default=list(PRODUCTS), choices=list(PRODUCTS)
     )
     parser.add_argument("--context", type=int, default=256, help="the cache's rows")
     parser.add_argument("--runs", type=int, default=20, help="timed commands a way")
@@ -190,14 +182,7 @@ def parse():
     parser.add_argument(
         "--skip-hand", action="store_true", help="the class alone (its build)"
     )
-    args = parser.parse_args()
-    wrong = sorted(set(args.products) - set(RIGHT))
-    if wrong and not args.known_wrong:
-        parser.error(
-            f"{', '.join(wrong)}: wrong sums and a hang on 2026-11-16, under "
-            "investigation; --known-wrong to run them anyway"
-        )
-    return args
+    return parser.parse_args()
 
 
 def operands(session, model, name, rng):

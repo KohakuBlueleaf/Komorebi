@@ -1,5 +1,5 @@
 /* The work cluster's loop with the class's commands: decide.c's rounds until SUM's
- * result ends it, each command placed by workcluster_thread.h. See ../README.md. */
+ * result ends it, each command filled by workcluster_thread.h. See ../README.md. */
 #include <stdint.h>
 
 #include "decide.h"
@@ -8,43 +8,28 @@
 
 #define WAIT_TICKS KMX_TICKS_PER_SECOND /* per command, longer than its deadline */
 
-/* Word `place` (a0 is 0) of `command`. */
-static void put(km_command_t* command, uint32_t place, uint32_t value) {
-    uint32_t* words[10] = {
-        &command->a0,
-        &command->a1,
-        &command->a2,
-        &command->a3,
-        &command->a4,
-        &command->a5,
-        &command->a6,
-        &command->a7,
-        &command->a8,
-        &command->a9,
-    };
-    *words[place] = value;
-}
-
-/* decide.c's command as the class's: its handler's number and words, field by field
- * (a struct assignment may call memset, which does not link). */
+/* decide.c's command as the class's: its handler's function in workcluster_thread.h
+ * fills the command, the state's address from the load's words. */
 static void build_command(const wc_command* decision, km_command_t* command) {
-    command->sequence = command->land1 = command->land2 = command->land3 = 0;
-    for (uint32_t place = 0; place < 10; place++) {
-        put(command, place, 0);
-    }
-    uint32_t handler = WORKCLUSTER_HANDLER_STEP;
     if (decision->handler == WC_HANDLER_STEP) {
-        put(command, WORKCLUSTER_STEP_STATE, decision->a0);
-        put(command, WORKCLUSTER_STEP_ROUND, decision->a1);
-        put(command, WORKCLUSTER_STEP_FIRST, decision->first);
+        workcluster_step(
+            command,
+            decision->flags,
+            decision->first,
+            decision->count,
+            decision->a1,
+            decision->first
+        );
     } else {
-        handler = WORKCLUSTER_HANDLER_SUM;
-        put(command, WORKCLUSTER_SUM_STATE, decision->a0);
-        put(command, WORKCLUSTER_SUM_CORES, decision->a1);
-        put(command, WORKCLUSTER_SUM_FIRST, decision->first);
+        workcluster_sum(
+            command,
+            decision->flags,
+            decision->first,
+            decision->count,
+            decision->a1,
+            decision->first
+        );
     }
-    command->hdr = handler | decision->flags << 8;
-    command->group = decision->first | decision->count << 16;
 }
 
 /* Submits `command`, waiting while the ring is full; KMX_OK and its handle, or the
@@ -73,7 +58,9 @@ int kmx_main(int core) {
         words[i] = i < (int)arguments->nwords ? arguments->words[i] : 0;
     }
     uint64_t bytes;
-    volatile uint32_t* groups = (volatile uint32_t*)kmx_region(0, &bytes);
+    volatile uint32_t* groups = (
+        (volatile uint32_t*)kmx_region(WORKCLUSTER_REGION_GROUPS, &bytes)
+    );
     if (
         arguments->nwords < WC_WORDS || wc_start(&state, words) || groups == 0 ||
         bytes < (uint64_t)words[WC_MAX_ROUNDS] * 4
