@@ -258,7 +258,7 @@ class Run:
         of a program written as a class takes its arguments (tensors, ints, patterns)
         in `args`, made into its words."""
         started = time.perf_counter()
-        program_field = 0
+        program_field, method = 0, None
         if isinstance(handler, HandlerMethod | ClassHandler):
             method = handler if isinstance(handler, HandlerMethod) else handler.method
             result = result or method.returns
@@ -279,6 +279,8 @@ class Run:
         elif cluster is None:
             group = self._group(group)
             self._check_holds(program_field, handler, *group)
+            if method is not None:
+                self._check_rectangle(method, program_field, group)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(word) <= M32 for word in args):
@@ -298,6 +300,22 @@ class Run:
             self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
         return handle
+
+    def _check_rectangle(self, method, program_field, group):
+        """Refuses a broadcast's command of a class whose group is not the group of
+        the rectangle the program was loaded with (fixed at load)."""
+        program = self.programs[program_field]
+        line = getattr(program, "broadcast_lines", {}).get(method.name)
+        rectangle = getattr(program, "rectangle", None)
+        if line is None or rectangle is None or rectangle["group"] is None:
+            return
+        if tuple(group) != rectangle["group"]:
+            raise ValueError(
+                f"{type(program).__name__}.{method.name}, {line}: the broadcast's "
+                f"rectangle {rectangle['rect'] or 'the whole grid'} is the group "
+                f"{rectangle['group']}, fixed at load; submit it to that group "
+                f"(not {tuple(group)}), or make the program with rect="
+            )
 
     def _block_words(self, block, args, cluster):
         """The arguments with a block's address and bytes in a7 and a8, and the block

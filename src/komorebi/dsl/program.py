@@ -70,13 +70,17 @@ def prepare(cls):
 def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **tensors):
     """Compiles the class: `tensors` an example tensor of each tensor parameter (by
     name), `plan` sizes by name, `l1` the L1 left for buffers (Session.l1()[1]); with
-    broadcasts, `rect` (x, y, columns, rows) and `nocs` (Session.nocs())."""
+    broadcasts, `rect` (x, y, columns, rows; the whole grid when not given) and `nocs`
+    (Session.load gives the session's when not given)."""
     cls = type(self)
     plan = dict(plan or {})
     compiled = compiler.compile_class(cls, plan, tensors, l1)
     program_args = None
+    # The rectangle's state, shared by the copies a session of islands runs.
+    self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
+    self.broadcast_lines = compiled.broadcast_lines
     if compiled.rectangle:
-        program_args = rectangle_args(compiled, rect, nocs)
+        program_args = rectangle_of(self, compiled)
     built = write(cls, compiled, l1)
     for line in built.report:
         log(line)
@@ -215,15 +219,38 @@ def may_cross(compiled, tensors):
     return lines
 
 
+def rectangle_of(program, compiled):
+    """The program arguments of a class with a rectangle, made at their first use
+    (the load), once the session gave its NoCs."""
+    state = program.rectangle
+
+    def args(core):
+        if state["args"] is None:
+            nocs = state["nocs"]
+            if nocs is None:
+                raise ProgramError(
+                    f"{compiled.name} uses self.x, self.y or a broadcast: load it with "
+                    f"Session.load, or make it with {spelling('nocs')}=session.nocs()"
+                )
+            rect = state["rect"] or (0, 0, *nocs.grid)
+            state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
+        return state["args"](core)
+
+    return args
+
+
+def session_nocs(program, nocs):
+    """Session.load's hand-over: the session's NoCs, unless the class was made with
+    its own."""
+    state = getattr(program, "rectangle", None)
+    if state is not None and state["nocs"] is None:
+        state["nocs"] = nocs
+
+
 def rectangle_args(compiled, rect, nocs):
     """Each core's program arguments (a function of the core, as Program takes): its
-    column and row in `rect`, whether it is there, its mover's broadcast arguments."""
-    if rect is None or nocs is None:
-        raise ProgramError(
-            f"{compiled.name} uses self.x, self.y or a broadcast: make it with "
-            f"{spelling('rect')}=(x, y, columns, rows) and {spelling('nocs')}="
-            "session.nocs()"
-        )
+    column and row in `rect`, whether it is there, its mover's broadcast arguments;
+    and the rectangle's group (first, count)."""
     first_x, first_y, columns, rows = rect
     grid_width = nocs.grid[0]
     first = first_y * grid_width + first_x
@@ -260,7 +287,7 @@ def rectangle_args(compiled, rect, nocs):
             movers.append(common + ([words[name] for name in fields] if words else []))
         return movers[0], movers[1], common
 
-    return program_args
+    return program_args, (group.first, group.count)
 
 
 def compute_options(compiled):

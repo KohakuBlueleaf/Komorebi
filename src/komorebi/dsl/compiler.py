@@ -142,9 +142,9 @@ class Compiled:
     name: str
     source: str
     handlers: dict = field(default_factory=dict)  # name -> number
-    overlays: dict = field(
-        default_factory=dict
-    )  # overlay handler -> its overlay number
+    # overlay handler -> its overlay number; broadcast handler -> its km.Broadcast
+    overlays: dict = field(default_factory=dict)
+    broadcast_lines: dict = field(default_factory=dict)
     words: dict = field(default_factory=dict)  # name -> [(parameter, kind)]
     lines: dict = field(default_factory=dict)  # name -> its def line
     buffers: list = field(default_factory=list)
@@ -1798,6 +1798,9 @@ class HandlerCompiler:
                 "make one broadcast along a row and one along a column",
             )
         self.movers[mover] = name
+        self.compiled.broadcast_lines.setdefault(
+            self.method.name, f"line {node.lineno}, `{self.text(node)}`"
+        )
         self.compiled.rectangle = True
         self.compiled.includes |= {"broadcast"}
         self.compute_waits = True

@@ -38,6 +38,7 @@ from komorebi import channel as channel_module
 from komorebi import state as device_state
 from komorebi import tensor as tensor_module
 from komorebi import thread as thread_module
+from komorebi.dsl.program import session_nocs
 from komorebi.errors import (
     CardBusy,
     ChannelError,
@@ -712,6 +713,19 @@ class Session:
         kernel, free, _ = self._module.kernel_buffer(self.device)
         return int(kernel), int(free)
 
+    def _hand_nocs(self, program):
+        """A program written as a class whose rectangle needs the grid's NoCs gets
+        this session's (komorebi.dsl.program.session_nocs)."""
+        if isinstance(program, programs.Plan):
+            loaded = program.programs
+        else:
+            loaded = list(program) if isinstance(program, dict | list) else [program]
+        needing = [one for one in loaded if getattr(one, "rectangle", None)]
+        if needing:
+            nocs = self.nocs()
+            for one in needing:
+                session_nocs(one, nocs)
+
     def nocs(self):
         """The grid's NoC coordinates by core (a layout.Nocs), from the open device:
         for program arguments that name other cores, before load()."""
@@ -1068,6 +1082,7 @@ class Session:
         self.link_plan = link
         self.link_area = link.area if link is not None else 0
         self.tensor_table = tensors
+        self._hand_nocs(program)
         placed = None
         if isinstance(program, programs.Plan):  # an island's part of a flat plan
             placed = program

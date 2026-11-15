@@ -75,7 +75,6 @@ def run(session, args, generator):
         output=output,
         plan={"PAGES": args.pages, "WINDOW": args.window},
         rect=rect,
-        nocs=nocs,
         log=hand.log,
     )
     run = session.load(program, deadline=args.deadline, wait=args.wait)
@@ -84,16 +83,18 @@ def run(session, args, generator):
     try:
         for job in range(args.jobs):
             rows, columns = inputs[job % 2]
-            words = Broadcasts.broadcast.args(
-                rows,
-                columns,
-                output,
-                hand.job_blocks(args, job),
-                job * group.count,
-                args.blocks,
-            )
             run.submit(
-                program.broadcast, (group.first, group.count), words, exclusive=True
+                Broadcasts.broadcast,
+                (group.first, group.count),
+                args=(
+                    rows,
+                    columns,
+                    output,
+                    hand.job_blocks(args, job),
+                    job * group.count,
+                    args.blocks,
+                ),
+                exclusive=True,
             )
         hand.log(f"{run.drain(timeout=10.0)} events")
     except km.CommandTimeout as error:

@@ -67,7 +67,7 @@ run.submit(
 | a tensor by each tensor parameter's name | an example of the tensor: its format and page size (the buffers', the movers' compile arguments); a tensor of an island session too |
 | `plan` | the sizes by name: a module constant the handlers use (`BLOCK`), a field's symbol |
 | `l1` | the bytes left for buffers (`Session.l1()[1]`): the buffers must fit, a field's last symbol takes what they leave |
-| `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows) and `Session.nocs()`; each core's program arguments are made from them |
+| `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
 
 The build writes `build/<name>/` beside the class's source: `<name>.h` (the handler
@@ -114,6 +114,10 @@ words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
 the group's size and its rank 0; `self.x` and `self.y` its column and row in the
 rectangle.
+
+A broadcast's rectangle is fixed at load (a program argument), and `Run.submit`
+refuses a broadcast's command whose group is not the rectangle's, naming the
+`km.Broadcast` line; a rectangle per command is not in this version.
 
 A body takes the handler's names: an int, a partition, a pattern or a body's word by its
 own name; a page that mover B writes (`takes=[whole]` on `"mover_b"`) as its buffer; a
@@ -228,7 +232,7 @@ the packed text of the five CPUs, of 70,656 B.
 
 ## Not at level 1
 
-Dynamic handlers and messages; a class's handlers called from an X280 thread, and a
+A rectangle per command; dynamic handlers and messages; a class's handlers called from an X280 thread, and a
 group switched to a class's program (`kmx_load`); a core's own word written to DRAM;
 tile expressions (`tile * factors`, `block @ self.weight`); `@`, slices and `.columns`
 of a field.
