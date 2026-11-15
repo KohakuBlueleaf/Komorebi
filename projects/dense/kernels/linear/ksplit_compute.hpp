@@ -15,6 +15,59 @@ namespace {
         tile_regs_release();
     }
 
+    // The whole-K plan's receiver: unpack's timed wait until X's marker in its port
+    // counts `chunks` of the command's chunks landed; `seen` the count on all three.
+    bool x_landed(
+        const km::Compute& compute,
+        const km_command_t& command,
+        uint32_t chunks,
+        uint32_t& seen
+    ) {
+        if (chunks <= seen) {
+            return true;
+        }
+        uint32_t heard = 0;
+        UNPACK(({
+            volatile tt_l1_ptr uint32_t* marker = (
+                km::l1(
+                    compute.control() + KM_CONTROL_PORT + kPortKXGot * KM_PORT_STRIDE
+                )
+            );
+            uint32_t word = 0;
+            const uint32_t code = km::poll_live(
+                compute.control(),
+                km::kRoleUnpack,
+                km::kWherePort,
+                true,
+                [&] {
+                    invalidate_l1_cache();
+                    word = marker[KM_PORT_COUNT];
+                    return km::broadcast_reached(word, command.sequence, chunks);
+                },
+                compute.wait_limit(),
+                0
+            );
+            if (code == km::kGaveNone) {
+                heard = word & 0xFFFFu;
+            } else {
+                km::command_gave_up(
+                    compute.control(),
+                    km::kStCompute,
+                    code,
+                    km::kWherePort,
+                    km::slot(command),
+                    command.sequence
+                );
+            }
+            ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, heard);
+            ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, heard);
+        }));
+        MATH((heard = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)));
+        PACK((heard = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)));
+        seen = heard;
+        return heard != 0;
+    }
+
 }  // namespace
 
 void kernel_main() {
@@ -40,7 +93,9 @@ void kernel_main() {
         const km::Arrival arrival = {kCbKArrive, plan(kKsArrive), block_tiles};
         const uint32_t form = plan(kKsForm);
         const km::Pattern pattern = km::Pattern::of(plan(kKsPattern));
-        const bool x_cast = plan(kKsXCast) != 0;     // X whole in kCbKX, by chunk
+        const bool x_cast = plan(kKsXCast) != 0;  // X whole in kCbKX, by chunk
+        const bool x_marked = plan(kKsXRole) == kKXReceiver;  // ... once marked
+        uint32_t x_seen = 0;
 #if defined(LINEAR_ACCOUNT) && !defined(TRISC_MATH)  // the math thread: no buffers
         volatile uint32_t* stamps = stamp_row();
 #endif
@@ -64,6 +119,7 @@ void kernel_main() {
             const uint32_t w_half = km::block_half(kKChunksW, pattern, chunk);
             const uint32_t x_first = x_cast ? chunk * block_height * chunk_tiles : 0;
             ok = (
+                (!x_marked || x_landed(compute, command, chunk + 1, x_seen)) &&
                 compute.wait_front(x_half, x_first + block_height * chunk_tiles) &&
                 compute.wait_front(w_half, chunk_tiles * block_width)
             );

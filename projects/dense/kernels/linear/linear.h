@@ -225,13 +225,13 @@ constexpr uint32_t kKsMt = 9;
 constexpr uint32_t kKsSetPages = 10;
 constexpr uint32_t kKsPattern = 11;
 // The whole-K plan (S 1, Kohaku-TT's decode form): X multicast once a panel by the
-// panel's sender (its writer, NoC 1) into every rank's kCbKX, a marker after each.
+// panel's sender (its writer, on its NoC) into every rank's kCbKX, a marker after each.
 constexpr uint32_t kKsXCast = 12;    // 1: this plan
 constexpr uint32_t kKsXRole = 13;    // this core's: 0 none, 1 the sender, 2 a receiver
 constexpr uint32_t kKsXWaits = 14;   // sender: the receivers whose free it counts
 constexpr uint32_t kKsXDests = 15;   // sender: the multicast's cores but itself
 constexpr uint32_t kKsXSender = 16;  // receiver: its sender's core
-constexpr uint32_t kKsXStart = 17;   // the panel's NoC 1 multicast corners, x | y << 16
+constexpr uint32_t kKsXStart = 17;   // the cast's corners (writer's NoC), x | y << 16
 constexpr uint32_t kKsXEnd = 18;
 constexpr uint32_t kKsXChunks = 19;  // K chunks a multicast
 constexpr uint32_t kKsWords = 20;
