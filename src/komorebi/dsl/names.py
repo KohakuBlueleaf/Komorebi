@@ -20,7 +20,15 @@ class Name:
 NAMES = {
     # the class
     "handler": Name("handler", "km.handler: a method that is a handler", "handler"),
-    "field": Name("L1", "km.L1[format, shape]: a field resident in the L1", None),
+    "overlay": Name(
+        "overlay",
+        "km.handler(overlay=True): its code an overlay, loaded and called",
+        None,
+    ),
+    "field": Name("L1", "km.L1[format, *shape]: a field resident in the L1", None),
+    "symbol": Name(
+        "symbol", "K = km.symbol(): a size the plan gives or the build solves", None
+    ),
     "tensor": Name("Tensor", "km.Tensor: a parameter that is a tensor", "tensor"),
     "pattern": Name("Pattern", "km.Pattern: a parameter that is a pattern", "pattern"),
     "args": Name("args", "a handler's command words from its arguments", "argument"),
@@ -29,7 +37,12 @@ NAMES = {
     "rank": Name("rank", "self.rank: this core's rank in the command's group", "rank"),
     "size": Name("size", "self.size: the cores of the command's group", "group"),
     "leader": Name("leader", "self.leader: the group's rank 0", "leader"),
-    "partition": Name("partition", "self.partition(pages): this core's part", None),
+    "partition": Name(
+        "partition",
+        "self.partition(pages): this core's part by rank; b.partition(pages): "
+        "by its place along broadcast b's row or column",
+        None,
+    ),
     "x": Name("x", "self.x: this core's column in the broadcasts' rectangle", None),
     "y": Name("y", "self.y: this core's row in the broadcasts' rectangle", None),
     # moves
@@ -37,7 +50,9 @@ NAMES = {
     "write_stream": Name("write", "km.Stream(..., write=True): a write stream", None),
     "block": Name("block", "a stream's pages a block", "block"),
     "repeat": Name("repeat", "a stream's repetitions", "repetitions"),
+    "drain": Name("drain", "km.Stream(pages).drain(): read, the tiles dropped", None),
     "push": Name("push", "out.push(tile): a tile into a write stream", None),
+    "fill": Name("fill", "self.field.fill(km.Stream(pages)): pages into a field", None),
     "pages": Name("pages", "tensor.pages(first, count): a range of pages", "page"),
     "read": Name("read", "pages.read(): the pages, read", "read"),
     "write": Name("write", "pages.write(tile): the tile, written there", "write"),
@@ -57,9 +72,25 @@ NAMES = {
     "zeros": Name("zeros", "km.tile.zeros(format): a tile of zeros", None),
     "cxx": Name("cxx", "km.cxx(text, takes=, gives=, on=): an inline body", None),
     "takes": Name("takes", "the names an inline body reads", None),
-    "gives": Name("gives", "what an inline body gives", None),
+    "gives": Name("gives", "what an inline body gives: int or km.Tile", None),
+    "tile_value": Name(
+        "Tile", "gives=km.Tile: the tile a body leaves in DST 0", "tile"
+    ),
     "on": Name("on", "the CPU of an inline body", None),
-    "result": Name("result", "self.result(word): the command's result word", "result"),
+    "tile_buffer": Name(
+        "_buffer",
+        "tile_buffer in a body: a stream tile's buffer (the loop's name)",
+        None,
+    ),
+    "tile_index": Name(
+        "_index", "tile_index in a body: a stream tile's place in its block", None
+    ),
+    "may_cross": Name(
+        "may_cross", "program.may_cross: the report of what may cross a link", None
+    ),
+    "result": Name(
+        "result", "self.result: refused; `return word` is the result", "result"
+    ),
     # formats
     "fp32": Name("fp32", "km.fp32: float32", "float32"),
     "bf16": Name("bf16", "km.bf16: bfloat16", "bfloat16"),

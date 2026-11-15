@@ -381,6 +381,9 @@ KM_STATIC_ASSERT(
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u
 #define KM_PORT_MET 2u
+/* word KM_PORT_GO of KM_PORT_LEFT's slot: the leader's release of a whole island, a
+   marker it multicasts (km_ask.hpp); every core of the island's rectangles takes it */
+#define KM_PORT_GO 3u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
 /* KM_BROADCASTS areas, KM_BROADCAST_BYTES each; on a 64-byte line after the ports */
@@ -633,6 +636,12 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_FORWARD (KM_ISLAND_TENSORS + 4u)
 /* then a word (byte offset): the own words' L1 address on this island (0: none) */
 #define KM_ISLAND_OWN (KM_ISLAND_FORWARD + 4u)
+/* then a word (byte offset): the island's cores for a multicast release, grid columns
+ * | its rows << 8 | panel 1's first column << 16 (0: one panel) | 1 << 24; 0: none */
+#define KM_ISLAND_GO (KM_ISLAND_OWN + 4u)
+#define KM_ISLAND_GO_ROWS 8u
+#define KM_ISLAND_GO_SPLIT 16u
+#define KM_ISLAND_GO_ON (1u << 24)
 /* A core's own words (every core of a run with page links): per data-movement CPU its
  * asks' scratch, put lines and put headers */
 #define KM_OWN_LINE 0x00u
@@ -737,7 +746,7 @@ KM_STATIC_ASSERT(
 KM_STATIC_ASSERT(
     KM_ISLAND_RELAY * 4u >= KM_ISLAND_LINK_AREA + 4u &&
         KM_ISLAND_TENSORS == (KM_ISLAND_RELAY_TILE + 1u) * 4u &&
-        KM_ISLAND_OWN + 4u <= KM_ISLANDS_BYTES &&
+        KM_ISLAND_GO == KM_ISLAND_OWN + 4u && KM_ISLAND_GO + 4u <= KM_ISLANDS_BYTES &&
         KM_OWN_RETURNED >= KM_OWN_LINE + 64u && KM_OWN_READ >= KM_OWN_RETURNED + 16u &&
         KM_OWN_DONE >= KM_OWN_READ + 32u && KM_OWN_PUT_SENT >= KM_OWN_DONE + 16u &&
         KM_OWN_PUT_NUMBER >= KM_OWN_PUT_SENT + 4u &&

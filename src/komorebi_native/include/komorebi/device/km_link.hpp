@@ -112,20 +112,6 @@ namespace km {
     constexpr uint32_t kLinkRun = 2;       // the run the next word counts
     constexpr uint32_t kLinkRunCount = 3;  // messages issued or sent in it
 
-    // Where codes of a link (KM_MESSAGES_GAVE and kLinkGave word 0).
-    constexpr uint32_t kWhereLinkArgs = 50;    // its arguments, or the router's packet
-    constexpr uint32_t kWhereLinkSpace = 51;   // a writer: no outbox space in time
-    constexpr uint32_t kWhereLinkCredit = 52;  // no far inbox packet free
-    constexpr uint32_t kWhereLinkRouter = 53;  // no space at the router
-    constexpr uint32_t kWhereLinkSent = 54;    // a packet's writes did not leave
-    constexpr uint32_t kWhereLinkGap = 55;     // a reserved entry not written
-    constexpr uint32_t kWhereLinkSequence = 56;  // a landed packet's sequence, count
-    constexpr uint32_t kWhereLinkIsland = 57;    // an entry for no rank of this island
-    constexpr uint32_t kWhereLinkOverflow = 58;  // more landed than the inbox holds
-    constexpr uint32_t kWhereLinkRunFound = 59;  // the RUN's counter tile not ready
-    constexpr uint32_t kWhereLinkUp = 60;        // no hello from the far side
-    static_assert(kWhereLinkArgs > kWhereClear, "link where codes after the runtime's");
-
     // Bytes of an outbox entry, and the entries a packet holds, for `message_bytes`.
     inline uint32_t link_entry(uint32_t message_bytes) {
         return kLinkPrefix + message_bytes;

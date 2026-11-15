@@ -99,13 +99,15 @@ program's page and its committed results.
 Two P150A joined by four links, 2026-11-15: a linear layer `Y = X W` in bfloat16, single
 calls, from the [dense page](projects/dense/README.md#a-linear-layer-on-one-card-and-two).
 "Speed-up" is one card's time over two cards'. M = 32 is a decode step (one tile row),
-M = 1024 prefill.
+M = 1024 prefill. The output-dim-sharded rows are calls back to back, Kohaku-TT in the
+same form beside them with its own speed-up; the gathered rows are single calls.
 
 | Linear layer | M x K x N | One card | Two cards | Speed-up | Kohaku-TT, two cards, same form |
 |---|---|---|---|---|---|
-| Output dim sharded, one copy of W | 32 x 8192 x 8192 | 312.3 µs | 172.8 µs | 1.81 | not measured |
-| Output dim sharded, one copy of W | 32 x 5120 x 17408 | 409.4 µs | 223.1 µs | 1.84 | not measured |
-| Output dim sharded, one copy of W | 1024 x 8192 x 8192 | 1,408.0 µs | 734.3 µs | 1.92 | not measured |
+| Output dim sharded, one copy of W | 32 x 8192 x 8192 | 314.7 µs | 176.1 µs | 1.79 | 155.5 µs (1.95) |
+| Output dim sharded, one copy of W | 32 x 5120 x 17408 | 412.3 µs | 227.0 µs | 1.82 | 204.3 µs (1.96) |
+| Output dim sharded, one copy of W | 1024 x 8192 x 8192 | 698.8 µs | 380.6 µs | 1.84 | 382.7 µs (1.86) |
+| Output dim sharded, one copy of W | 4096 x 5120 x 17408 | 3,011.7 µs | 1,762.9 µs | 1.71 | 2,665.6 µs (2.32) |
 | W gathered on both cards | 8192 x 8192 x 8192 | 4,488.1 µs | 2,357.6 µs | 1.90 | 2,482.8 µs (1.83) |
 | W gathered on both cards | 16,384 x 16,384 x 16,384 | 34,544.8 µs | 17,731.5 µs | 1.95 | 17,067.8 µs (1.90) |
 
@@ -544,13 +546,15 @@ models' layers, M = 32 a decode step and M = 1024 or 4096 prefill, microseconds 
 | 32 x 8192 x 8192 | 312.3 | 172.8 | 0.55 | 135.4 | read 21.9, sum 12.0, way in and out 2.3 |
 | 32 x 5120 x 17408 | 409.4 | 223.1 | 0.54 | 179.8 | read 25.8, sum 13.1, way in and out 2.4 |
 | 32 x 17408 x 5120 | 422.4 | 227.4 | 0.54 | 179.8 | read 26.3, sum 18.3, way in and out 1.6 |
-| 1024 x 8192 x 8192 | 1,408.0 | 734.3 | 0.52 | 223.1 | W read by one row of cores at 116 GB/s, 441.3 over the ceiling's time; its cast down the columns 108.8 |
-| 1024 x 5120 x 17408 | 1,864.6 | 964.2 | 0.52 | 296.3 | the same read 575.8, the cast 141.7 |
+| 1024 x 8192 x 8192 | 698.8 | 380.6 | 0.54 | 223.1 | W crosses a column twice: read by the column's cores into its sender, then cast down the column |
+| 1024 x 5120 x 17408 | 961.5 | 518.8 | 0.54 | 296.3 | the same: 247.8 into the sender, 173.2 the cast |
 | 4096 x 5120 x 17408 | 2,960.2 | 1,739.8 | 0.59 | 1,185.2 | the matrix unit, 1,469.4 on the slowest core |
 
 At a decode step the call is the weight's read: 32 x 5120 x 17408 in 223.1 µs is 799
-GB/s over the two cards. At M = 1024 the largest term is the kernel's own: the weight
-is read by one row of cores, at a quarter of the ceiling. A chain of two such layers
+GB/s over the two cards. At M = 1024 the weight's read is spread over each column's
+cores (one row of cores read it before, at a quarter of the ceiling: 1,408.0 µs on one
+card then, 698.8 now, calls back to back); what is left is the kernel's own, the weight
+crossing a column twice. A chain of two such layers
 (hidden to mlp to hidden) gathers the first layer's output to both cards with
 `km::all_gather` inside its kernel, 20.6 to 34.5 µs a call and 5.9 to 14.0 % of the
 chain. The all-gather and all-reduce calls are on `main`, after 0.2.0.
@@ -559,6 +563,15 @@ The **input dimension sharded** form (X and W split along K, each card a partial
 whole output, one addition across the cards) is exact and recorded on the same page. It
 has to move the whole output across a link and add it, 69 to 149 µs at a decode step,
 so it is not the form to use on this hardware.
+
+Beside Kohaku-TT in the same form on the same two cards, 24 shapes
+([table](projects/dense/README.md#beside-kohaku-tt-the-same-shapes-and-forms)): at a
+decode step ours takes 1.03 to 1.33 of its time, and the difference is the sum inside
+a group and the read under the ceiling (7 to 23 µs). At prefill ours takes 0.66 to
+0.99 of its time where a card's half of N is wide (4096 x 5120 x 17408: 1,762.9 against
+2,665.6 µs) and 1.04 to 2.17 where it is narrow (4096 x 9216 x 2560: 949.2 against
+436.8 µs): there one row of cores reads the activation for the whole card. Each of
+these terms is the kernel's own, not the links' or the model's.
 
 What crosses a link, and what it costs ([islands](docs/reference/islands.md)):
 
@@ -712,9 +725,11 @@ program has to be written around is under
    dynamic run on part of the ranks, a put to an island two links away.
 2. **Collectives across islands at the links' rate.** An all-gather and an all-reduce
    are calls, from a kernel and from the host (on `main`, after 0.2.0). A gather of two
-   pages takes 19.7 µs where a message crosses in 4.7 µs, a larger one moves 14 to 23
-   GB/s each way where puts on the same links reach 72.5 GB/s, and the reduce's
-   addition is made by the movers in integer instructions, not by the compute units.
+   pages takes 12.7 µs where a message crosses in 4.7 µs; a larger one moves 15 to 25
+   GB/s each way where puts from every core on the same links reach 72.5 GB/s (one
+   line from DRAM a share, bound by the reads a link core keeps in flight); and the
+   reduce's addition is made by the movers in integer instructions, not by the compute
+   units.
 3. **Tensors an island cannot hold yet.** A tensor is placed by pages of one size set
    at build. A range of one DRAM bank (an X280 thread's region) and a stream whose page
    size is set by the command are named by bank address, so only their own island

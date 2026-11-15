@@ -36,6 +36,7 @@ PROBES = {
     "icache": 12,
     "sfpi": 13,
     "ties": 14,
+    "packer": 15,
 }
 # probe.hpp layout
 NONCE, ERROR, NUM_TIMES, DONE0, TIMES, DATA = 0, 1, 2, 4, 16, 2048
@@ -63,7 +64,15 @@ def to_dev(session, words):
 
 
 def run_kernel(
-    session, probe, in_words, params, defines=(), rvv=False, peer=None, extra_cbs=None
+    session,
+    probe,
+    in_words,
+    params,
+    defines=(),
+    rvv=False,
+    peer=None,
+    extra_cbs=None,
+    in_format="float32",
 ):
     """Runs one probe on core (0, 0); returns (out words as uint32, nonce). With peer
     (x, y), the reader and the CBs also run on that core; extra_cbs maps more CB
@@ -78,7 +87,8 @@ def run_kernel(
     launch = session.launch()
     sizes = {CB_IN: IN_WORDS, CB_OUT: OUT_WORDS, CB_SCRATCH: SCRATCH_WORDS}
     for index, words in sizes.items():
-        launch.cb(both, index, "float32", words * 4, words * 4)
+        fmt = in_format if index == CB_IN else "float32"
+        launch.cb(both, index, fmt, words * 4, words * 4)
     for index, (fmt, page) in (extra_cbs or {}).items():
         launch.cb(core, index, fmt, page, page)
 
@@ -782,61 +792,60 @@ def sfpcfg(session, args):
 
 # ---- probe 11 -----------------------------------------------------------------------
 
+# (op, K): K Dst blocks in rotation; ("mvmul", 0) is one MVMUL pushed once.
 FPU_CONFIGS = (
-    [("none", 1, 0)]
-    + [("mvmul", k, 0) for k in (1, 2, 3, 4, 5, 6, 8)]
-    + [
-        ("mvmul", 8, 1),
-        ("mvmul", 8, 2),
-        ("mvmul", 8, 3),
-        ("elwmul", 1, 0),
-        ("elwmul", 8, 0),
-        ("elwadd", 1, 0),
-        ("elwadd", 8, 0),
-        ("elwsub", 8, 0),
-        ("gapool", 1, 0),
-        ("gapool", 8, 0),
-        ("gmpool", 1, 0),
-        ("gmpool", 8, 0),
-        ("mova2d", 1, 0),
-        ("mova2d", 8, 0),
-        ("movb2d", 8, 0),
-        ("movd2a", 8, 0),
-        ("movd2b", 8, 0),
-    ]
-)  # fmt: skip  (fpu.hpp kConfigs)
+    [("mvmul", 0)]
+    + [("mvmul", k) for k in (1, 2, 3, 4, 5, 6, 8)]
+    + [("elwmul", 1), ("elwmul", 8), ("elwadd", 1), ("elwadd", 8)]
+    + [("mova2d", 1), ("mova2d", 8), ("movb2d", 8)]
+)  # fmt: skip  (fpu.hpp run_config)
 FPU_A = 1 + 2**-6  # every SrcA and SrcB value
+FPU_REPS, FPU_PLAYS = 3, 64  # kReps spans of kReplays replays of the body (fpu.hpp)
+# Rows a block covers, and what a word adds per instruction when SrcA = SrcB = FPU_A:
+# MVMUL phase 0 16 products of 1.0 and FPU_A, ELWMUL one such product, ELWADD A + B.
+FPU_ROWS = {"mvmul": 8, "elwmul": 8, "elwadd": 8, "mova2d": 8, "movb2d": 4}
+FPU_ADDS = {"mvmul": 16 * FPU_A, "elwmul": FPU_A, "elwadd": 1 + FPU_A}
+
+
+def fpu_rows(out, first, count):
+    """One row per config run: spans, cycles per instruction, Dst check."""
+    d = out[DATA:]
+    empty = [int(v) for v in d[32 * len(FPU_CONFIGS) : 32 * len(FPU_CONFIGS) + 3]]
+    base = statistics.median(empty)
+    rows = []
+    for c in range(first, first + count):
+        op, k = FPU_CONFIGS[c]
+        w = d[32 * c : 32 * c + 32]
+        single = k == 0
+        length = 1 if single else (20 if k == 5 else 24)
+        blocks = 1 if single else k
+        n = 1 if single else FPU_REPS * FPU_PLAYS * length // blocks  # a block gets
+        spans = [int(w[0])] if single else [int(v) for v in w[0:3]]
+        hist = [(float(np.uint32(w[5 + 2 * q]).view(np.float32)), int(w[6 + 2 * q]))
+                for q in range(4) if int(w[6 + 2 * q])]  # fmt: skip
+        want = n * FPU_ADDS[op] if op in FPU_ADDS else FPU_A
+        want_words = FPU_ROWS[op] * 16 * blocks
+        rows.append({
+            "config": c, "op": op, "k": k, "spans": spans,
+            "instr_a_span": 1 if single else FPU_PLAYS * length,
+            "per_instr": None if single else
+                round((statistics.median(spans) - base) / (FPU_PLAYS * length), 3),
+            "len_ok": int(w[3]) == length,
+            "nonzero": int(w[4]), "nonzero_expected": want_words,
+            "values": hist, "value_expected": want,
+            "dst_ok": int(w[4]) == want_words and hist == [(want, want_words)],
+        })  # fmt: skip
+    return {"empty_cycles": empty, "rows": rows}
 
 
 def fpu(session, args):
-    words = np.full(1024, f32_bits(FPU_A), dtype=np.uint32)
-    out, nonce = run_kernel(session, "fpu", words, [])
-    d = out[DATA:]
-    rows = []
-    empty = [int(v) for v in d[0:3]]
-    base = statistics.median(empty)
-    for c, (op, k, phase) in enumerate(FPU_CONFIGS):
-        w = d[32 * c : 32 * c + 32]
-        n = 64 * (20 if k == 5 else 24)  # kReplays x the body (fpu.hpp)
-        spans = [int(v) for v in w[0:3]]
-        hist = [(float(np.uint32(w[5 + 2 * q]).view(np.float32)), int(w[6 + 2 * q]))
-                for q in range(4) if int(w[6 + 2 * q])]  # fmt: skip
-        rows.append({
-            "op": op, "k": k, "phase": phase, "instr": n, "spans": spans,
-            "per_instr": round((statistics.median(spans) - base) / n, 3) if c else None,
-            "len_ok": int(w[3]) == n // 64,
-            "nonzero": int(w[4]), "values": hist,
-        })  # fmt: skip
-    # Expected Dst contents per MVMUL phase: 16 products of A x B slices.
-    ah, al = 1.0, 2**-6  # SrcA: implicit 1 + top 4 bits, then the rest
-    bh, bl = FPU_A, 0.0  # SrcB: implicit 1 + top 6 bits, then the rest
-    per_phase = [16 * ah * bh, 16 * al * bh, 16 * ah * bl, 16 * al * bl]
-    return (
-        {"empty_cycles": empty, "rows": rows,
-         "mvmul_add_per_phase_model": per_phase},  # fmt: skip
-        out,
-        nonce,
-    )
+    pair = int(f32_bits(FPU_A) >> 16) * 0x10001  # two bf16 values a word
+    words = np.full(512, pair, dtype=np.uint32)  # one bf16 tile, as the dense kernel's
+    first, count = args.first, args.count
+    if not (first >= 0 and count >= 1 and first + count <= len(FPU_CONFIGS)):
+        raise SystemExit(f"fpu: configs 0..{len(FPU_CONFIGS) - 1}")
+    out, nonce = run_kernel(session, "fpu", words, [first, count], in_format="bfloat16")
+    return fpu_rows(out, first, count), out, nonce
 
 
 # ---- probe 12 -----------------------------------------------------------------------
@@ -890,7 +899,7 @@ def sfpi(session, args):
     return {"values_bad": bad, "inputs_kept": bool(inputs_ok)}, out, nonce
 
 
-# ---- probe 14 -----------------------------------------------------------------------
+# ---- probes 14 and 15 ---------------------------------------------------------------
 
 TIE_CBS = {17: ("bfloat16", 2048), 18: ("bfloat16", 2048)}  # probe.hpp kCbRne, kCbSr
 TIE_A = 2.0**-12  # products 1 and A * A = 2^-24: sums at half an FP32 unit of 1
@@ -910,12 +919,12 @@ def tie_tile():
 
 
 def pack_values():
-    """1024 FP32 values for the packer, element e of tile 1: kind e >> 8 (0 a tie of
-    BF16, 1 just above it, 2 just below, 3 exact), sign bit 7, BF16 mantissa e & 127."""
+    """1024 FP32 values for the packer, element e: kind e >> 9 (0 a tie of BF16, 1
+    exact), sign bit 7, BF16 mantissa e & 127. Every value has no bit below 2^-10, so
+    SrcA's TF32 keeps it whole on its way to Dst."""
     e = np.arange(1024)
-    m, sign, kind = e & 127, (e >> 7) & 1, e >> 8
-    step = [2**-8, 2**-8 + 2**-16, 2**-8 - 2**-16]
-    v = 1 + m / 128 + np.select([kind == 0, kind == 1, kind == 2], step, 0.0)
+    m, sign, kind = e & 127, (e >> 7) & 1, e >> 9
+    v = 1 + m / 128 + np.where(kind == 0, 2**-8, 0.0)
     return np.where(sign == 1, -v, v), kind
 
 
@@ -943,9 +952,7 @@ def ties(session, args):
     t = tie_tile()
     tile = np.zeros(1024, dtype=np.float64)
     tile[:256] = t.reshape(-1)
-    pv, kind = pack_values()
-    words = np.concatenate([f32_bits(tile), f32_bits(pv)])
-    out, nonce = run_kernel(session, "ties", words, [], extra_cbs=TIE_CBS)
+    out, nonce = run_kernel(session, "ties", f32_bits(tile), [])
     d = out[DATA:]
     dst = d[0:1024].view(np.float32).reshape(64, 16)
     exact = t[:8, :] @ t  # Dst[i][j] = sum_k B[i][k] A[k][j], B = rows 0..7
@@ -964,6 +971,14 @@ def ties(session, args):
     rec["srnd_rows_nontie_equal"] = int(
         sum((dst[8 * b : 8 * b + 8] == dst[:8]).sum() for b in range(1, 8))
     )
+    return rec, out, nonce
+
+
+def packer(session, args):
+    pv, kind = pack_values()
+    out, nonce = run_kernel(session, "packer", f32_bits(pv), [], extra_cbs=TIE_CBS)
+    d = out[DATA:]
+    rec = {}
 
     def bf(words16):
         return (words16.astype(np.uint32) << 16).view(np.float32).astype(np.float64)
@@ -975,7 +990,7 @@ def ties(session, args):
     pk = {}
     for name, got in [("rne", p_rne), ("srnd", p_sr)]:
         res = {}
-        for kd, label in enumerate(["tie", "above", "below", "exact"]):
+        for kd, label in enumerate(["tie", "exact"]):
             sel = kind == kd
             g = got[sel]
             res[label] = {
@@ -1019,24 +1034,18 @@ def main():
     p.add_argument(
         "--icache-passes", type=int, default=1000, help="icache: loop passes"
     )
-    p.add_argument(
-        "--allow-unproven",
-        action="store_true",
-        help="run fpu and ties, whose only run did not finish (README section 8)",
-    )
     p.add_argument("--n-float", type=int, default=10000)
     p.add_argument("--rays", type=int, default=32, help="walk: multiple of 32, <= 1024")
     p.add_argument("--ray-set", choices=["camera", "random"], default="random")
     p.add_argument("--form", choices=["a", "b"], default="a")
+    p.add_argument("--first", type=int, default=0, help="fpu: first config")
+    p.add_argument("--count", type=int, default=1, help="fpu: number of configs")
     p.add_argument("--copy", choices=["rvv", "scalar"], default="rvv")
     args = p.parse_args()
     names = args.probe.split(",")
     for name in names:
         if name not in PROBES:
             p.error(f"unknown probe {name!r}; one of {', '.join(PROBES)}")
-    unproven = {"fpu", "ties"} & set(names)
-    if unproven and not args.allow_unproven:
-        p.error(f"{', '.join(sorted(unproven))}: not proven safe (README section 8)")
     if "slab" in names:
         args.nodes = min(args.nodes, 64)
 

@@ -916,20 +916,65 @@ What crosses is a small part: a put line of one page goes out and is confirmed i
 terms are ours: the second island's command starts about 28 µs after the first's (the
 other island waits 0.2 µs for the share; the host stored the islands' commands one after
 the other, fixed since: below), the adds of the reduce, the release and the go (117
-atomics each). The adds take ceil(pages of the share / ranks) pages on the
+atomics each, one multicast each since: below). The adds take ceil(pages of the share / ranks) pages on the
 slowest rank: 1 page at 2 pages, 2 at 1 MiB. The first call of a run costs about
 15 µs more (the service overlay's first load on every rank).
 
 From a kernel, the form a chain of layers calls between layers, two cards, a gather of
 2 pages took 46.6 µs while the host stored each island's command in turn and waited
 for it before the next (the first island waited 36.3 µs for the other's share; storing
-the other island first moved the wait to it). The wait now hands every island's
-command first and stores them back to back: 19.7 µs (the median of 3), of which the
-command 2.4, the entries and the meeting 1.4, the lines out 2.0, the wait for the other
-share 9.5 (about 4.3 the share's line, about 5 the second island's store, still after
-the first's), the confirm 0.1 and the release 4.4. The host's form takes the same wait.
-Still ours: the release (117 atomics, where one multicast would do), the second store
-and the command.
+the other island first moved the wait to it). Handing every island's command first and
+storing them back to back from Python gave 19.7 µs: the command 2.4, the entries and
+the meeting 1.4, the lines out 2.0, the wait for the other share 9.5 (about 4.3 the
+share's line, about 5 the second island's store), the confirm 0.1 and the release 4.4
+(117 atomics).
+
+Two changes remove those two terms. The leader releases a whole island with one
+multicast: it writes a marker (the command's sequence number and the count of its
+releases in the call) into a word of its own control block, then multicasts those 4
+bytes to the same word on the island's other cores, one rectangle each for the rest of
+its row, the other rows of the grid's first panel and the second panel; each rank
+waits for the marker. The reduce's go before the adds is the same release. A team that
+is not a whole island, or an island the host gave no rectangles, keeps an atomic a
+rank. And `IslandRun.send` (the wait sends first) hands every island's lines to one
+native call that writes every dispatcher's ring and read count, then one fence.
+
+Measured again from a kernel (`account.py --cards 0,1 --sizes 2,144,272 --calls
+gather,reduce --forms kernel,host --store wait,old --rounds 3 --stamps`, two cards,
+every share exact, 2026-11-15), microseconds of the island that finishes last, the
+call's last round (each column sums to it; the medians of 3: 12.74, 22.62 and 91.04):
+
+| Term | Gather, 2 pages | Gather, 272 pages | Reduce, 2 pages | Kind |
+|---|---|---|---|---|
+| the command around the ranks | 2.3 | 2.2 | 2.2 | ours |
+| the ranks' entries and their meeting | 1.4 | 1.4 | 1.4 | ours |
+| waiting for the other island's partial | | | 7.3 | its line |
+| the team let go to add | | | 0.9 | ours: one multicast |
+| the adds | | | 70.1 | ours, not changed here |
+| the leader's put lines out | 2.0 | 2.0 | 2.0 | ours: the line's steps |
+| waiting for the other island's share (the reduce: its sums) | 5.3 | 16.2 | 5.6 | its line: hardware and the line's steps |
+| the confirm | 0.1 | 0.1 | 0.1 | |
+| the release of the island's 117 other ranks | 0.9 | 1.0 | 0.9 | ours: one multicast |
+
+The release took 4.4 µs and takes 0.9: the ranks see the marker 0.3 to 0.9 µs after
+the confirm, the leader's last 0.9 waiting for its write to be acknowledged. The wait
+for the other share went from 9.5 to 5.3 µs and is now the same on both islands (5.3
+and 5.2): the second island's store is gone. Stored island by island from Python
+(`--store old`) the first island waits 36.0 µs instead. The host's form takes the same
+times (12.4 µs, 2 pages). On one card split into three islands in a line (`--cards 0
+--islands 3`), the release takes 0.8 to 0.9 µs on every island, including those whose
+first core is not the card's.
+
+The larger gather, 272 pages (557 KB each way): 22.6 µs, 24.6 GB/s each way for the
+call. The term that holds it is the share's put line: 16.2 µs from the lines out to the
+share in, of which 5.3 is a line's own time (one page) and 10.9 the other 135 pages,
+51 GB/s. Each share is one line from the leader, from DRAM; the link cores' page CPUs
+split it (three or four of them; every one at 64 pages or more), each reading 4 pages a
+group with 3 groups in flight. The puts that reach 72.5 GB/s on the same links come
+from 118 cores at once, each from its own L1. The call already spreads its line over
+every page CPU, so what remains is the link cores' engine (its reads in flight a CPU),
+not the call: about 10.9 µs at 557 KB. At 144 pages (295 KB each way) the line takes
+13.1 µs, 7.8 for its last 71 pages (37 GB/s), and the call 20.2 µs, 14.6 GB/s.
 
 On the host every call costs about 270 µs more than on the card: the host's submit and
 wait (ours). On one card split into three islands in a line, 1 MiB: all-gather from a

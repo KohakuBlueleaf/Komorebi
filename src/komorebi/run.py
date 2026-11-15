@@ -15,6 +15,7 @@ import numpy.ma
 
 from komorebi import abi
 from komorebi import state as device_state
+from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
 from komorebi.errors import (
@@ -253,9 +254,15 @@ class Run:
         """Queues a command for `handler` on cores [first, first + count) (default all),
         or on cluster `cluster`'s X280 thread; returns its handle. `result`: the event
         has the result word; `queued`: the kernel picks the cores; `block`: bytes or an
-        array its handlers read; `part`: an island's part of a split group."""
+        array its handlers read; `part`: an island's part of a split group. A handler
+        of a program written as a class takes its arguments (tensors, ints, patterns)
+        in `args`, made into its words."""
         started = time.perf_counter()
         program_field = 0
+        if isinstance(handler, HandlerMethod | ClassHandler):
+            method = handler if isinstance(handler, HandlerMethod) else handler.method
+            result = result or method.returns
+            args = handler.args(*args)
         if cluster is not None:
             handler, group = self._to_thread(handler, cluster, group, exclusive, queued)
         else:
@@ -327,6 +334,15 @@ class Run:
         or a number is a handler of the run's first program."""
         if isinstance(handler, Handler):
             return int(handler), self.program_field(handler.program)
+        if isinstance(handler, HandlerMethod):
+            fields = [
+                field
+                for field, program in enumerate(self.programs)
+                if isinstance(program, handler.owner)
+            ]
+            if not fields:
+                raise ValueError(f"{handler.name}: no program of its class in the run")
+            return int(handler), fields[0]
         if handler.__class__ is not int:
             handler = (
                 self.program.handler(handler)
@@ -573,11 +589,16 @@ class Run:
         return self._given_up_error(handle) if handle in self._given_up else None
 
     def inspect(self, group=None, timeout=10.0):
-        """While the run goes on: the dispatcher reads each core of `group` (default
-        every core): core_state's dict, `live` (each kernel's runtime wait and command)
-        and `trace` (the latest commands' entries); `read` False for a core it could
-        not reach. inspect_ticks: the X280 timer ticks the read took on core 0."""
-        first, count = self._group(group) if group is not None else (0, self.cores)
+        """While the run goes on: the dispatcher reads each rank of `group` (flat, of
+        this island; default every core): core_state's dict, `live` (each kernel's wait
+        and command), `trace` (the latest commands' entries); `read` False for a core
+        it could not reach. inspect_ticks: X280 ticks the read took on core 0."""
+        first, count = (0, self.cores)
+        if group is not None:  # flat ranks, of this island: the dispatcher reads cores
+            low, high = self._part(*self._group(group))
+            first, count = int(low), int(high - low)
+            if count != group[1]:
+                raise ValueError(f"group {tuple(group)}: not this island's ranks")
         handle = self._queue_command(
             self.h["KMD_HANDLER_INSPECT"], (first, count), flags=self._flag_dispatcher
         )
@@ -608,14 +629,14 @@ class Run:
     def submit_many(
         self, handler, firsts, counts, args=None, exclusive=False, part=False
     ):
-        """Queues n commands at once: `handler` a name, a number or n numbers, `firsts`
-        and `counts` the groups (n each, or one for all), `args` an [n, m] matrix of
-        32-bit words (m <= 10) or None; `part` as for submit. Returns the handles as a
-        range."""
+        """Queues n commands at once: `handler` a name, a number, n numbers or a
+        class's handler, `firsts` and `counts` the groups (n each, or one for all),
+        `args` an [n, m] matrix of 32-bit words (m <= 10) or None; `part` as for
+        submit. Returns the handles as a range."""
         started = time.perf_counter()
         self._check_alive()
         program_field = 0
-        if isinstance(handler, str | Handler):
+        if isinstance(handler, str | Handler | HandlerMethod):
             handler, program_field = self._handler(handler)
         columns = [np.asarray(handler), np.asarray(firsts), np.asarray(counts)]
         if args is not None:
@@ -924,7 +945,7 @@ class Run:
     def _given_up_error(self, handle):
         """The CommandTimeout of a command the dispatcher gave up."""
         event, cores = self._given_up[handle]
-        return CommandTimeout(
+        error = CommandTimeout(
             handle,
             event.auxiliary,
             self.sequence(handle),
@@ -934,6 +955,23 @@ class Run:
             recovered=[core["core"] for core in cores if core.get("reset")],
             links=self.links_named(handle),
         )
+        self._name_lines(error)
+        return error
+
+    def _name_lines(self, error):
+        """A program written as a class names, in the error's text, the handler and
+        the Python line each not-reported core waited in."""
+        lines = [
+            line
+            for program in self.programs
+            if getattr(program, "built", None) is not None
+            for line in program.built.lines(error.cores)
+        ]
+        if lines:
+            error.args = (
+                f"{error.args[0]}; in Python: {'; '.join(lines)}",
+                *error.args[1:],
+            )
 
     def _unsequence(self, handle):
         """A rejected command took no sequence number: later commands move down one."""
@@ -982,8 +1020,12 @@ class Run:
         """Stores the commands already handed to the port (one native round, no wait);
         returns the events read meanwhile, not yet filed."""
         if self.port.queued and self._handed > self._base:
-            return self.port.wait(_NO_HANDLES, (self._handed - 1) & M32, 0.0)
+            return self.port.wait(_NO_HANDLES, self._store_upto(), 0.0)
         return ()
+
+    def _store_upto(self):
+        """The number of the last command handed: what _store_handed stores up to."""
+        return (self._handed - 1) & M32
 
     def wait_any(self, handles, timeout=10.0):
         """Sends what is queued and waits for the first event among the handles;
@@ -1567,6 +1609,7 @@ class Run:
         error = CommandTimeout(
             event.handle, event.auxiliary, sequence, group, cores, result
         )
+        self._name_lines(error)
         core, status = self._reset_failed
         if core >= 0:  # a give-up's reset that failed left the command in its core
             names = {self.h[f"KMD_RESET_{name}"]: name for name in RESET_STATUS}
