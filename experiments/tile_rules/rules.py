@@ -23,7 +23,7 @@ import komorebi as km
 from komorebi import native
 from komorebi import session as km_session
 from komorebi.dsl.tile import emit, row_operand, trace, unit_program
-from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
+from komorebi.dsl.tile.ir import BF16, F32, KernelIR, TensorParam
 from komorebi.dsl.tile.matrix import product_program
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import SLOT, WORD, step_program
@@ -57,7 +57,13 @@ TOLERANCE = {
     # the dense project's product: bf16 operands at HiFi2 (SrcA's top 5 bits in its
     # first phase); the emitted words are held to the library's bits
     "product": 2**-4,
+    # a product in the body at HiFi4 (bf16 terms exact, the sum not one rounding:
+    # about 1e-3 on the softmax step's sums), silu after it; the gate two of them
+    "mm_silu": 2**-8,
+    "mm_gate": 2**-7,
 }
+MM_FIDELITY = "HiFi4"  # the tile function's default (km.tile_function)
+MM_PRODUCT_TOLERANCE = 2**-8  # a @ w1 alone at HiFi4 (a band's rows past it)
 PRODUCT_FIDELITY = "HiFi2"  # projects/dense's
 # The hand bodies held to their own bound: attention's exp polynomial is 1.75e-3.
 HAND_TOLERANCE = {"exp": 2e-3}
@@ -111,16 +117,24 @@ BODIES = {
     24: ("add", "band"),
     25: ("gate", "band"),
     26: ("norm", "band"),
+    27: ("product", "trace"),
+    28: ("mm_silu", "emitted"),
+    29: ("mm_gate", "emitted"),
+    30: ("mm_gate", "band"),
 }
-FORMS = ("hand", "emitted", "macro", "stated", "accurate", "ruled", "band")
+FORMS = ("hand", "emitted", "macro", "stated", "accurate", "ruled", "band", "trace")
+# Products inside the tile function (kernels/fused.cpp), one body each; BODY 27 is
+# `a @ w` through the trace, BODY 23's words (checked by `build`), not run again.
+FUSED = {27: "mm_hifi2", 28: "mm_silu", 29: "mm_gate", 30: "mm_gate_band"}
 # The band's bodies (form "band"): the live rows a runtime argument, run at each of
 # `card --rows`; their headers' names.
-BAND = {24: "add_band", 25: "gate_band", 26: "norm_band"}
-BAND_ROWS = {"add": 4, "gate": 4, "norm": 8}  # the rows a band runs in
+BAND = {24: "add_band", 25: "gate_band", 26: "norm_band", 30: "mm_gate_band"}
+BAND_ROWS = {"add": 4, "gate": 4, "norm": 8, "mm_gate": 4}  # the rows a band runs in
 CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax", "attn", "product")
+CASES += ("mm_silu", "mm_gate")
 # Run on the card already, over the same inputs (the tile-front experiment): built
 # and checked here, not run again.
-ALREADY_RUN = {0, 12}
+ALREADY_RUN = {0, 12, 27}
 # Run on the card with the compiler before the rules of the vector-gap work (their
 # headers now hold the rules' code; their numbers stay in the README): not run again.
 EARLIER_CODE = {15, 16}
@@ -129,6 +143,8 @@ INPUTS = {
     "softmax": 1,
     "attn": 1,
     "product": 2,
+    "mm_silu": 2,
+    "mm_gate": 3,
 }
 # The per-core attention body (kernels/attention.cpp): one query row of tiles, steps
 # of 3 key tiles (--units steps), head and value dims of 2 tiles.
@@ -247,7 +263,37 @@ def units():
     out["softstep_accurate"] = step_program(accurate, STEP_WIDTH, STEP_TILE)
     name = f"product_{PRODUCT_FIDELITY.lower()}"
     out[name] = product_program(name, PRODUCT_FIDELITY)
+    out["mm_hifi2"] = unit_program(
+        mm_ir("mm_hifi2", 2, lambda a, w: a @ w), fidelity=PRODUCT_FIDELITY
+    )
+    for name, inputs, fn, rows in (
+        ("mm_silu", 2, lambda a, w: trace.silu(a @ w), False),
+        ("mm_gate", 3, lambda a, w1, w3: trace.silu(a @ w1) * (a @ w3), False),
+        ("mm_gate_band", 3, lambda a, w1, w3: trace.silu(a @ w1) * (a @ w3), True),
+    ):
+        ir = mm_ir(name, inputs, fn)
+        out[name] = unit_program(ir, load_macro=True, rows=rows, fidelity=MM_FIDELITY)
     return out
+
+
+def mm_ir(name, inputs, fn):
+    """The IR of y = fn(a, w1[, w3]) over a stream of bf16 tiles, `@` a tile product."""
+    params = [TensorParam(n, False, BF16) for n in ("a", "w1", "w3")[:inputs]]
+    y = TensorParam("y", True, F32)
+    ir = KernelIR(name, [*params, y], [], {})
+    with trace.Tracer(ir):
+        proxies = [trace.TensorProxy(p) for p in params]
+        ys = trace.TensorProxy(y)
+        for t in trace.grid(trace.num_tiles(proxies[0])):
+            loads = [trace.load(p.tiles[t]) for p in proxies]
+            trace.store(ys.tiles[t], fn(*loads))
+    return ir
+
+
+def code_of(text, name):
+    """The C++ lines of function `name` of an emitted header, without comments."""
+    lines = text.split(f"inline void {name}(", 1)[1].split("\n    }", 1)[0]
+    return [x for x in lines.splitlines()[1:] if not x.lstrip().startswith("//")]
 
 
 def sources_hash():
@@ -277,10 +323,13 @@ def generate():
     card job); returns the units' costs; logs the load-macro rule's refusals."""
     GENERATED.mkdir(exist_ok=True)
     costs = {}
-    for name, unit in units().items():
+    made = units()
+    for name, unit in made.items():
         (GENERATED / f"{name}.hpp").write_text(emit(unit))
         log(unit.dump())
         costs[name] = unit.cost("math")[1]
+        if unit.band:
+            costs[f"{name} 1 row"] = unit.cost("math", 1)[1]
         if unit.parts:
             parts, unit.parts = unit.parts, {}
             costs[f"{name} first part"] = unit.cost("math")[1]
@@ -294,6 +343,13 @@ def generate():
         refused[name] = next(p.done for p in unit.passes if p.name == "load_macro")
     log(f"estimates {json.dumps(costs)}")
     log(f"load-macro refusals {json.dumps(refused)}")
+    library = f"product_{PRODUCT_FIDELITY.lower()}"
+    same = code_of(emit(made["mm_hifi2"]), "mm_hifi2") == code_of(
+        emit(made[library]), library
+    )
+    log(f"a @ w through the trace: the words of {library}: {same}")
+    if not same:
+        sys.exit("mm_hifi2 is not the product the card ran (BODY 23)")
     saved = {"sources": sources_hash(), "costs": costs}
     (GENERATED / "costs.json").write_text(json.dumps(saved))
     return costs
@@ -408,9 +464,12 @@ def launch_attn(session, body, data, stage=3):
     return run, t_out, t_info, nonce
 
 
-def launch_product(session, body, data):
-    """The product (BODY 22, 23) on core (0, 0): per unit one tile of A times one of
-    B, bf16 operands as the dense project's, in `kernels/product.cpp`."""
+def launch_product(session, body, data, rows=32):
+    """The product (BODY 22, 23, 27) on core (0, 0): per unit one tile of A times one
+    of B, bf16 operands as the dense project's, in `kernels/product.cpp`; the bodies
+    with a product inside (28 to 30: one tile of A, W1 and W3 a unit) in
+    `kernels/fused.cpp`, `rows` the band's live rows."""
+    fused = body in FUSED and body != 27
     count = len(data["a"])
     nonce = secrets.randbits(32) | 1
 
@@ -420,31 +479,39 @@ def launch_product(session, body, data):
             np.concatenate([matrix_of(t[None]) for t in tiles]), "bfloat16", "tile"
         )
 
+    inputs = INPUTS[BODIES[body][0]]
     tensors = [bf16_tiles(data["a"]), bf16_tiles(data["b"])]
-    tensors.append(session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32"))
+    if inputs == 3:
+        tensors.append(bf16_tiles(data["p"]))
+    else:
+        tensors.append(session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32"))
     t_out = session.tensor(np.zeros((count, TILE_WORDS), np.uint32), "uint32")
     t_info = session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32")
     core, page = [(0, 0, 0, 0)], 4 * TILE_WORDS
     run = session.launch()
-    run.cb(core, CB_A, "bfloat16", page // 2, 2 * page // 2)
-    run.cb(core, CB_B, "bfloat16", page // 2, 2 * page // 2)
+    held = count if fused else 2  # fused.cpp holds every unit's tiles before the first
+    run.cb(core, CB_A, "bfloat16", page // 2, held * page // 2)
+    run.cb(core, CB_B, "bfloat16", page // 2, held * page // 2)
+    if inputs == 3:
+        run.cb(core, CB_P, "bfloat16", page // 2, held * page // 2)
     run.cb(core, CB_OUT, "float32", page, 2 * page)
     run.cb(core, CB_INFO, "float32", page, page)
     accessors = [w for t in tensors for w in t.accessor_args()]
-    words = [t.address for t in tensors] + [count, 1, 2, 0, 0]
+    words = [t.address for t in tensors] + [count, 1, inputs, 0, 0]
     run.kernel(str(KERNELS / "reader.cpp"), core, 1, accessors, [], [], [(0, 0, words)])
     accessors = t_out.accessor_args() + t_info.accessor_args()
     words = [t_out.address, t_info.address, count]
     run.kernel(str(KERNELS / "writer.cpp"), core, 0, accessors, [], [], [(0, 0, words)])
-    options = {"math_fidelity": PRODUCT_FIDELITY, "fp32_dest_acc_en": True}
+    fidelity = MM_FIDELITY if fused else PRODUCT_FIDELITY
+    options = {"math_fidelity": fidelity, "fp32_dest_acc_en": True}
     run.kernel(
-        str(KERNELS / "product.cpp"),
+        str(KERNELS / ("fused.cpp" if fused else "product.cpp")),
         core,
         2,
         [],
         [("BODY", str(body))],
         [str(GENERATED)],
-        [(0, 0, [nonce, count])],
+        [(0, 0, [nonce, count, rows])],
         **km_session.compute_config(options),
     )
     return run, t_out, t_info, nonce
@@ -458,8 +525,8 @@ def launch(session, body, data, stage=None, rows=32):
     case, form = BODIES[body]
     if case == "attn":
         return launch_attn(session, body, data)
-    if case == "product":
-        return launch_product(session, body, data)
+    if case in ("product", "mm_silu", "mm_gate"):
+        return launch_product(session, body, data, rows)
     defines = setting(body)
     headers = [str(GENERATED), str(ATTENTION)]
     if stage is not None:
@@ -750,6 +817,17 @@ def inputs_of(case, count, seed):
             "b": b.view(np.uint32),
             "p": one.view(np.uint32),
         }
+    if case in ("mm_silu", "mm_gate"):
+        # A in [0.5, 1.5), W1 and W3 in [0.5, 1.5) / 16 (bf16): the products about 0.5
+        # to 4.5, where silu bends, with no cancellation in a sum
+        a = bf16(rng.uniform(0.5, 1.5, (count, TILE_WORDS)))
+        w1 = bf16(rng.uniform(0.5, 1.5, (count, TILE_WORDS)) / 16)
+        w3 = bf16(rng.uniform(0.5, 1.5, (count, TILE_WORDS)) / 16)
+        return {
+            "a": a.view(np.uint32),
+            "b": w1.view(np.uint32),
+            "p": w3.view(np.uint32),
+        }
     if case == "exp":
         # Scores; m each row's max over every unit (the state tile is one page).
         s = (rng.standard_normal((count * 32, 32)) * 8).astype(np.float32)
@@ -906,11 +984,13 @@ def reference(case, data):
         if case == "gate":
             return a / (1 + np.exp(-a)) * b
     if case == "product":
-        out = [
-            tiles_of(matrix_of(a[u : u + 1]) @ matrix_of(b[u : u + 1]))[0]
-            for u in range(len(a))
-        ]
-        return np.stack(out)
+        return products(a, b)
+    if case in ("mm_silu", "mm_gate"):
+        p1 = products(a, b)
+        silu = p1 / (1 + np.exp(-p1))
+        if case == "mm_silu":
+            return silu
+        return silu * products(a, data["p"].view(np.float32).astype(np.float64))
     if case == "exp":
         shift = tiles_of(np.broadcast_to(data["m"][:, None], (32, 32)))
         return np.exp(EXP_SCALE * (a - shift))
@@ -918,6 +998,15 @@ def reference(case, data):
     y = x / np.sqrt((x * x).mean(axis=1, keepdims=True) + EPS) * g
     count = len(x) // 32
     return np.concatenate([tiles_of(y[32 * u : 32 * u + 32]) for u in range(count)])
+
+
+def products(a, b):
+    """float64 tile products a[u] @ b[u] of tiles in face order, in face order."""
+    out = [
+        tiles_of(matrix_of(a[u : u + 1]) @ matrix_of(b[u : u + 1]))[0]
+        for u in range(len(a))
+    ]
+    return np.stack(out)
 
 
 def errors(out, ref):
@@ -980,7 +1069,16 @@ def check_band(case, data, out, info, nonce, rows):
     ref = reference(case, data)
     got["rows"], got["band_end"] = rows, end
     got["vs_float64"] = errors(out[:, live], ref[:, live])
-    got["past_band_is_input"] = bool(np.array_equal(out[:, ~live], data["a"][:, ~live]))
+    if case == "mm_gate":
+        # past the band Dst tile 0 holds a @ w1, the product the vector code reads
+        a, w1 = (data[k].view(np.float32).astype(np.float64) for k in ("a", "b"))
+        past = errors(out[:, ~live], products(a, w1)[:, ~live]) if end < 32 else None
+        got["past_band_vs_product"] = past
+        got["past_band_is_input"] = past is None or past["max"] <= MM_PRODUCT_TOLERANCE
+    else:
+        got["past_band_is_input"] = bool(
+            np.array_equal(out[:, ~live], data["a"][:, ~live])
+        )
     got["ok"] = (
         got["nonce_ok"]
         and got["error"] == 0
