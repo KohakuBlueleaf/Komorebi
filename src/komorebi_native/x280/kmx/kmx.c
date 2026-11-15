@@ -1133,9 +1133,16 @@ int kmx_port_run(
 /* The pull's line in this cluster's (or a peer's) ports line, by word. */
 #define KMX_PULL_AT(field) (KMX_LIM_PORTS + offsetof(kmx_ports, field))
 
-/* This cluster's place among the group's clusters, and how many there are. */
+/* This cluster's place among the group's clusters that serve at least one core of the
+ * run (the ports area's owner table), and how many there are. */
 static uint32_t group_place(uint32_t* group_count) {
-    const uint32_t mask = kmx_clusters(), me = (uint32_t)kmx_cluster();
+    const volatile kmx_ports* ports_line = ports();
+    const volatile uint8_t* area = lim() + ports_line->at;
+    uint32_t serving = 0;
+    for (uint32_t core = 0; ports_line->at != 0 && core < g_port_cores; core++) {
+        serving |= 1u << (area[KMX_PORTS_OWNER + core] >> 2 & 3u);
+    }
+    const uint32_t mask = kmx_clusters() & serving, me = (uint32_t)kmx_cluster();
     uint32_t place = 0;
     *group_count = 0;
     for (uint32_t cluster = 1; cluster < 4; cluster++) {
