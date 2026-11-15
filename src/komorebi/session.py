@@ -352,11 +352,16 @@ def slot_area(base, size, used, slow_code):
     size = -(-size // overlay.ALIGN) * overlay.ALIGN
     if base + size > L1_FAST_CODE and not slow_code:
         raise SlowCodeError(base, size, L1_FAST_CODE)
-    # below the highest index in use: the kernel config keeps its size
+    return base, size, slot_index(used)
+
+
+def slot_index(used):
+    """The slots' buffer index: the highest one below the highest index in `used`
+    (the kernel config keeps its size)."""
     free = set(range(max(used))) - set(used)
     if not free:
         raise ProgramError(f"no circular buffer index below {max(used)} for the slots")
-    return base, size, max(free)
+    return max(free)
 
 
 def visible_card():
@@ -2319,7 +2324,22 @@ class _Backend:
             cores
         )
 
-    def describe(
+    def describe(self, *args, **options):
+        """_describe's descriptor with the slots' buffer declared first, its size
+        set once the overlays are built (_slot_buffer): what is built is launched."""
+        launch = self._describe(*args, **options)
+        self.slot_index = slot_index(self.cb_indices)
+        launch.cb(self._slot_cores(), self.slot_index, "uint32", 64, 64, first=True)
+        return launch
+
+    def _slot_cores(self):
+        """The cores that hold slots: every rank (an island's link cores apart)."""
+        grid = (self.port.grid_x, self.port.grid_y)
+        if self.apart_links:  # the link cores hold their link area there: no slots
+            return programs.rectangles(0, grid[0] * grid[1] - self.apart_links, grid[0])
+        return [(0, 0, grid[0] - 1, grid[1] - 1)]
+
+    def _describe(
         self,
         program,
         sources,
@@ -2766,12 +2786,7 @@ class _Backend:
         address, size, index = slot_area(
             base, slot_bytes, self.cb_indices, self.session.slow_code
         )
-        grid = (self.port.grid_x, self.port.grid_y)
-        cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
-        if self.apart_links:  # the link cores hold their link area there: no slots
-            ranks = grid[0] * grid[1] - self.apart_links
-            cores = programs.rectangles(0, ranks, grid[0])
-        descriptor.cb(cores, index, "uint32", size, size, first=True)
+        descriptor.resize_cb(index, size, size)  # declared by describe
         # a switch's buffers of every program field move up with the rest
         if getattr(self, "switch_layouts", None):
             for layout in self.switch_layouts.values():
