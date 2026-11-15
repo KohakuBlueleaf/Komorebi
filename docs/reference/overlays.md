@@ -512,7 +512,11 @@ the kernel build's `chlkc_descriptors.h` whose format tables hold the class's bu
 first among the includes; the part's index in the cache records that copy, and the add
 checks it. Its parts and its record go into the reserved room. A class named with
 `Program.ahead(other)` is built with group 0's overlays at the load, so the slots fit
-its parts and the add finds them in the cache.
+its parts and the add finds them in the cache. A class with per-core args has its parts
+built with `KM_ARGS_L1` (the record word holding its row's L1 address) and the writer's
+and compute's offsets in the row, so its `arg()` reads the row its load command copied
+in; the record's words 12 to 14 hold the row table's address, a row's bytes and that L1
+address (0, 0, 0 for a class without args).
 
 ### Several programs with overlays
 

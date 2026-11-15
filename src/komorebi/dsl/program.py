@@ -175,6 +175,7 @@ def make(
     self.port_handlers = set(compiled.port_handlers)
     if compiled.rectangle:
         program_args = rectangle_of(self, compiled)
+    self.word_fields = dict(compiled.word_fields)
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
     keyed = constants_keyed(cls, values)

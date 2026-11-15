@@ -388,10 +388,32 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
 5. **Its compute options** that are one a kernel (fidelity, `fp32_dest_acc_en`,
    `dst_full_sync_en`, `math_approx_mode`, `bfp8_pack_precise`) equal the load's;
    refused by name with both values.
+6. **Its per-core args** (a rectangle, a broadcast, `self.x`, `self.y`). A run's
+   per-core args are set at the launch, so an added class's go in a DRAM table, one
+   row per core (the reader's words, then the writer's, then compute's, padded to
+   64 B), and its record holds the table's address, a row's bytes and where the row
+   goes in L1: right after the class's buffers in the switch area. The load command
+   copies the core's row there, and the class's parts (only they: built with
+   `KM_ARGS_L1`) read their args from it; the loaded kernels and the other classes
+   still read theirs from the launch. Why no command of the class runs on a core
+   before its row is in L1: the load command runs on the reader with the four other
+   CPUs (the writer and the three compute CPUs) parked in it until the reader's go;
+   the reader reads the row and waits for the read to land before it sets its
+   buffers up and gives the go; each parked CPU clears its L1 cache when it sees the
+   go; and a core takes its commands in order, so its next command, on any of the five
+   CPUs, starts after the load command. A thread's `kmx_load` is the same load
+   command and returns when it is done. Where that order is not given, by name: the
+   host refuses a command to a group whose cores do not hold the class
+   (`does not hold`), and `run.load` refuses a group that does not contain the
+   class's rectangle; a thread's command to cores that never loaded the class reaches
+   them unchecked (only their compute refuses it, `program start`). The row costs the
+   load command little: 6.80 and 4.78 µs (first load, second) with a 64 B row and 7.86
+   and 4.60 µs with a 128 B row, against 8.02 and 4.34 µs for a class without args and
+   7.84 and 4.38 µs for the loaded gate. Word fields stay refused (their
+   L1 tensors are made with the class).
 
 Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
-`opt` levels or NoCs, per-core args (a rectangle, a broadcast, `self.x`: a run's
-per-core args are set at the launch), overlays of its own or a dynamic handler, buffers
+`opt` levels or NoCs, word fields, overlays of its own or a dynamic handler, buffers
 past the switch area or a part past its slot, an island run, a traced run and a merged
 program. The slots cannot grow under a live run: the load sizes them by the parts of the
 classes named with `Program.ahead(other)`, which the load also builds, or by
@@ -402,7 +424,12 @@ On the card (cores 0 to 59 the gate, 60 to 119 the added class, a row of 4 tiles
 have): its words exact; the add took 7.84 s (its parts linked and checked on its own
 tables) and 72 ms with the class named ahead; its command 9.42 and 9.40 µs against 9.26
 and 9.42 µs loaded at the start; the gate 22.84 µs before the add, 22.40 after and
-22.58 after its group switched back, 0 wrong, the same largest error each time.
+22.58 after its group switched back, 0 wrong, the same largest error each time. With
+per-core args (a class reading x page `self.x` on a rectangle of cores 60 to 119): its
+words exact added live and loaded at the start, 3.66 µs a command added, 3.78 µs at the
+start. A class with a row broadcast of one page a block gave wrong words added AND
+loaded at the start (launch args), with every broadcast delivered and no give-up: a
+fault of that class's broadcast beside the gate, not of the row, cause not found.
 
 ## The lines of a handler
 

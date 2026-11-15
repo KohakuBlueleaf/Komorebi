@@ -65,6 +65,32 @@ def ahead_programs(placed):
     return out
 
 
+def args_defines(program, cores):
+    """Gives an added class with per-core args (a rectangle, a broadcast, self.x) the
+    defines its parts read them from L1 by (KM_ARGS_L1: the record word that holds the
+    row's address, from the control block; the writer's and compute's offsets in the
+    row) and returns ([row words a core], row bytes); ([], 0) without args."""
+    if program.args is None:
+        return [], 0
+    rows = [program.core_args(core) for core in range(cores)]
+    widths = [max((len(row[k]) for row in rows), default=0) for k in range(3)]
+    c = overlay.constants()
+    program.defines = {
+        **program.defines,
+        "KM_ARGS_L1": str(
+            c["kOverlayArea"] + c["kOverlayRecord"] + 4 * c["kRecordArgsL1"]
+        ),
+        "KM_ARGS_WRITER": str(widths[0]),
+        "KM_ARGS_COMPUTE": str(widths[0] + widths[1]),
+    }
+    words = [
+        [*r, *[0] * (widths[0] - len(r)), *w, *[0] * (widths[1] - len(w)), *k]
+        for r, w, k in rows
+    ]
+    row_bytes = -(-4 * max(sum(widths), 1) // programs.CB_ALIGN) * programs.CB_ALIGN
+    return words, row_bytes
+
+
 def layout_of(backend, program):
     """({index: four words}, end) of `program`'s buffers in the switch area."""
     session = importlib.import_module("komorebi.session")
@@ -84,9 +110,16 @@ def pad_reserve(backend, placed, reserve):
     backend.switch_pad = max(set(range(programs.SWITCH_BUFFERS)) - used)
     backend.switch_loaded = len(placed.programs)
     for other in ahead:
-        reserve = max(reserve, layout_of(backend, other)[1])
+        backend.session._hand_nocs(other)
+        _, row_bytes = args_defines(other, placed.cores)
+        reserve = max(reserve, _args_at(layout_of(backend, other)[1]) + row_bytes)
     align = programs.CB_ALIGN
     return -(-reserve // align) * align + align
+
+
+def _args_at(end):
+    """Where an added class's per-core row goes: after its buffers, aligned."""
+    return -(-end // programs.CB_ALIGN) * programs.CB_ALIGN
 
 
 def ahead_overlays(backend, placed, number, recipes):
@@ -361,10 +394,10 @@ def refused(run, program):
         loaded.kernel_noc("writer"),
     ):
         return f"{program.name}: other NoCs than the loaded kernels'"
-    if program.args is not None:
+    if getattr(program, "word_fields", None):
         return (
-            f"{program.name}: per-core args (a rectangle, self.x / self.y, a "
-            "broadcast): a run's per-core args are set at the launch"
+            f"{program.name}: word fields (their L1 tensors are made with the class "
+            "and named in its args at the load)"
         )
     if program.overlays or program.messages is not None:
         return f"{program.name}: overlays of its own or a dynamic handler"
@@ -403,7 +436,10 @@ def add(run, program):
     backend, started = run.backend, time.perf_counter()
     session = backend.session
     program.program_field, program.overlay_shift, program.args_at = field, 0, 0
+    session._hand_nocs(program)
+    rows, row_bytes = args_defines(program, run.cores)
     layout, end = layout_of(backend, program)
+    at, end = _args_at(end), _args_at(end) + row_bytes
     start = backend.switch_start + backend.switch_shift
     top = backend.switch_base + backend.switch_reserve + backend.switch_shift
     if end > top:
@@ -428,6 +464,18 @@ def add(run, program):
     placed = added._place(run, made, [images])[0]
     table = [placed.get(part, (0, 0)) for part in overlay.PARTS]
     words = programs.record_words(field, layout, table)
+    if rows:  # the per-core rows: a DRAM page a core, copied by the load (kRecordArgs)
+        c = overlay.constants()
+        table = np.zeros((run.cores, row_bytes // 4), np.uint32)
+        for core, row in enumerate(rows):
+            table[core, : len(row)] = row
+        rows_tensor = importlib.import_module("komorebi.session")._words(session, table)
+        backend.io.append(rows_tensor)
+        if rows_tensor.aligned_page_bytes != row_bytes:
+            raise added.AddError(f"{program.name}: rows of {row_bytes} B are not pages")
+        words[c["kRecordArgs"]] = rows_tensor.address
+        words[c["kRecordArgsBytes"]] = row_bytes
+        words[c["kRecordArgsL1"]] = at
     address, row = run._switch["spare"].pop(field)
     banks = overlay.constants()["kOverlayBanks"]
     tensor = run._switch["tensor"]
