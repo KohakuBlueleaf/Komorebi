@@ -1632,6 +1632,9 @@ static int serve_commands(void) {
 static uint32_t g_ranks_open __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_said __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_last __attribute__((section(".data"))) = 0;
+/* 1 + the core whose inbox place a ROOM give-up left unfilled: its inbox reads in
+ * order and stops there, so every later run of the load is refused (BROKEN) */
+static uint32_t g_ranks_broken __attribute__((section(".data"))) = 0;
 static volatile uint8_t* g_l1[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
 static uint8_t g_l1_mine[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
 static volatile uint8_t* g_ranks_status[KM_X280_RANKS_MAX]
@@ -1878,6 +1881,12 @@ int kmx_messages_run(
         messages->at = messages->head;
         messages->last = now;
     }
+    if (g_ranks_broken != 0) { /* refused at once: the dispatcher ends the run */
+        for (uint32_t rank = 0; rank < line->ranks; rank++) {
+            ranks_give_up(&g_ranks_state[rank], KMX_GAVE_BROKEN);
+        }
+        return KMX_BAD;
+    }
     g_ranks_function = function;
     g_ranks_arg = arg;
     for (uint32_t rank = 1; rank < line->ranks && status == KMX_OK; rank++) {
@@ -2003,6 +2012,7 @@ int kmx_messages_forward(
             x280_fence_ir();
         }
         if (position - *credit >= line->inbox_messages) {
+            g_ranks_broken = core + 1u;
             ranks_give_up(messages, KMX_GAVE_ROOM);
             return KMX_BAD;
         }

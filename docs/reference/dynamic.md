@@ -501,7 +501,10 @@ end command; `kmx_messages_next` returns no message once it sees the end. An X28
 that gives up writes a `gave up` line (`KMX_GAVE_*` in word 3, its queue's head in word
 2) and stops taking messages, and the dispatcher stops the run as for a core that gives
 up ([When something goes wrong](#when-something-goes-wrong)), naming core index
-`KM_X280_RANK_CORE(r)`.
+`KM_X280_RANK_CORE(r)`. A rank that gives up for room (`KMX_GAVE_ROOM`) has taken the
+core's next inbox position and leaves it unfilled; the core reads its inbox in order,
+so every later run of the load is refused at once, each X280 rank giving up
+`KMX_GAVE_BROKEN` (5), until the next load.
 
 Limits of this version: the X280 ranks are on one cluster of a session of one island;
 an X280 rank sends only to core ranks; a program with bodies (`body_bytes`) has no X280

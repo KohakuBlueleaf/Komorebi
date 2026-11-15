@@ -288,12 +288,14 @@ typedef struct {
 #define KMX_GAVE_RANK 2u    /* forward or send named no core rank */
 #define KMX_GAVE_STOPPED 3u /* a stop, or the thread's deadline */
 #define KMX_GAVE_LINE 4u    /* the status line's window could not be opened */
+/* an earlier run of the load gave up ROOM with a core's inbox place taken */
+#define KMX_GAVE_BROKEN 5u
 
 /* X280 ranks of this cluster (0: the program declares none). */
 int kmx_ranks(void);
 
 /* Core 0, not nested: waits for the next dynamic run (by `deadline`), then runs
- * function(x280_core, messages, arg) on each X280 rank; KMX_OK once all returned. */
+ * function on each rank: KMX_OK once all returned; KMX_BAD after a ROOM give-up. */
 int kmx_messages_run(
     void (*function)(int x280_core, kmx_messages* messages, void* arg),
     void* arg,

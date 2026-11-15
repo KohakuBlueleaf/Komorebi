@@ -52,7 +52,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `function` | whether the command still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
 | `int kmx_pull_run(const km_command_t* command, const kmx_pull* settings, kmx_event* event)` | the lead's 0, not nested | submits `command` and serves its pulls on every X280 core until its event: units 0 to `settings->units - 1` in ranges of `settings->per`, by `settings->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `settings->log`), `settings->pick` (the range) or `settings->pick_word` (the range and a word the core gets with it, [the pull's word](#the-pulls-word)) | as `kmx_port_run`; `KMX_BAD` also for a bad mode, both `pick` and `pick_word` set, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
 | `int kmx_ranks(void)` | any | X280 cores 0 to `kmx_ranks() - 1` are ranks of the program's dynamic run ([X280 cores as ranks](#x280-cores-as-ranks)) | 0 to 4 (0: none on this cluster) |
-| `int kmx_messages_run(void (*function)(int x280_core, kmx_messages* messages, void* arg), void* arg, uint64_t deadline)` | 0, not nested | waits by `deadline` for the next dynamic run's `RUN`, then runs `function(x280_core, messages, arg)` on each X280 rank, cores 1 to `kmx_ranks() - 1` spawned, and joins them; afterwards it takes and consumes what a `function` left | `KMX_OK` once all returned; `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ranks or inside `kmx_parallel` |
+| `int kmx_messages_run(void (*function)(int x280_core, kmx_messages* messages, void* arg), void* arg, uint64_t deadline)` | 0, not nested | waits by `deadline` for the next dynamic run's `RUN`, then runs `function(x280_core, messages, arg)` on each X280 rank, cores 1 to `kmx_ranks() - 1` spawned, and joins them; afterwards it takes and consumes what a `function` left | `KMX_OK` once all returned; `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ranks or inside `kmx_parallel`, or at once after a rank of the load gave up for room (each rank's `gave` `KMX_GAVE_BROKEN`) |
 | `const volatile uint32_t* kmx_messages_next(kmx_messages* messages)` | the rank's | the next message of the rank's queue, `message_bytes / 4` words (word 0 the runtime's, `messages->handler` its handler), valid until the next call; waits while the queue is empty | the message; 0 once the run ended or the rank gave up |
 | `int kmx_messages_forward(kmx_messages* messages, uint32_t rank, const uint32_t* message, uint32_t handler)` | the rank's | the message taken last goes on at core rank `rank` (below `messages->count`), handled there by `handler`; words 1 on of `message` are sent | `KMX_OK`; `KMX_BAD` once it gave up (no such core rank, or no room in the core's inbox within the wait) |
 | `int kmx_messages_send(...)`, same arguments | the rank's | a new message, as forward, taking one of the quota | as forward; `KMX_FULL` with no quota left (nothing sent) |
@@ -144,7 +144,8 @@ dynamic `RUN` it takes part in; each rank's function takes its messages with
 consume. `kmx_messages` holds the run (`run`, the `RUN`'s sequence), the rank (`rank`),
 the core ranks (`count`, `first` the group's first core), the taken message's
 `handler`, the `quota`, `sent`, `consumed` and `gave` (`KMX_GAVE_ROOM` 1, `_RANK` 2,
-`_STOPPED` 3, `_LINE` 4; 0: it did not give up).
+`_STOPPED` 3, `_LINE` 4, `_BROKEN` 5: a run after a `ROOM` give-up of the load, refused;
+0: it did not give up).
 
 ```c
 static void rank(int x280_core, kmx_messages* messages, void* arg) {
