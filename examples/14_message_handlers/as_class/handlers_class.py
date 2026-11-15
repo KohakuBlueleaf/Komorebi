@@ -1,8 +1,7 @@
-"""The message handlers of ../message_handlers.py written as a class: three dynamic
-handlers, each a method whose loop takes the messages that name it, compiled into the
-program's compute kernel (build/messagehandlers/ beside this file); each core's counts
-in a field of words the host reads after the run. The same runs and replay as the
-hand program (beside it with --beside). See README.md.
+"""../message_handlers.py as a class: three dynamic handlers, each a method looping
+over the messages that name it, compiled into compute (build/messagehandlers/ here);
+each core's counts a field of words the host reads after the run, checked against the
+replay as the hand program's (beside it with --beside). See README.md.
 """
 
 import argparse
