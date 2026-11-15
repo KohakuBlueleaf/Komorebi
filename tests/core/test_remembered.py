@@ -70,3 +70,32 @@ def test_a_runner_in_pythons_prefix_keeps_nothing(cache, monkeypatch):
     said = []
     assert remembered.Memory(said.append).script is None
     assert "a runner such as pytest: none kept" in said[0]
+
+
+def test_a_session_that_cannot_reopen_opens_with_headroom(cache):
+    assert remembered.headroom(76288) == 9536
+    assert remembered.headroom(40000) == 8192  # at least 8 KiB
+    remembered.Memory(lambda message: None).wanted(75264)  # entry 76,288
+    said = []
+    made = remembered.Memory(said.append, room=True)
+    assert (made.size, made.opened) == (76288, 85824)
+    assert said == [
+        "kernel buffer 85,824 B at the open (remembered for this script: 76,288 B "
+        "and 9,536 B of headroom)"
+    ]
+
+
+def test_with_headroom_the_entry_shrinks_only_below_three_quarters(cache):
+    remembered.Memory(lambda message: None).wanted(75264)  # entry 76,288
+    made = remembered.Memory(lambda message: None, room=True)  # opened 85,824
+    made.largest = 70656  # over three quarters of 85,824: kept
+    made.closed()
+    assert remembered.read()["scripts"][made.script] == 76288
+    made.largest = 61056  # under: the entry is this run's
+    made.closed()
+    assert remembered.read()["scripts"][made.script] == 61056
+    one_card = remembered.Memory(lambda message: None)  # exact: no headroom
+    assert one_card.opened == 61056
+    one_card.largest = 60000
+    one_card.closed()
+    assert remembered.read()["scripts"][one_card.script] == 60000

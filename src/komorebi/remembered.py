@@ -13,6 +13,13 @@ from komorebi import _env, kernel_buffer, native
 from komorebi.program import Program
 
 FILE = "kernel_buffer.json"
+HEADROOM_LEAST = 8 << 10  # a session that cannot reopen opens with an eighth more
+
+
+def headroom(size):
+    """The bytes a session that cannot reopen (islands, a mesh) opens with beyond a
+    remembered `size`: an eighth of it, at least HEADROOM_LEAST, 64-byte aligned."""
+    return -(-max(size // 8, HEADROOM_LEAST) // 64) * 64
 
 
 def script_key(shape):
@@ -82,10 +89,14 @@ def write(memory):
 class Memory:
     """A session's remembered kernel buffer: the size it opens at, chosen from
     `expect` (a made Program) or the script's entry, and what its loads need;
-    `default` names the size it opens at without one."""
+    `default` names the size it opens at without one; `room`: it opens with headroom
+    and its entry shrinks only below three quarters of that (it cannot reopen)."""
 
-    def __init__(self, log, expect=None, shape="card", default="the runtime's"):
-        self.log, self.shape = log, shape
+    def __init__(
+        self, log, expect=None, shape="card", default="the runtime's", room=False
+    ):
+        self.log, self.shape, self.room = log, shape, room
+        self.opened = None  # the size it opens at: the entry, with headroom if `room`
         self.script = script_key(shape)
         self.largest = 0  # the largest buffer a load of this run needed
         memory = read(log)
@@ -99,7 +110,10 @@ class Memory:
             why = "remembered for this script" if self.size else None
         if self.size is not None:
             self.size = kernel_buffer.need(self.size - kernel_buffer.MARGIN)
-            log(f"kernel buffer {self.size:,} B at the open ({why})")
+            extra = headroom(self.size) if room else 0
+            self.opened = self.size + extra
+            more = f": {self.size:,} B and {extra:,} B of headroom" if extra else ""
+            log(f"kernel buffer {self.opened:,} B at the open ({why}{more})")
         elif self.script is None:
             log(
                 f"kernel buffer: {default} at the open (no script file, or a runner "
@@ -137,9 +151,14 @@ class Memory:
         self.largest = need if smaller else max(self.largest, need)
 
     def closed(self):
-        """At the session's close: the script's entry is this run's largest."""
+        """At the session's close: the script's entry is this run's largest; with
+        headroom, only once that is under three quarters of what it opened with."""
         if self.script is None or not self.largest:
             return
         memory = read()
-        memory["scripts"][self.script] = self.largest
+        before = memory["scripts"].get(self.script, 0)
+        keep = self.room and self.opened and self.largest * 4 >= self.opened * 3
+        memory["scripts"][self.script] = (
+            max(before, self.largest) if keep else self.largest
+        )
         write(memory)

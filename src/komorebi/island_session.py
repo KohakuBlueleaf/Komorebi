@@ -2501,13 +2501,13 @@ class IslandSession:
 
     def _remembered(self, expect):
         """The kernel buffer this session opens at: the size remembered for the script
-        (or `expect`, a made Program), else KERNEL_BYTES; a message service a link
-        keeps KERNEL_BYTES_SERVICES (message_services)."""
+        (or `expect`, a made Program) with headroom, else KERNEL_BYTES; a message
+        service a link keeps KERNEL_BYTES_SERVICES (message_services)."""
         shape = f"islands {len(self.cards)} cards x {self.split}"
         self._memory = remembered.Memory(
-            self.log, expect, shape, default=f"{KERNEL_BYTES:,} B"
+            self.log, expect, shape, default=f"{KERNEL_BYTES:,} B", room=True
         )
-        size = self._memory.size or KERNEL_BYTES
+        size = self._memory.opened or KERNEL_BYTES
         if self.message_links:
             size = max(size, KERNEL_BYTES_SERVICES)
         return min(size, session_module.KERNEL_BUFFER_MAX)
