@@ -27,7 +27,8 @@ inline uint32_t chain_tag(uint32_t sequence, uint32_t record) {
     return sequence * kChainRecordsMax + record;
 }
 
-// The command a record names: the chain command's header and sequence, its words.
+// The command a record names: the chain command's header and sequence, its words
+// (one ORed with the chain's a0 where the info word names it).
 inline km_command_t chain_command(const km_command_t& chain, const uint32_t* record) {
     km_command_t command = chain;
     command.group = record[kChainGroup];
@@ -41,6 +42,8 @@ inline km_command_t chain_command(const km_command_t& chain, const uint32_t* rec
     command.a7 = record[kChainArguments + 7];
     command.a8 = record[kChainArguments + 8];
     command.a9 = record[kChainArguments + 9];
+    const uint32_t token = (record[kChainInfo] >> kChainTokenShift) & kChainTokenMask;
+    reinterpret_cast<uint32_t*>(&command)[token] |= token != 0 ? chain.a0 : 0u;
     return command;
 }
 
@@ -48,6 +51,56 @@ inline bool chain_member(const uint32_t* record, uint32_t me) {
     const uint32_t first = record[kChainGroup] & 0xFFFFu;
     return me >= first && me - first < (record[kChainGroup] >> 16);
 }
+
+#if defined(SPLIT_CHAIN_STAMPS) && !defined(KM_OVERLAY_PART)
+#define CHAIN_STAMP(statement) statement
+#else
+#define CHAIN_STAMP(statement)
+#endif
+
+#if defined(SPLIT_CHAIN_STAMPS) && !defined(KM_OVERLAY_PART)
+// This kernel's row of the record it runs (0: none), its chain's start, the words
+// stamped once a record (bits).
+inline uint32_t chain_stamp_row = 0;
+inline uint32_t chain_stamp_start = 0;
+inline uint32_t chain_stamp_once_bits = 0;
+
+inline void chain_stamp_add(uint32_t word, uint32_t cycles) {
+    if (chain_stamp_row == 0) {
+        return;
+    }
+#if !defined(COMPILE_FOR_TRISC)
+    invalidate_l1_cache();  // the writer zeroes the rows after a read-out
+#endif
+    volatile tt_l1_ptr uint32_t* row = km::l1(chain_stamp_row);
+    row[word] += cycles;
+}
+
+inline void chain_stamp(uint32_t word) {
+    chain_stamp_add(word, km::wall() - chain_stamp_start);
+}
+
+inline void chain_stamp_once(uint32_t word) {
+    if ((chain_stamp_once_bits >> word & 1u) == 0) {
+        chain_stamp_once_bits |= 1u << word;
+        chain_stamp(word);
+    }
+}
+
+// Kernel `kernel` takes a record of stamp row `record` (info's top byte; the chain's
+// buffer at `area`).
+inline void chain_stamp_take(uint32_t area, uint32_t kernel, const uint32_t* record) {
+    chain_stamp_row = 0;
+    const uint32_t index = record[kChainInfo] >> 24;
+    if (index < kChainStampRecords) {
+        const uint32_t row = kernel * kChainStampRecords + index;
+        chain_stamp_row = area + kChainStamps + row * kChainStampWords * 4;
+    }
+    chain_stamp_once_bits = 0;
+    chain_stamp_add(0, 1);
+    chain_stamp(kChainStampTaken);
+}
+#endif
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "api/dataflow/dataflow_api.h"
@@ -108,13 +161,16 @@ struct ChainRange {
     uint32_t count;
 };
 
-// The running chain on this mover: the record, the one before it (its input's
-// writer), the record's index and its tag's base (not in a chain: off).
+// The running chain on this mover: the record, the one before (its input's writer), its
+// index, its tag's base (off: no chain); the next W early: allowed, its tag and block.
 struct ChainNow {
     bool on;
     bool has_before;
+    bool ahead_on;
     uint32_t record;
     uint32_t tag_base;
+    uint32_t ahead_tag;
+    uint32_t ahead_block;
     uint32_t now[kChainWords];
     uint32_t before[kChainWords];
 };
@@ -210,6 +266,7 @@ template <typename Kernel>
 bool chain_input(const Kernel& core) {
     uint32_t target = 0;
     if (!chain_target(core, target)) {
+        CHAIN_STAMP(chain_stamp(kChainStampMarked));
         return true;
     }
     const uint32_t code = core.poll_at(
@@ -222,30 +279,42 @@ bool chain_input(const Kernel& core) {
     if (code != km::kGaveNone) {
         core.gave_up(km::kStMover, code, km::kWherePort, 0xC0u, chain_now.record);
     }
+    CHAIN_STAMP(chain_stamp(kChainStampMarked));
     return code == km::kGaveNone;
 }
 
-// Until the record's input is marked: its W blocks into this mover's half once A has
-// freed it, a block a pass. `skip`: the chunks W's stream starts after. False: gave up.
+// Until the input is marked: W's blocks once A freed the half (`held`: some are in),
+// then the next record's (`after`); `skip`, `after_skip` the blocks. False: gave up.
 template <typename Kernel, typename Accessor>
 bool chain_weight_first(
-    const Kernel& core, const km::Stream<Accessor>& weights, uint32_t& skip
+    const Kernel& core,
+    const km::Stream<Accessor>& weights,
+    const km::Stream<Accessor>& after,
+    bool held,
+    uint32_t& skip,
+    uint32_t& after_skip
 ) {
     skip = 0;
+    after_skip = 0;
     uint32_t target = 0;
     if (!chain_target(core, target)) {
+        CHAIN_STAMP(chain_stamp(kChainStampMarked));
         return true;
     }
-    km::MoveCursor cursor;
+    CHAIN_STAMP(uint32_t full_at = 0);
+    km::MoveCursor cursor, later;
     uint32_t filled = 0, drained = 0;
-    if (!km::move_begin(weights, cursor, filled, drained)) {
+    if (
+        !km::move_begin(weights, cursor, filled, drained) ||
+        !km::move_begin(after, later, filled, drained)
+    ) {
         core.gave_up(km::kStMover, km::kGaveBadItem, km::kWhereData, 0, 0);
         return false;
     }
     const uint32_t half = weights.pair.half(km::kMover);
     const uint64_t limit = static_cast<uint64_t>(core.args().wait_limit) << 10;
     uint64_t deadline = km::wall64() + limit;
-    bool freed = false;
+    bool freed = held, any_after = false;
     for (uint32_t pass = 0; !chain_marked(target); pass++) {
         freed = (
             freed ||
@@ -254,21 +323,33 @@ bool chain_weight_first(
             )
         );
         bool issued = false, open = false, reads = false, writes = false;
+        bool later_issued = false;
         if (
             freed && !km::move_offer(core, weights, cursor, issued, open, reads, writes)
         ) {
             core.gave_up(km::kStMover, km::kGaveBadItem, km::kWhereData, 0, 0);
             return false;
         }
-        if (issued) {
+        if (
+            freed && !open &&
+            !km::move_offer(core, after, later, later_issued, open, reads, writes)
+        ) {
+            core.gave_up(km::kStMover, km::kGaveBadItem, km::kWhereData, 0, 0);
+            return false;
+        }
+        if (issued || later_issued) {
+            CHAIN_STAMP(chain_stamp_once(kChainStampWeight));
             if (!km::move_settle(core, true, false)) {
                 return false;
             }
             km::Moved moved = {0, 0};
             km::move_hand_on(weights, cursor, issued, moved);
+            any_after = any_after || later_issued;
+            km::move_hand_on(after, later, later_issued, moved);
             deadline = km::wall64() + limit;
             continue;
         }
+        CHAIN_STAMP(full_at = freed && full_at == 0 ? km::wall() | 1u : full_at);
         if ((pass & 15) == 15) {
             if (core.stop()) {
                 core.gave_up(km::kStMover, km::kGaveStop, km::kWherePort, 0xC0u, 0);
@@ -280,7 +361,14 @@ bool chain_weight_first(
             }
         }
     }
+    CHAIN_STAMP(
+        chain_stamp_add(kChainStampFull, full_at != 0 ? km::wall() - full_at : 0)
+    );
+    CHAIN_STAMP(chain_stamp(kChainStampMarked));
     skip = cursor.block < cursor.blocks ? cursor.block : cursor.blocks;
+    after_skip = (
+        any_after ? (later.block < later.blocks ? later.block : later.blocks) : 0
+    );
     return true;
 }
 
@@ -308,6 +396,42 @@ inline void chain_copy(uint32_t tag, uint32_t* record) {
     for (uint32_t word = 0; word < kChainWords; word++) {
         record[word] = slot[word];
     }
+}
+
+// The record after this one when this mover may read its W early: a product this core
+// is in, already in the ring (`words`). False: none (`words` this record's).
+template <typename Kernel>
+bool chain_next(const Kernel& core, uint32_t* words) {
+    const uint32_t tag = chain_now.tag_base + chain_now.record + 1;
+    for (uint32_t word = 0; word < kChainWords; word++) {  // none: this record's
+        words[word] = chain_now.now[word];
+    }
+    invalidate_l1_cache();
+    if (
+        !chain_now.on || !chain_now.ahead_on || chain_now.now[kChainNext] == 0 ||
+        static_cast<int32_t>(*chain_word(kChainReady) - tag) < 0
+    ) {
+        return false;
+    }
+    chain_copy(tag, words);
+    return (
+        chain_member(words, core.me()) && words[kChainArguments + 4] != kSplitOp &&
+        words[kChainArguments + 5] < kSplitPlans
+    );
+}
+
+// This record's W blocks this mover read in the record before (0: none).
+inline uint32_t chain_ahead_taken() {
+    const uint32_t tag = chain_now.tag_base + chain_now.record;
+    const uint32_t block = chain_now.ahead_tag == tag ? chain_now.ahead_block : 0;
+    chain_now.ahead_tag = 0;
+    return block;
+}
+
+// The next record's W read early up to block `block` (0: none).
+inline void chain_ahead_keep(uint32_t block) {
+    chain_now.ahead_tag = block != 0 ? chain_now.tag_base + chain_now.record + 1 : 0;
+    chain_now.ahead_block = block;
 }
 
 // Waits until the word at `offset` has reached `tag`. False: gave up (recorded).
@@ -357,10 +481,14 @@ void chain_records(km::Reader& reader, const km_command_t& command, Product prod
         reader.gave_up(km::kStReader, km::kGaveBadItem, km::kWhereData, 0xC2u, 0);
         return;
     }
+    CHAIN_STAMP(chain_stamp_start = km::wall());
+    chain_now.ahead_on = (command.a1 & kChainAheadOff) == 0;
+    chain_now.ahead_tag = 0;
     for (uint32_t record = 0; record < kChainRecordsMax; record++) {
         uint32_t words[kChainWords];
         chain_copy(base + record, words);
         const uint32_t next = words[kChainNext];
+        CHAIN_STAMP(const uint32_t fetch_at = km::wall());
         if (next != 0) {
             if (
                 record >= 1 &&
@@ -383,9 +511,14 @@ void chain_records(km::Reader& reader, const km_command_t& command, Product prod
                 return;
             }
         }
+        CHAIN_STAMP(const uint32_t fetched = km::wall() - fetch_at);
         chain_enter(record, base, words);
         if (chain_member(words, reader.me())) {
+            CHAIN_STAMP(chain_stamp_take(chain_address(0), 0, words));
+            CHAIN_STAMP(chain_stamp_add(kChainStampLast, fetched));
             product(chain_command(command, words));
+            CHAIN_STAMP(chain_stamp(kChainStampDone));
+            CHAIN_STAMP(chain_stamp_row = 0);
         }
         if (next == 0 || reader.given_up(command)) {
             break;
@@ -450,6 +583,7 @@ bool chain_mark(const Writer& writer, const km_command_t& command) {
     if (!writer.flushed(km::kFlushWrites, km::kStWriter)) {
         return false;
     }
+    CHAIN_STAMP(chain_stamp(kChainStampLast));
     const uint32_t width = chain_width(writer, now);
     const uint32_t low = (
         (writer.me() - km::first(command)) / chain_plan(writer, now, kSpS) * width
@@ -495,6 +629,9 @@ template <typename Product>
 bool chain_writer(km::Writer& writer, const km_command_t& command, Product product) {
     const uint32_t base = chain_tag(command.sequence, 0);
     bool ok = true;
+    CHAIN_STAMP(chain_stamp_start = km::wall());
+    chain_now.ahead_on = (command.a1 & kChainAheadOff) == 0;
+    chain_now.ahead_tag = 0;
     for (uint32_t record = 0; ok && record < kChainRecordsMax; record++) {
         if (!chain_reached(writer, kChainReady, base + record, km::kStWriter)) {
             ok = false;
@@ -506,8 +643,10 @@ bool chain_writer(km::Writer& writer, const km_command_t& command, Product produ
         chain_enter(record, base, words);
         if (chain_member(words, writer.me())) {
             const km_command_t one = chain_command(command, words);
+            CHAIN_STAMP(chain_stamp_take(chain_address(0), 1, words));
             chain_credits(writer, one);
             ok = product(one);
+            CHAIN_STAMP(chain_stamp_row = 0);
             invalidate_l1_cache();
             if (*chain_word(kChainCreditDue) != 0) {  // no emit came: its credit kept
                 *chain_word(kChainCreditDue) = 0;
@@ -529,11 +668,36 @@ bool chain_writer(km::Writer& writer, const km_command_t& command, Product produ
     return ok && code == km::kGaveNone;
 }
 
+#if defined(SPLIT_CHAIN_STAMPS)
+inline void chain_stamps_zero() {
+    for (uint32_t offset = 0; offset < kChainStampBytes; offset += 4) {
+        *chain_word(kChainStamps + offset) = 0;
+    }
+}
+
+// Writer, SPLIT's kChainStampsMode: this core's stamps to page `me` at a0, then zero.
+template <typename Writer>
+bool chain_stamps_out(const Writer& writer, const km_command_t& command) {
+    const InterleavedAddrGen<true> pages = {
+        .bank_base_address = command.a0, .page_size = kChainStampPage
+    };
+    noc_async_write(
+        chain_address(kChainStamps), get_noc_addr(writer.me(), pages), kChainStampBytes
+    );
+    if (!writer.flushed(km::kFlushWrites, km::kStWriter)) {
+        return false;
+    }
+    chain_stamps_zero();
+    return true;
+}
+#endif
+
 // Reader, before its first command: the chain's words zero (nothing counts them yet).
 inline void chain_start() {
     for (uint32_t offset = 0; offset < kChainSlots; offset += 4) {
         *chain_word(offset) = 0;
     }
+    CHAIN_STAMP(chain_stamps_zero());
 }
 #endif
 #else
@@ -542,6 +706,13 @@ inline void chain_start() {
 template <typename Product>
 void chain_compute(km::Compute& compute, const km_command_t& command, Product product) {
     const uint32_t base = chain_tag(command.sequence, 0);
+    CHAIN_STAMP(uint32_t stamps = 0);  // pack's: the chain's buffer, from unpack
+    CHAIN_STAMP(UNPACK((compute.hand(
+        ckernel::ThreadId::PackThreadId,
+        ckernel::get_tile_l1_byte_address(kChainBuffer, 0)
+    ))));
+    CHAIN_STAMP(PACK((stamps = compute.handed(ckernel::ThreadId::UnpackThreadId))));
+    CHAIN_STAMP(PACK((chain_stamp_start = km::wall())));
     for (uint32_t record = 0; record < kChainRecordsMax; record++) {
         uint32_t words[kChainWords] = {};
         uint32_t ok = 0;
@@ -599,7 +770,9 @@ void chain_compute(km::Compute& compute, const km_command_t& command, Product pr
             return;
         }
         if (chain_member(words, compute.me())) {
+            CHAIN_STAMP(PACK((chain_stamp_take(stamps, 2, words))));
             product(chain_command(command, words));
+            CHAIN_STAMP(PACK((chain_stamp_row = 0)));
         }
         if (words[kChainNext] == 0) {
             break;

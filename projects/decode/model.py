@@ -24,6 +24,9 @@ BLOCK_WIDTH, CHUNK = 8, 2  # every plan's output block (1 x 8 tiles) and K chunk
 # The chunks' movers (dense/plan.py PATTERNS) by product, AB for the rest; mover A's
 # half holds DEPTH chunks (AAAB gives it three of four).
 PATTERNS, DEPTH = {"gate_up": "AAAB"}, 3
+# The chain's halves (A's, B's chunks): the free L1 holds a record's next weight whole
+# (but gate_up's) and the record after's first chunks behind it (stage 7).
+CHAIN_HALVES = (5, 3)
 GATE_TILES = BLOCK_WIDTH // 2  # a gate_up block: 4 tiles of the gate, then 4 of up
 # A sum's tree takes at most half of a core's 8 ports (the other half is the set of
 # the product in flight beside it): 4 rounds, groups of at most 16 cores.
@@ -101,10 +104,11 @@ def from_config(path):
     )
 
 
-def plans(model, cores=CORES, chunk=CHUNK, patterns=None):
+def plans(model, cores=CORES, chunk=CHUNK, patterns=None, halves=(DEPTH, 1)):
     """{plan: Split} for the layer's shapes, sharing every buffer: 1 x 8 output blocks,
-    chunks of `chunk` K tiles dealt by `patterns` (PATTERNS), groups as large as the
-    cores allow up to GROUP_MOST, one arrival buffer of two sets, a slot per round."""
+    `chunk` K tiles a chunk dealt by `patterns` (PATTERNS), W halves of `halves` chunks
+    (A's, B's), groups as large as the cores allow up to GROUP_MOST, one arrival buffer
+    of two sets, a slot per round."""
     patterns = PATTERNS if patterns is None else patterns
     named = {plan_of(model, name): kind for name, kind in patterns.items()}
     shapes = {}
@@ -127,7 +131,8 @@ def plans(model, cores=CORES, chunk=CHUNK, patterns=None):
             cores=cores,
             arrive=arrive,
             pattern=named.get(shape, "AB"),
-            depth=DEPTH,
+            depth=halves[0],
+            depth_b=halves[1],
         )
         for shape in shapes
     }

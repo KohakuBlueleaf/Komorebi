@@ -69,6 +69,7 @@ void kernel_main() {
         }
         if (split_op_part(command, kOpWriter)) {  // the operation writes the block
 #if defined(SPLIT_CHAIN)
+            SPLIT_STAMP(kChainStampDone);
             return split_op(writer, command) && chain_mark(writer, command);
 #else
             return split_op(writer, command);
@@ -77,6 +78,7 @@ void kernel_main() {
         if (!km::reduce_result(writer, kCbSplitOut, block_tiles)) {
             return false;
         }
+        SPLIT_STAMP(kChainStampDone);
         const uint32_t group_index = (writer.me() - km::first(command)) / group_size;
         const uint32_t first_row = group_index / blocks_per_row * block_height;
         const uint32_t first_column = group_index % blocks_per_row * block_width;
@@ -119,6 +121,11 @@ void kernel_main() {
         if (km::handler(command) == kHandlerSplit && command.a4 == kChainMode) {
             return chain_writer(writer, command, product);
         }
+#if defined(SPLIT_CHAIN_STAMPS)
+        if (km::handler(command) == kHandlerSplit && command.a4 == kChainStampsMode) {
+            return chain_stamps_out(writer, command);
+        }
+#endif
         return product(command);
     });
 #else

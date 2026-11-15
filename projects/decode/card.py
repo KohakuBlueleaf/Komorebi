@@ -34,9 +34,9 @@ DEFAULT_BODIES = ()
 # The layer as one command: each core goes on to the next product by itself (stage 6;
 # the split's SPLIT_CHAIN), its records written by the thread; off: a command a step.
 CHAIN = abi.constants(dense_card.SPLIT_KERNELS / "chain.h")
-# The kernel buffer with the chain: its code takes 78,128 B (mock build), the
-# runtime's own 70,656; the L1 it takes is from the 217 K no buffer uses.
-CHAIN_KERNEL_BYTES = 80 * 1024
+# The kernel buffer with the chain: its code (stamped, with the next W early) is over
+# 80 K, the runtime's own 70,656; the L1 it takes is from the 217 K no buffer uses.
+CHAIN_KERNEL_BYTES = 84 * 1024
 
 
 def scale_fp32(bodies):
@@ -103,8 +103,7 @@ class Decode:
     """The model's layers loaded on a session: tensors, the program and its thread.
     `layers` layers of weights in DRAM (write_layer()); `trace`: the commands a core
     stamps (0: none); `chunk`, `patterns`: md.plans()'s; `context`: the cache's rows a
-    KV head and layer; `bodies`: BODIES'; `chain`: the layer as one command (stage 6).
-    """
+    KV head and layer; `bodies`: BODIES'; `chain`: a layer as one command (stage 6)."""
 
     def __init__(
         self,
@@ -119,9 +118,11 @@ class Decode:
         context=4096,
         bodies=DEFAULT_BODIES,
         chain=True,
+        stamps=False,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.chain = chain
+        self.stamps = stamps and chain  # SPLIT_CHAIN_STAMPS: chain_stamps() reads them
         if chain and trace:  # its words take the trace buffer's index (chain.h)
             raise ValueError("the chain's program runs untraced (trace=0)")
         self.bodies = tuple(bodies)
@@ -129,7 +130,8 @@ class Decode:
             raise ValueError(f"bodies {self.bodies}: of {BODIES}")
         if self.bodies:
             emitted_bodies.require()
-        self.plans = md.plans(model, chunk=chunk, patterns=patterns)
+        halves = md.CHAIN_HALVES if chain else (md.DEPTH, 1)
+        self.plans = md.plans(model, chunk=chunk, patterns=patterns, halves=halves)
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
         for name in ("o", "down"):  # their roots write a row's squares, a tile a group
             if self.plans[md.plan_of(model, name)].groups() != D["DC_PARTS"]:
@@ -151,6 +153,8 @@ class Decode:
         }
         self.tensors["constants"] = dense_card.bf16_tensor(session, md.constants())
         self.tensors["attend"] = dense_card.bf16_tensor(session, md.attend_constants())
+        if self.stamps:
+            self.stamp_tensor = dense_card.prof_tensor(session, self.cores())
         if layers > D["DC_QK_LAYERS"]:
             raise ValueError(
                 f"{layers} layers: the qk tensor holds {D['DC_QK_LAYERS']}"
@@ -202,7 +206,10 @@ class Decode:
             kernels=dense_card.SPLIT_KERNELS,
             buffers=buffers(plans[0], self.keys_most, self.bodies, self.chain),
             args=lambda core: (table, table, table),
-            defines={"SPLIT_CHAIN": 1} if self.chain else {},
+            defines=(
+                ({"SPLIT_CHAIN": 1} if self.chain else {})
+                | ({"SPLIT_CHAIN_STAMPS": 1} if self.stamps else {})
+            ),
             compile_args={"reader": tile_args * 2, "writer": tile_args * 3},
             compute={
                 "math_fidelity": "HiFi2",
@@ -333,6 +340,24 @@ class Decode:
             raise km.KomorebiError(f"attend: {event}")
         return event
 
+    def cores(self):
+        """The cores the layer's commands take at most (attend's, o's)."""
+        return self.attend_plan.s * self.attend_plan.groups()
+
+    def chain_stamps(self, timeout=5.0):
+        """Every core's chain stamps since the last read (chain.h), then zeroed:
+        [cores, kernels, records, words] uint32 sums of AICLK cycles."""
+        tensor, cores = self.stamp_tensor, self.cores()
+        args = [tensor.address, 0, 0, 0, CHAIN["kChainStampsMode"], 0, 0, 0, 0, 0]
+        handle = self.run.submit("split", (0, cores), args, exclusive=True)
+        event = self.run.wait(handle, timeout=timeout)
+        if event.kind != "done":
+            raise km.KomorebiError(f"chain stamps: {event}")
+        (pages,) = self.session.read(tensor)
+        shape = (CHAIN["kChainStampKernels"], CHAIN["kChainStampRecords"])
+        words = pages.reshape(-1).view(np.uint32).reshape(cores, -1)
+        return words[:, : CHAIN["kChainStampBytes"] // 4].reshape(cores, *shape, -1)
+
     def write_layer(self, layer, weights):
         """Layer `layer`'s weights (layer_weights(): {name: (pages, values)}) into DRAM
         through the host channel, as the card's products take them: seconds taken."""
@@ -401,11 +426,13 @@ class Decode:
         rows=1,
         chain=None,
         pair=False,
+        token=False,
+        ahead=False,
     ):
         """One LAYERS command: its result word and stats slot. `bare` products only,
         `parts` their parts only, `apart` q, k, v as three, `overlap` two in flight;
-        `position` the first token's (default: the cache's end); `attend` ATTEND_MODES';
-        `rows` tokens a step; `chain` the layer as one command, `pair` its first two."""
+        `rows` tokens a step from `position` (default: the cache's end); `attend` its
+        modes; `chain` a layer, `pair` 2 records, `token` a token; `ahead` W early."""
         slot = self.slot
         self.slot += 1
         mode = 3 if parts else int(bare)
@@ -416,6 +443,10 @@ class Decode:
             raise ValueError("the chain: the fused layer, on a program built for it")
         mode |= D["DC_LAYERS_CHAIN"] if chain else 0
         mode |= D["DC_LAYERS_PAIR"] if chain and pair else 0
+        if token and (pair or not chain):
+            raise ValueError("a token as one command: the chain's whole layers")
+        mode |= D["DC_LAYERS_TOKEN"] if token else 0
+        mode |= 0 if ahead or not chain else D["DC_LAYERS_AHEAD_OFF"]
         steps = tokens * rows
         position = self.context - steps if position is None else position
         if not 0 <= position <= self.context - steps or not 1 <= rows <= md.TILE:
@@ -434,6 +465,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
+THREAD_PARTS = ("records", "submit", "wait")  # DC_THREAD_*: the chain's thread
 STEPS = ("qkv", "q", "k", "v", "attend", "o", "gate_up", "down", "chain")  # DC_STEP_*
 
 
@@ -453,6 +485,11 @@ def decode_slot(words):
         )
         / TICKS_PER_MICROSECOND,
     }
+    out["thread"] = {}
+    for part, name in enumerate(THREAD_PARTS):
+        at = D["DC_ST_THREAD"] + 2 * part
+        ticks = int(words[at]) | int(words[at + 1]) << 32
+        out["thread"][name] = ticks / TICKS_PER_MICROSECOND
     for step, name in enumerate(STEPS):
         at = D["DC_ST_STEPS"] + D["DC_ST_STEP_WORDS"] * step
         ticks = int(words[at]) | int(words[at + 1]) << 32
