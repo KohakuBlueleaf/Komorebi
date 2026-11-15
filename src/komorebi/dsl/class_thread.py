@@ -158,6 +158,13 @@ def added(self, cluster=1, clusters=None, **kwargs):
 def merged(program, compiled, tensors):
     """A merged program's thread header: the merged numbers, each class's functions
     under its own name; a class declaring a thread refused (add one after)."""
+    parts = merged_parts(program, compiled, tensors)
+    program.__dict__["thread_parts"] = parts
+    write_base(program, parts)
+
+
+def merged_parts(program, compiled, tensors):
+    """The parts of a merged program's thread header (merged)."""
     for source in program.classes:
         if declared(source.cls)[0] is not None:
             raise ProgramError(
@@ -189,9 +196,7 @@ def merged(program, compiled, tensors):
         )
         for name, value in source.given["constants"].items():
             constants[f"{source.cls.__name__.upper()}_{name.upper()}"] = value
-    parts = Parts(compiled, ordered(compiled, tensors), handlers, constants, ())
-    program.__dict__["thread_parts"] = parts
-    write_base(program, parts)
+    return Parts(compiled, ordered(compiled, tensors), handlers, constants, ())
 
 
 def class_parts(program, compiled, tensors, opted):
@@ -226,11 +231,12 @@ def ordered(compiled, tensors):
 
 def write_base(program, parts):
     """The header in the build folder: every thread's but the words' count and the
-    regions, which a thread's own copy gives."""
+    regions, which a thread's own copy gives. The build wrote this very text (its
+    `thread=`: the folder is named by it), so this leaves the file as it is."""
     made = importlib.import_module("komorebi.dsl.program")  # it imports this module
     name = made.thread_header_name(parts.compiled)
     text = header_text(parts)
-    (program.built.folder / name).write_text(text)
+    made.put(program.built.folder / name, text)
     program.built.files[name] = text
 
 
