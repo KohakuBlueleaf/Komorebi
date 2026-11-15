@@ -35,6 +35,11 @@ place to ask a question and to be wrong.
 - [wall_clock](wall_clock/README.md): whether the Tensix wall clock is one count for
   the whole chip. It is: every core within 90 cycles of core (0, 0), no measurable
   drift, 1343 to 1347 MHz against host time with the driver reporting 1350.
+- [tile_front](tile_front/README.md): the SiLU compute body emitted by
+  `komorebi.dsl.tile` against tt-metal's `silu_tile` on one core of a Blackhole p150a.
+  The tile body is the same instruction stream modulo registers (the setup differs by
+  two counter resets and one `SFPNOP`), the output is equal bit for bit, and both take
+  1730 cycles a tile.
 - [feeder_runs](feeder_runs/README.md): the longer runs of the map/collect example
   under the test feeder (a thousand jobs, every group size, groups in flight at once),
   run by hand.
