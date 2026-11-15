@@ -82,10 +82,11 @@ island session (a card split, or two cards) reserves `overlay.ISLAND_SERVICE_SLO
 43,008 B, and checks the first island's table: the island loads' service part has the
 links' and the tensor table's services built in, at most 41,856 B logged (two cards;
 39,512 B on a card split in three, 39,552 B in two), and 1,152 B of margin. The load
-logs a part over the reserve. On card 0 split in two, example 01's class: the build's
-table 43,008 B of slot and 32,848 B of host transfer buffer, the load's 39,552 B and
-82,000 B (the island load's host transfer buffer is larger, and the build does not
-count it).
+logs a part over the reserve. The host transfer row is the load's own: its chunk counts
+the page of the dispatcher's state area (40,960 B), which every load makes before the
+transfer buffer. On card 0 split in two, example 01's class: the build's table and the
+load's are equal in every row but the slot (43,008 B reserved, 39,552 B loaded): host
+transfer buffer 82,000 B in both (the build counted 32,848 B before).
 
 The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` eight hex
 digits of what changes the generated sources (the plan, each tensor's format, page
