@@ -988,6 +988,76 @@ its 28 layers, qkv's from the previous layer's down):
   against 11.3 us a layer): its rest, 3.0 against 0.3, is the command's cores computed
   once more from five commands; its records, 12.1 against 8.8, are not explained yet.
 
+### The next weight earlier
+
+The term the account names: cores that wait for their mark with the W half full while
+DRAM idles (the command 345 us against 237 us of reads at the ceiling at T 4096). A
+half held 3 chunks on mover A and 1 on mover B (a chunk: 2 x 8 tiles, 32 KB), so a
+waiting core held at most 128 KB of the next weight. The card's own L1 table (the
+load's) leaves 151,856 B a core free with the chain's 80 K kernel buffer; the mock's
+table showed 202,112, as it lacks the runtime's 32,848 B host transfer buffer (the
+first try at deeper halves was refused at the load).
+
+Two changes, by the bytes the free L1 allows (the waits of the token's table):
+
+- **(a) more of the next weight in the wait**: the chain's program takes halves of 5
+  chunks on A and 3 on B (`model.CHAIN_HALVES`, plan `depth_b`; +139,264 B, the kernel
+  buffer 84 K). A core then holds all of its next record's share but gate_up's: qkv
+  16 to 32 KB more (5.4 us of DRAM at the ceiling), o nothing (it held all of o
+  already), gate_up 128 KB more (12.3 MB, bounded by its wait to 19.7 us), down all of
+  it (13.8 us): at most 38.9 us a layer.
+- **(b) the weight after the next**: once a mover has issued all of its next record's
+  W, it goes on with the record after's into the same half, behind it (the record is
+  in the reader's ring already; `chain_next`, `chunk_w_stream`); that record's own
+  stream starts after the blocks read. It adds o's wait (gate_up's first chunks: 5.5 a
+  core, 16.9 MB, 34 us) and down's (the next layer's qkv: 1.5 of mover A's chunks,
+  10.9 us): with (a), at most 84 us a layer. In a FIFO half the record after can only
+  follow a next record held whole, so (b) is built on (a)'s halves.
+
+Measured (`results/qwen3-1.7b-chain-halves-x10.json` for (a),
+`results/qwen3-1.7b-chain-ahead-x10.json` for (a) + (b); the token, stamped, 28
+layers, 10 tokens; "3/1": the token before this change):
+
+| us a layer | T 4096 halves 3/1 | T 4096 (a) | T 4096 (a)+(b) | T 1024 3/1 | T 1024 (a) | T 1024 (a)+(b) | T 256 3/1 | T 256 (a) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| qkv | 47.1 | 41.0 | 49.7 | 43.6 | 34.2 | 34.8 | 43.1 | 29.6 |
+| attend | 94.6 | 93.1 | 91.5 | 58.6 | 53.8 | 70.8 | 52.0 | 50.5 |
+| o | 31.0 | 62.1 | 16.5 | 37.8 | 69.7 | 23.2 | 36.2 | 68.6 |
+| gate_up | 147.7 | 118.6 | 129.2 | 147.5 | 124.0 | 130.6 | 148.2 | 125.0 |
+| down | 24.8 | 24.2 | 27.3 | 24.6 | 25.0 | 27.3 | 24.5 | 24.6 |
+| **the command** | **345.4** | **339.2** | **314.3** | **312.3** | **307.0** | **286.9** | **304.2** | **298.5** |
+| **a layer** | **346.4** | **340.2** | **315.2** | **313.3** | **307.1** | **287.8** | **305.2** | **298.6** |
+| tokens a second | 103.1 | 105.0 | 113.3 | 114.0 | 116.3 | 124.1 | 117.0 | 119.6 |
+
+| waits with W's half full (cores, us) | T 4096 halves 3/1 | T 4096 (a) | T 4096 (a)+(b) | T 1024 3/1 | T 1024 (a) | T 1024 (a)+(b) | T 256 3/1 | T 256 (a) |
+|---|---|---|---|---|---|---|---|---|
+| qkv | 112, 35.1 | 107, 30.0 | 110, 27.7 | 111, 36.6 | 107, 31.9 | 109, 28.1 | 112, 36.2 | 105, 32.4 |
+| o | 120, 40.2 | 120, 40.5 | 120, 32.1 | 120, 32.1 | 120, 31.5 | 120, 21.6 | 120, 30.9 | 120, 29.9 |
+| gate_up | 94, 19.7 | 93, 27.0 | 96, 20.6 | 94, 19.3 | 94, 20.6 | 96, 18.6 | 94, 19.3 | 94, 22.0 |
+| down | 95, 56.1 | 89, 58.7 | 82, 50.6 | 93, 57.2 | 89, 56.9 | 82, 49.8 | 92, 57.8 | 90, 56.2 |
+
+- **(a) gave 6.2 us a layer** (T 4096: 346.4 to 340.2; 1024 6.2, 256 6.6), where up to
+  38.9 were open: gate_up's span fell 29 us, but o's grew 31 (gate_up's deeper share
+  is now read under o, whose cores held all of o already), and every record still has
+  its cores waiting with a full half (o 120 cores, down 89).
+- **(a) + (b) gave 31.1 us a layer at T 4096 and 25.5 at T 1024** (315.2 and 287.8; 113.3
+  and 124.1 tokens a second): o's span is 16.5 against 31.0, its wait 32 us against
+  40. With (a) and with (a) + (b) the token's output equals a command a step's to the
+  last digit at 2 and 28 layers (T 4096).
+- **(b) hangs at T 256**, at its first token, every time: 119 cores' compute waits for
+  an input past its limit with their movers already in the next record's mark wait,
+  and one root (core 15, a root of the 15-core plans) waits for its tree's last round.
+  At T 256 a KV head's ranks 7 to 14 hold no key tile in attend (at T 1024 every rank
+  holds some); that is the one difference found, and the cause is not found. So the
+  early read of the record after is **off by default** (`Decode.job(ahead=False)`; the
+  chain command's a1 `kChainAheadOff` bit; `bench.py --beside ahead` runs it beside),
+  and (a) is on. The real prompt has not run with the deeper halves.
+
+What is left at T 4096 with (a), by the account: DRAM idle under waits with full halves
+(o's 40 us on 120 cores, down's 59 on 89, qkv's 30 on 107, gate_up's 27 on 93); (b)
+takes 25 to 31 of it where it runs. Outside this step, as recorded: attend above its
+hardware about 42, the operations about 32, the tree's rounds about 23.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
