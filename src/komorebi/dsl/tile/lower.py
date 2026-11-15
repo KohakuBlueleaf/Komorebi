@@ -8,7 +8,7 @@ import struct
 
 from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile import macro, sfpu
-from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
+from komorebi.dsl.tile.ir import A_DTYPES, TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.matrix import PHASES, tile_products
 from komorebi.dsl.tile.unit import (
     FIXED,
@@ -41,7 +41,9 @@ from komorebi.dsl.tile.unit import (
 ADDR_MOD, MACRO_ADDR_MOD = 7, 6
 ROWS, FACES = 8, 4
 BANDS = 4  # bands of 4 rows a face (rule band: a body runs the bands of live rows)
-TILE = 64  # Dst address units of one fp32 tile: 4 faces of 16 rows
+TILE = 64  # Dst address units of a tile in either Dst: 4 faces of 16 rows
+# SFPLOAD / SFPSTORE's instr_mod0 by Dst: its own format (fp32), FP16A (a 16-bit Dst)
+DEST_MODES = {"fp32": 0, "fp16a": 1}
 # Operand tiles a whole-tile stream body reads (Dst tiles 0 ..).
 OPERANDS = 3
 # The readers of a MAD-class result that the unit does not hold back (rule
@@ -84,6 +86,7 @@ class Body:
         # constants of `whole` are loaded once for the whole unit (their values in
         # `held`, which the layout pass places in the highest work registers)
         self.whole, self.whole_cache, self.held = set(), {}, set()
+        self.mode = 0  # SFPLOAD / SFPSTORE's format: Dst's own (FP16A on a 16-bit Dst)
 
     def fresh(self):
         self.count += 1
@@ -105,7 +108,7 @@ class Body:
         return self.op(
             "SFPLOAD",
             note or f"Dst + {address}",
-            instr_mod0=0,
+            instr_mod0=self.mode,
             sfpu_addr_mode=ADDR_MOD,
             dest_reg_addr=address,
         )
@@ -115,6 +118,7 @@ class Body:
             "SFPSTORE",
             note,
             lreg_ind=value,
+            instr_mod0=self.mode,
             sfpu_addr_mode=ADDR_MOD,
             dest_reg_addr=address,
         )
@@ -1251,7 +1255,7 @@ def per_row_prepass(code, addresses):
             "SFPSTORE",
             {
                 "lreg_ind": value,
-                "instr_mod0": 0,
+                "instr_mod0": operand["instr_mod0"],
                 "sfpu_addr_mode": ADDR_MOD,
                 "dest_reg_addr": address,
             },
@@ -1285,12 +1289,12 @@ def _step_mode(incr):
 
 
 def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"):
-    """The unit program of stream kernel `ir` on fp32 Dst: operand k (a load, or a
-    tile product `a @ w` issued first at `fidelity`) in Dst tile k of the caller's
+    """The unit program of stream kernel `ir` on `dest` Dst (DEST_MODES): operand k (a
+    load, or a product `a @ w` issued first at `fidelity`) in Dst tile k of the caller's
     `dst`, the result in tile 0. `load_macro`: try the load-macro rule (a refusal is a
     pass's record); `rows`: the band, live rows a runtime argument (`band_faces`)."""
-    if dest != "fp32":
-        raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
+    if dest not in DEST_MODES:
+        raise PlanError(f"komorebi.dsl.tile: no unit program for a {dest} Dst")
     if fidelity not in PHASES:
         fail(f"{ir.name}: no fidelity {fidelity!r}: one of {', '.join(PHASES)}")
     band = bool(rows)
@@ -1313,12 +1317,16 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
     if len(chain.operands) > OPERANDS:
         fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     dtypes = {t.dtype for t in ir.tensors}
-    if not dtypes <= set(TILE_DTYPES):
+    read = {t.dtype for t in ir.tensors if not t.output}
+    if dest == "fp16a" and not read <= set(A_DTYPES):
+        fail(f"{ir.name}: a 16-bit Dst's tensors are of the A family")
+    if dest == "fp32" and not dtypes <= set(TILE_DTYPES):
         fail(
             f"{ir.name}: tensors are fp32 or of the B family "
             f"({', '.join(TILE_DTYPES[1:])})"
         )
     body = Body()
+    body.mode = DEST_MODES[dest]
     per_row = [k for k, leaf in enumerate(chain.operands) if leaf.kind == "bcast_col"]
     if per_row:
         # A per-row operand (a state tile, each row's value in all its lanes): a row
@@ -1403,7 +1411,9 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         CONSTANT_REGISTERS[i]: value for i, value in enumerate(body.prog.values())
     }
     plan = None
-    if load_macro and not per_row:
+    if load_macro and dest != "fp32":  # the macro's load and store: fp32 Dst's
+        unit.passes.append(Pass("schedule", "load_macro", [f"refused: {dest} Dst"]))
+    elif load_macro and not per_row:
         try:
             plan = macro.fit(body.code)
             if band and (ROWS // plan.rows) % BANDS:

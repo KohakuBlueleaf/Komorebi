@@ -14,6 +14,10 @@ BF16, F32 = "bfloat16", "float32"
 # whose tiles the unpacker gives exactly (no A family: an fp32 Dst reads it wrong).
 BLOCK_B = ("bfp8_b", "bfp4_b", "bfp2_b")
 TILE_DTYPES = (F32, BF16, *BLOCK_B)
+# The A family's formats, read into a 16-bit Dst: its unit program loads and stores
+# fp16 there (SFPLOAD / SFPSTORE in the FP16A mode) and computes in fp32 between.
+F16, BLOCK_A = "float16", ("bfp8", "bfp4", "bfp2")
+A_DTYPES = (F16, *BLOCK_A)
 BF16_EXACT = (BF16, *BLOCK_B)  # formats whose every value a bf16 holds
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

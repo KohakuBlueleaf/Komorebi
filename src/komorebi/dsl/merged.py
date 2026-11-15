@@ -477,6 +477,13 @@ def build(self):
     ]
     compiled, tensors = compiler.compile_merged(self.cname, parts, room)
     self.compiled = compiled
+    made.place_handlers(  # a command by the merged copy or by its class's handler
+        compiled,
+        {
+            method.name: [method, handler_method(sources[index].cls, own)]
+            for (index, own), method in self.methods.items()
+        },
+    )
     defines, rect, nocs = {}, None, None
     for source in sources:
         for key, value in (source.given.get("defines") or {}).items():
@@ -561,10 +568,11 @@ def build(self):
     self.built_handlers = list(compiled.handlers)
     for key, method in getattr(type(self), "merged_methods", {}).items():
         mine = self.methods[key]  # the class's handler gives a call's words too
-        method.words, method.widths, method.returns = (
+        method.words, method.widths, method.returns, method.placed = (
             mine.words,
             mine.widths,
             mine.returns,
+            mine.placed,
         )
     for name in compiled.overlays:
         sources_of = {"reader": built.folder / name / "movement.cpp"}
