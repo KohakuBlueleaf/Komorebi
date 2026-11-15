@@ -375,6 +375,36 @@ if (kmx_load(kProgramWiden, k, old_k - k, kmx_time() + KMX_TICKS_PER_SECOND, &ev
 - **Not possible.** A load from a stream or a graph (rejected, reason 1), from a cast or
   a pull; a load in the combined form; a load of a dynamic program.
 
+#### A class added to the live run
+
+A class added with `run.addon(program)` ([host](host.md#a-class-added-to-a-live-run))
+takes the next program field, and its record goes into the row the load reserved for
+it: the load reserves a record row for every field an added class may take (each field
+whose overlay number stays above the programs' own overlays, at most 61; one record is
+576 B in each bank). The add then raises `programs` in the live thread's ring line, so
+`kmx_load` reaches it as it reaches a loaded program; a field past the reserved rows
+is refused by name. The thread's image was built before the class existed, so it has
+no `kProgram...` or handler constant for it: the host gives the thread the field, the
+handler number and the call's words in a command,
+
+```python
+field, handler, words = run.thread_words(Project.rows, (x, w, y))  # nothing sent
+run.submit("call", cluster=1, args=[field | handler << 8, first | count << 16, *words])
+```
+
+and the thread uses them in place of the constants:
+
+```c
+kmx_load(job->a0 & 0xFF, first, count, kmx_time() + KMX_TICKS_PER_SECOND, &event);
+kmx_command(&command, job->a0 & 0xFF, (job->a0 >> 8) & 0xFF, first, count);
+```
+
+The dispatcher is unchanged: it takes any field below 64. On the card (the gate on
+cores 0 to 59, the added class on 60 to 119, 16 calls each waited for): the thread's
+`kmx_load` of the added class took 10.5 µs, a call 10.4 to 11.3 µs from submit to its
+event, against 232 to 319 µs for the host's `run.submit` and `run.wait` of the same
+call (9.1 to 9.5 µs of it on the card); every output exact, the gate after it too.
+
 [21_thread_load](../../examples/21_thread_load/README.md): after one command from the
 host, the thread moves the boundary between two programs' groups with a load every
 round and commands both; 40 rounds on 120 cores in 1,825 µs against 16,950 µs with the

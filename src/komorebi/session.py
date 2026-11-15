@@ -2988,6 +2988,9 @@ class _Backend:
                 program.program_field, self.switch_layouts[program.program_field], table
             )
             records[(program.program_field, "record")] = words.tobytes()
+        spare = added_program.spare_fields(placed)  # rows for added classes' records
+        empty = bytes(c["kRecordBytes"])
+        records |= {(field, "record"): empty for field in spare}
         rows, placed_records = overlay.dram_rows(overlay.Built(records, {}))
         tensor = _words(self.session, rows)
         self.io.append(tensor)
@@ -3005,11 +3008,15 @@ class _Backend:
                 f"{differ[0][0]}'s {differ[0][1]}, {len(differ)} symbols), so a "
                 "program's parts would not fit another group's kernels"
             )
+        addresses = {
+            key[0]: tensor.address + row * tensor.aligned_page_bytes
+            for key, (row, _) in placed_records.items()
+        }
         self.switch = {
-            "records": {
-                key[0]: tensor.address + row * tensor.aligned_page_bytes
-                for key, (row, _) in placed_records.items()
-            },
+            "records": {f: a for f, a in addresses.items() if f not in spare},
+            # an added class's record goes in its row (run.addon(program))
+            "spare": {f: (addresses[f], placed_records[f, "record"][0]) for f in spare},
+            "tensor": tensor,
             "refused": refused,
             # an island's part of a plan: programs none of its groups holds, whose parts
             # were not built here (a part is built against its group's kernels' buffers)

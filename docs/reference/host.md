@@ -274,7 +274,9 @@ load's L1 table leaves free less 64 KiB (kept for L1 tensors made while the run 
 live); `session.load(..., buffers=N)` makes the area N bytes from the runtime's buffers
 (0: the largest program's). Its parts go in the load's slots, which cannot grow under a
 live run: `gate.ahead(project)` before the load sizes them by its parts and builds them,
-so the add takes milliseconds; else `Program.slots(bytes=)`. The refusals:
+so the add takes milliseconds; else `Program.slots(bytes=)`. A thread reaches it with `kmx_load`
+and its handler with the words `run.thread_words(handler, args)` gives
+([threads](threads.md#a-class-added-to-the-live-run)). The refusals:
 [classes](classes.md#another-class-added-to-a-live-run).
 
 The session sends each group a load of its own program before `session.load` returns
