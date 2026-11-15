@@ -27,6 +27,16 @@ constexpr uint32_t kHandlerLinear = 1;
 #endif
 // The other island's partial of this rank's blocks, counted here (km::keeper).
 constexpr uint32_t kPortAdd = 7;
+// Built with W's read spread over the column's ranks (LINEAR_SPREAD, grid plan): each
+// rank of the column broadcast reads its K rows of a block, the sender casts it.
+#if defined(LINEAR_SPREAD)
+#define LINEAR_SPREADS true
+#else
+#define LINEAR_SPREADS false
+#endif
+constexpr uint32_t kCbWSlice = 13;  // bf16, a receiver's K rows of a W block
+constexpr uint32_t kPortReady = 0;  // a receiver: the sender's slot reserved (a marker)
+constexpr uint32_t kPortSlices = 1;  // the sender: the receivers' rows landed
 // Built for the output dim sharded form into a copy of Y (LINEAR_GATHER, K-split
 // plan): each island writes its columns, then every rank's km::all_gather.
 #if defined(LINEAR_GATHER)

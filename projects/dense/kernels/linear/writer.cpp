@@ -1,5 +1,6 @@
 // Linear writer (NoC1 by default): W's column broadcast a window of columns; other
 // islands' tiles put in chunks through the link cores' rings, one sync, its own Y.
+#include <stddef.h>
 #include <stdint.h>
 
 #include "../dense.h"
@@ -45,6 +46,36 @@ namespace {
         }
         words[KM_PORT_COUNT] = 0;
         words[KM_PORT_WANT] = 0;
+        return true;
+    }
+
+    // Waits until word COUNT of port `port` of this core holds `marker`. False: gave
+    // up (recorded).
+    bool marked(
+        const km::Writer& writer,
+        const km_command_t& command,
+        uint32_t port,
+        uint32_t marker
+    ) {
+        volatile tt_l1_ptr uint32_t* words = km::port_words(writer, port);
+        const uint32_t code = writer.poll_at(
+            km::kWherePort,
+            [&] {
+                invalidate_l1_cache();
+                return words[KM_PORT_COUNT] == marker;
+            },
+            writer.args().wait_limit
+        );
+        if (code != km::kGaveNone) {
+            writer.gave_up(
+                km::kStWriter,
+                code,
+                km::kWherePort,
+                km::slot(command) | port << 8,
+                command.sequence
+            );
+            return false;
+        }
         return true;
     }
 
@@ -250,6 +281,26 @@ void kernel_main() {
             const Sent sent = {core(kCoreSetPages), core(kCoreSent)};
             const Holding w_here = holding(w, here, k_whole * n_whole);
             const auto w_matrix = TensorAccessor(w_args, w_here.address);
+            // LINEAR_SPREAD: the column broadcast's ranks (sender 0), when a receiver's
+            // rows of a block fit its slice buffer; the sender's slots, multicast area
+            const auto cast_arg = [&](uint32_t offset) {
+                return writer.arg(kArgBroadcast + offset / 4);
+            };
+            const uint32_t column_ranks = (
+                cast_arg(offsetof(km::BroadcastArgs, receivers)) + 1
+            );
+            const uint32_t mc_start = cast_arg(offsetof(km::BroadcastArgs, mc_start));
+            const uint32_t mc_end = cast_arg(offsetof(km::BroadcastArgs, mc_end));
+            const LocalCBInterface& slice_cb = get_local_cb_interface(kCbWSlice);
+            const LocalCBInterface& column_cb = get_local_cb_interface(kCbCol);
+            const uint32_t block_bytes = broadcast.pages() * column_cb.fifo_page_size;
+            const bool spread = (
+                LINEAR_SPREADS && broadcast.included() && column_ranks > 1 &&
+                blocks_of(k_block_tiles, column_ranks) * plan(kPlBn) * kBf16Bytes <=
+                    slice_cb.fifo_size
+            );
+            const uint32_t slice_base = slice_cb.fifo_limit - slice_cb.fifo_size;
+            const uint32_t port_base = writer.args().control + KM_CONTROL_PORT;
             uint32_t step = 0;
             bool finished = false;  // the column broadcast (LINEAR_ADD: before the sum)
             for (uint32_t turn = 1; turn <= islands; ++turn) {
@@ -472,9 +523,99 @@ void kernel_main() {
                     const uint32_t columns_read = (
                         left < block_width ? left : block_width
                     );
+                    // W's rows of K block `k_block` this rank reads (all on the
+                    // sender, unless spread): (first row of the block, rows)
+                    const auto k_rows = [&](uint32_t k_block) {
+                        const uint32_t k_start = k_block * k_block_tiles;
+                        return (
+                            mine.count - k_start < k_block_tiles
+                                ? mine.count - k_start
+                                : k_block_tiles
+                        );
+                    };
+                    const auto rows_of = [&](uint32_t k_block) {
+                        const uint32_t k_length = k_rows(k_block);
+                        if (!spread) {
+                            return km::Partition{0, k_length};
+                        }
+                        return km::partition(k_length, broadcast.rank(), column_ranks);
+                    };
+                    // Those rows read into `into` (its first row there), a row's tiles
+                    // at consecutive indices of this island's part of W
+                    const auto read_rows = [&](uint32_t k_block, uint32_t into) {
+                        const km::Partition rows = rows_of(k_block);
+                        for (uint32_t row = 0; row < rows.len; ++row) {
+                            const uint32_t index = (
+                                w_here.index(
+                                    (
+                                        mine.first + k_block * k_block_tiles +
+                                        rows.start + row
+                                    ) *
+                                        n_whole +
+                                    window.first + block_column
+                                )
+                            );
+                            for (uint32_t column = 0; column < columns_read; ++column) {
+                                noc_async_read_page(
+                                    index + column,
+                                    w_matrix,
+                                    into + (row * block_width + column) * kBf16Bytes
+                                );
+                            }
+                        }
+                    };
+                    bool ahead = false;  // a receiver's rows of this step already read
                     for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
                         LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
+                        const uint32_t marker = (
+                            (command.sequence & 0xFFFFu) << 16 | ((step + 1) & 0xFFFFu)
+                        );
                         if (!broadcast.sender()) {
+                            if (spread) {
+                                // its rows into the sender's slot once reserved, then
+                                // the next block's rows read ahead
+                                if (!ahead) {
+                                    read_rows(k_block, slice_base);
+                                }
+                                const km::Partition rows = rows_of(k_block);
+                                if (
+                                    !marked(writer, command, kPortReady, marker) ||
+                                    !flushed(writer, km::kStWriter, km::kFlushReads)
+                                ) {
+                                    return false;
+                                }
+                                if (rows.len != 0) {
+                                    noc_async_write(
+                                        slice_base,
+                                        writer.core_noc(
+                                            cast_arg(
+                                                offsetof(km::BroadcastArgs, sender)
+                                            ),
+                                            column_cb.fifo_limit - column_cb.fifo_size +
+                                                step % broadcast.window() *
+                                                    block_bytes +
+                                                rows.start * block_width * kBf16Bytes
+                                        ),
+                                        rows.len * block_width * kBf16Bytes
+                                    );
+                                }
+                                if (!landed(writer, command)) {
+                                    return false;
+                                }
+                                noc_semaphore_inc(
+                                    writer.core_noc(
+                                        cast_arg(offsetof(km::BroadcastArgs, sender)),
+                                        port_base + kPortSlices * KM_PORT_STRIDE +
+                                            4 * KM_PORT_COUNT
+                                    ),
+                                    1
+                                );
+                                ahead = k_block + 1 < k_blocks;
+                                if (ahead) {
+                                    read_rows(k_block + 1, slice_base);
+                                }
+                                LINEAR_ACCOUNT_DO(lap(account[kAcWRead - 16], since));
+                            }
                             if (!broadcast.arrive(step)) {
                                 return false;
                             }
@@ -485,38 +626,44 @@ void kernel_main() {
                                 return false;
                             }
                             LINEAR_ACCOUNT_DO(lap(account[kAcWFree - 16], since));
-                            const uint32_t k_start = k_block * k_block_tiles;
-                            const uint32_t k_length = (
-                                mine.count - k_start < k_block_tiles
-                                    ? mine.count - k_start
-                                    : k_block_tiles
-                            );
-                            for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
-                                // W's rows this island holds, read here: a row's
-                                // tiles at consecutive indices of its part
-                                const uint32_t index = (
-                                    w_here.index(
-                                        (mine.first + k_start + k_tile) * n_whole +
-                                        window.first + block_column
-                                    )
+                            const km::Partition rows = rows_of(k_block);
+                            if (spread) {  // the receivers may fill their rows now
+                                // the marker from the same word (and 16-byte offset)
+                                // as it lands at: this sender's own ready port
+                                volatile tt_l1_ptr uint32_t* words = (
+                                    km::port_words(writer, kPortReady)
                                 );
-                                for (
-                                    uint32_t column = 0; column < columns_read; ++column
-                                ) {
-                                    noc_async_read_page(
-                                        index + column,
-                                        w_matrix,
-                                        base +
-                                            (k_tile * block_width + column) * kBf16Bytes
-                                    );
-                                }
+                                words[KM_PORT_COUNT] = marker;
+                                noc_semaphore_set_multicast(
+                                    port_base + kPortReady * KM_PORT_STRIDE +
+                                        4 * KM_PORT_COUNT,
+                                    get_noc_multicast_addr(
+                                        mc_start & 0xFFFFu,
+                                        mc_start >> 16,
+                                        mc_end & 0xFFFFu,
+                                        mc_end >> 16,
+                                        port_base + kPortReady * KM_PORT_STRIDE +
+                                            4 * KM_PORT_COUNT
+                                    ),
+                                    column_ranks - 1
+                                );
+                            }
+                            read_rows(
+                                k_block, base + rows.start * block_width * kBf16Bytes
+                            );
+                            if (
+                                spread &&
+                                !counted(writer, command, kPortSlices, column_ranks - 1)
+                            ) {
+                                return false;
                             }
                             if (!flushed(writer, km::kStWriter, km::kFlushReads)) {
                                 return false;
                             }
                             LINEAR_ACCOUNT_DO(lap(account[kAcWRead - 16], since));
                             LINEAR_ACCOUNT_DO(
-                                account[kAcWTiles - 16] += k_length * columns_read
+                                account[kAcWTiles - 16] += k_rows(k_block) *
+                                    columns_read
                             );
                             if (!broadcast.cast(step)) {
                                 return false;

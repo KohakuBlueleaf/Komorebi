@@ -56,6 +56,9 @@ ADD = "kernel"
 # output dim sharded into a copy of Y: the kernels' all-gather at the call's end
 # (kernel) or the host's after it (host) (--gather)
 GATHER = "kernel"
+# the grid plan: W's read spread over the column broadcast's ranks (--spread; not yet
+# run exact on a card: off)
+SPREAD = False
 # The account's words (kernels/linear/linear.h kAcWFree ..), by name: cycles, but the
 # tiles and products (counts) and the ends and start (wall clocks)
 ACCOUNT_WORDS = (
@@ -186,7 +189,23 @@ def extra_buffers(plan, exchange):
         (L["kCbToken"], "uint32", L["kSignalBytes"], 1),
         (L["kCbArrive"], "uint32", L["kSignalBytes"], 1),
         (L["kCbStamp"], "uint32", L["kStampBytes"], 1),
-    ]
+    ] + (
+        # a receiver's K rows of a W block (W's read spread over the column)
+        [(L["kCbWSlice"], "bfloat16", L["kBf16Bytes"], slice_pages(plan))]
+        if spreads(plan)
+        else []
+    )
+
+
+def spreads(plan):
+    """Whether W's read is spread over the column's ranks (--spread): the 2d layout,
+    a column broadcast of more than one rank."""
+    return SPREAD and plan.layout == "2d" and plan.rows > 1
+
+
+def slice_pages(plan):
+    """A column rank's K rows of a W block, the most: K block / ranks, bn wide."""
+    return pl.cdiv(plan.kb, plan.rows) * plan.bn
 
 
 def extra_bytes(plan, exchange):
@@ -812,6 +831,11 @@ class Linear:
             # nothing exchanged: kernels without the puts and the sync (smaller)
             defines=({} if self.exchange else {"LINEAR_OWN": 1})
             | ({"LINEAR_ADD": 1} if self.adds else {})
+            | (
+                {"LINEAR_SPREAD": 1}
+                if any(spreads(p.plan) for p in self.pieces)
+                else {}
+            )
             | ({"LINEAR_VALID_SENT": 1} if VALID_SENT else {})
             | ({"LINEAR_ACCOUNT": 1} if ACCOUNT else {}),
         )
@@ -1335,6 +1359,13 @@ def main():
         "or the host's all-gather after it",
     )
     parser.add_argument(
+        "--spread",
+        choices=["on", "off"],
+        default="off",
+        help="the grid plan: W's read spread over the column's ranks, or the column's "
+        "sender reads it all",
+    )
+    parser.add_argument(
         "--shapes",
         default=None,
         help='several products in one session: "M,K,N[:place];..."',
@@ -1357,8 +1388,10 @@ def main():
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
     global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD, GATHER
+    global SPREAD
     ACCOUNT, SPLIT_REDUCE, ADD = args.account, args.reduce, args.add
     GATHER = args.gather
+    SPREAD = args.spread == "on"
     NOCS = tuple(int(value) for value in args.nocs.split(","))
     VALID_SENT = args.valid == "sent"
     if args.subblock:
