@@ -309,7 +309,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   command takes no slot and no sequence number. A second inspect waits in the ring
   while one runs. The host zeroes the layout up to the block's header
   (`KMD_LIM_ZEROED`) and writes the core table before the run. `KMD_LIM_BYTES` is
-  0x1C2C0.
+  0x1CBC0.
 - **Giving up one command.** At its deadline, a host command of a program's handler
   (not a dynamic run's) is not fatal. The kernel first reads its group into the same
   block (kind `KMD_INSPECT_TIMEOUT`, with the slot and sequence). Then it writes the
