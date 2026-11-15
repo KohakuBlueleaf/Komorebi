@@ -59,6 +59,9 @@ def main():
     parser.add_argument("--passes", type=int, default=2000, help="MATMUL passes")
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
+    chunks = [int(value) for value in args.chunks.split(",")]
+    if min(chunks) < 1 or args.passes < 1:
+        parser.error("--chunks: pages a chunk, 1 or more each; --passes: 1 or more")
     tile = C["kTileBytes"]
     pages = args.mib * (1 << 20) // tile
     report = {"card": args.card, "mib": args.mib, "pages": pages}
@@ -92,7 +95,7 @@ def main():
         except (AttributeError, TypeError):
             report["banks"] = 8  # a p150a's GDDR6 banks
         report["read"] = {}
-        for chunk in (int(value) for value in args.chunks.split(",")):
+        for chunk in chunks:
             row = measure(run, "read", group, [tensor.address, pages, chunk])
             best = min(row["single_us"])
             row["gb_per_s_single_best"] = round(pages * tile / best / 1e3, 1)

@@ -17,6 +17,15 @@ void read_chunks(
 ) {
     const auto tensor = TensorAccessor(args, command.a0);
     const uint32_t chunk = command.a2 < kChunkPages ? command.a2 : kChunkPages;
+    if (chunk == 0) {  // the loop would never advance
+        const uint32_t word = (
+            core.role() == km::kRoleWriter ? km::kStWriter : km::kStReader
+        );
+        core.gave_up(
+            word, km::kGaveBadItem, km::kWhereData, km::slot(command), command.sequence
+        );
+        return;
+    }
     const km::Partition part = (
         km::partition(command.a1, core.me() - km::first(command), km::count(command))
     );
