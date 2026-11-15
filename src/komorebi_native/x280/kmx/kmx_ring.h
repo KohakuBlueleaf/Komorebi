@@ -46,7 +46,7 @@ static inline int kmx_ring_open(
         !kmx_ring_pow2(descriptor->event_depth) ||
         descriptor->command_depth > KMX_RING_DEPTH_MAX ||
         descriptor->event_depth > KMX_RING_DEPTH_MAX || (descriptor->cmd & 63u) ||
-        (descriptor->events & 15u) || (descriptor->read & 63u) ||
+        (descriptor->events & 63u) || (descriptor->read & 63u) ||
         (descriptor->consumed & 3u) || descriptor->events == 0 ||
         descriptor->read == 0 || descriptor->consumed == 0
     ) {
