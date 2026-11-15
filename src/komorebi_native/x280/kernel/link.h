@@ -510,7 +510,9 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
                 line,
                 KMD_CROSS_COMMAND,
                 ticket,
-                (uint32_t)ring->t_command,
+                /* saturated: a deadline over 2^32 ticks arrives as 2^32 - 1 */
+                ring->t_command > 0xFFFFFFFFull ? 0xFFFFFFFFu
+                                                : (uint32_t)ring->t_command,
                 0
             );
         }

@@ -126,7 +126,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
   never cut: it is link cores k on, the island's cores after its ranks. EXIT goes to
   `island_first | cores << 16`; a queued job is placed inside the island's ranks (one
   larger than them is rejected with 3), its first core as `island_first` plus the core
-  it gets. A dynamic run reads the
+  it gets. A command that crosses to another island carries its deadline's ticks
+  left as 32 bits, saturated: a deadline over 2^32 ticks (85.9 s) arrives as 85.9 s,
+  never shorter. A dynamic run reads the
   status lines of its group's part (`part`); the engine and the graph engine check a
   group against [island_first, island_first + cores).
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
