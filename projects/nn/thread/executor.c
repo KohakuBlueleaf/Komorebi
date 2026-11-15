@@ -112,6 +112,8 @@ static int entry_command(
     kmx_command(command, header >> 24, header & 0xFFu, group & 0xFFFFu, group >> 16);
     command->hdr |= header & 0xFF00u;
     if (kind == NN_KIND_CHAIN) {
+        command->a0 = entry[NN_ENTRY_CHAIN_TOKEN];
+        command->a1 = entry[NN_ENTRY_CHAIN_AHEAD];
         command->a4 = entry[NN_ENTRY_CHAIN_MODE];
         return kmx_block(command, NN_REGION_LIST, offset, 64u);
     }

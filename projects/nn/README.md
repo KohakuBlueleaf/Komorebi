@@ -28,6 +28,7 @@ unchanged; the second line is the thread's.
 | 19, 20 | thread | a chain: its command's a4 (the kernel's chain mode) and its cores |
 | 21 | thread | the operation overlay the call names (kept for the host; the kernel reads its own word, SPLIT's a6) |
 | 22, 23 | thread | the sequence (an open list's number; 0 in a closed list) and the check |
+| 24, 25 | thread | a chain: its command's a0 (the token's word, ORed into the word a record's info names) and a1 (`kChainAheadOff` or 0) |
 
 The chain's next (word 15) and the list's next (word 18) are two words because a chain
 ends where the list goes on. The check is the sum of word i x (2i + 1) over the entry,
@@ -63,7 +64,8 @@ ticks, and each entry's command ticks by its index), read after `run.stop()`.
 - `Call(handler, cores, args, flags, program, overlay, record)`: one kernel call; `record`
   the chain's four words when the call can be a chain's record.
 - `Entries(first)`: a list from entry `first` of the region. `command(call)` appends a call
-  as one command; `chain(calls, mode, flags)` a run of calls as one chain command.
+  as one command; `chain(calls, mode, flags, token, ahead)` a run of calls as one chain
+  command (a0 `token`; a record's weight read in the record before with `ahead`).
   `words(base, sequence)` gives the entries' words with the links and the checks.
 - `executor_thread(program, cluster=2)` adds the thread to any program.
 - `Executor(session, run)`: `write(entries)` (the host's DRAM write and a barrier),
@@ -74,8 +76,9 @@ ticks, and each entry's command ticks by its index), read after `run.stop()`.
 - `drive(run, calls)`: the host's own calls.
 - `layer_calls(decode, layer, position, rows)`: the decode layer's five calls (qkv,
   attend, o, gate_up, down) with their chain records, from `Decode`'s words and tensors,
-  as the decode thread builds them; `decode_entries(...)` a closed list of T tokens of
-  L layers; `nop_call(decode, cores)` the decode program's cheapest call. `Decode` is the
+  as the decode thread builds them; `token_calls(decode, layers)` a token's records
+  through L layers, the position from the chain's a0; `decode_entries(...)` a closed
+  list of T tokens of L layers (a command a call, a layer or a token as one chain); `nop_call(decode, cores)` the decode program's cheapest call. `Decode` is the
   decode project's with the executor added.
 
 ## Run
@@ -85,11 +88,13 @@ python projects/nn/bench.py --check --costs --decode --json out.json
 python projects/nn/bench.py --layers 1 --check --costs
 ```
 
-`--check` runs one token through layer 0 at T 4096 six ways from the same x (the decode
-thread a command a step and as a chain; the list closed both ways; the open list; the
-host's calls) and compares qkv, a, x1, gated, x and the cache's new row with the first,
+`--check` runs one token through layer 0 at T 4096 eight ways from the same x (the
+decode thread a command a step, a layer and a token as a chain; the list closed the
+three ways; the open list; the host's calls) and compares qkv, a, x1, gated, x and the cache's new row with the first,
 bit for bit. `--costs` times 200 cheapest calls a list on one core and on all 120,
-`--decode` 10 tokens of 28 layers at T 4096, 1024 and 256 the three ways.
+`--decode` 10 tokens of 28 layers at T 4096, 1024 and 256: the list a command a call,
+a layer and a token as one chain (the token also with the weight read a record early,
+at T 1024 and up), the decode thread's token, the host's calls.
 
 ## The check
 
@@ -127,6 +132,33 @@ the same time (within 1.1), and the thread's share is 2.5 us where the hand's is
 most of which is the hand writing the five records itself before each layer; here the
 host wrote them once. (c) runs the same events and spends 153 to 157 us a call on the
 host's submit and wait.
+
+### A token as one command
+
+The decode chain now takes up to 256 records and a word of the chain command (a0) that a
+record's info names (qkv's and attend's position), so a token's 140 records are one
+entry of the list; the program's weight halves are the chain's deeper ones. Run
+2026-11-15 18:55 on one p150a, AICLK 1,343 to 1,350 MHz, beside the decode thread's own
+token in the same job; us a layer, the host's wall of one run of 10 tokens x 28 layers
+(the run's stats were not read: its last case failed, below), the decode thread's from
+its clock.
+
+| | T 4096 | T 1024 | T 256 |
+|---|---:|---:|---:|
+| list, a command a step | 416.1 | 378.9 | 370.0 |
+| list, a layer as a chain | 353.2 | 327.5 | 318.9 |
+| list, a token as a chain | 341.1 | 308.2 | 300.0 |
+| decode thread, a token (its clock) | 339.95 | 307.53 | |
+| decode thread, a token (the host's wall) | 341.1 | 309.3 | |
+| list, a token, the next weight early | 316.1 | 287.9 | |
+| decode thread, the same (its clock) | 314.92 | 288.12 | |
+| the host's calls | 1,175.2 | 1,147.2 | |
+
+The list's token is the decode thread's to 0.1 us at T 4096 in the same wall (one
+submit and one wait a token either way). Every tensor and the cache row of the eight
+ways of the check equal bit for bit. With the next weight early the chain hangs at T
+256, on the decode thread as well (the decode project's README); the bench runs that
+form at T 1024 and up.
 
 ## What an entry costs
 
