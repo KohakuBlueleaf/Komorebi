@@ -62,6 +62,17 @@
 /* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
+/* host, served by the service overlay: every rank of the group calls km::all_gather
+ * or km::all_reduce (km_ask.hpp) on pages of a copy tensor, with these words */
+#define KM_HANDLER_GATHER 243u
+#define KM_HANDLER_REDUCE 244u
+#define KM_COLL_TENSOR 0u  /* its reference word */
+#define KM_COLL_FIRST 1u   /* first page */
+#define KM_COLL_PAGES 2u   /* pages */
+#define KM_COLL_SCRATCH 3u /* reduce: a copy of 2 x pages pages, the same page size */
+#define KM_COLL_SUM 4u     /* reduce: km::Sum, 0 int32, 1 float32, 2 bfloat16 */
+#define KM_COLL_BUFFER 5u  /* reduce: L1 of every rank for the folds */
+#define KM_COLL_ROOM 6u    /* reduce: its bytes, two pages or more */
 /* served on link cores (km_pages.hpp): host: each CPU sends its pages share over its
  * link, or the reader waits a count; dispatcher: link 0 sends a staged packet */
 #define KM_HANDLER_PAGES 248u
@@ -153,6 +164,7 @@
 #define KM_QUEUE_E_CORE 2u   /* the asker, x | y << 16 */
 #define KM_QUEUE_E_COUNT 3u  /* its port count's L1 address */
 #define KM_QUEUE_E_NUMBER 4u /* the line's number word */
+#define KM_QUEUE_E_KEEPER 5u /* a gather's keeper (KM_ASK_KEEPER), 0: none */
 #define KM_QUEUE_BYTES (KM_QUEUE_PENDING + KM_QUEUE_LINES * KM_QUEUE_ENTRY)
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
@@ -201,6 +213,11 @@
  * (it counts 1), KM_ASK_GET_SPAN offset | bytes << 16, the bytes into KM_ASK_TO. */
 #define KM_ASK_GET_BYTES 2u
 #define KM_ASK_GET_SPAN 14u
+/* A put line from DRAM may name keepers (word 14, km::keeper): once its pages are all
+ * written, keeper k of the far island counts share k at its port. 0: none. */
+#define KM_ASK_KEEPER 14u
+#define KM_KEEPER_RANKS_SHIFT 8u
+#define KM_KEEPER_PORT_SHIFT 16u
 /* Then a core's puts into another island's DRAM (km::write_pages), as the asks: link
  * core 0's counts and each ring's address, each CPU's ring words, the put lines */
 #define KM_PUT_TAIL (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
@@ -229,6 +246,16 @@
 #define KM_PUT_RING_READ 0x50u /* what a putting core reads, from KM_PUT_TAKEN */
 #define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x80 the second CPU's */
 #define KM_PUT_OWN_BYTES 0x80u           /* unused (a core's own words, KM_OWN_*) */
+/* The lead page CPU's wall clock at a put line's steps (in link core 0's unused
+ * KM_PUT_OWN), then its loop's passes */
+#define KM_PUT_STAMPS KM_PUT_OWN
+#define KM_STAMP_TAKEN 0u
+#define KM_STAMP_ACROSS 1u
+#define KM_STAMP_PUSHED 2u
+#define KM_STAMP_ARRIVED 3u
+#define KM_STAMP_CONFIRMED 4u
+#define KM_STAMP_PASSES 5u
+#define KM_STAMP_WORDS 8u
 #define KM_PUT_RING_WORDS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES) /* + 16 a CPU */
 #define KM_PUT_RING_TAIL 0u
 #define KM_PUT_RING_SENT 4u
@@ -345,10 +372,15 @@ KM_STATIC_ASSERT(
    alone count at the reader's KM_PORT_PAGES and at the writer's, the one after. */
 #define KM_PORTS 8u
 #define KM_PORT_PAGES KM_PORTS
-#define KM_PORT_SLOTS (KM_PORTS + 2u)
+/* the collectives' counts of pages from the island before and after on the line; word
+   KM_PORT_MET of KM_PORT_LEFT's slot counts an island's ranks' meetings */
+#define KM_PORT_LEFT (KM_PORTS + 2u)
+#define KM_PORT_RIGHT (KM_PORTS + 3u)
+#define KM_PORT_SLOTS (KM_PORTS + 4u)
 #define KM_PORT_STRIDE 16u
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u
+#define KM_PORT_MET 2u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
 /* KM_BROADCASTS areas, KM_BROADCAST_BYTES each; on a 64-byte line after the ports */
