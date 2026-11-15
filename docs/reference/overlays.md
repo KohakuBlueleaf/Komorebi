@@ -327,9 +327,11 @@ code compiled in. Handlers 241 to 248 are the runtime's for this: the writer and
 compute kernel skip them with one range check, so a later handler of the runtime in
 that range adds nothing to them.
 
-- **Who may issue one.** The host only: the session itself, for a read or a write. The
-  dispatcher rejects them from a thread, a stream or a graph (reason 1), as `submit`
-  does from the host.
+- **Who may issue one.** The host: the session itself, for a read or a write. An X280
+  thread too, when its command's region word is the session's region (the load hands
+  the dispatcher its size); with any other region word, and from a stream or a graph,
+  the dispatcher rejects them (reason 1), as `submit` does from the host. The other
+  transfers of the range (pages, gather, reduce) stay the host's.
 - **The command.** Its group is cores `[first, first + count)` that all hold one
   program, and its program field is that program, so no switch is needed. Its words
   name the tensor (address, page bytes, first page, pages), the region (offset, the

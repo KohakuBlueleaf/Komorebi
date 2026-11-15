@@ -440,6 +440,13 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         first = part & 0xFFFFu;
         count = part >> 16; /* none here: count 0, rejected as outside */
     }
+    /* a thread's PUSH or PULL is taken only inside the session's region (its a6) */
+    const uint32_t thread_transfer = (
+        source >= KMD_SRC_WORK && source < KMD_SRC_LINK &&
+        (handler == KM_HANDLER_PUSH || handler == KM_HANDLER_PULL) &&
+        dispatcher->channel_region != 0u &&
+        (uint32_t)(line[5] >> 32) == dispatcher->channel_region
+    );
     uint32_t reject = 0;
     if (handler == KM_HANDLER_DEADLINE) {
         reject = KMD_REJECT_DEADLINE;
@@ -457,7 +464,8 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
                     handler == KM_HANDLER_PAGES || handler == KM_HANDLER_GATHER ||
                     handler == KM_HANDLER_REDUCE
                 )
-            )
+            ) &&
+            !thread_transfer
         ) ||
         (!host && handler == KM_HANDLER_EXIT)
     ) {
@@ -973,7 +981,8 @@ static __attribute__((noinline)) void run(uint64_t core) {
         KMD_X280_RANKS_CLUSTER(arguments->messages_handler)
     );
     dispatcher->messages.x280_count = KMD_X280_RANKS_COUNT(arguments->messages_handler);
-    dispatcher->programs = (uint32_t)arguments->programs;
+    dispatcher->programs = arguments->programs;
+    dispatcher->channel_region = arguments->channel_region;
     for (uint32_t program = 0; program < KMD_PROGRAMS_MAX; program++) {
         dispatcher->holds[program][0] = dispatcher->holds[program][1] = 0;
     }

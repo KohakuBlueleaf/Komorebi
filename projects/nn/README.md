@@ -23,7 +23,7 @@ unchanged; the second line is the thread's.
 | 11 to 14 | record | the chain's info word and three range words (a chain's record only) |
 | 15 | record | the next record of the same chain, its bank address; 0: the chain's last |
 | 16 | thread | the header: handler \| flags << 8 \| program << 24 |
-| 17 | thread | the kind: COMMAND, CHAIN, END, NONE |
+| 17 | thread | the kind: COMMAND, CHAIN, END, NONE, TRANSFER (a command moving pages to or from the host channel, its nonce word XORed with RUN's a3) |
 | 18 | thread | the list's next entry, its bank address; 0: the end |
 | 19, 20 | thread | a chain: its command's a4 (the kernel's chain mode) and its cores |
 | 21 | thread | the operation overlay the call names (kept for the host; the kernel reads its own word, SPLIT's a6) |
@@ -42,7 +42,8 @@ builds the command from the words (a COMMAND), or one command in the chain's mod
 block is the entry's first line (a CHAIN, the records after it read by the cores), then
 submits it and waits for its event. It is driven three ways:
 
-- **Closed list** (`run`: a0 the first entry, a1 the times, a2 a stats slot): the host
+- **Closed list** (`run`: a0 the first entry, a1 the times, a2 a stats slot, a3 the
+  nonce of its transfers): the host
   writes the whole list once with a DRAM barrier, the thread drops its cached lines of
   the region once and walks the list from the first entry to a next of 0, N times.
 - **Open list** (`drain`: a0 an anchor entry, a1 a stats slot, a2 the ticks it waits
@@ -55,7 +56,8 @@ submits it and waits for its event. It is driven three ways:
   (`run.submit`, `run.wait`), as every example does.
 
 Each run leaves a stats slot (its status, entries, polls, stale reads, each term's
-ticks, and each entry's command ticks by its index), read after `run.stop()`.
+ticks, and each entry's command ticks by its index; a command not done leaves its
+event's kind | reason << 8 there), read after `run.stop()`.
 
 ## The host calls (the interface)
 
@@ -407,6 +409,70 @@ rotation, and q, k, v side by side), view 4, silu 1. With fusion: none.
   write itself (566 us for 144 KB), then the RUN's round trip above the card's time
   (195 to 200 us), then the output's read (310 us).
 
+### One submission a call
+
+The compiled call above goes to the card three times: the host writes x and its
+squares, sends RUN and waits for its event, then reads y. In the stage `one` the list
+moves the pages itself, so a call is one host submission:
+
+- The list's first entry is the transfer that pulls x's pages (and its squares', one
+  DRAM tensor) from the session's region of the host channel; its last entry is the
+  transfer that pushes y's pages into the region. They are the same PULL and PUSH a
+  session's write and read send, issued by the executor thread as entries.
+- The host copies x's pages into the region (memory, no card call), sets RUN's nonce,
+  submits RUN once and waits for y's sequence words in the region (host memory), then
+  copies y out. RUN's own event is collected after the call; a call whose words do
+  not arrive in time reads it and raises with it.
+- Everything else (the entries, the transfers' words but the nonce, the views of the
+  region) is made at compile.
+- The dispatcher takes a thread's PUSH or PULL only when its region word is the
+  session's region, which the load hands to the dispatcher (0: no channel); with any
+  other word it refuses it as a handler it does not serve (reason 1). The kernel's own
+  bound keeps the offsets inside that region.
+- A transfer's wait for its sequence words now looks without a pause for its first
+  300 us, then every 200 us as before (every session transfer has it).
+
+Measured on one card (2026-11-15, 8 calls a model, `results/torch-one-submission.json`),
+the call before (stage `joint`, two host writes in one, RUN, a read) and after, both
+right (model A rms 3.18e-3, B 4.67e-3, as before). Microseconds a call:
+
+| Term | A joint | A one | B joint | B one |
+|---|---:|---:|---:|---:|
+| x and its squares as pages (Python) | 608.7 (with the write) | 440.2 | 573.1 (with the write) | 363.0 |
+| copy into the region | | 18.8 | | 19.2 |
+| RUN: submit and store | 405.6 (to its event) | 58.7 | 553.1 (to its event) | 57.2 |
+| the wait for y's words | | 281.6 | | 567.7 |
+| y read and untilized | 310.6 | 13.6 + 93.8 | 310.7 | 13.2 + 88.4 |
+| Python of the call | 246.5 | 92.5 | 136.5 | 94.4 |
+| a call | 1,571.5 | 999.2 | 1,573.4 | 1,203.1 |
+
+What is the card in a one-submission call (the thread's clock): A 237.6 us, the pull
+14.2, the commands 203.6, the push 12.3, the thread's own 7.5; B 386.0 (pull 14.4,
+commands 351.7, push 12.4). What is the system: the rest.
+
+Where a host command's wait above its command went (127 us in "What an entry costs",
+about 200 above RUN here): the host does not wait on the device. A wait (the run's,
+then the host module's) stores the command's 64-byte line and the read count through the
+write-combining window into the dispatcher's memory, one fence, then spins on the event
+ring and the state word, both in pinned host memory; no device read, no sleep, no poll
+interval. The time lies between the store and the event's return through the
+dispatcher. In a one-submission call that path is gone from the call: in A's wait of
+281.6 us the thread runs 237.6, so 44 us remain from the host's store to the thread's
+first entry and from the push's last word to the host seeing it; the submit itself
+(Python, the store) is 58.7. The one sleep on a host command's path was the sequence
+words' wait (200 us a look): a plain write or read of 72 pages went from 261.0 / 262.6
+us (mean; medians 221.5 / 224.5) to 214.6 / 219.5 (210.9 / 216.7) with the spin, of 64
+pages 211.6 / 215.6 to 211.4 / 216.2 (the words most often land before the event).
+
+What is left, largest first:
+- Making the pages in Python (A 440, B 363 us): bf16 rounding, the squares and the
+  tiling of x in numpy; y's untilize 90 more. Not the card's.
+- B's wait outlasts the 300 us of spin (the thread takes 386): it then looks every
+  200 us, and the wait is 182 us longer than the thread's run (A's: 44). A wait that
+  spins as long as the call's own card time would take most of that.
+- The submit (58 us, Python and the store), then the 44 us between the host and the
+  thread.
+
 ### What a kernel had to provide by hand
 
 - A plan for each product shape in the program's table (at most 8, fixed at the load):
@@ -439,6 +505,11 @@ python projects/nn/torch_bench.py --prepare --data ref.npz --snapshot <model sna
 python projects/nn/torch_bench.py --data ref.npz --snapshot <model snapshot> --models a b
 python projects/nn/torch_bench.py --data ref.npz --snapshot <model snapshot> \
     --ways eager joint --mirror
+python projects/nn/torch_bench.py --data ref.npz --snapshot <model snapshot> \
+    --ways joint one --channel
 ```
+
+`--channel` first measures a plain write and read with the old wait and with the spin,
+and the dispatcher's refusal of a thread's transfer outside the session's region.
 
 `--prepare` runs off the card: the inputs, torch float32's outputs and its CPU time.

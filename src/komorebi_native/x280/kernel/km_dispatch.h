@@ -356,7 +356,7 @@ enum {
 #define KMD_X280_RANKS_COUNT(word) ((uint32_t)((word) >> 36) & 0xFu)
 
 /* The argument block's layout; the kernel rejects a block of another version. */
-#define KMD_ARGS_VERSION 4u
+#define KMD_ARGS_VERSION 5u
 /* Work clusters with a ring to the kernel (clusters 1 to 3). */
 #define KMD_WORK_CLUSTERS 3u
 
@@ -390,7 +390,8 @@ typedef struct {
      * ranks, KMD_X280_RANKS(cluster, count) */
     uint64_t messages_handler;
     uint64_t version;  /* KMD_ARGS_VERSION */
-    uint64_t programs; /* 1: KMD_LIM_PROGRAMS holds each core's program; 0: none */
+    uint32_t programs; /* 1: KMD_LIM_PROGRAMS holds each core's program; 0: none */
+    uint32_t channel_region; /* the session's host channel region, bytes; 0: none */
     /* Groups in flat ranks: this island's, first | count << 16 (rank first + core i is
      * core i). 0: one island, a rank is its core. */
     uint64_t island;

@@ -82,10 +82,11 @@ class Entries:
         self.rows = []  # the entries' words
         self.items = []  # (first row, rows): what the executor runs, one at a time
 
-    def command(self, call):
-        """`call` as one command, submitted and waited for."""
+    def command(self, call, kind=NN["NN_KIND_COMMAND"]):
+        """`call` as one command, submitted and waited for (`kind` NN_KIND_TRANSFER: a
+        PUSH or PULL whose nonce word the executor XORs with RUN's a3)."""
         self.items.append((len(self.rows), 1))
-        self.rows.append(entry(call, NN["NN_KIND_COMMAND"]))
+        self.rows.append(entry(call, kind))
 
     def chain(self, calls, mode, flags=0, token=0, ahead=False):
         """`calls` as one chain command: the kernel's chain mode `mode` (its a4) on
@@ -189,6 +190,15 @@ class Executor:
         args = [self.address(entries.first), times, slot]
         handle = self.run.submit("run", cluster=self.cluster, args=args, result=True)
         return ended(self.run.wait(handle, timeout=timeout)), slot
+
+    def start(self, entries, times=1, nonce=0):
+        """RUN of the written list `entries` (its transfers' nonce `nonce`), stored on
+        the card and not waited for: (its handle, its stats slot)."""
+        slot = self.next_slot()
+        args = [self.address(entries.first), times, slot, nonce]
+        handle = self.run.submit("run", cluster=self.cluster, args=args, result=True)
+        self.run.store()
+        return handle, slot
 
     def open(self, at, idle=1.0, fence=False):
         """An open list after an anchor at entry `at` (OpenList), its drain started;

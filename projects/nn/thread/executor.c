@@ -5,6 +5,8 @@
 #include "kmx.h"
 #include "nn.h"
 
+_Static_assert(KM_TRANSFER_NONCE == 7u, "a transfer's nonce is its a7");
+
 #define WAIT_TICKS KMX_TICKS_PER_SECOND /* one command's submit or wait */
 
 typedef struct {
@@ -15,6 +17,7 @@ typedef struct {
     uint32_t slot_index;
     uint64_t terms[NN_TERMS];
     uint32_t entries, polls, stale, sequence;
+    uint32_t nonce; /* RUN's a3: a transfer entry's nonce word is XORed with it */
 } walk_t;
 
 /* The walk of a run: its regions, the stats slot `slot`; KMX_BAD for a bound. */
@@ -39,6 +42,7 @@ static int walk_start(walk_t* walk, uint32_t slot, uint32_t sequence) {
     }
     walk->entries = walk->polls = walk->stale = 0u;
     walk->sequence = sequence;
+    walk->nonce = 0u;
     return KMX_OK;
 }
 
@@ -117,7 +121,7 @@ static int entry_command(
         command->a4 = entry[NN_ENTRY_CHAIN_MODE];
         return kmx_block(command, NN_REGION_LIST, offset, 64u);
     }
-    if (kind != NN_KIND_COMMAND) {
+    if (kind != NN_KIND_COMMAND && kind != NN_KIND_TRANSFER) {
         return KMX_BAD;
     }
     command->a0 = entry[NN_ENTRY_ARGUMENTS + 0];
@@ -130,6 +134,9 @@ static int entry_command(
     command->a7 = entry[NN_ENTRY_ARGUMENTS + 7];
     command->a8 = entry[NN_ENTRY_ARGUMENTS + 8];
     command->a9 = entry[NN_ENTRY_ARGUMENTS + 9];
+    if (kind == NN_KIND_TRANSFER) {
+        command->a7 ^= walk->nonce; /* KM_TRANSFER_NONCE */
+    }
     return KMX_OK;
 }
 
@@ -166,14 +173,15 @@ static int run_entry(
     if (status != KMX_OK) {
         return status;
     }
-    if (event.kind != KM_EVENT_DONE) {
+    const uint32_t index = offset / NN_ENTRY_BYTES;
+    if (event.kind != KM_EVENT_DONE) { /* its kind and auxiliary where its ticks go */
+        walk->slot[NN_ST_ENTRY_TICKS + index] = event.kind | event.auxiliary << 8;
         return KMX_BAD;
     }
     walk->terms[NN_TERM_FETCH] += built - started;
     walk->terms[NN_TERM_SUBMIT] += submitted - built;
     walk->terms[NN_TERM_WAIT] += done - submitted;
     walk->terms[NN_TERM_COMMAND] += event.ticks;
-    const uint32_t index = offset / NN_ENTRY_BYTES;
     walk->slot[NN_ST_ENTRY_TICKS + index] = event.ticks;
     walk->entries++;
     return KMX_OK;
@@ -196,12 +204,13 @@ static uint32_t walk_end(walk_t* walk, int status, uint64_t ticks) {
     return status == KMX_OK ? (uint32_t)ticks : NN_FAILED | (uint32_t)status;
 }
 
-/* RUN: the closed list from entry a0 to its end, a1 times (nn.h). */
+/* RUN: the closed list from entry a0 to its end, a1 times; a3 its transfers' nonce. */
 static uint32_t run_list(const km_command_t* command) {
     walk_t walk;
     if (walk_start(&walk, command->a2, 0u) != KMX_OK) {
         return NN_FAILED | KMX_BAD;
     }
+    walk.nonce = command->a3;
     kmx_invalidate(NN_REGION_LIST); /* the host wrote it, then a barrier */
     const uint64_t started = kmx_time();
     int status = KMX_OK;

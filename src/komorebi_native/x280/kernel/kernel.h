@@ -174,6 +174,7 @@ typedef struct {
     uint32_t thread_busy; /* lines handed to threads and not answered, all clusters */
     /* programs (args programs): the cores holding each program field, a bit per core */
     uint32_t programs;
+    uint32_t channel_region; /* the session's host channel region, bytes; 0: none */
     uint64_t holds[KMD_PROGRAMS_MAX][2];
     /* inspect: the control block's address on every core, the inspect being read */
     uint32_t control_address;

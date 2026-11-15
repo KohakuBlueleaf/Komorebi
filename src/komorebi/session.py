@@ -96,6 +96,7 @@ TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 # about 30 ms, as the device API's read of some 76 KiB does (measured on a p150a).
 LAUNCH_MIN_BYTES = 80 << 10
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
+WORDS_SPIN_S = 300e-6  # a transfer's words looked at without a pause this long
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
 SPLIT_ISLANDS_MAX = 4  # a card split into islands: a dispatcher an X280 cluster
 
@@ -1053,14 +1054,23 @@ class Session:
                 raise ChannelError(self._words_missing(words, want, timeout))
             self.transfer_cycles += channel_module.cycles(words)
 
+    def _channel_region(self):
+        """The region's bytes for the dispatcher (a thread's transfers stay inside
+        it), 0 without a mapped channel."""
+        return self._region.bytes if self.channel is not None else 0
+
     @staticmethod
     def _words_arrived(words, want, timeout):
-        """Waits (bounded) until every rank's sequence word is the one expected."""
-        deadline = time.monotonic() + timeout
+        """Waits (bounded) until every rank's sequence word is the one expected:
+        looks without a pause for the first WORDS_SPIN_S, then every 200 us."""
+        started = time.monotonic()
+        deadline, spin = started + timeout, started + WORDS_SPIN_S
         while not np.array_equal(words[:, :4], want):
-            if time.monotonic() > deadline:
+            now = time.monotonic()
+            if now > deadline:
                 return False
-            time.sleep(0.0002)
+            if now > spin:
+                time.sleep(0.0002)
         return True
 
     @staticmethod
@@ -1272,6 +1282,7 @@ class Session:
                 ),
                 island=_island_word(self.island),
                 link=list(link.line(dispatch)) if link is not None else [],
+                channel_region=self._channel_region(),
             )
             check_bases(lim_bases(dispatch.lim_base))
             # an island's ports serve its ranks, not its link cores
@@ -1516,6 +1527,7 @@ class Session:
                         link=list(line),
                         first_row=first_row,
                         rows=count,
+                        channel_region=self._channel_region(),
                     )  # fmt: skip
                 )
                 check_bases(lim_bases(dispatch.lim_base))
