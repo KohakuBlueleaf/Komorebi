@@ -273,9 +273,12 @@ are added to the run by `run.addon(..., handler=True)`
 ([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
 with the added number. Later submits of the set find it added. The files go into
 `build/<class>-use<key>/`: the key holds the load's build key, the handler, the set's
-values and the class's source files. A later process that makes the same program finds
+values, the class's source files and a hash of the package's Python source (the class
+compiler that wrote them: a changed compiler compiles the set again). A later process that makes the same program finds
 them there and reads the set's words from `first_use.json`, so nothing is compiled.
 Its parts are then found in the parts' cache, so nothing is built either.
+`program.ahead(Gate.gate, size=4)` compiles a set before the run and has the load
+build its parts ([overlays](overlays.md#code-added-to-a-live-run), built ahead).
 
 What the opt-in costs and requires, checked at the make:
 
@@ -1461,14 +1464,39 @@ handler keeps its own copy of `km::move_filled` and `km::move_drained`), so all 
 stay resident and the load is refused with the bytes.
 
 Not merged, each refused with its reason: a dynamic handler (its message loop is its
-program's own kernels); a handler with constant parameters (built once a set in its own
-program), and `handlers=` on a merged class; classes whose compute options or start-ups
+program's own kernels); a made program with `km.ANY` among its sets (its sets are
+compiled on first use against its own program's load: list them to merge them);
+`handlers=` on a merged class (`class Layer(A, B)`: its handlers take their defaults;
+merge made programs to give sets); two classes whose handlers of one name both have
+constant parameters (a set is picked by the handler's name); classes whose compute options or start-ups
 differ; a define or the rectangle given two values; a merged program as a source; a
 class in the kernel form with a hand program, and `form=` or `beside=` at the make of a
 class merging classes (it is built in the kernel form). Classes made with
 `form="runtime"` merge with each other and with hand programs, in the runtime's form
-([Programs merged into one](host.md#programs-merged-into-one)). A chain over handlers
-of several classes is not built: a class has no chain on this version.
+([Programs merged into one](host.md#programs-merged-into-one)).
+
+A handler with constant parameters merges as its program built it: `km.merge` of a
+program made with `handlers={"gate": [{"size": 4}, {"size": 8}]}` gives the merged
+program `gate_size4` and `gate_size8`, at the numbers the class's own build gives them
+(the first class keeps its numbers, the next ones follow), or `gate` at its defaults
+when no set is listed. A call names the class's handler with the constants
+(`Gate.gate`, `size=4` at its place) and the merged program's handler of that set
+takes it; a set not listed is refused as in one class. The gate class merged with
+GateBlocks made with blocks 8 and 4 listed ran on the card, 120 cores, 16 tiles a core:
+`Gate.gate` 43.74 us, block 4 43.32 us, block 8 42.0 us, each 0 wrong.
+
+A chain runs over a merged class's handlers as over one class's
+([Chains](#chains)). `class Layer(Scale, Rest)` gets the chain's walk from a `km.chain`
+method of its own or of a class it merges, or from `chain=True` at its make;
+`km.merge(a, b)` of made programs gets it when a source was made with it. A chain's call
+names a handler through the merged class (`Layer.scale`, `program.steps(...)`) or
+through the class that declares it (`Scale.scale`), which the merged program's own copy
+then stands for. Each handler's chain waits are read from its own class's file. Example
+29's steps split over two classes and merged both ways ran on the card with the
+unmerged class's words (list and method, factors 5 and 7, 0 wrong) and its time a chain
+(21.48 / 20.94 us merged as a class, 21.18 / 21.02 by km.merge, 21.44 / 20.86 unmerged).
+A merged program in the runtime's form has no walk (a class's walk is in its own
+kernels).
 
 ## Dynamic handlers and messages
 
@@ -1854,23 +1882,38 @@ leaves their indices and takes their `unpack_to_dest_mode` at those indices, so 
 has one set of compute options. The fidelity is the programs' to agree on: a class
 whose tile functions have no product gives `compute={"math_fidelity": ...}`.
 
-Refused when the class is made in this form (`ProgramError`, naming the handler's
-line), each with what lifting it would need (none of it is built):
+**A start-up of the class's own** (a body at a kernel's start, `km.cxx(...,
+at="start")`, and `startup=`) runs at the load of the program: every part of a program
+is called with the load command (`KM_HANDLER_LOAD`) when a group takes it, and the
+class's parts run there what the kernel form runs before the commands, compute's
+start-up (the class's `km.Startup`, else the one on the program's first buffers) and
+then the bodies (`km_program_start` in the generated sources). In a dict's run it runs
+when the group takes the program, again at each `run.load` of it. A class alone (or
+alone in a list) is run as a dict over every core, so its run loads it before the first
+command (buffer indices below 32, as any dict's). With `startup=`, each command's two
+format calls are left out: the class's start-up set the formats, on cores that hold
+the program alone. The names a start body declares are not seen by the handlers here
+(the body is the load's function): a value a handler needs goes in an own field. On
+the card (card 0, 960 tiles, x + 0.5 from a 0.5 tile built into an own field at
+compute's start): the kernel form 18.12 us, the class with `startup=` alone in the
+runtime's form 18.94 us, every word equal to the kernel form's; a dict of the class
+(cores 0-59) and the one with `startup=` (60-119) 12.2 and 11.88 us, 0 wrong.
 
-- **A body at a kernel's start** (`km.cxx(..., at="start")`): the runtime owns the
-  kernels' start. The place exists in a dict's run: every part of a program is called
-  with the load command (`KM_HANDLER_LOAD`) when a group takes the program, where
-  compute runs the start-up today, so the body would run there. A list's run sends no
-  load, so it would need one sent to every core at the run's start.
-- **A body at a kernel's end** (`at="end"`): no part is called when the run stops; it
-  would need the runtime's loop to call each program's parts once at the stop.
-- **`startup=`** (a start-up of the class's own, `km.Startup`): the start-up is the
-  runtime's, on the first buffer below 16 and the first from 16. The same load call
-  has the place: the start-up there would take the class's buffers and order, and
-  each command's two format calls the same buffers.
-- **A dynamic handler**: the runtime's form has no message loop of a program's own;
-  it would need the runtime's message kernels to serve a program field, and two
-  programs' dynamic handlers in one run are not built either
+Refused, `ProgramError`:
+
+- **A start-up of the class's own in a list of several programs**, at the load: every
+  core holds every program and none is loaded, and one program's start-up would set
+  the hardware up under the others' commands; a dict gives each program its cores.
+  Sending a load of its own to every core at the run's start is not built for it.
+- **km.merge of such a class**: a merged program has one load, the sources' start-ups
+  are not merged.
+- **A body at a kernel's end** (`at="end"`), when the class is made in this form,
+  naming its line: no part is called when the run stops. It would need the runtime's
+  three kernels to load and call the held program's part once after the stop, with a
+  give-up path of its own; not built.
+- **A dynamic handler**, naming its line: the runtime's form has no message loop of a
+  program's own; it would need the runtime's message kernels to serve a program field,
+  and two programs' dynamic handlers in one run are not built either
   ([overlays](overlays.md#not-in-this-version)).
 
 An overlay handler is not refused: it is one of the program's own overlays (above).
@@ -2017,7 +2060,7 @@ the pack CPU's words. Items of a tensor on two islands (refused when the kernel 
 built: no call moves part of another island's page). A range loop whose count is one
 mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
-A class in the runtime's form with a dynamic handler, a body at a kernel's start or
-end, or a start-up of its own (`startup=`): refused ([The runtime's
-form](#the-runtimes-form)); the runtime's form has a message loop of no program, and
-the runtime owns the kernels' start, end and start-up.
+A class in the runtime's form with a dynamic handler or a body at a kernel's end:
+refused ([The runtime's form](#the-runtimes-form)); the runtime's form has a message
+loop of no program, and no program's part is called when the run stops. A body at a
+kernel's start or `startup=` in a list of several programs: refused (no load there).
