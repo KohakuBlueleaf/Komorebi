@@ -223,3 +223,222 @@ us), then its two writes (4.0 and 4.1 us).
 - Not here: placing a program that is not on a call's cores (the entry names its program
   in the header; the decode program is one program), several calls in flight, a ring
   that reuses the region's slots, a value read on the host without stopping the list.
+
+## torch on the list
+
+The package's torch side, in four files; torch is not a dependency of the framework
+(nothing under `src/` imports it).
+
+- `table.py` (no torch): the `Tensor` (shape, its DRAM tensor or the host's values,
+  whether a call not yet run makes it, its rows' sums of squares when a norm after it
+  needs them); the op table, a `Descriptor` a kernel call, each planner building a
+  `Call` from the decode program's own plans and words; the `Device` (the decode
+  program with the executor and one more plan, an open list the calls are appended to,
+  synced only on a host read, the fallbacks counted, the host's time by term); the
+  chain of a list's calls.
+- `front.py`: the custom op `komorebi::attend`; the eager tensor (`CardTensor`, a
+  `__torch_dispatch__` subclass); the torch.compile backend `komorebi`.
+- `models.py`: model A and model B as torch modules.
+- `torch_bench.py`: both models eager and compiled against torch float32 on the CPU.
+
+### The op table
+
+| Descriptor | Serves | Kernel | Shapes |
+|---|---|---|---|
+| `matmul` | `a @ W` | SPLIT, full, no operation | a [r, K] with r <= 32, W [K, N] of a plan |
+| `matmul_add` | `r + a @ W`, and the sum's squares | SPLIT, full, add | as matmul, N = 2048 (a plan of 8 groups) |
+| `norm_gate` | `silu(norm(x) Wg) * (norm(x) Wu)` | SPLIT, full, gate | x [r, 2048] with its squares, W' [2048, 2M] |
+| `norm_matmul` | `norm(x) @ W` | SPLIT, full, scale | x [r, 2048] with its squares, W' [2048, N] |
+| `norm_qkv` | `norm(x) @ [Wq Wk Wv]`, q's and k's heads normed and rotated | SPLIT, full, scale with the heads | x [1, 2048] with its squares, W' [2048, 4096] |
+| `attend` | `komorebi::attend`, by name | SPLIT, its operation mode, attend | qkv [1, 4096], caches [8 x 4096, 128] |
+
+Every tensor is bf16 in tiles; a call takes one tile row (the rows that hold values are
+its rows field). The tiny ops of the table are the product alone. The add, the gate and
+the scale exist only after a product (they work on the product's sum as it leaves the
+cores), and the operation mode alone has no sum to work on; so `a + b`, `a * b`, a
+scale, silu and the norm's pieces have no descriptor and run on the host (nothing new
+was written for them). The decode layer's plans hold 2048 x 6144 only as gate and up
+side by side; `x @ w1` alone takes a sixth plan, made by the decode project's planner
+with its constants (groups of 5 cores, 24 groups) and added to the program's table of
+plans before the load.
+
+### Eager
+
+`card_module(module, device)` puts every parameter and buffer on the card;
+`to_card(x, device)` an input. An op with a descriptor is planned and appended to the
+open list and returns at once; nothing waits until a host read (`.numpy()`, `.item()`,
+printing). An op without one, or whose shapes the descriptor does not take, is a
+fallback, counted by op: the open list is synced, its inputs read, torch runs it on the
+CPU in float32, and its output is written back to the card (a [32, 1] mean, which has
+no tile form, stays on the host).
+
+This is Python dispatch on a CPU tensor's key. A real device key (as Kohaku-TT's: its
+backend renamed from PrivateUse1, a device module, the generated tensor methods, and
+aten kernels in C++) would change three things: a tensor would be on a device torch
+knows (`.to("...")`, its storage and allocator the card's), so no wrapper and no host
+copy of the metadata; the dispatch, the planner and the entry's build would run in C++
+instead of Python per op (here 1.7 to 4 ms a call of the times below); and the
+fallbacks would become torch's own CPU fallback with a copy each way, as here.
+
+### torch.compile
+
+`torch.compile(module, backend="komorebi", options={"device": device, ...})`. The
+backend goes through AOT autograd's inference path to an aten graph and maps it onto the
+same op table, in stages, each switched by an option:
+
+- `fuse`: fusion rules as data (`front.RULES`): a pattern written as a torch function
+  (the same functions the modules call), traced to aten once, matched in the graph, and
+  what a match becomes (descriptor calls, the weights prepared once: the norm's weight
+  folded into W, the gate's and up's columns in turns of 4 tiles). Three rules: norm,
+  q k v, the heads and attend -> `norm_qkv` + `attend`; `r + a @ W` -> `matmul_add`;
+  norm and the gated MLP -> `norm_gate`. Off: every product is a `matmul`, the rest
+  host ops.
+- `once`: every tensor between calls is given its DRAM tensor at the first call and
+  kept, and each segment's closed list is written then; off, both every call.
+- `chain`: runs of calls where each takes the call before's output become one chain
+  entry; the rest one command each.
+- `joint` (the removal below, off by default): an input a norm reads and its squares
+  as one DRAM tensor, written in one host write.
+
+The compiled function writes the inputs (with their squares when a norm reads them),
+runs each segment's closed list, runs the host ops between segments (their inputs read,
+their outputs written when a later call takes them), and reads the outputs. The first
+call traces, prepares and writes the weights and the lists: 0.2 to 1.2 s.
+
+### Model A: the MLP half
+
+`y = x + (silu(h w1) * (h w3)) w2` with `h = x * rsqrt(mean(x^2) + eps) * wn`, x 32 x
+2048, w1 and w3 2048 x 6144, w2 6144 x 2048, the decode bench's random weights. The norm
+is part of the model because the card's only fused gate is the decode layer's, which
+applies the norm's 1 / rms. Right against torch float32 on the CPU (the bound fixed
+before the runs, the decode project's: rms error / rms <= 2e-2, largest error / largest
+value <= 5e-2): eager and without fusion rms 2.46e-3, largest 5.9e-3; fused and chained
+3.18e-3, 7.5e-3. One p150a, AICLK 1,350 MHz, 8 calls after the first, us a call
+(`results/torch-model-a.json`):
+
+| Term | eager | compile | fused | fused + chain |
+|---|---:|---:|---:|---:|
+| input written (x) | 343.6 | | 359.2 | 356.5 |
+| its squares written | | | 259.5 | 240.5 |
+| dispatch (its own Python) | 2,568.8 | | | |
+| planner | 23.5 | | | |
+| tensors given | 194.5 | | | |
+| entry built | 60.7 | | | |
+| append (store, link) | 35.0 | | | |
+| open list started | 413.3 | | | |
+| sync | 428.5 | | | |
+| a closed list run (its RUN, the card's time in it) | | 616.7 | 414.5 | 401.6 |
+| fallbacks / host ops: reads | 2,411.3 | 1,332.1 | | |
+| fallbacks / host ops: torch on the CPU | 439.0 | 921.9 | | |
+| fallbacks / host ops: writes back | 2,560.9 | 1,013.8 | | |
+| output read | 307.8 | (in the reads) | 314.3 | 312.2 |
+| the rest (Python around them) | 502.2 | 387.4 | 346.5 | 340.2 |
+| **a call** | **10,289.1** | **4,271.9** | **1,694.1** | **1,651.0** |
+| the card: the commands' events | 207.0 | 206.5 | 213.6 | 203.2 |
+| the executor's thread (idle within it) | 347.5 (124.1) | 214.1 | 218.5 | 206.1 |
+| lists a call | 3 open | 2 closed | 1 | 1 |
+| fallbacks a call | 9 | 9 | 0 | 0 |
+
+Beside them: the decode thread's own gate_up and down, a command a step, 131.8 + 72.6 =
+204.4 us of events (T 4096); torch float32 on the CPU, 16 threads at nice 10, 7,535 us a
+call (for scale). The card's time is the hand's in every way; what a call adds is the
+host's. The chain gains 10 us here: gate_up is its first record, so no record before it
+reads its weight early.
+
+### Model B: the decode layer
+
+The decode layer for one token as a torch module (`models.ModelB`): norm, q, k and v, q's
+and k's heads normed and rotated in torch, `komorebi::attend` over the cache (the token
+at row 4,095 of 4,096), o with its add, norm, the gated MLP, down with its add; the
+model's own weights of layer 0 (bf16), a random cache. Right: eager and without fusion
+rms 6.25e-3, largest 1.53e-2; fused and chained 4.67e-3, 7.4e-3. us a call
+(`results/torch-model-b.json`):
+
+| Term | eager | compile | fused | fused + chain |
+|---|---:|---:|---:|---:|
+| input written (x) | 417.3 | | 380.1 | 367.7 |
+| its squares written | | | 239.9 | 233.3 |
+| dispatch (its own Python) | 3,956.6 | | | |
+| planner | 60.2 | | | |
+| tensors given | 441.1 | | | |
+| entry built | 169.0 | | | |
+| append (store, link) | 95.5 | | | |
+| open lists started | 965.2 | | | |
+| sync | 1,027.1 | | | |
+| closed lists run | | 1,223.9 | 617.4 | 552.5 |
+| fallbacks / host ops: reads | 5,797.2 | 2,587.5 | | |
+| fallbacks / host ops: torch on the CPU | 551.7 | 1,668.8 | | |
+| fallbacks / host ops: writes back | 5,332.5 | 1,911.2 | | |
+| output read | 367.2 | (in the reads) | 312.1 | 307.9 |
+| the rest | 1,422.9 | 436.6 | 221.6 | 214.4 |
+| **a call** | **20,603.4** | **7,828.1** | **1,771.0** | **1,675.8** |
+| the card: the commands' events | 421.1 | 420.5 | 406.4 | 349.9 |
+| the executor's thread (idle within it) | 932.7 (471.0) | 440.4 | 418.4 | 352.8 |
+| lists a call | 7 open | 4 closed | 1 | 1 |
+| fallbacks a call | 45 | 45 | 0 | 0 |
+
+Beside them, the list's own decode layer on the same program (above, us a layer at T
+4096): a command a step 416.1, the layer as a chain 353.2, the token as one 341.1; the
+decode thread's token 339.95. Before the chain's change: a command a step 410.9, the
+layer as a chain 347.3. Fused, the compiled layer's five commands take what the list's
+take; with the chain, its one command takes the list's layer chain (349.9 against
+353.2 with its thread). torch float32 on the CPU: 11,408 us.
+
+The fallbacks, by op, a call: eager and compiled without fusion, add 8, mul 13, pow 4,
+mean 4, rsqrt 4 (the two norms and q's and k's head norms), slice 4 and cat 3 (the
+rotation, and q, k, v side by side), view 4, silu 1. With fusion: none.
+
+### What was removed and what it gave
+
+- Eager: the largest term was the fallbacks' traffic over the host channel (model B:
+  reads 5,797, writes 5,333 us a call): a fallback's output went back to the card and
+  the next fallback read it again. Now the host keeps a fallback's output
+  (`Device(mirror=True)`) and writes it to the card only when a call with a descriptor
+  takes it. Model A 10,289.1 -> 6,309.3 us a call (reads 2,411 -> 1,336, writes 2,561
+  -> 938); model B 20,603.4 -> 12,830.0 (reads 5,797 -> 2,503, writes 5,333 -> 1,870);
+  both right as before (`results/torch-removals.json`). Next: the dispatch's own Python
+  (1.7 / 3.7 ms), then the reads left (a product's output each fallback after it needs).
+- Compile (fused and chained): the largest term was the input's write (356.5 / 367.7)
+  with its squares written apart (240.5 / 233.3). Now x and its squares are one DRAM
+  tensor (the squares' pages a whole round of the eight banks after x's 64), written in
+  one host write: 597.0 -> 566.3 us (model A), 601.0 -> 576.1 (B); a call 1,651.0 ->
+  1,547.1 and 1,675.8 -> 1,580.2, right as before. The write was not a fixed cost a
+  write: 72 pages take what 64 and 8 took apart, less 31 us. Next: the host channel's
+  write itself (566 us for 144 KB), then the RUN's round trip above the card's time
+  (195 to 200 us), then the output's read (310 us).
+
+### What a kernel had to provide by hand
+
+- A plan for each product shape in the program's table (at most 8, fixed at the load):
+  a shape not planned before the load cannot run; `x @ w1` alone needed a sixth.
+- Its weights in the operation's layout: the norm's weight folded into W (diag(w) W),
+  the gate's and up's columns in turns of 4 tiles a block, q, k and v side by side.
+  The fusion rule prepares them once from the module's own parameters.
+- The rows' sums of squares beside its input: made only by an add after a product, or
+  by the host for an input; a norm before a product cannot run without them. The add
+  only where the product's plan has 8 groups (N = 2048): its roots write a tile each.
+- The operations only after a product: no element-wise kernel stands alone, so the
+  norm's pieces, silu, a residual add without its product and the rotation fall back.
+- The heads' norms and rotation: their weights in a slot of the qk tensor (a slot a
+  layer, written once), the rotation's table for the cache's rows, epsilon compiled
+  in; the position and the slot in a word. The rule checks the module's cos and sin
+  against that table.
+- attend: the cache's layout (heads x rows), one token's row, q, k and v as one
+  tensor with q and k already normed and rotated, and its own write of the token's k
+  and v into the card's cache (a side effect torch does not see; the same row each
+  call here).
+- For the chain: each call's record words (sends, marked, what it reads of the
+  output before: its K range or attend's three ranges, the gate's output width), and
+  only where each call takes the one before's output.
+- The rows that hold values, in a word of every call.
+
+### Run
+
+```
+python projects/nn/torch_bench.py --prepare --data ref.npz --snapshot <model snapshot>
+python projects/nn/torch_bench.py --data ref.npz --snapshot <model snapshot> --models a b
+python projects/nn/torch_bench.py --data ref.npz --snapshot <model snapshot> \
+    --ways eager joint --mirror
+```
+
+`--prepare` runs off the card: the inputs, torch float32's outputs and its CPU time.
