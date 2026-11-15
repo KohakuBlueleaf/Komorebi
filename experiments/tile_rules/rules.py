@@ -300,8 +300,9 @@ def setting(body):
     }
 
 
-def launch_attn(session, body, data):
-    """The per-core attention body (BODY 18, 19) on core (0, 0) over `data`."""
+def launch_attn(session, body, data, stage=3):
+    """The per-core attention body (BODY 18, 19) on core (0, 0) over `data`; `stage`
+    1, 2: only the score products (+ the hand step), packed out (attn_stages.py)."""
     steps = len(data["kv"]) // (3 * (HEAD_TILES + VALUE_TILES))
     columns = VALUE_TILES + (1 if BODIES[body][1] == "hand" else 0)
     nonce = secrets.randbits(32) | 1
@@ -341,6 +342,7 @@ def launch_attn(session, body, data):
     run.kernel(str(KERNELS / "writer.cpp"), core, 0, accessors, [], [], [(0, 0, words)])
     defines = {
         "BODY": body,
+        "STAGE": stage,
         "HEAD_TILES": HEAD_TILES,
         "VALUE_TILES": VALUE_TILES,
         "STEP_THRESHOLD": f"{bits(639.0 + STEP_LAG)}u",
