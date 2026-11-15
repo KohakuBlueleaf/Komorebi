@@ -1062,6 +1062,8 @@ class Session:
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way([tensor], start, count)
         if way is None:
+            if self._mock_channel and (count != tensor.pages or self.run is not None):
+                return  # the card's channel would take it; a mock run reads nothing
             if count != tensor.pages or (self.run is not None and not self.run.stopped):
                 raise ChannelError(
                     "a page range, or a write while a run is loaded, goes through the "

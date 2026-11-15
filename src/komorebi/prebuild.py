@@ -172,6 +172,15 @@ def run(script, args=(), cards=(0,), cluster=None):
     return code
 
 
+def in_load(error):
+    """Whether `error` was raised inside a load (a build), not by the script."""
+    return any(
+        frame.name in ("_load", "load_islands")
+        and frame.filename.endswith("session.py")
+        for frame in traceback.extract_tb(error.__traceback__)
+    )
+
+
 def add_arguments(parser):
     """The command's arguments (kmr's subcommand)."""
     parser.add_argument("--cards", default="0", help="0, or 0,1 for a mesh of two")
@@ -202,9 +211,9 @@ def main():
             raise
         print(f"{said}refused by size, as the card's run would be", flush=True)
         return REFUSED
-    except KomorebiError:  # a build or a load failed: as it would on the card
-        raise
-    except Exception as error:  # noqa: BLE001  the script's own checks on zeros
+    except Exception as error:  # the script's own checks on zeros, or a build
+        if isinstance(error, KomorebiError) and in_load(error):
+            raise  # a build or a load failed: as it would on the card
         frames = traceback.extract_tb(error.__traceback__)
         line = next(
             (f.lineno for f in reversed(frames) if Path(f.filename) == script), "?"
