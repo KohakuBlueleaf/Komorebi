@@ -427,9 +427,8 @@ class Template:
 
 
 LOG2E, LN2 = 1.4426950408889634, 0.6931471805599453
-# Each transcendental's templates, cheapest first; the default is the last (accurate).
-# flash: Kohaku-TT's flash attention 2^(u - 639), u = x + 639 (exponent and a degree-2
-# polynomial of the fraction), exp2's exactly 1 at x = 0 (exp2(m - m) rescales none).
+# Each transcendental's templates, cheapest first, the default last. flash: Kohaku-TT's
+# flash attention 2^(u - 639), u = x + 639; exp2's is exactly 1 at x = 0.
 TEMPLATES = {
     "exp": (
         Template(

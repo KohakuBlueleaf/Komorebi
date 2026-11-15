@@ -1,9 +1,7 @@
-"""The step form: a row of `width` tiles and one state tile in Dst. Exact reductions
-along the row come in levels (a reduction reads per-row values of the levels before
-it); per-row values are lanes of the state tile (layout rule: slot k of row group
-(h, q) at 16 h + 4 q + SLOT[k]); a per-row value reduced to one word (tile.word_max)
-takes the last slot; the row is stored in place. A pass over the row per level, row
-group by row group, so a group's per-row values feed its own next pass."""
+"""The step form: a row of `width` tiles and one state tile in Dst; exact reductions
+in levels, one pass over the row per level and row group. Per-row values are lanes
+of the state tile (slot k of row group (h, q) at 16 h + 4 q + SLOT[k]); a per-row
+value reduced to one word (tile.word_max) takes the last slot."""
 
 import copy
 

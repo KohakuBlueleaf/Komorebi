@@ -68,9 +68,8 @@ EXP_TILE = {
     16: 1,
 }  # the row state's Dst tile: the hand body's, the emitted
 
-# BODY: (case, form "hand", "emitted" or "macro": emitted with the load-macro rule;
-# "stated": emitted at STEP_EXP where "emitted" is accurate; "accurate" the reverse).
-# Hand: tt-metal's vector library (silu, add, scale), projects/decode (gate, norm).
+# BODY: (case, form); "macro": the load-macro rule, "stated": at STEP_EXP, "accurate":
+# the default exp. Hand: tt-metal's library, projects/decode, projects/attention.
 BODIES = {
     0: ("silu", "hand"),
     1: ("silu", "emitted"),
