@@ -22,6 +22,9 @@ K = packets.K
 VECTORS = packets.hit_vectors(False)
 # The profile's counters of cycles (the clock's) and of counts, by name (card.PROF).
 COUNTS = ("packets", "pops", "empty", "inner", "leaves", "error")
+COUNTS += ("reader_pages", "writer_pages")  # the movers' words: counts
+TIMES = ("reader_wait", "reader_read", "reader_total")  # and cycles
+TIMES += ("writer_wait", "writer_write", "writer_total")
 
 
 def hit_pages(rows, count):
@@ -30,9 +33,8 @@ def hit_pages(rows, count):
 
 
 def compare(hand, mine, count, workers):
-    """Words that differ: the hit pages but their cycles vector, and the walk's
-    counts in the profile (the class's page holds the pack CPU's words alone: the
-    movers' counters are a line it does not have)."""
+    """Words that differ: the hit pages but their cycles vector, and the counts in
+    the profile (the walk's, the reader's and the writer's pages)."""
     a, b = hit_pages(hand["hits"], count), hit_pages(mine["hits"], count)
     cycles = K["kHitCycles"]
     keep = [vector for vector in range(VECTORS) if vector != cycles]
@@ -52,6 +54,21 @@ def compare(hand, mine, count, workers):
     return result
 
 
+def times(hand, other, workers):
+    """Each mover's time word summed over the cores: the hand's, the other's, and
+    their difference over the hand's."""
+    a = card.profile_rows(hand["profile"], workers)
+    b = card.profile_rows(other["profile"], workers)
+    return {
+        name: {
+            "hand": int(a[name].sum()),
+            "other": int(b[name].sum()),
+            "difference": float((b[name].sum() - a[name].sum()) / a[name].sum()),
+        }
+        for name in TIMES
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--reference", action="store_true", help="numpy's trace too")
@@ -61,7 +78,7 @@ def main():
     count = int(inputs["count"][0])
     records = {
         name: dict(np.load(HERE / "build" / f"{name}.npz"))
-        for name in ("hand", "class")
+        for name in ("hand", "class", "hand2")
         if (HERE / "build" / f"{name}.npz").exists()
     }
     for record in records.values():
@@ -70,6 +87,9 @@ def main():
     report = {}
     if "hand" in records:
         report["compare"] = compare(records["hand"], mine, count, arguments.workers)
+        report["times"] = times(records["hand"], mine, arguments.workers)
+    if "hand" in records and "hand2" in records:  # the hand's spread, run to run
+        report["spread"] = times(records["hand"], records["hand2"], arguments.workers)
     for name, record in records.items():
         rows = card.profile_rows(record["profile"], arguments.workers)
         busy = rows["total"]

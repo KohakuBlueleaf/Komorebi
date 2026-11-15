@@ -9,6 +9,7 @@ import pytest
 import komorebi as km
 from komorebi.dsl.compiler import Refused, compile_class
 from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.program import compute_options
 from komorebi.errors import ProgramError
 from komorebi.session import Session
 from komorebi.tensor import Tensor
@@ -490,6 +491,129 @@ def test_a_class_built_for_a_session_leaves_the_loads_rows():
             plan={"TILES": 240},
             source=tensor("bfloat16"),
         )
+
+
+class Owned(km.Program):
+    state: km.L1[km.fp32, 2, 32, 32] = km.own(push=None)
+    fifo: km.L1[km.bf16, 3, 32, 32] = km.own()
+
+    @km.handler
+    def step(self, source: km.Tensor):
+        for tile in km.Stream(source.pages(0, 8)):
+            km.cxx("pack_tile<true>(0, state, 1);", takes=[tile, self.state])
+            km.cxx("cb_push_back(fifo, 1);", takes=[self.fifo], on="pack")
+            km.cxx("cb_pop_front(fifo, 1);", takes=[self.fifo], on="unpack")
+
+
+class OwnedFilled(km.Program):
+    state: km.L1[km.fp32, 2, 32, 32] = km.own(push=None)
+    fifo: km.L1[km.bf16, 3, 32, 32] = km.own()
+
+    @km.handler
+    def load(self, source: km.Tensor):
+        self.fifo.fill(km.Stream(source.pages(0, 3)))
+
+
+class OwnedTwice(km.Program):
+    state: km.L1[km.fp32, 2, 32, 32] = km.own(push=None)
+    fifo: km.L1[km.bf16, 3, 32, 32] = km.own()
+
+    @km.handler
+    def step(self, source: km.Tensor):
+        for tile in km.Stream(source.pages(0, 8)):
+            km.cxx("cb_push_back(fifo, 1);", takes=[tile, self.fifo], on="pack")
+
+    @km.handler
+    def give(self, source: km.Tensor):
+        km.Stream(source.pages(0, 1)).drain()
+        km.cxx("cb_push_back(fifo, 1);", takes=[self.fifo], on="mover_a")
+
+
+class OwnedPushed(km.Program):
+    state: km.L1[km.fp32, 2, 32, 32] = km.own(push=None)
+    fifo: km.L1[km.bf16, 3, 32, 32] = km.own()
+
+    @km.handler
+    def give(self, source: km.Tensor):
+        km.cxx("cb_push_back(state, 1);", takes=[self.state], on="pack")
+
+
+def test_an_own_field_is_a_buffer_of_bodies_with_one_producer():
+    compiled = compile_class(Owned, {}, {"source": tensor("bfloat16")})
+    owned = {b.name: b for b in compiled.buffers if b.role == "field"}
+    assert owned["kFieldState"].pages == (2,) and owned["kFieldFifo"].pages == (3,)
+    assert owned["kFieldFifo"].what.endswith(
+        "own: used by bodies, not filled by a line"
+    )
+    unpacked = compute_options(compiled)["unpack_to_dest_mode"]  # float32 in DST
+    assert unpacked[owned["kFieldState"].index_a] == "UnpackToDestFp32"
+    compute = "\n".join(render(prune(compiled.compute["step"]), 0))
+    assert "const uint32_t state = kFieldState;" in compute
+    assert "kFieldFifo)" not in compute  # no wait, no free: the bodies' own
+    for cls, match in (
+        (OwnedFilled, "is an own field: only bodies use it, no line fills it"),
+        (OwnedTwice, "is pushed on pack too .step, line .*: a buffer has one"),
+        (OwnedPushed, r"is km.own\(push=None\): written in place, never pushed"),
+    ):
+        with pytest.raises(Refused, match=match):
+            compile_class(cls, {}, {"source": tensor("bfloat16")})
+
+
+class Assembled(km.Program):
+    words: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_a")
+
+    @km.handler
+    def page(self, source: km.Tensor, out: km.Tensor):
+        for tile in km.Stream(source.pages(0, 8), pattern="A"):
+            km.cxx("look(tile);", takes=[tile], on="pack")
+        km.cxx("hand(words, tile_tiles, tile_cycles);", takes=[tile, self.words],
+               on="mover_a")  # fmt: skip
+        report = km.Stream(out.pages(self.rank, 1), write=True, pattern="B")
+        km.cxx("fill(report);", takes=[report], on="pack")
+        km.cxx("add(report, words);", takes=[report, self.words], on="mover_b")
+
+
+class AssembledOnA(km.Program):
+    @km.handler
+    def page(self, out: km.Tensor):
+        report = km.Stream(out.pages(self.rank, 1), write=True, pattern="B")
+        km.cxx("fill(report);", takes=[report], on="pack")
+        km.cxx("add(report);", takes=[report], on="mover_a")
+
+
+class AssembledFirst(km.Program):
+    @km.handler
+    def page(self, out: km.Tensor):
+        report = km.Stream(out.pages(self.rank, 1), write=True, pattern="B")
+        km.cxx("add(report);", takes=[report], on="mover_b")
+
+
+class AssembledByA(km.Program):
+    @km.handler
+    def page(self, out: km.Tensor):
+        report = km.Stream(out.pages(self.rank, 1), write=True, pattern="A")
+        km.cxx("fill(report);", takes=[report], on="pack")
+        km.cxx("add(report);", takes=[report], on="mover_b")
+
+
+def test_mover_b_adds_words_to_a_page_before_the_movers_write_it():
+    tensors = {"source": tensor("bfloat16"), "out": tensor("uint32")}
+    compiled = compile_class(Assembled, {}, tensors)
+    movement = "\n".join(render(prune(compiled.movement["page"]), 0))
+    assert "km::Moved moved0 = {0, 0};\nif (!movement.move(moved0, read0))" in movement
+    assert "const uint32_t tile_cycles = moved0.cycles;" in movement  # mover A's
+    waited = movement.index("if (!movement.wait_front(out_report, kWrite0Block))")
+    body = movement.rindex("add(report, words);")  # the body, not its comment
+    assert waited < body < movement.index("if (!movement.move(write0))")
+    assert "const uint32_t report = get_read_ptr(out_report);" in movement
+    assert "const uint32_t words = kFieldWords;" in movement  # A to B by an own field
+    for cls, match in (
+        (AssembledOnA, "report is a write stream: its pages are pack's to fill"),
+        (AssembledFirst, "report's page is mover B's after pack's body fills it"),
+        (AssembledByA, "report's block is not mover B's to write"),
+    ):
+        with pytest.raises(Refused, match=match):
+            compile_class(cls, {}, {"out": tensor("uint32")})
 
 
 class Patterned(km.Program):

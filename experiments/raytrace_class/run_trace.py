@@ -1,7 +1,7 @@
 """One trace pass on the card from prepare.py's inputs: the hand program (the project's
-run_handler: LOAD, then the TRACE commands) or the class (load_tree once, then the
-trace_rays commands); hit pages, profile pages, times to build/<program>.npz.
-Example: python run_trace.py --program class --reps 5"""
+run_handler), the class (load_tree once, then trace_rays), or both (hand, class, hand
+again in one session); hit pages, profile pages, times to build/<program>.npz.
+Example: python run_trace.py --program both --reps 5"""
 
 import argparse
 import json
@@ -79,32 +79,38 @@ def of_class(session, inputs, reps):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--program", choices=("hand", "class"), required=True)
+    parser.add_argument("--program", choices=("hand", "class", "both"), required=True)
     parser.add_argument("--reps", type=int, default=5)
     parser.add_argument("--inputs", default=str(HERE / "build" / "inputs.npz"))
     arguments = parser.parse_args()
     inputs = dict(np.load(arguments.inputs))
+    # both: the hand, the class, the hand again (its own spread from run to run)
+    runs = {"hand": [("hand", hand)], "class": [("class", of_class)]}.get(
+        arguments.program, [("hand", hand), ("class", of_class), ("hand2", hand)]
+    )
+    ok = True
     with card.open_session() as session:
-        run = hand if arguments.program == "hand" else of_class
-        output, profile, ran, microseconds = run(session, inputs, arguments.reps)
         workers = card.workers(session)
         mhz = card.aiclk_mhz()
-    report = {
-        "program": arguments.program,
-        "run": card.check_run(ran, workers),
-        "trace_microseconds": [float(value) for value in microseconds],
-        "median_microseconds": float(np.median(microseconds)),
-        "mhz": mhz,
-    }
-    report["ok"] = card.ran_cleanly(report["run"], workers)
-    np.savez(
-        HERE / "build" / f"{arguments.program}.npz",
-        hits=output,
-        profile=profile,
-        microseconds=microseconds,
-    )
-    print(json.dumps(report, default=int), flush=True)
-    sys.exit(0 if report["ok"] else 1)
+        for name, run in runs:
+            output, profile, ran, microseconds = run(session, inputs, arguments.reps)
+            report = {
+                "program": name,
+                "run": card.check_run(ran, workers),
+                "trace_microseconds": [float(value) for value in microseconds],
+                "median_microseconds": float(np.median(microseconds)),
+                "mhz": mhz,
+            }
+            report["ok"] = card.ran_cleanly(report["run"], workers)
+            ok = ok and report["ok"]
+            np.savez(
+                HERE / "build" / f"{name}.npz",
+                hits=output,
+                profile=profile,
+                microseconds=microseconds,
+            )
+            print(json.dumps(report, default=int), flush=True)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

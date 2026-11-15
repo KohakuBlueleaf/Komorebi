@@ -58,6 +58,29 @@ def symbol():
     return Symbol()
 
 
+# The CPUs that may push an own field's buffer: a mover, or compute's (its pack CPU).
+OWN_PUSHERS = ("mover_a", "mover_b", "pack")
+
+
+class Own:
+    """`p: km.L1[format, *shape] = km.own(push=...)`: a field only bodies use, never
+    filled, waited for or freed by a line. `push` the one CPU whose bodies push it
+    (OWN_PUSHERS), None for one written in place and never pushed; not given, the
+    build finds it from the bodies (one CPU at most)."""
+
+    def __init__(self, push="found"):
+        if push != "found" and push is not None and push not in OWN_PUSHERS:
+            raise ProgramError(
+                f"km.{spelling('own')}(push={push!r}): push= is the one CPU that "
+                f"pushes it ({', '.join(map(repr, OWN_PUSHERS))}) or None"
+            )
+        self.push = push
+
+
+def own(push="found"):
+    return Own(push)
+
+
 class Tile:
     """`gives=km.Tile`: what an inline body of compute leaves in DST 0."""
 
@@ -297,6 +320,7 @@ def exports():
         "message": Message,
         "field": L1,
         "symbol": symbol,
+        "own": own,
         "tile_value": Tile,
         "tensor": Tensor,
         "stream": line_only("stream"),
