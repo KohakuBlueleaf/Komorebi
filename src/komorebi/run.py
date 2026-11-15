@@ -1608,7 +1608,8 @@ class Run:
                 group = self.group(handle)
                 if group is not None and group[0] is not None:
                     # the trace's rows are the card's cores: the group's first row
-                    row = (int(group[0]) - self.island_first, int(group[1]))
+                    first = int(group[0]) - self.island_first + self.island_cores[0]
+                    row = (first, int(group[1]))
                     seqs[handle], groups[handle] = _sequence_number(count), row
             self._trace = device_state.Trace(
                 trace_rows, seqs, groups, self.backend.mhz, self.h
