@@ -304,8 +304,9 @@ its commands. Here is what was found and what remains:
   root walked the other island's 118 too, none of which it may mark.
 - **Fixed.** On an island of several, a root now walks only the groups with a rank on
   its own island. A card of its own (`KM_ONE_ISLAND`) builds the same code as before.
-- **UNSOLVED.** The walk over the island's own groups remains: about 12 us a record
-  after the first on 118 groups.
+- **A known cost.** The walk over the island's own groups remains: about 226 ns a group
+  of the next record, each step (about 12 us a record after the first on 118 groups).
+  It could be cut by computing the marked groups from the ranges.
 
 Each record after the first waits for the walk: its writer takes it only once the walk
 of the record before is done, and a core's mark lands when the walk reaches its group.
