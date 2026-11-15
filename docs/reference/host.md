@@ -945,6 +945,33 @@ division and square root in [`divsqrt.hpp`](../../projects/raytrace/kernels/divs
 `KMR_INSN_CHECK=0` turns the check off, for a kernel that never executes the code
 found.
 
+### Building with no card
+
+`kmr prebuild script.py [args]` (or `komorebi.prebuild.run(script, args, cards)`)
+runs the script in a new process against a mock device: one P150, or with
+`--cards 0,1` two P150 cards in a mesh joined by ports 4 to 7 (the mock clusters
+ship in the package; `--cluster` names another). Each load builds everything the
+card's load would, up to the launch: the kernels, the overlay parts, the host
+transfer kernel when the script writes a tensor before it, and on two cards each
+island's kernels and the link cores' kernels. A mock run then stands in for the
+launch, so the script goes on to its later loads. The build cache is the card's, so
+a card run of the script that follows compiles nothing. Every load, on a card or not,
+logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
+`compiled:` line with the defines of each kernel it had to compile.
+
+- The mock run's calls return at once (a wait gives an event of zeros) and every
+  read gives zeros of the tensor's shape. A script that branches on what it read may
+  take another path than on the card and build other loads. An exception from the
+  script's own checks on those zeros ends it with `the script stopped at line N after
+  K load(s)`, which is not a failure of the build; the command ends with how many
+  loads it built. A failed build or load is a failure, as on the card.
+- The remembered kernel buffers are read, so the mock opens as the card's next run
+  would, and never written: the prebuild keeps its sizes in a copy of its own. A load
+  refused by size (an island session cannot open its card again) is built a second
+  time at the size the card's next run opens at.
+- The mock cards have two Tensix columns harvested, as a P150 has; a card whose
+  grid differs needs its own cluster descriptor (`--cluster`).
+
 ## Rules the host keeps
 
 - The host never reads or writes a core's memory while the program runs, with one

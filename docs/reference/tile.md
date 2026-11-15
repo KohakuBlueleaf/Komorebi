@@ -22,7 +22,8 @@ turns it into a **unit program**: the vector-unit (SFPU) instructions the math C
 issues for one unit of work (one tile, or one row of tiles), the calls around them
 (copies into `Dst`, packs), the rules applied as passes, the hazard checks, and a cost.
 `emit` writes the unit program as a C++ header: `<name>_init()` once, `<name>(dst)` per
-unit, raw Tensix words only (no floats, every immediate known when the header is built).
+unit, raw Tensix words only (no floats, every immediate known when the header is built
+but a run-time scalar's two halves, which the core builds from the call's argument).
 
 ## Writing one
 
@@ -228,6 +229,11 @@ Each per-row value lives as lanes of one slot of the state tile (slot `k` of row
 `(h, q)` at `Dst` row `16 h + 4 q + (0, 2, 32, 34)[k]`); the reductions run in levels,
 one pass over the row a level and row group. `word_max` reduces a per-row value to one
 word (the largest over the rows) in the last slot, which a core reads as a word.
+A per-row value that reads a slot the step stores at a level before its reader's
+(alpha = exp2(m_old - m_new) read only by l's level) is kept in the state's next free
+slot: inlined into the later level it would read the new m. A class calls the step
+form on DST sums ([classes](classes.md#a-step-function-on-dst-sums)), its row sums on
+the vector unit (`matrix_sum=False`).
 
 ## Rules
 

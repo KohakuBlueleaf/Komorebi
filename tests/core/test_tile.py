@@ -334,7 +334,10 @@ def test_product_in_a_trace_is_one_body():
     [
         (lambda a, b, c: trace.silu(a) @ b, "a product after vector code"),
         (lambda a, b, c: (a @ b) @ c, "a product, its result in Dst"),
-        (lambda a, b, c: (a @ b) * (b @ c) + (a @ c) * (c @ a), "4 products"),
+        (
+            lambda a, b, c: (a @ b) * (b @ c) + (a @ c) * (c @ a) + b @ a,
+            "reads at most 4 operand tiles",  # 5 products: Dst holds 4 operands
+        ),
     ],
 )
 def test_product_refusals(fn, refusal):

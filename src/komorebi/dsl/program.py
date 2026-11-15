@@ -818,12 +818,12 @@ def rectangle_args(compiled, rect, nocs):
         first, (first_y + rows - 1) * grid_width + first_x + columns - first
     )
     fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
-    by_mover = {}
-    for number, (along, buffer, window, mover, length) in enumerate(
+    by_mover = {}  # mover -> {its broadcasts' place: their arguments by core}
+    for number, (along, buffer, window, mover, length, index) in enumerate(
         compiled.broadcasts
     ):
         noc = 0 if mover == "A" else 1  # each mover runs on its own NoC
-        by_mover[mover] = layout.broadcast_args(
+        by_mover.setdefault(mover, {})[index] = layout.broadcast_args(
             nocs.grid,
             nocs.panels,
             group,
@@ -845,9 +845,12 @@ def rectangle_args(compiled, rect, nocs):
         x, y = cells.get(core, (0, 0))
         common = [x, y, int(core in cells), columns, rows]
         movers = []
-        for mover in ("A", "B"):
-            words = by_mover.get(mover, {}).get(core)
-            movers.append(common + ([words[name] for name in fields] if words else []))
+        for mover in ("A", "B"):  # each broadcast's words after the last's
+            sets = by_mover.get(mover, {})
+            words = [sets[index].get(core) for index in sorted(sets)]
+            if not all(words):  # a core no broadcast of the mover takes
+                words = []
+            movers.append(common + [w[name] for w in words for name in fields])
         return movers[0], movers[1], common
 
     return program_args, (group.first, group.count)

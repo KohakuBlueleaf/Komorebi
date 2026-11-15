@@ -61,11 +61,11 @@ WORD = 2 * 256 + 1
 MAX_SWAP = 1  # SFPSWAP mod1: the larger into VC, the smaller into VD
 
 
-def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4"):
+def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4", matrix_sum=True):
     """The unit program of step kernel `ir` over a row of `width` tiles in Dst tiles
-    0 .. width - 1 (stored over them) and its state tile in Dst tile `state_tile`
-    (read and written in place; see the module text for its layout). `fidelity`: the
-    matrix unit's, for a row sum the cost model gives it (rule matrix_sum)."""
+    0 .. width - 1 (stored over them) and its state tile in Dst tile `state_tile`, read
+    and written in place. `fidelity`: the matrix unit's, for rule matrix_sum's row
+    sums, which `matrix_sum=False` refuses (a caller with no products of ones)."""
     if dest != "fp32":
         raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
     if not 1 <= width <= 3 or not width <= state_tile <= 3:
@@ -125,7 +125,7 @@ def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4"):
 
     unit = UnitProgram(ir.name, dest)
     unit.operands = [loads[0].attrs["view"].tensor.name]
-    plan = _Plan(width, state_tile, level, stored, word, held, slots)
+    plan = _Plan(width, state_tile, level, stored, word, held, slots, nodes)
     plan.reductions = []
     for r in reduces:
         operand, scale = _scale_out(r)
@@ -153,6 +153,8 @@ def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4"):
     if best is None:
         fail(f"{ir.name}: the step's values do not fit the 8 work registers")
     sums, record = _matrix_sums(plan, fidelity, word, nodes)
+    if not matrix_sum:
+        sums, record = set(), ["refused: the caller makes no products with ones"]
     chosen = None
     if sums:
         plan.matrix, plan.later = sums, _later(plan, sums)
@@ -392,11 +394,26 @@ class _Plan:
     """What the builder needs: the levels, the per-row values held (their chains),
     the reductions (node, chain of the operand, factor taken out) and the store."""
 
-    def __init__(self, width, state_tile, level, stored, word, held, slots):
+    def __init__(self, width, state_tile, level, stored, word, held, slots, nodes):
         self.width, self.state_tile, self.level = width, state_tile, level
         self.stored, self.word, self.held, self.slots = stored, word, held, slots
         self.reductions, self.store, self.per_row = [], None, []
         self.row_dtype = None  # the stored row's format
+        # a held value a later level reads and the step does not store: the state
+        # tile's next free slot (not the word's, the last), packed back with it
+        later = [
+            n
+            for n in held
+            if not any(n is v for v in stored)
+            and any(level[id(u)] > level[id(n)] for u in _users(n, nodes))
+        ]
+        room = len(SLOT) - len(stored) - (word is not None)
+        if len(later) > room:
+            fail(
+                f"the state tile holds {len(SLOT)} per-row values (the last a word's): "
+                f"{len(stored)} stored and {len(later)} read a level later"
+            )
+        self.extra = {id(n): len(stored) + i for i, n in enumerate(later)}
         # sums on the matrix unit (ids) and the per-row values computed after them
         self.matrix, self.later = set(), []
 
@@ -409,11 +426,12 @@ class _Plan:
         return range(max(top) + 1)
 
     def slot_of(self, node):
-        """The slot a per-row value lives in: its state slot, else None."""
+        """The slot a per-row value lives in: its state slot, its free slot, else
+        None."""
         for k, v in enumerate(self.stored):
             if v is node:
                 return k
-        return None
+        return self.extra.get(id(node))
 
     def per_row_of(self, lv):
         """The per-row values of level `lv` and their chains, in order (not those
@@ -451,9 +469,10 @@ def _users(node, nodes):
 
 
 def _held(nodes, shapes, stored, word, level):
-    """The per-row values computed once a group and kept: stored ones, the word's,
-    those broadcast into the row and those read by two or more. A later level reads
-    a kept value back from its state slot."""
+    """The per-row values computed once a group and kept (a later level reads them
+    back from a state slot): stored ones, the word's, those broadcast into the row,
+    those read by two or more, and those reading a slot the step stores at a level
+    before their reader's (inlined, alpha = exp2(m_old - m_new) read the new m)."""
     out = []
     for n in nodes:
         if shapes(n) != "col" or n.kind in ("slot", "reduce"):
@@ -464,9 +483,29 @@ def _held(nodes, shapes, stored, word, level):
             or (word is not None and n is word.args[0])
             or any(u.kind == "col" for u in users)
             or len(users) > 1
+            or _stale(n, users, stored, level)
         ):
             out.append(n)
     return out
+
+
+def _stale(node, users, stored, level):
+    """Whether `node`, inlined into its latest reader, would read a state slot the
+    step stores at an earlier level (a level loads the slots it reads before it
+    writes any: the same level reads the old value)."""
+    reader = max((level[id(u)] for u in users), default=0)
+    return any(level[id(stored[k])] < reader for k in _slots_read(node, stored))
+
+
+def _slots_read(node, stored):
+    """The state slots `node` reads through its arguments, up to a reduction or a
+    stored value (read back from its own slot)."""
+    if node.kind == "slot":
+        k = node.attrs["slot"]
+        return {k} if k < len(stored) else set()
+    if node.kind == "reduce" or any(node is v for v in stored):
+        return set()
+    return set().union(*(_slots_read(a, stored) for a in node.args))
 
 
 def _scale_out(r):
