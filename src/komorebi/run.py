@@ -279,6 +279,7 @@ class Run:
             self._check_holds(program_field, handler, *group)
             if method is not None:
                 self._check_rectangle(method, program_field, group)
+                self._check_reduce_groups(method, program_field, group)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(word) <= M32 for word in args):
@@ -313,6 +314,18 @@ class Run:
                 f"rectangle {rectangle['rect'] or 'the whole grid'} is the group "
                 f"{rectangle['group']}, fixed at load; submit it to that group "
                 f"(not {tuple(group)}), or make the program with rect="
+            )
+
+    def _check_reduce_groups(self, method, program_field, group):
+        """Refuses a command of a class's handler that reduces in groups of S ranks
+        whose group's cores are not a multiple of S."""
+        program = self.programs[program_field]
+        found = getattr(program, "reduce_groups", {}).get(method.name)
+        if found is not None and group[1] % found[0]:
+            raise ValueError(
+                f"{type(program).__name__}.{method.name}, {found[1]}: groups of "
+                f"{found[0]} ranks, and the command's {group[1]} cores are not a "
+                f"multiple of {found[0]}"
             )
 
     def _block_words(self, block, args, cluster):

@@ -1,6 +1,7 @@
 """A program written as a class that the compiler does not take is refused when it is
 made, with a sentence that names the handler and the line (no card)."""
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -175,6 +176,162 @@ def test_a_product_of_float32_tiles_is_refused_by_its_line():
     line = line_of("# narrow")
     with pytest.raises(Refused, match=rf"^Narrow.apply, line {line}, .*bfloat16 tiles"):
         made(Narrow, x=tensor("float32"), w=tensor("bfloat16"))
+
+
+def grid(dtype, rows, columns):
+    """A tensor of rows x columns tiles."""
+    return Tensor(
+        Pages(2048 if dtype == "bfloat16" else 4096),
+        (rows * 32, columns * 32),
+        dtype,
+        "tile",
+    )
+
+
+@km.tile_function
+def gate(a, b):
+    return a * b
+
+
+@km.tile_function(fidelity="HiFi2")
+def coarse(x, w):
+    return x @ w
+
+
+class Stepped(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor):
+        km.Stream(x.tiles[0:4:2, 0:4]).drain()  # stepped
+
+
+class Ragged(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor, n: int):
+        km.Stream(x.tiles[0:2, 0:n]).drain()  # ragged
+
+
+class Uneven(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor):
+        km.Stream(x.tiles[0:4, 0:3], block=4).drain()  # uneven
+
+
+class Owned(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        self.weight.fill(km.Stream(w.tiles[0:2, 0:2]))
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.tiles[0:1, 0:2], block=2):
+            acc += project(block, self.weight)
+        whole = km.reduce(acc, form="owner")  # owned
+        if self.rank == self.leader:
+            y.tiles[0:1, 0:2].write(whole)
+
+
+class Tall(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        self.weight.fill(km.Stream(w.tiles[0:2, 0:2]))
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.tiles[0:1, 0:2], block=2):
+            acc += project(block, self.weight)
+        y.tiles[0:2, 0:1].write(acc)  # tall
+
+
+class Vector(km.Program):
+    @km.tile_function(fidelity="HiFi2")
+    def gated(a, b):
+        return a * b
+
+    @km.handler
+    def apply(self, a: km.Tensor, b: km.Tensor, out: km.Tensor):
+        results = km.Stream(out.pages(0, 2), write=True)
+        for x, y in zip(km.Stream(a.pages(0, 2)), km.Stream(b.pages(0, 2))):
+            results.push(self.gated(x, y))  # vector
+
+
+class Fidelities(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        self.weight.fill(km.Stream(w.tiles[0:2, 0:2]))
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.tiles[0:1, 0:2], block=2):
+            acc += project(block, self.weight)
+        for block in km.Stream(x.tiles[0:1, 0:2], block=2):
+            acc += coarse(block, self.weight)  # fidelities
+        y.tiles[0:1, 0:2].write(acc)
+
+
+LINES = [
+    (Stepped, "copy", "# stepped", "two slices, rows then columns"),
+    (Ragged, "copy", "# ragged", "a constant number of columns"),
+    (Uneven, "copy", "# uneven", "whole rows of it"),
+    (Owned, "apply", "# owned", "by owner holds a slot of them"),
+    (Tall, "apply", "# tall", "a page write of a rectangle is one row"),
+    (Vector, "apply", "# vector", "fidelity= is a product's"),
+    (Fidelities, "apply", "# fidelities", "the fidelity is the compute kernel's"),
+]
+
+
+@pytest.mark.parametrize(("cls", "handler", "text", "message"), LINES)
+def test_a_line_of_rectangles_reduces_or_fidelity_is_refused_by_its_line(
+    cls, handler, text, message
+):
+    line = line_of(text)
+    match = rf"^{cls.__name__}.{handler}, line {line}, .*{message}"
+    tensors = {
+        "x": grid("bfloat16", 4, 4),
+        "w": grid("bfloat16", 4, 4),
+        "y": grid("bfloat16", 4, 4),
+        "a": tensor("bfloat16"),
+        "b": tensor("bfloat16"),
+        "out": tensor("bfloat16"),
+    }
+    names = inspect.signature(getattr(cls, handler).function).parameters
+    with pytest.raises(Refused, match=match):
+        made(cls, **{name: tensors[name] for name in names if name in tensors})
+
+
+class Kept(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def load(self, w: km.Tensor):
+        self.weight.fill(km.Stream(w.tiles[0:2, 0:2]))
+
+    @km.handler
+    def apply(self, x: km.Tensor, y: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.tiles[0:1, 0:2], block=2):
+            acc += project(block, self.weight)
+        for block in km.Stream(x.tiles[1:2, 0:2], block=2):
+            acc += project(block, self.weight)
+        y.tiles[0:1, 0:2].write(acc)
+
+
+def test_a_field_filled_by_one_handler_is_read_by_another():
+    compiled = compile_class(
+        Kept,
+        {},
+        {name: grid("bfloat16", 4, 4) for name in ("w", "x", "y")},
+    )
+    assert compiled.field_users["weight"] == (["load"], ["apply"])
+    compute = "\n".join(render(prune(compiled.compute["apply"]), 0))
+    assert compute.count("compute.wait_front(kFieldWeight") == 1
+    assert "cb_pop_front(kFieldWeight" not in compute
+    load = "\n".join(render(prune(compiled.compute["load"]), 0))
+    assert "cb_pop_front(kFieldWeight" in load
+
+
+def test_a_fidelity_is_tt_metals_word():
+    with pytest.raises(km.ProgramError, match="fidelity='HiFi5' is not one of"):
+        km.tile_function(fidelity="HiFi5")(gate.function)
 
 
 class Note(km.Message):

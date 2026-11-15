@@ -9,6 +9,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import formats
+from projects.decode import bodies as emitted_bodies
 from projects.decode import model as md
 from projects.dense import card as dense_card
 from projects.dense import plan as pl
@@ -26,6 +27,16 @@ ATTEND_PARTS = ADD_PARTS
 # attend's fp32 buffers that compute copies to DEST (with the K split's arrival)
 TO_DEST = ("DC_CB_REFERENCE", "DC_CB_STATE", "DC_CB_RESCALE")
 ATTEND_MODES = {None: 0, "read": 16, "local": 32, "exp_twice": 64}  # LAYERS' a4
+# Operations whose vector bodies can be emitted (bodies.py), a switch each; none by
+# default: each is right on the card and slower than the hand body (README, stage 5).
+BODIES = ("add", "norm", "gate", "qk")
+DEFAULT_BODIES = ()
+
+
+def scale_fp32(bodies):
+    """Whether DC_CB_SCALE (1 / rms) is fp32: only when nothing hand-written reads it
+    (those take it on the matrix unit's source B, in bf16 there)."""
+    return {"norm", "gate", "qk"} <= set(bodies)
 
 
 def operation_word(number, parts):
@@ -39,9 +50,9 @@ def keys_most(context, group):
     return math.ceil((context // md.TILE - 1) / group) + 1
 
 
-def buffers(plan, most):
+def buffers(plan, most, bodies=DEFAULT_BODIES):
     """The K split's buffers (every plan shares them) and the operations'; attend's
-    for `most` key tiles a core."""
+    for `most` key tiles a core; DC_CB_SCALE fp32 by scale_fp32(bodies)."""
     tile = pl.TILE_BYTES
     block = plan.oh * plan.ow
     head = D["DC_HEAD_TILES"]
@@ -68,10 +79,10 @@ def buffers(plan, most):
         (D["DC_CB_PARTS"], D["DC_PARTS"]),
         (D["DC_CB_CONSTANT"], D["DC_CONSTANTS"]),
         (D["DC_CB_SQUARES"], 1),
-        (D["DC_CB_SCALE"], 1),
         (D["DC_CB_UP"], block),
         (D["DC_CB_PART"], 1),
     ]
+    (state if scale_fp32(bodies) else own).append((D["DC_CB_SCALE"], 1))
     return (
         [km.Buffer(*buffer) for buffer in plan.buffers()]
         + [km.Buffer(index, "bfloat16", tile, pages) for index, pages in own + attend]
@@ -83,7 +94,7 @@ class Decode:
     """The model's layers loaded on a session: tensors, the program and its thread.
     `layers` distinct layers of weights in DRAM, written by write_layer(); `trace`:
     the commands each core stamps (the runtime's trace, 0: none); `chunk`, `patterns`:
-    md.plans()'s; `context`: the cache's rows a KV head and layer."""
+    md.plans()'s; `context`: the cache's rows a KV head and layer; `bodies`: BODIES'."""
 
     def __init__(
         self,
@@ -96,8 +107,14 @@ class Decode:
         chunk=md.CHUNK,
         patterns=None,
         context=4096,
+        bodies=DEFAULT_BODIES,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
+        self.bodies = tuple(bodies)
+        if not set(self.bodies) <= set(BODIES):
+            raise ValueError(f"bodies {self.bodies}: of {BODIES}")
+        if self.bodies:
+            emitted_bodies.require()
         self.plans = md.plans(model, chunk=chunk, patterns=patterns)
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
         for name in ("o", "down"):  # their roots write a row's squares, a tile a group
@@ -169,7 +186,7 @@ class Decode:
         program = km.Program(
             "decode",
             kernels=dense_card.SPLIT_KERNELS,
-            buffers=buffers(plans[0], self.keys_most),
+            buffers=buffers(plans[0], self.keys_most, self.bodies),
             args=lambda core: (table, table, table),
             compile_args={"reader": tile_args * 2, "writer": tile_args * 3},
             compute={
@@ -179,12 +196,15 @@ class Decode:
                     S["kCbArrive"]: "UnpackToDestFp32",
                     S["kCbSum"]: "UnpackToDestFp32",
                 }
-                | {D[name]: "UnpackToDestFp32" for name in TO_DEST},
+                | {D[name]: "UnpackToDestFp32" for name in self.to_dest()},
             },
             handlers=pl.SPLIT_H,
         )
         squares = KERNELS / "scale" / "reader.cpp"
-        program.overlay("add", KERNELS / "add", number=D["DC_OVERLAY_ADD"])
+        emit = {f"DC_EMIT_{name.upper()}": int(name in self.bodies) for name in BODIES}
+        program.overlay(
+            "add", KERNELS / "add", number=D["DC_OVERLAY_ADD"], defines=emit
+        )
         program.overlay(
             "gate",
             {
@@ -193,13 +213,14 @@ class Decode:
                 "writer": KERNELS / "gate" / "writer.cpp",
             },
             number=D["DC_OVERLAY_GATE"],
+            defines=emit,
         )
         epsilon = np.array([self.model.eps], np.float32).view(np.uint32)[0]
         program.overlay(
             "scale",
             KERNELS / "scale",
             number=D["DC_OVERLAY_SCALE"],
-            defines={"DC_EPSILON": int(epsilon)},
+            defines={"DC_EPSILON": int(epsilon)} | emit,
         )
         program.overlay(
             "attend",
@@ -227,6 +248,10 @@ class Decode:
             handlers={"layers": D["DC_HANDLER_LAYERS"]},
         )
         return program
+
+    def to_dest(self):
+        """The operations' fp32 buffers that compute copies to DEST."""
+        return TO_DEST + (("DC_CB_SCALE",) if scale_fp32(self.bodies) else ())
 
     def plan_word(self, weight):
         """A product's plan word: the plan's index | the cores it takes << 8."""

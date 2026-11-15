@@ -71,7 +71,8 @@ checked (4096, 1024, 256: the last token at row T - 1); `--loop-check` checks on
 through every layer against the chain of `model.layer()`.
 
 `--chunk` and `--pattern` set every plan's K chunk and pattern (the default is
-`model.PATTERNS`).
+`model.PATTERNS`). `--bodies` names the operations whose vector bodies are emitted
+(stage 5; none by default; `python projects/decode/bodies.py` first).
 
 The model's own weights and a prompt: `torch_reference.py` (in an environment with
 torch and transformers, on the host CPU) tokenizes the prompt and writes the prompt's
@@ -599,6 +600,112 @@ weights (`results/qwen3-1.7b-qk-x10.json`):
 One token through all 28 layers against the float64 chain (T 4096): x rms 2.6e-2,
 largest 3.8e-2.
 
+## Stage 5: the operations as emitted bodies
+
+### The bodies
+
+`bodies.py` writes each hand-written vector operation as a tile function of
+`komorebi.dsl.tile` and emits them into `kernels/generated/` (not in the repository;
+`python projects/decode/bodies.py` before a build: the card refuses headers built from
+other sources than the tile package's and that file's of the moment).
+`kernels/emitted.hpp` is the operations' compute on them: each operand tile copied into
+DEST with its own buffer's format, a body, a pack. Each operation is a switch of its
+overlays (`DC_EMIT_ADD`, `_NORM`, `_GATE`, `_QK`; `card.BODIES`; `bench.py` and
+`real.py --bodies add norm gate qk`):
+
+| Body | Expression (operand k in DEST tile dst + k) | Form | Math cycles a tile |
+|---|---|---|---:|
+| add | a + b | stream, load macro | 91.6 |
+| square | a a | stream | 150.4 |
+| square_add | a + b b | stream | 182.6 |
+| squares3 | a a + b b + c c | stream | 310.9 |
+| sum3 | a + b + c | stream | 246.8 |
+| mul | a b | stream, load macro | 91.6 |
+| mul3 | a b c | stream | 246.8 |
+| mad | a + b c | stream | 214.7 |
+| gate | silu(a b) c | stream | 1,693.6 |
+| rms_row, rms_head | each row's 1 / sqrt(sum / n + 1e-6), n = 2048, 128 | row | 429.0 |
+
+The cycles are the compiler's estimates. The operations on them:
+
+- **add** (o's and down's): y = s + b (the sum in fp32, the residual's block), packed to
+  bf16; the block's squares as one tile, the elementwise sum of y^2 over its 8 tiles,
+  whose row sums are the row's sums of squares (the host's diagonal form has the same
+  row sums, so the norm after reads either).
+- **norm** (qkv's and gate_up's): the 8 parts summed (sum3 three times, add), rms_row
+  into DC_CB_SCALE, in fp32 (unpacked to DEST) when the norm, the gate and the heads are
+  all emitted (a hand body reads it on the matrix unit's source B, in bf16 there); the
+  scale is s_t R (mul).
+- **gate**: up = s R into DC_CB_UP (bf16, as the reference rounds u), then
+  silu(g R) u in one body.
+- **qk** (a head, DEST holding 4 fp32 tiles): the squares of its 4 tiles (squares3,
+  square_add), rms_head into DC_CB_SCALE; n_j = y_j w_j R two a section (mul3 at DEST 0
+  and 1) into DC_CB_NORMED; then tiles j and j + 2 in one section, n_(j+2) s_j +
+  n_j c_j and n_j s_(j+2) + n_(j+2) c_(j+2) (mul, mad). 28 copies, 9 packs and 5
+  sections a head.
+
+The emitted path sets unpack A's format before each copy's init itself
+(`reconfig_data_format_srca` from the buffer last copied) and never uses source B, so it
+does not rely on `state_configure` (tt-metal's, a no-op). The hand path still does: every
+buffer it reads on source B is bf16 like the product's, so no format is wrong there.
+
+### What the card showed
+
+The first runs gave q, k, a and the gate wrong, the same to every digit run after run.
+Run one operation at a time (one session, a program a subset), the norm alone was
+right and the add alone gave a wrong gate (its squares), the heads alone wrong q and k.
+The cause is in the load macro's setup: a template is written through the back door
+(an instruction with VD 12 + k stores its word), and when the template's instruction
+writes a plain operand's register (square_add's and mad's: VD 4 and 5), the setup's
+renaming of the plain registers renames VD too, so the word is executed instead of
+stored and the macro runs the template the previous body left (add's or mul's).
+`bodies.py` keeps a load macro only when every template write has VD 12 or more
+(`templates_stored`); square_add and mad run plain. Each body is followed by the matrix
+unit's wait for the vector unit (`DC_VECTOR_DONE`; the headers leave the wait to the
+caller); on the card it changed no value.
+
+### The check and the account
+
+The layer against `model.layer()`, rms error over rms (`results/qwen3-1.7b-emitted-layer0-x10.json`
+against `results/qwen3-1.7b-qk-layer0-x10.json`):
+
+| T | | q | k | v | a | x1 | gated | x |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 4096 | hand | 6.1e-3 | 6.6e-3 | 5.9e-3 | 1.24e-2 | 1.2e-3 | 1.22e-2 | 2.6e-3 |
+| 4096 | emitted | 5.2e-3 | 4.9e-3 | 4.6e-3 | 9.7e-3 | 4.5e-4 | 7.9e-3 | 2.5e-3 |
+| 1024 | emitted | 5.3e-3 | 5.1e-3 | 4.6e-3 | 1.38e-2 | 9.6e-4 | 8.8e-3 | 2.8e-3 |
+| 256 | emitted | 5.2e-3 | 5.0e-3 | 4.6e-3 | 9.2e-3 | 8.8e-4 | 8.7e-3 | 2.8e-3 |
+| 4096, 32 tokens | emitted | 5.1e-3 | 5.1e-3 | 5.0e-3 | 9.5e-3 | 4.9e-4 | 8.2e-3 | 2.6e-3 |
+
+The largest errors over the largest values are 1.1e-2 (a) or less at T 4096; the append
+is exact in every case. The emitted bodies are closer: the scale and the products by
+1 / rms are fp32 vector multiplies where the hand ones are the matrix unit's (tf32
+operands), and DC_CB_SCALE is fp32.
+
+All 28 layers, 10 tokens from one command (`results/qwen3-1.7b-emitted-x10.json`), the
+operations' term (us a layer) and the layer:
+
+| | T 4096 hand | emitted | T 1024 hand | emitted | T 256 hand | emitted |
+|---|---:|---:|---:|---:|---:|---:|
+| qkv's operation (norm, scale, heads) | 13.8 | 16.6 | 13.8 | 16.7 | 13.8 | 16.6 |
+| o's (the add, its squares) | 1.6 | 3.5 | 1.6 | 3.4 | 1.6 | 3.5 |
+| gate_up's (norm, gate) | 4.1 | 9.0 | 4.2 | 8.9 | 4.2 | 8.9 |
+| down's (the add, its squares) | 1.5 | 3.5 | 1.6 | 3.3 | 1.5 | 3.4 |
+| the operations | 21.0 | 32.5 | 21.2 | 32.3 | 21.1 | 32.4 |
+| a layer | 409.7 | 421.1 | 371.7 | 383.1 | 362.6 | 373.9 |
+| tokens a second | 87.2 | 84.8 | 96.1 | 93.2 | 98.5 | 95.5 |
+
+The rest of the account is unchanged to 0.5 us a term. Every emitted operation is slower:
+the bodies run all 32 rows of a tile where the hand bodies run only the live rows'
+bands, each operand is a copy into DEST, and the gate's silu is 1,694 cycles a tile for
+4 tiles. The default is therefore the hand bodies (`card.DEFAULT_BODIES` is
+empty).
+
+With the model's weights and the prompt (`results/qwen3-1.7b-emitted-real-prompt.json`):
+16 of 16 tokens torch's; the hidden state's rms error against torch's at positions 0 to
+3 at most 2.4e-2, 3.3e-2, 7.3e-2 (layer 14), 5.3e-2 (14) (hand: 4.95e-2, 3.5e-2, 6.1e-2,
+4.3e-2); a token 10.41 to 10.43 ms, 96.0 tokens a second (hand 99.0).
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
@@ -639,3 +746,8 @@ largest 3.8e-2.
 - A first form of the rotation's table tilized the rows on compute (tt-metal's tilize
   inside the overlay); its first command did not end and the cause was not located.
   The reader now puts the rows into the tiles itself.
+- The tile compiler's forms run whole tiles: neither the stream form nor the row form
+  can be told to run the first M rows (the live rows' bands), which is most of why the
+  emitted operations are slower than the hand ones.
+- The tile compiler's load macro stores no template whose instruction writes a plain
+  operand's register (square_add, mad); `bodies.py` falls back to the plain form there.
