@@ -258,24 +258,47 @@ A run whose groups switch program (`run.load(program, group=)`) sets up buffers 
 only, so it refuses a program that declares buffer 32: a chain runs in a run whose
 cores hold their programs from the start.
 
-## Over islands: not built
+## Over islands
 
-A chain runs on one island. Over two, most of what a chain moves already crosses with
-the existing calls; its marks and credits do not:
+On a run of several islands (`km.Session(cards=[0, 1])`), `run.chain` takes calls whose
+cores are flat ranks, as the run's are. Each island walks the chain on its own cores:
+its records are written in its own DRAM, and the chain command is one ticket with a part
+an island, each part carrying its own island's record address (the islands' DRAM
+allocators place the records apart once their tensors do). A core marks and credits
+cores of its own island only; what must cross is moved by the calls a step already has,
+which wait for the far side themselves.
 
-| What crosses | How | Cost, by the [islands' measurements](islands.md#measured) |
-|---|---|---|
-| the chain command | one ticket, a part an island | 2.41 us a command over 240 ranks against 1.195 on one island |
-| the records | do not cross: each island's DRAM holds its copy, at one address for both parts (the command's a7 is one word) | none on the card; a block on each island at the same address on the host (not built) |
-| a record's input through the page calls | `km::read_pages` and `km::write_pages` ask or put what the other island holds | an ask line answered in 1.7 to 1.95 us at the far island; a put line of one page out and confirmed in 5.1 us |
-| a tree's parts (`sends`) | the port's emit takes the relay (`relay_put`) for a rank of the other island | example 26: 165.9 us a round on two cards, 158.0 on one |
-| the marks and the credits | none: each is an atomic add into a word of buffer 32 on the target core, which a rank of the other island has no NoC place for | |
+| What a step may do across islands | How |
+|---|---|
+| read or write another island's pages | `km::read_pages`, `km::write_pages` and the byte calls, as in any command |
+| add or gather a copy over the islands | `km::all_reduce`, `km::all_gather`, called by every rank of the record |
+| a tree within an island | a group an island (`size` its ranks), the credits inside it |
 
-The relay writes bytes into a far core's L1 and adds 1 to one of its ports only. The
-chain counts four things a core waits for (marks and credits, a word for each record
-parity), so a chain over islands needs either a relay ask that adds 1 to an L1 word it
-names (a change to the link cores' service) or four port slots of the runtime's for the
-chain (64 bytes more of every core's control block). Neither is built.
+**Refused** when the chain is made (`chain.ChainRefused`): a record whose input waits for
+a mark from a root on another island ("call 3 (sum): core 118 on island 1 waits for a
+mark from call 2 (add)'s root 0 on island 0: a mark from one island to another (the far
+mark) is not built"), a direct input from another island (the same text), and a record
+whose parts go up a tree of a group that spans islands (its credit would cross). A tree
+over every rank is therefore a tree an island followed by an all-reduce. The far mark (a
+relay ask that adds to a word it names, or port slots for the chain) is not built.
+
+[Example 29](../../examples/29_chain/README.md#over-two-cards) on two p150a cards, 236
+ranks, 2 tiles a rank, the median of 50 runs, every word exact both ways, 2026-11-16
+(card: submit to done of the slowest island):
+
+| | a command a step | one chain |
+|---|---:|---:|
+| SCALE, SCALE, ADD, SUM a group an island: on the card, us | 187.5 | 252.6 |
+| the same, on the host, us | 1,292.1 | 498.3 |
+| with TOTAL (an all-reduce of SUM's copy over the islands) and ADD of it into w, which island 0 holds alone: on the card, us | 535.7 | 603.0 |
+| the same, on the host, us | 2,181.5 | 841.3 |
+
+The chain removes the host's round trips as on one card. On the card it is slower over
+two islands: a chain of one call takes what its command does (25.7 against 27.1 us), and
+each record after the first about 30 us more than a command (two calls 84.3 against
+54.2, three 148.2 against 84.3); the same three calls on island 0's 118 ranks alone take
+108.1 against 83.9, and on one card a chain is not slower (four calls: 126.1 as a
+chain, 130.6 as commands). Where a marked record loses that time in an island build is not found yet.
 
 ## A record of another program's handler: what it would need
 
