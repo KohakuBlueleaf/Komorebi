@@ -745,9 +745,9 @@ class Session:
 
     def tensor(self, data, dtype, layout="row", shard_grid=None):
         """A tensor on the card holding `data` (anything np.asarray takes) as `dtype`
-        ("bfloat16", "float32", "int32", "uint32", "uint16", "uint8") in `layout`
-        ("row" or "tile"); in DRAM, or one row in each core's L1 of `shard_grid`.
-        Written before the grid starts, or (DRAM, the host channel) while it runs."""
+        (a name of formats.DTYPES; a block format in tiles) in `layout` ("row" or
+        "tile"); in DRAM, or one row in each core's L1 of `shard_grid`. Written before
+        the grid starts, or (DRAM, the host channel) while it runs."""
         self._module = self._module or native.load_module(self.tree)
         raw, shape = formats.to_bytes(data, dtype, layout)
         tensor = tensor_module.empty(

@@ -3,8 +3,6 @@ and read into numpy arrays: interleaved in DRAM (a page a row, or a page a 32 x 
 tile), or one row in the L1 of every core of a grid.
 """
 
-import math
-
 import numpy as np
 
 from komorebi import formats
@@ -93,7 +91,7 @@ def empty(module, device, shape, dtype, layout="row", shard_grid=None, address=N
     formats.check_dtype(dtype)
     shape = formats.padded_shape(shape, layout)
     page = formats.page_bytes(shape, dtype, layout)
-    size = math.prod(shape) * formats.itemsize(dtype)
+    size = formats.buffer_bytes(shape, dtype, layout)
     if shard_grid is not None:
         if layout != "row" or len(shape) != 2:
             raise ValueError("an L1 tensor is [cores, words] rows, one a core")
