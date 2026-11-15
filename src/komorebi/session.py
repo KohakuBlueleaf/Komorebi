@@ -133,6 +133,10 @@ def compute_config(options):
         )
         modes = ["Default"] * CBS
         for cb, name in by_cb.items():
+            if not 0 <= cb < CBS:
+                raise ProgramError(
+                    f"unpack_to_dest_mode: buffer {cb} is outside 0..{CBS - 1}"
+                )
             modes[cb] = name
         config["unpack_to_dest_mode"] = modes
     return config
