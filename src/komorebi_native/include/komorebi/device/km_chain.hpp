@@ -663,7 +663,18 @@ namespace km {
         KM_CHAIN_STAMP(chain_stamp(kChainStampLast));
         const uint32_t first = next[kChainGroup] & 0xFFFFu;
         const uint32_t count = next[kChainGroup] >> 16;
-        const uint32_t size = shape.size(writer, next), groups = count / size;
+        const uint32_t size = shape.size(writer, next);
+        uint32_t group_low = 0, groups = count / size;
+#if !defined(KM_ONE_ISLAND)
+        // On an island of several: only the groups with a rank here (no mark crosses).
+        const Islands island = islands_at(writer.args().control);
+        if (island.ranks() != 0) {
+            const uint32_t here = island.first(), end = here + island.ranks();
+            group_low = here > first ? (here - first) / size : 0;
+            const uint32_t above = end > first ? (end - first + size - 1) / size : 0;
+            groups = above < groups ? above : groups;
+        }
+#endif
         const uint32_t marks = chain_address(chain_marks_at(chain_now.record + 1));
         const auto meets = [&](const ChainRange& range) {
             return (
@@ -677,12 +688,12 @@ namespace km {
         const bool by_k = ((next[kChainInfo] >> kChainNeedsShift) & 1u) == kChainNeedsK;
         for (uint32_t rank = 0; by_k && rank < size; rank++) {
             if (meets(chain_need(shape, writer, next, 0, rank, 0))) {
-                for (uint32_t group = 0; group < groups; group++) {
+                for (uint32_t group = group_low; group < groups; group++) {
                     mark(first + group * size + rank);
                 }
             }
         }
-        for (uint32_t group = 0; !by_k && group < groups; group++) {
+        for (uint32_t group = group_low; !by_k && group < groups; group++) {
             for (uint32_t i = 0; i < kChainRangeCount; i++) {
                 if (meets(chain_need(shape, writer, next, i, 0, group))) {
                     mark(first + group * size);
