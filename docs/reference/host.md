@@ -53,15 +53,45 @@ each, `program.region(name, value)` a region shared by threads on one bank); see
 as `handlers` above does for the kernels ([commands to a
 thread](threads.md#commands-to-a-thread)).
 
-A program's three kernels share the session's kernel buffer, 70,656 bytes on Blackhole
-unless the session sets `kernel_bytes`. When a program is loaded its build is laid out
-against that buffer: `program.sizes` (a `km.KernelSizes`) holds the packed text per
-thread, the total and the buffer, and the session log has them in one line. A program
-that does not fit raises `km.KernelSizeError` before anything is loaded, naming the
-total, the buffer and the largest thread (in place of the runtime's "Program size
-... too large for kernel config buffer"). Give the session more with `kernel_bytes`,
-or lower the reader and writer to `"Os"` first and the compute kernel only when that
-is not enough, since its hot loops are what `O3` is for.
+### The kernel buffer
+
+A program's three kernels share the session's kernel buffer. When a program is loaded
+its build is laid out against that buffer: `program.sizes` (a `km.KernelSizes`) holds
+the packed text per thread, the total and the buffer, and the session log has them in
+one line. The only limit a program meets is a core's L1; inside it the buffer is
+**adaptive by default and configurable on request**:
+
+- **Adaptive** (no `kernel_bytes`). tt-metal fixes the buffer when the card is opened
+  and builds kernels only on an open card, and a script makes its tensors before it
+  loads, so the session opens at the runtime's 70,656 bytes and the load follows the
+  build: when the kernels need more (their total and a margin of 1,024 bytes, 64-byte
+  aligned), or when the L1 budget table does not fit and the kernels need less, the
+  load undoes itself, closes the card, opens it again at that size, makes every tensor
+  the session made again at its address and writes into it what it was given, then
+  loads. The log says so in one line before (the size before and after, and why) and
+  one after (the tensors, the bytes, the seconds: 0.04 to 0.07 s on a P150A for the
+  dense Linear class and the decode, whose weights are written after the load). A
+  tensor in L1 keeps its address (L1 tensors are made from the top of L1), and one
+  that would come back at another address raises `km.KomorebiError`. A load that fits
+  costs nothing more. The session keeps what it needs for this until its first load:
+  references to the arrays given to `session.tensor`, `session.write` and
+  `tensor.write`, never copies, and nothing for a tensor made empty and not written
+  ([hazards](hazards.md#a-session-that-follows-its-kernels)).
+- **Configurable** (`kernel_bytes=N`). The buffer is N and stays N; a program that does
+  not fit raises `km.KernelSizeError` before anything is loaded, naming the total, the
+  buffer, the largest thread and the size that would hold it.
+- **The one refusal.** Where the load cannot follow the kernels, the same
+  `km.KernelSizeError` says why and the size to give: a run already
+  loaded on the card (a second, larger program later: its kernels may have written
+  the tensors), a session on a given device, and an island or mesh session (opening a
+  mesh again re-initialises every card the process holds; an island session keeps its
+  160 KiB). A merged class that does not fit places its largest handler as an overlay
+  only after such a refusal: a session that follows its kernels gives them the room
+  first.
+
+Lowering the reader and writer to `"Os"` (and the compute kernel only when that is not
+enough, since its hot loops are what `O3` is for) makes the kernels smaller in either
+case.
 
 A program's own header (its handlers, buffers and argument indices, shared by its
 kernels and its driver) is read with `km.abi.constants(path,
@@ -368,8 +398,9 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`, or
   keeps a value of the user's.
 - `kernel_bytes` is how much of each core's L1 holds the program's kernels (the
   runtime's kernel config buffer: the five threads' text, their arguments and the
-  buffer configs), a multiple of 64 from 64 to 1,531,712; None keeps the runtime's
-  70,656 bytes. Every byte added is taken from the L1 left for circular buffers and
+  buffer configs), a multiple of 64 from 64 to 1,531,712; None opens at the runtime's
+  70,656 bytes and follows the kernels ([the kernel buffer](#the-kernel-buffer)). Every
+  byte added is taken from the L1 left for circular buffers and
   L1 tensors (1,461,120 bytes by default; 1,400,704 with 128 KiB of kernels): the
   session opens the device with the runtime's `worker_l1_size` that gives it, so it is
   set only when the session opens the device. `session.l1()` returns `(kernel buffer,

@@ -79,6 +79,12 @@ TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 # An inline body's CPU (on=): a mover, one compute CPU, or compute's three; the #if of
 # each one CPU's code.
 COMPUTE_CPUS = ("unpack", "math", "pack")
+# What compute's three CPUs run together in a body: a word of pack's alone must not
+# steer it (Compiler.pack_words_steer).
+STEERED = re.compile(
+    r"\btile_regs_\w+\s*\(|\bcopy_tile\s*\(|\bmatmul\w*\s*\(|\b(?!pack_)\w+_tile\s*\(|"
+    r"\b(?:return|break|continue|goto)\b"
+)
 BODY_CPUS = ("mover_a", "mover_b", *COMPUTE_CPUS)
 CPU_GUARDS = {
     "mover_a": "defined(COMPILE_FOR_BRISC)",
@@ -7228,6 +7234,8 @@ class HandlerCompiler:
                 self.take_field(node, field, where, bound, before, after)
                 continue
             uses |= self.take(node, item, where, bound, before, after)
+        if where == "compute":
+            self.pack_words_steer(node, text, takes)
         kernel = "compute" if mover is None else "movement"
         guard = CPU_GUARDS.get(on)
         entries = [line.strip() for line in lines[:included]]
@@ -7306,6 +7314,40 @@ class HandlerCompiler:
                         "what it takes",
                         f"take it: {spelling('takes')}=[..., {item.id}]",
                     )
+
+    def pack_words_steer(self, node, text, takes):
+        """A written page's word in a body on compute is pack's (0 once pack's reserve
+        gave up, the address on unpack and math): it may guard the packs only, and is
+        refused where it steers a section, a copy, a product or a way out (pack would
+        leave unpack and math held inside the unit)."""
+        words = [
+            item.id
+            for item in takes
+            if isinstance(item, ast.Name)
+            and getattr(self.scope.get(item.id), "kind", None) in ("write", "drained")
+        ]
+        for word in words:
+            mentions = re.compile(rf"\b{re.escape(word)}\b")
+            heads = []
+            for line in text.splitlines():
+                code = line.split("//")[0]
+                steered = any(mentions.search(head) for head in heads)
+                shared = STEERED.search(code)
+                if shared and (steered or mentions.search(code)):
+                    self.refuse(
+                        node,
+                        f"{word} is pack's word (0 once pack's reserve gave up, the "
+                        f"page on unpack and math): `{code.strip()}` would run on some "
+                        "of compute's CPUs and not on others",
+                        f"guard only pack_tile (and the packer's lines) with {word}; "
+                        "keep tile_regs_*, copies, products and the way out on all "
+                        "three",
+                    )
+                for char in code:
+                    if char == "{":
+                        heads.append(code)
+                    elif char == "}" and heads:
+                        heads.pop()
 
     def kernel_at(self, node, value):
         """`at="start"` or `at="end"`: a body at its kernel's start (before the

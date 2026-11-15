@@ -374,12 +374,12 @@ class Program:
         added.ahead(self, name, parts, defines, compile_args, wanted)
         return self
 
-    def slots(self, count=None, bytes=None):
-        """Declares the slots of the kernels: `count` (1 to 4) and `bytes` per slot,
-        each an int or a {"reader"|"writer"|"compute": value}; by default a slot per
-        overlay with a part there, sized by its largest part. Named `bytes` also give
-        the kernels the path of an added handler (run.addon): KM_ADDED_HANDLERS."""
-        self.overlay_slots = Slots(count, bytes)
+    def slots(self, count=None, bytes=None, service=None):
+        """Declares the slots: `count` (1 to 4) and `bytes` per slot, each an int or a
+        {"reader"|"writer"|"compute": value}, and the service overlay's ("own",
+        "shared"; None: the load chooses). Named `bytes` also give the kernels the
+        path of an added handler (run.addon): KM_ADDED_HANDLERS."""
+        self.overlay_slots = Slots(count, bytes, service)
         if bytes is None:
             self.defines.pop("KM_ADDED_HANDLERS", None)
         else:

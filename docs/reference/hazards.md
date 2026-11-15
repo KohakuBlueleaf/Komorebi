@@ -617,7 +617,15 @@ The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the 
 `ok && room`.
 
 **The guard.** A class's generated compute follows the rule at every reserve (a test
-checks the generated text). A hand kernel: nothing.
+checks the generated text: the products, the field reduce, a write stream's push of a
+copy, of a tile function's result and of a body's tile, a tile or a sum written to a
+page, a drained stream and its end). A body on compute that takes a written page gets
+its word as pack's (the page's address, 0 once pack's reserve gave up; the address on
+unpack and math): the class compiler refuses a body where that word steers a section,
+a copy, a product or a way out (`return`, `break`), and lets it guard `pack_tile`. A
+body that packs without testing the word packs into a buffer it holds no room in: the
+three threads stay in step, and the pages are the given-up command's, cleared at its
+end. A hand kernel: nothing.
 
 Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
 
@@ -995,6 +1003,28 @@ wait. SIGKILL: nothing, the card is reset.
 
 Described in [Host API, `Session`](host.md#session) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
+
+### A session that follows its kernels
+
+**The hazard.** A session not given `kernel_bytes` opens its card again at its first
+load when the kernels need another kernel buffer, and writes into each tensor again
+what it was given. It keeps the host arrays given to `session.tensor`, `session.write`
+and `tensor.write` by reference until that load, so an array changed in between is
+written as it is then, and bytes written through `tensor.buffer` itself are not
+written again. Where it cannot open the card again (a run already loaded, a session
+on a given device, an island or mesh session), the load is refused.
+
+**The rule.** Until the first load, do not change an array once it is given to the
+session, and write tensors through `session.tensor`, `session.write` or
+`tensor.write`. A session that loads a second, larger program gives `kernel_bytes`
+the size the refusal names.
+
+**The guard.** The refusals: `km.KernelSizeError` (or `km.L1BudgetError` for a
+smaller buffer) naming why and the size that holds the kernels; `km.KomorebiError`
+when a tensor comes back at another address. A changed array or a write through the
+buffer: nothing.
+
+Described in [Host API, the kernel buffer](host.md#the-kernel-buffer).
 
 ### A tensor or a thread's region touched while the kernels run
 

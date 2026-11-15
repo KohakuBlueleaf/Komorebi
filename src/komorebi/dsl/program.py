@@ -556,7 +556,7 @@ def l1_checked(program, session, l1, trace, log):
     load's."""
     session, most = reserve_of(session)
     rows = session.l1_rows(program, trace)
-    rows[2:2] = [(f"slots: reader, 1 x {most:,} B (at most)", most)]
+    rows[2:2] = [(f"slots: service (reader), 1 x {most:,} B (at most)", most)]
     table, fits = overlay.budget(l1, rows)
     log(f"L1 budget of a core (the build's, as the load's):\n{table}")
     if not fits:
