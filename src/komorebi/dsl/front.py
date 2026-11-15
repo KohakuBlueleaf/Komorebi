@@ -3,6 +3,7 @@ and the calls of a handler's lines. The lines are read by the compiler, never ru
 Python: calling one outside a class's handler raises ProgramError.
 """
 
+import importlib
 import inspect
 import operator
 from dataclasses import dataclass
@@ -355,6 +356,10 @@ class ClassHandler(Handler):
         """The command words of a call with these arguments."""
         return self.method.args(*values, **named)
 
+    def __call__(self, *values, **named):
+        """A call of the handler in a chain (`run.chain([program.scale(x, y)])`)."""
+        return HandlerCall(self, values, named)
+
 
 class Words(list):
     """A call's command words, a list as before, that also carry the constant values
@@ -370,10 +375,11 @@ class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
 
-    def __init__(self, function, overlay=False, stamps=None):
+    def __init__(self, function, overlay=False, stamps=None, direct=()):
         self.function = function
         self.overlay = overlay  # its code is an overlay: loaded into a slot, called
         self.stamps = stamps  # the tensor parameter its load and call cycles go to
+        self.direct = tuple(direct)  # its inputs a chain's call may send direct
         self.name = function.__name__
         self.number = None
         self.words = None  # [(parameter, kind)] in word order, set by the compiler
@@ -397,11 +403,11 @@ class HandlerMethod:
             raise ProgramError(f"{self.name}: its class is not prepared")
         return self.number
 
-    def __call__(self, *args, **kwargs):
-        raise ProgramError(
-            f"{self.name} is a handler: it runs on the cores; submit it "
-            f"(run.submit(Class.{self.name}, group, args=(...)))"
-        )
+    def __call__(self, *values, **named):
+        """A call of the handler in a chain (`run.chain([Class.scale(x, y)])`): its
+        arguments as a submit's, `cores=(first, count)` its group when not the
+        chain's; outside a chain's list it runs nothing."""
+        return HandlerCall(self, values, named)
 
     def args(self, *values, **named):
         """The command words of a call: a tensor gives its reference word (and its
@@ -518,13 +524,90 @@ def word_of(handler, parameter, kind, value):
     return value
 
 
-def handler(function=None, *, overlay=False, stamps=None):
+def handler(function=None, *, overlay=False, stamps=None, direct=()):
     """Makes a method of a class deriving km.Program a handler; `overlay=True`: its
     code is built apart as an overlay, loaded into a slot when a command needs it;
-    `stamps="t"`: each mover's load and call cycles to tensor parameter t."""
+    `stamps="t"`: each mover's load and call cycles to tensor parameter t; `direct`:
+    the tensor parameters a chain's call may send straight into its cores' L1."""
+    if isinstance(direct, str):
+        direct = (direct,)
     if function is None:
-        return lambda function: HandlerMethod(function, overlay, stamps)
-    return HandlerMethod(function, overlay, stamps)
+        return lambda function: HandlerMethod(function, overlay, stamps, direct)
+    return HandlerMethod(function, overlay, stamps, direct)
+
+
+class HandlerCall:
+    """A call of a class's handler in a chain: the handler (a class's, or a made
+    program's), its arguments as a submit's (`km.past(t)`, `km.direct(t)` marking a
+    tensor) and `cores=(first, count)` when its group is not the chain's."""
+
+    def __init__(self, handler, values, named):
+        self.handler = handler
+        self.method = handler if isinstance(handler, HandlerMethod) else handler.method
+        named = dict(named)
+        self.cores = None
+        if "cores" in named and "cores" not in self.method.places():
+            self.cores = tuple(named.pop("cores"))
+        self.values, self.named = tuple(values), named
+
+    def __repr__(self):
+        return f"{self.method.name}({len(self.values)} arguments)"
+
+
+class Marked:
+    """A tensor argument of a chain's call marked `km.past(t)` (written by a call
+    further back, proven complete) or `km.direct(t)` (sent into the cores' L1)."""
+
+    def __init__(self, tensor, how):
+        self.tensor, self.how = tensor, how
+
+    def __getattr__(self, name):
+        return getattr(self.__dict__["tensor"], name)
+
+
+def past(tensor):
+    """km.past(t) at a chain's call: t was written by a call further back than the
+    one before; the build proves each tile complete where it is read, or refuses."""
+    return Marked(tensor, "past")
+
+
+def direct(tensor):
+    """km.direct(t) at a chain's call: the call before's roots send t straight into
+    this call's cores' L1 (the handler declares t in km.handler(direct=))."""
+    return Marked(tensor, "direct")
+
+
+class ChainMethod:
+    """A method decorated with `km.chain`: calls of the class's handlers in order,
+    read when the class is made; called on a program with its arguments, the same
+    list of calls the host form gives (`run.chain(program.layer(x, y))`)."""
+
+    def __init__(self, function):
+        self.function = function
+        self.name = function.__name__
+        self.owner = None
+
+    def __set_name__(self, owner, name):
+        self.name, self.owner = name, owner
+
+    def __get__(self, program, owner=None):
+        if program is None:
+            return self
+        return lambda *values, **named: chain_calls_module().expand(
+            program, self, values, named
+        )
+
+
+def chain_calls_module():
+    """komorebi.dsl.chain_calls (it imports the compiler, which imports this)."""
+    return importlib.import_module("komorebi.dsl.chain_calls")
+
+
+def chain(function):
+    """Makes a method of a class deriving km.Program a chain: its lines calls of the
+    class's handlers in order (a loop of a constant count unrolled). Spelled
+    `km.chain`, the framework's module komorebi.chain called (chain.py)."""
+    return ChainMethod(function)
 
 
 # The matrix unit's fidelities (tt-metal's MathFidelity) and their phases.
@@ -600,6 +683,8 @@ def exports():
     """The module-level names of `komorebi` for programs written as classes."""
     made = {
         "handler": handler,
+        "past": past,
+        "direct": direct,
         "tile_function": tile_function,
         "message": Message,
         "entry": Entry,

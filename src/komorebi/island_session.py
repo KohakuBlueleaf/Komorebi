@@ -17,6 +17,7 @@ from komorebi import chain as chain_module
 from komorebi import channel as channel_module
 from komorebi import programs as programs_module
 from komorebi import session as session_module
+from komorebi.dsl import front
 from komorebi.errors import CardBusy, CommandTimeout, KomorebiError, WaitTimeout
 from komorebi.program import Program
 
@@ -316,10 +317,14 @@ class IslandRun:
                 np.concatenate([parts, np.zeros_like(parts)]) for parts in self._parts
             ]
 
-    def chain(self, calls, mode, flags=0):
+    def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True):
         """Run.chain over flat ranks: refused when a mark or a credit would go from
         one island to another; else each island's records written in its own DRAM,
-        each island walking them on its own cores."""
+        each island walking them on its own cores. A class's calls are described
+        with island 0's program, `cores` their group in flat ranks."""
+        if any(isinstance(call, front.HandlerCall) for call in calls):
+            group = (0, self.cores) if cores is None else tuple(cores)
+            calls = self.runs[0]._class_calls(calls, None, prefetch, group)
         chain_module.build(calls, lambda rank: self.graph.resolve(rank)[0])
         chains = []
         try:

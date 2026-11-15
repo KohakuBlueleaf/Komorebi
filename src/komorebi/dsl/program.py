@@ -3,6 +3,7 @@
 the sizes printed, and the made object is a Program of those files.
 """
 
+import ast
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,12 +115,13 @@ def make(
     defines=None,
     handlers=None,
     broadcast_wait=False,
+    chain=False,
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
-    by name; `session` (its L1 table checked; `trace` the load's) or `l1`; `rect` and
-    `nocs` a broadcast's; `defines` over the class's; `handlers` the sets of the
-    constant parameters (handler_sets); `broadcast_wait` a Program's; a constant."""
+    by name; `session` (its L1 table checked; `trace` the load's) or `l1`; `rect`,
+    `nocs` a broadcast's; `defines` over the class's; `handlers` the constant sets
+    (handler_sets); `broadcast_wait` a Program's; `chain` the walk (a km.chain's)."""
     cls = type(self)
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
@@ -131,6 +133,7 @@ def make(
     else:
         room = l1
     compiled = compiler.compile_class(cls, plan, tensors, room, values, sets)
+    walked = chain_made(self, cls, compiled, chain)
     constants_made(self, cls, values, compiled)
     self.constant_handlers = compiled.variants
     program_args = None
@@ -149,6 +152,8 @@ def make(
             (name, [sorted(one.items()) for one in listed])
             for name, listed in sets.items()
         )
+    if walked:
+        keyed[spelling("chain")] = True
     key = sources_key(plan, tensors, room, depth, rect, nocs, broadcast_wait, keyed)
     built = write(cls, compiled, room, key)
     for line in built.report:
@@ -849,6 +854,7 @@ def header(compiled):
                 f"constexpr uint32_t kOverlay{camel(name)} = "
                 f"{compiled.overlays[name]};  // its code: an overlay"
             )
+    lines += chain_header(compiled)
     if compiled.messages:
         lines += ["", f"constexpr uint32_t kMessageWords = {MESSAGE_WORDS};"]
     for cls, words in compiled.messages.items():
@@ -1160,6 +1166,8 @@ def runtime_kernels():
 
 
 def movement_source(compiled):
+    if compiled.chain:
+        return chain_movement_source(compiled)
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1).",
@@ -1223,7 +1231,9 @@ COMPUTE_INCLUDES = [
 ]
 
 
-def compute_source(compiled):
+def compute_source(compiled, walk=True):
+    if compiled.chain and walk:
+        return chain_compute_source(compiled)
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// the compute kernel: the tiles of its streams, in block order.",
@@ -1397,3 +1407,339 @@ def lines_of(program, error):
     CommandTimeout) gave up in, by its CPU and where: one text a core."""
     built = getattr(program, "built", None)
     return built.lines(error.cores) if built is not None else []
+
+
+# The chain's walk (km_chain.hpp) in a class's kernels: built when the class has a
+# km.chain method or is made with chain=True; a class without it pays nothing.
+CHAIN_PAGE = 2048  # the chain's words on each core (km_chain.hpp: 1,808 B)
+CHAIN_HANDLER = "km_chain"  # its handler's name: kHandlerKmChain
+READ_MOVES = ("read stream", "word read", "fill", "broadcast's read", "table read")
+
+
+def chain_methods(cls):
+    """The class's km.chain methods (its parents' too), by name."""
+    return {
+        name: value
+        for klass in reversed(cls.__mro__)
+        for name, value in vars(klass).items()
+        if isinstance(value, front.ChainMethod)
+    }
+
+
+def chain_made(program, cls, compiled, chain):
+    """The chain's walk when `chain` or the class has a km.chain method (its lines
+    checked here, refused at their line); on `program`: its handler (0: none)."""
+    methods = chain_methods(cls)
+    for method in methods.values():
+        front.chain_calls_module().checked(cls, method)
+    if chain or methods:
+        chain_prepared(cls, compiled)
+    program.chain_handler = compiled.chain
+    return bool(compiled.chain)
+
+
+def chain_prepared(cls, compiled):
+    """A build with the chain's walk: its handler number after the class's, and the
+    chain's buffer (km_chain.h's kChainBuffer); overlays and a dynamic class refused."""
+    words = abi.constants(abi.headers().chain)
+    if compiled.overlays or compiled.dynamic:
+        raise ProgramError(
+            f"{cls.__name__}: a chain's walk in a class with overlays or a dynamic "
+            "handler is not built; make it without them"
+        )
+    number = max(compiled.handlers.values(), default=0) + 1
+    if number > abi.headers()["KM_HANDLER_USER_MAX"]:
+        raise ProgramError(f"{cls.__name__}: no handler number left for the chain")
+    compiled.chain = number
+    compiled.buffers.append(
+        compiler.Buffer(
+            "kChainArea",
+            "chain",
+            words["kChainBuffer"],
+            None,
+            "uint32",
+            CHAIN_PAGE,
+            (1,),
+            what="the chain's words (km_chain.hpp): marks, credits, the records' ring",
+        )
+    )
+
+
+def chain_header(compiled):
+    """The chain's handler in the header (none without the walk)."""
+    if not compiled.chain:
+        return []
+    return [
+        "// The chain's walk: a chain command's records, each its handler's case.",
+        f"constexpr uint32_t kHandler{camel(CHAIN_HANDLER)} = {compiled.chain};",
+    ]
+
+
+def statement_starts(source):
+    """Each line of the class's file that a statement's head covers -> that
+    statement's first line (a kernel's `// line N:` comment)."""
+    tree = ast.parse(Path(source).read_text())
+    starts = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt):
+            continue
+        body = getattr(node, "body", None)
+        end = body[0].lineno - 1 if isinstance(body, list) and body else node.end_lineno
+        for line in range(node.lineno, max(end, node.lineno) + 1):
+            if line not in starts or starts[line] < node.lineno:
+                starts[line] = node.lineno
+    return starts
+
+
+def chain_reads(compiled):
+    """handler -> {statement line: (the bits of the tensors it reads, prefetch=)}: a
+    tensor's bit its place among the handler's tensor parameters."""
+    starts = statement_starts(compiled.source)
+    prefetch = chain_prefetch(compiled.source)
+    reads = body_reads(compiled, starts)
+    for move in compiled.moves:
+        if move.how not in READ_MOVES:
+            continue
+        for name in compiled.handlers:
+            words = compiled.words[name]
+            tensors = [word for word, kind in words if kind == "tensor"]
+            if name != move.handler or move.tensor not in tensors:
+                continue
+            line = starts.get(move.line, move.line)
+            bits, stated = reads.setdefault(name, {}).get(line, (0, None))
+            bits |= 1 << tensors.index(move.tensor)
+            if stated is not False:
+                stated = prefetch.get(move.line, stated)
+            reads[name][line] = (bits, stated)
+    return reads
+
+
+def body_reads(compiled, starts):
+    """handler -> {line: (all bits, False)} of each inline body that takes a tensor:
+    what it reads is its own C++, so its record's input is waited for before it."""
+    tree = ast.parse(Path(compiled.source).read_text())
+    functions = {
+        node.lineno: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    reads = {}
+    for name in compiled.handlers:
+        tensors = {word for word, kind in compiled.words[name] if kind == "tensor"}
+        function = functions.get(compiled.lines[name])
+        for node in ast.walk(function) if function is not None else ():
+            if not (isinstance(node, ast.Call) and node.keywords):
+                continue
+            taken = [
+                taken.id
+                for keyword in node.keywords
+                if keyword.arg == "takes" and isinstance(keyword.value, ast.List)
+                for taken in keyword.value.elts
+                if isinstance(taken, ast.Name)
+            ]
+            if tensors & set(taken):
+                line = starts.get(node.lineno, node.lineno)
+                reads.setdefault(name, {})[line] = (0xFFFFFFFF, False)
+    return reads
+
+
+def chain_prefetch(source):
+    """Each read stream's line in the class's file -> its prefetch= (True, False)."""
+    found = {}
+    for node in ast.walk(ast.parse(Path(source).read_text())):
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if keyword.arg == spelling("prefetch") and isinstance(
+                    keyword.value, ast.Constant
+                ):
+                    found[node.lineno] = keyword.value.value
+    return found
+
+
+def chain_mask_word(compiled, name):
+    """The record word that holds a handler's mask of chain-written tensors: the
+    first word after its own (None: it has ten, so it waits before any read)."""
+    count = len(compiled.words[name])
+    return count if count < 10 else None
+
+
+def chain_waits(compiled, name, lines, reads):
+    """A handler's case lines with the input's wait before each line that reads a
+    tensor a chain call writes (the record's mask), at the case's start when a read's
+    line is not found."""
+    out, found = [], set()
+    word = chain_mask_word(compiled, name)
+    for text in lines:
+        out.append(text)
+        stripped = text.lstrip()
+        if not stripped.startswith("// line "):
+            continue
+        line = int(stripped[len("// line ") :].split(":")[0])
+        if line not in reads:
+            continue
+        bits, stated = reads[line]
+        mask = "~0u" if word is None or stated is False else f"command.a{word}"
+        pad = text[: len(text) - len(stripped)]
+        out.append(f"{pad}if (!km_chain_read(movement, {mask}, {bits}u)) {{")
+        out.append(f"{pad}{INDENT}return false;")
+        out.append(f"{pad}}}")
+        found.add(line)
+    if set(reads) - found:  # a read's line not seen: the wait first
+        pad = INDENT * 4
+        out[:0] = [
+            f"{pad}if (!km_chain_read(movement, ~0u, ~0u)) {{",
+            f"{pad}{INDENT}return false;",
+            f"{pad}}}",
+        ]
+    return out
+
+
+CHAIN_HELPERS = """namespace {
+
+    bool km_chain_waited = false;  // this record's input waited for, or counted
+
+    // Before a line reading tensors `bits` of a chain's record: its input's marks
+    // waited for once, unless `mask` (the chain's written tensors) has none of them.
+    __attribute__((noinline)) bool km_chain_read(
+        km::Movement& movement, uint32_t mask, uint32_t bits
+    ) {
+        if (km_chain_waited || !km::chain_now.on || (mask & bits) == 0) {
+            return true;
+        }
+        km_chain_waited = true;
+        return km::chain_input(km::ChainShape{}, movement);
+    }
+
+    // A record's end: its marks counted if no line waited for them; on mover B each
+    // group's root marks the next record's cores once its block is written.
+    __attribute__((noinline)) bool km_chain_end(
+        km::Movement& movement, const km_command_t& command
+    ) {
+        if (!km::chain_now.on) {
+            return true;
+        }
+        if (!km_chain_waited) {
+            uint32_t target = 0;
+            km::chain_target(km::ChainShape{}, movement, target);
+        }
+#if defined(COMPILE_FOR_BRISC)  // mover A
+        return true;
+#else  // mover B
+        const uint32_t size = km::ChainShape{}.size(movement, km::chain_now.now);
+        if ((movement.me() - km::first(command)) % size != 0) {
+            return true;
+        }
+        const km::ChainDirect none = {0, 0, 0, 0};
+        return km::chain_mark(km::ChainShape{}, movement, command, none, false);
+#endif
+    }
+
+}  // namespace
+"""
+
+
+def chain_cases(compiled):
+    """The switch of a chain build's movers: each handler's case with the input's
+    waits, its end's marks, and a tree's credit before each emit."""
+    reads = chain_reads(compiled)
+    pad = INDENT * 2
+    lines = [pad + "switch (km::handler(command)) {"]
+    for name in compiled.handlers:
+        line = compiled.lines[name]
+        lines.append(f"{pad}{INDENT}case kHandler{camel(name)}: {{  // line {line}")
+        lines.append(f"{pad}{INDENT * 2}km_chain_waited = false;")
+        body = render(prune(compiled.movement[name]), 4)
+        lines += chain_waits(compiled, name, body, reads.get(name, {}))
+        lines += [
+            f"{pad}{INDENT * 2}return km_chain_end(movement, command);",
+            f"{pad}{INDENT}}}",
+        ]
+    lines += [f"{pad}{INDENT}default:", f"{pad}{INDENT * 2}return true;", pad + "}"]
+    text = "\n".join(lines)
+    emit = "!km::reduce_emit(movement,"
+    text = text.replace(emit, "!km::chain_credit(movement) || " + emit)
+    return text.split("\n")
+
+
+def chain_movement_source(compiled):
+    """The movement source of a chain build: a chain command's records walked
+    (km::chain_reader on mover A, km::chain_writer on mover B), each its handler's
+    case; any other command its case as in a plain build."""
+    chain = f"kHandler{camel(CHAIN_HANDLER)}"
+    lines = [
+        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
+        "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1),",
+        "// with the chain's walk (km_chain.hpp).",
+        *movement_includes(compiled),
+        '#include "komorebi/device/km_chain.hpp"',
+        f'#include "{header_name(compiled)}"',
+        "",
+        CHAIN_HELPERS,
+        "void kernel_main() {",
+    ]
+    lines += [INDENT + line for line in tensor_aliases(compiled)]
+    lines += [
+        f"{INDENT}km::Movement movement;",
+        "#if defined(COMPILE_FOR_BRISC)  // mover A: the chain's words zero",
+        f"{INDENT}km::chain_start();",
+        "#endif",
+    ]
+    lines += kernel_bodies(compiled, "start", "movement")
+    lines += [  # one copy of the cases, for a plain command and a chain's records
+        f"{INDENT}const auto km_case = [&](const km_command_t& command)",
+        f"{INDENT * 3}__attribute__((noinline)) -> bool {{",
+    ]
+    lines += [
+        line[len(INDENT) :] if line.startswith(INDENT) else line
+        for line in chain_cases(compiled)
+    ]
+    lines += [
+        f"{INDENT}}};",
+        f"{INDENT}movement.run([&](const km_command_t& command) {{",
+        f"{INDENT * 2}if (km::handler(command) != {chain}) {{",
+        f"{INDENT * 3}return km_case(command);",
+        f"{INDENT * 2}}}",
+        "#if defined(COMPILE_FOR_BRISC)  // mover A",
+        f"{INDENT * 2}km::chain_reader(movement, command, km_case);",
+        f"{INDENT * 2}return true;",
+        "#else  // mover B",
+        f"{INDENT * 2}return km::chain_writer(km::ChainShape{{}}, movement, command, "
+        "km_case);",
+        "#endif",
+        f"{INDENT}}});",
+        *kernel_bodies(compiled, "end", "movement"),
+        "}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def chain_compute_source(compiled):
+    """The compute kernel of a chain build: a chain command's records taken in turn
+    (km::chain_compute), each its handler's case."""
+    text = compute_source(compiled, walk=False)
+    chain = f"kHandler{camel(CHAIN_HANDLER)}"
+    head = f"{INDENT}compute.run([&](const km_command_t& command) {{"
+    before, after = text.split(head + "\n", 1)
+    cases_text, tail = after.rsplit(f"{INDENT}}});\n", 1)
+    before = before.replace(
+        f'#include "{header_name(compiled)}"',
+        '#include "komorebi/device/km_chain.hpp"\n'
+        f'#include "{header_name(compiled)}"',
+        1,
+    )
+    return (
+        before
+        + f"{INDENT}const auto km_case = [&](const km_command_t& command)\n"
+        + f"{INDENT * 3}__attribute__((noinline)) {{\n"
+        + cases_text
+        + f"{INDENT}}};\n"
+        + head
+        + "\n"
+        + f"{INDENT * 2}if (km::handler(command) == {chain}) {{\n"
+        + f"{INDENT * 3}km::chain_compute(compute, command, km_case);\n"
+        + f"{INDENT * 2}}} else {{\n"
+        + f"{INDENT * 3}km_case(command);\n"
+        + f"{INDENT * 2}}}\n"
+        + f"{INDENT}}});\n"
+        + tail
+    )

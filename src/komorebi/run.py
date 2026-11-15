@@ -256,10 +256,14 @@ class Run:
 
     # Submitting --------------------------------------------------------------------
 
-    def chain(self, calls, mode, flags=0):
-        """Calls (chain.Call) as one chain's records, written once: their inputs proven
-        or checked first (chain.ChainRefused names the call, the tensor, the core).
-        `mode`: the program's chain mode (the command's a4), `flags` its a1."""
+    def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True):
+        """Calls (chain.Call, or a class's handler calls) as one chain's records, their
+        inputs proven or checked first (ChainRefused names call, tensor, core). `mode`
+        the chain mode (a4), `flags` a1; a class's calls: `cores` the group of those
+        without cores=, `prefetch` False: every read waits for its input's marks."""
+        if any(isinstance(call, front.HandlerCall) for call in calls):
+            calls = self._class_calls(calls, cores, prefetch)
+        walk = self._walk(calls)
         report, word = chain_module.build(calls)
         calls = [  # a class's handler: the one built for its words' constants
             call._replace(
@@ -284,8 +288,9 @@ class Run:
             .ravel(),
         )
         self._unfenced = True
+        handler = self.field_handler(*numbers[0]) if walk is None else walk
         return chain_module.Chain(
-            self.field_handler(*numbers[0]),  # its number: submit makes no words
+            handler,  # a number: submit makes no words of it
             (first, end - first),
             mode,
             flags,
@@ -294,6 +299,24 @@ class Run:
             report,
             calls,
         )
+
+    def _class_calls(self, calls, cores, prefetch, group=None):
+        """The framework's calls of a chain stated with a class's handler calls
+        (komorebi.dsl.chain_calls); `group` (flat ranks) in place of `cores`."""
+        made = importlib.import_module("komorebi.dsl.chain_calls")
+        group = self._group(cores) if group is None else group
+        return made.chain_calls(self, list(calls), group, prefetch)
+
+    def _walk(self, calls):
+        """The chain command's handler when the first call is a class's handler of a
+        program built with the chain's walk (its records each name their handler);
+        None: the first call's handler, the program's own chain mode."""
+        first = calls[0].handler if calls else None
+        if not isinstance(first, HandlerMethod | ClassHandler):
+            return None
+        field = self._handler(first)[1]
+        number = getattr(self.programs[field], "chain_handler", 0)
+        return self.field_handler(number, field) if number else None
 
     def submit(
         self,

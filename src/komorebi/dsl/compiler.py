@@ -254,6 +254,7 @@ class Compiled:
     # only where the plan gives it (declared_constants).
     class_constants: dict = field(default_factory=dict)
     declared: dict = field(default_factory=dict)  # name -> its front.Constant
+    chain: int = 0  # the chain's walk: its handler number (0: none in this build)
 
 
 def handler_methods(cls):
@@ -346,6 +347,18 @@ def declared_constants(compiled, cls, constants):
     `compiled` (a symbol's where the plan or the make gives it)."""
     compiled.declared = front.constants_of(cls)
     compiled.class_constants = dict(constants or {})
+
+
+def prefetch_checked(handler, node, value):
+    """A read stream's `prefetch=`: True or False as written (the chain's walk reads
+    it, komorebi.dsl.chain_calls); anything else refused at its line."""
+    if not (isinstance(value, ast.Constant) and isinstance(value.value, bool)):
+        handler.refuse(
+            node,
+            f"{spelling('prefetch')}= is True or False as written",
+            f"write {spelling('prefetch')}=False (read once the input is marked) or "
+            "True (proven unwritten by the chain, or refused)",
+        )
 
 
 def listed_words(compiled, methods):
@@ -2980,6 +2993,8 @@ class HandlerCompiler:
                 repeat = self.integer(keyword_.value)
             elif key == spelling("write_stream"):
                 continue
+            elif key == spelling("prefetch") and not write:
+                prefetch_checked(self, node, keyword_.value)
             else:
                 self.refuse(node, f"a stream has no {key}=", "use block=, pattern=")
         block = self.row_width if block is None else block
