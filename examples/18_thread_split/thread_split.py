@@ -118,7 +118,8 @@ def program(args, words, tiles, lines, thread=True):
     for name in ("plain", "sparse", "dense"):
         if name not in later:
             made.overlay(name, KERNELS / name, number=C[f"TS_OVERLAY_{name.upper()}"])
-    made.slots(count={"reader": args.slots})  # fewer than three: loads happen
+    # fewer than three: loads happen; --addon asks for the path of run.addon
+    made.slots(count={"reader": args.slots}, bytes={} if args.addon else None)
     if not thread:
         return made
     made.thread(

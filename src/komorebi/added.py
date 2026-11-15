@@ -335,10 +335,11 @@ def addon(
             f"{name}: this run's load reserved no room for added code "
             "(session.load(reserve=0), or a load over islands)"
         )
-    if handler and not room.entered:  # a message loop needs no such path
+    if not room.entered:  # the entry command is served only on that path
         raise AddError(
-            f"{name}: this run's kernels have no path for an added handler; the load's "
-            "program names slot bytes for it (Program.slots(bytes=...))"
+            f"{name}: this run's kernels were built without the path for added code; "
+            "the load's program asks for it with Program.slots(bytes=...) (bytes={} "
+            "keeps the slot sizes) or, as a class, with km.ANY"
         )
     if name in room.added:
         number = room.added[name].number
