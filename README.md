@@ -104,8 +104,8 @@ same form beside them with its own speed-up; the gathered rows are single calls.
 
 | Linear layer | M x K x N | One card | Two cards | Speed-up | Kohaku-TT, two cards, same form |
 |---|---|---|---|---|---|
-| Output dim sharded, one copy of W | 32 x 8192 x 8192 | 314.7 µs | 176.1 µs | 1.79 | 155.5 µs (1.95) |
-| Output dim sharded, one copy of W | 32 x 5120 x 17408 | 412.3 µs | 227.0 µs | 1.82 | 204.3 µs (1.96) |
+| Output dim sharded, one copy of W | 32 x 8192 x 8192 | 306.8 µs | 176.7 µs | 1.74 | 155.5 µs (1.95) |
+| Output dim sharded, one copy of W | 32 x 5120 x 17408 | 399.6 µs | 227.0 µs | 1.76 | 204.3 µs (1.96) |
 | Output dim sharded, one copy of W | 1024 x 8192 x 8192 | 698.8 µs | 380.6 µs | 1.84 | 382.7 µs (1.86) |
 | Output dim sharded, one copy of W | 4096 x 5120 x 17408 | 2,958.6 µs | 1,637.3 µs | 1.81 | 2,665.6 µs (2.32) |
 | W gathered on both cards | 8192 x 8192 x 8192 | 4,488.1 µs | 2,357.6 µs | 1.90 | 2,482.8 µs (1.83) |
@@ -566,11 +566,13 @@ so it is not the form to use on this hardware.
 
 Beside Kohaku-TT in the same form on the same two cards, 24 shapes
 ([table](projects/dense/README.md#the-terms-where-ours-was-slower-one-by-one)): at a
-decode step ours takes 1.03 to 1.31 of its time. The difference is the sum inside a
-group and a second read of the activation, which Kohaku-TT's form does not have, and
-the read under the ceiling. Kohaku-TT's own form (every core all of K for its columns,
-no sum) is built as a second plan of the same kernel and is not faster yet: ours reads
-the weight on one mover where Kohaku-TT's uses both. At prefill ours takes 0.61 to
+decode step ours takes 1.03 to 1.31 of its time on two cards and 0.94 to 1.12 on one.
+Kohaku-TT's own form (every core all of K for its columns, no sum) is a second plan of
+the same kernel, with the weight on both movers and the casts on its NoCs, and the
+kernel takes it where it is faster: that brought one card level. On two cards what is
+left is the tail after the products (the sum, the output, the islands' add: about
+10 µs) and the weight's rate at the last core to finish; under the other plan it is the
+sum inside a group and a second read of the activation. At prefill ours takes 0.61 to
 0.99 of its time where a card's half of N is wide (4096 x 5120 x 17408: 1,637.3
 against 2,665.6 µs) and 1.02 to 1.56 where it is narrow (4096 x 9216 x 2560: 681.5
 against 436.8 µs): there the time is the step of a broadcast, a hand-over into the
