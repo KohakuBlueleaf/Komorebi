@@ -1720,23 +1720,38 @@ leaves their indices and takes their `unpack_to_dest_mode` at those indices, so 
 has one set of compute options. The fidelity is the programs' to agree on: a class
 whose tile functions have no product gives `compute={"math_fidelity": ...}`.
 
-Refused when the class is made in this form (`ProgramError`, naming the handler's
-line), each with what lifting it would need (none of it is built):
+**A start-up of the class's own** (a body at a kernel's start, `km.cxx(...,
+at="start")`, and `startup=`) runs at the load of the program: every part of a program
+is called with the load command (`KM_HANDLER_LOAD`) when a group takes it, and the
+class's parts run there what the kernel form runs before the commands, compute's
+start-up (the class's `km.Startup`, else the one on the program's first buffers) and
+then the bodies (`km_program_start` in the generated sources). In a dict's run it runs
+when the group takes the program, again at each `run.load` of it. A class alone (or
+alone in a list) is run as a dict over every core, so its run loads it before the first
+command (buffer indices below 32, as any dict's). With `startup=`, each command's two
+format calls are left out: the class's start-up set the formats, on cores that hold
+the program alone. The names a start body declares are not seen by the handlers here
+(the body is the load's function): a value a handler needs goes in an own field. On
+the card (card 0, 960 tiles, x + 0.5 from a 0.5 tile built into an own field at
+compute's start): the kernel form 18.12 us, the class with `startup=` alone in the
+runtime's form 18.94 us, every word equal to the kernel form's; a dict of the class
+(cores 0-59) and the one with `startup=` (60-119) 12.2 and 11.88 us, 0 wrong.
 
-- **A body at a kernel's start** (`km.cxx(..., at="start")`): the runtime owns the
-  kernels' start. The place exists in a dict's run: every part of a program is called
-  with the load command (`KM_HANDLER_LOAD`) when a group takes the program, where
-  compute runs the start-up today, so the body would run there. A list's run sends no
-  load, so it would need one sent to every core at the run's start.
-- **A body at a kernel's end** (`at="end"`): no part is called when the run stops; it
-  would need the runtime's loop to call each program's parts once at the stop.
-- **`startup=`** (a start-up of the class's own, `km.Startup`): the start-up is the
-  runtime's, on the first buffer below 16 and the first from 16. The same load call
-  has the place: the start-up there would take the class's buffers and order, and
-  each command's two format calls the same buffers.
-- **A dynamic handler**: the runtime's form has no message loop of a program's own;
-  it would need the runtime's message kernels to serve a program field, and two
-  programs' dynamic handlers in one run are not built either
+Refused, `ProgramError`:
+
+- **A start-up of the class's own in a list of several programs**, at the load: every
+  core holds every program and none is loaded, and one program's start-up would set
+  the hardware up under the others' commands; a dict gives each program its cores.
+  Sending a load of its own to every core at the run's start is not built for it.
+- **km.merge of such a class**: a merged program has one load, the sources' start-ups
+  are not merged.
+- **A body at a kernel's end** (`at="end"`), when the class is made in this form,
+  naming its line: no part is called when the run stops. It would need the runtime's
+  three kernels to load and call the held program's part once after the stop, with a
+  give-up path of its own; not built.
+- **A dynamic handler**, naming its line: the runtime's form has no message loop of a
+  program's own; it would need the runtime's message kernels to serve a program field,
+  and two programs' dynamic handlers in one run are not built either
   ([overlays](overlays.md#not-in-this-version)).
 
 An overlay handler is not refused: it is one of the program's own overlays (above).
@@ -1880,7 +1895,7 @@ the pack CPU's words. Items of a tensor on two islands (refused when the kernel 
 built: no call moves part of another island's page). A range loop whose count is one
 mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
-A class in the runtime's form with a dynamic handler, a body at a kernel's start or
-end, or a start-up of its own (`startup=`): refused ([The runtime's
-form](#the-runtimes-form)); the runtime's form has a message loop of no program, and
-the runtime owns the kernels' start, end and start-up.
+A class in the runtime's form with a dynamic handler or a body at a kernel's end:
+refused ([The runtime's form](#the-runtimes-form)); the runtime's form has a message
+loop of no program, and no program's part is called when the run stops. A body at a
+kernel's start or `startup=` in a list of several programs: refused (no load there).

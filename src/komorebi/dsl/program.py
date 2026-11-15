@@ -250,6 +250,7 @@ def make(
     self.built = built
     self.log = log
     self.runtime_refused = refused  # what form="runtime" would refuse ("": nothing)
+    self.load_start = form == "runtime" and load_started(compiled)  # programs.plan
     for name in compiled.overlays:
         sources = {"reader": built.folder / name / "movement.cpp"}
         sources["writer"] = sources["reader"]
@@ -922,23 +923,69 @@ def runtime_refused(compiled):
 
 def runtime_refusals(compiled):
     """What the runtime's form has no place for, refused at its line: a dynamic
-    handler, a body at a kernel's start or end, a km.Startup."""
+    handler, a body at a kernel's end. A body at a kernel's start and a km.Startup
+    run at the load of the program (load_started)."""
     name, form = compiled.name, f'{spelling("program_form")}="runtime"'
     if compiled.dynamic:
         raise ProgramError(
             f"{name}.{compiled.dynamic} (line {compiled.lines[compiled.dynamic]}): a "
-            f"dynamic handler; in {form} a program has none"
+            f"dynamic handler; in {form} a program has none (the runtime's movers "
+            "carry no messages)"
         )
     for at, line in compiled.kernel_body_lines:
-        raise ProgramError(
-            f"{name}: the body at the kernel's {at} (line {line}): in {form} the "
-            "runtime owns the kernels' start and end; put it in the handler"
+        if at == "end":
+            raise ProgramError(
+                f"{name}: the body at the kernel's end (line {line}): in {form} the "
+                "runtime owns the kernels' end (no program's part is called after "
+                "the run stops); put it in a handler"
+            )
+
+
+def load_started(compiled):
+    """Whether a program in the runtime's form has a start-up of its own, a body at
+    a kernel's start or a km.Startup: run at a load of the program (KM_HANDLER_LOAD),
+    so its run loads it first (komorebi.programs.plan)."""
+    starts = any(at == "start" for at, _ in compiled.kernel_body_lines)
+    return starts or compiled.startup is not None
+
+
+def runtime_start(compiled, kernel):
+    """km_program_start of a program in the runtime's form with a start-up of its own
+    (load_started): what the kernel form runs before the commands, run at a load of
+    the program (km_overlay_entry.hpp). compute: the class's start-up (else the
+    load's, on the program's first buffers), then its bodies."""
+    bodies = compiled.kernel_bodies.get(("start", kernel))
+    if not load_started(compiled) or (kernel == "movement" and not bodies):
+        return []  # the movers do nothing at a load
+    lines = [
+        "",
+        "// the program's start-up, at a load of the program",
+        "#define KM_PROGRAM_START 1",
+    ]
+    if kernel == "movement":
+        lines += [
+            "static void km_program_start(km::MoverRuntime& km_core) {",
+            *PART_MOVEMENT,
+            f"{INDENT}(void)movement;",
+            *(INDENT + line for line in tensor_aliases(compiled)),
+        ]
+    else:
+        startup = (
+            [INDENT + startup_line(compiled, "", "")]
+            if compiled.startup is not None
+            else [
+                "#if defined(KM_PROGRAM_SETUP_IN)",
+                f"{INDENT}compute_kernel_hw_startup(KM_PROGRAM_SETUP_IN, "
+                "KM_PROGRAM_SETUP_OUT);",
+                "#endif",
+            ]
         )
-    if compiled.startup is not None:
-        raise ProgramError(
-            f"{name}: startup=: in {form} compute's start-up is the "
-            "runtime's, on the first buffer below 16 and the first from 16 on"
-        )
+        lines += [
+            "static void km_program_start(km::Compute& compute) {",
+            f"{INDENT}(void)compute;",
+            *startup,
+        ]
+    return lines + [*kernel_bodies(compiled, "start", kernel), "}"]
 
 
 def runtime_movement_source(compiled):
@@ -958,6 +1005,7 @@ def runtime_movement_source(compiled):
         *(INDENT + line for line in tensor_aliases(compiled)),
         *cases(compiled, compiled.movement, "return true;", 1, "movement"),
         "}",
+        *runtime_start(compiled, "movement"),
         "",
         "#if defined(COMPILE_FOR_BRISC)",
         "void km_program(km::Reader& reader, const km_command_t& command) {",
@@ -987,15 +1035,18 @@ def runtime_compute_source(compiled):
         *start_formats(compiled),
         *cases(compiled, compiled.compute, "break;", 1, "compute"),
         "}",
+        *runtime_start(compiled, "compute"),
     ]
     return "\n".join(lines) + "\n"
 
 
 def start_formats(compiled):
     """A runtime-form command's first lines on compute: the formats of the runtime's
-    start-up on this program's buffers (programs.start_buffers: the first index below
-    16, the first from 16), as the kernel form's code finds them. In a run of several
-    programs on a core, the last command may have been another program's."""
+    start-up on this program's first buffers (programs.start_buffers), as the kernel
+    form's code finds them after another program's command. None with a km.Startup:
+    it set the formats at the load, on cores holding it alone."""
+    if compiled.startup is not None:
+        return []
     indices = sorted(
         index
         for buffer in compiled.buffers

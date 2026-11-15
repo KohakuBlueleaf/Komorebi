@@ -678,6 +678,12 @@ def _check_sources(sources):
                 "(handlers=, km.ANY among them); a merged program builds each handler "
                 "once"
             )
+        if getattr(source, "load_start", False):  # a class made form="runtime"
+            raise ProgramError(
+                f"{source.name}: a start-up of its own (a body at a kernel's start or "
+                "startup=), run at a load of the program; a merged program has one "
+                "load, its sources' start-ups not merged"
+            )
         if source.overlays:
             raise ProgramError(
                 f"{source.name}: it has overlays of its own, whose numbers a merged "
