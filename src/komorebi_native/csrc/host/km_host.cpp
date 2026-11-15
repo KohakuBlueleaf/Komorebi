@@ -30,6 +30,9 @@
 #include <immintrin.h>
 
 #include <tt-metalium/allocator.hpp>
+#include <tt-metalium/bfloat2.hpp>
+#include <tt-metalium/bfloat4.hpp>
+#include <tt-metalium/bfloat8.hpp>
 #include <tt-metalium/buffer.hpp>
 #include <tt-metalium/buffer_distribution_spec.hpp>
 #include <tt-metalium/distributed.hpp>
@@ -1128,6 +1131,14 @@ namespace {
             {"int32", tt::DataFormat::Int32},
             {"uint16", tt::DataFormat::UInt16},
             {"uint8", tt::DataFormat::UInt8},
+            {"float16", tt::DataFormat::Float16},
+            {"bfp8", tt::DataFormat::Bfp8},
+            {"bfp4", tt::DataFormat::Bfp4},
+            {"bfp2", tt::DataFormat::Bfp2},
+            {"bfp8_b", tt::DataFormat::Bfp8_b},
+            {"bfp4_b", tt::DataFormat::Bfp4_b},
+            {"bfp2_b", tt::DataFormat::Bfp2_b},
+            // the earlier names of bfp8_b and bfp4_b
             {"bfloat8_b", tt::DataFormat::Bfp8_b},
             {"bfloat4_b", tt::DataFormat::Bfp4_b},
         };
@@ -1137,6 +1148,56 @@ namespace {
             }
         }
         throw std::invalid_argument("no data format " + name);
+    }
+
+    using Floats = nb::ndarray<const float, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+    using Words = nb::ndarray<nb::numpy, uint32_t, nb::ndim<1>>;
+    using Values = nb::ndarray<nb::numpy, float, nb::ndim<1>>;
+
+    template <typename T>
+    nb::ndarray<nb::numpy, T, nb::ndim<1>> owned_array(std::vector<T>&& values) {
+        auto* owned = new std::vector<T>(std::move(values));
+        nb::capsule owner(owned, [](void* memory) noexcept {
+            delete static_cast<std::vector<T>*>(memory);
+        });
+        const size_t shape[1] = {owned->size()};
+        return nb::ndarray<nb::numpy, T, nb::ndim<1>>(owned->data(), 1, shape, owner);
+    }
+
+    // tt-metal's block-float encoder (fp32 tiles, faces in turn, to words; bits 8, 4,
+    // 2). It asks the runtime's HAL, which opens the driver if no device is open yet.
+    Words bfp_encode(const Floats& values, uint32_t bits, bool family_a) {
+        if (values.size() % 1024 != 0) {
+            throw std::invalid_argument("bfp_encode: whole tiles of 1024 values");
+        }
+        const ttsl::Span<const float> data(values.data(), values.size());
+        std::vector<uint32_t> words;
+        if (bits == 8) {
+            words = pack_as_bfp8_tiles(data, false, family_a);
+        } else if (bits == 4) {
+            words = pack_as_bfp4_tiles(data, false, family_a);
+        } else if (bits == 2) {
+            words = pack_as_bfp2_tiles(data, false, family_a);
+        } else {
+            throw std::invalid_argument("bfp_encode: bits 8, 4 or 2");
+        }
+        return owned_array(std::move(words));
+    }
+
+    // tt-metal's block-float decoder: the tiles' words as fp32 values, faces in turn.
+    Values bfp_decode(const Numbers& words, uint32_t bits, bool family_a) {
+        const ttsl::Span<const uint32_t> data(words.data(), words.size());
+        std::vector<float> values;
+        if (bits == 8) {
+            values = unpack_bfp8_tiles_into_float_vec(data, false, family_a);
+        } else if (bits == 4) {
+            values = unpack_bfp4_tiles_into_float_vec(data, false, family_a);
+        } else if (bits == 2) {
+            values = unpack_bfp2_tiles_into_float_vec(data, false, family_a);
+        } else {
+            throw std::invalid_argument("bfp_decode: bits 8, 4 or 2");
+        }
+        return owned_array(std::move(values));
     }
 
     tt::tt_metal::KernelBuildOptLevel opt_level(const std::string& name) {
@@ -3214,6 +3275,20 @@ NB_MODULE(_km_host, m) {
             nb::arg("ready_mask") = 0,
             nb::arg("ready_value") = 0
         );
+    m.def(
+        "bfp_encode",
+        &bfp_encode,
+        nb::arg("values"),
+        nb::arg("bits"),
+        nb::arg("family_a") = false
+    );
+    m.def(
+        "bfp_decode",
+        &bfp_decode,
+        nb::arg("words"),
+        nb::arg("bits"),
+        nb::arg("family_a") = false
+    );
     m.def(
         "write_l1",
         [](

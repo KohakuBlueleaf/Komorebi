@@ -496,6 +496,74 @@ product and pack when it mixes tile formats. For a hand-written body, nothing.
 Described in [Programs written as classes, a body's own buffer](classes.md#a-bodys-own-buffer) and
 [products](classes.md#products).
 
+### Buffers of the two exponent families in one kernel
+
+**The hazard.** The unpacker and the packer hold one exponent width for a kernel's
+buffers: the B family's 8 bits (bfloat16, bfp8_b, bfp4_b, bfp2_b) or the A family's 5
+(float16, bfp8, bfp4, bfp2). A kernel that reads or writes both reads one of them with
+the other's exponent: its values are wrong, with no error.
+
+**The rule.** A kernel's buffers are of one family; float32 and the integer formats go
+with either.
+
+**The guard.** Refused when the program is made: `km.Program` names one buffer of each
+family ("buffer 2 (bfp8) is of the A family ... and buffer 0 (bfloat16) of the B
+family"); a class's product of the two families is refused at its line ("its operands
+are of one exponent family").
+
+Described in [Tile formats, the exponent families](formats.md#the-exponent-families).
+
+### The A family with an fp32 Dst
+
+**The hazard.** With `fp32_dest_acc_en`, every A-family datum (float16, bfp8, bfp4, bfp2)
+arrives in `Dst` 2^-15 too large, through SrcA or unpacked straight to `Dst` (zero reads
+2^-15, infinity 65536); an fp32 `Dst` packed to float16 is garbage, and a pack to bfp8 is
+all zeros. Even with a 16-bit `Dst`, float16's subnormals become 0, -0 becomes +0, and a
+host-encoded A row whose exponent saturated reads as NaN.
+
+**The rule.** A kernel with an A-family buffer computes in a 16-bit `Dst`
+(`fp32_dest_acc_en` off), within float16's normal range.
+
+**The guard.** Refused when the program is made ("buffer 3 (bfp4) ... 16-bit Dst"). A
+class of A buffers is built with a 16-bit `Dst`, refuses a float32 tile unpacked to
+`Dst`, and its tile functions (which run on an fp32 `Dst`) refuse A tiles. The range
+is the programmer's.
+
+Described in [Tile formats, the exponent families](formats.md#the-exponent-families).
+
+### A host-encoded block-float tensor compared with the card's packing
+
+**The hazard.** The host's block-float encode (`session.tensor(..., "bfp8_b", "tile")`,
+tt-metal's) rounds each datum once, half to even, to its row's shared exponent; the
+card's packer rounds twice, ties away from zero. The same values encoded on the host
+and packed on the card differ in the last bit of many datums (235, 377 and 244 of 1024
+for bfp8_b, bfp4_b and bfp2_b in one test tile) and sometimes in a row's exponent. A
+check that compares the two byte for byte fails, and one that compares values against
+a host encode sees an error of the format's last bit.
+
+**The rule.** Compare block-float values with a tolerance of the format's last bit, or
+make both sides on one side (both packed on the card, or both encoded on the host).
+
+**The guard.** Nothing.
+
+Described in [Tile formats, the host encode and the card's](formats.md#the-host-encode-and-the-cards).
+
+### A turned product's weight written without transposed tiles
+
+**The hazard.** A product marked to put its right operand in SrcB (`x @ km.srcb(w)`)
+reads W's tiles as the transposes of W's: a W tensor written plainly gives a wrong
+product, and a W stored transposed under an unmarked product too.
+
+**The rule.** The tensor a turned product's W is read from is written with
+`session.tensor(..., transposed_tiles=True)`, and only such a product reads it.
+
+**The guard.** Refused at the build: the class names the product's line and the tensor
+("the product is turned and tensor w is not stored with its tiles transposed", or the
+plain one's "is stored"). The check is of the example tensors the class is made with; a
+command given another tensor than the one made with is the programmer's.
+
+Described in [Tile formats, placement](formats.md#placement).
+
 ## X280 threads
 
 ### A thread that never polls the stop flag
@@ -666,6 +734,25 @@ stopped ring is cleared by the cores' recovery or by the next load.
 **The guard.** Nothing at the call.
 
 Described in [Islands, pages across a link](islands.md#pages-across-a-link).
+
+### A card opened alone in a process that opened a mesh
+
+**The hazard.** Closing a session of several cards leaves tt-metal's context set up for
+the process. A later open with other parameters in the same process, such as one card
+with its default kernel buffer, re-initialises that context. The re-initialisation
+covers every card the process's driver opened, not only the one asked for. Once (2026-11-16, a
+one-card open of card 0 after cards 0 and 1 as a mesh), that open timed out waiting for
+the Ethernet core 27-25 to become active ("try resetting the board"). The process then
+crashed at exit, and both cards refused every later open, in fresh processes too, until
+a board reset. A process that closes a mesh and exits has never shown it.
+
+**The rule.** One process opens either cards as a mesh or a card alone, never both. Run
+the other kind in a new process.
+
+**The guard.** A refusal at open (`KomorebiError`, "open it in a new process"), for a
+card alone after a mesh and for a mesh after a card alone, before any device call.
+
+Described in [Islands, the session](islands.md#the-session).
 
 ## The host
 

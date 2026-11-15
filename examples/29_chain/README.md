@@ -131,8 +131,9 @@ The host saves its round trips as on one card. These are the times before the is
 in the [reference](../../docs/reference/chain.md#over-islands). On the card, each record
 after the first took about 30 us more than its command, in a root's walk over every group
 of the next record. Since the fix a root walks its own island's groups only (three calls
-148.4 -> 108.6 us). The remaining 12 us is still unsolved. Built with `KM_CHAIN_STAMPS`,
-STAMPS (handler 5) writes each core's stamps to page `me` of the bank address in a1.
+148.4 -> 108.6 us). The remaining 12 us is a known cost: about 226 ns a group of the
+next record. Built with `KM_CHAIN_STAMPS`, STAMPS (handler 5) writes each core's stamps
+to page `me` of the bank address in a1.
 
 ## Output
 
