@@ -395,8 +395,7 @@ class Program:
         taken = {o.number: o.name for o in self.overlays.values()}
         if made.number in taken:
             raise ValueError(
-                f"overlay {name}: number {made.number} is taken by "
-                f"{taken[made.number]}"
+                f"overlay {name}: number {made.number} is taken by {taken[made.number]}"
             )
         self.overlays[name] = made
         return self
@@ -405,7 +404,13 @@ class Program:
         """Code a run of this program will add, built by the load (and by a build off
         the card) into the parts' cache so the add finds it built: run.addon's `name`,
         `parts`, `defines`, `compile_args`, or a class's handler at a set its first use
-        compiles, `program.ahead(Gate.gate, size=4)` (komorebi.added.ahead)."""
+        compiles, `program.ahead(Gate.gate, size=4)`; or a class run.addon will add."""
+        if isinstance(name, Program):
+            if parts is not None or defines or compile_args or wanted:
+                raise ProgramError(f"{name.name}: a class ahead takes nothing more")
+            kept = getattr(self, "added_ahead_programs", ())
+            self.added_ahead_programs = [*kept, name]
+            return self
         added = importlib.import_module("komorebi.added")  # it imports this module
         added.ahead(self, name, parts, defines, compile_args, wanted)
         return self

@@ -239,6 +239,28 @@ commands for `program`.
   `program`), which sees every load from every source. Set it `True` for a run whose
   thread never loads.
 
+#### A class added to a live run
+
+```python
+run = session.load({gate: (0, 60)})  # cores 60 to 119 hold nothing
+project = Project(x=x, w=w, y=y, form="runtime", beside=gate, session=session)
+field = run.addon(project)  # its program field
+run.wait(run.load(project, (60, 60)), 30.0)
+run.submit(Project.rows, (60, 60), args=(x, w, y))
+```
+
+`run.addon(program)` with a class made in the runtime's form adds it to a run loaded with
+a dict as one more program (its program field, after the loaded ones): its parts built
+against the loaded kernels with its own buffers' format tables, written into the room
+the load reserved, its record written to DRAM. Nothing is written to the cores until a
+`run.load` of it. Its buffers lie in the switch area, which by default takes what the
+load's L1 table leaves free less 64 KiB (kept for L1 tensors made while the run is
+live); `session.load(..., buffers=N)` makes the area N bytes from the runtime's buffers
+(0: the largest program's). Its parts go in the load's slots, which cannot grow under a
+live run: `gate.ahead(project)` before the load sizes them by its parts and builds them,
+so the add takes milliseconds; else `Program.slots(bytes=)`. The refusals:
+[classes](classes.md#another-class-added-to-a-live-run).
+
 The session sends each group a load of its own program before `session.load` returns
 (the compute cores' hardware start-up on that program's formats). What it costs: the
 [example](../../examples/16_two_programs/README.md) and [overlays](overlays.md#a-group-switches-program).
@@ -416,7 +438,7 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`, or
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=0.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
 image=None, thread="card", island=None, link=None, tensors=0, recover=True,
-reserve=262144)` returns a `Run`:
+reserve=262144, buffers=None)` returns a `Run`:
 
 1. finds or builds the dispatcher image and the native module (see below), and
    checks that the image is there and X280 cluster 0 is idle (else `km.StartError`);
@@ -446,6 +468,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `settle_microseconds` | the host's pause between a fence and its next store into the card |
 | `thread` | for a program with an X280 thread: `"card"` builds and starts it after READY, `"host"` runs its `host_fallback` instead |
 | `recover` | hand the dispatcher every core's reset list at load, so that a give-up resets and loads again each core that did not leave the command (default True). It costs the load about 4 ms and 68,864 bytes of the upload region for the map/collect example (the list grows with the kernels and their arguments). One list a group of cores with the same kernels (several programs: each core the list of its program); on islands each island's own, link cores left out. Not done for program switches, nor for a program with semaphores: `run.recovery_refused` says why |
+| `buffers` | a run loaded with a dict: bytes of its switch area for the buffers of classes added live (`run.addon(program)`), from the runtime's buffers; None (the default) takes what the L1 table leaves free less 64 KiB, 0 the largest program's layout |
 | `reserve` | bytes of room for code added to the live run (`Run.add`), after the overlays' parts in their DRAM tensor (each part is stored in every bank; default 256 KiB). 0 reserves none, and a load over islands reserves none ([code added to a live run](overlays.md#code-added-to-a-live-run)) |
 | `island` | `(graph, i)`: this card is island `i` of a `komorebi.islands.Graph` whose island `i` has every core a rank in core order. Every core's island area holds island `i`'s header and table, the dispatcher gets `i`'s first rank and count (`kmd_args.island`), and the run's groups are flat ranks of the whole graph (`Run.ranks`); a group's part on this card runs ([islands](runtime.md#islands)) |
 | `link`, `tensors` | an island's own: its `LinkPlan` (the link core and link area its commands across ride; needs `island`) and the L1 address of the tensor table its cores hold. The island sessions pass them; a program on one card never does |
