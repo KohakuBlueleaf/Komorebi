@@ -40,6 +40,7 @@ void kernel_main() {
         const km::Arrival arrival = {kCbKArrive, plan(kKsArrive), block_tiles};
         const uint32_t form = plan(kKsForm);
         const km::Pattern pattern = km::Pattern::of(plan(kKsPattern));
+        const bool x_cast = plan(kKsXCast) != 0;     // X whole in kCbKX, by chunk
 #if defined(LINEAR_ACCOUNT) && !defined(TRISC_MATH)  // the math thread: no buffers
         volatile uint32_t* stamps = stamp_row();
 #endif
@@ -57,10 +58,13 @@ void kernel_main() {
             const uint32_t length = (
                 at.k_count - offset < chunk_tiles ? at.k_count - offset : chunk_tiles
             );
-            const uint32_t x_half = km::block_half(kKChunksX, pattern, chunk);
+            const uint32_t x_half = (
+                x_cast ? kCbKX : km::block_half(kKChunksX, pattern, chunk)
+            );
             const uint32_t w_half = km::block_half(kKChunksW, pattern, chunk);
+            const uint32_t x_first = x_cast ? chunk * block_height * chunk_tiles : 0;
             ok = (
-                compute.wait_front(x_half, block_height * chunk_tiles) &&
+                compute.wait_front(x_half, x_first + block_height * chunk_tiles) &&
                 compute.wait_front(w_half, chunk_tiles * block_width)
             );
             if (!ok) {
@@ -80,7 +84,7 @@ void kernel_main() {
                         matmul_block(
                             x_half,
                             w_half,
-                            subblock_row * chunk_tiles + k_tile,
+                            x_first + subblock_row * chunk_tiles + k_tile,
                             k_tile * block_width + subblock_column,
                             0,
                             0,
@@ -110,8 +114,13 @@ void kernel_main() {
                     tile_regs_release();
                 }
             }
-            cb_pop_front(x_half, block_height * chunk_tiles);
+            if (!x_cast) {
+                cb_pop_front(x_half, block_height * chunk_tiles);
+            }
             cb_pop_front(w_half, chunk_tiles * block_width);
+        }
+        if (ok && x_cast) {
+            cb_pop_front(kCbKX, x_pages(plan, at));
         }
         LINEAR_ACCOUNT_DO(PACK((stamps[kAcKOwn] = km::wall())));
         reconfig_data_format_srca(kCbKw, kCbKArrive);

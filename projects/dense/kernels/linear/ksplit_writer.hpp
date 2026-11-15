@@ -32,6 +32,9 @@ void kernel_main() {
         if (at.any) {
             const X x_matrix(command.a0);
             const W w_matrix(command.a1);
+            if (plan(kKsXRole) != 0 && !hand_x(writer, command, plan, at, x_matrix)) {
+                return false;
+            }
             if (!move_k_chunks(writer, command, plan, at, x_matrix, w_matrix)) {
                 return false;
             }

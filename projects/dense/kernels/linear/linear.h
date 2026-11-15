@@ -209,6 +209,7 @@ constexpr uint32_t kCbKArrive = 11;  // fp32, a slot of oh x ow tiles a sender
 constexpr uint32_t kCbKSum = 25;     // fp32, this rank's part: oh x ow tiles
 constexpr uint32_t kCbKOut = 18;     // bf16, the group's sum at its first rank
 constexpr uint32_t kCbKAdd = 12;     // bf16, its block of both partials (LINEAR_ADD)
+constexpr uint32_t kCbKX = 15;       // bf16, the whole-K plan's X: all its K chunks
 // Its words (every CPU's): S, oh, ow, kc, subblock sh x sw, blocks a row of the window,
 // arrival pages, reduce form, M tiles, a set of S's pages, the chunks' pattern word.
 constexpr uint32_t kKsS = 0;
@@ -223,7 +224,22 @@ constexpr uint32_t kKsForm = 8;
 constexpr uint32_t kKsMt = 9;
 constexpr uint32_t kKsSetPages = 10;
 constexpr uint32_t kKsPattern = 11;
-constexpr uint32_t kKsWords = 12;
+// The whole-K plan (S 1, Kohaku-TT's decode form): X multicast once a panel by the
+// panel's sender (its writer, NoC 1) into every rank's kCbKX, a marker after each.
+constexpr uint32_t kKsXCast = 12;    // 1: this plan
+constexpr uint32_t kKsXRole = 13;    // this core's: 0 none, 1 the sender, 2 a receiver
+constexpr uint32_t kKsXWaits = 14;   // sender: the receivers whose free it counts
+constexpr uint32_t kKsXDests = 15;   // sender: the multicast's cores but itself
+constexpr uint32_t kKsXSender = 16;  // receiver: its sender's core
+constexpr uint32_t kKsXStart = 17;   // the panel's NoC 1 multicast corners, x | y << 16
+constexpr uint32_t kKsXEnd = 18;
+constexpr uint32_t kKsXChunks = 19;  // K chunks a multicast
+constexpr uint32_t kKsWords = 20;
+constexpr uint32_t kKXSender = 1;
+constexpr uint32_t kKXReceiver = 2;
+// Ports (the split plan's grid ports): a receiver's X buffer free, X's marker
+constexpr uint32_t kPortKXFree = 2;
+constexpr uint32_t kPortKXGot = 3;
 // T's words of the K-split plan (with the account): the movers' chunks moved (reader,
 // writer), the reduce (writer: its part sent, or the sum taken), Y written.
 constexpr uint32_t kAcKMoveA = 16;
