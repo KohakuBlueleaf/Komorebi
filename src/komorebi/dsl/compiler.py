@@ -42,6 +42,7 @@ TILE_ELEMENTS = 32 * 32
 # Names the generated code takes for itself: a parameter or a variable may not.
 GENERATED = {"command", "movement", "compute", "rank", "size", "group", "ok"}
 GENERATED |= {"self_x", "self_y", "rect_columns", "rect_rows"}
+GENERATED |= {"messages", "packet", "arrived", "incoming", "word_page", "stamp"}
 GENERATED_NUMBERED = re.compile(
     r"(block|half|valid|tile|read|write|out|room|page|address)\d+"
 )
@@ -126,6 +127,7 @@ class Value:
     loop: dict | None = None  # broadcast: the range loop its blocks count
     waited: bool = False  # a written tile: mover B has waited for its page
     popped: bool = False  # a written tile: mover B has freed its page
+    words: dict | None = None  # a message: its class's named words
 
     def first_text(self, name):
         """A partition's first page: its range's first page plus its start."""
@@ -142,9 +144,13 @@ class Compiled:
     name: str
     source: str
     handlers: dict = field(default_factory=dict)  # name -> number
-    overlays: dict = field(
-        default_factory=dict
-    )  # overlay handler -> its overlay number
+    # overlay handler -> its overlay number; broadcast handler -> its km.Broadcast
+    overlays: dict = field(default_factory=dict)
+    broadcast_lines: dict = field(default_factory=dict)
+    stamps: dict = field(default_factory=dict)  # overlay handler -> (tensor, word)
+    dynamic: str | None = None  # the handler whose lines are a message loop
+    results: set = field(default_factory=set)  # handlers whose leader returns a word
+    messages: dict = field(default_factory=dict)  # km.Message class name -> words
     words: dict = field(default_factory=dict)  # name -> [(parameter, kind)]
     lines: dict = field(default_factory=dict)  # name -> its def line
     buffers: list = field(default_factory=list)
@@ -359,6 +365,7 @@ class HandlerCompiler:
         self.stream_loops = []  # the numbers of the read loops around the statement
         self.blocks = []  # the statement lists around the statement, innermost last
         self.assigned = self.assigned_names()
+        self.dynamic = self.arrives()
 
     # The source -------------------------------------------------------------------
 
@@ -412,8 +419,13 @@ class HandlerCompiler:
         compute = [
             Glue("const uint32_t rank = compute.me() - km::first(command);", {"rank"})
         ]
+        if self.dynamic:  # the ranks of the message loop: no counter tiles
+            self.dynamic_start(compute)
         for nodes, me in ((movement, "movement"), (compute, "compute")):
-            nodes.append(Glue("const uint32_t size = km::count(command);", {"size"}))
+            if not (self.dynamic and nodes is compute):
+                nodes.append(
+                    Glue("const uint32_t size = km::count(command);", {"size"})
+                )
             for axis in ("x", "y"):
                 nodes.append(
                     Glue(
@@ -435,10 +447,13 @@ class HandlerCompiler:
                 )
             )
         self.bind_parameters(movement, compute)
+        if self.method.stamps is not None:
+            self.stamps()
         body_m, body_c = self.statements(self.definition.body)
         movement += body_m
         compute += body_c
-        compute.insert(len(compute) - len(body_c), Glue("bool ok = true;", {"ok"}))
+        if not self.dynamic:
+            compute.insert(len(compute) - len(body_c), Glue("bool ok = true;", {"ok"}))
         for kept, filled in self.filled.items():
             if filled is not None:
                 self.refuse(
@@ -456,6 +471,225 @@ class HandlerCompiler:
                 )
         self.compiled.movement[name] = movement
         self.compiled.compute[name] = compute
+
+    def stamps(self):
+        """`stamps="t"`: the overlay's resident case on each mover writes the
+        command's sequence, the overlay, its load and call cycles and whether it was
+        held to page 2 x core + mover of tensor parameter t (mover A 0, B 1)."""
+        stamps = self.method.stamps
+        decorator = self.definition.decorator_list[0]
+        found = [p for p in self.params if p.name == stamps and p.kind == "tensor"]
+        if not self.method.overlay or not found:
+            self.refuse(
+                decorator,
+                f"stamps={stamps!r} names no tensor parameter of an overlay handler",
+                'write @km.handler(overlay=True, stamps="t") with t: km.Tensor',
+            )
+        dtype, page_bytes = self.tensor_format(decorator, stamps)
+        if page_bytes < 20 or page_bytes % 4:
+            self.refuse(
+                decorator,
+                f"a stamps page is five words; {stamps}'s page is {page_bytes} B",
+                f"make {stamps} a tensor of uint32 pages of at least five words",
+            )
+        buffer = self.other_buffer(
+            "kStamps", "word", dtype, page_bytes, 2, "stamps: a page a mover"
+        )  # fmt: skip
+        buffer.page_bytes = max(buffer.page_bytes, page_bytes)
+        self.compiled.stamps[self.method.name] = (stamps, found[0].word)
+        self.moved(decorator, stamps, "page write")
+
+    def arrives(self):
+        """Whether the handler has `for message in self.arrive():` (it is dynamic:
+        compute's lines alone, the runtime's movers carry the messages)."""
+        for node in ast.walk(self.definition):
+            if isinstance(node, ast.For) and self.self_call(
+                node.iter, "arrive_messages"
+            ):
+                return True
+        return False
+
+    def self_call(self, node, kind):
+        """Whether `node` is the call `self.<kind's spelling>(...)`."""
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            and node.func.attr == spelling(kind)
+        )
+
+    def dynamic_start(self, compute):
+        """A dynamic handler: one in a class, no moves; its message loop's state, the
+        rank and size of the loop's ranks."""
+        if self.compiled.dynamic is not None:
+            self.refuse(
+                self.definition,
+                f"{self.compiled.dynamic} is the class's dynamic handler already",
+                "make one class for each dynamic handler",
+            )
+        self.compiled.dynamic = self.method.name
+        for node in ast.walk(self.definition):
+            moving = isinstance(node, ast.Call) and (
+                self.construct(node) in ("stream", "reduce", "broadcast")
+                or isinstance(node.func, ast.Attribute)
+                and node.func.attr in (spelling("push"), spelling("fill"))
+                or any(k.arg == spelling("on") for k in node.keywords)
+            )
+            if moving:
+                self.refuse(
+                    node,
+                    "a dynamic handler is compute's lines alone: the runtime's movers "
+                    "carry its messages",
+                    "move pages in a handler of another class",
+                )
+        compute.insert(
+            0, Glue("km::Messages messages(compute, command);", {"messages"})
+        )
+        compute[1] = Glue(
+            "const uint32_t rank = messages.rank();", {"rank"}, {"messages"}
+        )
+        compute.append(
+            Glue("const uint32_t size = messages.count();", {"size"}, {"messages"})
+        )
+
+    def message_class(self, node, call):
+        """The km.Message class `call` names, or None."""
+        if not isinstance(call, ast.Call):
+            return None
+        func = call.func
+        found = self.names.get(func.id) if isinstance(func, ast.Name) else None
+        if isinstance(found, type) and issubclass(found, front.Message):
+            return found
+        return None
+
+    def made_message(self, node, name, cls, call):
+        """`message = Visit(id=..., ...)`: a message of named words, the others 0."""
+        if not self.dynamic:
+            self.refuse(node, "a message is a dynamic handler's", "send it from one")
+        if call.args or any(k.arg not in cls.words for k in call.keywords):
+            self.refuse(
+                node,
+                f"a {cls.__name__} is made of its named words",
+                f"write {cls.__name__}({', '.join(f'{w}=...' for w in cls.words)})",
+            )
+        self.messages_of(cls)
+        self.scope[name] = Value("message", name, words=cls.words)
+        text = [f"uint32_t {name}[kMessageWords] = {{}};"]
+        uses = set()
+        for given in call.keywords:
+            word = f"k{cls.__name__}{camel(given.arg)}"
+            text.append(f"{name}[{word}] = {self.integer(given.value)};")
+            uses |= self.uses(given.value)
+        return [], [Line("\n".join(text), uses)]
+
+    def messages_of(self, cls):
+        """The class's message words, for the header."""
+        known = self.compiled.messages.setdefault(cls.__name__, cls.words)
+        if known != cls.words:
+            self.refuse(self.definition, f"two {cls.__name__}s", "name one")
+
+    def message_word(self, node):
+        """The C++ of `message.word` (a word of a message), or None."""
+        base = node.value
+        if not (isinstance(base, ast.Name) and base.id in self.scope):
+            return None
+        value = self.scope[base.id]
+        if value.kind != "message":
+            return None
+        if node.attr not in value.words:
+            self.refuse(
+                node,
+                f"{base.id} has no word {node.attr}",
+                f"use one of {', '.join(value.words)}",
+            )
+        cls = next(c for c, w in self.compiled.messages.items() if w is value.words)
+        return f"{base.id}[k{cls}{camel(node.attr)}]"
+
+    def arrive_loop(self, node):
+        """`for message in self.arrive():` each message given to this core, in packets
+        (copied from the queue), each then forwarded, consumed or left."""
+        if not isinstance(node.target, ast.Name):
+            self.refuse(node, "one message name", "write for message in self.arrive()")
+        args = node.iter.args
+        cls = None
+        if len(args) == 1:
+            cls = self.message_class(node, ast.Call(func=args[0], args=[], keywords=[]))
+        elif not args:
+            known = [
+                v for v in self.names.values()
+                if isinstance(v, type) and issubclass(v, front.Message)
+                and v is not front.Message
+            ]  # fmt: skip
+            cls = known[0] if len(known) == 1 else None
+        if cls is None:
+            self.refuse(
+                node,
+                "the loop's message class is not known",
+                "write self.arrive(Visit), Visit a km.Message of the module",
+            )
+        name = node.target.id
+        self.check_name(node, name)
+        self.messages_of(cls)
+        self.scope[name] = Value("message", name, words=cls.words)
+        _, body = self.statements(node.body)
+        self.scope.pop(name)
+        copy = (
+            "const volatile tt_l1_ptr uint32_t* incoming = packet[arrived];\n"
+            f"uint32_t {name}[kMessageWords] = {{}};  // word 0: the runtime's\n"
+            "for (uint32_t word = 1; word < kMessageWords; word++) {\n"
+            f"    {name}[word] = incoming[word];\n"
+            "}"
+        )
+        inner = Block(
+            "for (uint32_t arrived = 0; arrived < packet.count; arrived++) {",
+            "}",
+            [Line(copy), *body],
+        )
+        outer = Block(
+            "while (km::Packet packet = messages.next()) {",
+            "}",
+            [inner, Line("messages.done(packet);")],
+            {"messages"},
+        )
+        return [], [outer]
+
+    def message_call(self, node, call, kind):
+        """self.send(rank, message), self.forward(rank, message), self.consume()."""
+        if not self.dynamic:
+            self.refuse(node, "a message call is a dynamic handler's", "use one")
+        if kind == "consume":
+            if call.args or call.keywords:
+                self.refuse(node, "consume() takes nothing", "write self.consume()")
+            return [], [Line("messages.consume();", {"messages"})]
+        if len(call.args) != 2 or call.keywords:
+            self.refuse(
+                node, "a rank and a message", f"write self.{spelling(kind)}(rank, m)"
+            )
+        message = call.args[1]
+        if not (
+            isinstance(message, ast.Name)
+            and self.scope.get(message.id, Value("")).kind == "message"
+        ):
+            self.refuse(node, "the second is a message", "give a message's name")
+        rank = self.integer(call.args[0])
+        uses = self.uses(call.args[0]) | {"messages", message.id}
+        return [], [Line(f"messages.{kind}({rank}, {message.id});", uses)]
+
+    def seeding_branch(self, node):
+        """`if self.seeding():` the first messages, then the loop is told they are
+        all sent."""
+        if node.orelse:
+            self.refuse(node, "seeding has no else", "write the if alone")
+        _, body = self.statements(node.body)
+        return [], [
+            Block(
+                "if (messages.seeding()) {",
+                "}",
+                [*body, Line("messages.seeded();")],
+                {"messages"},
+            )
+        ]
 
     def bind_parameters(self, movement, compute):
         """Each parameter after self is a command word: a tensor's reference word, an
@@ -613,11 +847,25 @@ class HandlerCompiler:
         )
 
     def assign(self, node):
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Attribute):
+            return self.set_word(node, node.targets[0], self.integer(node.value))
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             self.refuse(node, "one name a line", "assign one name")
         name = node.targets[0].id
         self.check_name(node, name)
         value = node.value
+        made = self.message_class(node, value)
+        if made is not None:
+            return self.made_message(node, name, made, value)
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == spelling("read")
+            and not value.args
+            and not value.keywords
+            and self.is_range(value.func.value)
+        ):
+            return self.read_word(node, name, self.range_of(value.func.value))
         call = self.construct(value)
         if call == "partition":
             return self.partition(node, name, value)
@@ -655,11 +903,18 @@ class HandlerCompiler:
 
     def augmented(self, node):
         target = node.target
+        if isinstance(target, ast.Attribute):
+            op = OPERATORS.get(type(node.op))
+            if op is None:
+                self.refuse(node, "an operator level 1 has no C++ for", "use + - *")
+            return self.set_word(node, target, self.integer(node.value), op)
         if not isinstance(target, ast.Name) or target.id not in self.scope:
             self.refuse(node, "an unknown name", "assign it first")
         value = self.scope[target.id]
         if value.kind == "tile":
             return self.accumulate(node, value)
+        if value.kind == "word" and value.mover in ("A", "B"):
+            return self.word_sum(node, value)
         if value.kind != "int":
             self.refuse(node, f"{target.id} is a {value.kind}", "add to an int")
         op = OPERATORS.get(type(node.op))
@@ -668,6 +923,14 @@ class HandlerCompiler:
         text = f"{target.id} {op}= {self.integer(node.value)};"
         uses = self.uses(node.value) | {target.id}
         return [Line(text, uses)], [Line(text, uses)]
+
+    def set_word(self, node, target, text, op=""):
+        """`message.word = value` (or `+=` and the others): a word of a message."""
+        word = self.message_word(target)
+        if word is None:
+            self.refuse(node, "an attribute set is a message's word", "set one")
+        uses = self.uses(node.value) | {target.value.id}
+        return [], [Line(f"{word} {op}= {text};", uses)]
 
     def construct(self, node):
         """The construct a call is (a key of the names table), or None."""
@@ -697,7 +960,7 @@ class HandlerCompiler:
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
             if isinstance(node.value, bool) or node.value < 0:
                 self.refuse(node, "a word is a non-negative int", "write one")
-            return str(node.value)
+            return f"{node.value}u" if node.value > 0x7FFFFFFF else str(node.value)
         if isinstance(node, ast.Name):
             if node.id in self.scope:
                 value = self.scope[node.id]
@@ -710,7 +973,7 @@ class HandlerCompiler:
                 return node.id
             return str(self.constant(node, node.id))
         if isinstance(node, ast.Attribute):
-            return self.attribute(node)
+            return self.message_word(node) or self.attribute(node)
         if isinstance(node, ast.BinOp):
             op = OPERATORS.get(type(node.op))
             if op is None:
@@ -1087,6 +1350,8 @@ class HandlerCompiler:
         if node.orelse:
             self.refuse(node, "a loop with an else", "write the else after it")
         iterator = node.iter
+        if self.self_call(iterator, "arrive_messages"):
+            return self.arrive_loop(node)
         if (
             isinstance(iterator, ast.Name)
             and self.scope.get(iterator.id, Value("")).kind == "arrived"
@@ -1280,6 +1545,9 @@ class HandlerCompiler:
             and self.construct(func.value) == "stream"
         ):
             return self.drain(node, call)
+        for kind in ("send", "forward", "consume"):
+            if self.self_call(call, kind):
+                return self.message_call(node, call, kind)
         construct = self.construct(call)
         if construct == "cxx":
             return self.inline(node, call)
@@ -1377,6 +1645,8 @@ class HandlerCompiler:
             self.refuse(node, "write one tile", "write pages.write(total)")
         name = call.args[0].id
         value = self.scope.get(name)
+        if value is not None and value.kind == "word":
+            return self.write_word(node, pages, value)
         if value is None or value.kind not in ("tile", "reduced") or value.popped:
             self.refuse(
                 node,
@@ -1432,6 +1702,96 @@ class HandlerCompiler:
         self.wait(node, "mover B", WAIT_DATA)
         return movement, compute
 
+    def read_word(self, node, name, pages):
+        """`word = pages.read()` of one page: its first word, on mover B, from its own
+        L1 page (read, settled, the L1 cache invalidated)."""
+        if pages.count != "1":
+            self.refuse(node, "a word is one page", "read pages(first, 1)")
+        self.check_name(node, name)
+        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        buffer = self.other_buffer(
+            "kWordB", "word", dtype, page_bytes, 1, f"line {node.lineno}: "
+            f"{self.text(node)} (mover B's word page)",
+        )  # fmt: skip
+        buffer.page_bytes = max(buffer.page_bytes, page_bytes)
+        tensor = f"{camel(pages.tensor)}({pages.tensor})"
+        text = (
+            f"uint32_t {name} = 0;\n"
+            f"if (!km::read_pages(movement, command, {tensor}, {pages.first}, 1,\n"
+            f"                    get_write_ptr({buffer.name}))) {{\n"
+            "    return false;\n"
+            "}\n"
+            "noc_async_read_barrier();\n"
+            "invalidate_l1_cache();\n"
+            f"{name} = km::l1(get_write_ptr({buffer.name}))[0];"
+        )  # fmt: skip
+        self.moved(node, pages.tensor, "word read")
+        self.compiled.includes.add("ask")
+        self.scope[name] = Value("word", name, mover="B")
+        return [Line(text, range_uses(pages, self), mover="B")], []
+
+    def word_sum(self, node, value):
+        """`word += x` (or another operator) on a mover's word: its mover's line; x
+        reads ints and that mover's words."""
+        op = OPERATORS.get(type(node.op))
+        if op is None:
+            self.refuse(node, "an operator level 1 has no C++ for", "use + - * etc.")
+        for item in ast.walk(node.value):
+            other = isinstance(item, ast.Name) and self.scope.get(item.id)
+            if other and other.kind == "word" and other.mover != value.mover:
+                self.refuse(
+                    node,
+                    f"{item.id} is another CPU's word",
+                    "add words of one mover",
+                )
+        self.allow_words = True
+        text = f"{value.cxx} {op}= {self.integer(node.value)};"
+        self.allow_words = False
+        uses = self.uses(node.value) | {value.cxx}
+        return [Line(text, uses, mover=value.mover)], []
+
+    def write_word(self, node, pages, value):
+        """`pages.write(word)`: a mover's word as one page (the word first, zeros
+        after) from its own L1 page, written as a page write is, settled."""
+        if value.mover not in ("A", "B"):
+            self.refuse(
+                node,
+                f"{value.cxx} is compute's word; a page of words is a mover's",
+                'make the word on="mover_a" or on="mover_b"',
+            )
+        if pages.count != "1":
+            self.refuse(node, "a word is one page", "write pages(first, 1)")
+        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        if page_bytes % 4:
+            self.refuse(
+                node, f"a page of {page_bytes} B is not whole words", "use words"
+            )
+        buffer = self.other_buffer(
+            f"kWord{value.mover}", "word", dtype, page_bytes, 1, f"line {node.lineno}: "
+            f"{self.text(node)} (mover {value.mover}'s word page)",
+        )  # fmt: skip
+        buffer.page_bytes = max(buffer.page_bytes, page_bytes)
+        tensor = f"{camel(pages.tensor)}({pages.tensor})"
+        text = (
+            "{\n"
+            "    volatile tt_l1_ptr uint32_t* word_page =\n"
+            f"        km::l1(get_write_ptr({buffer.name}));\n"
+            f"    word_page[0] = {value.cxx};\n"
+            f"    for (uint32_t rest = 1; rest < {page_bytes // 4}; rest++) {{\n"
+            "        word_page[rest] = 0;\n"
+            "    }\n"
+            f"    if (!km::write_pages(movement, command, {tensor}, {pages.first}, 1,\n"
+            f"                         get_write_ptr({buffer.name}))) {{\n"
+            "        return false;\n"
+            "    }\n"
+            "    noc_async_write_barrier();\n"
+            "}"
+        )  # fmt: skip
+        self.moved(node, pages.tensor, "page write")
+        self.compiled.includes.add("ask")
+        uses = range_uses(pages, self) | {value.cxx}
+        return [Line(text, uses, mover=value.mover)], []
+
     def out_buffer(self, dtype, page_bytes, what):
         """The buffer of one page compute packs and mover B writes: the program's
         next one of this handler (handlers share them), two pages."""
@@ -1461,6 +1821,8 @@ class HandlerCompiler:
         return buffer
 
     def branch(self, node):
+        if self.self_call(node.test, "seeding"):
+            return self.seeding_branch(node)
         broadcast = self.broadcast_branch(node)
         if broadcast is not None:
             return broadcast
@@ -1798,6 +2160,9 @@ class HandlerCompiler:
                 "make one broadcast along a row and one along a column",
             )
         self.movers[mover] = name
+        self.compiled.broadcast_lines.setdefault(
+            self.method.name, f"line {node.lineno}, `{self.text(node)}`"
+        )
         self.compiled.rectangle = True
         self.compiled.includes |= {"broadcast"}
         self.compute_waits = True
@@ -2171,6 +2536,7 @@ class HandlerCompiler:
         text = self.integer(node.value)
         self.allow_words = False
         self.method.returns = True
+        self.compiled.results.add(self.method.name)
         return [Line(f"movement.result({text});", self.uses(node.value), mover="B")], []
 
     def drain(self, node, call):

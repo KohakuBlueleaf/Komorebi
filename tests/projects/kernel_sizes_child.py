@@ -45,6 +45,7 @@ class FakeDispatch:
 
 def build_only(self, program, depth=None, trace=0, **_):
     """`Session.load` up to the runtime's kernel layout; prints the sizes and stops."""
+    self._hand_nocs(program)  # a class's rectangle: the session's NoCs, as load does
     placed = None
     if not isinstance(program, Program) or program.form() == "program":
         grid = self.grid

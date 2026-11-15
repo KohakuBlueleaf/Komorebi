@@ -21,12 +21,12 @@ import overlays as hand  # noqa: E402  (the hand program, its loop and its value
 
 
 class Overlays(km.Program):
-    """mix: a core's word mixed `steps` times, the command's result. scale: each core's
-    `tiles` tiles of source times `scalar` (float32 bits) into output, the same
-    pages."""
+    """mix: each core's word mixed `steps` times, written to its page of words. scale:
+    each core's `tiles` tiles of source times `scalar` (float32 bits) into output, the
+    same pages. Both: each mover's load and call cycles to its page of stamps."""
 
-    @km.handler(overlay=True)
-    def mix(self, seed: int, steps: int):
+    @km.handler(overlay=True, stamps="stamps")
+    def mix(self, words: km.Tensor, stamps: km.Tensor, seed: int, steps: int):
         word = km.cxx(
             """
             word = seed ^ movement.me();
@@ -39,11 +39,17 @@ class Overlays(km.Program):
             gives=int,
             on="mover_b",
         )
-        if self.rank == self.leader:
-            return word
+        words.pages(self.rank, 1).write(word)
 
-    @km.handler(overlay=True)
-    def scale(self, source: km.Tensor, output: km.Tensor, tiles: int, scalar: int):
+    @km.handler(overlay=True, stamps="stamps")
+    def scale(
+        self,
+        source: km.Tensor,
+        output: km.Tensor,
+        stamps: km.Tensor,
+        tiles: int,
+        scalar: int,
+    ):
         first = self.rank * tiles
         out = km.Stream(output.pages(first, tiles), write=True)
         for tile in km.Stream(source.pages(first, tiles)):
@@ -62,14 +68,15 @@ class Overlays(km.Program):
 
 
 class Turns:
-    """../overlays.py's turns with the class's commands: mix to each core alone (its
-    word the command's result: a core's own word to DRAM is not a line of a class),
-    scale to every core; each result checked as overlays.py checks it."""
+    """../overlays.py's turns with the class's commands, each one command to every
+    core, each result checked as overlays.py checks it; the stamps read after the
+    turn's time (the hand program's turn reads its lines, stamps in them)."""
 
-    def __init__(self, session, run, cores, args, source, output):
+    def __init__(self, session, run, cores, args, tensors):
         self.session, self.run, self.cores, self.args = session, run, cores, args
-        self.source, self.output = source, output
+        self.source, self.output, self.words, self.stamps = tensors
         self.times = {}  # overlay -> [us a turn, from the host]
+        self.cycles = {}  # (overlay, mover, loading or held) -> [(load, call)]
         self.wrong = 0
         self.commands = 0
 
@@ -77,27 +84,32 @@ class Turns:
         args, run = self.args, self.run
         started = time.perf_counter()
         if name == "mix":
-            handles = [
-                run.submit(Overlays.mix, (core, 1), args=(seed, args.steps))
-                for core in range(self.cores)
-            ]
-            events = run.wait(handles, 30.0)
+            words = (self.words, self.stamps, seed, args.steps)
+            event = run.wait(run.submit(Overlays.mix, (0, self.cores), args=words))
+            (raw,) = self.session.read(self.words)
+            got = raw.reshape(self.cores, -1).view(np.uint32)[:, 0].astype(np.int64)
             want = [hand.mix(seed ^ core, args.steps) for core in range(self.cores)]
-            got = [event.result for event in events]
-            self.wrong += sum(g != w for g, w in zip(got, want, strict=True))
+            self.wrong += int((got != want).sum())
         else:
             scalar = float(2 + seed % 3)
             bits = int(np.float32(scalar).view(np.uint32))
-            words = (self.source, self.output, args.tiles, bits)
-            events = [run.wait(run.submit(Overlays.scale, (0, self.cores), args=words))]
+            words = (self.source, self.output, self.stamps, args.tiles, bits)
+            event = run.wait(run.submit(Overlays.scale, (0, self.cores), args=words))
             (raw,) = self.session.read(self.output)
             got = raw.view(np.uint16).reshape(self.cores * args.tiles, -1)
             self.wrong += int(
                 (got != hand.scaled(self.cores, args.tiles, scalar)).sum()
             )
         self.times.setdefault(name, []).append((time.perf_counter() - started) * 1e6)
-        self.wrong += sum(event.kind != "done" for event in events)
-        self.commands += len(events)
+        self.wrong += int(event.kind != "done")
+        self.commands += 1
+        (raw,) = self.session.read(self.stamps)
+        stamps = raw.reshape(self.cores * 2, -1).view(np.uint32).astype(np.int64)
+        number = self.run.program.overlays[name].number
+        self.wrong += int((stamps[:, 1] != number).sum())
+        for row, (load, call, held) in enumerate(stamps[:, 2:5]):
+            key = (name, "AB"[row % 2], "held" if held else "loading")
+            self.cycles.setdefault(key, []).append((int(load), int(call)))
 
 
 def run_class(session, args, cores):
@@ -107,9 +119,13 @@ def run_class(session, args, cores):
     output = session.empty((pages * 32, 32), "bfloat16", "tile")
     small = hand.scaled(cores, args.tiles, 1.0)  # value (c + t + j) % 7 + 1, raw
     session.write(source, small.view(np.uint8).reshape(pages, -1))
-    program = Overlays(source=source, output=output, log=hand.log)
+    words = session.empty((cores, 16), "uint32")
+    stamps = session.empty((cores * 2, 16), "uint32")
+    program = Overlays(
+        source=source, output=output, words=words, stamps=stamps, log=hand.log
+    )
     run = session.load(program)
-    turns = Turns(session, run, cores, args, source, output)
+    turns = Turns(session, run, cores, args, (source, output, words, stamps))
     try:
         for seed in range(args.rounds):  # in turn: each load replaces the other
             turns.once("mix", seed)
@@ -132,6 +148,10 @@ def run_class(session, args, cores):
         "slots_bytes": {part: list(value) for part, value in built.slots.items()},
         "median_turn_us": {
             name: round(float(np.median(us)), 2) for name, us in turns.times.items()
+        },
+        "median_cycles": {
+            " ".join(key): np.median(np.asarray(pairs), axis=0).tolist()
+            for key, pairs in sorted(turns.cycles.items())
         },
     }
 
