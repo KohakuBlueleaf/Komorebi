@@ -1,8 +1,5 @@
-// The attention project's compute (projects/attention/kernels/compute.cpp, the body of
-// Kohaku-TT's ktt_flash compute) for the class's bodies: the same steps, the buffers
-// the template's arguments (the bodies' names of the class's buffers, constants) but
-// Q's and the output's, the sizes the class's defines, no profile words. finalize packs
-// a row into the write stream's block the line reserved.
+// The attention project's compute (kernels/compute.cpp, from Kohaku-TT's ktt_flash) for
+// the class's bodies: its steps, a template on the class's buffers, no profile words.
 #pragma once
 
 #include <cstdint>
@@ -436,9 +433,8 @@ namespace flash_class {
             }
         }
 
-        // One K / V block of a job (key tiles [block_start, ...) of its `key_tiles`):
-        // its steps in (chunk, row) order, pairs of two different rows; `chunk_base`
-        // the job's chunks before it.
+        // One K / V block of a job, from key tile `block_start`: its steps in (chunk,
+        // row) order, pairs of two rows; `chunk_base` the job's chunks before it.
         static void block(
             uint32_t rows,
             uint32_t first_row,

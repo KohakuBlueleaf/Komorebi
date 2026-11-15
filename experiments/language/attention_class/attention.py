@@ -1,7 +1,6 @@
 """The attention project's ATTEND as a class, beside the hand program on the same
-tensors: the job table's entries, Q's rows, the K / V broadcast in bands and the
-output rows as lines, every compute step the hand's (flash.hpp). README.md says what
-each line lowers to.
+tensors; every compute step the hand's (flash.hpp). README.md says what each line
+lowers to.
 Example: python attention.py --shape t1; python attention.py --shape causal64"""
 
 import argparse
