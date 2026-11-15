@@ -1478,7 +1478,8 @@ def parts(compiled):
         made = f"// {compiled.name}.{name}, made by komorebi.dsl from " + (
             f"{Path(compiled.source).name}: overlay kOverlay{camel(name)},"
         )
-        files[f"{name}/movement.cpp"] = (
+        files[f"{name}/movement.cpp"] = chain_part(
+            compiled,
             "\n".join(
                 [
                     made,
@@ -1495,7 +1496,7 @@ def parts(compiled):
                     "}",
                 ]
             )
-            + "\n"
+            + "\n",
         )
         if has_part(compiled.compute[name]):
             files[f"{name}/compute.cpp"] = (
@@ -1516,6 +1517,18 @@ def parts(compiled):
                 + "\n"
             )
     return files
+
+
+def chain_part(compiled, text):
+    """A movement part of a chain build: a tree's emit after its credit, as in the
+    walk's cases (km::chain_credit reads only the chain's words, so the part may
+    hold it); a part of a build without the walk as it is."""
+    if not compiled.chain:
+        return text
+    head = f'#include "../{header_name(compiled)}"'
+    text = text.replace(head, '#include "komorebi/device/km_chain.hpp"\n' + head, 1)
+    emit = "!km::reduce_emit(movement,"
+    return text.replace(emit, "!km::chain_credit(movement) || " + emit)
 
 
 def part_includes(lines):
@@ -1837,12 +1850,12 @@ def chain_made(program, cls, compiled, chain):
 
 def chain_prepared(cls, compiled):
     """A build with the chain's walk: its handler number after the class's, and the
-    chain's buffer (km_chain.h's kChainBuffer); overlays and a dynamic class refused."""
+    chain's buffer (km_chain.h's kChainBuffer); a dynamic class refused."""
     words = abi.constants(abi.headers().chain)
-    if compiled.overlays or compiled.dynamic:
+    if compiled.dynamic:
         raise ProgramError(
-            f"{cls.__name__}: a chain's walk in a class with overlays or a dynamic "
-            "handler is not built; make it without them"
+            f"{cls.__name__}: a chain's walk in a class with a dynamic handler is not "
+            "built; make it without one"
         )
     number = max(compiled.handlers.values(), default=0) + 1
     if number > abi.headers()["KM_HANDLER_USER_MAX"]:
@@ -2062,6 +2075,9 @@ def chain_cases(compiled):
         line = compiled.lines[name]
         lines.append(f"{pad}{INDENT}case kHandler{camel(name)}: {{  // line {line}")
         lines.append(f"{pad}{INDENT * 2}km_chain_waited = false;")
+        if name in compiled.overlays:
+            lines += chain_overlay_case(compiled, name, reads.get(name, {}))
+            continue
         body = render(prune(compiled.movement[name]), 4)
         lines += chain_waits(compiled, name, body, reads.get(name, {}))
         lines += [
@@ -2073,6 +2089,54 @@ def chain_cases(compiled):
     emit = "!km::reduce_emit(movement,"
     text = text.replace(emit, "!km::chain_credit(movement) || " + emit)
     return text.split("\n")
+
+
+def chain_overlay_case(compiled, name, reads):
+    """An overlay handler's case in a chain build: its overlay loaded (the reader's
+    load, the followers' meet, as in a plain build), then the record's input waited
+    for whole when the handler reads a tensor a chain call writes (its part cannot
+    reach the walk's state), then the part called, then the record's marks."""
+    pad = INDENT * 4
+    overlay = f"kOverlay{camel(name)}"
+    bits = 0
+    whole = chain_mask_word(compiled, name) is None
+    for line_bits, stated in reads.values():
+        bits |= line_bits
+        whole = whole or stated is False
+    mask = "~0u" if whole else f"command.a{chain_mask_word(compiled, name)}"
+    wait = (
+        [
+            f"if (!km_chain_read(movement, {mask}, {bits}u)) {{",
+            f"{INDENT}return false;",
+            "}",
+        ]
+        if reads
+        else []
+    )
+    end = "return km_chain_end(movement, command);"
+    if name in compiled.stamps:
+        body = [line[len(pad) :] for line in stamped(compiled, name, pad)]
+        at = body.index("const uint64_t km_loaded = km::wall64();")
+        body[at + 1 : at + 1] = [*wait, "const uint64_t km_waited = km::wall64();"]
+        body = [  # the call's cycles from the input's arrival
+            line.replace("km_called - km_loaded", "km_called - km_waited")
+            for line in body
+        ]
+        body[-1:] = ["if (!km_called_ok) {", f"{INDENT}return false;", "}", end]
+    else:
+        body = [
+            f"km::Overlay km_part(movement, {overlay});",
+            "if (!km_part.load()) {",
+            f"{INDENT}return false;",
+            "}",
+            *wait,
+            "if (km_part.call(command) == 0) {",
+            f"{INDENT}return false;",
+            "}",
+            end,
+        ]
+    body = [line if line.startswith("#") else pad + line for line in body]
+    return [*body, f"{INDENT * 3}}}"]
 
 
 def chain_movement_source(compiled):

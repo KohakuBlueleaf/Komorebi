@@ -238,6 +238,24 @@ between two records does not happen. Programs merged into one
 ([host](host.md#programs-merged-into-one)) are one program: a record names a handler of
 any of its sources ([below](#a-record-of-another-programs-handler)).
 
+A class's overlay handler in a chain ([classes](classes.md#chains)) loads its overlay
+at the start of its record, in line: the reader loads, the core's other CPUs meet it
+when a part is not held, then the record's input is waited for and the part called.
+Loading the next record's parts while a core waits for its input is not built. A
+model of every order of the reader and a follower found two faults in it. (A) A
+follower that lags a record behind can have checked a slot and not yet counted its
+call when the read ahead picks that slot as the least recently used one, and then
+calls bytes being replaced. (B) A follower takes the next record once it is in the
+ring, before the read ahead lands, so it can decide to wait for the reader and say so
+only after the reader's load has found the parts held and gone on: nothing then
+answers it. Closing (A) means leaving out the slots of every record still in flight
+(two before the current one, for the compute cores), which leaves none to read into;
+closing (B) means a follower taking back its wait, which the load's meet counts do not
+allow. It matters little at the default slots (a slot a handler, up to four): every
+part is held after a chain's first command and a record loads nothing (72 cycles, the
+check). With fewer slots than handlers, each record loads in line, after the core's
+other CPUs have ended the record before.
+
 ## In the runtime's form
 
 A program in the runtime's form ([a program as an overlay](overlays.md#a-program-as-an-overlay))
