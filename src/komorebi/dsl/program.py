@@ -189,7 +189,7 @@ def make(
     for line in report:
         log(line)
     self.placements = placements_of(compiled, tensors)
-    cls.placed_parameters = placed_parameters(compiled)
+    place_handlers(compiled, {m.name: [m] for m in compiler.handler_methods(cls)})
     for line in self.placements:
         log(line)
     buffers = []
@@ -666,6 +666,16 @@ def placed_parameters(compiled):
         for pair in weight_tensors(compiled, handler, weight):
             placed[pair] = (placement == "turned", where)
     return placed
+
+
+def place_handlers(compiled, methods):
+    """Sets each handler method's `placed` (HandlerMethod.placed_check): `methods`
+    {the handler's name in `compiled`: the method objects a command reaches it by}."""
+    placed = placed_parameters(compiled)
+    for name, objects in methods.items():
+        mine = {p: value for (h, p), value in placed.items() if h == name}
+        for method in objects:
+            method.placed = mine
 
 
 def rectangle_of(program, compiled):

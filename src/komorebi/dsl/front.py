@@ -395,6 +395,9 @@ class HandlerMethod:
         self.number = None
         self.words = None  # [(parameter, kind)] in word order, set by the compiler
         self.widths = {}  # tensor parameter -> the tile width of its rectangles
+        # tensor parameter -> (turned, the product's place) of each product reading it
+        # as W: set when a program of the handler is made (dsl.program.place_handlers)
+        self.placed = {}
         self.owner = None  # the class it is a handler of
         self.returns = False  # it returns a word: its commands ask for the result
         # its constant parameters' values this handler is built for (km.constant[int])
@@ -453,9 +456,7 @@ class HandlerMethod:
     def placed_check(self, parameter, value):
         """Refuses a command's tensor that a product reads as its W stored otherwise
         than the product's placement takes it (transposed tiles: turned)."""
-        placed = getattr(self.owner, "placed_parameters", {}).get(
-            (self.name, parameter)
-        )
+        placed = self.placed.get(parameter)
         if placed is None or not isinstance(value, Tensor):
             return
         turned, where = placed

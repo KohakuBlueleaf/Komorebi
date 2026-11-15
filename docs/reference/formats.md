@@ -157,7 +157,9 @@ tile function `return a @ km.srcb(w)` of its own.
 
 The command is checked too: a command's tensor that a product reads as W (by the
 handler's parameter) is refused at submit when its `transposed_tiles` differs from the
-product's placement, naming the tensor and the product's line:
+product's placement, naming the tensor and the product's line; through a merged
+program too (`km.merge` of made programs, a class deriving two classes), by its handler
+or its class's:
 
 ```text
 apply: tensor w is not stored with its tiles transposed, and Sums.apply, line 153: self.sums += self.turned(xb, wb) reads it as W of a turned product; write it with session.tensor(..., transposed_tiles=True)
