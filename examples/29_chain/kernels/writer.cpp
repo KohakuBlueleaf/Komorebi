@@ -33,7 +33,15 @@ namespace {
         if (!step_handler(km::handler(command))) {
             return true;
         }
-        const km::Group group = km::group_of(command, writer.me());
+        const km::Group group = step_group(command, writer.me());
+        if (km::handler(command) == kHandlerTotal) {  // the sum is in once its token is
+            if (!writer.wait_front(kCbOut, 1)) {
+                return false;
+            }
+            cb_pop_front(kCbOut, 1);
+            return group.rank != 0 ||
+                km::chain_mark(km::ChainShape{}, writer, command, none, false);
+        }
         const bool sum = km::handler(command) == kHandlerSum;
         if (sum && group.rank != 0) {
             const km::Arrival arrival = {kCbArrive, kArrivePages, 1};

@@ -65,11 +65,14 @@ run.submit(
 | Made with | What it is |
 |---|---|
 | a tensor by each tensor parameter's name | an example of the tensor: its format and page size (the buffers', the movers' compile arguments); a tensor of an island session too |
-| `plan` | the sizes by name: a module constant the handlers use (`BLOCK`), a field's symbol |
+| a constant of the class by its name (`K_TILES=256`) | its value for this program ([Constants](#constants)) |
+| `plan` | the sizes by name: a constant of the class, a module constant the handlers use (`BLOCK`), a field's symbol |
+| `handlers` | by handler, the sets of its constant parameters to build, each a handler of its own (`handlers={"gate": [{"block": 4}, {"block": 8}]}`) |
 | `session`, `trace` | the session it is loaded on and the trace pages its load is given: the build checks the load's L1 table of a core (`Session.l1_rows`: the buffers with the token and trace pages, the control block and overlay area, the host transfer buffer, what the session keeps) with the service overlay's slot at its most (`overlay.SERVICE_SLOT_MOST`), so a class that builds loads; a class's own overlays' slots are the load's; a field's last symbol takes what is left |
 | `l1` | without a session, the bytes left for buffers (`Session.l1()[1]`): the buffers alone must fit, a field's last symbol takes what they leave |
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
+| `broadcast_wait` | as a `Program`'s ([host](host.md#program)), `False` by default: `True` builds the kernels with a word broadcast's wait at `finish` (the guard), in a build folder of its own |
 
 The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
 service's reader part built for every example and project that builds without a card
@@ -90,8 +93,10 @@ transfer buffer 82,000 B in both (the build counted 32,848 B before).
 
 The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` eight hex
 digits of what changes the generated sources (the plan, each tensor's format, page
-bytes, shape and layout, the L1 and the trace depth, the rectangle and the NoCs): two
-instances of one class built differently have a folder each. In it: `<name>.h` (the
+bytes, shape and layout, the L1 and the trace depth, the rectangle and the NoCs, the
+class's constants by name and value, the listed sets of the constant parameters): two
+instances of one class built differently have a folder each, and two built alike share
+one. In it: `<name>.h` (the
 handler numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
 handler's parts in `<handler>/`, and `program.txt`, the report it also prints: each
 buffer with its indices, format, pages, bytes and the Python line that made it, and the
@@ -100,7 +105,8 @@ body's lines name the Python file's.
 
 `Run.submit(Class.handler, group, args=(...))` makes the command words from the
 arguments: a tensor's reference word (`tensor.address`), an int (32 bits), a pattern's
-word, in the order of the parameters; a tensor whose `pages` a line uses whole adds a
+word, in the order of the parameters (a constant parameter's value, at its place, is
+no word: it picks the handler built for it); a tensor whose `pages` a line uses whole adds a
 word, its page count. A handler that returns a word asks for the result. For arrays of
 words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, and
 `submit_many(Class.handler, firsts, counts, words)` takes them. A tensor whose
@@ -114,6 +120,127 @@ Python and a truth in C++, are refused (write `max(a, 1)`, or an `if`). A parame
 not assigned again, and a name first assigned inside an `if` or a loop ends with it, as
 in C++ (assign it before the `if`). The generated code's own names start with `km_`,
 and a name of the handler's with that prefix is refused.
+
+## Constants
+
+A constant is a number fixed when the program is built: a stream's block, a field's
+size, a loop's count, a rectangle's most. It is declared in one of two places: on the
+class, or as a handler's parameter.
+
+### A constant of the class
+
+```python
+class Linear(km.Program):
+    K_TILES = km.constant(128)  # K = 4096
+    WIDTH = km.constant(16)
+    CHUNK = km.constant(2)
+    W_BLOCK = CHUNK * WIDTH  # derived: follows an override
+
+    sums: km.L1[km.fp32, 1, WIDTH, 32, 32]
+
+    @km.handler
+    def split(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        first = self.rank // self.SPLIT * self.WIDTH
+        ...
+
+
+wide = Linear(x=x, w=w, y=y, K_TILES=256, session=session)
+```
+
+`km.constant(default)` in the class's body is a declaration: its name, its default and
+its type (an int, a float or a bool). Arithmetic on declarations in the body (`+`,
+`-`, `*`, `//`, `%`, `/`, a negation, with numbers or other declarations) is a derived
+declaration. The class holds the declarations only, and making a program never changes
+one: `Linear.WIDTH` is the declaration on the class, and `wide.WIDTH` (and `self.WIDTH`
+in Python) that program's number.
+
+The make collects the declarations of the class and of its parents, takes an override
+by a keyword of the declared name (`K_TILES=256`) or by name in `plan` (one of the two
+for one name), evaluates each derived constant from this program's own values, and
+keeps the values on the program, frozen: assigning one on a program is refused, and two
+programs of one class with different values do not touch each other or the class. A
+derived constant's names are resolved through the program, so a subclass that declares
+`WIDTH = km.constant(32)` changes the `W_BLOCK` its parent derived; the subclass has
+its parent's handlers, fields and options. A name a parent declares, rebound to a plain
+value in a subclass, is refused when the subclass is made.
+
+In a handler, `self.K_TILES` is the constant: the compiler writes its value where it
+writes a module constant's, so a block, a count or a most may be one. A field's shape
+may hold declarations (`km.L1[km.fp32, 1, WIDTH, 32, 32]`); the shape keeps them on
+the class and each program's build takes its values. `km.constant()` without a
+default is a symbol, as `km.symbol()` is: the plan (or the make's keyword) gives it, or
+the build solves it as the largest that fits, and `self.TILES` of one the build solves
+is refused in a handler's lines. Module constants and the plan's names stay as they
+were: a module constant a handler names is the plan's when the plan gives it.
+
+The build key holds the class's constants by name and value: two programs with
+different values are two builds, side by side under `build/`; equal values share the
+folder.
+
+A line that needs a constant and is given a word of the command (a stream's block, a
+field's size, a rectangle's stated most `r:r + n` or `r:min(r + n, e)`) is refused at
+its line, naming the word and the tier it needs:
+
+```text
+Worded.walk, line 197, `km.Stream(x.pages(0, tiles), block=tiles).drain()`: tiles is a word of the command, known only when the command runs, and a size the build needs is fixed when the program is built: it needs a constant of the class; declare TILES = km.constant(n) in the class and write self.TILES
+```
+
+With two programs of one class in one run, the class's handler (`Linear.split`) does
+not say which program a command is for: it is refused, naming both, and the handler is
+named through the program (`wide.split`). With one program of the class in the run the
+class's handler names it, as before.
+
+```text
+Linear.split: the run holds 2 programs of the class (Linear(K_TILES=4, WIDTH=2, CHUNK=1, W_BLOCK=2) at field 0; Linear(K_TILES=8, WIDTH=2, CHUNK=1, W_BLOCK=2) at field 1), and the class's handler does not say which; name it through the program (program.split)
+```
+
+Refused at the make, besides: a keyword that is a number and no constant of the class
+(`K_TILE=8 is not a constant of the class (its constants: ...)`), a value of another
+type (`K_TILES=2.5: the constant is declared int`; an int is a float's value, a bool
+only a bool's), one name given by keyword and by the plan, and an override of a
+derived constant (`W_BLOCK is derived from the class's constants; give the constants
+it is made of`). A tuple is not a constant (`km.constant((1, 2))`): the compiler emits
+no table of constants.
+
+### A constant parameter of a handler
+
+```python
+class GateBlocks(km.Program):
+    @km.handler
+    def gate(
+        self,
+        a: km.Tensor,
+        b: km.Tensor,
+        out: km.Tensor,
+        tiles: int,
+        pattern: km.Pattern,
+        block: km.constant[int] = 8,
+    ): ...  # block=block in its streams
+
+
+program = GateBlocks(a=a, b=b, out=out, handlers={"gate": [{"block": 8}, {"block": 4}]})
+run.submit(program.gate, (0, cores), args=(a, b, out, tiles, pattern, 4))
+```
+
+A parameter annotated `km.constant[int]` (`float`, `bool`) with a default is not a
+word of the command: the handler's lines read it as a module constant. With no set
+listed the handler is built for its defaults. The make's `handlers=` lists, by
+handler, the sets of its constant parameters (a parameter a set leaves out takes its
+default); each set is a handler of its own in the kernels, named by its values
+(`gate_block8`, `gate_block4`), the first at the handler's number and the others after
+the class's handlers. A submit gives the constant's value in `args` at its place, as
+the other parameters are, or leaves it out for its default; the host runs the handler
+built for those values. A set that was not built is refused, naming the sets that
+were:
+
+```text
+Gate.gate with size=2: no handler was built for it (built: size=4; size=8); list it at the make, handlers={'gate': [{...}]} (a set is not compiled on first use)
+```
+
+Refused besides: a constant parameter without a default (at its line), `handlers=`
+naming no handler of the class or one without constant parameters, a parameter a set
+names that is not one, a value of another type, and a set listed twice. A set compiled
+when a submit first names it is not built.
 
 ## The lines of a handler
 
@@ -414,13 +541,116 @@ Refused at the line:
 - a take on one compute CPU or on a mover;
 - a take outside the block of lines where the stream was made.
 
+### Items with a step
+
+`t.items(first=f, count=n, size=B, step=s)` is items f, f + s, ..., n of them, of B
+bytes in t's pages (the keywords of `.entries`; `step=` left out is 1, the run of
+`t.items(first, n, size=B)`). A stream of them is a `km::Walk` of one item a row and
+a row pitch of s items over `km::items`: one item of each of several pages, as a slice
+of every core's counters page. From the rasterizer's SUM
+([region_class](../../experiments/language/raster_class/region_class.py)), slice
+`part` of each counting core's page of 128 items:
+
+```python
+entries = km.Stream(counters.items(first=part, count=counting, size=64, step=128))
+```
+
+`count=` and `step=` are each an int or a word of the handler (a parameter, an entry's
+word); their most is n where n is an int, and none otherwise (refused where a most is
+needed, as a rectangle's rows are). Refused at the line: a missing `first=`, `count=`
+or `size=`, another keyword, an item size that does not divide the page, a count or
+step that is an expression (`n * 2`: the build bounds an int or a word, not this), and
+a count or step under 1.
+
+### An item put, a word bumped
+
+`t.items(size=B).put(self.f, at=i)` writes B bytes of own field f (from its start, or
+item k of it: `self.f[k]`, at k x B) to item i of t, i / P of t's pages at byte (i % P)
+x B, P = page bytes / B: one `km::put_bytes` by a mover (`on="mover_a"`, mover B when
+not given). The put is not waited for at its line: each mover that put waits for its
+puts once, at the handler's end (`km::put_wait`). A body that rewrites a source it put
+waits for the write first (`noc_async_writes_flushed()`). `slot = self.f.bump(i)` is
+word i of field f, then one more: on the mover an own field's `push=` names (its words
+in L1), or on the unpack CPU for a field of `km.u32` words; `slot` is a word of that
+CPU. The two lines stand alone or together (SETUP's record to its list's next slot):
+
+```python
+slot = self.next_slots.bump(page[1])
+lists.items(size=128).put(page, at=slot)
+```
+
+Refused: a put on a compute CPU; a source that is not an own field (or a drained
+stream's page, below); a size that is not whole words or does not divide the page;
+`at=` a word of another CPU; a bump of a field whose words are no one CPU's (an own
+field of `push=None` or found, a filled field).
+
+### A word handed between the movers
+
+A word a body gives on one mover, taken by a body on the other, is handed over by the
+line: both CPUs are written (`on=` of each), never inferred.
+
+```python
+pages = km.cxx("...pages = ...;", gives=int, on="mover_a")
+km.cxx("...use(pages);", takes=[pages], on="mover_b")
+```
+
+The giver writes the taking body's words into one 64 B page of a buffer of its own
+(`kHandover`) and pushes it before the taker's place; the taker waits for the page,
+gets the words by name and frees the page after its body. The build's report names
+each: `hand-over: count, line 16: pages from mover A to mover B by the hand-over
+buffer`. Refused: more than 16 words of the other mover in one body (the most a page
+holds), words of both movers handed into one body, and a taker with no `on=` (a word
+of a mover taken on compute).
+
+### A stream compute fills and a mover drains
+
+`out = km.Stream(self.f, mover="B")`, f an own field, is pages compute's bodies fill
+and the mover named drains, a page a turn. A body on compute (on pack, or compute's
+three) that takes `out` gets `out`, the L1 address of a page reserved before it (0
+when compute gave up), and `out_buffer`; the line pushes the page after the body and
+counts it. `out.end()` is compute's line saying no page follows: pack hands the count
+of pages pushed to the mover in one page of the stream's end buffer (`kEndOut`).
+Leaving a `with` block is exactly an `.end()` at that place:
+
+```python
+with km.Stream(self.out, mover="B") as out:
+    for tri in range(count):
+        km.cxx("bin(tri, out);", takes=[out, tri], on="pack")
+for page in out:  # mover B: until the end's count
+    slot = self.next_slots.bump(page[1])
+    lists.items(size=128).put(page, at=slot)
+```
+
+`for page in out:` is the mover's loop: it waits for a page or the end's count (a
+timed poll), stops when it has taken as many pages as the count says, and frees each
+page once the writes that read it have read it. `page` is the page's L1 address (a
+put's source, a body's on that mover) and `page[i]` its word i, an int of that mover.
+The loop holds what a mover's lines may be: puts, bumps, writes, bodies on that mover.
+The end costs 0.1 us a command: a command that fills no page, ends and drains takes
+2.20 us beside 2.10 us of one with a pack body alone, and 64 pages a core filled,
+drained and put take 14.24 us, on 120 cores
+([drain_cost](../../experiments/language/raster_class/drain_cost.py)).
+
+Refused, each at its line: a drain of a stream no line ends above (neither `.end()`
+nor a `with`); `.end()` twice, or inside its own `with`; a body that takes the stream
+after its end, or on a mover; no `mover=`; a field a mover pushes, or not an own field;
+a drain of a stream no compute body fills; lines of another CPU in the drain loop.
+
 ## Tables of entries
 
 A page of words can be a table: `t.pages(i, 1).entries(Job, first=F, size=S,
-count=C)` is page i of t read on every CPU of the handler, its entries S words each
+count=C)` is page i of t read on the CPUs of the handler that use it, its entries S words each
 from word F, as many as word C says; `fixed=N` in place of `count=` says N entries,
 known at build. `Job` is a class of int annotations, `class Job(km.Entry)`, its words
 0, 1, ... of an entry in order (an entry may have more words than it names).
+
+Where the page is read follows from the lines inside the loop: when only one mover's
+lines use the entries (a body on that mover, a put, a bump), that mover reads the page
+alone and compute and the other mover skip the loop; when compute's lines use them,
+mover A reads it for compute and mover B its own copy, as below. The rasterizer's HIST,
+whose tile list only mover B's body reads, went from 33.06 us (the page read on all
+CPUs) to 24.80 us, beside the hand's 23.96 us
+([raster_class](../../experiments/language/raster_class/README.md)).
 
 ```python
 class Job(km.Entry):
@@ -519,6 +749,8 @@ class Gate(km.Program):
     """gate: each core's `tiles` pages of a and b from rank x tiles, silu(a) * b into
     the same pages of out, block by block in the command's pattern."""
 
+    BLOCK = km.constant(8)  # tiles a block, as the hand program's kBlock
+
     @km.handler
     def gate(
         self,
@@ -530,11 +762,11 @@ class Gate(km.Program):
     ):
         first = self.rank * tiles
         results = km.Stream(
-            out.pages(first, tiles), write=True, block=BLOCK, pattern=pattern
+            out.pages(first, tiles), write=True, block=self.BLOCK, pattern=pattern
         )
         for x, g in zip(
-            km.Stream(a.pages(first, tiles), block=BLOCK, pattern=pattern),
-            km.Stream(b.pages(first, tiles), block=BLOCK, pattern=pattern),
+            km.Stream(a.pages(first, tiles), block=self.BLOCK, pattern=pattern),
+            km.Stream(b.pages(first, tiles), block=self.BLOCK, pattern=pattern),
         ):
             results.push(silu_gate(x, g))
 ```
@@ -558,6 +790,7 @@ class RowNorm(km.Program):
     """norm: each core's `rows` rows of WIDTH tiles of x from rank x rows, y = x
     rsqrt(mean(x^2) + eps) g into the same pages of out; g's tile filled from w."""
 
+    BLOCK = km.constant(2 * WIDTH)  # tiles a block: two rows
     weight: km.L1[km.fp32, 1, 32, 32]
 
     @km.tile_function(tolerance=TOLERANCE)
@@ -572,8 +805,10 @@ class RowNorm(km.Program):
     ):
         first = self.rank * rows * WIDTH
         self.weight.fill(km.Stream(w.pages(0, 1)))
-        results = km.Stream(out.pages(first, rows * WIDTH), write=True, block=BLOCK)
-        for row in km.Stream(x.pages(first, rows * WIDTH), block=BLOCK, row=WIDTH):
+        results = km.Stream(
+            out.pages(first, rows * WIDTH), write=True, block=self.BLOCK
+        )
+        for row in km.Stream(x.pages(first, rows * WIDTH), block=self.BLOCK, row=WIDTH):
             results.push(self.norm(row, self.weight))
 ```
 
@@ -747,6 +982,16 @@ the grid form for more):
 
 ```python
 class Linear(km.Program):
+    K_TILES = km.constant(128)  # K = 4096
+    N_TILES = km.constant(128)  # N = 4096
+    SPLIT = km.constant(14)
+    WIDTH = km.constant(16)
+    SPLIT_CORES = N_TILES // WIDTH * SPLIT  # 112
+    CHUNK = km.constant(2)
+    W_BLOCK = CHUNK * WIDTH  # W's tiles a block: CHUNK rows of the group's columns
+    COLUMNS = km.constant(12)
+    KC = km.constant(2)
+    OW = -(-N_TILES // COLUMNS)  # 11
     OH = km.symbol()  # the plan's
     sums: km.L1[km.fp32, 1, WIDTH, 32, 32]
     part: km.L1[km.fp32, OH, OW, 32, 32]
@@ -757,39 +1002,43 @@ class Linear(km.Program):
 
     @km.handler
     def split(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
-        share = self.rank % SPLIT  # this core's part of K
-        first = self.rank // SPLIT * WIDTH  # the group's columns of Y
-        k0 = share * K_TILES // SPLIT
-        k1 = (share + 1) * K_TILES // SPLIT
+        share = self.rank % self.SPLIT  # this core's part of K
+        first = self.rank // self.SPLIT * self.WIDTH  # the group's columns of Y
+        k0 = share * self.K_TILES // self.SPLIT
+        k1 = (share + 1) * self.K_TILES // self.SPLIT
         for xb, wb in zip(
-            km.Stream(x.tiles[0:1, k0:k1], block=CHUNK),
-            km.Stream(w.tiles[k0:k1, first : first + WIDTH], block=W_BLOCK),
+            km.Stream(x.tiles[0:1, k0:k1], block=self.CHUNK),
+            km.Stream(w.tiles[k0:k1, first : first + self.WIDTH], block=self.W_BLOCK),
         ):
             self.sums += self.project(xb, wb)
-        whole = km.reduce(self.sums, form="tree", group=SPLIT)
+        whole = km.reduce(self.sums, form="tree", group=self.SPLIT)
         if self.rank == self.leader:
-            y.tiles[0:1, first : first + WIDTH].write(whole)
+            y.tiles[0:1, first : first + self.WIDTH].write(whole)
 
     @km.handler
     def grid(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
         along = km.Broadcast(self, along="row", window=2)
         down = km.Broadcast(self, along="column", window=2)
-        top = self.y * OH
-        left = self.x * OW
-        for chunk in range(K_TILES // KC):
-            k0 = chunk * KC
+        top = self.y * self.OH
+        left = self.x * self.OW
+        for chunk in range(self.K_TILES // self.KC):
+            k0 = chunk * self.KC
             if along.sender():
-                xs = along.cast(x.tiles[top : top + OH, k0 : k0 + KC].read())
+                xs = along.cast(x.tiles[top : top + self.OH, k0 : k0 + self.KC].read())
             else:
                 xs = along.arrive()
             if down.sender():
                 ws = down.cast(
-                    w.tiles[k0 : k0 + KC, left : min(left + OW, N_TILES)].read()
+                    w.tiles[
+                        k0 : k0 + self.KC, left : min(left + self.OW, self.N_TILES)
+                    ].read()
                 )
             else:
                 ws = down.arrive()
             self.part += self.project(xs, ws)
-        y.tiles[top : top + OH, left : min(left + OW, N_TILES)].write(self.part)
+        y.tiles[top : top + self.OH, left : min(left + self.OW, self.N_TILES)].write(
+            self.part
+        )
 ```
 
 `split` is the dense project's K split for one row tile (its plan 14,1,16): 112 cores
@@ -860,8 +1109,9 @@ The gate after the products, as the Tile functions section's: 7.3 us and 92.7 us
 ## Fields
 
 A field is declared on the class with its format and shape; a symbol of the shape is
-declared in the class's body, `TILES = km.symbol()`, and used as
-`count: km.L1[km.fp32, TILES, 32, 32]`. Each field is a buffer of whole tiles, index 8
+declared in the class's body, `TILES = km.symbol()` (or `km.constant()`), and used as
+`count: km.L1[km.fp32, TILES, 32, 32]`; a size may be a constant of the class too,
+each program's value ([Constants](#constants)). Each field is a buffer of whole tiles, index 8
 up. A symbol is the plan's; one symbol left unknown is solved as the largest for which
 the fields and the buffers fit `l1`, and the report prints it.
 
@@ -1040,6 +1290,25 @@ with `kmx_submit` and waits with `kmx_wait`. From
 #define WORKCLUSTER_SUM_RESULT 1u /* KM_FLAG_RESULT */
 ```
 
+### A thread's region as a parameter
+
+A handler's parameter `counts: km.Region` is an X280 thread's region: two command
+words, its bank address and its bank (the bank's word after the others). In the
+handler it is a tensor of the region's pages of 4,096 B in that one bank
+(`km::RegionPages`, km_region.hpp): `.pages(...)`, `.items(...)`, streams, fills,
+puts and bodies on a mover take it as they take a tensor parameter. `Run.submit`
+takes it by the region's name, the region of the run's thread that has it (refused
+when none or more than one has), or as (bank, bank address), what
+`run.threads[c].regions.address(name)` gives:
+
+```python
+run.submit(RegionPasses.sum_tiles, (0, cores), args=(counters, prefixes, "sums", cores))
+```
+
+A region is in its island's DRAM: a program made with island tensors, whose other
+islands' cores would read it, is refused at the parameter, naming the region's island
+(`km.Region(bank, address, island=1)` as its example).
+
 ## Islands
 
 The same class runs on `km.Session(cards=[0, 1])`, made with the island session's
@@ -1153,10 +1422,9 @@ from words of three CPUs (the ray tracer's profile page: the walk's counters fro
 the reader's from mover A, the writer's from mover B, written by mover B): it would
 need a mover-to-mover hand-over and a body on mover B over a write stream's page before
 the movers write it, more than 40 lines of the compiler; the class's profile page holds
-the pack CPU's words. Items with a step (one item of each of several pages, as a slice
-of every core's counters), items written one at a time to scattered places (a record
-to its list's next slot), and items of a tensor on two islands (refused when the
-kernel is built: no call moves part of another island's page).
+the pack CPU's words. Items of a tensor on two islands (refused when the kernel is
+built: no call moves part of another island's page). A range loop whose count is one
+mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
 A group switched to a class's program (`kmx_load`): a load switches between programs
 in the runtime's form, parts on the runtime's reader, writer and compute, and a class

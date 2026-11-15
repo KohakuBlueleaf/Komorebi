@@ -6,8 +6,6 @@ included as they are. README.md says what each line lowers to."""
 import komorebi as km
 
 TREE = 16  # the tree's pages: the plan's (`made` gives the scene's)
-PACKET = 1408  # a packet (kPacketBytes), 64 to a page of the packets tensor
-HIT = 2432  # a nearest-hit page (kHitBytes), 64 to a page of the hits tensor
 # The walk's compute options: the pack CPU's vector unit, DST whole.
 WALK = {"enable_trisc2_rvv": True, "dst_full_sync_en": True}
 
@@ -25,12 +23,14 @@ class TracePass(km.Program, compute=WALK):
     profile): each core's packets walked into their hit pages, then its profile."""
 
     TREE = km.symbol()  # the plan's
+    PACKET = km.constant(1408)  # a packet (kPacketBytes), 64 to a packets page
+    HIT = km.constant(2432)  # a nearest-hit page (kHitBytes), 64 to a hits page
     tree: km.L1[km.u32, TREE, 32, 32]
     handoff: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_a")  # the reader's words
 
     @km.handler
     def load_tree(self, image: km.Tensor):
-        self.tree.fill(km.Stream(image.pages(0, TREE)))
+        self.tree.fill(km.Stream(image.pages(0, self.TREE)))
 
     @km.handler
     def trace_rays(
@@ -45,7 +45,9 @@ class TracePass(km.Program, compute=WALK):
         km.cxx("const uint32_t writer_started = km::wall();", on="mover_b")
         for span in directory.pages(self.rank, 1).entries(Span, size=2, fixed=1):
             hit = km.Stream(
-                hits.items(span.first, span.count, size=HIT), write=True, pattern="B"
+                hits.items(span.first, span.count, size=self.HIT),
+                write=True,
+                pattern="B",
             )
             image = km.cxx("image = tree;", takes=[self.tree], gives=int, on="pack")
             # The walk's state on the pack CPU, seen by its bodies below.
@@ -69,7 +71,7 @@ class TracePass(km.Program, compute=WALK):
             km.cxx("const uint32_t reader_moving = km::wall();", on="mover_a")
             km.cxx("const uint32_t writer_moving = km::wall();", on="mover_b")
             for rays in km.Stream(
-                packets.items(span.first, span.count, size=PACKET), pattern="A"
+                packets.items(span.first, span.count, size=self.PACKET), pattern="A"
             ):
                 km.cxx(
                     """

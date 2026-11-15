@@ -40,15 +40,126 @@ class Field:
     shape: tuple
 
 
-class Symbol:
-    """`K = km.symbol()` in a class body: a size of a field's shape the plan gives
-    or the build solves; its name is the attribute's."""
+class Constant:
+    """`K_TILES = km.constant(128)` in a class body: a number fixed when the program
+    is built, its default overridden at the make; on the class the declaration, on
+    a made program its value (constant_values). Arithmetic makes a Derived one."""
 
-    def __init__(self):
+    def __init__(self, default):
+        if isinstance(default, tuple):
+            raise ProgramError(
+                f"km.{spelling('constant')}({default!r}): a tuple is not a constant: "
+                "the compiler emits no table of constants; declare each number"
+            )
+        if not isinstance(default, int | float):  # bool is an int
+            raise ProgramError(
+                f"km.{spelling('constant')}({default!r}): an int, a float or a bool"
+            )
+        self.default = default
+        self.kind = type(default)
         self.name = None
 
     def __set_name__(self, owner, name):
         self.name = name
+
+    def __get__(self, program, owner=None):
+        if program is None:
+            return self
+        values = program.__dict__.get("constant_values")
+        if values is None or self.name not in values:
+            raise ProgramError(
+                f"{type(program).__name__}.{self.name}: a constant's value is the "
+                "made program's; make the program first"
+            )
+        return values[self.name]
+
+    def __set__(self, program, value):
+        raise ProgramError(
+            f"{type(program).__name__}.{self.name}: a constant is fixed when the "
+            f"program is made; give {self.name}={value!r} to the make"
+        )
+
+    def value(self, values):
+        """This declaration's value among a program's `values` by name."""
+        return values[self.name]
+
+    def __repr__(self):
+        return f"km.{spelling('constant')}({self.default!r}) {self.name}"
+
+    def derived(self, op, other, mirrored=False):
+        if not isinstance(other, Constant | int | float) or isinstance(other, bool):
+            return NotImplemented
+        return Derived(op, other, self) if mirrored else Derived(op, self, other)
+
+    def __add__(self, other):
+        return self.derived(operator.add, other)
+
+    def __radd__(self, other):
+        return self.derived(operator.add, other, True)
+
+    def __sub__(self, other):
+        return self.derived(operator.sub, other)
+
+    def __rsub__(self, other):
+        return self.derived(operator.sub, other, True)
+
+    def __mul__(self, other):
+        return self.derived(operator.mul, other)
+
+    def __rmul__(self, other):
+        return self.derived(operator.mul, other, True)
+
+    def __floordiv__(self, other):
+        return self.derived(operator.floordiv, other)
+
+    def __rfloordiv__(self, other):
+        return self.derived(operator.floordiv, other, True)
+
+    def __mod__(self, other):
+        return self.derived(operator.mod, other)
+
+    def __rmod__(self, other):
+        return self.derived(operator.mod, other, True)
+
+    def __truediv__(self, other):
+        return self.derived(operator.truediv, other)
+
+    def __rtruediv__(self, other):
+        return self.derived(operator.truediv, other, True)
+
+    def __neg__(self):
+        return Derived(operator.neg, self, None)
+
+
+class Derived(Constant):
+    """`W_BLOCK = CHUNK * WIDTH` in a class body: a constant of others, evaluated
+    from each made program's values (a subclass's override of WIDTH included)."""
+
+    def __init__(self, op, left, right):
+        self.op, self.left, self.right = op, left, right
+        self.default = self.kind = None
+        self.name = None
+
+    def value(self, values):
+        def of(side):
+            return side.value(values) if isinstance(side, Constant) else side
+
+        if self.right is None:
+            return self.op(of(self.left))
+        return self.op(of(self.left), of(self.right))
+
+    def __repr__(self):
+        return f"{self.name or 'a derived constant'} (of the class's constants)"
+
+
+class Symbol(Constant):
+    """`K = km.symbol()` (or `km.constant()`) in a class body: a size of a field's
+    shape the plan gives or the build solves; its name is the attribute's."""
+
+    def __init__(self):
+        self.default = None
+        self.kind = int
+        self.name = None
 
     def __repr__(self):
         return f"km.{spelling('symbol')}() {self.name}"
@@ -56,6 +167,48 @@ class Symbol:
 
 def symbol():
     return Symbol()
+
+
+class ConstantParameter:
+    """`block: km.constant[int] = 8`: a handler's parameter fixed when the program is
+    built, not a command word; each listed set of values a handler of its own."""
+
+    def __init__(self, kind):
+        self.kind = kind
+
+
+class ConstantSpelling:
+    """`km.constant`: called, a constant of the class (no default: a symbol);
+    subscripted by int, float or bool, a handler's constant parameter."""
+
+    def __call__(self, *default):
+        if len(default) > 1:
+            raise ProgramError(f"km.{spelling('constant')}(default): one default")
+        return Constant(default[0]) if default else Symbol()
+
+    def __getitem__(self, kind):
+        if kind not in (int, float, bool):
+            raise ProgramError(
+                f"km.{spelling('constant')}[{getattr(kind, '__name__', kind)}]: a "
+                "constant parameter is of int, float or bool"
+            )
+        return ConstantParameter(kind)
+
+
+def constants_of(cls):
+    """The constants declared on `cls` and its parents by name, a subclass's over
+    its parent's; a name a parent declared rebound to a plain value is refused."""
+    declared = {}
+    for klass in reversed(cls.__mro__):
+        for name, value in vars(klass).items():
+            if isinstance(value, Constant):
+                declared[name] = value
+            elif name in declared:
+                raise ProgramError(
+                    f"{klass.__name__}.{name}: a constant of a parent class; declare "
+                    f"it {name} = km.{spelling('constant')}({value!r})"
+                )
+    return declared
 
 
 # The CPUs that may push an own field's buffer: a mover, or compute's (its pack CPU).
@@ -126,12 +279,13 @@ class L1:
                 "km.bf16 or km.u32"
             )
         if not shape or not all(
-            isinstance(n, Symbol) or (isinstance(n, int) and not isinstance(n, bool))
+            isinstance(n, Constant) or (isinstance(n, int) and not isinstance(n, bool))
             for n in shape
         ):
             raise ProgramError(
-                f"a field's sizes are ints and km.{spelling('symbol')}()s of the class "
-                f"(K = km.{spelling('symbol')}() in its body): got {tuple(shape)!r}"
+                f"a field's sizes are ints and constants of the class (K = "
+                f"km.{spelling('constant')}(n) or km.{spelling('symbol')}() in its "
+                f"body): got {tuple(shape)!r}"
             )
         return Field(format_, tuple(shape))
 
@@ -216,6 +370,8 @@ class HandlerMethod:
         self.widths = {}  # tensor parameter -> the tile width of its rectangles
         self.owner = None  # the class it is a handler of
         self.returns = False  # it returns a word: its commands ask for the result
+        # its constant parameters' values this handler is built for (km.constant[int])
+        self.constant_set = {}
 
     def __set_name__(self, owner, name):
         self.name = name
@@ -240,13 +396,15 @@ class HandlerMethod:
     def args(self, *values, **named):
         """The command words of a call: a tensor gives its reference word (and its
         page count, if the handler counts its pages), an int itself, a pattern its
-        word."""
+        word; a constant parameter's value, at its place, is no word."""
         if self.words is None:
             raise ProgramError(f"{self.name}: its program is not made yet")
-        given = dict(zip([p for p, _ in self.parameters()], values))
+        given = dict(zip(self.places(), values))
         if len(values) > len(given):
             raise ProgramError(f"{self.name}: {len(values)} arguments, too many")
         given.update(named)
+        for constant in constant_parameters(self.function):
+            given.pop(constant, None)
         words = []
         for parameter, kind in self.words:
             value = given.get(parameter)
@@ -264,9 +422,60 @@ class HandlerMethod:
             words.append(word_of(self.name, parameter, kind, value))
         return words
 
+    def places(self):
+        """The names of the parameters after self in order, constant ones too."""
+        return list(inspect.signature(self.function).parameters)[1:]
+
+    def constants_given(self, values, named=None):
+        """The constant parameters' values a call gives at their places (or by
+        name), by name; one left out takes its default."""
+        constants = constant_parameters(self.function)
+        given = {
+            name: value
+            for name, value in zip(self.places(), values)
+            if name in constants
+        }
+        given.update({k: v for k, v in (named or {}).items() if k in constants})
+        return given
+
     def parameters(self):
         """The (name, kind) of each parameter, in order, without page counts."""
-        return [(p, kind) for p, kind in self.words if kind != "pages"]
+        return [(p, kind) for p, kind in self.words if kind not in ("pages", "bank")]
+
+
+class Region:
+    """km.Region, a handler parameter's type: an X280 thread's region, its bank address
+    and bank two command words. `Run.submit` takes it by the region's name, or as
+    (bank, bank address), what a run's `threads[c].regions.address(name)` gives."""
+
+    def __init__(self, bank, address, island=0):
+        self.bank, self.address, self.island = int(bank), int(address), int(island)
+
+
+def region_words(handler, parameter, value):
+    """A region argument's (bank address, bank)."""
+    if isinstance(value, Region):
+        return value.address, value.bank
+    if isinstance(value, tuple) and len(value) == 2:
+        return int(value[1]), int(value[0])
+    raise ProgramError(
+        f"{handler}: {parameter} is a region: give its name (Run.submit) or "
+        f"(bank, address), got {value!r}"
+    )
+
+
+def constant_parameters(function):
+    """A handler's constant parameters (`p: km.constant[int] = n`) by name: (their
+    type, their default; None: no default)."""
+    found = {}
+    for name, parameter in inspect.signature(function).parameters.items():
+        if isinstance(parameter.annotation, ConstantParameter):
+            default = parameter.default
+            found[name] = (
+                parameter.annotation.kind,
+                None if default is inspect.Parameter.empty else default,
+            )
+    return found
 
 
 def is_tensor(value):
@@ -285,6 +494,9 @@ def word_of(handler, parameter, kind, value):
         return int(value.address) & abi.M32
     if kind == "pages":
         return int(value.pages) & abi.M32
+    if kind in ("region", "bank"):
+        address, bank = region_words(handler, parameter, value)
+        return (address if kind == "region" else bank) & abi.M32
     if kind == "pattern":
         pattern = value if isinstance(value, Pattern) else Pattern(value)
         return pattern.word
@@ -383,10 +595,12 @@ def exports():
         "entry": Entry,
         "field": L1,
         "symbol": symbol,
+        "constant": ConstantSpelling(),
         "own": own,
         "tile_value": Tile,
         "startup": Startup,
         "tensor": Tensor,
+        "region": Region,
         "stream": line_only("stream"),
         "reduce": line_only("reduce"),
         "broadcast": line_only("broadcast"),

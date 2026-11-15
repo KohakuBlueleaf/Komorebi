@@ -23,10 +23,14 @@ class (`compute={"enable_trisc2_rvv": True, "dst_full_sync_en": True}`):
 ```python
 for span in directory.pages(self.rank, 1).entries(Span, size=2, fixed=1):
     ...  # the lines below, inside it; class Span(km.Entry): first: int; count: int
-hit = km.Stream(hits.items(span.first, span.count, size=HIT), write=True, pattern="B")
+hit = km.Stream(
+    hits.items(span.first, span.count, size=self.HIT), write=True, pattern="B"
+)
 image = km.cxx("image = tree;", takes=[self.tree], gives=int, on="pack")
 km.cxx("...setup...", takes=[image], on="pack", include=[".../walk.hpp"])
-for rays in km.Stream(packets.items(span.first, span.count, size=PACKET), pattern="A"):
+for rays in km.Stream(
+    packets.items(span.first, span.count, size=self.PACKET), pattern="A"
+):
     km.cxx("...the walk of one packet...", takes=[rays, hit, mode], on="pack")
 report = km.Stream(profile.pages(self.rank, 1), write=True, pattern="B")
 km.cxx("...finish, the profile page...", takes=[report], on="pack")
@@ -145,7 +149,9 @@ copies them from there. The class says the same page with these lines:
 ```python
 handoff: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_a")  # the reader's words
 ...
-for rays in km.Stream(packets.items(span.first, span.count, size=PACKET), pattern="A"):
+for rays in km.Stream(
+    packets.items(span.first, span.count, size=self.PACKET), pattern="A"
+):
     ...
 km.cxx(
     "...wait, read, total, pages into handoff...",

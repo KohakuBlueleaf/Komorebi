@@ -159,6 +159,27 @@ broadcast that casts words alone. Its casts are `cast(block, word)` with no `res
 `finish` is still called on every core. Each cast waits until every receiver took the
 last word, so one cast costs a round trip to the farthest receiver.
 
+**The hazard.** At `finish` a receiver clears its VALID. The caster does not wait for
+that clear, so the first cast of its next command on the same cores can land before it:
+the clear then wipes the new VALID, that receiver never sees the cast, and the command
+gives up at the wait limit.
+
+**The rule.** A command that casts a word on a broadcast is not followed at once by a
+command that casts a word on the same broadcast's cores; something between them (the
+host's wait for the first command's event, or a command of other cores) gives every
+receiver the time to clear.
+
+**The guard.** `km.Program(..., broadcast_wait=True)` (and the same keyword at a class's
+making) builds the kernels with `KM_BROADCAST_WAIT` 1: each receiver marks the caster
+after its clear, and the caster waits at `finish` for every mark under the core's wait
+limit and stop, so the rule is not needed. It is off by default (`KM_BROADCAST_WAIT` 0:
+the kernels as before it). Its cost on one p150a
+([17_leader_overlay](../../examples/17_leader_overlay/README.md)): the cast itself
+unchanged, a command of 2,000 casts 0.2 % longer, a command that is one cast of a word
+4.94 against 5.38 µs (+0.44 µs); the bytes it adds, 176 B of example 17's reader text
+(23,632 against 23,808 B) and 576 B of the [dense class](../../experiments/language/dense_class/README.md)'s
+five kernels (90,624 against 91,200 B, 64 B over its kernel buffer of 91,136 B).
+
 ## Casting an overlay
 
 The word can name an overlay ([Overlays](overlays.md)): the leader picks the code its

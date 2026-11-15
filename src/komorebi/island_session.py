@@ -13,6 +13,7 @@ import time
 import numpy as np
 
 from komorebi import abi, dram, formats, islands, native
+from komorebi import chain as chain_module
 from komorebi import channel as channel_module
 from komorebi import programs as programs_module
 from komorebi import session as session_module
@@ -315,9 +316,48 @@ class IslandRun:
                 np.concatenate([parts, np.zeros_like(parts)]) for parts in self._parts
             ]
 
-    def submit(self, handler, group=None, args=(), exclusive=False, result=False):
+    def chain(self, calls, mode, flags=0):
+        """Run.chain over flat ranks: refused when a mark or a credit would go from
+        one island to another; else each island's records written in its own DRAM,
+        each island walking them on its own cores."""
+        chain_module.build(calls, lambda rank: self.graph.resolve(rank)[0])
+        chains = []
+        try:
+            for run in self.runs:
+                chains.append(run.chain(calls, mode, flags))  # noqa: PERF401 (freed)
+        except KomorebiError as error:
+            for made in chains:
+                made.free()
+            raise self._error(error, len(chains)) from None
+        return chain_module.IslandChain(chains, chains[0].group)
+
+    def _submit_chain(self, chain, words):
+        """An island chain as one ticket: a part an island it touches, each with its
+        own island's records (the command's a7)."""
+        self._grow(1)
+        ticket = self._next
+        for island, _first, _count in self.graph.split(chain.group):
+            one = chain.chains[island]
+            try:
+                handle = self.runs[island].submit(
+                    one.handler, one.group, one.args(words), exclusive=True, part=True
+                )
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+            self._parts[island][ticket] = handle
+        self._next += 1
+        return ticket
+
+    def submit(
+        self, handler, group=None, args=(), exclusive=False, result=False, **words
+    ):
         """Queues a command for `handler` on flat ranks [first, first + count)
-        (default every rank): a part on each island it touches. Returns its ticket."""
+        (default every rank): a part on each island it touches. Returns its ticket.
+        A chain (run.chain): one ticket, `words` its per-submit word."""
+        if isinstance(handler, chain_module.IslandChain):
+            return self._submit_chain(handler, words)
+        if words:
+            raise TypeError(f"submit: unknown arguments {sorted(words)}")
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
         if self._dynamic(handler):
