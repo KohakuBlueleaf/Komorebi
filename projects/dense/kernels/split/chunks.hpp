@@ -17,6 +17,15 @@ constexpr km::BufferPair kChunksW = {kCbSw, kCbSwMoverB};
 #define SPLIT_PRODUCT
 #endif
 
+// A record's stamp in a product (chain.h kChainStamp*; compute's on pack), or nothing.
+#if defined(SPLIT_CHAIN) && defined(SPLIT_CHAIN_STAMPS) && defined(COMPILE_FOR_TRISC)
+#define SPLIT_STAMP(word) PACK((chain_stamp_once(word)))
+#elif defined(SPLIT_CHAIN) && defined(SPLIT_CHAIN_STAMPS)
+#define SPLIT_STAMP(word) chain_stamp_once(word)
+#else
+#define SPLIT_STAMP(word) ((void)0)
+#endif
+
 // The pattern a plan's kSpPattern word names.
 inline km::Pattern chunk_pattern(uint32_t word) {
     return word == kSplitAAAB ? km::kPatternAAAB : km::kPatternAB;
@@ -117,8 +126,11 @@ bool move_chunks(
     if (!chain_weight_first(core, w_from(0), skip)) {
         return false;
     }
+    SPLIT_STAMP(kChainStampWeight);  // no block before the mark: W's first is now
     const km::Stream a_chunks(km::kMoveRead, a_matrix, a_walk, 1, kChunksA, pattern);
-    return km::move(core, a_chunks, w_from(skip));
+    const bool moved = km::move(core, a_chunks, w_from(skip));
+    SPLIT_STAMP(kChainStampMoved);
+    return moved;
 #else
     const km::Walk w_walk = {
         (k_part.start * n_tiles) + first_column,

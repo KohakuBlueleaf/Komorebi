@@ -28,3 +28,40 @@ enum { kChainNeedsK = 0, kChainNeedsRanges = 1, kChainRangeCount = 3 };
 /* The buffer of a core's chain words and two record slots: the runtime's trace
  * buffer's index (0 to 28 are taken), so a chain's program runs untraced. */
 enum { kChainBuffer = 31 };
+
+/* The stamps (SPLIT_CHAIN_STAMPS): SPLIT's a4 kChainStampsMode writes each core's to
+ * page `me` of the tensor at a0 (pages of kChainStampPage bytes) and zeroes them. */
+enum { kChainStampsMode = 4, kChainStampPage = 1024 };
+
+/* At byte kChainStamps of the chain's buffer, a row a kernel and record: word 0 its
+ * runs, the others sums of the wall clock from that kernel's chain start. */
+enum {
+    kChainStamps = 256,
+    kChainStampKernels = 3, /* the reader, the writer, compute's pack */
+    kChainStampRecords = 8,
+    kChainStampWords = 8,
+    kChainStampBytes = 768
+};
+
+/* A mover's (Full, the reader's Last: cycles): W's half full before the mark; Done the
+ * writer's root output ready, Last its writes acknowledged, the reader's next fetch. */
+enum {
+    kChainStampTaken = 1,
+    kChainStampWeight = 2,
+    kChainStampFull = 3,
+    kChainStampMarked = 4,
+    kChainStampMoved = 5,
+    kChainStampDone = 6,
+    kChainStampLast = 7
+};
+
+/* Compute's (pack): its first chunk in, its last product, the sum, the output written;
+ * an operation's start and end (attend's record). */
+enum {
+    kChainStampFirst = 2,
+    kChainStampParts = 3,
+    kChainStampSum = 4,
+    kChainStampOut = 5,
+    kChainStampOpStart = 6,
+    kChainStampOpEnd = 7
+};
