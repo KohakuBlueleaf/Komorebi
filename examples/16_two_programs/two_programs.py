@@ -51,6 +51,11 @@ def parse():
         "--switches", type=int, default=200, help="live: loads into the part"
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--overlay",
+        action="store_true",
+        help="merged: scale's code an overlay (km.merge's marker), sum's resident",
+    )
     parser.add_argument("--cards", default="", help="e.g. 0,1: a session of islands")
     return parser.parse_args()
 
@@ -455,13 +460,14 @@ def load_time(session, args, cores):
 
 def merged_phase(session, args, cores):
     """sum and scale merged into ONE program (km.merge): commands in turn on random
-    groups, every result checked; then the cycles a command of the two as a list and
-    merged: an empty command and a sum of 16 tiles, on one core and on `cores`."""
+    groups, every result checked; then the cycles a command of sum alone, of the two
+    as a list and merged: an empty command and a sum of 16 tiles, on 1 and `cores`."""
     generator = np.random.default_rng(args.seed)
     checked = Checked(session, cores, args.rounds, generator)
     sum_program, scale_program = programs(checked.inputs, checked.sums, checked.doubled)
     # --8<-- [start:merged]
-    merged = km.merge(sum_program, scale_program, log=log)  # handlers 1, 2 and 3, 4
+    marker = {"overlay": [scale_program]} if args.overlay else {}
+    merged = km.merge(sum_program, scale_program, log=log, **marker)  # 1, 2 and 3, 4
     run = session.load(merged)
     sum_handler = merged.handler("sum")  # sum's alone: 1
     scale_handler = scale_program.handler("scale")  # scale's own 1, mapped: 3
@@ -481,6 +487,7 @@ def merged_phase(session, args, cores):
     log(f"merged: {sent} commands, {wrong} wrong")
     out = {"commands": sent, "wrong": wrong, "cycles": {}}
     forms = {
+        "one": (sum_program, sum_program.handler("empty"), sum_program.handler("sum")),
         "list": (
             [sum_program, scale_program],
             sum_program.handler("empty"),
@@ -488,13 +495,18 @@ def merged_phase(session, args, cores):
         ),
         "merged": (merged, merged.handler(sum_program, "empty"), sum_handler),
     }
+    if args.overlay:  # the one program and the list are the same as without it
+        forms = {"merged": forms["merged"]}
     for form, (loaded, empty, sums) in forms.items():
         commands = []
         for group in ((0, 1), (0, cores)):
             words = checked.sum_words(group)
             commands.append((f"{form} empty {group[1]}", empty, group, words))
             commands.append((f"{form} sum {group[1]}", sums, group, words))
-        run = session.load(loaded, trace=4 * args.rounds + 2)
+            if form == "merged":  # scale's EMPTY: its 2 mapped from 4, a copy
+                mapped = merged.handler(scale_program, "empty")
+                commands.append((f"merged mapped empty {group[1]}", mapped, group, []))
+        run = session.load(loaded, trace=6 * args.rounds + 2)
         out["cycles"].update(one_at_a_time(run, commands, args.rounds))
     return out
 

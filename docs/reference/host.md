@@ -180,6 +180,75 @@ The session sends each group a load of its own program before `session.load` ret
 (the compute cores' hardware start-up on that program's formats). What it costs: the
 [example](../../examples/16_two_programs/README.md) and [overlays](overlays.md#a-group-switches-program).
 
+### Programs merged into one
+
+`km.merge(a, b, ..., name=None, overlay=(), resident=(), session=None, l1=None,
+log=print)` makes ONE program of programs in the runtime's form: one program field, one
+handler numbering, one L1 layout. It is loaded with `session.load(merged)` as any
+program is, and a chain, a submit, a stream, a graph and a thread see one program. The
+sources' code is not changed.
+
+```python
+merged = km.merge(sum_program, scale_program)  # sum's 1, 2; scale's 1, 2 as 3, 4
+run = session.load(merged)
+run.submit(merged.handler("sum"), group, words)  # a name one source alone has
+run.submit(scale_program.handler("scale"), group, words)  # a source's own: mapped
+run.submit(merged.handler(scale_program, "empty"), group)  # a name both sources have
+```
+
+- **The numbering.** The first source keeps its numbers; each next source's handlers,
+  in their own order, take the numbers after the highest so far. The build prints each
+  source's handlers with their merged numbers. Past 239 is refused with the count. A
+  name two sources have is refused by `merged.handler(name)`, which names both: give
+  the source, `merged.handler(source, name)`, or the source's own handler.
+- **How a command reaches a source.** Each kernel's part is a table from the merged
+  number to the source and its own number, linked with each source compiled on its
+  own (its `compile_args` and `defines`; the names one source defines never meet
+  another's, while the data the runtime's headers define is one copy in the part). A command of the first source goes to it as it came; any other gets a
+  copy with the source's own number. A chain's records go through the same table, so
+  one chain names handlers of every source ([the chain](chain.md#a-record-of-another-programs-handler)).
+- **Buffers, options, threads.** The list load's rule: buffer indices disjoint, or an
+  index declared identically by both (one shared buffer); else `km.L1LayoutError`
+  naming both, with the table (of `session.l1()` or `l1=` when given). The sources share
+  compute options, `opt` levels and NoCs. One source may take per-core `args`. X280
+  threads and ports are the first source's (its commands keep their numbers); another
+  source with them is refused.
+- **Where the code lives.** When everything fits, every source is resident: its code
+  is in the part. When the load's L1 table does not fit, the load places the largest
+  resident source as an **overlay** (its own part, loaded on demand into a slot the
+  sources placed as overlays share) and builds again, until it fits or none is left
+  (`km.L1BudgetError`). `overlay=[source, ...]` and `resident=[source, ...]` fix sources
+  either way; the unit is a whole source (a hand source's switch cannot be cut), so a
+  marker naming a handler is refused. The load prints where each source's code lives.
+  A merged program with a source placed as an overlay is loaded alone (not in a list or
+  a dict), since its overlays take the run's slots and numbers.
+
+What it costs, example 16 (`--phase merged`), one Blackhole p150a, 1,350 MHz,
+2026-11-16; cycles from the reader taking a command to its completion, median core,
+one command at a time:
+
+| Command | sum alone | sum and scale as a list | merged | merged, scale an overlay |
+|---|---:|---:|---:|---:|
+| empty (sum's), 1 core / 120 | 1,051 / 1,216 | 1,057 / 1,206 | 1,092 / 1,235 | 1,093 / 1,239 |
+| a sum of 16 tiles, 1 core / 120 | 6,451 / 2,136 | 6,461 / 2,118 | 5,831 / 2,175 | 5,847 / 2,158 |
+| empty (scale's, its number mapped), 1 core / 120 | | | 1,156 / 1,307 | 1,266 / 1,428 |
+
+A merged program's command costs about 40 cycles more than one program's (18 on 120
+cores), the table and the call of the source; a command of a source other than the
+first about 65 more (the copy of the command); one of a source placed as an overlay,
+held, about 110 more again (the overlay's check and call). A sum on one core ran 620
+cycles faster merged than alone; that difference is not looked into. The parts are larger than
+the sources' together (example 16 merged: reader 3,264 B against 1,536 + 1,536): each
+source keeps its own copy of the runtime's functions it uses.
+
+Not merged, each refused with its reason: a program in the kernel form (it owns
+`kernel_main` and the loop; merge it in the runtime's form, each source defining
+`km_program`); a class (it is built in the kernel form); a merged program as a source
+(merge its sources). A class in the runtime's form would need its movement lines in
+parts that the runtime's reader and writer call, the runtime's switch to set up each
+part's buffers, its compute start-up on its own formats, and its overlays numbered in
+the run: a change of the runtime's kernels and of the class compiler.
+
 ## `Session`
 
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,

@@ -230,7 +230,9 @@ when the slot holds it). A record cannot name a handler of a program placed as a
 overlay ([a program as an overlay](overlays.md#a-program-as-an-overlay)) other than
 the chain's own: the record's command keeps the chain command's program field, and the
 walk runs inside one program's kernels, so the runtime's load of another program
-between two records does not happen.
+between two records does not happen. Programs merged into one
+([host](host.md#programs-merged-into-one)) are one program: a record names a handler of
+any of its sources ([below](#a-record-of-another-programs-handler)).
 
 ## In the runtime's form
 
@@ -300,10 +302,25 @@ each record after the first about 30 us more than a command (two calls 84.3 agai
 108.1 against 83.9, and on one card a chain is not slower (four calls: 126.1 as a
 chain, 130.6 as commands). Where a marked record loses that time in an island build is not found yet.
 
-## A record of another program's handler: what it would need
+## A record of another program's handler
 
-Not built; a record names a handler of the chain's own program only. To name one of
-another program held by the same cores (a run loaded with a list):
+Programs merged with `km.merge` ([host](host.md#programs-merged-into-one)) are one
+program, so a chain's records name handlers of every source: the record holds the
+merged number, and the walk, inside the source of the chain command's handler, hands
+each record to the merged part's table, which calls the record's source with its own
+number. [29_chain](../../examples/29_chain/)'s `--form merged` merges `sums` (SUM, its 3
+kept) and `maps` (SCALE and ADD, 1 and 2 as 4 and 5): the chain walks SCALE, SCALE,
+ADD in maps and SUM in sums. One Blackhole p150a, 2026-11-16, 200 runs a way (the
+runtime's form as measured [above](#in-the-runtimes-form)):
+
+| Example 29 | runtime's form (one program) | merged (two sources) |
+|---|---:|---:|
+| on the card, us a run: a command a step / one chain | 131.5 / 126.7 | 127.7 / 127.1 |
+| on the host, us a run: a command a step / one chain | 838.9 / 302.8 | 824.9 / 305.9 |
+| every word of y, z, s, t | exact | exact |
+
+Between programs of a list (several program fields), not built. A record would name a
+handler of another program held by the same cores only with:
 
 - **The record.** A program field per record: the 16 words have no free bits (the
   info word is full, the group word and the range words too, the next word's low bits
