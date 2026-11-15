@@ -56,8 +56,8 @@ subnormals become 0 and -0 becomes +0, infinity and NaN packed to float32 read 6
 98304, and a host-encoded A row whose exponent saturated (31) reads as NaN. So a
 program with an A buffer and `fp32_dest_acc_en` is refused ("... 16-bit Dst"), and a
 class of A buffers computes in a 16-bit `Dst` and refuses a float32 tile unpacked to
-`Dst`. A tile function's code runs on an fp32 `Dst`, so it takes float32 and the B
-family, not the A family. An A-family product loses about 1 % where its products are
+`Dst`. A tile function of the A family runs on a 16-bit `Dst` too
+([below](#the-a-family-in-a-tile-function)). An A-family product loses about 1 % where its products are
 near 1e-5 (the 5-bit exponent's range).
 
 ## Unpack and pack
@@ -228,6 +228,63 @@ Each turn equals its plain product within the sums' noise. Two float16 operands 
 11 bits each, so the two placements cut alike (one keeps 5 and the other 7 at LoFi);
 the marker matters when the operands' bits differ.
 
+## The A family in a tile function
+
+A tile function of fp16, bfp8, bfp4 or bfp2 tiles runs its whole unit program on a
+16-bit `Dst`, as a class of A buffers computes: its operands are copied into `Dst`
+through SrcA (exact, above), each `SFPLOAD` and `SFPSTORE` takes the FP16A mode where
+the B family's take `Dst`'s own fp32, and the vector code runs in fp32 in the vector
+unit's registers between them. The words are the same as the B family's, one for one
+(the gate: 1336 words, 1678.6 cycles a tile in both), so a tile costs the same. The
+families do not mix in one function ("given float16 with float32": an fp32 `Dst` reads
+the A family 2^-15 off, a 16-bit one holds no float32).
+
+What passes through the 16-bit `Dst`, and so through its 11 significant bits:
+
+- each operand tile, copied in: exact;
+- each product in the trace: the matrix unit accumulates its sums there, in the 16-bit
+  format, **truncated** at each accumulation;
+- a per-row operand (a state tile's value) that the stream form's per-row pass
+  computes once and stores over the operand, then loads again;
+- the result, stored once: **truncated** to the 16-bit format. On the card, x * y of
+  fp16 tiles (an exact product in the registers) read back equal to the product
+  rounded toward zero in 99.998 % of datums, to it rounded to nearest even in 50 %.
+
+The 16-bit `Dst`'s format is not IEEE fp16 at its top: its largest exponent is a number,
+not infinity. A product's sums above 65,504 read back as themselves (truncated) up to
+131,008 and saturate there; none read infinity. Under 2^-14 a value reads 0: an operand
+under 2^-14 is 0 from its unpack, so its terms drop from a product's sums, and a result
+under 2^-14 stores as 0. A result above 65,504 packed to an fp16 tensor takes fp16's
+exponent 31, which the host reads as infinity or NaN (above); packed to float32 it
+reads as itself.
+
+| Step | A family (16-bit `Dst`) | B family (fp32 `Dst`) |
+| --- | --- | --- |
+| an operand tile in | fp16 11 bits; bfp8 7, bfp4 3, bfp2 1 | bf16 8; bfp8_b 7, bfp4_b 3, bfp2_b 1 |
+| a product's operands | as the build prints ([above](#the-bits-a-product-multiplies)): HiFi4, fp16 x fp16: 11 and 10 | bf16 x bf16: 8 and 8 |
+| a product's sums in `Dst` | 11, truncated at each accumulation; 2^-14 to 131,008 (saturating) | fp32 |
+| the vector code | fp32 registers | fp32 registers |
+| the result stored to `Dst` | 11, truncated | fp32 |
+
+**Measured** ([tile_a_family.py](../../experiments/core/formats/README.md#a-tile-function-of-the-a-family)):
+the gate `silu(a @ w1) * (a @ w3)` of each 32 x 32 tile, 64 tiles a core on 12 cores,
+a normal and w1, w3 normal / sqrt(32), the result packed to float32; the median of 3
+commands. "Computed" is the card's result against the float64 gate of the values the
+tensors hold (the computation's own error); "the inputs' formats" is the float64 gate
+of those values against the float64 gate of the float32 inputs (the storage's error).
+
+| Tensors | Computed: RMS rel. | Max / RMS | The inputs' formats: RMS rel. | µs |
+| --- | --- | --- | --- | --- |
+| fp16 | 1.48e-3 | 0.050 | 4.35e-4 | 87.6 |
+| fp16 a, bfp8 w | 1.16e-3 | 0.035 | 9.94e-3 | 87.0 |
+| bf16 | 4.57e-4 | 0.012 | 3.48e-3 | 87.2 |
+| bf16 a, bfp8_b w | 4.56e-4 | 0.016 | 1.02e-2 | 86.7 |
+
+The A family's computation is the less precise (its products' sums and its result are
+truncated to 11 bits, the B family's kept in fp32), its inputs the more precise; with
+both, fp16 is about 1.5e-3 against bf16's 3.5e-3, and a bfp8 weight's storage dominates
+either family. x * y alone, fp16: 4.13e-4, each datum its product truncated.
+
 ## Not in this version
 
 - **lf8** (an 8-bit float the packer can write) is not built: no buffer, tensor or
@@ -236,6 +293,6 @@ the marker matters when the operands' bits differ.
   does not pick one.
 - **A turned product in a tile function the tile compiler traces** (above).
 - **A fidelity a product.** One a compute kernel (above).
-- **The A family in a tile function**, which runs on an fp32 `Dst`.
+- **The A family in a tile function's row and step forms** (below).
 - **The card's packer on the host.** `formats.bfp_encode` is tt-metal's encode, not the
   packer's rounding.

@@ -150,8 +150,11 @@ alone (1568) is 139.0 cycles: the two products' estimate.
 **Stream form.** Each tile of the output is an expression of the same tile of up to
 three inputs: `+`, `-`, `*`, unary minus, Python number constants, `trace.sigmoid`,
 `trace.silu` (`x * sigmoid(x)`) and `trace.rsqrt`. Inputs are fp32 tensors or tensors
-of the B family (bf16, bfp8_b, bfp4_b, bfp2_b; [tile formats](formats.md)); `Dst` is
-fp32, which reads the A family wrong, so A-family tensors are refused. Constants become `SFPLOADI` immediates, or one of the constant registers
+of the B family (bf16, bfp8_b, bfp4_b, bfp2_b), which run on an fp32 `Dst`, or tensors
+of the A family (fp16, bfp8, bfp4, bfp2), which run on a 16-bit `Dst`: the same words,
+each `SFPLOAD` and `SFPSTORE` in the FP16A mode, the vector code in fp32 between them
+([tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function)).
+The two families are not mixed in one function. Constants become `SFPLOADI` immediates, or one of the constant registers
 when that saves words: the three programmable ones (LReg 12 to 14), then LReg 11, which
 the unit sets after its setup and restores to -1.0 at its end.
 
@@ -250,8 +253,9 @@ Each rule is a pass; `dump()` prints what each one did.
 | "the unit program reads whole-tile operands" | a slice or a broadcast operand needs the row form |
 | "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering |
 | "the unit program takes no runtime scalars" | every immediate is built into the header; a run-time word would need building on the core |
-| "tensors are fp32 or of the B family" | the loads and stores are fp32 `Dst` accesses, and an fp32 `Dst` reads the A family's datums 2^-15 off |
-| "the unit program is built for fp32 Dst" | the address walk assumes 64 address units a tile |
+| "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |
+| "takes tiles of float16 (the A family, a 16-bit Dst) and is called on a row" | the row form and the step form keep each row's value, its sums and the state word in `Dst` between their levels, which a 16-bit `Dst` would cut to fp16 (the word is an int32) |
+| the load macro: "refused: fp16a Dst" (a pass's record, not a refusal) | the macro's load and store are built for the fp32 `Dst`; an A-family unit runs its rows plain |
 | row form: "rows of 1 or 2 tiles" | the per-column operand tile holds two tiles of columns |
 | exp / exp2: "no template meets relative error E over [lo, hi]" | no template's bound meets the stated error over that range |
 | step form: 1 to 3 row tiles, one row store and one state store, one row tensor, one state tile, exact sums or maxima, a slot read after the level that writes it, "the step's values do not fit the 8 work registers" | what the levels and the state layout are built for |

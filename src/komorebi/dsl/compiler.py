@@ -20,7 +20,15 @@ from komorebi.dsl import front
 from komorebi.dsl.names import kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
 from komorebi.dsl.tile import trace, unit_program
-from komorebi.dsl.tile.ir import BF16, BLOCK_B, F32, KernelIR, PlanError, TensorParam
+from komorebi.dsl.tile.ir import (
+    A_DTYPES,
+    BF16,
+    BLOCK_B,
+    F32,
+    KernelIR,
+    PlanError,
+    TensorParam,
+)
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.errors import ProgramError
@@ -762,16 +770,27 @@ def turned_tiles(tiles, first):
 
 
 def tile_format_refusal(formats):
-    """None, or why a tile function is refused tiles of `formats`: its code runs on
-    an fp32 Dst, which reads the A family wrong (the card: each datum 2^-15 off)."""
-    wrong = [f for f in formats if f not in TILE_FORMATS]
-    if not wrong:
+    """None, or why a tile function is refused tiles of `formats`: float32 and the B
+    family run on an fp32 Dst, the A family on a 16-bit one (tile_dest); a mix of
+    the two is refused (an fp32 Dst reads the A family 2^-15 off, a 16-bit Dst cuts
+    float32 to fp16)."""
+    if all(f in TILE_FORMATS for f in formats) or all(f in A_DTYPES for f in formats):
         return None
+    a = [f for f in formats if f in A_DTYPES]
+    other = [f for f in formats if f not in A_DTYPES]
     return (
         f"a tile function takes tiles of float32 or the B family ("
-        f"{', '.join(TILE_FORMATS)}), not {', '.join(wrong)}: its code runs on an "
-        "fp32 Dst, which the card fills wrong from the A family"
+        f"{', '.join(TILE_FORMATS)}), run on an fp32 Dst, or of the A family ("
+        f"{', '.join(A_DTYPES)}), run on a 16-bit Dst; given {', '.join(a)} with "
+        f"{', '.join(other)}: an fp32 Dst reads the A family 2^-15 off, and a 16-bit "
+        "Dst holds no float32"
     )
+
+
+def tile_dest(formats):
+    """The Dst a tile function on tiles of `formats` runs on: "fp16a" for the A
+    family, else "fp32"."""
+    return "fp16a" if all(f in A_DTYPES for f in formats) else "fp32"
 
 
 def field_refused(compiled, name, why, instead):
@@ -4357,9 +4376,19 @@ class HandlerCompiler:
         cxx = function.name
         while cxx in self.compiled.units:
             cxx += "_"
-        tensors = [
-            TensorParam(p, False, TILE_FORMATS[f]) for p, f in zip(parameters, formats)
-        ]
+        dest = tile_dest(formats)
+        if dest != "fp32" and width > 1:
+            self.refuse(
+                node,
+                f"the tile function {function.name} ({where}) takes tiles of "
+                f"{', '.join(sorted(set(formats)))} (the A family, a 16-bit Dst) and "
+                "is called on a row: the row form keeps each row's value and its sums "
+                "in Dst between its levels, which a 16-bit Dst would cut to fp16",
+                "call it on a stream's tiles, one tile a side, or stream tensors of "
+                "the B family",
+            )
+        kinds = {**TILE_FORMATS, **{f: f for f in A_DTYPES}}
+        tensors = [TensorParam(p, False, kinds[f]) for p, f in zip(parameters, formats)]
         result = TensorParam("result", True, F32)
         ir = KernelIR(cxx, [*tensors, result], [], {})
         held = len(parameters) - len(fields)  # the fields are the last parameters
@@ -4379,7 +4408,7 @@ class HandlerCompiler:
                         trace.store(out.tiles[t, :], value)
             if width == 1:
                 fidelity = function.fidelity or "HiFi4"  # its products'
-                unit = unit_program(ir, load_macro=True, fidelity=fidelity)
+                unit = unit_program(ir, dest, load_macro=True, fidelity=fidelity)
             else:
                 unit = row_program(ir, width, width, 2 * width)
                 self.compiled.full_dst = True
