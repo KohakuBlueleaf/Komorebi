@@ -69,7 +69,7 @@ enum value, as a dict; it may use the package's constants by their C++ names
 (`km::kBroadcastArgs`). A constant the reader cannot evaluate raises `abi.HeaderError`.
 
 The runtime owns circular buffers 29 and 30 (the command's token for compute and
-writer) and 31 (the trace); a program uses the others.
+writer), 31 (the trace) and 32 (a chain's words); a program uses 0 to 28.
 
 `program.handler(name)` returns a `km.Handler`: the handler's number (an `int`) that also
 names its program (`.program`). `submit`, `submit_many`, `graph.command` and a stream's

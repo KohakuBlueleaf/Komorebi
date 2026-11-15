@@ -37,9 +37,9 @@ enum {
     kChainHandlerShift = 24 /* bits 24 to 31; 0: the chain command's handler */
 };
 
-/* The chain's words and two record slots on each core: the runtime's trace buffer's
- * index (0 to 28 are a program's), so a chain's program runs untraced. */
-enum { kChainBuffer = 31 };
+/* The chain's words and two record slots on each core: an index the runtime reserves
+ * for it, past a program's 0 to 28 and the runtime's 29 to 31 (the trace's). */
+enum { kChainBuffer = 32 };
 
 /* A direct input's writes go under this NoC transaction id. */
 enum { kChainInputTrid = 15 };

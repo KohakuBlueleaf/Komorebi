@@ -190,7 +190,6 @@ namespace km {
 
 }  // namespace km
 
-#if !defined(KM_OVERLAY_PART)
 namespace km {
 
     // Tiles first .. first + count - 1 of a row written in blocks of `width` tiles by
@@ -782,7 +781,6 @@ namespace km {
     }
 
 }  // namespace km
-#endif
 #else
 namespace km {
 
