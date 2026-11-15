@@ -1048,6 +1048,25 @@ with `kmx_submit` and waits with `kmx_wait`. From
 #define WORKCLUSTER_SUM_RESULT 1u /* KM_FLAG_RESULT */
 ```
 
+### A thread's region as a parameter
+
+A handler's parameter `counts: km.Region` is an X280 thread's region: two command
+words, its bank address and its bank (the bank's word after the others). In the
+handler it is a tensor of the region's pages of 4,096 B in that one bank
+(`km::RegionPages`, km_region.hpp): `.pages(...)`, `.items(...)`, streams, fills,
+puts and bodies on a mover take it as they take a tensor parameter. `Run.submit`
+takes it by the region's name, the region of the run's thread that has it (refused
+when none or more than one has), or as (bank, bank address), what
+`run.threads[c].regions.address(name)` gives:
+
+```python
+run.submit(RegionPasses.sum_tiles, (0, cores), args=(counters, prefixes, "sums", cores))
+```
+
+A region is in its island's DRAM: a program made with island tensors, whose other
+islands' cores would read it, is refused at the parameter, naming the region's island
+(`km.Region(bank, address, island=1)` as its example).
+
 ## Islands
 
 The same class runs on `km.Session(cards=[0, 1])`, made with the island session's

@@ -42,6 +42,7 @@ BROADCAST_WINDOW = 2
 # Circular buffer indices: reads from 0, writes from 16, the others from 8 (24 and up
 # are the runtime's).
 FIRST_READ, FIRST_OTHER, FIRST_WRITE, LAST_INDEX = 0, 8, 16, 25
+REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
 PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}
 TILE_ELEMENTS = 32 * 32
 # Every local the generated code declares starts with GENERATED_PREFIX, which a
@@ -205,6 +206,7 @@ class Compiled:
     movement: dict = field(default_factory=dict)  # handler -> nodes
     compute: dict = field(default_factory=dict)  # handler -> nodes
     tensors: list = field(default_factory=list)  # tensor parameter names, in order
+    regions: list = field(default_factory=list)  # region parameter names
     includes: set = field(default_factory=set)  # "port", "broadcast", "fill", "add"
     # The #include lines of inline bodies, by kernel ("movement", "compute").
     body_includes: dict = field(default_factory=lambda: {"movement": [], "compute": []})
@@ -1217,6 +1219,8 @@ class HandlerCompiler:
                 if param.name not in self.compiled.tensors:
                     self.compiled.tensors.append(param.name)
                 text = f"const uint32_t {param.name} = command.a{word};"
+            elif kind == "region":
+                text = self.bind_region(parameter, word)
             elif kind == "pattern":
                 self.scope[param.name] = Value("pattern", param.name)
                 text = (
@@ -1240,6 +1244,11 @@ class HandlerCompiler:
                         {f"{tensor}_pages"},
                     )
                 )
+        for name in [n for n, kind in words if kind == "region"]:  # its bank's word
+            word = len(words)
+            words.append((name, "bank"))
+            for nodes in (movement, compute):
+                nodes.append(Glue(f"{name}.bank = command.a{word};", {name}))
         if len(words) > COMMAND_WORDS:
             self.refuse(
                 self.definition,
@@ -1262,7 +1271,7 @@ class HandlerCompiler:
         if isinstance(annotation, ast.Name) and annotation.id == "int":
             return "int"
         if isinstance(annotation, ast.Attribute):
-            kind = kind_of(annotation.attr, ("tensor", "pattern"))
+            kind = kind_of(annotation.attr, ("tensor", "pattern", "region"))
             if kind:
                 return kind
         self.refuse(
@@ -1270,6 +1279,30 @@ class HandlerCompiler:
             f"parameter {parameter.arg}: a type the command words cannot carry",
             f"a parameter is km.{spelling('tensor')}, int or km.{spelling('pattern')}",
         )
+
+    def bind_region(self, parameter, word):
+        """A region parameter: a tensor of the handler's lines in pages of the thread's
+        granularity, its bank address this word and its bank a word after the rest."""
+        name = parameter.arg
+        example = self.tensors.get(name)
+        islands = {
+            len(t.placement.parts)
+            for t in self.tensors.values()
+            if hasattr(t, "placement") and hasattr(t.placement, "parts")
+        }
+        if islands and max(islands) > 1:
+            island = getattr(example, "island", 0)
+            self.refuse(
+                parameter,
+                f"{name} is a region of island {island}'s DRAM, and the program is "
+                f"made with island tensors: another island's core would read it",
+                "a region is read by its own island's cores only; make the program "
+                "with this island's tensors",
+            )
+        self.scope[name] = Value("tensor", name)
+        if name not in self.compiled.regions:
+            self.compiled.regions.append(name)
+        return f"km::Region {name}{{command.a{word}, 0}};"
 
     def counted_tensors(self):
         """Tensor parameters whose `pages` the handler uses whole (not called)."""
@@ -2695,6 +2728,8 @@ class HandlerCompiler:
         )
 
     def tensor_format(self, node, tensor):
+        if tensor in self.compiled.regions:  # a thread's region: words, in its pages
+            return "uint32", REGION_PAGE
         example = self.tensors.get(tensor)
         if not front.is_tensor(example):
             self.refuse(
@@ -5583,7 +5618,8 @@ class HandlerCompiler:
             )
         if value.kind == "tensor" and where in ("A", "B"):
             word = f"km_word_{item.id}"
-            bound.append(f"const uint32_t {word} = {item.id};")
+            kind = "km::Region" if item.id in self.compiled.regions else "uint32_t"
+            bound.append(f"const {kind} {word} = {item.id};")
             bound.append(f"const {camel(item.id)} {item.id}({word});")
             return {item.id}
         if value.kind == "tensor":

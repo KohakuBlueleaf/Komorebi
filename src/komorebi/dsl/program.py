@@ -684,7 +684,15 @@ def tensor_aliases(compiled):
             f"using {camel(name)} [[maybe_unused]] = km::Tensor<{offset}>;  // {name}"
         )
         previous = camel(name)
-    return lines
+    return lines + region_aliases(compiled)
+
+
+def region_aliases(compiled):
+    """A region parameter's type: a thread's region in its pages (km_region.hpp)."""
+    pages = f"km::RegionPages<{compiler.REGION_PAGE}>"
+    return [
+        f"using {camel(name)} [[maybe_unused]] = {pages};" for name in compiled.regions
+    ]
 
 
 def cases(compiled, nodes_of, ending, depth, kernel):
@@ -781,6 +789,8 @@ def movement_includes(compiled):
         lines.append('#include "komorebi/device/km_broadcast.hpp"')
     if compiled.overlays:
         lines.append('#include "komorebi/device/km_overlay.hpp"')
+    if compiled.regions:
+        lines.append('#include "komorebi/device/km_region.hpp"')
     return lines + compiled.body_includes["movement"]
 
 

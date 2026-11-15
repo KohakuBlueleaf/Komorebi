@@ -39,6 +39,11 @@ NAMES = {
     "own": Name("own", "f: km.L1[...] = km.own(push=): a field only bodies use", None),
     "tensor": Name("Tensor", "km.Tensor: a parameter that is a tensor", "tensor"),
     "pattern": Name("Pattern", "km.Pattern: a parameter that is a pattern", "pattern"),
+    "region": Name(
+        "Region",
+        "km.Region: a parameter that is an X280 thread's region, given by its name",
+        "region",
+    ),
     "args": Name("args", "a handler's command words from its arguments", "argument"),
     "plan": Name("plan", "the program's sizes, given or solved at build", None),
     # what a core is in the command
