@@ -12,9 +12,22 @@ KINDS = ("algebra", "layout", "schedule")
 FIXED = {"zero": 9, "one": 10, "neg_one": 11}
 PROGRAMMABLE = (12, 13, 14)
 WORK = 8  # LReg 0 .. 7 hold values
-COST_SOURCE = "estimate (an instruction a cycle, a MAD result after 2): not measured"
-REPLAY_SOURCE = "estimate (a played instruction a cycle): not measured"
 REPLAY_ENTRIES = 32  # entries of one thread's replay buffer
+# Cycles (AICLK) of the math CPU's vector code: one-core Blackhole measurements
+# (experiments/tile_probes/README.md, section 8) or, where marked, the ISA's word.
+PRICES = {
+    "word": (1.0, "a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16)"),
+    "loop": (2.0, "a pass of a loop the core runs: N + 2 cycles (probe 12)"),
+    "replayed": (1.004, "a replayed word: 1.004 cycles (probe 8)"),
+    "mad_stall": (1.0, "a MAD result read next: 1 stall (probe 9: 4.03 against 3.04)"),
+    # read by a store: no stall (experiments/tile_rules: add, scale, SiLU on the card)
+    "shft2_stall": (1.0, "SFPSHFT2 lane modes stall the unit 1 cycle (stated)"),
+    "built_word": (4.14, "a word built at run time: 4.14 cycles (probe 8)"),
+    "table_word": (9.37, "a word loaded from an L1 table: 9.37 cycles (probe 8)"),
+    "macro_row": (1.046, "one SFPLOADMACRO a row: 1.046 cycles (probe 9)"),
+}
+# SFPSHFT2 modes that take 2 cycles and stall the unit one (VectorUnit table).
+SHFT2_SLOW = (2, 3, 4)
 
 
 @dataclass(frozen=True)
@@ -95,6 +108,15 @@ OPS = {
         ("lreg_src_b", "lreg_src_c"),
         ("lreg_dest",),
     ),
+    "SFPSHFT": Op(0x7A, _R, ("lreg_c",), ("lreg_dest",)),
+    "SFPSHFT2": Op(
+        0x94,
+        (("imm12_math", 12), ("lreg_src_c", 4), ("lreg_dest", 4), ("instr_mod1", 4)),
+        ("lreg_src_c",),
+        ("lreg_dest",),
+    ),
+    "SFPDIVP2": Op(0x76, _R, ("lreg_c",), ("lreg_dest",)),
+    "SFPLOADMACRO": Op(0x93, _LS, (), (), "macro"),
     "SFPNOP": Op(0x8F, ()),
     "SFPCONFIG": Op(0x91, (("imm16_math", 16), ("config_dest", 4), ("instr_mod1", 4))),
     "INCRWC": Op(
@@ -127,8 +149,10 @@ OPS = {
     ),
     "STALLWAIT": Op(0xA2, (("stall_res", 9), ("wait_res", 15)), kind="stall"),
 }
-# SFPIADD's immediate form reads only lreg_c; SFPIADD mod1 bit 2 set: no flags.
-IADD_IMM, IADD_NO_CC = 1, 4
+# SFPIADD's immediate form reads only lreg_c; mod1 bit 1: lreg_c - lreg_dest; bit 2
+# set: no flags. SFPSHFT mod1 5: lreg_c shifted by the immediate.
+IADD_IMM, IADD_SUB, IADD_NO_CC = 1, 2, 4
+SHIFT_IMM_VC = 5
 CODES = {op.code: name for name, op in OPS.items()}
 
 
@@ -168,6 +192,10 @@ class Insn:
 
     def reads(self):
         """The register arguments read (value names or LReg numbers)."""
+        return [self.args[n] for n in self.read_fields()]
+
+    def read_fields(self):
+        """The names of the register fields read."""
         o = OPS[self.op]
         names = list(o.reads)
         if self.op == "SFPIADD" and self.args["instr_mod1"] & IADD_IMM:
@@ -176,7 +204,9 @@ class Insn:
             names.append("lreg_ind")
         if self.op in ("SFPSETSGN", "SFPSETEXP") and self.args["instr_mod1"] & 1:
             names.remove("lreg_dest")
-        return [self.args[n] for n in names]
+        if self.op == "SFPSHFT" and self.args["instr_mod1"] & 5 != 5:
+            names = ["lreg_dest"] + ([] if self.args["instr_mod1"] & 1 else names)
+        return names
 
     def writes(self):
         """The register arguments written."""
@@ -256,6 +286,7 @@ class UnitProgram:
 
     name: str
     dest: str
+    operands: list = field(default_factory=list)
     init: dict = field(default_factory=lambda: {cpu: [] for cpu in CPUS})
     tile: dict = field(default_factory=lambda: {cpu: [] for cpu in CPUS})
     constants: dict = field(default_factory=dict)
@@ -269,10 +300,11 @@ class UnitProgram:
         instructions and their cycles; each term (what, count, cycles, source),
         cycles None for a library call or a sync (not priced)."""
         terms = []
-        _price(self.tile[cpu], 1, terms, [])
+        state = {"previous": None, "recording": None, "buffer": {}}
+        _price(self.tile[cpu], 1, terms, state)
         priced = [t for t in terms if t[2] is not None]
-        count = sum(t[1] for t in priced if t[0] in OPS)
-        return count, sum(t[2] for t in priced), terms
+        count = sum(t[1] for t in priced if t[0].split()[0] in OPS)
+        return count, round(sum(t[2] for t in priced), 1), terms
 
     def dump(self):
         """The unit program as text: setup, per-tile loop nests, passes, checks and
@@ -301,7 +333,8 @@ class UnitProgram:
                 "the calls not priced"
             )
             lines += [
-                f"    {what}: {n} x, {'-' if c is None else c} cycles ({source})"
+                f"    {what}: {n} x, {'-' if c is None else round(c, 1)} cycles "
+                f"({source})"
                 for what, n, c, source in _merge(terms)
             ]
         return "\n".join(lines)
@@ -327,31 +360,70 @@ def _dump(items, depth):
     return out
 
 
-def _price(items, times, terms, previous):
-    """Appends (what, count, cycles, source) per item, `times` passes; `previous`
-    is the last instruction issued (a MAD-class result read next costs a stall)."""
+def _price(items, times, terms, state):
+    """Appends (what, count, cycles, source) per item, `times` passes. `state`: the
+    last instruction issued (a stall follows a MAD result read next), the words being
+    recorded into the replay buffer, and the recorded sequences by start index."""
     for item in items:
         if isinstance(item, Loop):
-            _price(item.body, times * item.count, terms, previous)
+            if not item.unroll:
+                cycles, source = PRICES["loop"]
+                passes = times * item.count
+                terms.append(("loop pass", passes, passes * cycles, source))
+            _price(item.body, times * item.count, terms, state)
         elif isinstance(item, Insn) and item.op == "REPLAY":
-            # Recording with execution runs what follows (priced there); a play
-            # runs `len` recorded instructions, a cycle each.
-            plays = 0 if item.args["load_mode"] else item.args["len"]
-            terms.append(("REPLAY", times, times * plays, REPLAY_SOURCE))
-            previous[:] = []
+            a = item.args
+            if a["load_mode"]:
+                # Recording with execution: what follows runs as pushed words.
+                state["recording"] = (a["start_idx"], a["len"])
+                state["buffer"][a["start_idx"]] = []
+                _issue(item, times, terms, state, "word")
+                continue
+            played = state["buffer"].get(a["start_idx"], [])[: a["len"]]
+            if len(played) < a["len"]:
+                raise UnitError(f"REPLAY of {a['len']} plays words never recorded")
+            for insn in played:
+                _issue(insn, times, terms, state, "replayed")
         elif isinstance(item, Insn):
-            stall = 0
-            if previous and OPS[previous[0].op].kind == "mad":
-                written = set(previous[0].writes())
-                stall = 1 if written & set(item.reads()) else 0
-            terms.append((item.op, times, times * (1 + stall), COST_SOURCE))
-            if stall:
-                terms.append(("stall on a MAD result", times, 0, COST_SOURCE))
-            previous[:] = [item]
+            _issue(item, times, terms, state, "word")
+            if state["recording"]:
+                start, count = state["recording"]
+                state["buffer"][start].append(item)
+                if len(state["buffer"][start]) == count:
+                    state["recording"] = None
         elif isinstance(item, Call):
             terms.append((item.text, times, None, "library call, not priced"))
         else:
             terms.append((f"sync {item.text}", times, None, "sync, not priced"))
+
+
+def _issue(insn, times, terms, state, how):
+    """The price of `insn` issued `times` (pushed: "word", or "replayed") and of the
+    stall in front of it, if any."""
+    previous = state["previous"]
+    stall = None
+    if (
+        previous is not None
+        and OPS[previous.op].kind == "mad"
+        and insn.op != "SFPSTORE"
+        and set(previous.writes()) & set(insn.reads())
+    ):
+        stall = "mad_stall"
+    if (
+        previous is not None
+        and previous.op == "SFPSHFT2"
+        and previous.args["instr_mod1"] in SHFT2_SLOW
+    ):
+        stall = "shft2_stall"
+    if stall:
+        cycles, source = PRICES[stall]
+        terms.append((f"stall ({stall})", times, times * cycles, source))
+    if insn.op == "SFPLOADMACRO":
+        how = "macro_row"
+    cycles, source = PRICES[how]
+    name = insn.op if how == "word" else f"{insn.op} {how}"
+    terms.append((name, times, times * cycles, source))
+    state["previous"] = insn
 
 
 def _merge(terms):
