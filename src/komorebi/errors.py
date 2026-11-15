@@ -32,14 +32,19 @@ class KernelSizeError(ProgramError):
     """A program's kernels do not fit the session's kernel buffer; nothing was loaded.
     `sizes` is the build's `KernelSizes` (total None when the runtime did not say)."""
 
-    def __init__(self, program, sizes, most):
+    def __init__(self, program, sizes, most, refused=None):
         thread = max(sizes.text, key=sizes.text.get)
         total = f"{sizes.total} B" if sizes.total else "more"
+        advice = (
+            f"The session did not follow them ({refused})"
+            if refused
+            else "Give the session more (Session(kernel_bytes=...))"
+        )
         super().__init__(
             f"{program}: its kernels take {total} of the {sizes.limit} B kernel buffer "
             f"(largest: {thread}, {sizes.text[thread]} B of text); L1 allows up to "
-            f"{most} B. Give the session more (Session(kernel_bytes=...)) or build a "
-            "kernel for size (Program(opt={'reader': 'Os', 'writer': 'Os'}))."
+            f"{most} B. {advice}, or build a kernel for size (Program(opt={{'reader': "
+            "'Os', 'writer': 'Os'}))."
         )
         self.sizes = sizes
 
@@ -48,17 +53,19 @@ class L1BudgetError(ProgramError):
     """A program's buffers, control blocks and overlay slots do not fit a core's L1;
     nothing was loaded. `table` is the L1 budget table of one core."""
 
-    def __init__(self, program, table, held=0):
+    def __init__(self, program, table, held=0, refused=None):
         kept = (
             f" The session keeps {held:,} B of every core's L1 at the top (counted in "
             "the table)."
             if held
             else ""
         )
+        smaller = f" ({refused})" if refused else ""
         super().__init__(
             f"{program}: its buffers and slots do not fit a core's L1. Fewer or "
             "smaller slots (Program.slots(count=..., bytes=...)), fewer buffer pages, "
-            f"or a smaller kernel buffer.{kept} The L1 budget of a core:\n{table}"
+            f"or a smaller kernel buffer{smaller}.{kept} The L1 budget of a core:\n"
+            f"{table}"
         )
         self.table = table
         self.held = held

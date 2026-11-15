@@ -11,7 +11,7 @@ tags:
 A **hazard** is something that goes wrong on the card or in the framework, that a page of
 this documentation has seen or states, and that a program never meets when it follows a
 rule. It is a category of its own. The README's
-[sizes a program works within](../../README.md#sizes-a-program-works-within) are fixed
+[sizes a program works within](../../README.md#limits) are fixed
 sizes of the runtime and limits of the card, which a program is written to fit; a hazard
 is not a size but something a program does, or does in a certain order. What each page
 lists under "Not in this version" is what is not built; a hazard is built, and works
@@ -617,7 +617,15 @@ The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the 
 `ok && room`.
 
 **The guard.** A class's generated compute follows the rule at every reserve (a test
-checks the generated text). A hand kernel: nothing.
+checks the generated text: the products, the field reduce, a write stream's push of a
+copy, of a tile function's result and of a body's tile, a tile or a sum written to a
+page, a drained stream and its end). A body on compute that takes a written page gets
+its word as pack's (the page's address, 0 once pack's reserve gave up; the address on
+unpack and math): the class compiler refuses a body where that word steers a section,
+a copy, a product or a way out (`return`, `break`), and lets it guard `pack_tile`. A
+body that packs without testing the word packs into a buffer it holds no room in: the
+three threads stay in step, and the pages are the given-up command's, cleared at its
+end. A hand kernel: nothing.
 
 Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
 
@@ -756,6 +764,22 @@ it in the B family.
 
 Described in [Tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function).
 
+### A tile function's sqrt, reciprocal and division outside their domain
+
+**The hazard.** `km.sqrt(x)` is `x * rsqrt(x)` and `km.reciprocal(y)` the unit's
+estimate refined by two Newton steps, neither guarded: `km.sqrt` of a negative value,
+`km.rsqrt` of 0 or a negative value and `km.reciprocal(0)` (so `x / 0`) give what the
+words compute, not the IEEE answer (tt-metal's `sqrt_tile` and `div_binary_tile` test
+those cases; the unit program does not). `km.sqrt(0)` is 0.
+
+**The rule.** Give `km.sqrt` values of 0 or more and `km.rsqrt`, `km.reciprocal` and a
+divisor values away from 0, or write the guard in the expression (`km.maximum(x, 0.0)`),
+or use the inline body of the library's call.
+
+**The guard.** Nothing.
+
+Described in [Tile functions, what a tile function may contain](tile.md#what-a-tile-function-may-contain).
+
 ## X280 threads
 
 ### A thread that never polls the stop flag
@@ -865,6 +889,21 @@ into a `memset` call, does not link.
 Described in [X280 threads reference, the image](threads.md#the-image) and
 [writing one](../threads.md#writing-one).
 
+### A class's command from a thread on a tensor other than the make's
+
+**The hazard.** A handler's function in a class's thread header writes the address of
+the tensor the class was made with into each tensor parameter's word. A thread that
+means the command for another tensor gets the make's tensor: it reads or writes the
+wrong pages, and nothing fails.
+
+**The rule.** For another tensor, set the word after the function
+(`command->a<n>`, `n` the place `<NAME>_<HANDLER>_<PARAMETER>` gives), or make the
+class with that tensor.
+
+**The guard.** Nothing.
+
+Described in [classes, X280 threads](classes.md#x280-threads).
+
 ### An X280 clock above the default under matrix load
 
 **The hazard.** At 1,750 MHz the card lowers its core voltage when the Tensix grid is
@@ -879,7 +918,7 @@ and safe use is the caller's claim. What the default gives up: a host-fed comman
 depth 16 costs 1.228 µs at 1,000 MHz and 0.726 at 1,750.
 
 Described in [Host API, `Session`](host.md#session) and the README's
-[sizes](../../README.md#sizes-a-program-works-within).
+[sizes](../../README.md#limits).
 
 ## Islands and links
 
@@ -964,6 +1003,28 @@ wait. SIGKILL: nothing, the card is reset.
 
 Described in [Host API, `Session`](host.md#session) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
+
+### A session that follows its kernels
+
+**The hazard.** A session not given `kernel_bytes` opens its card again at its first
+load when the kernels need another kernel buffer, and writes into each tensor again
+what it was given. It keeps the host arrays given to `session.tensor`, `session.write`
+and `tensor.write` by reference until that load, so an array changed in between is
+written as it is then, and bytes written through `tensor.buffer` itself are not
+written again. Where it cannot open the card again (a run already loaded, a session
+on a given device, an island or mesh session), the load is refused.
+
+**The rule.** Until the first load, do not change an array once it is given to the
+session, and write tensors through `session.tensor`, `session.write` or
+`tensor.write`. A session that loads a second, larger program gives `kernel_bytes`
+the size the refusal names.
+
+**The guard.** The refusals: `km.KernelSizeError` (or `km.L1BudgetError` for a
+smaller buffer) naming why and the size that holds the kernels; `km.KomorebiError`
+when a tensor comes back at another address. A changed array or a write through the
+buffer: nothing.
+
+Described in [Host API, the kernel buffer](host.md#the-kernel-buffer).
 
 ### A tensor or a thread's region touched while the kernels run
 

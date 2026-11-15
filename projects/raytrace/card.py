@@ -16,7 +16,6 @@ from projects.raytrace import packets
 
 K = packets.K
 KERNELS = packets.HERE / "kernels"
-KERNEL_BYTES = 87488  # kernel buffer: the kernels' 85,392 B and 2 KiB to spare
 T0 = time.monotonic()
 
 
@@ -106,7 +105,7 @@ def read(session, *tensors):
 
 def open_session():
     """The session every driver runs in (`with card.open_session() as session`)."""
-    return km.Session(log=log, kernel_bytes=KERNEL_BYTES)
+    return km.Session(log=log)
 
 
 def workers(session):

@@ -32,7 +32,6 @@ CHUNK = 2  # K tiles a block
 WEIGHTS = {"16": "bfloat16", "8": "bfp8_b", "4": "bfp4_b"}
 FIDELITIES = ("LoFi", "HiFi2", "HiFi4")
 REPEAT = 3
-KERNEL_BYTES = 76 * 1024  # six handlers' kernels: over the default 70,656 B
 STARTED = time.monotonic()
 
 
@@ -174,7 +173,7 @@ def build(args):
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     km_session.Session.load = build_only()
     x, w = inputs()
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         tensors = tensors_of(session, x, w, empty=True)
         for fidelity in FIDELITIES:
             program = proof_class(fidelity)(log=log, session=session, **tensors)
@@ -198,7 +197,7 @@ def card(args):
     x, w = inputs()
     want = x.astype(np.float64) @ w.astype(np.float64)
     rows = []
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         tensors = tensors_of(session, x, w, empty=False)
         for fidelity in FIDELITIES:
             cls = proof_class(fidelity)

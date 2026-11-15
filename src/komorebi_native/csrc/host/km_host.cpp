@@ -1309,6 +1309,21 @@ namespace {
             }
         }
 
+        // Sets the sizes of buffer `index`: its format, the one thing the kernels'
+        // build keys hold of it, stays, so the built program is the one launched.
+        void resize_cb(uint8_t index, uint32_t page_size, uint32_t total_size) {
+            for (auto& descriptor : desc_.cbs) {
+                for (auto& format : descriptor.format_descriptors) {
+                    if (format.buffer_index == index) {
+                        format.page_size = page_size;
+                        descriptor.total_size = total_size;
+                        return;
+                    }
+                }
+            }
+            throw std::invalid_argument("no circular buffer " + std::to_string(index));
+        }
+
         // A kernel from a file on `cores`, args (x, y, words) per core; processor 0 or
         // 1: data movement on that RISC-V and NoC `noc` (default: its own), 2: compute.
         void kernel(
@@ -3258,6 +3273,12 @@ NB_MODULE(_km_host, m) {
         ).def("build", &Launch::build).def("recipes", &Launch::recipes)
         .def("run", &Launch::run)
         .def(
+            "resize_cb",
+            &Launch::resize_cb,
+            nb::arg("index"),
+            nb::arg("page_size"),
+            nb::arg("total_size")
+        ).def(
             "reset_core",
             &Launch::reset_core,
             nb::arg("x"),

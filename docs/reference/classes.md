@@ -273,9 +273,12 @@ are added to the run by `run.addon(..., handler=True)`
 ([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
 with the added number. Later submits of the set find it added. The files go into
 `build/<class>-use<key>/`: the key holds the load's build key, the handler, the set's
-values and the class's source files. A later process that makes the same program finds
+values, the class's source files and a hash of the package's Python source (the class
+compiler that wrote them: a changed compiler compiles the set again). A later process that makes the same program finds
 them there and reads the set's words from `first_use.json`, so nothing is compiled.
 Its parts are then found in the parts' cache, so nothing is built either.
+`program.ahead(Gate.gate, size=4)` compiles a set before the run and has the load
+build its parts ([overlays](overlays.md#code-added-to-a-live-run), built ahead).
 
 What the opt-in costs and requires, checked at the make:
 
@@ -422,6 +425,7 @@ A handler of **another** class added to a live run is not built. It would need:
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
+| `y.tiles[r0:r1, c0:c1].write(gate(self.h, self.g))`, gate a tile function, h and g fields of sums of one shape | as the field's write | tile by tile each field's tile copied into the DST tile of its operand, gate's body on the math CPU, DST 0 packed into Y's format; both fields freed, both counts reset |
 | `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
@@ -938,8 +942,9 @@ A **tile function** is a Python function of tiles that the tile compiler
 ([Tile functions](tile.md)) traces and emits for compute: decorated with
 `@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
 called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
-stream form: `+`, `-`, `*`, number constants, `km.silu`, `km.sigmoid`,
-`km.rsqrt`, `km.exp` (`error=`, `over=`) of up to three tiles, one result. From
+stream form: `+`, `-`, `*`, `/`, `abs`, number constants, `km.silu`, `km.sigmoid`,
+`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.exp`
+(`error=`, `over=`) of up to four tiles, one result. From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
@@ -981,6 +986,22 @@ class Gate(km.Program):
 | `results.push(f(x, g))`, `t = f(x, g)` | | once before the blocks `copy_init` and the body's setup (`km_tile::f_init()`); DST held for as many tiles as half of DST takes (4 float32 tiles over the operands: 2 tiles of a gate an acquire), each tile's operands copied into its DST tiles in the order of the unit program's operands and `km_tile::f(d)` on the math CPU, then each tile's first DST tile packed into the write stream at its place |
 | `for row in km.Stream(pages, block=4, row=2):` | one read stream, as without `row=` | each item a row of 2 tiles of the block; the block a multiple of the row |
 | `results.push(self.f(row, self.w))`, `self.w` a field | | the row form: the field filled above the loop waited for before its blocks and freed after them; a row: its tiles copied into DST 0 and 1, the field's tile into DST 4, `km_tile::f(0)`, DST 0 and 1 packed; DST in full-sync mode |
+
+**A tile expression in a handler's line.** `results.push(x / y)`, `t = km.silu(x) * y *
+SCALE`: an expression of the loop's tiles, numbers, module constants and the tile
+arithmetic above is the tile function of the tiles it names, in the order it names
+them, and is emitted as that function's call is (`tile_line_N` in the build's list,
+N the line): its unit program is the same, word for word, as the one a
+`@km.tile_function` of the same expression gives. A word of the command, a field or
+`self` in such an expression is refused at its line (the unit program's numbers are
+immediates built into its code); a call that is no tile arithmetic (`km.cxx(...)`)
+leaves the line to its own form. On the card
+([tile lines](../../experiments/language/tile_lines/README.md), bf16 tiles, 768 a
+command on 12 cores): `results.push(km.silu(x) * y)` equal datum for datum to the tile
+function's call, 82.1 us both; `x / y` within 1.6e-7 of float64 at 30.3 us against
+75.5 us for the inline body of tt-metal's `div_binary_tile`; `km.sqrt(x)` within 9.5e-8
+at 40.2 us against 53.9 us for `sqrt_tile`; `km.minimum(abs(x), y)` exact; four tiles
+`x * y + z * w` within 6.0e-8.
 
 A function called on a row of a stream of `row=` tiles is traced in the tile
 compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows of the
@@ -1098,6 +1119,17 @@ A product's sum is in one of two places:
   blocks are two streams' (the field one row of n tiles, `km.L1[km.fp32, 1, n, 32,
   32]`) or two broadcasts' arrived blocks (rows x k and k x columns, `b.cast(...)` or
   `b.arrive()`), as the dense project's grid form.
+
+A field of sums starts from zero at each command: its first block packs without the L1
+accumulation, and its count of sums is 0 at the handler's start; nothing of one
+command's sums is kept for the next. One loop may add two products into two fields
+(`self.h += self.p(xb, w1b)` and `self.g += self.p(xb, w3b)`, X's block read once for
+both): each is counted on mover B for its write, and a product whose setup differs from
+the loop's first (W's format, the block's shape, a turn) sets its own before its K
+tiles and the first's after them. A tile function of fields of sums is written as one
+rectangle (the table above): the README's SwiGLU layer,
+[31 swiglu](../../examples/31_swiglu/README.md), whose `up` handler writes
+`gate(self.h, self.g)`.
 
 The size rule: a sum in DST is at most 8 float32 tiles (4 in the half-sync DST, 8 in
 full sync); a larger sum is a float32 field, 4 KiB a tile of L1.
@@ -1462,14 +1494,39 @@ handler keeps its own copy of `km::move_filled` and `km::move_drained`), so all 
 stay resident and the load is refused with the bytes.
 
 Not merged, each refused with its reason: a dynamic handler (its message loop is its
-program's own kernels); a handler with constant parameters (built once a set in its own
-program), and `handlers=` on a merged class; classes whose compute options or start-ups
+program's own kernels); a made program with `km.ANY` among its sets (its sets are
+compiled on first use against its own program's load: list them to merge them);
+`handlers=` on a merged class (`class Layer(A, B)`: its handlers take their defaults;
+merge made programs to give sets); two classes whose handlers of one name both have
+constant parameters (a set is picked by the handler's name); classes whose compute options or start-ups
 differ; a define or the rectangle given two values; a merged program as a source; a
 class in the kernel form with a hand program, and `form=` or `beside=` at the make of a
 class merging classes (it is built in the kernel form). Classes made with
 `form="runtime"` merge with each other and with hand programs, in the runtime's form
-([Programs merged into one](host.md#programs-merged-into-one)). A chain over handlers
-of several classes is not built: a class has no chain on this version.
+([Programs merged into one](host.md#programs-merged-into-one)).
+
+A handler with constant parameters merges as its program built it: `km.merge` of a
+program made with `handlers={"gate": [{"size": 4}, {"size": 8}]}` gives the merged
+program `gate_size4` and `gate_size8`, at the numbers the class's own build gives them
+(the first class keeps its numbers, the next ones follow), or `gate` at its defaults
+when no set is listed. A call names the class's handler with the constants
+(`Gate.gate`, `size=4` at its place) and the merged program's handler of that set
+takes it; a set not listed is refused as in one class. The gate class merged with
+GateBlocks made with blocks 8 and 4 listed ran on the card, 120 cores, 16 tiles a core:
+`Gate.gate` 43.74 us, block 4 43.32 us, block 8 42.0 us, each 0 wrong.
+
+A chain runs over a merged class's handlers as over one class's
+([Chains](#chains)). `class Layer(Scale, Rest)` gets the chain's walk from a `km.chain`
+method of its own or of a class it merges, or from `chain=True` at its make;
+`km.merge(a, b)` of made programs gets it when a source was made with it. A chain's call
+names a handler through the merged class (`Layer.scale`, `program.steps(...)`) or
+through the class that declares it (`Scale.scale`), which the merged program's own copy
+then stands for. Each handler's chain waits are read from its own class's file. Example
+29's steps split over two classes and merged both ways ran on the card with the
+unmerged class's words (list and method, factors 5 and 7, 0 wrong) and its time a chain
+(21.48 / 20.94 us merged as a class, 21.18 / 21.02 by km.merge, 21.44 / 20.86 unmerged).
+A merged program in the runtime's form has no walk (a class's walk is in its own
+kernels).
 
 ## Dynamic handlers and messages
 
@@ -1573,22 +1630,93 @@ is a command word).
 
 ## X280 threads
 
-Each build also writes `<name>_thread.h`, a C header for a thread's commands: each
-handler's number, the place of each of its words (a0 is 0) and their count, and
-whether its command asks for the leader's result. A thread that includes it (the
-build folder, `program.built.folder`, in its `includes`) submits the class's commands
-with `kmx_submit` and waits with `kmx_wait`. From
+A thread stays C, built for the X280 and calling `kmx_*`. Each build writes
+`<name>_thread.h`, a C header for a thread's commands, from the same build as the
+kernels, so the C and the class cannot drift apart. It holds:
+
+- each built handler's number (a constant set's under its set's name, a merged
+  program's at the merged number), the place of each of its words (a0 is 0), their
+  count, and whether its command asks for the leader's result, as before;
+- the program field (`kProgram<Name>` in a run of several programs, else 0) and the
+  class's constants at this make (`WORKCLUSTER_MAX_ROUNDS`);
+- the load's words: each tensor of the make, its address, as a word the load gives the
+  thread after the thread's own (`<NAME>_WORD_STATE`), its pages, and
+  `<name>_state_dram(first)`, the `kmx_dram` that `kmx_fetch` and `kmx_store` take;
+- the thread's regions: each one's id for `kmx_region` and its bytes, and a region's
+  bank address and bank, a region parameter's two words;
+- a function for each built handler that fills its whole command (`kmx_command`, the
+  flags, the group, each word) from typed arguments: the make's tensors and the
+  thread's regions come from the load, so they are not arguments.
+
+The class states its thread in its body: its regions with `km.region(bytes)` (an int
+or of the class's constants; ids in body order), and its C with
+`km.x280_thread(*sources, cluster=1, deadline=, includes=, defines=, prefetch=,
+host_fallback=)`, sources and includes relative to the class's file.
+`thread_words=[...]` at the make gives the thread's own words. From
 [07 work cluster](../../examples/07_work_cluster/as_class/README.md):
 
-```c
-/* SUM, line 35. */
-#define WORKCLUSTER_HANDLER_SUM 2u
-#define WORKCLUSTER_SUM_STATE 0u
-#define WORKCLUSTER_SUM_CORES 1u
-#define WORKCLUSTER_SUM_FIRST 2u
-#define WORKCLUSTER_SUM_WORDS 3u
-#define WORKCLUSTER_SUM_RESULT 1u /* KM_FLAG_RESULT */
+```python
+class WorkCluster(km.Program):
+    MAX_ROUNDS = km.constant(1000)
+    groups = km.region(4 * MAX_ROUNDS)
+    thread = km.x280_thread(
+        "thread/driver.c", "../decide.c", cluster=1, includes=[".."], deadline=10.0
+    )
+
+    @km.handler
+    def step(self, state: km.Tensor, round: int, first: int): ...
+
+
+program = WorkCluster(state=state, MAX_ROUNDS=rounds, thread_words=words)
 ```
+
+```c
+/* STEP, line 35: state the make's tensor, round, first. */
+static inline void workcluster_step(
+    km_command_t* km_command,
+    uint32_t km_flags,
+    uint32_t km_first,
+    uint32_t km_count,
+    uint32_t round,
+    uint32_t first
+) {
+    kmx_command(km_command, WORKCLUSTER_PROGRAM, WORKCLUSTER_HANDLER_STEP, km_first, km_count);
+    km_command->hdr |= km_flags << 8;
+    km_command->a0 = workcluster_word(WORKCLUSTER_WORD_STATE);
+    km_command->a1 = round;
+    km_command->a2 = first;
+}
+```
+
+The thread is made and its C built at the make, before any card job: the header the
+thread was built with is in a folder of its own (`build/<name>-<key>/thread-<hash>/`),
+put first among its includes. The make refuses a region parameter that names no
+region of the class. It also refuses C that names a handler, a tensor or a region
+the program lacks. The message gives the class's line, the C's errors with their
+lines, and what the program has:
+
+```
+Missing, line 97: the thread's C does not build with missing_thread.h:
+  .../missing.c:10:5: error: implicit declaration of function 'missing_nothing'; ...
+  missing_nothing: the program has no handler nothing (['total'])
+```
+
+`program.thread(...)` after the make, as a hand program's (`Program.thread`), keeps
+working: the thread gets the same header, its words come first and the load's follow,
+and it is built at that call. A class declares one thread, and `program.thread` is
+refused on a class that declares one. On a made program, `program.thread` (the
+declaration's name) is the `komorebi.thread.Thread`, and `program.threads` holds it as
+a hand program's. `km.thread` is the module `komorebi.thread`, so the class's spelling
+is `km.x280_thread`.
+
+What stays out: nothing makes the thread anything but C, and no Python runs on the
+X280. A set added on its first use (`km.ANY`) has no number at the build: the host
+submits it, never the thread, and the header says so. Chain records and `kmx_load`'s
+programs are not in the header. A merged program takes its thread after the merge
+(`program.thread`); a class that declares one is refused in a merge. A region's size
+is not checked against the pages a handler reads of it. In a run of several programs
+the load builds the thread again with the programs' defines (`kProgram<Name>`); the
+image is built at that load.
 
 ### A thread's region as a parameter
 
@@ -1674,7 +1802,8 @@ session gives more with `kernel_bytes`
 
 **The lines a call is described from.** A handler's streams of page ranges
 (`t.pages(first, count)`, a partition's share `s[part]`, a rectangle `t.tiles[r0:r1,
-c0:c1]`), their zip, `.write` of a page range, `.drain` and `.fill`, the assignments
+c0:c1]`), their zip, `.write` of a page range or of a rectangle (`t.tiles[r0:r1,
+c0:c1].write(...)`), `.drain` and `.fill`, the assignments
 before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write. A
 first page is a number of the call's words, the class's constants, `self.rank`, `size`
 and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the first tensor
@@ -1683,7 +1812,11 @@ written; each group's root writes block g, `width` tiles from g x width), the gr
 `base + step x g`. The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
 input that `run.chain` proves (as a written chain's,
-[the earlier input](chain.md#the-earlier-input-and-the-direct-input)).
+[the earlier input](chain.md#the-earlier-input-and-the-direct-input)). A rectangle of
+several rows that are not whole rows (a weight's columns, `w.tiles[0:K, c:c + n]`) is
+no range of tiles: it is read as an outside tensor, and refused when a call of the
+chain writes it. A call's `cores=(first, count)` puts it on its own group (the README's
+SwiGLU: `up` on 12 cores, `down` on 4).
 
 **Several outputs.** A handler that writes more than one tensor, each as block g of its
 group (the decode layer's x and its rows' squares, a tile a group), is a call with
@@ -1725,6 +1858,7 @@ island 0's program and `cores` in flat ranks.
 | a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor and states neither `reads=` nor `writes=` | `run.chain` | the handler, the line and why; it still runs as a command |
 | a body's `reads=` of a tensor a call of the chain writes; a read of a tensor another call's body writes (`writes=`) | `run.chain` | the call, the line, the tensor, the other call |
 | a call of a program made without the walk | `run.chain` | the handler; `chain=True` or a `km.chain` method |
+| a rectangle of rows not whole read from the call before's output or from a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | a `kc.Call` among a class's calls | `run.chain` | the call |
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
 | `km.past` of the call before's output, or of a tensor the handler does not read | `run.chain` | the call, the tensor |
@@ -1784,23 +1918,38 @@ leaves their indices and takes their `unpack_to_dest_mode` at those indices, so 
 has one set of compute options. The fidelity is the programs' to agree on: a class
 whose tile functions have no product gives `compute={"math_fidelity": ...}`.
 
-Refused when the class is made in this form (`ProgramError`, naming the handler's
-line), each with what lifting it would need (none of it is built):
+**A start-up of the class's own** (a body at a kernel's start, `km.cxx(...,
+at="start")`, and `startup=`) runs at the load of the program: every part of a program
+is called with the load command (`KM_HANDLER_LOAD`) when a group takes it, and the
+class's parts run there what the kernel form runs before the commands, compute's
+start-up (the class's `km.Startup`, else the one on the program's first buffers) and
+then the bodies (`km_program_start` in the generated sources). In a dict's run it runs
+when the group takes the program, again at each `run.load` of it. A class alone (or
+alone in a list) is run as a dict over every core, so its run loads it before the first
+command (buffer indices below 32, as any dict's). With `startup=`, each command's two
+format calls are left out: the class's start-up set the formats, on cores that hold
+the program alone. The names a start body declares are not seen by the handlers here
+(the body is the load's function): a value a handler needs goes in an own field. On
+the card (card 0, 960 tiles, x + 0.5 from a 0.5 tile built into an own field at
+compute's start): the kernel form 18.12 us, the class with `startup=` alone in the
+runtime's form 18.94 us, every word equal to the kernel form's; a dict of the class
+(cores 0-59) and the one with `startup=` (60-119) 12.2 and 11.88 us, 0 wrong.
 
-- **A body at a kernel's start** (`km.cxx(..., at="start")`): the runtime owns the
-  kernels' start. The place exists in a dict's run: every part of a program is called
-  with the load command (`KM_HANDLER_LOAD`) when a group takes the program, where
-  compute runs the start-up today, so the body would run there. A list's run sends no
-  load, so it would need one sent to every core at the run's start.
-- **A body at a kernel's end** (`at="end"`): no part is called when the run stops; it
-  would need the runtime's loop to call each program's parts once at the stop.
-- **`startup=`** (a start-up of the class's own, `km.Startup`): the start-up is the
-  runtime's, on the first buffer below 16 and the first from 16. The same load call
-  has the place: the start-up there would take the class's buffers and order, and
-  each command's two format calls the same buffers.
-- **A dynamic handler**: the runtime's form has no message loop of a program's own;
-  it would need the runtime's message kernels to serve a program field, and two
-  programs' dynamic handlers in one run are not built either
+Refused, `ProgramError`:
+
+- **A start-up of the class's own in a list of several programs**, at the load: every
+  core holds every program and none is loaded, and one program's start-up would set
+  the hardware up under the others' commands; a dict gives each program its cores.
+  Sending a load of its own to every core at the run's start is not built for it.
+- **km.merge of such a class**: a merged program has one load, the sources' start-ups
+  are not merged.
+- **A body at a kernel's end** (`at="end"`), when the class is made in this form,
+  naming its line: no part is called when the run stops. It would need the runtime's
+  three kernels to load and call the held program's part once after the stop, with a
+  give-up path of its own; not built.
+- **A dynamic handler**, naming its line: the runtime's form has no message loop of a
+  program's own; it would need the runtime's message kernels to serve a program field,
+  and two programs' dynamic handlers in one run are not built either
   ([overlays](overlays.md#not-in-this-version)).
 
 An overlay handler is not refused: it is one of the program's own overlays (above).
@@ -1925,14 +2074,16 @@ the packed text of the five CPUs, of 70,656 B.
 
 ## Not in this version
 
-A rectangle per command; tile arithmetic outside a tile function (`tile * factors`
-in a handler's line); slices and `.columns` of a field; a rectangle of tiles with a
+A rectangle per command; slices and `.columns` of a field; a rectangle of tiles with a
 step on its columns; a transposed rectangle outside a cast; a stream of a rectangle
 of more than one row whose columns are words; a field
 filled from a broadcast; a product's operands other than a stream's tile and a field,
 two streams' blocks, or two broadcasts' blocks into a float32 field; a field of sums of
 more than one row from two streams; a product and a tile function in one body; the fidelity derived from a tile function's tolerance (it is
-given as `fidelity=`); a word field with a rectangle (`self.x`, a broadcast).
+given as `fidelity=`); a word field with a rectangle (`self.x`, a broadcast). Of a
+class's X280 thread: a thread in a merged class's body, shared regions, a region's
+size checked against the pages a handler reads of it, chain records in its header
+(see [X280 threads](#x280-threads)).
 
 A body's own buffer (a field only bodies fill, as a hand kernel's scratch or a page it
 builds for the movers): not needed by the lines above, not built. A page assembled
@@ -1944,7 +2095,7 @@ the pack CPU's words. Items of a tensor on two islands (refused when the kernel 
 built: no call moves part of another island's page). A range loop whose count is one
 mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
-A class in the runtime's form with a dynamic handler, a body at a kernel's start or
-end, or a start-up of its own (`startup=`): refused ([The runtime's
-form](#the-runtimes-form)); the runtime's form has a message loop of no program, and
-the runtime owns the kernels' start, end and start-up.
+A class in the runtime's form with a dynamic handler or a body at a kernel's end:
+refused ([The runtime's form](#the-runtimes-form)); the runtime's form has a message
+loop of no program, and no program's part is called when the run stops. A body at a
+kernel's start or `startup=` in a list of several programs: refused (no load there).

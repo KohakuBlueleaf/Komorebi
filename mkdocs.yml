@@ -151,6 +151,7 @@ nav:
       - examples/28_islands_reduce/README.md
       - examples/29_chain/README.md
       - examples/30_add_overlay/README.md
+      - examples/31_swiglu/README.md
   - Measured: measured.md
   - Releases:
       - releases/0.2.0.md
