@@ -1,6 +1,5 @@
 // A crossing alone, reader: roots write their block into their card's copy, then V1
-// (the leader sends the card's half) or V2 (each root sends its block); all go
-// together.
+// (the leader sends the card's half) or V2 (each root sends its block).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

@@ -227,6 +227,7 @@ def probe(args, session, report):
             words_i[1] = island * 32
             words_i[9] = decode.leader | (two.CROSS_SERIAL if serial else 0)
             handles[island] = run.submit("split", (first, 1), words_i, part=True)
+            run.store()  # on its card now, not at its wait
             if gap:
                 time.sleep(gap)
         events = {}
@@ -259,12 +260,29 @@ def crossed(diff):
 
 
 def check(decode, want):
-    """Every word of x1, a, gated and x on both cards against md.layer()'s."""
+    """Every word of x1, a, gated and x on both cards against md.layer()'s, each half
+    apart (card c's own: its output columns), and each card's q, k, v of its heads."""
     out = {}
     for name in ("a", "x1", "gated", "x"):
         for island in (0, 1):
             got = decode.read_activation(name, island)[:1]
             out[f"{name}{island}"] = md.errors(got, want[name][:1])
+            half = got.shape[1] // 2
+            for c in (0, 1):
+                part = slice(c * half, (c + 1) * half)
+                key = f"{name}{island} half{c}"
+                out[key] = md.errors(got[:, part], want[name][:1, part])
+    model = decode.model
+    for island in (0, 1):
+        (raw,) = decode.session.sessions[island].read(decode.local[island]["qkv"])
+        tiles = raw.reshape(-1).view(np.uint16).reshape(-1, md.TILE, md.TILE)
+        qkv = real.formats.bf16_values(tiles).transpose(1, 0, 2).reshape(md.TILE, -1)
+        q_width = model.heads // 2 * model.head_dim
+        kv_width = model.kv_heads // 2 * model.head_dim
+        got = np.split(qkv[:1], [q_width, q_width + kv_width], axis=1)
+        for name, width, values in zip("qkv", (q_width, kv_width, kv_width), got):
+            mine = slice(island * width, (island + 1) * width)
+            out[f"{name}{island}"] = md.errors(values, want[name][:1, mine])
     return out
 
 
@@ -307,6 +325,7 @@ def layer_mode(args, session, report):
         position=position,
         local=True,
     )
+    decode.write_activation("x", x)  # the local job wrote only its own half of x
     guarded(decode, report, "failed cross", tokens=1, layers=1, position=position)
     report["check"] = check(decode, want)
     log(f"check: { {k: round(v['rms_rel'], 4) for k, v in report['check'].items()} }")

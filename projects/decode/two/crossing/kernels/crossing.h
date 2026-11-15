@@ -3,9 +3,8 @@
 
 #include <stdint.h>
 
-// CROSS: a0 the activation (a copy, 2 x a2 pages), a1 the stamps (a copy, a page a
-// flat rank), a2 a card's half in pages, a3 roots, a4 their stride, a5 a root's pages,
-// a6 the way (1: V1, 2: V2), a7 the run's salt.
+// CROSS: a0 the activation (copy, 2 x a2 pages), a1 the stamps (a page a rank), a2 a
+// half's pages, a3 roots, a4 their stride, a5 a root's pages, a6 way (1, 2), a7 salt.
 constexpr uint32_t kHandlerCross = 1;
 // GATHER: a0 .. a2 as CROSS: km::all_gather of the 2 x a2 pages, each half written.
 constexpr uint32_t kHandlerGather = 2;

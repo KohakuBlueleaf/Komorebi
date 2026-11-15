@@ -4,14 +4,12 @@
 
 #include <stdint.h>
 
-/* CROSS, SPLIT's operation on one core (the card's leader), the writer's part: a0 the
- * activation's table word, a1 this card's first page, a2 its pages, a7 the squares'
- * table word (0: none), a8 their pages, a9 the far leader's rank on its island. */
+/* CROSS, SPLIT's op on the leader: a0 the activation's word, a1 this card's first
+ * page, a2 its pages, a7/a8 the squares' word and pages, a9 the far leader. */
 enum { DC2_OVERLAY_CROSS = 5 };
 
-/* The thread's words past decode.h's (DC_WORDS): the cross plan, the crossing's op
- * word, this island's first rank, the far leader's rank on its island, the leader here
- * (on this island), this card's index (0, 1). */
+/* The thread's words past decode.h's: the cross plan and op word, this island's first
+ * rank, the far and the local leader's ranks on their islands, this card (0, 1). */
 enum {
     DC2_WORD_PLAN_CROSS = 24,
     DC2_WORD_CROSS,
@@ -24,9 +22,8 @@ enum {
     DC2_WORDS
 };
 
-/* Region `tensors`: this island's addresses (bank addresses of its parts; a half: its
- * pages of the whole, by a whole number of pages a bank) and the crossings' table
- * words. */
+/* Region `tensors`: this island's bank addresses (a half: its pages of the whole, whole
+ * pages a bank) and the crossings' table words. */
 enum {
     DC2_TENSOR_X,
     DC2_TENSOR_X_HALF,

@@ -63,8 +63,7 @@ static void product(
 }
 
 /* A crossing on the leader alone: the activation's table word, this card's first page
- * and pages, the squares' word and pages (0: none); local: no pages (the mark alone).
- */
+ * and pages, the squares' word and pages (0: none); local: the mark alone. */
 static void crossing(
     const job_t* job,
     km_command_t* command,

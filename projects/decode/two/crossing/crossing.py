@@ -1,8 +1,7 @@
-"""One crossing of the two-card decode alone, on cards 0 and 1: each card's roots
-write their blocks into their card's copy of the activation; V1 (the roots mark the
-card's leader, which sends the card's half as one put line) or V2 (each root puts
-its block across); the far leader counts the half and releases its card. Beside
-km::all_gather of the same pages. Prints one JSON line."""
+"""One crossing of the two-card decode alone, on cards 0 and 1: V1 (the roots mark
+their card's leader, which puts the card's half across as one line) or V2 (each root
+puts its block across); the far leader counts the half and releases its card. Beside
+km::all_gather of the same pages; prints one JSON line."""
 
 import argparse
 import json

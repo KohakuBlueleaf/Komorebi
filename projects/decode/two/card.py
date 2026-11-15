@@ -414,6 +414,7 @@ class TwoDecode:
         args = [tokens, layers, slot, first, mode, position, 1]
         runs = self.run.runs
         handles = [self.submit_thread(island, args) for island in range(2)]
+        self.run.send()  # both islands' commands on their cards before any wait
         events = []
         for run, handle in zip(runs, handles):
             try:
