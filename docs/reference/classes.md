@@ -281,7 +281,9 @@ What the opt-in costs and requires, checked at the make:
 - `km.ANY(p=n)` also sizes the template's buffers for the set with `p=n`: each buffer
   takes the larger page count of the two compiles. `km.ANY` alone sizes them for the
   template only. Buffers that no longer fit the L1 left are refused at the make, with
-  their bytes.
+  their bytes. A program pays for the reserve even if it never submits a larger set.
+  The gate's buffers take 327,680 B of L1 for block 8 alone and 655,360 B with
+  `km.ANY(block=16)`: 327,680 B more on every core.
 
 A set compiled this way may use only what the load has: the buffers, fields and
 streams of the class's L1 layout. It is refused at its first submit, naming the buffer
