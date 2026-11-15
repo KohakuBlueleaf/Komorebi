@@ -145,10 +145,11 @@ and a name of the handler's with that prefix is refused.
 | `word = pages.read()` (one page) | mover B: `km::read_pages` of the page into its word page, the barrier, the L1 cache invalidated, the page's first word | |
 | `word += round + page`, `word` a mover's | the line on the word's mover | |
 | `pages.write(word)` (one page), `word` a mover's | that mover: its word page (the word first, zeros after), `km::write_pages`, `noc_async_write_barrier` | |
-| `b = km.Broadcast(self, along="row", window=2)` | the broadcast on its mover (rows on mover A, columns on mover B); a core it leaves out skips the handler | the same core skips it |
+| `b = km.Broadcast(self, along="row", window=2)` | the broadcast on its mover (rows on mover A, columns on mover B); a core it leaves out skips the handler, on the other mover too | the same core skips it |
 | `if b.sender():` `v = b.cast(t.pages(first, n).read())` `else:` `v = b.arrive()` | the sender's reserve, read and cast, the others' arrival, block by block of the loop around it; the last block's finish | |
 | `v = b.cast(k.tiles[k0:k1, 0:D].T, w.tiles[k0:k1, 0:E])` | several parts into one block, in order, each at its most's place (Several ranges into one block) | |
 | `for tile in v:` | | the block received, each page of it, then freed; the padding after the last |
+| `km.cxx("...", takes=[v])`, v a broadcast's block | | the block received before the body, `v_buffer` its buffer and `v` its first page there (0), freed after the body: the body indexes the block's pages itself |
 | `for i in range(n):` | a loop | a loop |
 | `km.cxx("...", takes=[n], on="mover_b")` | the C++ as written, on the CPU `on` names (Inline bodies) | compute's three CPUs when `on` is not given; `on="unpack"`, `"math"`, `"pack"`: that CPU's alone |
 | `class P(km.Program, compute={...})` | | the compute kernel's options, by the host API's names, over the ones the class's lines set |
@@ -646,6 +647,15 @@ the slot `window` times. Refused at the line: a part that is not a page range of
 tensor, a part with a side whose most the build cannot tell, and parts of tensors of
 different formats or page sizes. `.T` is a cast's: a stream, a fill or a write of a
 transposed rectangle is not a line.
+
+A body on compute's three takes the block whole, `takes=[kv]`: each CPU waits for it
+(`km::broadcast_receive`) before the body, which reads `kv_buffer` from page `kv` (0)
+on, at the parts' places, and frees it after (`km::broadcast_done`). A block is taken
+once, by a body or by `for tile in kv:`; a second take, or a body on one CPU
+(`on="pack"`), is refused at its line. The [table of jobs](../../experiments/language/class_lines/README.md)
+casts K's chunks transposed and V's into one block and packs it whole to a write
+stream: 0 of 112 filled slot pages differ on the card, on the sending and the
+receiving row.
 
 `@km.tile_function(fidelity="HiFi2")` sets the matrix unit's fidelity, tt-metal's word
 (LoFi, HiFi2, HiFi3, HiFi4): the compute kernel's `math_fidelity`, so a class's

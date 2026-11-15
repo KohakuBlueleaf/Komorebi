@@ -375,8 +375,7 @@ class Gathered(km.Program):
                 )
             else:
                 kv = down.arrive()
-            for _tile in kv:
-                pass
+            km.cxx("use(kv_buffer, kv);", takes=[kv])
 
 
 def test_a_cast_of_a_transposed_rectangle_and_a_second_range_into_one_block():
@@ -393,7 +392,15 @@ def test_a_cast_of_a_transposed_rectangle_and_a_second_range_into_one_block():
     # V's rows after K's most: slot page 6, byte 12,288
     assert "() && km::read_pages(movement, command, V(v), ((k0) * 4 + (0))," in movement
     assert " + 12288)) || !down.cast(chunk)" in movement
+    # mover A, which runs no broadcast here, skips a core the rectangle leaves out
+    assert "#else  // mover A\nif (movement.arg(kArgIncluded) == 0) {" in movement
+    # compute takes the block whole, then frees it
     assert "km::broadcast_receive(compute, kBroadcast0, kBroadcast0Pages);" in compute
+    assert "const uint32_t kv_buffer = kBroadcast0;" in compute
+    assert "const uint32_t kv = 0;" in compute
+    assert compute.index("use(kv_buffer, kv);") < compute.index(
+        "km::broadcast_done(kBroadcast0, kBroadcast0Pages);"
+    )
 
 
 class Unbound(km.Program):
@@ -404,8 +411,7 @@ class Unbound(km.Program):
             kv = down.cast(k.tiles[0:keys, 0:2].T)  # unbound
         else:
             kv = down.arrive()
-        for _tile in kv:
-            pass
+        km.cxx("use(kv);", takes=[kv])
 
 
 class Unstated(km.Program):
@@ -416,8 +422,7 @@ class Unstated(km.Program):
             kv = down.cast(k.tiles[0 : rows * stride : stride, 0:2])  # unstated
         else:
             kv = down.arrive()
-        for _tile in kv:
-            pass
+        km.cxx("use(kv);", takes=[kv])
 
 
 class Mixed(km.Program):
@@ -428,8 +433,30 @@ class Mixed(km.Program):
             kv = down.cast(k.tiles[0:1, 0:2], v.tiles[0:1, 0:2])  # mixed
         else:
             kv = down.arrive()
-        for _tile in kv:
-            pass
+        km.cxx("use(kv);", takes=[kv])
+
+
+class Twice(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor):
+        down = km.Broadcast(self, along="column")
+        if down.sender():  # noqa: SIM108
+            kv = down.cast(k.tiles[0:1, 0:2])
+        else:
+            kv = down.arrive()
+        km.cxx("use(kv);", takes=[kv])
+        km.cxx("again(kv);", takes=[kv])  # twice
+
+
+class Packed(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor):
+        down = km.Broadcast(self, along="column")
+        if down.sender():  # noqa: SIM108
+            kv = down.cast(k.tiles[0:1, 0:2])
+        else:
+            kv = down.arrive()
+        km.cxx("use(kv);", takes=[kv], on="pack")  # packed
 
 
 class ColumnStep(km.Program):
@@ -444,6 +471,8 @@ class ColumnStep(km.Program):
         (Unbound, "# unbound", "the build knows no most for a side here"),
         (Unstated, "# unstated", "the build knows no most for a side here"),
         (Mixed, "# mixed", "a cast's block is of one format and page size"),
+        (Twice, "# twice", "this block is taken above"),
+        (Packed, "# packed", "a block of compute's three CPUs"),
         (ColumnStep, "# column step", "a step on the rows alone"),
     ],
 )

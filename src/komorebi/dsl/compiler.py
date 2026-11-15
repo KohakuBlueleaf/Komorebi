@@ -4875,7 +4875,16 @@ class HandlerCompiler:
         compute = []
         if len(self.movers) == 1:
             compute.append(Line("if (compute.arg(kArgIncluded) == 0) {\n    break;\n}"))
+            return [movement, self.other_mover_skips(mover)], compute
         return [movement], compute
+
+    def other_mover_skips(self, mover):
+        """The mover a handler's first broadcast does not run skips the handler on a
+        core the rectangle leaves out, as that broadcast's mover and compute do."""
+        return Line(
+            "if (movement.arg(kArgIncluded) == 0) {\n    return true;\n}",
+            mover="B" if mover == "A" else "A",
+        )
 
     def broadcast_branch(self, node):
         """`if b.sender(): v = b.cast(pages.read())`, `else: v = b.arrive()`: on the
@@ -5160,6 +5169,7 @@ class HandlerCompiler:
         takes its pages in order, frees its slot."""
         if not isinstance(node.target, ast.Name):
             self.refuse(node, "one name a tile", "write for tile in block")
+        self.arrived_once(node, value)
         buffer = value.buffer.name
         page = f"km_page{value.buffer.index_a}"
         self.check_name(node, node.target.id)
@@ -5402,6 +5412,8 @@ class HandlerCompiler:
             return {item.id}
         if value.kind in ("entry", "entries"):
             return self.take_entry(node, item.id, value, bound)
+        if value.kind == "arrived":
+            return self.take_arrived(node, item.id, value, where, bound, before, after)
         if value.kind == "streamed" and where == "compute":  # its buffer and place
             buffer, index = spelling("tile_buffer"), spelling("tile_index")
             bound.append(f"const uint32_t {item.id}{buffer} = {value.cxx};")
@@ -5506,6 +5518,44 @@ class HandlerCompiler:
             )
         )
         self.handover(node, f"the release of {name}", cpu, ("unpack",))
+
+    def arrived_once(self, node, value):
+        """A block a broadcast brought is taken once: a body or a loop over it."""
+        if value.popped:
+            self.refuse(
+                node,
+                "this block is taken above (a body or a loop over it), and freed",
+                "take it once each block",
+            )
+        value.popped = True
+
+    def take_arrived(self, node, name, value, where, bound, before, after):
+        """A block a broadcast brought, taken whole by a body on compute's three: the
+        block waited for before it, `name_buffer` its buffer and `name` its first page
+        there (0), freed after it."""
+        if where != "compute":
+            self.refuse(
+                node,
+                f"{name} is a block of compute's three CPUs: each waits for it and "
+                "frees it",
+                "take it in a body on compute's three (no on=)",
+            )
+        self.arrived_once(node, value)
+        buffer = value.buffer.name
+        self.wait(node, "compute", WAIT_INPUT)
+        before.append(
+            Line(
+                f"km_ok = km_ok && km::broadcast_receive(compute, {buffer}, "
+                f"{buffer}Pages);",
+                {"km_ok"},
+            )
+        )
+        bound.append(f"const uint32_t {name}{spelling('tile_buffer')} = {buffer};")
+        bound.append(f"const uint32_t {name} = 0;")
+        after.append(
+            Line(f"if (km_ok) {{\n    km::broadcast_done({buffer}, {buffer}Pages);\n}}")
+        )
+        return set()
 
     def take_write(self, node, name, value, bound, before, after):
         """A write stream's page for a body on pack: in a stream loop the loop's

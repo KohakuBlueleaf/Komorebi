@@ -47,8 +47,47 @@ class TableJobs(km.Program, defines={"TABLE_BIAS": "0.5f"}):
 | `.entries(Job, first=4, size=4, count=0)` | the page read by mover A and pushed to compute, by mover B into its own; the loop over the count (word 0, refused past the page's 255 entries) on every CPU; `job_add` and the others read from the entry's words |
 | a write stream inside the loop | each job's target pages, packed by the body into `out_buffer` |
 
+A second handler, `gather`, runs on a rectangle of 2 x 2 cores (the class is made
+with `rect=(0, 0, 2, 2)`) and takes the ranges of a rectangle of tiles:
+
+```python
+down = km.Broadcast(self, along="column")  # a core outside the rectangle skips
+r0 = self.y * COLUMNS + self.x
+copied = km.Stream(
+    qo.tiles[r0 : min(r0 + R * stride, r0 + rows * stride) : stride, 0:DT],
+    write=True,
+    block=QB,
+)
+for tile in km.Stream(
+    q.tiles[r0 : min(r0 + R * stride, r0 + rows * stride) : stride, 0:DT], block=QB
+):
+    copied.push(tile)
+for chunk in range(chunks):
+    k0 = chunk * KB
+    if down.sender():
+        kv = down.cast(
+            k.tiles[k0 : min(k0 + KB, keys), 0:DT].T,
+            v.tiles[k0 : min(k0 + KB, keys), 0:DV],
+        )
+    else:
+        kv = down.arrive()
+    seen = km.Stream(
+        slots.pages((r0 * chunks + chunk) * SLOT, SLOT), write=True, block=SLOT
+    )
+    km.cxx(
+        "...copy the SLOT_PAGES pages of kv_buffer from kv into seen_buffer...",
+        takes=[kv, seen],
+    )
+```
+
+| Line | What it lowers to |
+|---|---|
+| `q.tiles[r0:min(r0 + R * stride, r0 + rows * stride):stride, 0:DT]`, `block=QB` | Q's `rows` rows (at most R = 4), `stride` rows apart: a `km::Walk` of a row pitch of `stride x DT` pages, one block of R x DT tiles reserved whole and partly read; the write stream of the same rectangle writes the rows read |
+| `down.cast(k.tiles[...].T, v.tiles[...])` | the sender reads K's chunk a page at a time, column h of it to slot `h x KB + key`, then V's rows after K's most (slot page `KB x DT`), then casts the block of `KB x DT + KB x DV` = 12 pages; a short last chunk leaves the rest in place |
+| `km.cxx(..., takes=[kv, seen])` | compute's three wait for the block, the body copies it page by page into the write stream's block, the block is freed after |
+
 ```bash
-python table_jobs.py --cores 8 --jobs 3    # the class on 8 cores, 3 jobs a core, checked against numpy
+python table_jobs.py --cores 8 --jobs 3    # walk on 8 cores, 3 jobs a core; gather on 2 x 2; both checked against numpy
 ```
 
 ## Results
@@ -56,12 +95,22 @@ python table_jobs.py --cores 8 --jobs 3    # the class on 8 cores, 3 jobs a core
 Card 0, a Blackhole p150a. The jobs are random (seed 1): 1 to 5 source pages each,
 anywhere in 64 pages of bfloat16 integers -4 to 4, half of them adding 0.5.
 
-| | Class |
-|---|---|
-| Cores, jobs | 8, 24 (3 a core) |
-| Target against numpy | 0 words differ |
-| Time a command | 11.16 us |
-| Kernel text, B (mover A, mover B, unpack, math, pack) | 14,840, 9,968, 6,004, 2,324, 3,128 |
+| | walk alone | walk and gather |
+|---|---|---|
+| walk: cores, jobs | 8, 24 (3 a core) | the same |
+| walk: target against numpy | 0 words differ | 0 words differ |
+| walk: time a command | 11.16 us | 11.62 us |
+| gather: Q's rows (3 of 4, 4 rows apart) copied | | 0 words differ |
+| gather: slot pages (7 keys, 3 chunks, the last of 1 key; 112 filled) | | 0 words differ |
+| gather: time a command | | 16.16 us |
+| Kernel text, B (mover A, mover B, unpack, math, pack) | 14,840, 9,968, 6,004, 2,324, 3,128 | 17,348, 22,336, 9,572, 3,440, 6,208 |
+
+gather places each core by `self.y * COLUMNS + self.x`: a rectangle's group is the
+contiguous core indices from its first core to its last, so `self.rank` of its second
+row is the grid's width on, and the cores between are in the group but not the
+rectangle (they skip the handler at the broadcast's line). The first run on the card
+placed the cores by `self.rank`, and every slot page of the second row was read from
+pages no core wrote.
 
 The ray tracer's class reads its directory by the same line
 ([raytrace_class](../raytrace_class/README.md)).
