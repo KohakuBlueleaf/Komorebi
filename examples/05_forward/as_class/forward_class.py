@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -145,7 +146,7 @@ def main():
                 max(timed),
             ]
     report["ok"] = all(r["ok"] for runs in report["runs"].values() for r in runs)
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

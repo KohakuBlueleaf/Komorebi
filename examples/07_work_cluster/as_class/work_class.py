@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -111,7 +112,7 @@ def main():
         for run in report["runs"].values()
     )
     report["wall_s"] = round(time.monotonic() - hand.STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

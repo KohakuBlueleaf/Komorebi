@@ -164,7 +164,7 @@ def main():
             report["host"]["image_differs"] = host["check"]["any_differs"]
             succeeded = succeeded and host["ok"]
     report["ok"] = bool(succeeded)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         with open(args.json, "w") as file:
             json.dump(report, file, indent=1)

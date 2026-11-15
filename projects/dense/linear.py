@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, layout  # noqa: E402
+from komorebi import abi, layout, power  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -1723,7 +1723,7 @@ def main():
     report = reports[0] if not args.shapes else {"products": reports}
     report["ok"] = all(one["ok"] for one in reports)
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

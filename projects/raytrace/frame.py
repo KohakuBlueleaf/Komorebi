@@ -13,7 +13,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
-
+from komorebi import power  # noqa: E402
 from projects.raytrace import card, packets, planner  # noqa: E402
 from projects.raytrace import ties as ties_module  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
@@ -684,7 +684,7 @@ def main():
     ok &= all(entry["errors"] == 0 for entry in report["steps"])
     ok &= all(value == 0 for value in report.get("stages", {}).values())
     report["ok"] = bool(ok)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if arguments.pictures is not None:
         pictures(arguments.pictures, arguments.scene, flat_pixels, colour, want, report)
     if arguments.json:

@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 from komorebi.layout import partition
 from komorebi.session import aiclk_mhz
 
@@ -580,7 +581,7 @@ def main():
     refused = report.get("disjoint", {}).get("refused", True)
     refused &= report.get("live", {}).get("refused_other", 0) == 0
     report["ok"] = wrong == 0 and refused
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if not report["ok"]:
         raise SystemExit(1)
 

@@ -622,7 +622,11 @@ namespace km {
         }
 
         uint32_t arg(uint32_t index) const {
+#if defined(KM_ARGS_L1)  // an added class's: its row in L1, where its load put it
+            return l1(*l1(control_ + KM_ARGS_L1))[KM_ARGS_COMPUTE + index];
+#else
             return get_arg_val<uint32_t>(kComputeArgs + KM_PROGRAM_ARGS_AT + index);
+#endif
         }
 
         // The control block's address and the wait limit (1024-cycle units).

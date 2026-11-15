@@ -13,6 +13,7 @@ from bucket_sort import keys_tensor, program
 
 import komorebi as km
 import reference
+from komorebi import power
 from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
 
 STARTED = time.monotonic()
@@ -130,7 +131,7 @@ def main():
         for result in results.values()
     )
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

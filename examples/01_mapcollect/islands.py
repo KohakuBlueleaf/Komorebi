@@ -14,7 +14,7 @@ import numpy as np
 from mapcollect import rank_sums
 
 import komorebi as km
-from komorebi import formats
+from komorebi import formats, power
 from komorebi.errors import describe_core
 
 HERE = Path(__file__).resolve().parent
@@ -286,7 +286,7 @@ def main():
         and report.get("put_crossings_agree", True)
         and report.get("across_check", {}).get("wrong_tiles", 0) == 0
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

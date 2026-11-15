@@ -15,7 +15,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import komorebi as km
-from komorebi import formats
+from komorebi import formats, power
 from projects.decode import card
 from projects.decode import model as md
 
@@ -221,7 +221,7 @@ def main():
     }
     if args.tokens:
         np.savez(args.tokens, card=np.array(got), reference=np.array(want))
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1))
     sys.exit(0 if "failed" not in report else 1)

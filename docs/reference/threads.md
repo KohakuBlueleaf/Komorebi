@@ -405,6 +405,12 @@ cores 0 to 59, the added class on 60 to 119, 16 calls each waited for): the thre
 event, against 232 to 319 µs for the host's `run.submit` and `run.wait` of the same
 call (9.1 to 9.5 µs of it on the card); every output exact, the gate after it too.
 
+An added class with per-core args needs nothing more from the thread: its load command
+copies each core's row into L1 before any of the core's five CPUs takes the next
+command, and `kmx_load` returns only when that command is done. A thread's command to
+cores that never loaded the class is not checked by the host: load it on that group
+first.
+
 [21_thread_load](../../examples/21_thread_load/README.md): after one command from the
 host, the thread moves the boundary between two programs' groups with a load every
 round and commands both; 40 rounds on 120 cores in 1,825 µs against 16,950 µs with the
