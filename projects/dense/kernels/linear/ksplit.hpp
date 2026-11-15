@@ -9,7 +9,6 @@
 
 constexpr km::BufferPair kKChunksX = {kCbKa, kCbKaB};
 constexpr km::BufferPair kKChunksW = {kCbKw, kCbKwB};
-constexpr km::Pattern kKChunkPattern = km::kPatternAB;
 
 // This rank's group of the K-split plan: S consecutive ranks of its island's part of
 // the command's group (a group never crosses islands); `index`, the group's number.
@@ -114,12 +113,9 @@ bool move_k_chunks(
         last_length,
         at.columns
     };
-    const km::Stream x_chunks(
-        km::kMoveRead, x_matrix, x_walk, 1, kKChunksX, kKChunkPattern
-    );
-    const km::Stream w_chunks(
-        km::kMoveRead, w_matrix, w_walk, 1, kKChunksW, kKChunkPattern
-    );
+    const km::Pattern pattern = km::Pattern::of(plan(kKsPattern));
+    const km::Stream x_chunks(km::kMoveRead, x_matrix, x_walk, 1, kKChunksX, pattern);
+    const km::Stream w_chunks(km::kMoveRead, w_matrix, w_walk, 1, kKChunksW, pattern);
     return km::move(core, x_chunks, w_chunks);
 }
 #endif

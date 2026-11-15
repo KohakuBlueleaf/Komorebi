@@ -50,6 +50,10 @@ VALID_SENT = False
 ACCOUNT = False
 # the K-split plan's reduce inside a group (--reduce)
 SPLIT_REDUCE = "tree"
+# the K-split plan's chunks: their movers (--pattern; ABABAABA: 5 of 8 on mover A,
+# Kohaku-TT's decode kernel's share) and the K chunks mover A's half holds (B's: 2)
+SPLIT_PATTERN = "AB"
+SPLIT_DEPTH = {"AB": 2, "AAAB": 3, "ABABAABA": 3}
 # input dim sharded: the addition across in the kernels (kernel) or the all-reduce of Y
 # after the product (reduce) (--add)
 ADD = "kernel"
@@ -87,6 +91,13 @@ SPLIT_ACCOUNT_WORDS = (
     ("reduce", "kAcKReduce"),
     ("y_write", "kAcKWrite"),
     ("reader_all", "kAcKReaderReduce"),
+)
+# and its wall clocks: compute's own part packed, each round's part taken and added;
+# the writer's part to send in hand
+SPLIT_ACCOUNT_CLOCKS = (("own", L["kAcKOwn"]), ("held", L["kAcKHeld"])) + tuple(
+    (f"{name}{step}", L[word] + step)
+    for name, word in (("taken", "kAcKTaken"), ("added", "kAcKAdded"))
+    for step in range(L["kKRounds"])
 )
 ACCOUNT_CLOCKS = (
     ("reader_end", "kAcReaderEnd"),
@@ -297,22 +308,29 @@ REDUCED_CALLS = 20
 
 
 def split_buffers(plan, adds=False):
-    """(index, format, page bytes, pages) of the K-split plan's buffers (two chunks a
-    mover; `adds`: both partials of a block), T's slot last."""
+    """(index, format, page bytes, pages) of the K-split plan's buffers (mover A's
+    chunks the plan's depth, mover B's two; `adds`: both partials of a block), T's
+    slot last."""
     block_tiles = plan.oh * plan.ow
     both = (
         [(L["kCbKAdd"], "bfloat16", L["kBf16Bytes"], 2 * block_tiles)] if adds else []
     )
     return both + [
-        (L["kCbKa"], "bfloat16", L["kBf16Bytes"], 2 * plan.oh * plan.kc),
+        (L["kCbKa"], "bfloat16", L["kBf16Bytes"], plan.depth * plan.oh * plan.kc),
         (L["kCbKaB"], "bfloat16", L["kBf16Bytes"], 2 * plan.oh * plan.kc),
-        (L["kCbKw"], "bfloat16", L["kBf16Bytes"], 2 * plan.kc * plan.ow),
+        (L["kCbKw"], "bfloat16", L["kBf16Bytes"], plan.depth * plan.kc * plan.ow),
         (L["kCbKwB"], "bfloat16", L["kBf16Bytes"], 2 * plan.kc * plan.ow),
         (L["kCbKArrive"], "float32", L["kPartBytes"], plan.arrive_pages()),
         (L["kCbKSum"], "float32", L["kPartBytes"], block_tiles),
         (L["kCbKOut"], "bfloat16", L["kBf16Bytes"], block_tiles),
         (L["kCbStamp"], "uint32", L["kStampBytes"], 1),
     ]
+
+
+def pattern_word(letters):
+    """A km::Pattern word: the length, and from bit 8 a bit set where mover B moves."""
+    owners = sum(1 << at for at, letter in enumerate(letters) if letter == "B")
+    return len(letters) | owners << 8
 
 
 def split_ns(plan, ranks):
@@ -337,7 +355,19 @@ def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget, adds=False):
             continue
         chunk = max(1, min(pl.cdiv(k_tiles, size), SPLIT_CHUNK_PAGES // width))
         sh, sw = pl.subblock(m_tiles, width)
-        plan = pl.Split(m_tiles, k_tiles, n_tiles, size, m_tiles, width, chunk, sh, sw)
+        plan = pl.Split(
+            m_tiles,
+            k_tiles,
+            n_tiles,
+            size,
+            m_tiles,
+            width,
+            chunk,
+            sh,
+            sw,
+            pattern=SPLIT_PATTERN,
+            depth=SPLIT_DEPTH[SPLIT_PATTERN],
+        )
         buffers = split_buffers(plan, adds)
         if sum(page * pages for _, _, page, pages in buffers) > budget:
             continue
@@ -801,6 +831,7 @@ class Linear:
             ("kKsForm", pl.REDUCE_FORMS[SPLIT_REDUCE]),
             ("kKsMt", plan.mt if self.islands == 1 else self.m_tiles),
             ("kKsSetPages", self.set_pages() if self.adds else 0),
+            ("kKsPattern", pattern_word(plan.pattern)),
         ):
             words[L[name]] = value
         fp32 = "UnpackToDestFp32"
@@ -904,7 +935,9 @@ class Linear:
             ran = words[words[:, L["kStampEnd"]] != 0]
             account = {}
             names = SPLIT_ACCOUNT_WORDS if self.split is not None else ACCOUNT_WORDS
-            clocks = () if self.split is not None else ACCOUNT_CLOCKS
+            clocks = SPLIT_ACCOUNT_CLOCKS if self.split is not None else ACCOUNT_CLOCKS
+            clocks = [(name, L[w] if isinstance(w, str) else w) for name, w in clocks]
+            names = [(name, L[w]) for name, w in names]
             if ACCOUNT and len(ran):  # the slowest core's phases, and each one's most
                 span = (ran[:, L["kStampEnd"]] - ran[:, L["kStampStart"]]) % 2**32
                 slow = int(np.argmax(span))
@@ -912,14 +945,20 @@ class Linear:
                 account = {
                     "core": slow,
                     "span": int(span[slow]),
-                    "slowest": {name: int(ran[slow, L[w]]) for name, w in names}
+                    "slowest": {name: int(ran[slow, w]) for name, w in names}
+                    | {name: int((ran[slow, w] - start) % 2**32) for name, w in clocks},
+                    "most": {name: int(ran[:, w].max()) for name, w in names},
+                    # every core's, in core order (the spread of each phase), and its
+                    # clocks from its own start (-1: not stamped)
+                    "cores": {name: ran[:, w].tolist() for name, w in names}
                     | {
-                        name: int((ran[slow, L[w]] - start) % 2**32)
+                        name: np.where(
+                            ran[:, w] == 0,
+                            -1,
+                            (ran[:, w] - ran[:, L["kStampStart"]]) % 2**32,
+                        ).tolist()
                         for name, w in clocks
                     },
-                    "most": {name: int(ran[:, L[w]].max()) for name, w in names},
-                    # every core's, in core order (the spread of each phase)
-                    "cores": {name: ran[:, L[w]].tolist() for name, w in names},
                 }
             # the cores that stamped a crossing: the K split's first ranks (every rank
             # with the gather), the grid's ranks with blocks
@@ -1353,6 +1392,12 @@ def main():
         help="the K-split plan's reduce in a group",
     )
     parser.add_argument(
+        "--pattern",
+        choices=list(SPLIT_DEPTH),
+        default="AB",
+        help="the K-split plan's chunks: their movers (mover A's half 3 deep but AB's)",
+    )
+    parser.add_argument(
         "--add",
         choices=["kernel", "reduce"],
         default="kernel",
@@ -1403,7 +1448,8 @@ def main():
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
     global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD, GATHER
-    global SPREAD, X_SPREAD
+    global SPREAD, X_SPREAD, SPLIT_PATTERN
+    SPLIT_PATTERN = args.pattern
     ACCOUNT, SPLIT_REDUCE, ADD = args.account, args.reduce, args.add
     GATHER = args.gather
     SPREAD = args.spread

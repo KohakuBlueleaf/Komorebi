@@ -40,6 +40,12 @@ void kernel_main() {
             const km::Group group = k_group(command, writer.me(), plan(kKsS), index);
             const km::Arrival arrival = {kCbKArrive, plan(kKsArrive), block_tiles};
             if (group.rank != 0) {
+                LINEAR_ACCOUNT_DO({  // the part to send in hand (emit waits again)
+                    if (!writer.wait_front(kCbKSum, block_tiles, km::kBehindPort)) {
+                        return false;
+                    }
+                    stamps[kAcKHeld] = km::wall();
+                });
                 if (!km::reduce_emit(
                     writer,
                     command,

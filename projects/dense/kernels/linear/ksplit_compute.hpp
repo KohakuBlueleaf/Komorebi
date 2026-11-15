@@ -39,6 +39,11 @@ void kernel_main() {
         const km::Group group = k_group(command, compute.me(), plan(kKsS), index);
         const km::Arrival arrival = {kCbKArrive, plan(kKsArrive), block_tiles};
         const uint32_t form = plan(kKsForm);
+        const km::Pattern pattern = km::Pattern::of(plan(kKsPattern));
+#if defined(LINEAR_ACCOUNT) && !defined(TRISC_MATH)  // the math thread: no buffers
+        volatile uint32_t* stamps = stamp_row();
+#endif
+        uint32_t round = 0;
         const bool room = compute.reserve_back(kCbKSum, block_tiles);
         bool ok = true;  // the same on all three threads (wait_front tells them)
         matmul_block_init(
@@ -52,8 +57,8 @@ void kernel_main() {
             const uint32_t length = (
                 at.k_count - offset < chunk_tiles ? at.k_count - offset : chunk_tiles
             );
-            const uint32_t x_half = km::block_half(kKChunksX, kKChunkPattern, chunk);
-            const uint32_t w_half = km::block_half(kKChunksW, kKChunkPattern, chunk);
+            const uint32_t x_half = km::block_half(kKChunksX, pattern, chunk);
+            const uint32_t w_half = km::block_half(kKChunksW, pattern, chunk);
             ok = (
                 compute.wait_front(x_half, block_height * chunk_tiles) &&
                 compute.wait_front(w_half, chunk_tiles * block_width)
@@ -108,16 +113,24 @@ void kernel_main() {
             cb_pop_front(x_half, block_height * chunk_tiles);
             cb_pop_front(w_half, chunk_tiles * block_width);
         }
+        LINEAR_ACCOUNT_DO(PACK((stamps[kAcKOwn] = km::wall())));
         reconfig_data_format_srca(kCbKw, kCbKArrive);
         copy_init(kCbKArrive);
         if (ok) {
             pack_reconfig_l1_acc(1);
             ok = km::reduce(compute, arrival, group, form, [&](uint32_t slot) {
+                LINEAR_ACCOUNT_DO(if (round < kKRounds) {
+                    UNPACK((stamps[kAcKTaken + round] = km::wall()));
+                });
                 for (uint32_t tile = 0; tile < block_tiles; ++tile) {
                     move_tile(
                         kCbKArrive, km::slot_page(arrival, slot) + tile, kCbKSum, tile
                     );
                 }
+                LINEAR_ACCOUNT_DO(if (round < kKRounds) {
+                    PACK((stamps[kAcKAdded + round] = km::wall()));
+                });
+                round++;
             });
         }
         pack_reconfig_l1_acc(0);

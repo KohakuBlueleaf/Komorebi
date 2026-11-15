@@ -108,6 +108,19 @@ inline void lap(uint32_t& counter, uint32_t& since) {
     since = now;
 }
 
+#if defined(COMPILE_FOR_TRISC)
+// Compute's view of T's row (the unpacker's and packer's threads): each sets up only
+// its own end of a buffer, the unpacker the read pointer, the packer the write pointer.
+inline volatile uint32_t* stamp_row() {
+    const LocalCBInterface& row = get_local_cb_interface(kCbStamp);
+#if defined(TRISC_UNPACK)
+    return reinterpret_cast<volatile uint32_t*>(row.fifo_rd_ptr << 4);
+#else
+    return reinterpret_cast<volatile uint32_t*>(row.fifo_wr_ptr << 4);
+#endif
+}
+#endif
+
 #if !defined(COMPILE_FOR_TRISC)
 
 // Waits until port `port` of this core has counted `wanted` arrivals, then clears
@@ -196,8 +209,8 @@ constexpr uint32_t kCbKArrive = 11;  // fp32, a slot of oh x ow tiles a sender
 constexpr uint32_t kCbKSum = 25;     // fp32, this rank's part: oh x ow tiles
 constexpr uint32_t kCbKOut = 18;     // bf16, the group's sum at its first rank
 constexpr uint32_t kCbKAdd = 12;     // bf16, its block of both partials (LINEAR_ADD)
-// Its words (every CPU's, from 0): S, oh, ow, kc, subblock sh x sw, blocks a row of the
-// window, the arrival buffer's pages, the reduce form, M tiles, a set of S's pages.
+// Its words (every CPU's): S, oh, ow, kc, subblock sh x sw, blocks a row of the window,
+// arrival pages, reduce form, M tiles, a set of S's pages, the chunks' pattern word.
 constexpr uint32_t kKsS = 0;
 constexpr uint32_t kKsOh = 1;
 constexpr uint32_t kKsOw = 2;
@@ -209,7 +222,8 @@ constexpr uint32_t kKsArrive = 7;
 constexpr uint32_t kKsForm = 8;
 constexpr uint32_t kKsMt = 9;
 constexpr uint32_t kKsSetPages = 10;
-constexpr uint32_t kKsWords = 11;
+constexpr uint32_t kKsPattern = 11;
+constexpr uint32_t kKsWords = 12;
 // T's words of the K-split plan (with the account): the movers' chunks moved (reader,
 // writer), the reduce (writer: its part sent, or the sum taken), Y written.
 constexpr uint32_t kAcKMoveA = 16;
@@ -217,6 +231,13 @@ constexpr uint32_t kAcKMoveB = 17;
 constexpr uint32_t kAcKReduce = 18;
 constexpr uint32_t kAcKWrite = 19;
 constexpr uint32_t kAcKReaderReduce = 20;
+// wall clocks: compute's own part packed, each round's part taken and added; the
+// writer's part to send in hand
+constexpr uint32_t kAcKOwn = 21;
+constexpr uint32_t kAcKTaken = 22;  // rounds 0 to kKRounds - 1
+constexpr uint32_t kAcKAdded = 26;  // the same
+constexpr uint32_t kAcKHeld = 30;
+constexpr uint32_t kKRounds = 4;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
