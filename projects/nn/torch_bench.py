@@ -19,9 +19,11 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi import abi, formats  # noqa: E402
+from komorebi import session as session_module  # noqa: E402
 from projects.decode import card, real  # noqa: E402
 from projects.decode import model as md  # noqa: E402
-from projects.nn import front, models, table  # noqa: E402
+from projects.nn import front, models, nn, table  # noqa: E402
 
 MODEL = md.MODELS["qwen3-1.7b"]
 CONTEXT = 4096  # the cache's rows a KV head, as the decode bench's
@@ -32,6 +34,8 @@ STAGES = {
     "fused": {"fuse": True, "chain": False},
     "chained": {"fuse": True, "chain": True},
     "joint": {"fuse": True, "chain": True, "joint": True},  # the compile's removal
+    # a call as one host submission: the list pulls x and pushes y
+    "one": {"fuse": True, "chain": True, "joint": True, "one": True},
 }
 TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
     "in_write",
@@ -53,6 +57,12 @@ TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
     "out_read",
     "list_write",
     "weights",
+    "in_pages",
+    "copy_in",
+    "submit",
+    "spin",
+    "copy_out",
+    "out_values",
 )
 INSIDE_DISPATCH = (  # what the eager dispatch's own time holds besides itself
     "planner",
@@ -87,6 +97,7 @@ def parse():
     parser.add_argument("--position", type=int, default=CONTEXT - 1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--threads", type=int, default=16, help="torch's, --prepare")
+    parser.add_argument("--channel", action="store_true", help="plain transfers, guard")
     parser.add_argument("--json", default=None)
     return parser.parse_args()
 
@@ -140,6 +151,7 @@ def series(device, call, count):
         started = time.perf_counter()
         out = call()
         wall = time.perf_counter() - started
+        device.collect()  # a one-submission call's RUN event, off its path
         rows.append(
             {
                 "wall": wall,
@@ -180,6 +192,8 @@ def run_model(device, name, args, data):
                     args.calls,
                 )
                 described = {}
+        if way.startswith("one"):
+            described = {"spans": list(device.ones[-1].spans)}
         errors = md.errors(np.asarray(got, np.float32), want)
         ok = errors["rms_rel"] <= CHECK_RMS and errors["max_rel"] <= CHECK_MAX
         out[way + args.tag] = {
@@ -193,6 +207,93 @@ def run_model(device, name, args, data):
             f"model {name} {way}: {json.dumps(errors)} ok {ok}, a call "
             f"{np.mean([r['wall'] for r in rows]) * 1e6:.1f} us"
         )
+    return out
+
+
+def random_pages(rng, columns):
+    """A [32, columns] tile tensor's pages of random bf16 values."""
+    values = rng.standard_normal((table.TILE, columns)).astype(np.float32)
+    return md.tile_pages(formats.bf16_bits(values))
+
+
+def plain_transfers(device, calls):
+    """A plain Session.write and read of x's joint pages (72) and y's (64), without the
+    words' spin (WORDS_SPIN_S 0, the old wait) and with it: us per call, mean and
+    median over `calls`."""
+    session, out = device.session, {}
+    rng = np.random.default_rng(3)
+    for name, columns in (("x_joint", 2304), ("y", 2048)):
+        tensor = session.empty((table.TILE, columns), "bfloat16", "tile")
+        pages = random_pages(rng, columns)
+        for spin in (0.0, session_module.WORDS_SPIN_S):
+            kept, session_module.WORDS_SPIN_S = session_module.WORDS_SPIN_S, spin
+            writes, reads = [], []
+            for _ in range(calls + 1):
+                started = time.perf_counter()
+                session.write(tensor, pages)
+                written = time.perf_counter()
+                (got,) = session.read(tensor)
+                writes.append(written - started)
+                reads.append(time.perf_counter() - written)
+            session_module.WORDS_SPIN_S = kept
+            if not np.array_equal(got, pages):
+                raise km.KomorebiError(f"{name}: the read is not the write")
+            out[f"{name}_spin_{round(spin * 1e6)}us"] = {
+                "pages": tensor.pages,
+                "write_us": [round(np.mean(writes[1:]) * 1e6, 1),
+                             round(np.median(writes[1:]) * 1e6, 1)],
+                "read_us": [round(np.mean(reads[1:]) * 1e6, 1),
+                            round(np.median(reads[1:]) * 1e6, 1)],
+            }  # fmt: skip
+        tensor.free()
+    return out
+
+
+def guard(device):
+    """A thread's PULL and PUSH with the session's region word (pages back as sent),
+    then each with the whole channel's region word: refused, the region untouched.
+    Returns what was seen; the refusals' tick words are read after the stop."""
+    session, h = device.session, abi.headers()
+    tensor = session.empty((table.TILE, 2048), "bfloat16", "tile")
+    rng = np.random.default_rng(5)
+    pages = random_pages(rng, 2048)
+    one = table.OneSubmission(device, nn.Entries(0), [tensor], [tensor])
+    (back,) = one([pages])
+    device.collect()
+    out = {"right_region_round_trip": bool(np.array_equal(back, pages))}
+    out["refused"] = []
+    for move in one.moves:
+        args = list(move.call.args)
+        args[h["KM_TRANSFER_REGION"]] = h["KM_CHANNEL_BYTES"]
+        entries = nn.Entries(device.reserve(1))
+        entries.command(move.call._replace(args=tuple(args)), nn.NN["NN_KIND_TRANSFER"])
+        device.write_list(entries)
+        region = session.channel[: session._region.bytes]
+        region[move.offset : move.offset + tensor.pages * tensor.aligned_page_bytes] = (
+            0xA5
+        )
+        words = one.channel_words(move.words, move.count)
+        words[:] = 0xA5A5A5A5
+        before = (np.array(region[move.offset : move.offset + 4096]), words.copy())
+        try:
+            device.executor.closed(entries)
+            result = "ran"
+        except km.KomorebiError as error:
+            result = str(error)
+        out["refused"].append(
+            {
+                "handler": int(move.call.handler),
+                "run": result,
+                "entry": entries.first,
+                "slot": device.executor.slot - 1,
+                "data_unchanged": bool(
+                    np.array_equal(region[move.offset : move.offset + 4096], before[0])
+                ),
+                "words_unchanged": bool(np.array_equal(words, before[1])),
+            }
+        )
+    device.ones.remove(one)
+    tensor.free()
     return out
 
 
@@ -218,6 +319,19 @@ def account(result, stats):
     for row in rows:
         fallbacks.update(row["fallbacks"])
     host = sum(terms[name] for name in TERMS)
+    ones = [stats[index] for index in runs if "pull" in stats.get(index, {})]
+    one = {}
+    if ones:
+        thread = {
+            name: round(sum(run[name] for run in ones) / len(ones), 2)
+            for name in nn.TERMS
+        }
+        one = {
+            "pull_us": round(sum(r["pull"] for r in ones) / len(ones) / 50, 2),
+            "push_us": round(sum(r["push"] for r in ones) / len(ones) / 50, 2),
+            "thread_terms_us": thread,
+            "card_span_cycles": round(float(np.mean(result.get("spans", [0]))), 1),
+        }
     return {
         "wall_us": round(wall, 1),
         "terms_us": {name: round(value, 1) for name, value in terms.items() if value},
@@ -228,6 +342,7 @@ def account(result, stats):
         "lists_a_call": round(len(runs) / count, 2),
         "fallbacks_a_call": {k: v / count for k, v in sorted(fallbacks.items())},
         "first_call_us": round(result["first"]["wall"] * 1e6, 1),
+        **({"one": one} if one else {}),
     }
 
 
@@ -243,6 +358,11 @@ def main():
         device = table.Device(session, MODEL, 2.0, log)
         log("loaded")
         try:
+            if args.channel:
+                report["plain"] = plain_transfers(device, args.calls * 4)
+                log(f"plain transfers: {json.dumps(report['plain'])}")
+                report["guard"] = guard(device)
+                log(f"guard: {json.dumps(report['guard'])}")
             for name in args.models:
                 results[name] = run_model(device, name, args, data)
         except km.KomorebiError as error:
@@ -251,6 +371,11 @@ def main():
         device.decode.run.stop()
         log("run stopped")
         stats = device.stats()
+        if "guard" in report:  # the refused transfers' tick words: kind | reason << 8
+            words = device.executor.stats()
+            for refused in report["guard"]["refused"]:
+                at = nn.NN["NN_ST_ENTRY_TICKS"] + refused["entry"]
+                refused["event_word"] = int(words[refused["slot"]][at])
     for name, ways in results.items():
         for way, result in ways.items():
             if isinstance(result, dict):
@@ -258,11 +383,25 @@ def main():
                 log(f"{name} {way}: {json.dumps(result['account'])}")
                 del result["calls"], result["first"]
     report["results"] = results
-    report["ok"] = "failed" not in report and all(
-        way["ok"]
-        for ways in results.values()
-        for way in ways.values()
-        if isinstance(way, dict)
+    guarded = report.get("guard")
+    if guarded is not None:
+        refusal = 3 | 1 << 8  # KM_EVENT_REJECTED, reason 1 (KMD_REJECT_HANDLER)
+        guarded["ok"] = guarded["right_region_round_trip"] and all(
+            r["run"] != "ran"
+            and r["data_unchanged"]
+            and r["words_unchanged"]
+            and r.get("event_word") == refusal
+            for r in guarded["refused"]
+        )
+    report["ok"] = (
+        (guarded is None or guarded["ok"])
+        and "failed" not in report
+        and all(
+            way["ok"]
+            for ways in results.values()
+            for way in ways.values()
+            if isinstance(way, dict)
+        )
     )
     print(json.dumps(report, default=float), flush=True)
     if args.json:

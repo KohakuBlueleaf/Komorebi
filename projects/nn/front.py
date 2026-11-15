@@ -15,14 +15,15 @@ from torch._functorch.aot_autograd import aot_function, aot_module_simplified
 from torch.fx.passes.utils.matcher_utils import SubgraphMatcher
 from torch.utils._pytree import tree_map
 
+from komorebi import dram
 from projects.decode import model as md
 from projects.nn import table
 
 aten = torch.ops.aten
-# The backend's stages, each switched by an option: fusion, DRAM tensors once, the
-# chain, an input and its squares in one host write (joint: off by default).
-STAGES = ("fuse", "once", "chain", "joint")
-DEFAULTS = {"fuse": True, "once": True, "chain": True, "joint": False}
+# The backend's stages, an option each: fusion, DRAM tensors once, the chain, x and its
+# squares as one tensor (joint), a call as one host submission (one; README).
+STAGES = ("fuse", "once", "chain", "joint", "one")
+DEFAULTS = {"fuse": True, "once": True, "chain": True, "joint": False, "one": False}
 
 
 @torch.library.custom_op("komorebi::attend", mutates_args=())
@@ -438,7 +439,7 @@ def trace(function, examples):
 
 def backend(gm, example_inputs, options=None):
     """torch.compile's backend "komorebi": options `device` (table.Device) and the
-    stages (STAGES, each True by default)."""
+    stages (STAGES, DEFAULTS)."""
     options = dict(options or {})
     device = options.pop("device")
     stages = {name: bool(options.pop(name, DEFAULTS[name])) for name in STAGES}
@@ -455,6 +456,12 @@ def backend(gm, example_inputs, options=None):
 
 
 torch._dynamo.register_backend(backend, name="komorebi")
+
+
+def whole(tensor):
+    """A Tensor's whole DRAM tensor (a joint part's, or its own)."""
+    card = tensor.card
+    return card.whole if isinstance(card, table.Part) else card
 
 
 class Compiled:
@@ -641,7 +648,50 @@ class Compiled:
             else:
                 planned.append(step)
         self.steps = planned
+        self.one = self.one_submission() if self.stages["one"] else None
         self.ready = True
+
+    def one_submission(self):
+        """The call as one host submission (table.OneSubmission): a graph of one list
+        whose outputs are all the list's, its inputs pulled and outputs pushed by it."""
+        kinds = [kind for kind, _ in self.steps]
+        outputs = list(self.output.args[0])
+        if kinds != ["run"] + ["read"] * len(outputs):
+            raise ValueError(f"one submission takes one list and its reads: {kinds}")
+        self.pulled = [
+            node
+            for node in self.inputs
+            if node in self.tensors and not self.is_weight(node)
+        ]
+        inputs = [whole(self.tensors[node]) for node in self.pulled]
+        pushed = [whole(self.tensors[node]) for node in outputs]
+        return table.OneSubmission(self.device, self.steps[0][1], inputs, pushed)
+
+    def call_one(self, host):
+        """A call of the one-submission form: inputs' pages in, outputs' pages out."""
+        started = time.perf_counter()
+        pages = []
+        for node in self.pulled:
+            tensor, values = self.tensors[node], host_values(host[node])
+            if isinstance(tensor.card, table.Part):
+                pages.append(table.joint_pages(tensor, values))
+            else:
+                pages.append(table.tensor_pages(tensor, values))
+        built = time.perf_counter()
+        raws = self.one(pages)
+        out_started = time.perf_counter()
+        outputs = []
+        for node, raw in zip(self.output.args[0], raws, strict=True):
+            tensor = self.tensors[node]
+            rows, columns = tensor.card.shape
+            flat = dram.untilize_bf16(raw, rows, columns)
+            shape = tuple(node.meta["val"].shape)
+            values = flat.reshape(-1)[: math.prod(shape)].reshape(shape)
+            outputs.append(torch.from_numpy(values).to(torch.bfloat16))
+        clock = self.device.clock
+        clock["in_pages"] += built - started
+        clock["out_values"] += time.perf_counter() - out_started
+        return tuple(outputs)
 
     def operand(self, operand, host):
         """A call's operand as a Tensor: a node's, or a prepared weight's (cached)."""
@@ -713,6 +763,8 @@ class Compiled:
             self.prepare(args)
         else:
             host = {node: args[i] for i, node in enumerate(self.inputs)}
+            if self.one is not None:
+                return self.call_one(host)
             self.write_inputs(host)
         values = dict(host)
         for step in self.steps:
@@ -741,6 +793,8 @@ class Compiled:
         return tuple(values[value] for value in self.output.args[0])
 
     def release(self):
+        if self.one is not None:
+            self.one.collect()
         for node, tensor in self.tensors.items():
             if node not in self.weight_nodes:
                 self.device.free(tensor)

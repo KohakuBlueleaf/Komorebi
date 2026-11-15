@@ -27,9 +27,15 @@ enum {
  * check left out. An open list's entry is new once its sequence and its check hold. */
 #define NN_CHECK_FACTOR(word) (2u * (word) + 1u)
 
-/* An entry's kind: one command; a chain from this entry's record on, waited for once;
- * the end of an open list's drain (a sync); an open list's anchor, never run. */
-enum { NN_KIND_NONE = 0, NN_KIND_COMMAND = 1, NN_KIND_CHAIN = 2, NN_KIND_END = 3 };
+/* An entry's kind: a command; a chain from its record on; an open list's END; an
+ * anchor, never run; a PUSH or PULL whose nonce word is XORed with RUN's a3. */
+enum {
+    NN_KIND_NONE = 0,
+    NN_KIND_COMMAND = 1,
+    NN_KIND_CHAIN = 2,
+    NN_KIND_END = 3,
+    NN_KIND_TRANSFER = 4
+};
 
 /* The executor's handlers: RUN a closed list, DRAIN an open one; their words are in
  * the README ("The thread"). Each returns its ticks, or NN_FAILED | its status. */

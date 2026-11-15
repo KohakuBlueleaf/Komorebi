@@ -8,10 +8,14 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import formats
+from komorebi import abi, formats
+from komorebi import channel as channel_module
+from komorebi.errors import KomorebiError
+from komorebi.session import L1_BYTES
 from projects.decode import model as md
 from projects.dense import plan as pl
 from projects.nn import nn
@@ -356,6 +360,23 @@ def entries_of(items, first):
     return entries
 
 
+def joint_pages(x, values):
+    """The pages of an empty_joint tensor: x's values, then their squares."""
+    rows = np.zeros(x.card.shape, np.float32)
+    rows[: x.rows] = np.asarray(values, np.float32).reshape(x.rows, -1)
+    both = np.concatenate([md.bf16(rows), md.squares(rows)], axis=1)
+    return md.tile_pages(formats.bf16_bits(both))
+
+
+def tensor_pages(tensor, values):
+    """The pages of a tensor's DRAM tensor holding host values (float, to bf16)."""
+    rows, columns = tensor.card.shape
+    flat = np.zeros((rows, columns), np.float32)
+    given = np.asarray(values, np.float32).reshape(-1, columns)
+    flat[: given.shape[0]] = given
+    return md.tile_pages(formats.bf16_bits(flat))
+
+
 class Device:
     """Komorebi-nn on one card: the decode program with the executor (Card), the
     tensors, an open list the calls are appended to (synced on a host read only), the
@@ -377,6 +398,7 @@ class Device:
         self.qk_layers = {}
         self.prepared = {}  # a compiled graph's prepared weights, by name and tensors
         self.pending_outputs = []
+        self.ones = []  # the OneSubmission calls made
 
     def plan_word(self, kn):
         if kn not in self.decode.plan_index:
@@ -451,10 +473,7 @@ class Device:
     def write_joint(self, x, values):
         """x's values and their squares in one host write (an empty_joint tensor)."""
         started = time.perf_counter()
-        rows = np.zeros(x.card.shape, np.float32)
-        rows[: x.rows] = np.asarray(values, np.float32).reshape(x.rows, -1)
-        both = np.concatenate([md.bf16(rows), md.squares(rows)], axis=1)
-        self.session.write(x.card.whole, md.tile_pages(formats.bf16_bits(both)))
+        self.session.write(x.card.whole, joint_pages(x, values))
         self.clock["in_write"] += time.perf_counter() - started
 
     def write_squares(self, x, values):
@@ -559,6 +578,11 @@ class Device:
         self.runs.append((name, slot, ticks))
         return ticks
 
+    def collect(self):
+        """Every one-submission call's RUN event (off the calls' path)."""
+        for one in self.ones:
+            one.collect()
+
     def fallback(self, name):
         self.fallbacks[name] += 1
 
@@ -582,6 +606,155 @@ class Device:
         out = {}
         first = max(0, len(self.runs) - nn.NN["NN_SLOTS"])
         for index in range(first, len(self.runs)):
-            name, slot, ticks = self.runs[index]
+            name, slot, ticks, *entries = self.runs[index]
             out[index] = nn.slot_terms(words[slot]) | {"ticks": ticks, "name": name}
+            if entries:  # a one-submission call: its first and last entries' commands
+                at, last = entries[0].first, entries[0].first + len(entries[0]) - 1
+                out[index]["pull"] = int(words[slot][nn.NN["NN_ST_ENTRY_TICKS"] + at])
+                out[index]["push"] = int(words[slot][nn.NN["NN_ST_ENTRY_TICKS"] + last])
         return out
+
+
+# A compiled call as one host submission (OneSubmission)
+PUSH_SALT = 0x5A5A0001  # a push's stored nonce: its words differ from the pull's
+WORDS_TIMEOUT_S = 2.0  # a call's wait for y's sequence words
+
+
+class Move(NamedTuple):
+    """One transfer of a call: the whole DRAM tensor, its region offset and word slots
+    (byte offsets in the region), the ranks, the call's entry and its words' template.
+    """
+
+    tensor: object
+    offset: int
+    words: int
+    count: int
+    call: nn.Call
+    want: np.ndarray
+
+
+class OneSubmission:
+    """A closed list as one host submission: its first entries pull the inputs' pages
+    from the session's host channel region, its last push the outputs' there (README,
+    "One submission a call"). A call: pages in, the nonce, one RUN, a spin on the last
+    push's words, pages out; RUN's event is collected later (collect())."""
+
+    def __init__(self, device, entries, inputs, outputs):
+        session, run = device.session, device.decode.run
+        if session.channel is None or getattr(run.backend, "transfer", None) is None:
+            raise ValueError("one submission needs the host channel and a live run")
+        self.device, self.session, self.region = device, session, session._region
+        h = abi.headers()
+        stride = h["KM_TRANSFER_WORD_BYTES"]
+        offset, words, self.moves = 0, self.region.words, []
+        for push, tensors in ((False, inputs), (True, outputs)):
+            for tensor in tensors:
+                move = self.move(tensor, offset, words, push, h)
+                self.moves.append(move)
+                offset += -(-tensor.pages * tensor.aligned_page_bytes // 16) * 16
+                words += move.count * stride
+        if offset > self.region.data:
+            raise ValueError("the call's pages do not fit the region's data")
+        self.pulls = [move for move in self.moves[: len(inputs)]]
+        self.pushes = [move for move in self.moves[len(inputs) :]]
+        out = nn.Entries(device.reserve(len(entries) + len(self.moves)))
+        transfer = nn.NN["NN_KIND_TRANSFER"]
+        for move in self.pulls:
+            out.command(move.call, transfer)
+        base = len(out.rows)
+        for row, count in entries.items:
+            out.items.append((base + row, count))
+        out.rows += [row.copy() for row in entries.rows]
+        for move in self.pushes:
+            out.command(move.call, transfer)
+        self.entries = out
+        device.write_list(out)
+        last = self.pushes[-1]
+        self.words = self.channel_words(last.words, last.count)
+        self.pending = []  # (handle, slot) of RUNs not collected
+        self.nonce = 0
+        self.spans = []  # cycles from the first pull's start to the last push's end
+        device.ones.append(self)
+
+    def move(self, tensor, offset, words, push, h):
+        run = self.device.decode.run
+        page = tensor.aligned_page_bytes
+        chunk = channel_module.chunk_bytes(page, run.backend.transfer.chunk)
+        wanted = channel_module.ranks(
+            tensor.pages, page, chunk, self.session.transfer_cores
+        )
+        first, count, field = channel_module.transfer_group(
+            run.holds(), run.cores, wanted
+        )
+        stored = PUSH_SALT if push else 0
+        transfer = channel_module.Transfer(
+            tensor.address, page, 0, tensor.pages, offset, words, self.region.bytes,
+            stored, run.backend.transfer.address, chunk,
+        )  # fmt: skip
+        channel_module.check(transfer, count, L1_BYTES)
+        handler = h["KM_HANDLER_PUSH" if push else "KM_HANDLER_PULL"]
+        call = nn.Call(handler, (first, count), tuple(transfer.args()), 0, field)
+        want = channel_module.sequence_words(0, tensor.pages, page, count)
+        return Move(tensor, offset, words, count, call, want)
+
+    def channel_words(self, words, count):
+        stride = abi.headers()["KM_TRANSFER_WORD_BYTES"]
+        raw = self.session.channel[words : words + count * stride]
+        return raw.view("<u4").reshape(count, stride // 4)
+
+    def rows(self, move):
+        """[pages, page_bytes] uint8 view of a move's pages in the region."""
+        tensor, page = move.tensor, move.tensor.aligned_page_bytes
+        raw = self.session.channel[move.offset : move.offset + tensor.pages * page]
+        return raw.reshape(tensor.pages, page)[:, : tensor.page_bytes]
+
+    def __call__(self, pages):
+        """One call: `pages` (each input's [pages, page_bytes] uint8) in, the outputs'
+        pages out (copies). KomorebiError with RUN's answer if y does not arrive."""
+        clock = self.device.clock
+        started = time.perf_counter()
+        for move, data in zip(self.pulls, pages, strict=True):
+            self.rows(move)[:] = data
+        self.nonce = (self.nonce + 1) & 0xFFFFFFFF or 1
+        push = self.pushes[-1]
+        want = push.want.copy()
+        nonce = self.nonce ^ PUSH_SALT
+        want[:, 0] = nonce
+        want[:, 3] ^= nonce
+        self.words[:] = 0
+        copied = time.perf_counter()
+        executor = self.device.executor
+        if executor.slot == nn.NN["NN_SLOTS"]:
+            executor.slot = 0
+        handle, slot = executor.start(self.entries, 1, self.nonce)
+        submitted = time.perf_counter()
+        arrived = self.session._words_arrived(self.words, want, WORDS_TIMEOUT_S)
+        seen = time.perf_counter()
+        self.pending.append((handle, slot))
+        if not arrived:
+            event = self.device.decode.run.wait(handle, timeout=WORDS_TIMEOUT_S)
+            raise KomorebiError(f"y's sequence words did not arrive; RUN: {event}")
+        out = [self.rows(move).copy() for move in self.pushes]
+        done = time.perf_counter()
+        for name, span in (
+            ("copy_in", copied - started),
+            ("submit", submitted - copied),
+            ("spin", seen - submitted),
+            ("copy_out", done - seen),
+        ):
+            clock[name] += span
+        first = self.channel_words(self.pulls[0].words, self.pulls[0].count)
+        starts = first[:, 4].astype(np.int64) | first[:, 5].astype(np.int64) << 32
+        ends = (
+            self.words[:, 6].astype(np.int64) | self.words[:, 7].astype(np.int64) << 32
+        )
+        self.spans.append(int(ends.max() - starts.min()))
+        return out
+
+    def collect(self, timeout=10.0):
+        """RUN's events of the calls so far (off a call's path): each run noted."""
+        run = self.device.decode.run
+        for handle, slot in self.pending:
+            ticks = nn.ended(run.wait(handle, timeout=timeout))
+            self.device.runs.append(("one", slot, ticks, self.entries))
+        self.pending = []
