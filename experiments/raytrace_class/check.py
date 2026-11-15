@@ -30,8 +30,9 @@ def hit_pages(rows, count):
 
 
 def compare(hand, mine, count, workers):
-    """Words that differ: the hit pages but their cycles vector, the profile's counts
-    and the reader's and writer's page counts."""
+    """Words that differ: the hit pages but their cycles vector, and the walk's
+    counts in the profile (the class's page holds the pack CPU's words alone: the
+    movers' counters are a line it does not have)."""
     a, b = hit_pages(hand["hits"], count), hit_pages(mine["hits"], count)
     cycles = K["kHitCycles"]
     keep = [vector for vector in range(VECTORS) if vector != cycles]
@@ -45,9 +46,8 @@ def compare(hand, mine, count, workers):
         name: card.profile_rows(record["profile"], workers)
         for name, record in (("hand", hand), ("mine", mine))
     }
-    names = [*COUNTS, "reader_pages", "writer_pages"]
     result["profile_counts_differ"] = {
-        name: int((rows["hand"][name] != rows["mine"][name]).sum()) for name in names
+        name: int((rows["hand"][name] != rows["mine"][name]).sum()) for name in COUNTS
     }
     return result
 

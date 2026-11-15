@@ -408,3 +408,102 @@ def test_a_word_field_is_written_by_the_unpack_cpu():
     assert "UNPACK((field_places[0] = self_core));" in text
     assert "UNPACK((field_places[1] += rank));" in text
     assert compiled.word_fields == {"places": 4} and "places" not in compiled.fields
+
+
+WALK = {"enable_trisc2_rvv": True}
+
+
+class Bodies(km.Program, compute=WALK):
+    table: km.L1[km.u32, 2, 32, 32]
+
+    @km.handler
+    def load(self, image: km.Tensor):
+        self.table.fill(km.Stream(image.pages(0, 2)))
+
+    @km.handler
+    def walk(self, places: km.Tensor, items: km.Tensor, out: km.Tensor, mode: int):
+        first, count = places.pages(self.rank, 1).read()[0:2]
+        made = km.Stream(out.items(first, count, size=1024), write=True, pattern="B")
+        base = km.cxx("base = table;", takes=[self.table], gives=int, on="pack")
+        for item in km.Stream(items.items(first, count, size=512), pattern="A"):
+            km.cxx("use(item, made, base, mode);", takes=[item, made, base, mode],
+                   on="pack", include=["walk.hpp"])  # fmt: skip
+        km.cxx("note(places);", takes=[places], on="mover_b")
+
+
+def test_inline_bodies_reach_items_words_cpus_and_kept_fields():
+    names = ("places", "items", "out")
+    tensors = {"image": tensor("uint32"), **{name: tensor("float32") for name in names}}
+    compiled = compile_class(Bodies, {}, tensors)
+    movement = "\n".join(render(prune(compiled.movement["walk"]), 0))
+    compute = "\n".join(render(prune(compiled.compute["walk"]), 0))
+    assert "km::items(Items(items), 512, 8)" in movement
+    assert "km::items(Out(out), 1024, 4)" in movement
+    assert "cb_push_back(kWords, 1);" in movement  # mover A hands the words on
+    assert "const Places places(km_word_places);" in movement
+    assert "first = compute.handed(ckernel::ThreadId::UnpackThreadId);" in compute
+    assert "cb_pop_front(kFieldTable" not in compute  # kept: load's next fill frees it
+    assert "compute.hand(ckernel::ThreadId::PackThreadId, get_tile_l1_byte_address(" \
+        "half0, tile0));" in compute  # fmt: skip
+    assert '#if defined(TRISC_PACK)\n#include "walk.hpp"\n#endif' in (
+        compiled.body_includes["compute"]
+    )
+    assert compiled.compute_options == WALK
+    assert [b.page_bytes for b in compiled.buffers if b.role == "read"] == [512]
+    assert len(compiled.handovers) == 4
+
+
+class Unpacked(km.Program):
+    @km.handler
+    def copy(self, items: km.Tensor):
+        km.Stream(items.items(0, 4, size=1000)).drain()
+
+
+class Untaken(km.Program):
+    table: km.L1[km.u32, 2, 32, 32]
+
+    @km.handler
+    def use(self, items: km.Tensor):
+        km.cxx("use(table);", takes=[self.table], on="pack")
+
+
+class Outside(km.Program):
+    @km.handler
+    def copy(self, items: km.Tensor):
+        first, count, more = items.pages(0, 1).read()[0:2]
+
+
+class Pushed(km.Program):
+    @km.handler
+    def copy(self, items: km.Tensor, out: km.Tensor):
+        made = km.Stream(out.pages(0, 1), write=True)
+        km.cxx("fill(made);", takes=[made])
+
+
+class Unknown(km.Program, compute={"dst_full_sync": True}):
+    @km.handler
+    def copy(self, items: km.Tensor):
+        km.Stream(items.pages(0, 1)).drain()
+
+
+@pytest.mark.parametrize(
+    "cls, text, match",
+    [
+        (Unpacked, "size=1000)).drain()", "items of 1000 B in pages of 4096 B"),
+        (Untaken, 'takes=[self.table], on="pack")', "no other handler keeps it"),
+        (Outside, "first, count, more =", "words 0 to 1 of a page of 1024 words"),
+        (Pushed, 'km.cxx("fill(made);"', "its pages are pack's to fill"),
+    ],
+)
+def test_a_body_line_the_compiler_does_not_take_is_refused_by_its_line(
+    cls, text, match
+):
+    line = line_of(text)
+    with pytest.raises(Refused, match=rf"line {line}, .*{match}"):
+        compile_class(cls, {}, {name: tensor("float32") for name in ("items", "out")})
+
+
+def test_an_unknown_compute_option_is_refused_by_name():
+    line = line_of('class Unknown(km.Program, compute={"dst_full_sync": True}):')
+    with pytest.raises(Refused, match=rf"^Unknown, line {line}: .*'dst_full_sync'"):
+        compile_class(Unknown, {}, {"items": tensor("float32")})

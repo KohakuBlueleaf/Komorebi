@@ -22,6 +22,7 @@ from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.errors import ProgramError
 from komorebi.movement import Pattern
+from komorebi.session import COMPUTE_FLAGS
 
 # Words of a command a handler's arguments may take (a0 to a9).
 COMMAND_WORDS = 10
@@ -47,7 +48,7 @@ TILE_ELEMENTS = 32 * 32
 GENERATED = {"command", "movement", "compute", "rank", "size", "group", "ok"}
 GENERATED |= {"self_x", "self_y", "self_core", "rect_columns", "rect_rows"}
 GENERATED |= {"messages", "packet", "arrived", "incoming", "word_page", "stamp"}
-GENERATED |= {"spans", "spans_page", "called"}
+GENERATED |= {"spans", "spans_page", "called", "page_words"}
 GENERATED_NUMBERED = re.compile(
     r"(block|half|valid|tile|read|write|out|room|page|address|batch|slot)\d+"
 )
@@ -66,6 +67,15 @@ ALONG = {"row": "A", "column": "B"}
 # pair around one tensix_sync), then each call's span from word 18.
 SPANS_EMPTY, SPANS_FIRST = 16, 18
 TILE_FORMATS = {"float32": F32, "bfloat16": BF16}
+# An inline body's CPU (on=): a mover, one compute CPU, or compute's three; the #if of
+# each one CPU's code.
+COMPUTE_CPUS = ("unpack", "math", "pack")
+BODY_CPUS = ("mover_a", "mover_b", *COMPUTE_CPUS)
+CPU_GUARDS = {
+    "mover_a": "defined(COMPILE_FOR_BRISC)",
+    "mover_b": "!defined(COMPILE_FOR_BRISC)",
+    **{cpu: f"defined(TRISC_{cpu.upper()})" for cpu in COMPUTE_CPUS},
+}
 
 
 class Refused(ProgramError):
@@ -146,6 +156,7 @@ class Value:
     # a range of a rectangle of tiles: (rows, columns, the tensor's tile columns),
     # C++ texts but the last; rows and columns ints where the build knows them
     rect: tuple | None = None
+    items: tuple | None = None  # a range of items: (bytes an item, items a page)
 
     def first_text(self, name):
         """A partition's first page: its range's first page plus its start."""
@@ -204,6 +215,9 @@ class Compiled:
     # field -> (the handlers that fill it, those that read it and do not fill it)
     field_users: dict = field(default_factory=dict)
     full_dst: bool = False  # a row-form tile function: DST in full-sync mode
+    # Each value an inline body or a line hands between compute CPUs by mailbox.
+    handovers: list = field(default_factory=list)
+    compute_options: dict = field(default_factory=dict)  # the class's compute=
 
 
 def handler_methods(cls):
@@ -254,7 +268,45 @@ def compile_class(cls, plan, tensors, l1=None):
         names = method.function.__globals__
         HandlerCompiler(compiled, method, names, plan, tensors).run()
     bind_fields(compiled, plan, l1)
+    compiled.compute_options = class_compute(cls, compiled)
     return compiled
+
+
+def class_compute(cls, compiled):
+    """The class's compute options (`compute=`): the host API's names, each refused
+    by name when unknown or when the class sets it from its lines."""
+    given = getattr(cls, "compute_given", {})
+    try:
+        line = inspect.getsourcelines(cls)[1]
+    except (OSError, TypeError):
+        line = "?"
+    where = f"{cls.__name__}, line {line}: compute option"
+    for key, value in given.items():
+        if key == "unpack_to_dest_mode":
+            raise Refused(
+                f"{where} {key!r}: the class sets it from its float32 buffers; "
+                "drop it"
+            )
+        if key == "math_fidelity":
+            if value not in front.FIDELITIES:
+                raise Refused(
+                    f"{where} {key!r} = {value!r}: not a fidelity; give one of "
+                    f"{', '.join(front.FIDELITIES)}"
+                )
+            if compiled.fidelity is not None and compiled.fidelity != value:
+                raise Refused(
+                    f"{where} {key!r} = {value!r}: the products ask "
+                    f"{compiled.fidelity}; give one fidelity"
+                )
+            continue
+        if key not in COMPUTE_FLAGS:
+            raise Refused(
+                f"{where} {key!r}: the host API has no such option; give "
+                f"math_fidelity or one of {', '.join(COMPUTE_FLAGS)}"
+            )
+        if not isinstance(value, bool):
+            raise Refused(f"{where} {key!r} = {value!r}: a flag; give True or False")
+    return dict(given)
 
 
 def field_users(methods, fields):
@@ -516,6 +568,7 @@ class HandlerCompiler:
         # lines, and the lines compute runs once before its blocks.
         self.loop_states = []
         self.blocks = []  # the statement lists around the statement, innermost last
+        self.body_moves = []  # the movers' lines of an inline body's write stream
         self.assigned = self.assigned_names()
         self.dynamic = self.arrives()
 
@@ -1195,6 +1248,8 @@ class HandlerCompiler:
         )
 
     def assign(self, node):
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Tuple):
+            return self.read_words(node, node.targets[0], node.value)
         if len(node.targets) == 1 and self.word_name(node.targets[0]):
             return self.set_field_word(node, node.targets[0])
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Attribute):
@@ -1492,9 +1547,10 @@ class HandlerCompiler:
 
     def is_range(self, node):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            return node.func.attr == spelling("pages") and self.is_tensor(
-                node.func.value
-            )
+            return node.func.attr in (
+                spelling("pages"),
+                spelling("items"),
+            ) and self.is_tensor(node.func.value)
         if isinstance(node, ast.Subscript):
             return self.is_tensor(node.value) or self.is_tiles(node.value)
         if isinstance(node, ast.Attribute):
@@ -1626,6 +1682,8 @@ class HandlerCompiler:
             return Value(
                 "range", first="0", count=self.counts[tensor], tensor=tensor, cxx=tensor
             )
+        if isinstance(node, ast.Call) and node.func.attr == spelling("items"):
+            return self.items_of(node)
         if isinstance(node, ast.Call):
             tensor = node.func.value.id
             if len(node.args) != 2 or node.keywords:
@@ -1660,6 +1718,37 @@ class HandlerCompiler:
             f"stream or {spelling('read')}()",
         )
 
+    def items_of(self, node):
+        """`t.items(first, count, size=B)`: items of B bytes packed in t's pages, a
+        whole number a page; a stream moves them as pages of B bytes."""
+        tensor = node.func.value.id
+        sizes = [k.value for k in node.keywords if k.arg == spelling("item_size")]
+        if len(node.args) != 2 or len(sizes) != 1 or len(node.keywords) != 1:
+            self.refuse(
+                node,
+                f"{spelling('items')}(first, count, {spelling('item_size')}=bytes)",
+                "give first, count and the bytes an item",
+            )
+        size = self.constant_int(sizes[0])
+        _, page_bytes = self.tensor_format(node, tensor)
+        if size < 1 or page_bytes % size:
+            self.refuse(
+                node,
+                f"items of {size} B in pages of {page_bytes} B: a page holds a whole "
+                "number of items",
+                f"give a {spelling('item_size')} that divides {page_bytes}",
+            )
+        first, count = (self.integer(arg) for arg in node.args)
+        used = self.uses(node.args[0]) | self.uses(node.args[1])
+        return Value(
+            "range",
+            first=first,
+            count=count,
+            tensor=tensor,
+            cxx=" ".join(sorted(used)),
+            items=(size, page_bytes // size),
+        )
+
     def partition(self, node, name, call):
         """`part = self.partition(pages)`: this core's part by rank; `part =
         b.partition(pages)`: by its place along broadcast b's row or column."""
@@ -1676,6 +1765,7 @@ class HandlerCompiler:
         argument = call.args[0]
         if self.is_range(argument):
             pages = self.range_of(argument)
+            self.pages_only(node, pages)
             first, count = pages.first, pages.count
         else:
             first, count = "0", self.integer(argument)
@@ -2134,7 +2224,9 @@ class HandlerCompiler:
         return constant
 
     def stream_cxx(self, kind, variable, pages, buffer, pattern, repeat):
-        tensor_type = camel(pages.tensor)
+        tensor = f"{camel(pages.tensor)}({pages.tensor})"
+        if pages.items is not None:  # items of a page: an item a buffer page
+            tensor = f"km::items({tensor}, {pages.items[0]}, {pages.items[1]})"
         direction = "km::kMoveRead" if kind == "read" else "km::kMoveWrite"
         if pages.rect is not None:  # blocks of whole rows of a rectangle
             rows, columns, row_step, block = pages.rect
@@ -2148,16 +2240,36 @@ class HandlerCompiler:
             return (
                 f"// the rectangle's rows, {columns} tiles each, {row_step} apart\n"
                 f"const km::Stream {variable}(\n"
-                f"    {direction}, {tensor_type}({pages.tensor}), {walk}, {repeat}, "
+                f"    {direction}, {tensor}, {walk}, {repeat}, "
                 f"{buffer.name}, {pattern}\n"
                 ");"
             )
         return (
             f"const km::Stream {variable}(\n"
-            f"    {direction}, {tensor_type}({pages.tensor}), {pages.first}, "
+            f"    {direction}, {tensor}, {pages.first}, "
             f"{pages.count}, {buffer.name}Block, {repeat}, {buffer.name}, {pattern}\n"
             ");"
         )
+
+    def items_alone(self, node, pages):
+        """Refuses what items do not take: a stream of rows of them."""
+        if self.row_width > 1:
+            self.refuse(
+                node,
+                "items are not tiles: a stream of them has no rows",
+                f"drop {spelling('row')}=",
+            )
+
+    def pages_only(self, node, pages):
+        """Refuses a range of items where a line takes pages."""
+        if pages.items is not None:
+            self.refuse(
+                node,
+                f"{pages.tensor}.{spelling('items')}(...) is a stream's: this line "
+                "moves whole pages",
+                f"write {pages.tensor}.{spelling('pages')}(first, count), or stream "
+                "the items",
+            )
 
     def write_stream(self, node, name, call):
         written = [k for k in call.keywords if k.arg == spelling("write_stream")]
@@ -2172,6 +2284,8 @@ class HandlerCompiler:
             )
         pages, block, pattern, letters, repeat = self.stream_options(node, call, True)
         dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        if pages.items is not None:  # the buffer's pages are the items
+            page_bytes = pages.items[0]
         self.moved(node, pages.tensor, "write stream")
         number = self.writes
         self.writes += 1
@@ -2186,7 +2300,9 @@ class HandlerCompiler:
         )
         pattern_text = self.pattern_cxx(buffer, pattern, letters)
         variable = f"write{number}"
-        self.scope[name] = Value("write", variable, buffer=buffer, pattern=pattern_text)
+        self.scope[name] = Value(
+            "write", variable, count=pages.count, buffer=buffer, pattern=pattern_text
+        )
         text = self.stream_cxx("write", variable, pages, buffer, pattern_text, repeat)
         uses = range_uses(pages, self) | pattern_uses(pattern)
         self.wait(node, "mover A", WAIT_DATA)
@@ -2302,6 +2418,9 @@ class HandlerCompiler:
                     f"write `for row in km.{spelling('stream')}(..., row=2)`",
                 )
             dtype, page_bytes = self.tensor_format(node, pages.tensor)
+            if pages.items is not None:  # the buffer's pages are the items
+                page_bytes = pages.items[0]
+                self.items_alone(node, pages)
             index = self.reads
             self.reads += 1
             buffer = self.pair(
@@ -2314,7 +2433,7 @@ class HandlerCompiler:
                 f"line {node.lineno}: {self.text(node)}",
             )
             pattern_text = self.pattern_cxx(buffer, pattern, letters)
-            if dtype == "float32":
+            if dtype == "float32" and pages.items is None:
                 self.compiled.unpack_fp32.add(buffer.name)
             self.moved(node, pages.tensor, "read stream")
             reads.append(
@@ -2356,7 +2475,13 @@ class HandlerCompiler:
         pushed_before = {id(v): v.pushed for v in writes_before}
         self.stream_loops.append(number)
         self.loop_states.append(
-            {"function": None, "other": None, "inits": [], "after": []}
+            {
+                "function": None,
+                "other": None,
+                "inits": [],
+                "after": [],
+                "block": reads[0]["block"],
+            }
         )
         body_m, body_c = self.statements(node.body)
         state = self.loop_states.pop()
@@ -2460,7 +2585,7 @@ class HandlerCompiler:
                 )
             )
             self.wait(node, "compute", WAIT_OUTPUT)
-        if pushed and state["function"] is None:
+        if pushed and state["function"] is None and not state.get("body_pushed"):
             inner.append(
                 Line(
                     f"KM_UNPACK_FORMAT_A({first['half']});\n"
@@ -2920,6 +3045,7 @@ class HandlerCompiler:
                 "write tensor.pages(first, 1).write(tile)",
             )
         pages = self.range_of(target)
+        self.pages_only(node, pages)
         summed = call.args[0] if len(call.args) == 1 else None
         if self.field_name(summed) in self.summed:
             return self.write_sums(node, pages, self.field_name(summed))
@@ -3112,6 +3238,7 @@ class HandlerCompiler:
     def read_word(self, node, name, pages):
         """`word = pages.read()` of one page: its first word, on mover B, from its own
         L1 page (read, settled, the L1 cache invalidated)."""
+        self.pages_only(node, pages)
         if pages.count != "1":
             self.refuse(node, "a word is one page", "read pages(first, 1)")
         self.check_name(node, name)
@@ -3136,6 +3263,134 @@ class HandlerCompiler:
         self.compiled.includes.add("ask")
         self.scope[name] = Value("word", name, mover="B")
         return [Line(text, range_uses(pages, self), mover="B")], []
+
+    def read_words(self, node, target, value):
+        """`a, b = pages.read()[0:2]` of one page: its words 0 and 1 as ints of
+        every kernel. Mover A reads the page into a page it hands compute (unpack
+        takes the words and hands them to math and pack by mailbox); mover B reads
+        its own."""
+        call = value.value if isinstance(value, ast.Subscript) else None
+        part = value.slice if call is not None else None
+        if not (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == spelling("read")
+            and not call.args
+            and not call.keywords
+            and self.is_range(call.func.value)
+            and isinstance(part, ast.Slice)
+            and part.step is None
+            and part.upper is not None
+            and all(isinstance(name, ast.Name) for name in target.elts)
+        ):
+            self.refuse(
+                node,
+                "names are given a page's words, by a constant slice",
+                f"write `first, count = t.{spelling('pages')}(i, 1)."
+                f"{spelling('read')}()[0:2]`",
+            )
+        lower = 0 if part.lower is None else self.constant_int(part.lower)
+        upper = self.constant_int(part.upper)
+        names = [name.id for name in target.elts]
+        pages = self.range_of(call.func.value)
+        self.pages_only(node, pages)
+        if pages.count != "1":
+            self.refuse(node, "words are of one page", "read pages(first, 1)")
+        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        if not 0 <= lower < upper <= page_bytes // 4 or upper - lower != len(names):
+            self.refuse(
+                node,
+                f"words {lower} to {upper - 1} of a page of {page_bytes // 4} words "
+                f"for {len(names)} names",
+                "give a slice of the page with a name each word",
+            )
+        for name in names:
+            self.check_name(node, name)
+            self.scope[name] = Value("int", name)
+        what = f"line {node.lineno}: {self.text(node)}"
+        handed = self.other_buffer(
+            "kWords", "word", dtype, page_bytes, 1, f"{what} (mover A's, to compute)"
+        )
+        own = self.other_buffer(
+            "kWordB", "word", dtype, page_bytes, 1, f"{what} (mover B's word page)"
+        )
+        for buffer in (handed, own):
+            buffer.page_bytes = max(buffer.page_bytes, page_bytes)
+        declared = "\n".join(f"[[maybe_unused]] uint32_t {name} = 0;" for name in names)
+        taken = "\n".join(
+            f"    {name} = page_words[{lower + n}];" for n, name in enumerate(names)
+        )
+        tensor = f"{camel(pages.tensor)}({pages.tensor})"
+
+        def mover(buffer, reserve):
+            opening = (
+                f"if (!movement.reserve({buffer}, 1) ||\n    " if reserve else ("if (")
+            )
+            return (
+                f"{declared}\n"
+                f"{opening}!km::read_pages(movement, command, {tensor}, "
+                f"{pages.first}, 1,\n                    get_write_ptr({buffer}))) {{\n"
+                "    return false;\n"
+                "}\n"
+                "noc_async_read_barrier();\n"
+                "invalidate_l1_cache();\n"
+                "{\n"
+                "    volatile tt_l1_ptr uint32_t* page_words =\n"
+                f"        km::l1(get_write_ptr({buffer}));\n"
+                f"{taken}\n"
+                "}"
+            )
+
+        uses = range_uses(pages, self)
+        movement = [
+            Line(mover("kWords", True) + "\ncb_push_back(kWords, 1);", uses, mover="A"),
+            Glue(mover("kWordB", False), set(names), uses, mover="B"),
+        ]
+        hands = "\n".join(
+            f"    compute.hand(ckernel::ThreadId::{cpu}ThreadId, {name});"
+            for name in names
+            for cpu in ("Math", "Pack")
+        )
+        heard = "\n".join(
+            f"{name} = compute.handed(ckernel::ThreadId::UnpackThreadId);"
+            for name in names
+        )
+        compute = [
+            Line(
+                f"{declared}\n"
+                "if (!compute.wait_front(kWords, 1)) {\n"
+                "    return;\n"
+                "}\n"
+                "#if defined(TRISC_UNPACK)\n"
+                "{\n"
+                "    const volatile uint32_t* page_words =\n"
+                "        reinterpret_cast<const volatile uint32_t*>(\n"
+                "            get_tile_l1_byte_address(kWords, 0)\n"
+                "        );\n"
+                '    asm volatile("fence" ::: "memory");\n'
+                f"{taken}\n"
+                f"{hands}\n"
+                "}\n"
+                "#else\n"
+                f"{heard}\n"
+                "#endif\n"
+                "cb_pop_front(kWords, 1);"
+            )
+        ]
+        self.moved(node, pages.tensor, "word read")
+        self.compiled.includes.add("ask")
+        self.handover(node, ", ".join(names), "unpack", ("math", "pack"))
+        self.wait(node, "mover A", WAIT_DATA)
+        self.wait(node, "mover B", WAIT_DATA)
+        self.wait(node, "compute", WAIT_INPUT)
+        return movement, compute
+
+    def handover(self, node, what, sender, receivers):
+        """A value handed between compute CPUs by mailbox, for the build's report."""
+        self.compiled.handovers.append(
+            f"{self.method.name}, line {node.lineno}: {what} from {sender} to "
+            f"{' and '.join(receivers)} by mailbox"
+        )
 
     def word_sum(self, node, value):
         """`word += x` (or another operator) on a mover's word: its mover's line; x
@@ -3313,6 +3568,7 @@ class HandlerCompiler:
                 "fill it once, before the body that takes it",
             )
         pages = self.range_of(stream.args[0])
+        self.pages_only(node, pages)
         dtype, page_bytes = self.tensor_format(node, pages.tensor)
         value = self.compiled.fields[field]
         if (dtype, page_bytes) != (value.format.dtype, 1024 * value.format.itemsize):
@@ -3383,42 +3639,37 @@ class HandlerCompiler:
         fillers, readers = self.compiled.field_users.get(field, ([], []))
         return bool(fillers and readers)
 
-    def take_field(self, node, field, mover, bound, before, after):
-        """A field an inline body takes: compute gets its buffer index, mover B its
-        L1 address, once mover A filled it; it is freed after the body."""
-        if field not in self.filled or self.filled[field] is None:
+    def take_field(self, node, field, where, bound, before, after):
+        """A field an inline body takes: compute's three get its buffer index, one
+        compute CPU its L1 address (unpack's own, handed to math or pack), mover B
+        its L1 address, once mover A filled it. A field filled in this handler is
+        freed after the body; one another handler fills (kept) stays."""
+        kept = self.kept_field(field) and field not in self.filled
+        if not kept and (field not in self.filled or self.filled[field] is None):
             self.refuse(
                 node,
                 f"self.{field} is not filled above in this handler (or a body took "
-                "it): a field is filled for one body, in the handler that takes it",
-                f"write self.{field}.fill(km.Stream(...)) before this body",
+                "it), and no other handler keeps it filled",
+                f"write self.{field}.fill(km.Stream(...)) before this body, or in "
+                "a handler of its own",
             )
-        if self.filled[field][1] != self.blocks[-1]:
+        if not kept and self.filled[field][1] != self.blocks[-1]:
             self.refuse(
                 node,
                 f"self.{field} is filled in another block: every core that fills it "
                 "must free it",
                 "take it in the block of its fill (or fill it inside this one)",
             )
-        if mover == "A":
+        if where == "A":
             self.refuse(
                 node,
                 f"self.{field} is filled by mover A and handed on",
                 'take it in a body on compute or on="mover_b"',
             )
-        self.filled[field] = None
+        if not kept:
+            self.filled[field] = None
         buffer, pages_name = f"kField{camel(field)}", f"kField{camel(field)}Pages"
-        if mover is None:
-            before.append(
-                Line(
-                    f"if (!compute.wait_front({buffer}, {pages_name})) {{\n"
-                    "    return;\n}"
-                )
-            )
-            bound.append(f"const uint32_t {field} = {buffer};")
-            after.append(Line(f"cb_pop_front({buffer}, {pages_name});"))
-            self.wait(node, "compute", WAIT_INPUT)
-        else:
+        if where == "B":
             before.append(
                 Line(
                     f"if (!movement.wait_front({buffer}, {pages_name})) {{\n"
@@ -3427,8 +3678,26 @@ class HandlerCompiler:
                 )
             )
             bound.append(f"const uint32_t {field} = get_read_ptr({buffer});")
-            after.append(Line(f"cb_pop_front({buffer}, {pages_name});", mover="B"))
+            if not kept:
+                after.append(Line(f"cb_pop_front({buffer}, {pages_name});", mover="B"))
             self.wait(node, "mover B", WAIT_DATA)
+            return
+        before.append(
+            Line(
+                f"if (!compute.wait_front({buffer}, {pages_name})) {{\n"
+                "    return;\n}"
+            )
+        )
+        if where == "compute":
+            bound.append(f"const uint32_t {field} = {buffer};")
+        else:
+            address = f"get_tile_l1_byte_address({buffer}, 0)"
+            self.cpu_address(
+                node, field, address, where, bound, before, after, not kept
+            )
+        if not kept:
+            after.append(Line(f"cb_pop_front({buffer}, {pages_name});"))
+        self.wait(node, "compute", WAIT_INPUT)
 
     def field_use(self, node):
         """Refuses any other use of a field: `@`, slices and `.columns` of a field
@@ -3743,6 +4012,7 @@ class HandlerCompiler:
         value = cast.targets[0].id
         self.check_name(cast, value)
         pages = self.range_of(source)
+        self.pages_only(cast, pages)
         if isinstance(source, ast.Subscript):
             if not pages.count.isdigit():
                 self.refuse(
@@ -3908,9 +4178,10 @@ class HandlerCompiler:
     # Inline bodies and results -----------------------------------------------------
 
     def inline(self, node, call, name=None):
-        """`km.cxx(text, takes=[...], gives=..., on=...)`: the C++ as written, on its
-        CPU, the names it takes bound before it; `name = km.cxx(..., gives=int)` the
-        word the body sets, `gives=km.Tile` the tile it leaves in DST 0 (compute)."""
+        """`km.cxx(text, takes=[...], gives=..., on=..., include=[...])`: the C++ as
+        written, on its CPU (a mover, one compute CPU, or compute's three), the names
+        it takes bound before it; `name = km.cxx(..., gives=int)` the word the body
+        sets, `gives=km.Tile` the tile it leaves in DST 0 (compute)."""
         if not call.args or not isinstance(call.args[0], ast.Constant):
             self.refuse(node, "an inline body is a string", 'write km.cxx("...")')
         text = textwrap.dedent(call.args[0].value).strip("\n")
@@ -3925,24 +4196,36 @@ class HandlerCompiler:
                 "put them on the body's first lines",
             )
         text = "\n".join(lines[included:])
-        on, takes, gives = "compute", [], None
+        on, takes, gives, includes = "compute", [], None, []
         for keyword_ in call.keywords:
             value = keyword_.value
             if keyword_.arg == spelling("on"):
-                if not (
-                    isinstance(value, ast.Constant)
-                    and value.value in ("mover_a", "mover_b")
-                ):
+                if not (isinstance(value, ast.Constant) and value.value in BODY_CPUS):
                     self.refuse(
                         node,
-                        "on= names a mover (a body without it is compute's)",
-                        'write on="mover_a" or on="mover_b"',
+                        "on= names a mover or a compute CPU (a body without it is "
+                        "compute's three)",
+                        'write on="mover_a", "mover_b", "unpack", "math" or "pack"',
                     )
                 on = value.value
             elif keyword_.arg == spelling("takes"):
                 if not isinstance(value, ast.List):
                     self.refuse(node, "takes= is a list of names", "write takes=[a]")
                 takes = list(value.elts)
+            elif keyword_.arg == spelling("include"):
+                if not (
+                    isinstance(value, ast.List)
+                    and all(
+                        isinstance(item, ast.Constant) and isinstance(item.value, str)
+                        for item in value.elts
+                    )
+                ):
+                    self.refuse(
+                        node,
+                        "include= is a list of header paths",
+                        'write include=["../kernels/walk.hpp"]',
+                    )
+                includes = [item.value for item in value.elts]
             elif keyword_.arg == spelling("gives"):
                 if isinstance(value, ast.Name) and value.id == "int":
                     gives = "int"
@@ -3960,7 +4243,7 @@ class HandlerCompiler:
                 self.refuse(
                     node,
                     f"km.cxx has no {keyword_.arg}=",
-                    "use takes=, gives= and on=",
+                    "use takes=, gives=, on= and include=",
                 )
         if (gives is None) != (name is None):
             self.refuse(
@@ -3968,22 +4251,31 @@ class HandlerCompiler:
                 "a body that gives a value is assigned, one that gives none is not",
                 "write `x = km.cxx(..., gives=int)`, or km.cxx(...) on its own line",
             )
-        mover = None if on == "compute" else ("A" if on == "mover_a" else "B")
-        if gives == "tile" and mover is not None:
+        mover = {"mover_a": "A", "mover_b": "B"}.get(on)
+        cpu = on if on in COMPUTE_CPUS else None  # one compute CPU, or None
+        if gives == "tile" and on != "compute":
             self.refuse(
-                node, "a tile is compute's", "drop on= for a body giving a tile"
+                node,
+                "a tile is compute's three CPUs'",
+                "drop on= for a body giving a tile",
             )
+        where = mover or cpu or "compute"
         uses, bound, before, after = set(), [], [], []
         for item in takes:
             field = self.field_name(item)
             if field:
-                self.take_field(node, field, mover, bound, before, after)
+                self.take_field(node, field, where, bound, before, after)
                 continue
-            uses |= self.take(node, item, mover, bound, before)
+            uses |= self.take(node, item, where, bound, before, after)
         kernel = "compute" if mover is None else "movement"
-        for line in lines[:included]:
-            if line.strip() not in self.compiled.body_includes[kernel]:
-                self.compiled.body_includes[kernel].append(line.strip())
+        guard = CPU_GUARDS.get(on)
+        entries = [line.strip() for line in lines[:included]]
+        for path in includes:  # the body's CPU's alone
+            entry = f'#include "{path}"'
+            entries.append(entry if guard is None else f"#if {guard}\n{entry}\n#endif")
+        for entry in entries:
+            if entry not in self.compiled.body_includes[kernel]:
+                self.compiled.body_includes[kernel].append(entry)
         start = call.args[0].lineno + 1 + included
         body = f'#line {start} "{self.compiled.source}"\n{text}\n#line RESUME'
         if bound:
@@ -3992,7 +4284,7 @@ class HandlerCompiler:
         if gives == "int":
             self.check_name(node, name)
             body = f"uint32_t {name} = 0;\n{body}"
-            self.scope[name] = Value("word", name, mover=mover or "compute")
+            self.scope[name] = Value("word", name, mover=where)
         elif gives == "tile":
             self.check_name(node, name)
             self.other_tile_line(node)
@@ -4006,28 +4298,59 @@ class HandlerCompiler:
             self.dst_live = name
             self.scope[name] = Value("tile", name, dst=0)
             body = f"tile_regs_acquire();\n{body}"
+        if cpu is not None:  # its CPU's alone
+            body = f"#if {guard}\n{body}\n#endif"
         lines = [*before, Line(body, uses, mover=mover), *after]
+        moves, self.body_moves = self.body_moves, []
         if mover is None:
-            return [], lines
+            return moves, lines
         return lines, []
 
-    def take(self, node, item, mover, bound, before):
-        """A name an inline body takes: an int, partition or pattern by its own name;
-        a tile written to a page (on mover B) as its buffer, once compute packed it."""
+    def take(self, node, item, where, bound, before, after):
+        """A name a body takes on `where` (mover "A" or "B", "compute", or a compute
+        CPU), as the table of docs/reference/classes.md ("Inline bodies") says: by
+        name, a stream tile's buffer or L1 address, a write stream's page on pack, a
+        tensor on a mover, a written tile on mover B."""
         if not isinstance(item, ast.Name) or item.id not in self.scope:
             self.refuse(node, "takes= names the handler's values", "take names")
         value = self.scope[item.id]
         if value.kind in ("int", "partition", "pattern"):
             return {item.id}
-        if value.kind == "streamed" and mover is None:  # its buffer and place
+        if value.kind == "streamed" and where == "compute":  # its buffer and place
             buffer, index = spelling("tile_buffer"), spelling("tile_index")
             bound.append(f"const uint32_t {item.id}{buffer} = {value.cxx};")
             bound.append(f"const uint32_t {item.id}{index} = {value.first};")
             return set()
-        if value.kind == "word" and value.mover == (mover or "compute"):
+        if value.kind == "streamed" and where in COMPUTE_CPUS:
+            address = f"get_tile_l1_byte_address({value.cxx}, {value.first})"
+            self.cpu_address(node, item.id, address, where, bound, before, after, True)
+            return set()
+        if value.kind == "write" and where == "pack":
+            self.take_write(node, item.id, value, bound, before, after)
+            return set()
+        if value.kind == "write":
+            self.refuse(
+                node,
+                f"{item.id} is a write stream: its pages are pack's to fill",
+                'take it in a body on="pack"',
+            )
+        if value.kind == "tensor" and where in ("A", "B"):
+            word = f"km_word_{item.id}"
+            bound.append(f"const uint32_t {word} = {item.id};")
+            bound.append(f"const {camel(item.id)} {item.id}({word});")
+            return {item.id}
+        if value.kind == "tensor":
+            self.refuse(
+                node,
+                f"{item.id} is a tensor, in DRAM: the movers' to move",
+                'take it in a body on="mover_a" or on="mover_b"',
+            )
+        if value.kind == "word" and (
+            value.mover == where or value.mover == "compute" and where in COMPUTE_CPUS
+        ):
             return {item.id}
         if value.kind in ("written", "reduced") and value.buffer is not None:
-            if mover != "B":
+            if where != "B":
                 self.refuse(
                     node,
                     f"{item.id} is packed for mover B's write",
@@ -4047,10 +4370,107 @@ class HandlerCompiler:
             return set()
         self.refuse(
             node,
-            f"{item.id} is a {value.kind}: a body takes ints, partitions, patterns, "
-            "words and written tiles",
+            f"{item.id} is a {value.kind} here: a body takes ints, partitions, "
+            "patterns, words of its CPU, stream tiles, write streams (on pack), "
+            "tensors (on a mover) and written tiles",
             "pass those",
         )
+
+    def cpu_address(self, node, name, address, cpu, bound, before, after, release):
+        """An L1 address unpack knows, for a body on one compute CPU: unpack's own;
+        math or pack are handed it before the body and, with `release`, hand back a
+        release after it (unpack frees nothing before)."""
+        if cpu == "unpack":
+            bound.append(f"const uint32_t {name} = {address};")
+            return
+        thread = f"ckernel::ThreadId::{cpu.capitalize()}ThreadId"
+        before.append(
+            Line(
+                "#if defined(TRISC_UNPACK)\n"
+                f"compute.hand({thread}, {address});\n"
+                "#endif"
+            )
+        )
+        bound.append(
+            f"const uint32_t {name} = "
+            "compute.handed(ckernel::ThreadId::UnpackThreadId);"
+        )
+        self.handover(node, f"{name}'s L1 address", "unpack", (cpu,))
+        if not release:
+            return
+        after.append(
+            Line(
+                f"// {cpu} is done with {name}: unpack may free it\n"
+                f"#if {CPU_GUARDS[cpu]}\n"
+                "compute.hand(ckernel::ThreadId::UnpackThreadId, 1);\n"
+                "#elif defined(TRISC_UNPACK)\n"
+                f"(void)compute.handed({thread});\n"
+                "#endif"
+            )
+        )
+        self.handover(node, f"the release of {name}", cpu, ("unpack",))
+
+    def take_write(self, node, name, value, bound, before, after):
+        """A write stream's page for a body on pack: in a stream loop the loop's
+        page (reserved with the block, pushed after it); outside one, the stream's
+        one block, reserved, pushed and moved at this line. The page's L1 address,
+        0 when compute gave up."""
+        if value.pushed:
+            self.refuse(
+                node,
+                f"{name} is fed above (a push or another body)",
+                "open a write stream for each",
+            )
+        value.pushed = True
+        buffer = value.buffer.name
+        if self.stream_loops:
+            state = self.loop_states[-1]
+            if value.buffer.block != state["block"]:
+                self.refuse(
+                    node,
+                    f"{name}'s block is {value.buffer.block} page(s), the loop's "
+                    f"{state['block']}",
+                    "give the write stream the loop's block=",
+                )
+            state["body_pushed"] = True
+            number = self.stream_loops[-1]
+            out, room, tile = f"out{number}", f"room{number}", f"tile{number}"
+            ring = f"get_local_cb_interface({out})"
+            bound.append(
+                f"const uint32_t {name} = {room} ? ({ring}.fifo_wr_ptr + {tile} * "
+                f"{ring}.fifo_page_size) << 4 : 0;"
+            )
+            return
+        if value.count != str(value.buffer.block):
+            self.refuse(
+                node,
+                f"{name} outside a stream loop is one block: {value.count} page(s), "
+                f"its block {value.buffer.block}",
+                "give the write stream one block, or fill it in a stream loop",
+            )
+        out, room = f"out_{name}", f"room_{name}"
+        given = value.pattern if value.pattern in self.scope else None
+        before.append(
+            Line(
+                f"const uint32_t {out} = "
+                f"km::block_half({buffer}, {value.pattern}, 0);\n"
+                f"const bool {room} = compute.reserve_back({out}, {buffer}Block);",
+                uses=pattern_uses(given),
+            )
+        )
+        bound.append(
+            f"const uint32_t {name} = {room} ? "
+            f"get_local_cb_interface({out}).fifo_wr_ptr << 4 : 0;"
+        )
+        after.append(
+            Line(f"if ({room}) {{\n    cb_push_back({out}, {buffer}Block);\n}}")
+        )
+        self.body_moves.append(
+            Line(f"if (!movement.move({value.cxx})) {{\n    return false;\n}}",
+                 {value.cxx})
+        )  # fmt: skip
+        self.wait(node, "compute", WAIT_OUTPUT)
+        self.wait(node, "mover B", WAIT_DATA)
 
     def page_wait(self, value, pages=1):
         """The opening of mover B's wait for the page(s) compute packs of `value`."""
