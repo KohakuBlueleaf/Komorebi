@@ -342,7 +342,27 @@ def maximum(b, x, y):
     return big
 
 
-FUNCTIONS = {"exp": exp, "sigmoid": sigmoid, "rsqrt": rsqrt}
+def sqrt(b, x):
+    """The square root of x >= 0: x rsqrt(x) (0 at 0: rsqrt's guess from 0's bits is
+    finite)."""
+    return b.mul(x, rsqrt(b, x), "x rsqrt(x)")
+
+
+def minimum(b, x, y):
+    """The smaller of x and y in every lane: the other result of maximum's swap."""
+    big = b.op("SFPMOV", "min: first", lreg_c=x)
+    small = b.op("SFPMOV", "min: second", lreg_c=y)
+    b.op("SFPSWAP", "max, min", lreg_src_c=big, lreg_dest=small, instr_mod1=1)
+    return small
+
+
+FUNCTIONS = {
+    "exp": exp,
+    "sigmoid": sigmoid,
+    "rsqrt": rsqrt,
+    "recip": recip,
+    "sqrt": sqrt,
+}
 # Lane tests of a condition: (instruction, mod1, the operands swapped)
 CONDITIONS = {"gt": ("SFPGT", 1, False), "lt": ("SFPGT", 1, True)}
 ZERO_TESTS = {"eq": 6, "ne": 2}  # SFPSETCC on the integer view: -0.0 is not 0
@@ -371,6 +391,12 @@ def _value(b, node, done, source=None):
     elif k == "max":
         x, y = (_value(b, a, done, source) for a in node.args)
         out = maximum(b, x, y)
+    elif k == "min":
+        x, y = (_value(b, a, done, source) for a in node.args)
+        out = minimum(b, x, y)
+    elif k == "abs":
+        x = _value(b, node.args[0], done, source)
+        out = b.op("SFPABS", "|x|", lreg_c=x, instr_mod1=1)  # 1: the float form
     elif k == "mad":
         out = b.mad(*(_value(b, a, done, source) for a in node.args))
     elif k == "flash_exp2":
@@ -1416,6 +1442,10 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
     elif load_macro and not per_row:
         try:
             plan = macro.fit(body.code)
+            if ROWS % plan.rows:
+                raise macro.Refused(
+                    f"{plan.rows} rows a macro turn do not divide a face"
+                )
             if band and (ROWS // plan.rows) % BANDS:
                 raise macro.Refused(
                     f"a macro turn of {plan.rows} row steps; a band is 2"
@@ -1450,8 +1480,6 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         drained = []
     else:
         row = macro.rows(plan, MACRO_ADDR_MOD)
-        if ROWS % plan.rows:
-            raise UnitError(f"{plan.rows} rows a macro turn do not divide a face")
         face = Loop("row", ROWS // plan.rows, row, unroll=True)
         unit.init["math"] += [
             Call(
