@@ -19,5 +19,5 @@ refused) and stalls no core (`--stall-job` is refused).
 
 Measured on one Blackhole card (the line above): both ok, 960 ranks checked (8 jobs on
 120 cores), every one bit-exact, 19,920 blocks delivered, no core and no broadcast gave
-up; kernel text 51,216 B against the hand program's 53,424 B. A job, exclusive: host
+up; kernel text 48,720 B against the hand program's 53,408 B (mock build). A job, exclusive: host
 109.0 us against 99.8 us.

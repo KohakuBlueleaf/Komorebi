@@ -361,7 +361,7 @@ at small offsets.
 | 0x780 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
 | 0x7C0 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
 | 0x800 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
-| 0xA00 | `KM_CONTROL_PORT` | 10 ports of 16 bytes: count, wanted count; ports 0 to 7 a kernel names ([ports](ports.md)), 8 and 9 (`KM_PORT_PAGES`) the reader's and the writer's page calls' ([islands](islands.md)) |
+| 0xA00 | `KM_CONTROL_PORT` | 12 port slots of 16 bytes: count, wanted count; ports 0 to 7 a kernel names ([ports](ports.md)), 8 and 9 (`KM_PORT_PAGES`) the reader's and the writer's page calls' ([islands](islands.md)), 10 and 11 (`KM_PORT_LEFT`, `KM_PORT_RIGHT`) the collectives' counts from the island before and after on the line |
 | 0xAC0 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
 | 0xD40 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
 | 0xE00 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
