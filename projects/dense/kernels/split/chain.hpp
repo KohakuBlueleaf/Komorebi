@@ -225,9 +225,8 @@ bool chain_input(const Kernel& core) {
     return code == km::kGaveNone;
 }
 
-// Until the record's input is marked: its W blocks into this mover's half once A
-// has freed it (the half empty), one block a pass. `skip`: the chunks W's stream
-// starts after (this mover's next block). False: gave up (recorded).
+// Until the record's input is marked: its W blocks into this mover's half once A has
+// freed it, a block a pass. `skip`: the chunks W's stream starts after. False: gave up.
 template <typename Kernel, typename Accessor>
 bool chain_weight_first(
     const Kernel& core, const km::Stream<Accessor>& weights, uint32_t& skip

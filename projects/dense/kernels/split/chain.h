@@ -1,6 +1,5 @@
-/* SPLIT's chain (SPLIT_CHAIN): a core runs a layer's commands from records in DRAM by
- * itself, each record one command and the next one's address. Plain C (the X280
- * writes). */
+/* SPLIT's chain (SPLIT_CHAIN): a core runs a layer's commands by itself from records
+ * in DRAM, each one command and the next one's address. Plain C: the X280 writes. */
 #pragma once
 
 /* SPLIT's a4 kChainMode: the first record at a7, its DRAM bank in a8 as a block's. */
