@@ -234,8 +234,15 @@ default); each set is a handler of its own in the kernels, named by its values
 (`gate_block8`, `gate_block4`), the first at the handler's number and the others after
 the class's handlers. A submit gives the constant's value in `args` at its place, as
 the other parameters are, or leaves it out for its default; the host runs the handler
-built for those values. A set that was not built is refused, naming the sets that
-were:
+built for those values. The words `program.gate.args(a, b, out, tiles, pattern, 4)`
+gives are a list as before that also carries the values stated, so `submit_many`,
+`Graph.command`, a stream's `submit` and `enqueue`, and a chain's call
+(`kc.Call(program.gate, words, ...)`) run the handler built for them; plain words, and
+a slice or a concatenation of these (a plain list), mean the defaults. The rows of one
+`submit_many` state one set. A graph and a stream have no run to find the class's
+program in: they take such a handler through its program (`program.gate`), and
+`Class.gate` is refused there. A set that was not built is refused, naming the sets
+that were:
 
 ```text
 Gate.gate with size=2: no handler was built for it (built: size=4; size=8); list it at the make, handlers={'gate': [{...}]} (a set is not compiled on first use)
@@ -1543,6 +1550,100 @@ may cross (each move: its tensor's placement; what it lowers to):
 ```
 
 A copy's read never crosses: each island reads its own.
+
+## Chains
+
+A [chain](chain.md) can be a list of a class's handler calls: the class states the calls,
+and each call's description (its groups, the block it writes, what it reads and from
+which call) comes from its handler's lines, with no `kc.Call` written by hand. There are
+two forms, and they give the same records
+([29_chain as a class](../../examples/29_chain/as_class/steps_class.py)):
+
+```python
+class Steps(km.Program):
+    @km.handler
+    def scale(self, a: km.Tensor, out: km.Tensor, factor: int, width: int): ...
+
+    @km.chain
+    def steps(self, x, y, z, s, t, factor: int, width: int, tiles: int):
+        self.scale(x, y, factor, width)
+        self.scale(y, z, THREE, width)
+        self.add(z, km.past(y), s, width)  # y: written two calls back
+        self.sum(s, t, tiles)
+
+
+chain = run.chain(program.steps(x, y, z, s, t, bits(5), 2, 16), cores=(0, 8))
+listed = run.chain([Steps.scale(x, y, bits(5), 2), ...], cores=(0, 8))
+run.wait(run.submit(chain))
+```
+
+`Steps.scale(x, y, ...)` outside a command is a call, not a run: its values in the
+handler's order (a constant parameter at its place, which picks the handler built for
+it), and `cores=(first, count)` for its group when the handler has no parameter of that
+name (else `run.chain`'s `cores`). A `kc.Call` written by hand is refused in the same
+list: its tensors are names the class's calls do not share, so no input or prefetch
+between them could be checked.
+
+**The walk.** A class with a `km.chain` method, or made with `chain=True`, has the
+chain's walk in its kernels: a handler of its own after the class's (`km_chain`), the
+chain's words in buffer 32 (2,048 B), each kernel's case for a chain command handing
+each record to the handler it names (`km_chain.hpp`'s reader, writer and compute walk),
+each read of the record's input waiting for its marks, each case ending in its marks, a
+tree's send waiting for its credit. A class without either has none of it. In example 29
+the walk adds 15,920 B of kernel text (74,160 against 58,240 B: BRISC +4,332, NCRISC
++7,880, each TRISC about +1,220), past the default buffer of 70,656 B: such a class's
+session gives more with `kernel_bytes`
+([Host API, `Session`](host.md#session)). A plain command of a class with the walk took
+0.16 us more on the card (21.25 against 20.62 us for four).
+
+**The lines a call is described from.** A handler's streams of page ranges
+(`t.pages(first, count)`, a partition's share `s[part]`, a rectangle `t.tiles[r0:r1,
+c0:c1]`), their zip, `.write` of a page range, `.drain` and `.fill`, the assignments
+before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write. A
+first page is a number of the call's words, the class's constants, `self.rank`, `size`
+and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the one tensor
+written; each group's root writes block g, `width` tiles from g x width), the group size
+(the reduce's group, else 1), and each read as a share of K tiles or as ranges of
+`base + step x g`. The record's input is the call before's output; another read is an
+outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
+input that `run.chain` proves (as a written chain's,
+[the earlier input](chain.md#the-earlier-input-and-the-direct-input)).
+
+**prefetch.** A read of a tensor that no call of the chain writes goes before the
+record's input is marked: the kernels' wait before each read line takes the record's
+mask of chain-written tensors (a word after the call's own). `run.chain(calls,
+prefetch=False)` makes every read wait for the input's marks, and so does
+`km.Stream(..., prefetch=False)` for that read. `prefetch=True` on a read states it: a
+call that reads a chain-written tensor with it is refused.
+
+**km.direct.** `km.direct(t)` at a call marks an input sent by the call before's roots
+into L1. The handler declares which of its parameters may arrive so,
+`@km.handler(direct=("b",))`; the mark is checked against that and against the call
+before's output. The class's kernels do not take an input from the arrival area in this
+version (each read is a stream from DRAM), so a call with a direct mark is refused.
+
+**A `km.chain` method** holds calls of the class's handlers in order (`self.scale(...)`),
+assignments, and `for _ in range(N)` of a constant N, unrolled. It is read when the class
+is made, and called on a program (`program.steps(...)`) it gives the list of calls, which
+`run.chain` takes. Its own parameters are the values its calls name; `km.past` and
+`km.direct` mark them at a call as in the list.
+
+On a session of several islands, `session.chain` takes a class's calls too, described with
+island 0's program and `cores` in flat ranks.
+
+| Refused | When | Text names |
+|---|---|---|
+| a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor | `run.chain` | the handler, the line and why; it still runs as a command |
+| a call of a program made without the walk | `run.chain` | the handler; `chain=True` or a `km.chain` method |
+| a `kc.Call` among a class's calls | `run.chain` | the call |
+| a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
+| `km.past` of the call before's output, or of a tensor the handler does not read | `run.chain` | the call, the tensor |
+| `km.direct` of a parameter the handler does not declare, of a tensor other than the call before's output; any direct mark (kernels) | `run.chain` | the call, the parameter, the declaration |
+| `prefetch=True` on a read of a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
+| `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
+| in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
+| more than 256 calls unrolled | the call of the method | the method |
+| a class with the walk that also has overlays or dynamic handlers | the make | the class |
 
 ## The runtime's form
 

@@ -3,6 +3,9 @@ becomes (km_chain.h), and what is proven or checked before they are written: an
 earlier input complete for every core that reads it, a direct input's senders."""
 
 import functools
+import importlib
+import sys
+import types
 from typing import NamedTuple
 
 import numpy as np
@@ -437,3 +440,14 @@ def build(calls, island_of=None):
     if len(names) > 1:
         raise ChainRefused(f"one per-submit word a chain, not {sorted(names)}")
     return report, (names.pop() if names else None)
+
+
+class _Spelled(types.ModuleType):
+    """`km.chain` is this module and, called, the decorator of a class's chain
+    method (komorebi.dsl.front.chain): `@km.chain` beside `km.chain.Call`."""
+
+    def __call__(self, function):
+        return importlib.import_module("komorebi.dsl.front").chain(function)
+
+
+sys.modules[__name__].__class__ = _Spelled

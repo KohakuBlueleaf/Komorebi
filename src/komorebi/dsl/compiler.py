@@ -259,6 +259,7 @@ class Compiled:
     # only where the plan gives it (declared_constants).
     class_constants: dict = field(default_factory=dict)
     declared: dict = field(default_factory=dict)  # name -> its front.Constant
+    chain: int = 0  # the chain's walk: its handler number (0: none in this build)
 
 
 def handler_methods(cls):
@@ -342,6 +343,7 @@ def compile_class(
             compiled.overlays[method.name] = len(compiled.overlays) + 1
         names = handler_names(method)
         HandlerCompiler(compiled, method, names, plan, tensors).run()
+    listed_words(compiled, methods)
     bind_fields(compiled, plan, l1)
     compiled.compute_options = class_compute(cls, compiled)
     compiled.startup = getattr(cls, "startup_given", None)
@@ -353,6 +355,32 @@ def declared_constants(compiled, cls, constants):
     `compiled` (a symbol's where the plan or the make gives it)."""
     compiled.declared = front.constants_of(cls)
     compiled.class_constants = dict(constants or {})
+
+
+def prefetch_checked(handler, node, value):
+    """A read stream's `prefetch=`: True or False as written (the chain's walk reads
+    it, komorebi.dsl.chain_calls); anything else refused at its line."""
+    if not (isinstance(value, ast.Constant) and isinstance(value.value, bool)):
+        handler.refuse(
+            node,
+            f"{spelling('prefetch')}= is True or False as written",
+            f"write {spelling('prefetch')}=False (read once the input is marked) or "
+            "True (proven unwritten by the chain, or refused)",
+        )
+
+
+def listed_words(compiled, methods):
+    """A handler whose sets are listed: its sets' words on it too (its parameters but
+    the constants, one for every set), so that `Class.handler.args(...)` gives a
+    call's words before the handler for its constants is picked."""
+    for method in methods:
+        built = [variant for _, variant in compiled.variants.get(method.name, [])]
+        if not built or built[0] is method:
+            continue
+        first = built[0]
+        if all(v.words == first.words and v.widths == first.widths for v in built):
+            method.words, method.widths = first.words, first.widths
+            method.returns = first.returns
 
 
 def handler_variants(compiled, methods, handlers):
@@ -3392,6 +3420,8 @@ class HandlerCompiler:
                 repeat = self.integer(keyword_.value)
             elif key == spelling("write_stream"):
                 continue
+            elif key == spelling("prefetch") and not write:
+                prefetch_checked(self, node, keyword_.value)
             else:
                 self.refuse(node, f"a stream has no {key}=", "use block=, pattern=")
         block = self.row_width if block is None else block
@@ -5601,15 +5631,9 @@ class HandlerCompiler:
             self.compiled.full_dst = True
         number = self.arrivals
         self.arrivals += 1
-        arrival = self.other_buffer(
-            f"kArrival{number}",
-            "arrival",
-            "float32",
-            PAGE_BYTES["float32"],
-            slots * width,
-            f"line {node.lineno}: {self.text(node)}",
+        arrival = self.arrival_buffer(
+            number, slots, width, f"line {node.lineno}: {self.text(node)}"
         )
-        arrival.block = width
         self.compiled.unpack_fp32.add(arrival.name)
         out = self.out_buffer(
             "float32",
@@ -5700,15 +5724,9 @@ class HandlerCompiler:
             )
         number = self.arrivals
         self.arrivals += 1
-        arrival = self.other_buffer(
-            f"kArrival{number}",
-            "arrival",
-            "float32",
-            PAGE_BYTES["float32"],
-            slots * tiles,
-            f"line {node.lineno}: {self.text(node)}",
+        arrival = self.arrival_buffer(
+            number, slots, tiles, f"line {node.lineno}: {self.text(node)}"
         )
-        arrival.block = tiles
         self.compiled.unpack_fp32.add(arrival.name)
         buffer = f"kField{camel(field_)}"
         self.compiled.includes |= {"port", "pack"}
@@ -5830,6 +5848,24 @@ class HandlerCompiler:
             f"to mover {where} by the hand-over buffer"
         )
         return set()
+
+    def arrival_buffer(self, number, slots, per, what):
+        """kArrival<number>, which the handlers' reduces of that number share: a slot
+        of the largest part (`per` pages) and as many slots as the most a reduce takes.
+        """
+        name = f"kArrival{number}"
+        found = next((b for b in self.compiled.buffers if b.name == name), None)
+        if found is not None:
+            per, slots = max(per, found.block), max(
+                slots, found.pages[0] // found.block
+            )
+            found.block, found.pages = per, (slots * per,)
+            return found
+        arrival = self.other_buffer(
+            name, "arrival", "float32", PAGE_BYTES["float32"], slots * per, what
+        )
+        arrival.block = per
+        return arrival
 
     def other_buffer(self, name, role, dtype, page_bytes, pages, what):
         for buffer in self.compiled.buffers:
