@@ -62,6 +62,12 @@ SPREAD = "auto"
 # the sender alone reads a W tile in 199 ns, a rank makes a tile product in 25.5 ns:
 # that read bounds a step below 7.8 tile rows of block height (bm)
 SPREAD_HEIGHT_MOST = 7
+# the grid plan: X's read spread over the row broadcast's ranks (--xspread): "auto"
+# by the same rates as W's, below 7.8 tile columns of block width (x_spreads())
+X_SPREAD = "auto"
+# the island grid's panels (first, last column; layout.panels): a row broadcast lies in
+# one, so an X block is shared by the ranks of the row's part in a panel
+PANELS = None
 # The account's words (kernels/linear/linear.h kAcWFree ..), by name: cycles, but the
 # tiles and products (counts) and the ends and start (wall clocks)
 ACCOUNT_WORDS = (
@@ -177,16 +183,25 @@ def extra_buffers(plan):
     """The linear kernels' buffers past the grid plan's: a partial's subblocks added
     (LINEAR_ADD), the token and its slot, T's row."""
     subblock = plan.sh * plan.sw
-    return [
-        (L["kCbSent"], "bfloat16", L["kBf16Bytes"], 2 * subblock),
-        (L["kCbToken"], "uint32", L["kSignalBytes"], 1),
-        (L["kCbArrive"], "uint32", L["kSignalBytes"], 1),
-        (L["kCbStamp"], "uint32", L["kStampBytes"], 1),
-    ] + (
-        # a receiver's K rows of a W block (W's read spread over the column)
-        [(L["kCbWSlice"], "bfloat16", L["kBf16Bytes"], slice_pages(plan))]
-        if spreads(plan)
-        else []
+    return (
+        [
+            (L["kCbSent"], "bfloat16", L["kBf16Bytes"], 2 * subblock),
+            (L["kCbToken"], "uint32", L["kSignalBytes"], 1),
+            (L["kCbArrive"], "uint32", L["kSignalBytes"], 1),
+            (L["kCbStamp"], "uint32", L["kStampBytes"], 1),
+        ]
+        + (
+            # a receiver's K rows of a W block (W's read spread over the column)
+            [(L["kCbWSlice"], "bfloat16", L["kBf16Bytes"], slice_pages(plan))]
+            if spreads(plan)
+            else []
+        )
+        + (
+            # a receiver's tiles of an X block (X's read spread over the row)
+            [(L["kCbXSlice"], "bfloat16", L["kBf16Bytes"], x_slice_pages(plan))]
+            if x_spreads(plan)
+            else []
+        )
     )
 
 
@@ -202,6 +217,34 @@ def spreads(plan):
 def slice_pages(plan):
     """A column rank's K rows of a W block, the most: K block / ranks, bn wide."""
     return pl.cdiv(plan.kb, plan.rows) * plan.bn
+
+
+def x_spreads(plan):
+    """Whether X's read is spread over the row's ranks (--xspread): the 2d layout, a
+    row broadcast of more than one rank; "auto" also blocks of at most
+    SPREAD_HEIGHT_MOST tile columns and at least two tiles of X (tiles to share)."""
+    if X_SPREAD == "off" or plan.layout != "2d" or plan.cols < 2:
+        return False
+    return X_SPREAD == "on" or (
+        plan.bn <= SPREAD_HEIGHT_MOST and plan.bm * plan.kb >= 2
+    )
+
+
+def x_slice_pages(plan):
+    """A row rank's tiles of an X block, the most: bm x K block / the ranks of the
+    fewest a row broadcast has (a rect from the grid's first column, cut by PANELS)."""
+    return pl.cdiv(plan.bm * plan.kb, row_ranks_least(plan))
+
+
+def row_ranks_least(plan):
+    if PANELS is None:
+        return plan.cols
+    parts = [
+        min(last, plan.cols - 1) - first + 1
+        for first, last in PANELS
+        if first < plan.cols
+    ]
+    return min(parts)
 
 
 def extra_bytes(plan):
@@ -587,6 +630,8 @@ class Linear:
         ranks = counts.pop()
         self.islands = len(graph.islands)
         self.nocs = session.sessions[0].nocs()
+        global PANELS
+        PANELS = list(self.nocs.panels)
         self.n_tiles = n_tiles
         self.k_parts = k_spans(tensors["w"].placement, k_tiles)
         self.w_columns = w_column_spans(tensors["w"].placement, n_tiles)
@@ -784,6 +829,11 @@ class Linear:
             | (
                 {"LINEAR_SPREAD": 1}
                 if any(spreads(p.plan) for p in self.pieces)
+                else {}
+            )
+            | (
+                {"LINEAR_XSPREAD": 1}
+                if any(x_spreads(p.plan) for p in self.pieces)
                 else {}
             )
             | ({"LINEAR_VALID_SENT": 1} if VALID_SENT else {})
@@ -1285,6 +1335,13 @@ def main():
         "sender's read bounds a step), or the column's sender reads it all",
     )
     parser.add_argument(
+        "--xspread",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="the grid plan: X's read spread over the row's ranks (auto: where the "
+        "sender's read bounds a step), or the row's sender reads it all",
+    )
+    parser.add_argument(
         "--shapes",
         default=None,
         help='several products in one session: "M,K,N[:place];..."',
@@ -1307,10 +1364,11 @@ def main():
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
     global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD, GATHER
-    global SPREAD
+    global SPREAD, X_SPREAD
     ACCOUNT, SPLIT_REDUCE, ADD = args.account, args.reduce, args.add
     GATHER = args.gather
     SPREAD = args.spread
+    X_SPREAD = args.xspread
     NOCS = tuple(int(value) for value in args.nocs.split(","))
     VALID_SENT = args.valid == "sent"
     if args.subblock:

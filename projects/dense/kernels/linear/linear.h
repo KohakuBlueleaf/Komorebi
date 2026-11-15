@@ -30,6 +30,16 @@ constexpr uint32_t kPortAdd = 7;
 constexpr uint32_t kCbWSlice = 13;  // bf16, a receiver's K rows of a W block
 constexpr uint32_t kPortReady = 0;  // a receiver: the sender's slot reserved (a marker)
 constexpr uint32_t kPortSlices = 1;  // the sender: the receivers' rows landed
+// Built with X's read spread over the row's ranks (LINEAR_XSPREAD, grid plan): each
+// rank of the row broadcast reads its share of a block's tiles, the sender casts it.
+#if defined(LINEAR_XSPREAD)
+#define LINEAR_XSPREADS true
+#else
+#define LINEAR_XSPREADS false
+#endif
+constexpr uint32_t kCbXSlice = 14;    // bf16, a receiver's tiles of an X block
+constexpr uint32_t kPortXReady = 2;   // as kPortReady, the row broadcast's
+constexpr uint32_t kPortXSlices = 3;  // as kPortSlices, the row broadcast's
 // Built for the output dim sharded form into a copy of Y (LINEAR_GATHER, K-split
 // plan): each island writes its columns, then every rank's km::all_gather.
 #if defined(LINEAR_GATHER)
@@ -97,6 +107,84 @@ inline void lap(uint32_t& counter, uint32_t& since) {
     counter += now - since;
     since = now;
 }
+
+#if !defined(COMPILE_FOR_TRISC)
+
+// Waits until port `port` of this core has counted `wanted` arrivals, then clears
+// it. False: gave up (recorded in state word `state`).
+inline bool counted(
+    const km::Core& mover,
+    uint32_t state,
+    const km_command_t& command,
+    uint32_t port,
+    uint32_t wanted
+) {
+    volatile tt_l1_ptr uint32_t* words = km::port_words(mover, port);
+    words[KM_PORT_WANT] = wanted;
+    const uint32_t code = mover.poll_at(
+        km::kWherePort,
+        [&] {
+            invalidate_l1_cache();
+            return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
+        },
+        mover.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        mover.gave_up(
+            state, code, km::kWherePort, km::slot(command) | port << 8, command.sequence
+        );
+        return false;
+    }
+    words[KM_PORT_COUNT] = 0;
+    words[KM_PORT_WANT] = 0;
+    return true;
+}
+
+// Waits until word COUNT of port `port` of this core holds `marker`. False: gave
+// up (recorded in state word `state`).
+inline bool marked(
+    const km::Core& mover,
+    uint32_t state,
+    const km_command_t& command,
+    uint32_t port,
+    uint32_t marker
+) {
+    volatile tt_l1_ptr uint32_t* words = km::port_words(mover, port);
+    const uint32_t code = mover.poll_at(
+        km::kWherePort,
+        [&] {
+            invalidate_l1_cache();
+            return words[KM_PORT_COUNT] == marker;
+        },
+        mover.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        mover.gave_up(
+            state, code, km::kWherePort, km::slot(command) | port << 8, command.sequence
+        );
+        return false;
+    }
+    return true;
+}
+
+// This CPU's writes have landed (acknowledged), so other cores may read them. False:
+// gave up (recorded in state word `state`).
+inline bool landed(const km::Core& mover, uint32_t state, const km_command_t& command) {
+    const uint32_t code = mover.poll_at(
+        km::kWhereData,
+        [] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        },
+        mover.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        mover.gave_up(state, code, km::kWhereData, km::slot(command), command.sequence);
+        return false;
+    }
+    return true;
+}
+
+#endif
 
 // The K-split plan (LINEAR_SPLIT, few rows of X): groups of S ranks, a block a group,
 // each rank 1/S of K on both movers, the parts summed into the group's first rank.
