@@ -12,7 +12,9 @@ namespace fpu {
     constexpr uint32_t kDstWindow = 0xFFBD8000;
     constexpr uint32_t kRows = 128;  // Dst rows (32-bit view) the ties probe reads
     constexpr uint32_t kTileWords = 1024;  // one packed tile: Dst rows 0..63
-    constexpr uint32_t kAm = ADDR_MOD_7;  // no step on any counter; the matmul init uses 0..6
+    constexpr uint32_t kAmInc = ADDR_MOD_7;  // Dst counter one block on (matmul init uses 0..5)
+    constexpr uint32_t kAmClr = ADDR_MOD_6;  // Dst counter back to block 0
+    constexpr uint32_t kAm = kAmClr;         // probe 14: no step
 
     inline uint32_t wall() {
         return *reinterpret_cast<volatile uint32_t*>(kWallClock);
@@ -67,16 +69,30 @@ namespace fpu {
         tensix_sync();
     }
 
-    // Math thread counters: no step in kAm, all counters zero; the Dst offset stays
-    // the one the section protocol set.
-    inline void math_counters() {
+    // Address modes: kAmInc steps the Dst counter by ROWS (a block), kAmClr sets it
+    // back to zero (as the matmul's reset mode does); no source counter moves.
+    template <uint32_t ROWS>
+    inline void math_modes() {
         addr_mod_t{
             .srca = {.incr = 0},
             .srcb = {.incr = 0},
-            .dest = {.incr = 0},
+            .dest = {.incr = ROWS},
             .fidelity = {.incr = 0, .clr = 0},
         }
-            .set(kAm);
+            .set(kAmInc);
+        addr_mod_t{
+            .srca = {.incr = 0},
+            .srcb = {.incr = 0},
+            .dest = {.incr = 0, .clr = 1, .cr = 1},
+            .fidelity = {.incr = 0, .clr = 0},
+        }
+            .set(kAmClr);
+    }
+
+    // Math thread counters zero and 8-row blocks; the Dst offset stays the one the
+    // section protocol set.
+    inline void math_counters() {
+        math_modes<8>();
         TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, 15);
         tensix_sync();
     }
@@ -101,25 +117,27 @@ namespace fpu {
     constexpr uint32_t kNumConfigs = 15;
     constexpr uint32_t kReps = 3, kReplays = 64;
 
-    template <Op OP, uint32_t D>
+    // The Dst block comes from the counter and the address mode, as in the LLK: the
+    // row field of the word is zero.
+    template <Op OP, uint32_t AM>
     inline void emit() {
         if constexpr (OP == kMvmul) {
-            TTI_MVMUL(p_setrwc::CLR_NONE, 0, kAm, D);
+            TTI_MVMUL(p_setrwc::CLR_NONE, 0, AM, 0);
         } else if constexpr (OP == kElwmul) {
-            TTI_ELWMUL(p_setrwc::CLR_NONE, 0, 0, kAm, D);
+            TTI_ELWMUL(p_setrwc::CLR_NONE, 0, 0, AM, 0);
         } else if constexpr (OP == kElwadd) {
-            TTI_ELWADD(p_setrwc::CLR_NONE, 1, 0, kAm, D);
+            TTI_ELWADD(p_setrwc::CLR_NONE, 1, 0, AM, 0);
         } else if constexpr (OP == kMova2d) {
-            TTI_MOVA2D(0, 0, kAm, p_mova2d::MOV_8_ROWS, D);
+            TTI_MOVA2D(0, 0, AM, p_mova2d::MOV_8_ROWS, 0);
         } else {
-            TTI_MOVB2D(0, 0, kAm, p_movb2d::MOV_4_ROWS, D);
+            TTI_MOVB2D(0, 0, AM, p_movb2d::MOV_4_ROWS, 0);
         }
     }
 
     template <Op OP, uint32_t K, uint32_t I = 0, uint32_t N = (K == 5 ? 20 : 24)>
     inline void body() {
         if constexpr (I < N) {
-            emit<OP, 8 * (I % K)>();
+            emit<OP, (I % K == K - 1) ? kAmClr : kAmInc>();
             body<OP, K, I + 1, N>();
         }
     }
@@ -128,6 +146,7 @@ namespace fpu {
     template <Op OP, uint32_t K>
     inline void measure(volatile uint32_t* d) {
         constexpr uint32_t len = K == 5 ? 20 : 24;
+        math_modes<(OP == kMovb2d ? 4 : 8)>();
         TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, 15);
         TTI_REPLAY(0, len, 0, 1);
         body<OP, K>();
@@ -148,7 +167,7 @@ namespace fpu {
     inline void single(volatile uint32_t* d) {
         TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, 15);
         const uint32_t a = wall();
-        TTI_MVMUL(p_setrwc::CLR_NONE, 0, kAm, 0);
+        TTI_MVMUL(p_setrwc::CLR_NONE, 0, kAmClr, 0);
         tensix_sync();
         d[0] = wall() - a;
         d[3] = 1;
