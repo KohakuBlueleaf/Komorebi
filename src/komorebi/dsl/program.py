@@ -160,7 +160,8 @@ def make(
             (name, [sorted(one.items()) for one in listed])
             for name, listed in sets.items()
         )
-    key = sources_key(plan, tensors, room, depth, rect, nocs, broadcast_wait, keyed)
+    solved = {n: v for n, v in compiled.constants.items() if n not in plan}
+    key = sources_key(plan, tensors, solved, depth, rect, nocs, broadcast_wait, keyed)
     key = form_key(key, form, reserved)
     built = write(cls, compiled, room, key, form)
     for line in built.report:
@@ -929,12 +930,12 @@ def start_formats(compiled):
     return lines if len(lines) > 1 else []
 
 
-def sources_key(plan, tensors, room, depth, rect, nocs, wait=False, constants=None):
-    """A short hash of what a class is made with that changes its generated sources:
-    the plan, each tensor's format, page and shape, the make's options (a
-    broadcast_wait of True too; False keeps the key it had before the option), and the
-    class's constants by name and value (constants_keyed)."""
-    made = [sorted(plan.items()), room, depth, rect, nocs]
+def sources_key(plan, tensors, solved, depth, rect, nocs, wait=False, constants=None):
+    """A short hash of what changes a class's generated sources: the plan, the field
+    sizes solved from the L1 left (`solved`; not that L1, a mock session's and the
+    card's differ), each tensor's format, page and shape, the make's options (a
+    broadcast_wait of True too) and the class's constants (constants_keyed)."""
+    made = [sorted(plan.items()), sorted((solved or {}).items()), depth, rect, nocs]
     if wait:
         made.append("broadcast_wait=True")
     if constants:  # none: the key of a class without constants as before them

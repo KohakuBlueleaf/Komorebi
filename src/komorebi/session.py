@@ -831,7 +831,9 @@ class Session:
             ("circular buffers", buffers),
             ("control block and overlay area", control),
         ]
-        if self.channel is not None or program.threads:
+        # A mock device maps no host channel: its budget holds the card's buffer.
+        mock = bool(os.environ.get("TT_METAL_MOCK_CLUSTER_DESC_PATH"))
+        if self.channel is not None or program.threads or mock:
             held = placed.programs if placed else [program]
             switch = bool(placed and placed.switch)
             chunk = _transfer_chunk_of(self, held, switch, trace_cap, control)
