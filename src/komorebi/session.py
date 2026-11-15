@@ -111,7 +111,6 @@ LAUNCH_MIN_BYTES = 80 << 10
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 WORDS_SPIN_S = 300e-6  # a transfer's words looked at without a pause this long
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
-LINK_OPT = "Os"  # the link cores' reader and writer: their text sets an island's buffer
 SPLIT_ISLANDS_MAX = 4  # a card split into islands: a dispatcher an X280 cluster
 
 
@@ -331,14 +330,6 @@ def _link_kernels(island, program, split, cores):
 def _link_kernel_path(kernel):
     """The runtime's link kernel of `kernel` (reader, writer, compute)."""
     return _env.include_directory().parent / "kernels" / f"link_{kernel}.cpp"
-
-
-def _link_build(kernel, defines):
-    """A link kernel's build: the reader and writer for size (LINK_OPT, its define
-    keying the cache), the compute kernel as the runtime builds it."""
-    if kernel == "compute":
-        return {"defines": defines, **compute_config({})}
-    return {"defines": [*defines, (OPT_DEFINE, LINK_OPT)], "opt_level": LINK_OPT}
 
 
 def _is_link_kernel(source):
@@ -2587,7 +2578,8 @@ class _Backend:
                     [],
                     includes=include,
                     args=args[ranks:],
-                    **_link_build(kernel, link_defines),
+                    defines=link_defines,
+                    **(compute_config({}) if kernel == "compute" else {}),
                 )
         return launch
 
@@ -2883,7 +2875,8 @@ class _Backend:
                 [],
                 includes=include,
                 args=args[processor][ranks:],
-                **_link_build(kernel, link_defines),
+                defines=link_defines,
+                **(compute_config({}) if kernel == "compute" else {}),
             )
 
     def _slot_buffer(self, descriptor, slot_bytes):
