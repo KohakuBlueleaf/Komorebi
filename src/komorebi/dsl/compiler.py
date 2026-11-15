@@ -173,6 +173,9 @@ class Value:
     # a range of a rectangle of tiles: (rows, columns, the tensor's tile columns),
     # C++ texts but the last; rows and columns ints where the build knows them
     rect: tuple | None = None
+    # a block a broadcast brought: each part's (first slot page, slot rows, pitch,
+    # transposed), pitch the slot's pages a row (ints, or None where a word)
+    parts: tuple | None = None
     # a rectangle's most rows and columns where the build knows them (a side's length,
     # or n of `c:min(c + n, e)`); its sides themselves may be words
     bounds: tuple | None = None
@@ -816,6 +819,22 @@ def scalar_words(unit, scalars):
     )
 
 
+def slot_part(part):
+    """A cast part's place in the slot: (first page, rows, pitch, transposed), the
+    rows and pitch ints where the build knows them (None where a word)."""
+    pages, pitch = part["pages"], part["pitch"]
+    sides = pages.sides if pages.sides is not None else ("1", pages.count)
+    bounds = pages.bounds or (None, None)
+    rows, columns = (
+        int(side) if str(side).isdigit() else most for side, most in zip(sides, bounds)
+    )
+    if part["transposed"]:  # a column of the rectangle a row of the slot
+        rows, columns = columns, (pitch or rows)
+    elif pitch is not None:
+        columns = pitch
+    return part["offset"], rows, columns, part["transposed"]
+
+
 def tile_format_refusal(formats):
     """None, or why a tile function is refused tiles of `formats`: float32 and the B
     family run on an fp32 Dst, the A family on a 16-bit one (tile_dest); a mix of
@@ -1068,6 +1087,9 @@ class HandlerCompiler:
         self.allow_words = False  # a body's word is read by the return only
         self.field_line = False  # a word field's words are read in a line setting one
         self.closing = []  # compute's lines after the handler's (a product's field)
+        # {block a cast outside a loop brought: its mover}, whose finish (the wait for
+        # compute to free the block) is at the cast
+        self.finished_casts = {}
         self.opening = []  # compute's lines before them (a field's sums count)
         self.opening_b = []  # mover B's (the same count)
         self.summed = {}  # a field of sums -> its counter's C++ name
@@ -2761,6 +2783,9 @@ class HandlerCompiler:
         other = isinstance(call.args[1], ast.Name) and self.scope.get(call.args[1].id)
         if item and other and self.in_this_loop(item) and self.in_this_loop(other):
             return self.stream_product(node, value, function, item, other)
+        arrived = self.arrived_operand(node, call.args[1])
+        if item and self.in_this_loop(item) and arrived is not None:
+            return self.broadcast_product(node, value, function, item, arrived)
         if not item or item.kind != "streamed" or field_ is None:
             self.refuse(
                 node,
@@ -2867,6 +2892,156 @@ class HandlerCompiler:
             f"{block});"
         )
         return [], [Line(text)]
+
+    def arrived_operand(self, node, arg):
+        """`w`, `kv[i]` or either `[:, c0:c0 + n]`, w a block a broadcast brought:
+        (its Value, the part's slot geometry, the first column's C++, the columns or
+        None for the part's); None when `arg` names no such block."""
+        window = None
+        if (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.slice, ast.Tuple)
+            and len(arg.slice.elts) == 2
+        ):
+            window, arg = arg.slice.elts, arg.value
+        part = None
+        if isinstance(arg, ast.Subscript) and isinstance(arg.value, ast.Name):
+            part, arg = arg.slice, arg.value
+        value = isinstance(arg, ast.Name) and self.scope.get(arg.id)
+        if not value or value.kind != "arrived":
+            return None
+        drawn = f"write {arg.id}[i][:, c0:c0 + n], i its part in the cast"
+        if part is None and len(value.parts) > 1:
+            self.refuse(
+                node,
+                f"{arg.id} is a cast of {len(value.parts)} parts: a product reads one",
+                drawn,
+            )
+        index = 0 if part is None else self.known_int(part)
+        if index is None or not 0 <= index < len(value.parts):
+            self.refuse(node, f"{arg.id} has parts 0 .. {len(value.parts) - 1}", drawn)
+        first, columns = "0", None
+        if window is not None:
+            rows, cols = window
+            if not (
+                isinstance(rows, ast.Slice)
+                and rows.lower is rows.upper is rows.step is None
+                and isinstance(cols, ast.Slice)
+                and cols.step is None
+                and cols.lower is not None
+                and isinstance(cols.upper, ast.BinOp)
+                and isinstance(cols.upper.op, ast.Add)
+                and ast.dump(cols.upper.left) == ast.dump(cols.lower)
+            ):
+                self.refuse(node, "a block's columns are a window c0:c0 + n", drawn)
+            first = self.integer(cols.lower)
+            columns = self.known_int(cols.upper.right)
+            if columns is None:
+                self.refuse(
+                    node,
+                    "a window's width is an int the build knows",
+                    "write c0:c0 + n, n a constant",
+                )
+        return value, value.parts[index], first, columns, arg.id
+
+    def broadcast_product(self, node, value, function, item, arrived):
+        """`acc += f(xb, w)` (or `w[i][:, c0:c0 + n]`), w a broadcast's block brought
+        above the loop: tile t of block k by K row k x block + t of w's part (columns
+        from c0, acc's width; transposed where the cast turned it) into acc's DST;
+        w waited for before the loop's blocks, freed after them."""
+        block_value, (offset, rows, pitch, transposed), first, columns, name = arrived
+        state, number = self.loop_states[-1], self.stream_loops[-1]
+        mover = self.finished_casts.get(name)
+        if mover is not None and any(
+            letters is None or mover in letters for letters in state["letters"]
+        ):
+            other = "A" if mover == "B" else "B"
+            self.refuse(
+                node,
+                f"{name} was cast outside a loop, so mover {mover} waits at the cast "
+                "for compute to free the block, and compute frees it after this "
+                f"loop, some of whose stream's blocks mover {mover} moves",
+                f'read the loop\'s stream on mover {other}: pattern="{other}"',
+            )
+        width = value.width
+        if columns is None:
+            columns = pitch
+        if columns != width:
+            self.refuse(
+                node,
+                f"the block's part is {columns or 'a word of'} columns and "
+                f"{ast.unparse(node.target)} holds {width}",
+                f"take a window of {width}: w[:, c0:c0 + {width}]",
+            )
+        if pitch is None:
+            self.refuse(
+                node,
+                "the block's rows are a word apart in its slot",
+                "cast a rectangle whose columns the build knows",
+            )
+        if first.isdigit() and int(first) + width > pitch:
+            self.refuse(
+                node,
+                f"columns {first} .. {int(first) + width - 1} of a part of {pitch}",
+                f"take a window inside the part's {pitch} columns",
+            )
+        if state["other"] is not None or state["function"] not in (None, "product"):
+            self.refuse(
+                node,
+                "this loop has other tile lines, and a product holds the matrix unit's "
+                "setup for the loop",
+                "keep the loop to the product",
+            )
+        buffer = block_value.buffer
+        why = product_refusal(item.buffer.dtype, buffer.dtype)
+        if why is not None:
+            self.refuse(node, why, "cast tiles of a matrix format of the stream's")
+        fidelity = self.product_fidelity(node, function)
+        if self.placed(
+            node,
+            state,
+            function,
+            item.buffer.dtype,
+            buffer.dtype,
+            ("tensor", block_value.tensor),
+        ):
+            self.refuse(
+                node,
+                f"{function.name} turns the product, and a broadcast block's product "
+                "is built plain",
+                "drop the marker",
+            )
+        self.arrived_once(node, block_value)
+        x, w = f"{item.buffer.name}.mover_a", buffer.name
+        block = item.buffer.name + "Block"
+        flip = "true" if transposed else "false"
+        self.wait(node, "compute", WAIT_INPUT)
+        if state["function"] is None:
+            state["function"] = "product"
+        state["inits"].append(
+            Line(
+                f"km_ok = km_ok && km::broadcast_receive(compute, {w}, {w}Pages);\n"
+                "// the zeros' fills (vector unit) done before the matrix unit adds\n"
+                "MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
+                f"KM_UNPACK_FORMATS({w}, {x});\n"
+                f"matmul_block_init({x}, {w}, {flip}, {width}, 1, {block});",
+                {"km_ok"},
+            )
+        )
+        state["after"].append(
+            Line(f"if (km_ok) {{\n    km::broadcast_done({w}, {w}Pages);\n}}")
+        )
+        self.compiled.includes.add("matmul")
+        self.compiled.products.append(
+            (self.method.name, node.lineno, self.text(node), function, width, block)
+            + (fidelity,)
+        )
+        row = f"(km_block{number} * {block} + {item.first})"
+        text = (
+            f"matmul_block({item.cxx}, {w}, {item.first}, {offset} + {row} * {pitch} "
+            f"+ {first}, {value.dst}, {flip}, {width}, 1, {block});"
+        )
+        return [], [Line(text, text_uses(first, self))]
 
     def placed(self, node, state, function, left, right, weight):
         """Whether the product is turned (product_placement): refused when both
@@ -3872,6 +4047,7 @@ class HandlerCompiler:
                     "block": block,
                     "pattern": pattern,
                     "pattern_text": pattern_text,
+                    "letters": letters,
                     "repeat": repeat,
                     "buffer": buffer,
                     "width": self.row_width,
@@ -3921,6 +4097,7 @@ class HandlerCompiler:
                 "first": reads[0]["half"],
                 "count": reads[0]["pages"].count,  # the loop's tiles, as written
                 "tensors": {r["buffer"].name: r["pages"].tensor for r in reads},
+                "letters": [r["letters"] for r in reads],  # None: a pattern word
                 "repeat": reads[0]["repeat"],
                 "line": node.lineno,
             }
@@ -6700,7 +6877,13 @@ class HandlerCompiler:
         if broadcast.unread is not None:  # each core's slot pushed as it is, or cast
             text, uses = self.unread_push(broadcast, text, uses)
         tensors = ",".join(sorted({part["pages"].tensor for part in parts}))
-        self.scope[value] = Value("arrived", buffer.name, buffer=buffer, tensor=tensors)
+        self.scope[value] = Value(
+            "arrived",
+            buffer.name,
+            buffer=buffer,
+            tensor=tensors,
+            parts=tuple(slot_part(part) for part in parts),
+        )
         self.wait(node, f"mover {broadcast.mover}", WAIT_FREE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_DONE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_VALID)
@@ -6710,6 +6893,7 @@ class HandlerCompiler:
             movement.append(Line(f"{counted}++;", {counted}, mover=broadcast.mover))
             compute.append(Line(f"{counted}++;", {counted}))
         if not self.loops:
+            self.finished_casts[value] = broadcast.mover
             movement_end, compute = self.broadcast_end(name, "1", set())
             movement += movement_end
         return movement, compute

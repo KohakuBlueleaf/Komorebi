@@ -457,6 +457,7 @@ and 9.42 µs loaded at the start; the gate 22.84 µs before the add, 22.40 after
 | `self.f.fill(km.Stream(t.tiles[r0:r1, c0:c1]))` | the same, a read a row; refused on the card when the rows are more than the field holds | |
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
+| `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
 | `y.tiles[r0:r1, c0:c1].write(gate(self.h, self.g))`, gate a tile function, h and g fields of sums of one shape | as the field's write | tile by tile each field's tile copied into the DST tile of its operand, gate's body on the math CPU, DST 0 packed into Y's format; both fields freed, both counts reset |
@@ -1162,6 +1163,19 @@ A product's weight is in one of two forms:
   the movers; each W block is used as it arrives and freed, so W's read and the
   products overlap. X's stream is the zip's first: the loop counts its tiles, and the
   last block holds the rest of K.
+- **A broadcast's block.** `acc += self.f(xb, ws)` in a loop over X's stream, `ws` a
+  block `b.cast(w.tiles[k0:k1, c0:c1].read())` or `b.arrive()` brought before the
+  loop: the block is a weight one core reads and every core of its row or column
+  shares. Each tile t of block k of the stream takes K row k x b + t of the block's
+  part. `ws[:, c0:c0 + n]` takes a window of n of the part's columns; a cast of
+  several parts names one, `kv[i]` or `kv[i][:, c0:c0 + n]`; a part cast transposed
+  (`t.tiles[...].T`) is multiplied with the library's transpose flag. The block is
+  waited for before the loop and freed after it. Refused at the line: a cast of
+  several parts named whole, a window past the part's columns, a width other than the
+  sums', a window whose width the build does not know, and a cast outside a loop
+  whose block a stream on the cast's mover follows (the mover waits at the cast for
+  compute to free the block, and compute frees it after that stream's last block:
+  read the stream on the other mover, `pattern="A"` for a column's broadcast).
 
 A product's sum is in one of two places:
 
@@ -1358,6 +1372,7 @@ blocks' product into its field.
 | `self.sums += self.project(xb, wb)` | | before the blocks: `matmul_block_init(x, w, 0, 4, 1, 2)`, the pack's format; a block: the field reserved at the first, `pack_reconfig_l1_acc` on after it; for each subblock of 1 x 4 tiles the products over the block's K tiles, packed onto the field; both blocks freed | 32 tile products a pair; the pack and its L1 accumulation not priced |
 | `acc += self.project(xb, wb)`, `acc` n tiles of DST | | tile t of xb: `matmul_block(x, w, t, t x n, dst, 0, n, 1, b)` | n tile products a tile of X |
 | `self.f.fill(km.Stream(w.tiles[k0:k1, c0:c1]))`, a kept weight | mover A reads the field's rows, one read of c1 - c0 pages a row | waited for once a handler, before the first product; freed at the handler's end (or at the next fill, when another handler reads it) | the field's bytes, once a command |
+| `acc += self.project(xb, ws[:, c0:c0 + n])`, `ws` a broadcast's block of a part p columns wide from page o | | before the blocks: `km::broadcast_receive`, a stall of the math CPU for the vector unit's fills, `matmul_block_init(x, ws, t, n, 1, b)` (t the part's transpose); a tile t of block k: `matmul_block(x, ws, t, o + (k x b + t) x p + c0, dst, t, n, 1, b)`; after the blocks: `km::broadcast_done` | n tile products a stream tile |
 | `acc += self.project(block, self.w)` | | before the blocks: the field's wait, a stall of the math CPU for the vector unit's fills, `matmul_block_init(in0, field, 0, n, 1, 8)`; a tile t of block k: `matmul_block(in0, field, t, (k x 8 + t) x n, 0, 0, n, 1, 8)` | n tile products a stream tile, 16 MVMUL words a phase (HiFi2 2 phases, HiFi4 4) |
 | `whole = km.reduce(self.sums, form="tree", group=14)` | `km::reduce_arrive` of 16 tiles a slot on mover A; `km::reduce_emit` of the field's 16 pages on mover B, in `km::digit_group(command, me, 1, 14)` | each arrival's 16 tiles copied into DST and packed onto the field; the field pushed | 4 rounds; 16 float32 tiles (64 KiB) sent a round, 16 copies and packs |
 | `if self.rank == self.leader:` `y.tiles[0:1, c0:c1].write(whole)` | the owner (`rank - rank % 14`) writes 16 pages | the field's sums copied into DST 4 at a time and packed in Y's bfloat16 | the pack of 16 tiles |
