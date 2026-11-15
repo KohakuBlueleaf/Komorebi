@@ -182,11 +182,14 @@ static inline uint32_t slots_overlap(
     return end;
 }
 
-/* Group allocator: the lowest first such that cores [first, first + count) overlap no
- * busy slot's group, or KMD_NO_FIRST. Each round jumps past an overlapping group. */
+/* Group allocator: the lowest first core of this island's ranks (all cores: no islands)
+ * such that [first, first + count) overlaps no busy slot's group, or KMD_NO_FIRST. */
 static inline uint32_t group_alloc(const kmd_t* dispatcher, uint32_t count) {
-    uint32_t first = 0;
-    while (count <= dispatcher->cores - first) {
+    const uint32_t island = dispatcher->island_count != 0;
+    const uint32_t low = island ? dispatcher->island_base : 0;
+    const uint32_t high = island ? low + dispatcher->island_count : dispatcher->cores;
+    uint32_t first = low;
+    while (first <= high && count <= high - first) {
         const uint32_t end = slots_overlap(dispatcher, first, count);
         if (end == 0) {
             return first;

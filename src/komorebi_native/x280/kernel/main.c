@@ -468,8 +468,14 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         reject = KMD_REJECT_EXITED;
     } else if (
         handler != KM_HANDLER_EXIT &&
-        group_outside(dispatcher, queued ? 0 : first, count)
-    ) {
+        (
+            group_outside(dispatcher, queued ? 0 : first, count) ||
+            (
+                queued && dispatcher->island_count != 0 &&
+                count > dispatcher->island_count
+            )
+        )
+    ) { /* a queued job is placed inside this island's ranks */
         reject = KMD_REJECT_GROUP;
     } else if (queued && KM_IS_DYNAMIC(dispatcher->messages.handler, handler)) {
         reject = KMD_REJECT_MESSAGES;
@@ -497,6 +503,10 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         ring_push(ring, request, KM_EVENT_REJECTED | (reject << 8), 0);
         dispatcher->last_event_mtime = now;
         dispatcher->rejected++;
+        if (queued && source == KMD_SRC_ENGINE) { /* the engine counted it: taken */
+            dispatcher->queue->taken++;
+            queue_tell(dispatcher);
+        }
         return KMD_TAKEN;
     }
     if (queued) {

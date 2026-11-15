@@ -454,12 +454,12 @@ namespace {
     ) {
         auto* dev = chip(mesh);
         const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
-        std::vector<std::vector<uint8_t>*> data;
+        std::vector<std::unique_ptr<std::vector<uint8_t>>> data;  // until the capsules
         for (const auto& span : spans) {
             if (span[0] >= dram_banks(mesh) || span[2] > UINT32_MAX) {
                 throw std::runtime_error("a DRAM span outside the banks or over 4 GB");
             }
-            data.push_back(new std::vector<uint8_t>(span[2]));
+            data.push_back(std::make_unique<std::vector<uint8_t>>(span[2]));
         }
         {
             nb::gil_scoped_release release;
@@ -476,10 +476,12 @@ namespace {
             }
         }
         std::vector<Bytes> out;
-        for (auto* owned : data) {
+        for (auto& held : data) {
+            auto* owned = held.get();
             nb::capsule owner(owned, [](void* memory) noexcept {
                 delete static_cast<std::vector<uint8_t>*>(memory);
             });
+            held.release();  // the capsule owns it now
             const size_t shape[1] = {owned->size()};
             out.emplace_back(owned->data(), 1, shape, owner);
         }
@@ -801,6 +803,7 @@ namespace {
                 tt::tt_fabric::FabricManagerMode::DEFAULT,
                 router
             );
+            fabric_set_ = true;
             try {
                 mesh_ = MeshDevice::create(
                     distributed::MeshDeviceConfig(distributed::MeshShape(1, count)),
@@ -892,7 +895,10 @@ namespace {
             if (mesh_) {
                 mesh_->close();
                 mesh_.reset();
+            }
+            if (fabric_set_) {  // also after a failed open: no mesh, the config set
                 tt::tt_fabric::SetFabricConfig(tt::tt_fabric::FabricConfig::DISABLED);
+                fabric_set_ = false;
             }
         }
 
@@ -958,6 +964,7 @@ namespace {
         std::shared_ptr<MeshDevice> mesh_;
         std::vector<std::shared_ptr<MeshDevice>> islands_;
         std::shared_ptr<IslandRuntime> x280_;
+        bool fabric_set_ = false;  // FABRIC_1D set by this open, not yet turned off
     };
 
     using MeshBuffer = tt::tt_metal::distributed::MeshBuffer;
@@ -2058,7 +2065,9 @@ namespace {
                 work_cmds &&
                 (
                     work_cmds % 64 != 0 || work_cmds < KMD_LIM_BYTES ||
-                    base_ + work_cmds + work_bytes > tile_->available_lim().end
+                    base_ > tile_->available_lim().end ||
+                    work_cmds > tile_->available_lim().end - base_ ||
+                    work_bytes > tile_->available_lim().end - base_ - work_cmds
                 )
             ) {
                 throw std::runtime_error("the work ring's lines are not inside LIM");
@@ -2637,7 +2646,8 @@ namespace {
             Work& cluster_state = work(cluster, true);
             if (
                 offset % 64 != 0 || data.size() % 64 != 0 ||
-                offset + data.size() > cluster_state.bytes
+                data.size() > cluster_state.bytes ||
+                offset > cluster_state.bytes - data.size()
             ) {
                 throw std::runtime_error("LIM writes are whole lines inside the area");
             }
@@ -2649,7 +2659,10 @@ namespace {
 
         nb::bytes work_read(uint32_t cluster, uint64_t offset, uint64_t n) const {
             const Work& cluster_state = work(cluster, true);
-            if (offset % 4 != 0 || n % 4 != 0 || offset + n > cluster_state.bytes) {
+            if (
+                offset % 4 != 0 || n % 4 != 0 || n > cluster_state.bytes ||
+                offset > cluster_state.bytes - n
+            ) {
                 throw std::runtime_error("LIM reads are whole words inside the area");
             }
             const auto got = (

@@ -92,7 +92,11 @@ def ktt_times(shape, cards, variant="default"):
         return None, None
     single = (nine or first)["synced_microseconds_median"]
     if nine:  # the nine-call median skips the slow calls after the first product
-        single = statistics.median(nine["synced_microseconds"][3:])
+        calls = nine["synced_microseconds"]
+        if len(calls) <= 3:
+            path = result_path(RESULTS / "singles9", shape, "ktt", cards, variant)
+            raise SystemExit(f"{path}: {len(calls)} calls, the median skips 3")
+        single = statistics.median(calls[3:])
     return single, first["loop"]["microseconds_per_call"]
 
 

@@ -74,7 +74,10 @@ static int engine_run(
         dispatcher->rejected++;
         return 0;
     }
-    uint32_t bad = (offset & 63u) || offset > region || bytes > region - offset;
+    uint32_t bad = (
+        (offset & 63u) || offset > region || bytes > region - offset ||
+        bytes < sizeof(km_stream_t) /* the engine would drop it with no verdict */
+    );
     kmd_run_t* free_run = 0;
     for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE; i++) {
         kmd_run_t* run = &dispatcher->runs[i];

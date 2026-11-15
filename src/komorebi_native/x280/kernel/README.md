@@ -124,8 +124,11 @@ These rules are part of the protocol; a host that relies on anything else is wro
   core), while the line keeps the flat group the cores test. A group with no part here
   is rejected as outside (3). A group of link cores, first `KM_GROUP_LINK_BASE` + k, is
   never cut: it is link cores k on, the island's cores after its ranks. EXIT goes to
-  `island_first | cores << 16`; a queued job's first core is placed as `island_first`
-  plus the core it gets. A dynamic run reads the
+  `island_first | cores << 16`; a queued job is placed inside the island's ranks (one
+  larger than them is rejected with 3), its first core as `island_first` plus the core
+  it gets. A command that crosses to another island carries its deadline's ticks
+  left as 32 bits, saturated: a deadline over 2^32 ticks (85.9 s) arrives as 85.9 s,
+  never shorter. A dynamic run reads the
   status lines of its group's part (`part`); the engine and the graph engine check a
   group against [island_first, island_first + cores).
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
@@ -306,7 +309,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   command takes no slot and no sequence number. A second inspect waits in the ring
   while one runs. The host zeroes the layout up to the block's header
   (`KMD_LIM_ZEROED`) and writes the core table before the run. `KMD_LIM_BYTES` is
-  0x1C2C0.
+  0x1CBC0.
 - **Giving up one command.** At its deadline, a host command of a program's handler
   (not a dynamic run's) is not fatal. The kernel first reads its group into the same
   block (kind `KMD_INSPECT_TIMEOUT`, with the slot and sequence). Then it writes the
