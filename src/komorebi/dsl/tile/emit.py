@@ -5,7 +5,7 @@ movers; the waits around it are the caller's."""
 
 import re
 
-from komorebi.dsl.tile.macro import check_templates
+from komorebi.dsl.tile.macro import check_back_door, check_templates
 from komorebi.dsl.tile.unit import (
     OPS,
     Call,
@@ -109,14 +109,22 @@ def check_buffers(unit):
 
 def emit(unit):
     """The C++ header of `unit`'s math CPU; refuses text that carries a float, a
-    macro whose template the init does not store or the tile's code overwrites, and a
-    buffer with two producers."""
+    macro whose template the init does not store or the tile's code overwrites, a
+    word with a VD of 12 or more that is no template store, and a buffer with two
+    producers."""
     name = unit.name
     unit.checks.append(
         Check(
             "macro-templates",
             "each macro's template stored, kept",
             check_templates(unit),
+        )
+    )
+    unit.checks.append(
+        Check(
+            "back-door",
+            "a VD of 12 or more only in a template store",
+            check_back_door(unit),
         )
     )
     unit.checks.append(

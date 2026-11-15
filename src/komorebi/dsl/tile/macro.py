@@ -451,6 +451,32 @@ def _sequences(init):
     return out
 
 
+def check_back_door(unit):
+    """Rule "back door": the init leaves LaneConfig's back door open, so a vector
+    word with VD 12 + k (but SFPCONFIG and SFPLOADMACRO) stores template k and runs
+    nothing; only the init's template stores have one. Returns the check's text;
+    raises UnitError."""
+    stores = 0
+    tile = [unit.tile["math"], *unit.parts.values()]
+    for where, items in (("init", [unit.init["math"]]), ("tile", tile)):
+        for x in (x for t in items for x in _words(t)):
+            if not x.op.startswith("SFP") or x.op in ("SFPCONFIG", "SFPLOADMACRO"):
+                continue
+            name = next((n for n in ("lreg_dest", "lreg_ind") if n in x.args), None)
+            v = x.args.get(name)
+            if not isinstance(v, int) or v < BACK_DOOR:
+                continue
+            if where == "init" and x.note.startswith("template"):
+                stores += 1
+                continue
+            raise UnitError(
+                f"{unit.name}: {x.op} ({x.note}) has VD {v}: with the back door open "
+                f"it stores template {v - BACK_DOOR} and runs nothing (a VD of 12 or "
+                "more only in a macro's template store)"
+            )
+    return f"ok: a VD of 12 or more only in the init's {stores} template store(s)"
+
+
 def check_templates(unit):
     """Rule "macro templates": each template a macro of `unit` runs is the last word
     of its init to write VD 12 + k and is setup's, and no word of the tile's code

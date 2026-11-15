@@ -54,7 +54,7 @@ class Op:
     """One coprocessor instruction: its opcode, its macro's arguments (name, width in
     bits) from the high field down to bit `low`, the register arguments it reads and
     writes, and its class: "mad" (the 2-cycle multiply-add unit), "simple", "load",
-    "store", "flags", "rwc", "stall"."""
+    "store", "flags", "rwc", "stall"; `implied`: LRegs it reads that no field names."""
 
     code: int
     args: tuple
@@ -62,6 +62,7 @@ class Op:
     writes: tuple = ()
     kind: str = "simple"
     low: int = 0
+    implied: tuple = ()
 
 
 _R = (("imm12_math", 12), ("lreg_c", 4), ("lreg_dest", 4), ("instr_mod1", 4))
@@ -147,7 +148,12 @@ OPS = {
     "SFPDIVP2": Op(0x76, _R, ("lreg_c",), ("lreg_dest",)),
     "SFPLOADMACRO": Op(0x93, _LS, (), (), "macro"),
     "SFPNOP": Op(0x8F, ()),
-    "SFPCONFIG": Op(0x91, (("imm16_math", 16), ("config_dest", 4), ("instr_mod1", 4))),
+    # the value it moves is LReg 0's (Imm16's under MOD1_IMM16_IS_VALUE, VD 4 and up)
+    "SFPCONFIG": Op(
+        0x91,
+        (("imm16_math", 16), ("config_dest", 4), ("instr_mod1", 4)),
+        implied=(0,),
+    ),
     "INCRWC": Op(
         0x38,
         (("rwc_cr", 6), ("rwc_d", 4), ("rwc_b", 4), ("rwc_a", 4)),
@@ -187,6 +193,7 @@ OPS = {
 # SFPIADD's immediate form reads only lreg_c; mod1 bit 1: lreg_c - lreg_dest; bit 2
 # set: no flags. SFPSHFT mod1 5: lreg_c shifted by the immediate.
 IADD_IMM, IADD_SUB, IADD_NO_CC = 1, 2, 4
+CONFIG_IMM = 1  # SFPCONFIG mod1: MOD1_IMM16_IS_VALUE
 SHIFT_IMM_VC = 5
 CODES = {op.code: name for name, op in OPS.items()}
 
@@ -229,8 +236,13 @@ class Insn:
     uses: tuple = ()
 
     def reads(self):
-        """The register arguments read (value names or LReg numbers)."""
-        return [self.args[n] for n in self.read_fields()] + list(self.uses)
+        """The register arguments read (value names or LReg numbers), and the LRegs it
+        reads that no field names, by both names ("L0" before the layout pass, 0)."""
+        out = [self.args[n] for n in self.read_fields()]
+        imm = self.op == "SFPCONFIG" and self.args["instr_mod1"] & CONFIG_IMM
+        if not (imm and self.args["config_dest"] >= 4):
+            out += [name for r in OPS[self.op].implied for name in (f"L{r}", r)]
+        return out + list(self.uses)
 
     def read_fields(self):
         """The names of the register fields read."""

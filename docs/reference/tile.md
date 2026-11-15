@@ -178,6 +178,14 @@ at 0 (a rescale factor that must be none when nothing moved).
 | `exp2` | flash | 1.75e-3 | [-126, 127] |
 | `exp2` | accurate: `exp(a ln 2)` | 6e-6 | all |
 
+Below the flash template's range the argument is clamped (`max(u, 512)` on `u = a k +
+639`), so the result is under 2^-126 and finite for any argument down to minus
+infinity; the card reads 0 there (one core, arguments -127.5 to -1e4). The clamp's
+`SFPSWAP` takes a copy of 512 in a work register as its `VD`: the init leaves
+`LaneConfig`'s back door open, and a word with a `VD` of 12 or more stores an
+instruction template and runs nothing (a clamp against LReg 12 gave NaN at -127.5 and
+1.76e38 at -128 on the card).
+
 **Step form.** The online softmax step of attention is this form: per row of score
 tiles the reference max that may lag, the old state's rescale factor, P, the new sum,
 and one word saying whether any row's reference moved:
@@ -214,7 +222,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | templates | algebra | each transcendental takes the cheapest template meeting its stated error (above) |
 | flash bias | algebra | the flash template's bias joins the argument's subtracted term: `p k + (639 - r k)` is one multiply-add, the per-row part computed once a row group |
 | drop_copies | algebra | a move whose source is not written again before its reader disappears |
-| common_values | algebra | an instruction computed again from the same operands is computed once for all its readers; constants are keyed by their bits (an `SFPLOADI` itself is not shared: that would lengthen register lives) |
+| common_values | algebra | an instruction computed again from the same operands is computed once for all its readers; constants are keyed by their bits (an `SFPLOADI` itself is not shared: that would lengthen register lives); a load no instruction reads is dropped, and `SFPCONFIG` reads LReg 0 unless it takes `Imm16` |
 | negated_zero | algebra | the -0.0 a row loads becomes one load |
 | resident_constants | layout | two-word polynomial constants stay in free LRegs for the whole tile when 8 work registers allow |
 | interleave | schedule | in the row and step forms, independent instructions fill the multiply-add and `SFPSWAP` stall slots under a live-register limit (retried with a tighter limit, down to 3; the limit counts live values as the allocator does); a constant load is placed at its reader; a constant register's setup (`SFPLOADI` into LReg 0, `SFPCONFIG`) stays whole |
@@ -251,6 +259,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | matrix_sum: at LoFi and HiFi2; "the step without its sums does not fit the registers"; "kept on the vector unit (cheaper)" | P sits in SrcB, whose low bits only phases 2 and 3 multiply; the second build must still allocate |
 | max_macro: "a multiply-add just before the run"; "no second register of LReg 0 .. 3 free to alternate"; "no template free (4 a unit, less those the code writes as VD)" | the template's swap reads its registers unstalled; the loaded register is LReg 0 .. 3; a word whose `VD` is 12 + k stores template k |
 | emit: "macro k runs template t, which the init does not store"; "... writes VD 12 + t in the tile's code" | the macro would run whatever template an earlier body left, or, from the second tile on, the word that overwrote it |
+| emit: "W (...) has VD v: with the back door open it stores template v - 12 and runs nothing" | any vector word but `SFPCONFIG` and `SFPLOADMACRO` with a `VD` of 12 or more is a template store while `LaneConfig`'s back door is open (the ISA's `SFPCONFIG` page); only the init's template stores may have one |
 | emit: "buffer B is pushed by X and Y" | a buffer's received counter takes one producer's count: a second producer's pages never reach the wait (a state kept in place is neither pushed nor popped) |
 
 A refused load macro is not an error: the pass records "refused: reason" and the rows
@@ -266,10 +275,11 @@ them), `config-nop`, `constants` (set before use, LReg 11 restored to -1.0),
 `predication` (every lane on at the end), `dst-load` (the matrix unit's writes finished
 before the first `SFPLOAD`), `immediates`, and in the row form `lanes` (each per-row slot
 stored complete, the same value in the 8 lanes of a lane row) and `broadcast` (each
-stored vector followed back to the loads it reads). `emit` adds two that refuse:
+stored vector followed back to the loads it reads). `emit` adds three that refuse:
 `macro-templates` (each template a macro runs is the last word of the init to write its
 `VD` 12 + k, and no word of the tile's code writes it: the tile's code repeats, and the
-card's init runs once a stream) and `one-producer` (each buffer the unpack CPU waits for
+card's init runs once a stream), `back-door` (no other word has a `VD` of 12 or more)
+and `one-producer` (each buffer the unpack CPU waits for
 or the pack CPU pushes has one producer). The rules no check covers yet are printed as
 "not checked".
 
@@ -332,6 +342,12 @@ tile:
 | softmax step, + row sums on the matrix unit: first part | 1659.0 | 1761 | -5.8% |
 | the same, second part (from the products' issue) | 246.0 | 366 | -33% |
 | exp step at 2e-3, + the store's address mode | 401.0 | 402 | -0.2% |
+| exp2 at 2e-3 (one tile), the clamp against LReg 12 | 478.1 | 478.0 | +0.0% |
+| the same, the clamp's `VD` a work register | 510.2 | 511.0 | -0.2% |
+| softmax step, the clamp's `VD` a work register: first part | 1777.0 | 1878.5 | -5.4% |
+| the same, second part | 246.0 | 368 | -33% |
+| `a * rsqrt(s.col())` | 487.4 | 490.0 | -0.5% |
+| `sigmoid(a + s.col())` | 1453.5 | 1454.5 | -0.1% |
 
 The accurate softmax step is 26 KB of straight-line code; the 12% is not explained by
 the price list (a candidate, not measured: instruction fetch past what the core
