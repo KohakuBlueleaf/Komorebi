@@ -87,7 +87,7 @@ static int entries_new(
             }
         }
         const volatile uint32_t* entry = walk->list + at / 4u;
-        const uint32_t next = entry[NN_ENTRY_RECORD_NEXT];
+        const uint32_t next = entry[kChainNext];
         if (
             (
                 at == offset && walk->list[offset / 4u + NN_ENTRY_KIND] != NN_KIND_CHAIN
@@ -111,7 +111,7 @@ static int entry_command(
     const volatile uint32_t* entry = walk->list + offset / 4u;
     const uint32_t header = entry[NN_ENTRY_HEADER];
     const uint32_t group = (
-        entry[kind == NN_KIND_CHAIN ? NN_ENTRY_CHAIN_GROUP : NN_ENTRY_GROUP]
+        entry[kind == NN_KIND_CHAIN ? NN_ENTRY_CHAIN_GROUP : kChainGroup]
     );
     kmx_command(command, header >> 24, header & 0xFFu, group & 0xFFFFu, group >> 16);
     command->hdr |= header & 0xFF00u;
@@ -124,16 +124,16 @@ static int entry_command(
     if (kind != NN_KIND_COMMAND && kind != NN_KIND_TRANSFER) {
         return KMX_BAD;
     }
-    command->a0 = entry[NN_ENTRY_ARGUMENTS + 0];
-    command->a1 = entry[NN_ENTRY_ARGUMENTS + 1];
-    command->a2 = entry[NN_ENTRY_ARGUMENTS + 2];
-    command->a3 = entry[NN_ENTRY_ARGUMENTS + 3];
-    command->a4 = entry[NN_ENTRY_ARGUMENTS + 4];
-    command->a5 = entry[NN_ENTRY_ARGUMENTS + 5];
-    command->a6 = entry[NN_ENTRY_ARGUMENTS + 6];
-    command->a7 = entry[NN_ENTRY_ARGUMENTS + 7];
-    command->a8 = entry[NN_ENTRY_ARGUMENTS + 8];
-    command->a9 = entry[NN_ENTRY_ARGUMENTS + 9];
+    command->a0 = entry[kChainArguments + 0];
+    command->a1 = entry[kChainArguments + 1];
+    command->a2 = entry[kChainArguments + 2];
+    command->a3 = entry[kChainArguments + 3];
+    command->a4 = entry[kChainArguments + 4];
+    command->a5 = entry[kChainArguments + 5];
+    command->a6 = entry[kChainArguments + 6];
+    command->a7 = entry[kChainArguments + 7];
+    command->a8 = entry[kChainArguments + 8];
+    command->a9 = entry[kChainArguments + 9];
     if (kind == NN_KIND_TRANSFER) {
         command->a7 ^= walk->nonce; /* KM_TRANSFER_NONCE */
     }

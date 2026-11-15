@@ -1,0 +1,99 @@
+# 29 chain
+
+Four calls of one small program, each reading what the call before it wrote, run two
+ways: a command a step (each submitted and waited for by the host), and one chain (the
+four calls written once as records in DRAM, then one command that every core walks by
+itself, each record's input waiting for marks from the cores that wrote it, not for
+the host). The same kernels serve both. Every output is exact against numpy either way.
+
+| Call | Cores | Reads | Writes |
+|---|---|---|---|
+| scale x | 8, one a group | its 2 tiles of `x` | `y` = factor x `x`; the factor is the chain's per-submit word |
+| scale y | 8, one a group | its 2 tiles of `y` (the call before) | `z` = 3 x `y` |
+| add | 8, one a group | its 2 tiles of `z` (the call before) and of `y` (earlier: proven) | `s` = `z` + `y` |
+| sum | 8, one group | its share of the 16 tiles of `s` (the call before) | `t`, one tile: every tile of `s` added up the group's tree to its root |
+
+The data is int32, worked on in L1 by the movers, so every result is exact.
+
+## The calls, from the host
+
+`chain_steps.py` describes the calls with `komorebi.chain` and gives them to
+`run.chain`, which proves the earlier input, writes the records once and returns the
+chain; `run.submit(chain, factor=5)` runs it.
+
+```python
+own = kc.Range(0, width, width)  # group g: tiles g x width .. + width
+add = kc.Call(
+    "step",
+    (C["kAdd"], t["z"], t["s"], t["y"], 0, 0, width),
+    (0, cores),
+    1,
+    width,
+    "s",
+    "z",
+    ranges=(own,),
+    reads=(kc.Read("y", ranges=(own,)),),
+    name="add",
+)
+```
+
+Each call states its handler and ten words, its cores, its groups (`size` cores, here
+1) and the block each group's root writes (`width` tiles of `s` from g x width), the
+output of the call before that it reads (`z`, by ranges here) and its other inputs
+(`y`, written two calls back). The sum states its input as a share of K tiles
+(`k=(0, 16)`, shared out over the ranks of its group) and `sends=True`: its parts go up
+the group's tree, so the chain gives each sender a credit from its receiver.
+
+`y` is an earlier input: no mark tells `add`'s cores that `y` is written. `run.chain`
+proves it from the descriptions: core g's mark from `scale y`'s core g came after that
+core waited for `scale x`'s core g, which wrote block g of `y`. A call reading
+another core's tiles of `y` is refused with the call, the tensor and the core (the
+script builds one on purpose; the text is in the output below).
+
+## On the card
+
+| Kernel | What it does |
+|---|---|
+| `kernels/reader.cpp` | `km::chain_start()` once; for a chain command `km::chain_reader` walks the records and calls the step for each one this core is in; a step waits for its marks (`km::chain_input`), reads its tiles, scales or adds them in L1, hands them to the writer; the sum also adds the part of each tree round it receives |
+| `kernels/writer.cpp` | for a chain command `km::chain_writer`; a step writes its tiles and marks the cores of the next record that read them (`km::chain_mark`); in the sum a rank other than the root waits for its receiver's credit (`km::chain_credit`), then sends its part |
+| `kernels/compute.cpp` | the movers do the work; in a chain command compute takes each record in turn (`km::chain_compute`), as every kernel of a core does |
+
+The records name no core's kernels: the record's group, its info word (marked, sends,
+the group's size, the output width) and its ranges are all the device calls use, so
+the same calls serve this program and the decode project's.
+
+## Running it
+
+```
+python chain_steps.py                 # 8 cores, 2 tiles a core, 200 timed runs a way
+```
+
+The script runs a command a step with factor 2, the chain with 5, then 7 and 3, and
+checks every word of `y`, `z`, `s` and `t` after each; then 200 runs a way timed, and
+the outputs checked once more.
+
+## What it measured
+
+One Blackhole p150a, card 1, 2026-11-15, AICLK 1350 MHz; 200 runs a way. On the host:
+from the first submit to the last wait's return, a run; on the card: the dispatcher's
+submit-to-done time of each command (a command a step: the four added), the median.
+
+| | A command a step | One chain |
+|---|---:|---:|
+| on the host, us a run | 721.0 | 268.2 |
+| on the card, us a run | 130.5 | 126.3 |
+| every word of y, z, s, t | exact | exact |
+
+The card does the same work either way: about 31 us a call, most likely the movers'
+integer loops over 2,048 to 5,120 words a core (not timed apart here). What the chain
+removes is the host's part: three of the four round trips from a submit to its event,
+about 150 us each here (host less card: 590.5 us for four, 141.9 for one).
+The four records cost the card 4.2 us less than four commands. In the decode project
+the same chain runs a whole token (140 records) as one command; its layer is 315 us
+at T 4096, within the spread of its own chain before the move to the framework.
+
+## Output
+
+```
+{"cores": 8, "width": 2, "tiles": 16, "refused": "call 2 (add): core 0 reads y tile 2, written by call 0 (scale x) (block 1), and nothing it waits for tells it that block is complete", "kernel": "none", "checks": {"steps x2": {"y": 0, "z": 0, "s": 0, "t": 0}, "chain x5": {"y": 0, "z": 0, "s": 0, "t": 0}, "steps x7": {"y": 0, "z": 0, "s": 0, "t": 0}, "chain x3": {"y": 0, "z": 0, "s": 0, "t": 0}, "after timing": {"y": 0, "z": 0, "s": 0, "t": 0}}, "microseconds_a_run": {"steps": 720.98, "chain": 268.24}, "card_microseconds_a_run": {"steps": 130.54, "chain": 126.3}, "earlier_proven": true, "ok": true, "wall_s": 15.7}
+```

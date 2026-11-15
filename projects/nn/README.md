@@ -12,9 +12,9 @@ plans and its words, called and not copied. The thread knows no model.
 ## The entry
 
 A list is entries of 128 bytes (two 64-byte lines) in a region of the thread's DRAM
-bank, each one kernel call (`nn.h`). The first line is the split's chain record
-(`../dense/kernels/split/chain.h`) as it is, so a run of entries is passed to the chain
-unchanged; the second line is the thread's.
+bank, each one kernel call (`nn.h`). The first line is the chain's record
+(`komorebi/abi/km_chain.h`, [the chain](../../docs/reference/chain.md)) as it is, so
+a run of entries is passed to the chain unchanged; the second line is the thread's.
 
 | Words | Line | What |
 |---|---|---|
