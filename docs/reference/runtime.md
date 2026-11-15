@@ -440,7 +440,7 @@ The calls that act by island (`km_group.hpp`, `km_port.hpp`):
 
 | Call | What it does | On one island |
 |---|---|---|
-| `km::reduce_arrive`, `km::reduce_emit`, `km::reduce` on a group over islands | each island's part reduces as a group of its own (owner or tree), then each part's first rank sends its fold once to the group's rank 0: by owner into the slot after its island's (port 0), by tree into the round after its island's (port and slot); the calls do not change | the flat schedule |
+| `km::reduce_arrive`, `km::reduce_emit`, `km::reduce` on a group over islands | each island's part reduces as a group of its own (owner or tree), then each part's first rank sends its fold once to the group's rank 0: by owner into the slot after its island's (port 0), by tree on the one port after the root part's rounds, part j into slot j - 1 after the root part's (rank 0 waits there for all of them); where the port or the slots do not fit, every core gives up (`kGaveBadItem`); the calls do not change | the flat schedule |
 | the same with `km::local` (`reduce_emit(..., km::local)`, `reduce_arrive(..., km::local)`, `reduce(compute, arrival, group, form, km::local, combine)`) | the reduce over `group.local()`: it stays in this island | the whole group |
 | `group.leader(j)` | the first rank of island part `j` of the group | `group.leader(0)`: its first rank |
 | `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | `km::emit` to `rank` after a check that island `i` holds it (else a give-up, bad item) | a local emit |

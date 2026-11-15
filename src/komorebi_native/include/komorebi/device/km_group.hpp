@@ -185,13 +185,17 @@ namespace km {
         return {part, high - low + 1, view.here() - low, root};
     }
 
-    // The port and slot at rank 0 of the part of index j > 0: after the root part's.
+    // The slot at rank 0 of the part of index j > 0: after the root part's.
     inline uint32_t reduce_cross(const ReduceParts& p, uint32_t form, uint32_t j) {
-        if (form == kReduceOwner) {
-            return p.root - 1 + j - 1;  // slot; port 0
-        }
         const Group root = {0, 1, p.root, 0};
-        return reduce_slots_flat(root, form) + j - 1;  // port and slot
+        return reduce_slots_flat(root, form) + j - 1;
+    }
+
+    // The one port all parts j > 0 send on to rank 0 (tree: the first after the root
+    // part's rounds; owner: port 0).
+    inline uint32_t reduce_cross_port(const ReduceParts& p, uint32_t form) {
+        const Group root = {0, 1, p.root, 0};
+        return form == kReduceOwner ? 0 : reduce_slots_flat(root, form);
     }
 
     // A core's send in the reduce of `group` over its islands (one island: the flat
@@ -205,7 +209,7 @@ namespace km {
             return {true, 0, 0, 0};
         }
         const uint32_t cross = reduce_cross(p, form, p.index);
-        return {false, group.base, form == kReduceOwner ? 0 : cross, cross};
+        return {false, group.base, reduce_cross_port(p, form), cross};
     }
 
     inline uint32_t reduce_slots(const Group& group, uint32_t form) {
@@ -221,12 +225,18 @@ namespace km {
         const ReduceParts p = reduce_parts(group);
         uint32_t wants = reduce_wants_flat(p.part, form, port);
         if (p.parts > 1 && p.index == 0 && p.part.rank == 0) {
-            for (uint32_t j = 1; j < p.parts; j++) {
-                const uint32_t cross = reduce_cross(p, form, j);
-                wants += form == kReduceOwner ? (port == 0 ? 1 : 0) : (port == cross);
-            }
+            wants += port == reduce_cross_port(p, form) ? p.parts - 1 : 0;
         }
         return wants;
+    }
+
+    // Ports a reduce names at its root (0 to reduce_ports - 1).
+    inline uint32_t reduce_ports(const Group& group, uint32_t form) {
+        const ReduceParts p = reduce_parts(group);
+        if (p.parts == 1) {
+            return form == kReduceOwner ? 1 : reduce_slots_flat(group, form);
+        }
+        return reduce_cross_port(p, form) + 1;
     }
 
     // Scope km::local: a reduce, collect or broadcast stays inside this core's island
