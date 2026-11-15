@@ -32,25 +32,55 @@ FORMATS = {
 @dataclass(frozen=True)
 class Field:
     """A field resident in each core's L1: its format and shape (ints, or symbols the
-    build solves); the annotation of `km.L1[format, shape]`."""
+    build solves); the annotation of `km.L1[format, *shape]`."""
 
     format: Format
     shape: tuple
 
 
+class Symbol:
+    """`K = km.symbol()` in a class body: a size of a field's shape the plan gives
+    or the build solves; its name is the attribute's."""
+
+    def __init__(self):
+        self.name = None
+
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def __repr__(self):
+        return f"km.{spelling('symbol')}() {self.name}"
+
+
+def symbol():
+    return Symbol()
+
+
+class Tile:
+    """`gives=km.Tile`: what an inline body of compute leaves in DST 0."""
+
+
 class L1:
-    """`km.L1[format, shape]`: the annotation of a field resident in the L1."""
+    """`km.L1[format, *shape]`: the annotation of a field resident in the L1, each
+    size an int or a km.symbol() of the class."""
 
     def __class_getitem__(cls, key):
-        if not isinstance(key, tuple) or len(key) != 2:
-            raise ProgramError(f"km.{spelling('field')}[format, shape]: got {key!r}")
-        format_, shape = key
+        key = key if isinstance(key, tuple) else (key,)
+        format_, *shape = key
         if not isinstance(format_, Format):
-            raise ProgramError("a field's format is km.fp32, km.bf16 or km.u32")
-        shape = tuple(shape) if isinstance(shape, tuple | list) else (shape,)
-        if not shape or not all(isinstance(n, int | str) for n in shape):
-            raise ProgramError(f"a field's shape is ints and symbols: {shape!r}")
-        return Field(format_, shape)
+            raise ProgramError(
+                f"km.{spelling('field')}[format, *shape]: the format first, km.fp32, "
+                "km.bf16 or km.u32"
+            )
+        if not shape or not all(
+            isinstance(n, Symbol) or (isinstance(n, int) and not isinstance(n, bool))
+            for n in shape
+        ):
+            raise ProgramError(
+                f"a field's sizes are ints and km.{spelling('symbol')}()s of the class "
+                f"(K = km.{spelling('symbol')}() in its body): got {tuple(shape)!r}"
+            )
+        return Field(format_, tuple(shape))
 
 
 class ClassHandler(Handler):
@@ -71,14 +101,18 @@ class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
 
-    def __init__(self, function):
+    def __init__(self, function, overlay=False):
         self.function = function
+        self.overlay = overlay  # its code is an overlay: loaded into a slot, called
         self.name = function.__name__
         self.number = None
         self.words = None  # [(parameter, kind)] in word order, set by the compiler
+        self.owner = None  # the class it is a handler of
+        self.returns = False  # it returns a word: its commands ask for the result
 
     def __set_name__(self, owner, name):
         self.name = name
+        self.owner = owner
 
     def __get__(self, program, owner=None):
         if program is None:
@@ -93,7 +127,7 @@ class HandlerMethod:
     def __call__(self, *args, **kwargs):
         raise ProgramError(
             f"{self.name} is a handler: it runs on the cores; submit it "
-            f"(run.submit(Class.{self.name}, group, Class.{self.name}.args(...)))"
+            f"(run.submit(Class.{self.name}, group, args=(...)))"
         )
 
     def args(self, *values, **named):
@@ -119,10 +153,18 @@ class HandlerMethod:
         return [(p, kind) for p, kind in self.words if kind != "pages"]
 
 
+def is_tensor(value):
+    """A DRAM tensor of a session or an island session: what a class reads of it (its
+    reference word, format, page bytes and accessor arguments)."""
+    return isinstance(value, Tensor) or all(
+        hasattr(value, name) for name in ("address", "dtype", "page_bytes", "placement")
+    )
+
+
 def word_of(handler, parameter, kind, value):
     """One command word for an argument of `kind`."""
     if kind == "tensor":
-        if not isinstance(value, Tensor):
+        if not is_tensor(value):
             raise ProgramError(f"{handler}: {parameter} is a tensor, got {value!r}")
         return int(value.address) & abi.M32
     if kind == "pages":
@@ -138,9 +180,12 @@ def word_of(handler, parameter, kind, value):
     return value
 
 
-def handler(function):
-    """Makes a method of a class deriving km.Program a handler."""
-    return HandlerMethod(function)
+def handler(function=None, *, overlay=False):
+    """Makes a method of a class deriving km.Program a handler; `overlay=True`: its
+    code is built apart as an overlay, loaded into a slot when a command needs it."""
+    if function is None:
+        return lambda function: HandlerMethod(function, overlay)
+    return HandlerMethod(function, overlay)
 
 
 def line_only(kind):
@@ -170,6 +215,8 @@ def exports():
     made = {
         "handler": handler,
         "field": L1,
+        "symbol": symbol,
+        "tile_value": Tile,
         "tensor": Tensor,
         "stream": line_only("stream"),
         "reduce": line_only("reduce"),

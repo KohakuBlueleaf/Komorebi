@@ -6,7 +6,7 @@ the sizes printed, and the made object is a Program of those files.
 from dataclasses import dataclass
 from pathlib import Path
 
-from komorebi import abi, layout
+from komorebi import abi, layout, overlay
 from komorebi import program as km_program
 from komorebi.dsl import compiler
 from komorebi.dsl.names import spelling
@@ -14,10 +14,12 @@ from komorebi.dsl.nodes import prune, render
 from komorebi.errors import ProgramError
 
 BUILD = "build"
+# A core's kernels as a CommandTimeout names them, and the CPU a class's wait is on.
+CPUS = {"reader": "mover A", "writer": "mover B", "compute": "compute"}
 INDENT = "    "
 # The program arguments of every kernel: the core's column and row in the rectangle,
 # whether a broadcast takes it, then (on a mover) its broadcast's arguments.
-ARG_X, ARG_Y, ARG_INCLUDED, ARG_BROADCAST = 0, 1, 2, 3
+ARG_X, ARG_Y, ARG_INCLUDED, ARG_COLUMNS, ARG_ROWS, ARG_BROADCAST = 0, 1, 2, 3, 4, 5
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,24 @@ class Built:
     files: dict
     report: list
     waits: list
+
+    def lines(self, cores):
+        """For each of `cores` (a CommandTimeout's) whose CPU gave up waiting, the
+        handlers' Python lines that wait there."""
+        named = []
+        for core in cores:
+            for kernel, cpu in CPUS.items():
+                gave = core.get(kernel)
+                where = gave.get("where") if isinstance(gave, dict) else None
+                if not where:
+                    continue
+                named.extend(
+                    f"core {core['core']} {cpu}: {wait.handler}, line {wait.line}: "
+                    f"waiting in {wait.text}"
+                    for wait in self.waits
+                    if wait.cpu == cpu and wait.where == where
+                )
+        return named
 
 
 def prepare(cls):
@@ -43,6 +63,8 @@ def prepare(cls):
     for number, method in enumerate(methods, start=1):
         method.number = number
     cls.__init__ = make
+    cls.built_handlers = [method.name for method in methods]
+    cls.overlays_built = property(overlays_built, set_overlays_built)
 
 
 def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **tensors):
@@ -57,6 +79,10 @@ def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **t
         program_args = rectangle_args(compiled, rect, nocs)
     built = write(cls, compiled, l1)
     for line in built.report:
+        log(line)
+    report = may_cross(compiled, tensors)
+    setattr(self, spelling("may_cross"), report)
+    for line in report:
         log(line)
     buffers = []
     for buffer in compiled.buffers:
@@ -91,6 +117,102 @@ def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **t
         handlers=built.folder / header_name(compiled),
     )
     self.built = built
+    self.log = log
+    for name in compiled.overlays:
+        sources = {"reader": built.folder / name / "movement.cpp"}
+        sources["writer"] = sources["reader"]
+        if f"{name}/compute.cpp" in built.files:
+            sources["compute"] = built.folder / name / "compute.cpp"
+        self.overlay(name, sources)
+    if compiled.overlays:
+        self.slots()
+
+
+def code_table(program, built):
+    """Where each handler's code lives, once the session built the overlays: in the
+    kernels, or an overlay (its parts' bytes, the slots of their kernels)."""
+    compiled_overlays = {o.name: o.number for o in program.overlays.values()}
+    lines = ["where the handlers' code lives:"]
+    for name in program.built_handlers:
+        if name not in compiled_overlays:
+            lines.append(f"  {name}: resident, in the kernels")
+            continue
+        number = compiled_overlays[name]
+        sizes = ", ".join(
+            f"{part} {len(built.images[number, part]):,} B"
+            for part in overlay.PARTS
+            if (number, part) in built.images
+        )
+        slots = ", ".join(
+            f"{part} {count} x {size:,} B"
+            for part, (count, size) in built.slots.items()
+        )
+        lines.append(f"  {name}: overlay {number}: {sizes}; slots: {slots}")
+    return lines
+
+
+def overlays_built(self):
+    return self.__dict__.get("_overlays_built")
+
+
+def set_overlays_built(self, built):
+    """The session's build of the overlays: kept, and the code table logged."""
+    self.__dict__["_overlays_built"] = built
+    if built is not None and self.overlays:
+        for line in code_table(self, built):
+            self.log(line)
+
+
+# What a move lowers to: a tensor built for one island (its accessor), and one that
+# may cross (km::Tensor with the tensor table: the far island's runs by its link).
+LOCAL = {
+    "read": "noc_async_read_page a page",
+    "write": "noc_async_write_page a page",
+}
+CROSSING = {
+    "read": "km::read_pages_at a row: this island's pages by noc_async_read_page, "
+    "another island's run by an ask line to its link core (km::ask_line_at)",
+    "write": "km::write_pages_at: this island's pages by noc_async_write_page, "
+    "another island's run by a put line to its link core (km::ask_line_at)",
+}
+
+
+def may_cross(compiled, tensors):
+    """The "may cross" report of a program made with island tensors (their
+    placement): each move of each handler, whether a page of it can be another
+    island's, and what it lowers to then; nothing on one island."""
+    if not any(hasattr(tensors.get(name), "placement") for name in compiled.tensors):
+        return []
+    lines = ["may cross (each move: its tensor's placement; what it lowers to):"]
+    for move in compiled.moves:
+        placement = tensors[move.tensor].placement
+        direction = (
+            "read"
+            if move.how in ("read stream", "fill", "broadcast's read")
+            else "write"
+        )
+        holders = [i for i, (_, steps) in enumerate(placement.parts) if steps]
+        if placement.copy:
+            where = "a copy on every island: each island's own"
+            crosses = False
+        elif len(holders) == 1:
+            where = f"held by island {holders[0]} alone"
+            crosses = True
+        else:
+            parts = ", ".join(
+                f"island {i} steps {first}..{first + steps - 1}"
+                for i, (first, steps) in enumerate(placement.parts)
+                if steps
+            )
+            where = f"split {placement.split} ({parts})"
+            crosses = True
+        lowered = CROSSING[direction] if crosses else LOCAL[direction]
+        lines.append(
+            f"  {move.handler}, line {move.line}, {move.how} of {move.tensor} "
+            f"({where}): {'may cross' if crosses else 'never crosses'}; "
+            f"{lowered}; one island: {LOCAL[direction]}"
+        )
+    return lines
 
 
 def rectangle_args(compiled, rect, nocs):
@@ -131,7 +253,7 @@ def rectangle_args(compiled, rect, nocs):
 
     def program_args(core):
         x, y = cells.get(core, (0, 0))
-        common = [x, y, int(core in cells)]
+        common = [x, y, int(core in cells), columns, rows]
         movers = []
         for mover in ("A", "B"):
             words = by_mover.get(mover, {}).get(core)
@@ -170,10 +292,12 @@ def write(cls, compiled, l1):
         header_name(compiled): header(compiled),
         "movement.cpp": movement_source(compiled),
         "compute.cpp": compute_source(compiled),
+        **parts(compiled),
     }
     for name, text in files.items():
         text = resume_lines(text, name)
         files[name] = text
+        (folder / name).parent.mkdir(exist_ok=True)
         (folder / name).write_text(text)
     report = summary(compiled, folder, files, l1)
     (folder / "program.txt").write_text("\n".join(report) + "\n")
@@ -206,11 +330,14 @@ def header(compiled):
     lines.append("")
     if compiled.rectangle:
         lines += [
-            "// Program arguments: the core's column and row in the rectangle, 1",
-            "// when a broadcast takes it, then its mover's broadcast's arguments.",
+            "// Program arguments: the core's column and row in the rectangle, 1 when",
+            "// a broadcast takes it, the rectangle's columns and rows, then its",
+            "// mover's broadcast's arguments.",
             f"constexpr uint32_t kArgX = {ARG_X};",
             f"constexpr uint32_t kArgY = {ARG_Y};",
             f"constexpr uint32_t kArgIncluded = {ARG_INCLUDED};",
+            f"constexpr uint32_t kArgColumns = {ARG_COLUMNS};",
+            f"constexpr uint32_t kArgRows = {ARG_ROWS};",
             f"constexpr uint32_t kArgBroadcast = {ARG_BROADCAST};",
         ]
     for name, number in compiled.handlers.items():
@@ -222,6 +349,11 @@ def header(compiled):
             f"// {name.upper()}, line {compiled.lines[name]}: {words or 'no words'}."
         )
         lines.append(f"constexpr uint32_t kHandler{camel(name)} = {number};")
+        if name in compiled.overlays:
+            lines.append(
+                f"constexpr uint32_t kOverlay{camel(name)} = "
+                f"{compiled.overlays[name]};  // its code: an overlay"
+            )
     for buffer in compiled.buffers:
         lines.append("")
         lines.append(f"// {buffer.what}")
@@ -265,19 +397,37 @@ def tensor_aliases(compiled):
         offset = (
             "0" if previous is None else f"{previous}::next_compile_time_args_offset()"
         )
-        lines.append(f"using {camel(name)} = km::Tensor<{offset}>;  // {name}")
+        lines.append(
+            f"using {camel(name)} [[maybe_unused]] = km::Tensor<{offset}>;  // {name}"
+        )
         previous = camel(name)
     return lines
 
 
-def cases(compiled, nodes_of, ending, depth):
-    """The switch on the handler: a case for each handler, its pruned nodes."""
+def cases(compiled, nodes_of, ending, depth, kernel):
+    """The switch on the handler: a case for each handler, its pruned nodes; an
+    overlay handler's case loads its overlay and calls this kernel's part."""
     pad = INDENT * depth
     lines = [pad + "switch (km::handler(command)) {"]
     for name in compiled.handlers:
         line = compiled.lines[name]
         lines.append(f"{pad}{INDENT}case kHandler{camel(name)}: {{  // line {line}")
-        lines += render(prune(nodes_of[name]), depth + 2)
+        if name not in compiled.overlays:
+            lines += render(prune(nodes_of[name]), depth + 2)
+        elif kernel == "movement" or has_part(nodes_of[name]):  # the reader loads
+            inner = pad + INDENT * 2
+            gave_up = "return false;" if kernel == "movement" else "break;"
+            lines += [
+                f"{inner}km::Overlay part({kernel}, kOverlay{camel(name)});",
+                f"{inner}if (!part.load()) {{",
+                f"{inner}{INDENT}{gave_up}",
+                f"{inner}}}",
+            ]
+            if kernel == "movement":
+                lines.append(f"{inner}return part.call(command) != 0;")
+                lines.append(f"{pad}{INDENT}}}")
+                continue
+            lines.append(f"{inner}part.call(command);")
         lines.append(f"{pad}{INDENT * 2}{ending}")
         lines.append(f"{pad}{INDENT}}}")
     lines.append(f"{pad}{INDENT}default:")
@@ -286,10 +436,13 @@ def cases(compiled, nodes_of, ending, depth):
     return lines
 
 
-def movement_source(compiled):
+def has_part(nodes):
+    """Whether a kernel has code of a handler: lines other than comments."""
+    return any(not line.strip().startswith("//") for line in render(prune(nodes), 0))
+
+
+def movement_includes(compiled):
     lines = [
-        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
-        "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1).",
         "#include <stdint.h>",
         "",
         '#include "api/dataflow/dataflow_api.h"',
@@ -297,16 +450,93 @@ def movement_source(compiled):
     ]
     if "port" in compiled.includes:
         lines.append('#include "komorebi/device/km_port.hpp"')
-    if "broadcast" in compiled.includes:
+    if compiled.includes & {"broadcast", "ask"}:
         lines.append('#include "komorebi/device/km_ask.hpp"')
+    if "broadcast" in compiled.includes:
         lines.append('#include "komorebi/device/km_broadcast.hpp"')
+    if compiled.overlays:
+        lines.append('#include "komorebi/device/km_overlay.hpp"')
+    return lines + compiled.body_includes["movement"]
+
+
+def compute_includes(compiled):
+    lines = ["#include <stdint.h>", ""]
+    for path, needs in COMPUTE_INCLUDES:
+        if needs is None or needs in compiled.includes:
+            lines.append(f'#include "{path}"')
+    if compiled.overlays:
+        lines.append('#include "komorebi/device/km_overlay.hpp"')
+    return lines + compiled.body_includes["compute"]
+
+
+# A movement part's first lines: the resident case's km::Movement, as its runtime.
+PART_MOVEMENT = [
+    INDENT + "// the resident case's km::Movement, as its mover's runtime",
+    INDENT + "km::Movement& movement = static_cast<km::Movement&>(core);",
+]
+
+
+def parts(compiled):
+    """{path: text} of each overlay handler's parts: one movement source (built for
+    each mover) and, if compute has code, a compute source."""
+    files = {}
+    for name in compiled.overlays:
+        made = f"// {compiled.name}.{name}, made by komorebi.dsl from " + (
+            f"{Path(compiled.source).name}: overlay kOverlay{camel(name)},"
+        )
+        files[f"{name}/movement.cpp"] = (
+            "\n".join(
+                [
+                    made,
+                    "// its part on each mover (mover A: RISCV_0, mover B: RISCV_1).",
+                    *movement_includes(compiled),
+                    f'#include "../{header_name(compiled)}"',
+                    "",
+                    "uint32_t km_overlay("
+                    "km::MoverRuntime& core, const km_command_t& command) {",
+                    *PART_MOVEMENT,
+                    *(INDENT + line for line in tensor_aliases(compiled)),
+                    *render(prune(compiled.movement[name]), 1),
+                    f"{INDENT}return true;",
+                    "}",
+                ]
+            )
+            + "\n"
+        )
+        if has_part(compiled.compute[name]):
+            files[f"{name}/compute.cpp"] = (
+                "\n".join(
+                    [
+                        made,
+                        "// its part on compute.",
+                        *compute_includes(compiled),
+                        f'#include "../{header_name(compiled)}"',
+                        "",
+                        "void km_overlay(",
+                        "    km::Compute& compute, const km_command_t& command",
+                        ") {",
+                        *render(prune(compiled.compute[name]), 1),
+                        "}",
+                    ]
+                )
+                + "\n"
+            )
+    return files
+
+
+def movement_source(compiled):
+    lines = [
+        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
+        "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1).",
+        *movement_includes(compiled),
+    ]
     lines += [f'#include "{header_name(compiled)}"', "", "void kernel_main() {"]
     lines += [INDENT + line for line in tensor_aliases(compiled)]
     lines += [
         f"{INDENT}km::Movement movement;",
         f"{INDENT}movement.run([&](const km_command_t& command) {{",
     ]
-    lines += cases(compiled, compiled.movement, "return true;", 2)
+    lines += cases(compiled, compiled.movement, "return true;", 2, "movement")
     lines += [f"{INDENT}}});", "}"]
     return "\n".join(lines) + "\n"
 
@@ -331,26 +561,26 @@ def compute_source(compiled):
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// the compute kernel: the tiles of its streams, in block order.",
-        "#include <stdint.h>",
-        "",
+        *compute_includes(compiled),
     ]
-    for path, needs in COMPUTE_INCLUDES:
-        if needs is None or needs in compiled.includes:
-            lines.append(f'#include "{path}"')
     lines += [f'#include "{header_name(compiled)}"', "", "void kernel_main() {"]
     reads = [b for b in compiled.buffers if b.role == "read"]
-    writes = [b for b in compiled.buffers if b.role == "write"]
+    writes = [b for b in compiled.buffers if b.role in ("write", "out")]
     others = [b for b in compiled.buffers if b.role == "broadcast"]
     first_in = (
         f"{reads[0].name}.mover_a" if reads else others[0].name if others else "0"
     )
-    first_out = f"{writes[0].name}.mover_a" if writes else "16"
+    first_out = "16"
+    if writes:
+        first_out = writes[0].name
+        if writes[0].index_b is not None:
+            first_out += ".mover_a"
     lines += [
         f"{INDENT}km::Compute compute;",
         f"{INDENT}compute_kernel_hw_startup({first_in}, {first_out});",
         f"{INDENT}compute.run([&](const km_command_t& command) {{",
     ]
-    lines += cases(compiled, compiled.compute, "break;", 2)
+    lines += cases(compiled, compiled.compute, "break;", 2, "compute")
     lines += [f"{INDENT}}});", "}"]
     return "\n".join(lines) + "\n"
 
@@ -391,20 +621,4 @@ def lines_of(program, error):
     """The handler and Python line of each wait a not-reported core of `error` (a
     CommandTimeout) gave up in, by its CPU and where: one text a core."""
     built = getattr(program, "built", None)
-    if built is None:
-        return []
-    cpus = {"reader": "mover A", "writer": "mover B", "compute": "compute"}
-    named = []
-    for core in error.cores:
-        for kernel, cpu in cpus.items():
-            gave = core.get(kernel)
-            where = gave.get("where") if isinstance(gave, dict) else None
-            if not where:
-                continue
-            named.extend(
-                f"core {core['core']} {cpu}: {wait.handler}, line {wait.line}: "
-                f"waiting in {wait.text}"
-                for wait in built.waits
-                if wait.cpu == cpu and wait.where == where
-            )
-    return named
+    return built.lines(error.cores) if built is not None else []

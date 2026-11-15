@@ -2,6 +2,7 @@
 the X280 thread that walks the layers, its tensors, the weights written through the
 host channel, and the thread's job. Needs tt-metal's Python environment."""
 
+import math
 import time
 
 import numpy as np
@@ -17,10 +18,14 @@ KERNELS = md.HERE / "kernels"
 CLUSTER = 1
 TICKS_PER_MICROSECOND = 50  # kmx_time() and the dispatcher count the 50 MHz timer
 EXCLUSIVE = km.abi.headers().constants["KM_FLAG_EXCLUSIVE"]
-ACTIVATIONS = ("x", "x1", "qkv", "k", "v", "gated", "sums", "squares1", "squares2")
+ACTIVATIONS = ("x", "x1", "qkv", "k", "v", "gated", "sums", "squares1", "squares2", "a")
 PARTS = {"reader": OP["kOpReader"], "compute": OP["kOpCompute"]}
 ADD_PARTS = PARTS | {"writer": OP["kOpWriter"]}
 GATE_PARTS = ADD_PARTS
+ATTEND_PARTS = ADD_PARTS
+# attend's fp32 buffers that compute copies to DEST (with the K split's arrival)
+TO_DEST = ("DC_CB_REFERENCE", "DC_CB_STATE", "DC_CB_RESCALE")
+ATTEND_MODES = {None: 0, "read": 16, "local": 32, "exp_twice": 64}  # LAYERS' a4
 
 
 def operation_word(number, parts):
@@ -28,10 +33,35 @@ def operation_word(number, parts):
     return number | sum(parts.values())
 
 
-def buffers(plan):
-    """The K split's buffers (every plan shares them) and the operations'."""
+def keys_most(context, group):
+    """Key tiles a core of a KV head's group holds at most: its share of the full
+    tiles of a cache of `context` rows, and the token's tile."""
+    return math.ceil((context // md.TILE - 1) / group) + 1
+
+
+def buffers(plan, most):
+    """The K split's buffers (every plan shares them) and the operations'; attend's
+    for `most` key tiles a core."""
     tile = pl.TILE_BYTES
     block = plan.oh * plan.ow
+    head = D["DC_HEAD_TILES"]
+    attend = [
+        (D["DC_CB_QUERY"], D["DC_HEAD_GROUP"] * head),
+        (D["DC_CB_ATTEND_CONSTANT"], 3),
+        (D["DC_CB_MASK"], 1),
+        (D["DC_CB_KEYS"], most * head),
+        (D["DC_CB_VALUES"], most * head),
+        (D["DC_CB_SCORES"], D["DC_HEAD_GROUP"] * most),
+        (D["DC_CB_PROBABILITIES"], most),
+        (D["DC_CB_ROW_MAX"], 1),
+        (D["DC_CB_TOKEN"], 2 * head),
+    ]
+    state = [
+        (D["DC_CB_REFERENCE"], 1),
+        (D["DC_CB_STATE"], 2 * D["DC_STATE_ITEM"]),
+        (D["DC_CB_RESCALE"], 2),
+        (D["DC_CB_OUTBOX"], D["DC_STATE_ITEM"]),
+    ]
     own = [
         (D["DC_CB_BLOCK"], block),
         (D["DC_CB_Y"], block),
@@ -42,16 +72,18 @@ def buffers(plan):
         (D["DC_CB_UP"], block),
         (D["DC_CB_PART"], 1),
     ]
-    return [km.Buffer(*buffer) for buffer in plan.buffers()] + [
-        km.Buffer(index, "bfloat16", tile, pages) for index, pages in own
-    ]
+    return (
+        [km.Buffer(*buffer) for buffer in plan.buffers()]
+        + [km.Buffer(index, "bfloat16", tile, pages) for index, pages in own + attend]
+        + [km.Buffer(index, "float32", S["kSumBytes"], pages) for index, pages in state]
+    )
 
 
 class Decode:
     """The model's layers loaded on a session: tensors, the program and its thread.
     `layers` distinct layers of weights in DRAM, written by write_layer(); `trace`:
     the commands each core stamps (the runtime's trace, 0: none); `chunk`, `patterns`:
-    md.plans()'s."""
+    md.plans()'s; `context`: the cache's rows a KV head and layer."""
 
     def __init__(
         self,
@@ -63,6 +95,7 @@ class Decode:
         trace=0,
         chunk=md.CHUNK,
         patterns=None,
+        context=4096,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.plans = md.plans(model, chunk=chunk, patterns=patterns)
@@ -70,18 +103,26 @@ class Decode:
         for name in ("o", "down"):  # their roots write a row's squares, a tile a group
             if self.plans[md.plan_of(model, name)].groups() != D["DC_PARTS"]:
                 raise ValueError(f"{name}: not {D['DC_PARTS']} groups")
+        self.context = context
+        self.attend_plan = self.plans[md.plan_of(model, "o")]
+        self.check_attend(model, self.attend_plan, context)
+        self.keys_most = keys_most(context, self.attend_plan.s)
         hidden = model.hidden
         products = model.products()
         widths = {"x": hidden, "x1": hidden, "gated": model.mlp}
         widths |= dict.fromkeys(("squares1", "squares2"), D["DC_PARTS"] * md.TILE)
         widths |= {"qkv": products["qkv"][1], "sums": products["gate_up"][1]}
         widths |= {name: model.shapes()[name][1] for name in ("k", "v")}
+        widths |= {"a": model.heads * model.head_dim}
         self.tensors = {
             name: session.empty((md.TILE, widths[name]), "bfloat16", "tile")
             for name in ACTIVATIONS
         }
         self.tensors["constants"] = dense_card.bf16_tensor(session, md.constants())
+        self.tensors["attend"] = dense_card.bf16_tensor(session, md.attend_constants())
         shapes = products | {name: model.shapes()[name] for name in md.APART}
+        cache = (model.kv_heads * context, model.head_dim)
+        shapes |= dict.fromkeys(("keys", "values"), cache)
         self.weights = [
             {
                 name: session.empty(shape, "bfloat16", "tile")
@@ -94,8 +135,24 @@ class Decode:
         )
         self.slot = 0
 
+    @staticmethod
+    def check_attend(model, plan, context):
+        """attend takes o's plan: a group a KV head, whose block of a (1 x 8 tiles) is
+        its query heads'; the merge's states fit the arrival buffer's slots."""
+        head = D["DC_HEAD_TILES"]
+        if model.head_dim != head * md.TILE or model.heads != D["DC_HEAD_GROUP"] * (
+            model.kv_heads
+        ):
+            raise ValueError("attend: heads of 128 and two query heads a KV head")
+        if plan.groups() != model.kv_heads or plan.ow != D["DC_HEAD_GROUP"] * head:
+            raise ValueError("attend: o's plan is not a group a KV head")
+        if plan.arrive // D["DC_STATE_ITEM"] < math.ceil(math.log2(plan.s)):
+            raise ValueError("attend: the merge's rounds do not fit the arrival slots")
+        if context % md.TILE or not md.TILE <= context < 1 << 16:
+            raise ValueError(f"context {context}: whole tiles, below 65536 rows")
+
     def program(self):
-        """The K split's kernels with a table of the layer's plans, three overlays and
+        """The K split's kernels with a table of the layer's plans, four overlays and
         the thread."""
         plans = list(self.plans.values())
         table = pl.split_table(plans)
@@ -103,7 +160,7 @@ class Decode:
         program = km.Program(
             "decode",
             kernels=dense_card.SPLIT_KERNELS,
-            buffers=buffers(plans[0]),
+            buffers=buffers(plans[0], self.keys_most),
             args=lambda core: (table, table, table),
             compile_args={"reader": tile_args * 2, "writer": tile_args * 3},
             compute={
@@ -112,7 +169,8 @@ class Decode:
                 "unpack_to_dest_mode": {
                     S["kCbArrive"]: "UnpackToDestFp32",
                     S["kCbSum"]: "UnpackToDestFp32",
-                },
+                }
+                | {D[name]: "UnpackToDestFp32" for name in TO_DEST},
             },
             handlers=pl.SPLIT_H,
         )
@@ -128,6 +186,12 @@ class Decode:
             number=D["DC_OVERLAY_GATE"],
         )
         program.overlay("scale", KERNELS / "scale", number=D["DC_OVERLAY_SCALE"])
+        program.overlay(
+            "attend",
+            KERNELS / "attend",
+            number=D["DC_OVERLAY_ATTEND"],
+            defines={"DC_KEYS_MOST": self.keys_most},
+        )
         weights = np.zeros((self.layers, D["DC_LAYER_WORDS"]), np.uint32)
         for layer, tensors in enumerate(self.weights):
             for name, tensor in tensors.items():
@@ -167,7 +231,34 @@ class Decode:
             operation_word(D["DC_OVERLAY_GATE"], GATE_PARTS),
             operation_word(D["DC_OVERLAY_SCALE"], PARTS),
             int(epsilon),
+            self.plan_word("o"),
+            operation_word(D["DC_OVERLAY_ATTEND"], ATTEND_PARTS),
+            self.context // md.TILE,
         ]
+
+    def attend(self, groups, position, layer=0, timeout=5.0):
+        """One ATTEND from the host on the first `groups` KV heads' groups, over layer
+        `layer`'s cache at `position` (q, k, v from qkv): its event."""
+        words = self.words()
+        tensors, weights = self.tensors, self.weights[layer]
+        args = [
+            tensors["qkv"].address,
+            weights["keys"].address,
+            tensors["a"].address,
+            words[D["DC_WORD_REDUCE"]],
+            S["kSplitOp"],
+            words[D["DC_WORD_PLAN_ATTEND"]] & 0xFF,
+            words[D["DC_WORD_ATTEND"]],
+            weights["values"].address,
+            tensors["attend"].address,
+            position | words[D["DC_WORD_CACHE_TILES"]] << 16,
+        ]
+        group = (0, self.attend_plan.s * groups)
+        handle = self.run.submit("split", group, args, exclusive=True)
+        event = self.run.wait(handle, timeout=timeout)
+        if event.kind != "done":
+            raise km.KomorebiError(f"attend: {event}")
+        return event
 
     def write_layer(self, layer, weights):
         """Layer `layer`'s weights (layer_weights(): {name: (pages, values)}) into DRAM
@@ -176,6 +267,29 @@ class Decode:
         for name, pages in md.fused(weights).items():
             seconds += self.write(self.weights[layer][name], pages)
         return seconds
+
+    def write_cache(self, layer, keys, values):
+        """A layer's cache ([KV heads, n, width] values each, rows past n zero) into its
+        tensors through the host channel: seconds taken."""
+        seconds = self.write(
+            self.weights[layer]["keys"], md.cache_pages(keys, self.context)
+        )
+        return seconds + self.write(
+            self.weights[layer]["values"], md.cache_pages(values, self.context)
+        )
+
+    def cache_rows(self, layer, name, position):
+        """Row `position` of every KV head of a layer's cache ("keys" or "values"):
+        [KV heads, width] float32, read back from the tiles holding it."""
+        head_tiles, rows = D["DC_HEAD_TILES"], self.context // md.TILE
+        out = []
+        for head in range(self.model.kv_heads):
+            first = (head * rows + position // md.TILE) * head_tiles
+            tiles = self.session.read_tiles_bf16(
+                self.weights[layer][name], first, head_tiles
+            )  # [head_tiles, 32, 32]
+            out.append(np.concatenate(list(tiles[:, position % md.TILE])))
+        return np.array(out, np.float32)
 
     def write(self, tensor, pages):
         """Pages into a tensor through the host channel: seconds taken."""
@@ -205,15 +319,22 @@ class Decode:
         apart=False,
         overlap=False,
         timeout=10.0,
+        position=None,
+        attend=None,
     ):
-        """One LAYERS command to the thread (`bare`: the products only; `parts`: their
-        parts only, no sum and nothing written; `apart`: q, k and v as three products;
-        `overlap`: and q, k, v, o two in flight): its result word and stats slot."""
+        """One LAYERS command: its result word and stats slot. `bare` products only,
+        `parts` their parts only, `apart` q, k, v as three (no attention), `overlap` two
+        in flight; `position` the first token's (default: the last is the cache's last
+        row); `attend` a cut-down attention of ATTEND_MODES."""
         slot = self.slot
         self.slot += 1
         mode = 3 if parts else int(bare)
         mode |= (4 if apart or overlap else 0) | (8 if overlap else 0)
-        args = [tokens, layers, slot, first, mode]
+        mode |= ATTEND_MODES[attend]
+        position = self.context - tokens if position is None else position
+        if not 0 <= position <= self.context - tokens:
+            raise ValueError(f"position {position}: {tokens} tokens past the cache")
+        args = [tokens, layers, slot, first, mode, position]
         handle = self.run.submit("layers", cluster=CLUSTER, args=args, result=True)
         event = self.run.wait(handle, timeout=timeout)
         if event.kind != "done" or event.result >= 0xFFFFFFF0:
@@ -227,7 +348,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
-STEPS = ("qkv", "q", "k", "v", "o", "gate_up", "down")  # DC_STEP_*
+STEPS = ("qkv", "q", "k", "v", "attend", "o", "gate_up", "down")  # DC_STEP_*
 
 
 def decode_slot(words):

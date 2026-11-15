@@ -71,13 +71,8 @@ def run(session, args, generator):
     first_tiles = hand.input_pages(job_count, tiles, input_tiles)
 
     program = MapCollect(source=inputs[0], output=outputs[0], depth=args.depth)
-    run = session.load(
-        program,
-        deadline=args.deadline,
-        batch=args.batch,
-        settle_microseconds=args.settle_microseconds,
-    )
-    hand.log(f"loaded: {cores} cores, depth {args.depth}")
+    # The words before the load: the dispatcher's clock runs from the load's first
+    # command, and a Python call a job (about 3 us) is the host's, not the cores'.
     words = np.array(
         [
             MapCollect.map.args(
@@ -91,6 +86,14 @@ def run(session, args, generator):
         ],
         np.int64,
     )
+    run = session.load(
+        program,
+        trace=job_count + 1 if args.trace else 0,
+        deadline=args.deadline,
+        batch=args.batch,
+        settle_microseconds=args.settle_microseconds,
+    )
+    hand.log(f"loaded: {cores} cores, depth {args.depth}")
     handlers = np.full(job_count, int(program.map))
     firsts = np.array([first for first, _ in groups])
     counts = np.array([count for _, count in groups])
@@ -130,6 +133,9 @@ def run(session, args, generator):
             "mean": round(float(latencies.mean()), 3),
             "max": round(float(latencies.max()), 3),
         }
+    trace = run.trace()
+    if trace is not None:
+        report.update(hand.trace_summary(trace, handles, groups))
     states = run.state()
     report["cores_magic_ok"] = sum(state["magic_ok"] for state in states)
     report["cores_ended"] = {
@@ -195,6 +201,7 @@ def main():
             timed = hand.parse(
                 ["--jobs", str(ours.timing), "--count", str(grid[0] * grid[1])]
                 + ["--no-check"]
+                + (["--trace"] if args.trace else [])
             )
             report["timing"] = both(session, ours, timed)
     report["wall_s"] = round(time.monotonic() - hand.STARTED, 1)
