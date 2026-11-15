@@ -1058,6 +1058,127 @@ What is left at T 4096 with (a), by the account: DRAM idle under waits with full
 takes 25 to 31 of it where it runs. Outside this step, as recorded: attend above its
 hardware about 42, the operations about 32, the tree's rounds about 23.
 
+## Stage 8: the hand-over between kernels
+
+### The early read's hang at T 256, found
+
+Stage 7's (b) hung at T 256 because a tree's credits were one count for every record.
+At T 256 a KV head's ranks 7 to 14 hold no key tile, so cores 21 to 23 leave attend at
+once. Core 22 ran o, emitted, started gate_up and credited core 23, its sender there.
+That credit completed core 23's wait for its o credit from core 15 (its o receiver,
+attend's root of head 1, still in attend): core 23 emitted o's part into core 15's port
+3 while attend's merge used it, attend's arrival cleared the count, and o's arrival was
+lost (core 15 waits for it forever, every core behind it at its input limit). The early
+read only changed the timing; the hazard was there without it.
+
+The credits are now counted per record parity (`chain_credits_at`: a credit for the
+record after cannot complete this record's wait), and the early read is on again by
+default (`Decode.job(ahead=True)`, `bench.py --beside no_ahead`). On the card: T 256
+with the early read, the staged checks and a token equal to a command a step at 2 and
+28 layers, 280.1 us a layer (127.5 tokens a second); the real prompt with the 5 / 3
+halves 16 of 16, 124.8 tokens a second. The marks word has the same form, and so the
+same kind of premature release in principle (a mark of the record after, from a root
+that does not depend on this core, completing this record's wait: a wrong input, no
+hang); never seen, not changed here.
+
+### The hand-over, piece by piece
+
+The stamps now also take each tree round's arrival and add, the sender's emit, the
+root's write issued, its acknowledge, the marks, the overlay's load and call, and B's
+first product (stamped kernels: an 88 K buffer). T 4096, the median root of each
+transition, us; the sums over the five transitions of a layer:
+
+| piece | qkv>attend | attend>o | o>gate_up | gate_up>down | down>qkv | sum | kind |
+|---|---:|---:|---:|---:|---:|---:|---|
+| tree rounds: the adds | 3.73 (3) | - | 4.72 (4) | 1.06 (1) | 6.14 (4) | 15.65 | HARDWARE 0.38 a round (8 fp32 tiles in and out at 64 B a cycle), the rest OURS |
+| tree: the root waits for a sender | 0 | - | 2.08 | 0 | 1.89 | 3.97 | OURS (a late sender) |
+| the sum's end | 0.32 | - | 0.26 | 0.44 | 0.26 | 1.28 | OURS |
+| the operation: its overlay met | 0.12 | - | 0.14 | 0.12 | 0.12 | 0.50 | OURS |
+| the operation's compute | 14.51 | (attend) | 3.12 | 8.21 | 2.73 | 28.57 | OURS (the vector floor not derived) |
+| the write issued | 0.41 | 0.52 | 0.30 | 0.89 | 0.34 | 2.46 | HARDWARE 0.19 (16 KB) |
+| the acknowledge | 0.51 | 0.83 | 0.44 | 0.46 | 0.53 | 2.77 | HARDWARE (a round trip) |
+| the marks issued | 2.26 | 1.43 | 1.88 | 1.14 | 1.60 | 8.31 | OURS (chain_mark's loops) |
+| B: mark to its first chunk in | - | 1.43 | 2.28 | 1.86 | 2.10 | 7.67 | HARDWARE about 0.6 (4 KB from DRAM), OURS the mark seen between W blocks |
+| B: its first chunk's product | - | 0.60 | 0.59 | 0.59 | 0.58 | 2.36 | HARDWARE 0.41 (16 tile products) |
+
+A tree's senders emit off the root's path (1.0 to 6.0 us each: 0.38 of bytes, the rest
+the acknowledge before the port's atomic). The overlays are loaded at the record's
+start, not at the call: the 0.12 us is the call meeting it. The slowest qkv root at
+T 4096 spends 6.9 us issuing its write and 12.3 on the acknowledge (its DRAM bank's
+queue behind attend's cache reads; 0.5 and 0.6 at T 256). So the largest OURS pieces
+are the operations' compute (qkv's 14.5), the tree's adds above their bytes (about
+0.6 a round) and the marks' loops.
+
+### The data is the mark
+
+A record's switch (`chain.h` `kChainDataMark`; LAYERS' a4 bits 12 to 16, a bit a
+record; `Decode(data=...)`, `bench.py --data`, `--beside no_data`, `real.py --data`):
+the record before's roots send this record's input straight into its cores' L1, and
+its cores read it there instead of from DRAM.
+
+- **Where it lands**: each core's K range of its input goes into its arrival buffer
+  from page 48 on (64 KB, 32 bf16 tiles; a tree takes pages 0 to 31, attend's merge 0
+  to 47). The roots are the only writers of that area (each tile from one root: the
+  blocks are disjoint); the core's two movers read it with local NoC reads into their
+  own halves, which they push as before.
+- **The release**: a root, its block written to DRAM (sent, not acknowledged), writes
+  the block's part of each next core's K range from its output buffer (L1; compute
+  refills it only after this writer's next credits) under its own NoC transaction id,
+  waits for that id's acknowledgements only, then marks as before. A mark leaves only
+  after its block's writes to that core landed, so the count a core waits for is a
+  count of arrivals; the DRAM write's acknowledge is no longer on the path.
+- **The DRAM copy** is still written: `a` and `gated` have no other reader on the card;
+  the host reads them after the command, whose end waits for every writer's writes.
+- **Which records**: one record but attend (whose input is ranges, read by attend
+  itself), or o and down together, or qkv and gate_up together: the pairs whose areas
+  are never live at once (gate_up's roots finish only after every o core has read its
+  input, and attend's only after every down core has).
+- **A bug found on the way**: the cores read the switch from the record's words also
+  in a plain command (a command a step on the chain's program), which keeps the last
+  record's words: after a token whose last record had the switch, a command-a-step run
+  read stale areas. The first job's token at 28 layers differed from its reference for
+  that reason; the switch is now read only inside a chain.
+
+Measured with o's and down's input sent (`results/qwen3-1.7b-chain-data-x10.json`;
+the token, stamped, 28 layers, 10 tokens; beside it the same program without):
+
+| us a layer | T 4096 sent | T 4096 none | T 1024 sent | T 1024 none | T 256 sent | T 256 none |
+|---|---:|---:|---:|---:|---:|---:|
+| qkv | 51.0 | 48.6 | 36.2 | 34.9 | 31.0 | 30.2 |
+| attend | 93.8 | 92.7 | 74.4 | 71.4 | 68.7 | 66.2 |
+| o | 16.2 | 16.6 | 19.6 | 23.0 | 22.2 | 24.8 |
+| gate_up | 123.8 | 129.1 | 125.3 | 129.6 | 125.7 | 130.4 |
+| down | 29.0 | 27.7 | 28.8 | 28.1 | 28.7 | 27.8 |
+| **a layer** | **314.9** | **315.8** | **285.5** | **288.1** | **277.4** | **280.6** |
+| tokens a second | 113.4 | 113.1 | 125.1 | 123.9 | 128.8 | 127.3 |
+
+| median root, T 4096, us | attend>o sent | attend>o none | gate_up>down sent | gate_up>down none |
+|---|---:|---:|---:|---:|
+| the write issued | 0.51 | 0.50 | 0.87 | 0.87 |
+| the acknowledge (sent: the sends and their acknowledge) | 3.83 | 0.88 | 2.67 | 0.49 |
+| the marks issued | 1.40 | 1.40 | 1.11 | 1.13 |
+| B: mark to its first chunk in | 0.92 | 1.40 | 0.86 | 1.84 |
+| B: its first chunk's product | 0.61 | 0.61 | 0.59 | 0.59 |
+
+- **0.9, 2.7 and 3.2 us a layer** at T 4096, 1024, 256. The checks pass (staged: a
+  command a step, the pair, the token equal to a command a step at 2 and 28 layers, the
+  layer at each T and 32 rows); the real prompt with it is 16 of 16 with every layer's
+  error the same as without (`results/qwen3-1.7b-real-prompt-data.json`).
+- **The hand-over itself got longer**: a root's sends take 3.0 us for attend's 128 KB
+  (8 tiles to 16 to 24 cores) and 2.2 for gate_up's 64 KB, about 40 and 30 GB/s against
+  a link's 86; B's input read fell only 0.5 and 1.0 us. The bytes are HARDWARE (1.5 and
+  0.75 us at the link); the rest is OURS: one writer issues the cores' writes one after
+  another and waits for the last acknowledge.
+- **The gain is in gate_up and o**: gate_up's span fell 4.3 to 5.3 us (its slowest root
+  against the median: 29.2 against 35.9 at T 4096), o's 0.4 to 3.4: o's and down's
+  cores no longer read 1.2 and 3.1 MB a layer of input from DRAM while the weights
+  stream. qkv and attend grew 1 to 3 us (the root's sends are now in attend's span, and
+  qkv's weight has less time under down to be read early).
+- Two diagnostic jobs (unstamped and stamped) ran a token of 28 layers 156 times with
+  inputs sent (every single record, o and down, and o and down with the DRAM copy also
+  acknowledged before the marks, `kChainDataDram`) at T 4096 and 256: equal to a
+  command a step every time. The switch stays **off by default**.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer

@@ -44,6 +44,11 @@ inline bool arrive_set(
         ) {
             return false;  // a port past the last one gives up in arrive
         }
+#if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP)
+        if (wanted != 0 && port < kChainStampRounds) {
+            SPLIT_STAMP(kChainStampRound + port);
+        }
+#endif
     }
     return true;
 }
@@ -59,7 +64,10 @@ inline bool emit_set(
     uint32_t pages
 ) {
     const km::ReduceStep step = km::reduce_send(group, form);
-    return (
+#if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP)
+    SPLIT_STAMP(kChainStampEmit);
+#endif
+    const bool sent = (
         step.root ||
         km::emit(
             writer,
@@ -72,6 +80,10 @@ inline bool emit_set(
             set_slot(command, arrival) + step.slot
         )
     );
+#if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP)
+    SPLIT_STAMP(kChainStampEmitted);
+#endif
+    return sent;
 }
 #else
 // Compute: km::reduce in the command's set. False: stopping.
@@ -101,6 +113,11 @@ inline bool reduce_set(
             combine(base + port);
         }
         km::untake(arrival);
+#if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP)
+        if (port < kChainStampRounds) {
+            SPLIT_STAMP(kChainStampRound + port);
+        }
+#endif
     }
     return true;
 }

@@ -51,6 +51,13 @@ def parse():
         action="store_true",
         help="a token as one command (the chain's records of every layer, once)",
     )
+    parser.add_argument(
+        "--data",
+        nargs="*",
+        default=[],
+        choices=list(card.DATA_STEPS),
+        help="the records whose input the roots before send to their cores (stage 8)",
+    )
     return parser.parse_args()
 
 
@@ -144,6 +151,7 @@ def main():
     report["bodies"] = args.bodies
     report["chain"] = not args.no_chain
     report["token"] = args.token
+    report["data"] = args.data
     tokens, per_layer, step_us = list(prompt), [], []
     kernel_bytes = None if args.no_chain else card.CHAIN_KERNEL_BYTES
     with km.Session(log=log, kernel_bytes=kernel_bytes) as session:
@@ -156,6 +164,7 @@ def main():
             context=args.context,
             bodies=args.bodies,
             chain=not args.no_chain,
+            data=args.data,
         )
         written = 0.0
         empty = np.zeros((model.kv_heads, 0, model.head_dim), np.float32)

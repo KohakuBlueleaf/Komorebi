@@ -134,6 +134,7 @@ void kernel_main() {
             }
             cb_pop_front(a_half, block_height * chunk_tiles);
             cb_pop_front(w_half, chunk_tiles * block_width);
+            SPLIT_STAMP(kChainStampFirstProduct);  // once: the first chunk's
         }
         SPLIT_STAMP(kChainStampParts);
         reconfig_data_format_srca(kCbSw, kCbArrive);

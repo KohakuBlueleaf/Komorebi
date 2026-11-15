@@ -1,0 +1,2414 @@
+{
+ "model": "Qwen/Qwen3-1.7B",
+ "layers": 28,
+ "tokens": 10,
+ "bodies": [],
+ "chain": true,
+ "token": true,
+ "layer_bytes": 100671488,
+ "plans": {
+  "64x128": [
+   1,
+   64,
+   128,
+   7,
+   1,
+   8,
+   2,
+   1,
+   4,
+   16,
+   64,
+   0
+  ],
+  "64x64": [
+   1,
+   64,
+   64,
+   15,
+   1,
+   8,
+   2,
+   1,
+   4,
+   8,
+   64,
+   0
+  ],
+  "64x384": [
+   1,
+   64,
+   384,
+   2,
+   1,
+   8,
+   2,
+   1,
+   4,
+   48,
+   64,
+   1
+  ],
+  "192x64": [
+   1,
+   192,
+   64,
+   15,
+   1,
+   8,
+   2,
+   1,
+   4,
+   8,
+   64,
+   0
+  ],
+  "64x32": [
+   1,
+   64,
+   32,
+   16,
+   1,
+   8,
+   2,
+   1,
+   4,
+   4,
+   64,
+   0
+  ]
+ },
+ "write_gbs": 5.37,
+ "alone": [
+  {
+   "groups": 1,
+   "position": 1000,
+   "rows": 1,
+   "max_rel": 0.006622516556291391,
+   "rms_rel": 0.00768320083545461,
+   "ok": true,
+   "append_exact": true
+  },
+  {
+   "groups": 8,
+   "position": 4095,
+   "rows": 1,
+   "max_rel": 0.00819672131147541,
+   "rms_rel": 0.0079771395034261,
+   "ok": true,
+   "append_exact": true
+  },
+  {
+   "groups": 8,
+   "position": 30,
+   "rows": 5,
+   "max_rel": 0.007165605095541401,
+   "rms_rel": 0.007080343497989188,
+   "ok": true,
+   "append_exact": true
+  },
+  {
+   "groups": 8,
+   "position": 1000,
+   "rows": 32,
+   "max_rel": 0.008673469387755102,
+   "rms_rel": 0.00755525567191142,
+   "ok": true,
+   "append_exact": true
+  }
+ ],
+ "check": {
+  "commands": {
+   "q": {
+    "max_rel": 0.007246376811594203,
+    "rms_rel": 0.006056015996686579,
+    "ok": true
+   },
+   "k": {
+    "max_rel": 0.00881057268722467,
+    "rms_rel": 0.0065794659394723155,
+    "ok": true
+   },
+   "v": {
+    "max_rel": 0.006787330316742082,
+    "rms_rel": 0.005946932770767175,
+    "ok": true
+   },
+   "a": {
+    "max_rel": 0.019230769230769232,
+    "rms_rel": 0.01237898042339732,
+    "ok": true
+   },
+   "x1": {
+    "max_rel": 0.00390625,
+    "rms_rel": 0.001234000231032051,
+    "ok": true
+   },
+   "gated": {
+    "max_rel": 0.019704433497536946,
+    "rms_rel": 0.012174771535886345,
+    "ok": true
+   },
+   "x": {
+    "max_rel": 0.006622516556291391,
+    "rms_rel": 0.0026243487383814496,
+    "ok": true
+   },
+   "rows": 1,
+   "append_exact": true
+  },
+  "pair": {
+   "q": {
+    "max_rel": 0.007246376811594203,
+    "rms_rel": 0.006056015996686579,
+    "ok": true
+   },
+   "k": {
+    "max_rel": 0.00881057268722467,
+    "rms_rel": 0.0065794659394723155,
+    "ok": true
+   },
+   "v": {
+    "max_rel": 0.006787330316742082,
+    "rms_rel": 0.005946932770767175,
+    "ok": true
+   },
+   "a": {
+    "max_rel": 0.019230769230769232,
+    "rms_rel": 0.01237898042339732,
+    "ok": true
+   },
+   "rows": 1,
+   "append_exact": true
+  },
+  "token x2": {
+   "layers": 2,
+   "equal": true,
+   "different": []
+  },
+  "token x28": {
+   "layers": 28,
+   "equal": true,
+   "different": []
+  },
+  "4096x1": {
+   "q": {
+    "max_rel": 0.007246376811594203,
+    "rms_rel": 0.006056015996686579,
+    "ok": true
+   },
+   "k": {
+    "max_rel": 0.00881057268722467,
+    "rms_rel": 0.0065794659394723155,
+    "ok": true
+   },
+   "v": {
+    "max_rel": 0.006787330316742082,
+    "rms_rel": 0.005946932770767175,
+    "ok": true
+   },
+   "a": {
+    "max_rel": 0.019230769230769232,
+    "rms_rel": 0.01237898042339732,
+    "ok": true
+   },
+   "x1": {
+    "max_rel": 0.00390625,
+    "rms_rel": 0.001234000231032051,
+    "ok": true
+   },
+   "gated": {
+    "max_rel": 0.019704433497536946,
+    "rms_rel": 0.012174771535886345,
+    "ok": true
+   },
+   "x": {
+    "max_rel": 0.006622516556291391,
+    "rms_rel": 0.0026243487383814496,
+    "ok": true
+   },
+   "rows": 1,
+   "append_exact": true
+  },
+  "1024x1": {
+   "q": {
+    "max_rel": 0.011627906976744186,
+    "rms_rel": 0.006358042208843053,
+    "ok": true
+   },
+   "k": {
+    "max_rel": 0.008368200836820083,
+    "rms_rel": 0.0065352893704906006,
+    "ok": true
+   },
+   "v": {
+    "max_rel": 0.006787330316742082,
+    "rms_rel": 0.005946932770767175,
+    "ok": true
+   },
+   "a": {
+    "max_rel": 0.021645021645021644,
+    "rms_rel": 0.01673093997406592,
+    "ok": true
+   },
+   "x1": {
+    "max_rel": 0.0038461538461538464,
+    "rms_rel": 0.00134922173776291,
+    "ok": true
+   },
+   "gated": {
+    "max_rel": 0.014778325123152709,
+    "rms_rel": 0.011716975985578665,
+    "ok": true
+   },
+   "x": {
+    "max_rel": 0.006666666666666667,
+    "rms_rel": 0.002776594995597838,
+    "ok": true
+   },
+   "rows": 1,
+   "append_exact": true
+  },
+  "256x1": {
+   "q": {
+    "max_rel": 0.011278195488721804,
+    "rms_rel": 0.006147956214304674,
+    "ok": true
+   },
+   "k": {
+    "max_rel": 0.008849557522123894,
+    "rms_rel": 0.006572495782924681,
+    "ok": true
+   },
+   "v": {
+    "max_rel": 0.006787330316742082,
+    "rms_rel": 0.005946932770767175,
+    "ok": true
+   },
+   "a": {
+    "max_rel": 0.008,
+    "rms_rel": 0.010135955342745464,
+    "ok": true
+   },
+   "x1": {
+    "max_rel": 0.003787878787878788,
+    "rms_rel": 0.0013458724326708689,
+    "ok": true
+   },
+   "gated": {
+    "max_rel": 0.00980392156862745,
+    "rms_rel": 0.00768335887511895,
+    "ok": true
+   },
+   "x": {
+    "max_rel": 0.006666666666666667,
+    "rms_rel": 0.002845276616136952,
+    "ok": true
+   },
+   "rows": 1,
+   "append_exact": true
+  },
+  "4096x32": {
+   "q": {
+    "max_rel": 0.011363636363636364,
+    "rms_rel": 0.006013900478682203,
+    "ok": true
+   },
+   "k": {
+    "max_rel": 0.008571428571428572,
+    "rms_rel": 0.0060619821978990475,
+    "ok": true
+   },
+   "v": {
+    "max_rel": 0.014598540145985401,
+    "rms_rel": 0.006427280018028406,
+    "ok": true
+   },
+   "a": {
+    "max_rel": 0.018518518518518517,
+    "rms_rel": 0.01114312491030753,
+    "ok": true
+   },
+   "x1": {
+    "max_rel": 0.007751937984496124,
+    "rms_rel": 0.0012697144148316032,
+    "ok": true
+   },
+   "gated": {
+    "max_rel": 0.0125,
+    "rms_rel": 0.009660046609140738,
+    "ok": true
+   },
+   "x": {
+    "max_rel": 0.009202453987730062,
+    "rms_rel": 0.0027942653274288316,
+    "ok": true
+   },
+   "rows": 32,
+   "append_exact": true
+  }
+ },
+ "account": {
+  "4096": {
+   "weights_us": 203.13,
+   "cache_us": 33.82,
+   "cases": {
+    "full": {
+     "layer_us": 314.89,
+     "commands_us": 313.96,
+     "thread_us": 0.93,
+     "thread_parts_us": {
+      "records": 0.83,
+      "submit": 0.04,
+      "wait_past_event": 0.04,
+      "rest": 0.02
+     }
+    },
+    "full/no_data": {
+     "layer_us": 315.76,
+     "commands_us": 314.83,
+     "thread_us": 0.93,
+     "thread_parts_us": {
+      "records": 0.83,
+      "submit": 0.04,
+      "wait_past_event": 0.04,
+      "rest": 0.02
+     }
+    }
+   },
+   "records": {
+    "full": {
+     "records": [
+      {
+       "record": "qkv",
+       "span_us": 51.01,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 33.85
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 21.96
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -49.66
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.16
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 4.43
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 14.64
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.29
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 23.33
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 26.65,
+       "full_wait_cores": 110,
+       "next_fetch_us": 0.72,
+       "runs": 280
+      },
+      {
+       "record": "attend",
+       "span_us": 93.78,
+       "terms": [
+        {
+         "kind": "OURS",
+         "term": "its input's mark after the record before's end",
+         "us": -22.11
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the cache's K and V at the ceiling",
+         "us": 33.82
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the busiest core's tile products",
+         "us": 4.19
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the exponent tiles (measured, d5)",
+         "us": 3.47
+        },
+        {
+         "kind": "OURS",
+         "term": "attend's read, compute and merge above them",
+         "us": 52.18
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 4.34
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 17.9
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 0.0,
+       "full_wait_cores": 0,
+       "next_fetch_us": 0.57,
+       "runs": 280
+      },
+      {
+       "record": "o",
+       "span_us": 16.15,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 16.93
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 19.65
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -34.82
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.55
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 7.31
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 3.25
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 0.76
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 1.53
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 35.53,
+       "full_wait_cores": 120,
+       "next_fetch_us": 1.43,
+       "runs": 280
+      },
+      {
+       "record": "gate_up",
+       "span_us": 123.8,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 101.56
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 4.8
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -26.5
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 2.22
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 1.22
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 7.79
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 3.54
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 29.17
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 21.32,
+       "full_wait_cores": 94,
+       "next_fetch_us": 0.6,
+       "runs": 280
+      },
+      {
+       "record": "down",
+       "span_us": 29.01,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 50.78
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": -29.27
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -15.06
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.2
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 6.6
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 2.83
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 11.94
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 47.83,
+       "full_wait_cores": 87,
+       "next_fetch_us": 1.13,
+       "runs": 280
+      }
+     ],
+     "command_us": 313.96,
+     "end_us": 0.21
+    },
+    "full/no_data": {
+     "records": [
+      {
+       "record": "qkv",
+       "span_us": 48.63,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 33.85
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 25.36
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -53.22
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.17
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 4.04
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 14.66
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.28
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 21.5
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 27.77,
+       "full_wait_cores": 111,
+       "next_fetch_us": 0.76,
+       "runs": 280
+      },
+      {
+       "record": "attend",
+       "span_us": 92.66,
+       "terms": [
+        {
+         "kind": "OURS",
+         "term": "its input's mark after the record before's end",
+         "us": -20.14
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the cache's K and V at the ceiling",
+         "us": 33.82
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the busiest core's tile products",
+         "us": 4.19
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the exponent tiles (measured, d5)",
+         "us": 3.47
+        },
+        {
+         "kind": "OURS",
+         "term": "attend's read, compute and merge above them",
+         "us": 51.98
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.39
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 17.97
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 0.0,
+       "full_wait_cores": 0,
+       "next_fetch_us": 0.57,
+       "runs": 280
+      },
+      {
+       "record": "o",
+       "span_us": 16.59,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 16.93
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 19.78
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -33.4
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.15
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 7.19
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 3.17
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 0.75
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 1.03
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 32.21,
+       "full_wait_cores": 120,
+       "next_fetch_us": 1.45,
+       "runs": 280
+      },
+      {
+       "record": "gate_up",
+       "span_us": 129.07,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 101.56
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 4.69
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -26.17
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 2.17
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 1.39
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 8.15
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.36
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 35.92
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 20.64,
+       "full_wait_cores": 96,
+       "next_fetch_us": 0.63,
+       "runs": 280
+      },
+      {
+       "record": "down",
+       "span_us": 27.69,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 50.78
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": -28.26
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -15.98
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.01
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 8.15
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 2.84
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 9.15
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 50.48,
+       "full_wait_cores": 82,
+       "next_fetch_us": 1.18,
+       "runs": 280
+      }
+     ],
+     "command_us": 314.83,
+     "end_us": 0.2
+    }
+   }
+  },
+  "1024": {
+   "weights_us": 203.13,
+   "cache_us": 8.43,
+   "cases": {
+    "full": {
+     "layer_us": 285.48,
+     "commands_us": 284.55,
+     "thread_us": 0.93,
+     "thread_parts_us": {
+      "records": 0.83,
+      "submit": 0.04,
+      "wait_past_event": 0.04,
+      "rest": 0.02
+     }
+    },
+    "full/no_data": {
+     "layer_us": 288.14,
+     "commands_us": 287.22,
+     "thread_us": 0.93,
+     "thread_parts_us": {
+      "records": 0.83,
+      "submit": 0.04,
+      "wait_past_event": 0.04,
+      "rest": 0.02
+     }
+    }
+   },
+   "records": {
+    "full": {
+     "records": [
+      {
+       "record": "qkv",
+       "span_us": 36.24,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 33.85
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": -0.78
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -26.99
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.27
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 4.23
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 14.65
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.3
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 8.71
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 26.78,
+       "full_wait_cores": 111,
+       "next_fetch_us": 0.74,
+       "runs": 280
+      },
+      {
+       "record": "attend",
+       "span_us": 74.37,
+       "terms": [
+        {
+         "kind": "OURS",
+         "term": "its input's mark after the record before's end",
+         "us": -7.85
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the cache's K and V at the ceiling",
+         "us": 8.43
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the busiest core's tile products",
+         "us": 1.43
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the exponent tiles (measured, d5)",
+         "us": 1.09
+        },
+        {
+         "kind": "OURS",
+         "term": "attend's read, compute and merge above them",
+         "us": 48.05
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 8.63
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 14.6
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 0.0,
+       "full_wait_cores": 0,
+       "next_fetch_us": 0.57,
+       "runs": 280
+      },
+      {
+       "record": "o",
+       "span_us": 19.64,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 16.93
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 12.85
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -30.43
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.36
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 13.24
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 3.78
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 0.82
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 1.1
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 24.05,
+       "full_wait_cores": 120,
+       "next_fetch_us": 1.92,
+       "runs": 280
+      },
+      {
+       "record": "gate_up",
+       "span_us": 125.31,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 101.56
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 4.76
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -25.73
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 2.13
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 1.35
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 7.74
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 3.56
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 29.94
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 20.94,
+       "full_wait_cores": 95,
+       "next_fetch_us": 0.85,
+       "runs": 280
+      },
+      {
+       "record": "down",
+       "span_us": 28.79,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 50.78
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 10.99
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -61.82
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.23
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 13.17
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 2.8
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 11.64
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 47.05,
+       "full_wait_cores": 88,
+       "next_fetch_us": 1.16,
+       "runs": 280
+      }
+     ],
+     "command_us": 284.55,
+     "end_us": 0.19
+    },
+    "full/no_data": {
+     "records": [
+      {
+       "record": "qkv",
+       "span_us": 34.86,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 33.85
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 25.12
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -52.98
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.16
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 3.99
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 14.65
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.27
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 7.79
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 27.72,
+       "full_wait_cores": 109,
+       "next_fetch_us": 0.76,
+       "runs": 280
+      },
+      {
+       "record": "attend",
+       "span_us": 71.44,
+       "terms": [
+        {
+         "kind": "OURS",
+         "term": "its input's mark after the record before's end",
+         "us": -6.88
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the cache's K and V at the ceiling",
+         "us": 8.43
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the busiest core's tile products",
+         "us": 1.43
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the exponent tiles (measured, d5)",
+         "us": 1.09
+        },
+        {
+         "kind": "OURS",
+         "term": "attend's read, compute and merge above them",
+         "us": 48.12
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 5.11
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 14.15
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 0.0,
+       "full_wait_cores": 0,
+       "next_fetch_us": 0.57,
+       "runs": 280
+      },
+      {
+       "record": "o",
+       "span_us": 23.0,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 16.93
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 14.52
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -26.88
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.54
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 11.07
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 4.25
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 0.76
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 0.81
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 22.14,
+       "full_wait_cores": 120,
+       "next_fetch_us": 2.03,
+       "runs": 280
+      },
+      {
+       "record": "gate_up",
+       "span_us": 129.61,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 101.56
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 4.92
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -25.76
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 2.19
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 2.14
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 8.6
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.36
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 34.59
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 19.03,
+       "full_wait_cores": 96,
+       "next_fetch_us": 0.92,
+       "runs": 280
+      },
+      {
+       "record": "down",
+       "span_us": 28.1,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 50.78
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": -28.19
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -14.82
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.01
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 7.11
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 2.84
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 9.37
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 48.63,
+       "full_wait_cores": 84,
+       "next_fetch_us": 1.2,
+       "runs": 280
+      }
+     ],
+     "command_us": 287.22,
+     "end_us": 0.21
+    }
+   }
+  },
+  "256": {
+   "weights_us": 203.13,
+   "cache_us": 2.08,
+   "cases": {
+    "full": {
+     "layer_us": 277.37,
+     "commands_us": 276.45,
+     "thread_us": 0.93,
+     "thread_parts_us": {
+      "records": 0.83,
+      "submit": 0.04,
+      "wait_past_event": 0.04,
+      "rest": 0.02
+     }
+    },
+    "full/no_data": {
+     "layer_us": 280.58,
+     "commands_us": 279.65,
+     "thread_us": 0.93,
+     "thread_parts_us": {
+      "records": 0.83,
+      "submit": 0.04,
+      "wait_past_event": 0.04,
+      "rest": 0.02
+     }
+    }
+   },
+   "records": {
+    "full": {
+     "records": [
+      {
+       "record": "qkv",
+       "span_us": 31.0,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 33.85
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": -0.74
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -27.13
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.26
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 4.21
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 14.65
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.3
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 3.59
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 26.47,
+       "full_wait_cores": 112,
+       "next_fetch_us": 0.75,
+       "runs": 280
+      },
+      {
+       "record": "attend",
+       "span_us": 68.72,
+       "terms": [
+        {
+         "kind": "OURS",
+         "term": "its input's mark after the record before's end",
+         "us": -2.19
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the cache's K and V at the ceiling",
+         "us": 2.08
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the busiest core's tile products",
+         "us": 0.51
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the exponent tiles (measured, d5)",
+         "us": 0.2
+        },
+        {
+         "kind": "OURS",
+         "term": "attend's read, compute and merge above them",
+         "us": 51.63
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 4.02
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 12.47
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 0.0,
+       "full_wait_cores": 0,
+       "next_fetch_us": 0.57,
+       "runs": 280
+      },
+      {
+       "record": "o",
+       "span_us": 22.15,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 16.93
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 9.65
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -24.08
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.27
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 11.58
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 4.79
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 0.86
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 1.16
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 23.37,
+       "full_wait_cores": 120,
+       "next_fetch_us": 2.45,
+       "runs": 280
+      },
+      {
+       "record": "gate_up",
+       "span_us": 125.7,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 101.56
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 0.0
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -20.75
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 2.54
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 1.26
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 7.86
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 3.51
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 29.71
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 20.13,
+       "full_wait_cores": 95,
+       "next_fetch_us": 0.91,
+       "runs": 280
+      },
+      {
+       "record": "down",
+       "span_us": 28.68,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 50.78
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 10.22
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -61.37
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.23
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 13.44
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 2.81
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 11.57
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 46.49,
+       "full_wait_cores": 88,
+       "next_fetch_us": 1.17,
+       "runs": 280
+      }
+     ],
+     "command_us": 276.45,
+     "end_us": 0.2
+    },
+    "full/no_data": {
+     "records": [
+      {
+       "record": "qkv",
+       "span_us": 30.21,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 33.85
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 25.79
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -53.66
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.19
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 3.88
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 14.65
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.27
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 3.25
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 27.72,
+       "full_wait_cores": 110,
+       "next_fetch_us": 0.78,
+       "runs": 280
+      },
+      {
+       "record": "attend",
+       "span_us": 66.24,
+       "terms": [
+        {
+         "kind": "OURS",
+         "term": "its input's mark after the record before's end",
+         "us": -1.8
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the cache's K and V at the ceiling",
+         "us": 2.08
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the busiest core's tile products",
+         "us": 0.51
+        },
+        {
+         "kind": "HARDWARE",
+         "term": "the exponent tiles (measured, d5)",
+         "us": 0.2
+        },
+        {
+         "kind": "OURS",
+         "term": "attend's read, compute and merge above them",
+         "us": 51.28
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.04
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 12.94
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 0.0,
+       "full_wait_cores": 0,
+       "next_fetch_us": 0.57,
+       "runs": 280
+      },
+      {
+       "record": "o",
+       "span_us": 24.8,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 16.93
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": 11.98
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -24.57
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 2.08
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 11.73
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 5.26
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 0.75
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 0.65
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 20.94,
+       "full_wait_cores": 120,
+       "next_fetch_us": 2.43,
+       "runs": 280
+      },
+      {
+       "record": "gate_up",
+       "span_us": 130.42,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 101.56
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": -4.02
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -16.01
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 2.26
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 1.3
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 8.39
+        },
+        {
+         "kind": "OURS",
+         "term": "the root's write and acknowledge",
+         "us": 1.36
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 35.59
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 19.49,
+       "full_wait_cores": 96,
+       "next_fetch_us": 1.25,
+       "runs": 280
+      },
+      {
+       "record": "down",
+       "span_us": 27.77,
+       "terms": [
+        {
+         "kind": "HARDWARE",
+         "term": "W at the ceiling",
+         "us": 50.78
+        },
+        {
+         "kind": "OURS",
+         "term": "W's rate below the ceiling",
+         "us": -27.95
+        },
+        {
+         "kind": "OURS",
+         "term": "W read under the record before",
+         "us": -15.36
+        },
+        {
+         "kind": "OURS",
+         "term": "compute after the last chunk",
+         "us": 1.01
+        },
+        {
+         "kind": "OURS",
+         "term": "the tree's rounds",
+         "us": 7.28
+        },
+        {
+         "kind": "OURS",
+         "term": "the operation and the output",
+         "us": 2.84
+        },
+        {
+         "kind": "OURS",
+         "term": "the tail: the slowest root against the median",
+         "us": 9.17
+        }
+       ],
+       "unaccounted_us": 0.0,
+       "full_wait_us": 50.46,
+       "full_wait_cores": 82,
+       "next_fetch_us": 1.22,
+       "runs": 280
+      }
+     ],
+     "command_us": 279.65,
+     "end_us": 0.2
+    }
+   }
+  }
+ },
+ "ceiling_ms_per_token": 5.688,
+ "cases": [
+  {
+   "thread_ticks": 4408399,
+   "stats_slot": 16,
+   "case": "full",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0886,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 10,
+    "microseconds": 88167.98,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 87908.6,
+      "most_us": 8842.32,
+      "least_us": 8756.76
+     }
+    },
+    "span_us": 0.0,
+    "thread": {
+     "records": 232.48,
+     "submit": 10.84,
+     "wait": 87919.82
+    }
+   },
+   "ms_per_token": 8.817,
+   "tokens_per_second": 113.4,
+   "weight_gbs": 319.7
+  },
+  {
+   "thread_ticks": 4420650,
+   "stats_slot": 17,
+   "case": "full/no_data",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0889,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 10,
+    "microseconds": 88413.0,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 88153.68,
+      "most_us": 8865.64,
+      "least_us": 8785.14
+     }
+    },
+    "span_us": 0.0,
+    "thread": {
+     "records": 231.88,
+     "submit": 10.76,
+     "wait": 88165.46
+    }
+   },
+   "ms_per_token": 8.841,
+   "tokens_per_second": 113.1,
+   "weight_gbs": 318.8
+  },
+  {
+   "thread_ticks": 3996678,
+   "stats_slot": 18,
+   "case": "full",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0805,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 10,
+    "microseconds": 79933.56,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 79673.82,
+      "most_us": 8071.56,
+      "least_us": 7899.12
+     }
+    },
+    "span_us": 0.0,
+    "thread": {
+     "records": 232.16,
+     "submit": 10.74,
+     "wait": 79685.74
+    }
+   },
+   "ms_per_token": 7.993,
+   "tokens_per_second": 125.1,
+   "weight_gbs": 352.6
+  },
+  {
+   "thread_ticks": 4033976,
+   "stats_slot": 19,
+   "case": "full/no_data",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0812,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 10,
+    "microseconds": 80679.52,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 80420.24,
+      "most_us": 8109.42,
+      "least_us": 7997.76
+     }
+    },
+    "span_us": 0.0,
+    "thread": {
+     "records": 231.96,
+     "submit": 10.72,
+     "wait": 80431.88
+    }
+   },
+   "ms_per_token": 8.068,
+   "tokens_per_second": 123.9,
+   "weight_gbs": 349.4
+  },
+  {
+   "thread_ticks": 3883230,
+   "stats_slot": 20,
+   "case": "full",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0782,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 10,
+    "microseconds": 77664.6,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 77405.06,
+      "most_us": 7918.02,
+      "least_us": 7620.22
+     }
+    },
+    "span_us": 0.0,
+    "thread": {
+     "records": 232.24,
+     "submit": 10.74,
+     "wait": 77416.68
+    }
+   },
+   "ms_per_token": 7.766,
+   "tokens_per_second": 128.8,
+   "weight_gbs": 362.9
+  },
+  {
+   "thread_ticks": 3928051,
+   "stats_slot": 21,
+   "case": "full/no_data",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0791,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 10,
+    "microseconds": 78561.02,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 78300.74,
+      "most_us": 7937.52,
+      "least_us": 7744.0
+     }
+    },
+    "span_us": 0.0,
+    "thread": {
+     "records": 232.6,
+     "submit": 10.78,
+     "wait": 78312.64
+    }
+   },
+   "ms_per_token": 7.856,
+   "tokens_per_second": 127.3,
+   "weight_gbs": 358.8
+  }
+ ],
+ "load_avg": [
+  "1.03",
+  "1.28",
+  "2.50"
+ ],
+ "ok": true
+}

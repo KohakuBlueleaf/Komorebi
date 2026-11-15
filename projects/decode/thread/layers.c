@@ -37,6 +37,8 @@ typedef struct {
     uint32_t token;     /* and a token as one command: every layer's records, once */
     uint32_t cores;     /* the records' cores: the chain command's */
     uint32_t ahead_off; /* no record's W read in the record before */
+    uint32_t data;      /* the records whose input is sent, a bit a step (decode.h) */
+    uint32_t data_dram; /* their DRAM copy acknowledged before the marks too */
 } job_t;
 
 /* Overlapped, q, k, v and o alternate the sum's two sets: k and o the second. */
@@ -321,6 +323,12 @@ static int chain_write(job_t* job, uint32_t count, int token) {
         if (g > 0u && chain_writes(job, chain_steps[(g - 1u) % steps])) {
             flags |= kChainMarked;
         }
+        if (
+            (flags & kChainMarked) != 0u && step != DC_STEP_ATTEND &&
+            ((job->data >> i) & 1u) != 0u
+        ) {
+            flags |= kChainDataMark;
+        }
         if (chain_sends(job, step)) {
             flags |= kChainSends;
         }
@@ -366,7 +374,9 @@ static int chain_run(job_t* job, uint32_t a0) {
         return KMX_BAD;
     }
     chain.a0 = a0;
-    chain.a1 = job->ahead_off ? kChainAheadOff : 0u;
+    chain.a1 = (
+        (job->ahead_off ? kChainAheadOff : 0u) | (job->data_dram ? kChainDataDram : 0u)
+    );
     chain.a4 = kChainMode;
     uint32_t handle = 0u;
     uint64_t deadline = kmx_time() + WAIT_TICKS;
@@ -429,8 +439,9 @@ static uint32_t layers(const km_command_t* command) {
         weights == 0 || tensors == 0 || stats == 0 || args->nwords < DC_WORDS ||
         command->a2 >= DC_STATS_SLOTS || command->a6 == 0u || command->a6 > 32u ||
         4ull * DC_STATS_WORDS * DC_STATS_SLOTS > stats_bytes || count == 0 ||
-        4ull * DC_LAYER_WORDS * (first + count) > weight_bytes ||
-        first + count > DC_QK_LAYERS || 4ull * DC_TENSORS > tensor_bytes
+        count > DC_QK_LAYERS || first > DC_QK_LAYERS - count ||
+        4ull * DC_LAYER_WORDS * ((uint64_t)first + count) > weight_bytes ||
+        4ull * DC_TENSORS > tensor_bytes
     ) {
         return 0xFFFFFFFFu;
     }
@@ -448,6 +459,8 @@ static uint32_t layers(const km_command_t* command) {
     job.records = (command->a4 & DC_LAYERS_PAIR) != 0u ? 2u : CHAIN_STEPS;
     job.token = job.chain && (command->a4 & DC_LAYERS_TOKEN) != 0u;
     job.ahead_off = (command->a4 & DC_LAYERS_AHEAD_OFF) != 0u;
+    job.data = (command->a4 >> DC_LAYERS_DATA_SHIFT) & DC_LAYERS_DATA_MASK;
+    job.data_dram = (command->a4 & DC_LAYERS_DATA_DRAM) != 0u;
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |

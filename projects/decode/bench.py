@@ -36,9 +36,6 @@ STAGES = (("commands", {"chain": False}), ("pair", {"chain": True, "pair": True}
 # The cache's rows a KV head and layer, and the lengths T timed (the last token
 # attends over T rows) and checked (in this order: a check appends to row T - 1).
 CONTEXT, LENGTHS = 4096, (4096, 1024, 256)
-# attend alone first, (groups, first position, tokens): one token in a tile, at a
-# tile's last row, 5 and 32 tokens across two tiles.
-ALONE = ((1, 1000, 1), (8, 4095, 1), (8, 30, 5), (8, 1000, 32))
 # The layer's check: one token at each length, then 32 at the first.
 CHECK_ROWS = 32
 CASES = {
@@ -57,6 +54,15 @@ SPANNED = ("q", "k", "v", "o")  # overlapped: one span
 TRACED = 512  # commands a core stamps with --trace (16 bytes of L1 each)
 TRACE_FIELDS = ("kTraceSeen", "kTraceDone", "kTraceSent", "kTraceExtra")
 STARTED = time.monotonic()
+
+
+def alone(context):
+    """attend alone's cases, (groups, first position, tokens), in a cache of `context`
+    rows: one token in a tile, at the last row, 5 and 32 tokens across two tiles (each
+    that fits; at 4096 rows from 1000)."""
+    middle = context * 1000 // 4096
+    cases = ((1, middle, 1), (8, context - 1, 1), (8, 30, 5), (8, middle, 32))
+    return tuple(case for case in cases if case[1] + case[2] <= context)
 
 
 def log(message):
@@ -111,6 +117,9 @@ def parse():
         help="the chain's stamps (SPLIT_CHAIN_STAMPS): the layer's account per record",
     )
     parser.add_argument(
+        "--stamps-out", default=None, help="an .npz of every core's stamps of each case"
+    )
+    parser.add_argument(
         "--staged",
         action="store_true",
         help="checks first a command a step, then the chain's first two records",
@@ -124,8 +133,16 @@ def parse():
         "--beside",
         nargs="*",
         default=[],
-        choices=("layer", "ahead"),
-        help="each case also as CASE/FORM: the chain a layer, the next W read early",
+        choices=("layer", "no_ahead", "no_data"),
+        help="each case also as CASE/FORM: the chain a layer, no W read early, "
+        "no input sent",
+    )
+    parser.add_argument(
+        "--data",
+        nargs="*",
+        default=[],
+        choices=list(card.DATA_STEPS),
+        help="the records whose input the roots before send to their cores (stage 8)",
     )
     parser.add_argument(
         "--commands",
@@ -271,11 +288,15 @@ def measure(decode, case, tokens, layers, index, length, token=False):
         meter.mark("job")
         started = time.perf_counter()
         position = length - tokens
-        name, _, form = case.partition("/")  # CASE/commands, /layer, /ahead
+        name, _, form = case.partition("/")  # CASE/commands, /layer, /no_ahead, ...
         job = CASES[name] | (
-            {"chain": False}
+            {"chain": False, "data": ()}
             if form == "commands"
-            else {"token": token and form != "layer", "ahead": form == "ahead"}
+            else {
+                "token": token and form != "layer",
+                "ahead": form != "no_ahead",
+                "data": () if form == "no_data" else None,
+            }
         )
         got = decode.job(tokens, layers, timeout=60.0, position=position, **job)
         seconds = time.perf_counter() - started
@@ -651,6 +672,7 @@ def main():
     if args.loop_check:
         looped = chain(model, layers, args.seed, args.context, args.lengths[0])
     kernel_bytes = None if args.no_chain else card.CHAIN_KERNEL_BYTES
+    kernel_bytes = card.STAMPED_KERNEL_BYTES if args.stamps else kernel_bytes
     with km.Session(log=log, kernel_bytes=kernel_bytes) as session:
         decode = card.Decode(
             session,
@@ -665,6 +687,7 @@ def main():
             bodies=args.bodies,
             chain=not args.no_chain,
             stamps=args.stamps,
+            data=args.data,
         )
         log(
             f"loaded: {len(decode.plans)} plans, deadline {deadline} s, "
@@ -690,7 +713,7 @@ def main():
                 log(f"loop check: {json.dumps(report['loop'])}")
             if not args.no_check:
                 report["alone"] = []
-                for groups, position, rows in ALONE:
+                for groups, position, rows in alone(args.context):
                     got = attend_alone(
                         decode, model, caches, args.seed, groups, position, rows
                     )
@@ -772,6 +795,11 @@ def main():
             trace = decode.run.trace()
             fields = {name: trace.h[name] for name in TRACE_FIELDS}
             np.savez(args.trace, rows=trace.rows, mhz=trace.mhz, **fields)
+    if args.stamps_out and stamped:  # the raw stamps, keyed T{length}_{case}
+        named = {
+            f"T{t}_{case.replace('/', '_')}": v for (t, case), v in stamped.items()
+        }
+        np.savez(args.stamps_out, **named)
     layered = {}
     for result in results:
         slot = card.decode_slot(stats[result["stats_slot"]])
