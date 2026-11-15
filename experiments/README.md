@@ -234,6 +234,11 @@ as classes and what a class cannot say yet.
   kind can be written as a class with nothing but its own lines and its arithmetic in
   inline bodies. The trace pass (1,048,576 primary rays on 120 cores) gives hit pages equal
   to the hand's word for word and takes 3,294.9 us a command against the hand's 3,259.9.
+- [raster_class](language/raster_class/README.md): the rasterizer's FILL, COUNT, HIST and
+  SETUP as two classes beside the hand programs, on the tiny scene. The frame, counters,
+  histograms and lists equal the hand's word for word. FILL takes 88.34 us a command
+  against 118.90 (the empty tile's planes kept in L1); the passes are within 10 % of the
+  hand's.
 - [own_buffer](language/own_buffer/README.md): whether a class can give its compute bodies
   buffers that only they use, a float32 tile written in place and a FIFO from the pack CPU
   to the unpack CPU, with no line filling, waiting for or freeing them (`km.own()`). On 8
