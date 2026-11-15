@@ -46,6 +46,7 @@ from komorebi.errors import (
     ChannelError,
     GridTimeout,
     KernelSizeError,
+    KomorebiError,
     L1BudgetError,
     ProgramError,
     SlowCodeError,
@@ -149,6 +150,25 @@ def compute_config(options):
 # hooks never keep a session alive
 _LIVE = weakref.WeakSet()
 _HOOKED = []  # [True] once the exit hooks are installed
+# What this process opened: "mesh" (cards as a fabric mesh), "alone" (a card by itself)
+_OPENED = {"mesh": [], "alone": []}
+
+
+def refuse_reopen(kind, cards):
+    """Refuses opening `cards` as `kind` ("mesh" or "alone") in a process that already
+    opened the other kind; then records the attempt (see the hazards page)."""
+    other = "alone" if kind == "mesh" else "mesh"
+    if _OPENED[other]:
+        was = ",".join(str(card) for card in _OPENED[other][0])
+        now = ",".join(str(card) for card in cards)
+        said = {"mesh": f"cards {was} as a fabric mesh", "alone": f"card {was} alone"}
+        raise KomorebiError(
+            f"{'cards ' + now + ' as a mesh' if kind == 'mesh' else 'card ' + now}: "
+            f"this process opened {said[other]}; tt-metal would re-initialise its "
+            "context over every card the process holds, which left both cards' "
+            "Ethernet cores inactive until a board reset: open it in a new process"
+        )
+    _OPENED[kind].append(tuple(cards))
 
 
 def _release_all(why, close_device=True):
@@ -646,6 +666,7 @@ class Session:
                 "an open would wait until that process exits",
                 pid=holder,
             )
+        refuse_reopen("alone", [card])
         self._module = self._module or native.load_module(self.tree)
         if self._region is None:
             self.device = self._module.Device(self._worker_l1)  # program cache off

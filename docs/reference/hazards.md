@@ -667,6 +667,25 @@ stopped ring is cleared by the cores' recovery or by the next load.
 
 Described in [Islands, pages across a link](islands.md#pages-across-a-link).
 
+### A card opened alone in a process that opened a mesh
+
+**The hazard.** Closing a session of several cards leaves tt-metal's context set up for
+the process. A later open with other parameters in the same process, such as one card
+with its default kernel buffer, re-initialises that context. The re-initialisation
+covers every card the process's driver opened, not only the one asked for. Once (2026-11-16, a
+one-card open of card 0 after cards 0 and 1 as a mesh), that open timed out waiting for
+the Ethernet core 27-25 to become active ("try resetting the board"). The process then
+crashed at exit, and both cards refused every later open, in fresh processes too, until
+a board reset. A process that closes a mesh and exits has never shown it.
+
+**The rule.** One process opens either cards as a mesh or a card alone, never both. Run
+the other kind in a new process.
+
+**The guard.** A refusal at open (`KomorebiError`, "open it in a new process"), for a
+card alone after a mesh and for a mesh after a card alone, before any device call.
+
+Described in [Islands, the session](islands.md#the-session).
+
 ## The host
 
 ### A process that leaves the card half closed
