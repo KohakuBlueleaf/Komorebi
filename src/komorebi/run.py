@@ -33,7 +33,7 @@ from komorebi.errors import (
     describe_core,
 )
 from komorebi.merge import lifted, merged_holds
-from komorebi.program import Handler
+from komorebi.program import Handler, unguarded
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
 NO_LIST = 0xFF  # a core with no kept reset list (KMD_RESET_DIRECTORY)
@@ -876,6 +876,13 @@ class Run:
         this island; default every core): core_state's dict, `live` (each kernel's wait
         and command), `trace` (the latest commands' entries); `read` False for a core
         it could not reach. inspect_ticks: X280 ticks the read took on core 0."""
+        off = unguarded(self.programs)
+        if off:
+            raise KomorebiError(
+                f"run.inspect: {', '.join(off)} built with guard=False: its kernels "
+                "keep no live words, so there is nothing to read; build it with "
+                "guard=True (the default)"
+            )
         first, count = (0, self.cores)
         if group is not None:  # flat ranks, of this island: the dispatcher reads cores
             low, high = self._part(*self._group(group))
@@ -1259,6 +1266,14 @@ class Run:
             links=self.links_named(handle),
         )
         self._name_lines(error)
+        off = unguarded(self.programs)
+        if off:
+            error.args = (
+                f"{error.args[0]}; guard=False ({', '.join(off)}): no core was asked "
+                "to leave the command, a core may still be held in it, and the next "
+                "command to it may not run: a card reset if it does not",
+                *error.args[1:],
+            )
         return error
 
     def _name_lines(self, error):

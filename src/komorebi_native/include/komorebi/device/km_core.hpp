@@ -13,6 +13,17 @@
 #include "km_command.hpp"
 #include "km_island.hpp"
 
+// KM_GUARD 1 (default): a command's deadline, give-up and inspect (live words, abort
+// word, timed barriers). 0 (km.Program(guard=False)): none; KM_GUARDED(...) is empty.
+#if !defined(KM_GUARD)
+#define KM_GUARD 1
+#endif
+#if KM_GUARD
+#define KM_GUARDED(...) __VA_ARGS__
+#else
+#define KM_GUARDED(...) static_cast<void>(0)
+#endif
+
 // Where a program's own arguments start among a run's (a part of program p in a run of
 // several: after the earlier programs'; komorebi.programs); 0 unless the host gives it.
 #if !defined(KM_PROGRAM_ARGS_AT)
@@ -524,6 +535,7 @@ namespace km {
         uint32_t limit,
         uint32_t grace
     ) {
+#if KM_GUARD
         volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
         const uint32_t sequence = live[kLvSequence + role];
         volatile tt_l1_ptr uint32_t* abort = (
@@ -544,6 +556,11 @@ namespace km {
             live[kLvWhere + role] = before;
         }
         return code;
+#else
+        // no live words, no abort word
+        static_cast<void>(control + role + where + abortable);
+        return poll_stop(l1(control + KM_CONTROL_STOP), ready, limit, grace);
+#endif
     }
 
     // A give-up into state word pair `word`: a deadline's per command, the run goes on;
@@ -820,8 +837,11 @@ namespace km {
 
         // The command this kernel runs (its slot and sequence in the live words).
         void begin(const km_command_t& command) const {
-            control(KM_CONTROL_LIVE)[kLvSlot + role_] = slot(command);
-            control(KM_CONTROL_LIVE)[kLvSequence + role_] = command.sequence;
+            KM_GUARDED(({
+                control(KM_CONTROL_LIVE)[kLvSlot + role_] = slot(command);
+                control(KM_CONTROL_LIVE)[kLvSequence + role_] = command.sequence;
+            }));
+            static_cast<void>(command);
         }
 
         uint32_t running_slot() const {
@@ -834,13 +854,55 @@ namespace km {
 
         // Whether the dispatcher gave the command up (its deadline passed).
         bool given_up(const km_command_t& command) const {
+#if KM_GUARD
             invalidate_l1_cache();
             return km::given_up(args_.control, slot(command), command.sequence);
+#else
+            static_cast<void>(command);  // never: nothing reads the abort word
+            return false;
+#endif
         }
+
+#if !KM_GUARD
+        bool noc_flushed(uint32_t what) const {
+            if constexpr (noc_mode == DM_DYNAMIC_NOC) {
+                return (
+                    what == kFlushReads
+                        ? ncrisc_dynamic_noc_reads_flushed(noc_index)
+                        : what == kFlushSent
+                            ? ncrisc_dynamic_noc_nonposted_writes_sent(noc_index)
+                            : what == kFlushAtomics
+                                ? ncrisc_dynamic_noc_nonposted_atomics_flushed(
+                                    noc_index
+                                )
+                                : ncrisc_dynamic_noc_nonposted_writes_flushed(noc_index)
+                );
+            } else {
+                return (
+                    what == kFlushReads
+                        ? ncrisc_noc_reads_flushed(noc_index)
+                        : what == kFlushSent
+                            ? ncrisc_noc_nonposted_writes_sent(noc_index)
+                            : what == kFlushAtomics
+                                ? ncrisc_noc_nonposted_atomics_flushed(noc_index)
+                                : ncrisc_noc_nonposted_writes_flushed(noc_index)
+                );
+            }
+        }
+#endif
 
         // Timed NoC barrier of this kernel (kFlush*), polled with the stop flag; a stop
         // gives it one more wait limit. False: gave up in kWhereNocFlush (recorded).
         bool flushed(uint32_t what, uint32_t word) const {
+#if !KM_GUARD
+            // a plain barrier: no limit, no clock, no live words
+            static_cast<void>(word);
+            while (!noc_flushed(what)) {
+                ;
+            }
+            invalidate_l1_cache();
+            return true;
+#else
             const uint32_t code = poll_live(
                 args_.control,
                 role_,
@@ -886,15 +948,19 @@ namespace km {
             }
             invalidate_l1_cache();
             return true;
+#endif
         }
 
         // A buffer this kernel fills (a producer: the reader) or drains (a consumer)
         // through the timed waits: what a clear after a give-up looks at.
         void produce(uint32_t cb) const {
-            if (cb < kClearBuffers && !((produces_ >> cb) & 1)) {
-                produces_ |= 1u << cb;
-                control(KM_CONTROL_LIVE)[kLvProduces + producer()] = produces_;
-            }
+            KM_GUARDED(({
+                if (cb < kClearBuffers && !((produces_ >> cb) & 1)) {
+                    produces_ |= 1u << cb;
+                    control(KM_CONTROL_LIVE)[kLvProduces + producer()] = produces_;
+                }
+            }));
+            static_cast<void>(cb);
         }
 
         // This kernel's producer number: the reader's, or the writer's (a broadcast).
@@ -910,6 +976,11 @@ namespace km {
         // the buffers cleared and rewound. False: the clear gave up (the tile stops).
         bool finish(const km_command_t& command, uint32_t word) {
             index_++;
+#if !KM_GUARD
+            static_cast<void>(command);  // no end bookkeeping, no give-up check
+            static_cast<void>(word);
+            return true;
+#else
             end_command(
                 args_.control, role_, index_, produces_, producer(), [](uint32_t cb) {
                     return *get_cb_tiles_received_ptr(cb);
@@ -939,6 +1010,7 @@ namespace km {
                 return false;
             }
             return true;
+#endif
         }
 
         // The command's block in copy area `area` (0 reader, 1 writer), read once per

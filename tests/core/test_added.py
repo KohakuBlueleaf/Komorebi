@@ -54,6 +54,7 @@ def fake_run(room, slots=None):
     )
     run = SimpleNamespace(
         backend=SimpleNamespace(room=room, session=session),
+        programs=[],  # none built with guard=False
         _check_alive=lambda: None,
         _queue_command=lambda handler, cores, words: queued.append(
             (handler, cores, words)

@@ -73,6 +73,7 @@ run.submit(
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
 | `broadcast_wait` | as a `Program`'s ([host](host.md#program)), `False` by default: `True` builds the kernels with a word broadcast's wait at `finish` (the guard), in a build folder of its own |
+| `guard` | as a `Program`'s ([host](host.md#program)), `True` by default: `False` builds the kernels without a command's deadline, give-up and inspect ([hazards](hazards.md#a-wait-that-never-completes)), in a build folder of its own |
 | `form` | `"kernel"` (the default): the class owns its kernels; `"runtime"`: the class is a program in the runtime's form, in parts the runtime's kernels call, which loads in a list or a dict and which a group switches to ([The runtime's form](#the-runtimes-form)); each form has its build folder |
 | `beside` | with `form="runtime"`, a program or a list of them that share the run's cores: the class leaves their buffer indices and takes their unpack modes ([The runtime's form](#the-runtimes-form)) |
 

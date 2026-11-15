@@ -526,6 +526,14 @@ tests of the deadline still end the run. A consumer that waits for more pages th
 command's producer sends can take the next command's pages if that command is already
 in flight.
 
+A program built with `guard=False` (`KM_GUARD` 0) has none of this. Its kernels read
+no abort word, keep no live words and wait at a NoC barrier with no limit. The
+dispatcher still reaches the deadline, reads the group and writes the abort word, but
+finds in the live words no kernel running the command: it frees the slot and sends the
+give-up while the cores stay in the wait, and resets only a core whose own wait limit
+ended its kernels (and only with a kept list). `run.inspect` of its cores raises, and
+the load's log says once that its commands are not given up at a deadline.
+
 ## What a program may and may not do
 
 A program may:
