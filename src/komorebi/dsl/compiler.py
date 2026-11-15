@@ -3322,7 +3322,8 @@ class HandlerCompiler:
         self.stream_operands(node, function, a, b, columns, f"self.{field_}")
         state = self.loop_states[-1]
         state["whole"] = True  # the product takes the block, not its tiles
-        state["sums"] = sums  # mover B counts the loop's blocks into it
+        # mover B counts the loop's blocks into each field the loop adds to
+        state.setdefault("sums", []).append(sums)
         buffer = f"kField{camel(field_)}"
         inner = a.buffer.block
         width = max(w for w in range(1, DST_HALF + 1) if columns % w == 0)
@@ -3347,7 +3348,9 @@ class HandlerCompiler:
             )
         if state["function"] is None:
             state["function"] = "product"
+            state["product_init"] = init
             state["inits"].append(Line(f"{init}\nKM_PACK_FORMAT({buffer});"))
+        own, restore = product_setups(state.get("product_init"), init)
         self.compiled.includes |= {"pack"}
         self.compiled.unpack_fp32.add(buffer)
         self.compiled.products.append(
@@ -3373,6 +3376,7 @@ class HandlerCompiler:
         text = (
             f"{sums_reserve(sums, room, buffer)}"
             "if (km_ok) {\n"
+            f"{own}"
             f"    if ({room}) {{\n"
             f"        pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
             "    }\n"
@@ -3391,6 +3395,7 @@ class HandlerCompiler:
             f"    if ({room}) {{\n"
             "        pack_reconfig_l1_acc(0);\n"
             "    }\n"
+            f"{restore}"
             f"    {sums}++;\n"
             "}"
         )
@@ -3931,15 +3936,15 @@ class HandlerCompiler:
             f"if (!movement.move({moved})) {{\n    return false;\n}}", set(variables)
         )
         movement.append(move)
-        if state.get("sums"):  # a sum a block: mover B counts them as compute does
-            movement.append(
-                Line(
-                    f"{state['sums']} += ({first['pages'].count} + "
-                    f"{first['buffer'].name}Block - 1) / {first['buffer'].name}Block;",
-                    range_uses(first["pages"], self),
-                    mover="B",
-                )
+        movement.extend(  # a sum a block into each field, as compute counts them
+            Line(
+                f"{sums} += ({first['pages'].count} + "
+                f"{first['buffer'].name}Block - 1) / {first['buffer'].name}Block;",
+                range_uses(first["pages"], self),
+                mover="B",
             )
+            for sums in state.get("sums", ())
+        )
         for read in reads:  # after the loop: what each mover moved (a mover's body)
             self.scope[read["name"]] = Value("moved", f"km_moved{number}", move=move)
         self.wait(node, "mover A", WAIT_DATA)
@@ -4627,6 +4632,12 @@ class HandlerCompiler:
         summed = call.args[0] if len(call.args) == 1 else None
         if self.field_name(summed) in self.summed:
             return self.write_sums(node, pages, self.field_name(summed))
+        if (
+            self.tile_function_of(summed) is not None
+            and summed.args
+            and all(self.field_name(arg) in self.summed for arg in summed.args)
+        ):
+            return self.write_function_of_sums(node, pages, summed)
         if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
             self.refuse(node, "write one tile", "write pages.write(total)")
         name = call.args[0].id
@@ -4861,6 +4872,133 @@ class HandlerCompiler:
         self.wait(node, "mover B", WAIT_DATA)
         return [Line(movement, range_uses(pages, self), mover="B")], [
             Line(compute, {"km_ok"})
+        ]
+
+    def write_function_of_sums(self, node, pages, call):
+        """`t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of
+        fields of sums of one shape: each tile's fields copied into DST k (the unit's
+        operand order), f's body, DST 0 packed in t's format and written a row at a
+        time by mover B as `write(self.h)` is; the fields freed, the next sums start."""
+        function = self.tile_function_of(call)
+        fields = [self.field_name(arg) for arg in call.args]
+        sides = {self.field_sides(node, f) for f in fields}
+        if len(sides) > 1 or len(set(fields)) != len(fields):
+            self.refuse(
+                node,
+                f"{function.name} takes fields of sums of one shape, each once, and "
+                f"is given {', '.join('self.' + f for f in fields)}",
+                "give it fields of one shape",
+            )
+        ((rows, columns),) = sides
+        formats = [self.compiled.fields[f].format.dtype for f in fields]
+        why = tile_format_refusal(formats)
+        if why is not None:
+            self.refuse(node, f"{function.name}: {why}", "give it fields of those")
+        unit, cxx = self.tile_unit(node, function, formats)
+        if unit.products:
+            self.refuse(
+                node,
+                f"{function.name} has a matrix product (`@`), and its operands here "
+                "are fields of sums in L1, which the unit reads from DST",
+                f"add the product into a field (self.f += self.p(a, b)) and write "
+                f"{function.name} of the fields",
+            )
+        rect = pages.rect
+        bounds = pages.bounds or (None, None)
+        written = rect[:2] if rect is not None else ("1", pages.count)
+        fits = all(
+            side_fits(side, bound, most)
+            for side, bound, most in zip(written, bounds, (rows, columns), strict=True)
+        )
+        if not fits:
+            self.refuse(
+                node,
+                f"the fields are {rows} x {columns} tiles; write a rectangle of them",
+                f"write {pages.tensor}.{spelling('tiles')}[r:r + {rows}, c:c + "
+                f"{columns}].write({function.name}(...))",
+            )
+        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        name = f"kOutRows{columns}"
+        held = [b.pages[0] for b in self.compiled.buffers if b.name == name]
+        out = self.out_buffer(
+            dtype, page_bytes, f"line {node.lineno}: {self.text(node)}", columns, name
+        )
+        out.pages = (max(held + [columns * min(rows, 2)]),)
+        parameters = list(inspect.signature(function.function).parameters)
+        buffers = {f: f"kField{camel(f)}" for f in fields}
+        counts = [self.summed[f] for f in fields]
+        made = " && ".join(f"{sums} > 0" for sums in counts)
+        tile, out_room = f"km_tile{node.lineno}", f"km_room{node.lineno}"
+        lines = [f"// {self.text(node)}: {function.name} of the fields' sums"]
+        for f in fields:
+            buffer, sums = buffers[f], self.summed[f]
+            lines += [
+                f"if (km_ok && {sums} > 0) {{",
+                f"    if ({sums_room(f)}) {{  // pack's: its pages held",
+                f"        cb_push_back({buffer}, {buffer}Pages);",
+                "    }",
+                f"    km_ok = compute.wait_front({buffer}, {buffer}Pages);",
+                "}",
+            ]
+        first = buffers[fields[0]]
+        lines += [
+            f"if (km_ok && {made}) {{",
+            f"    KM_UNPACK_FORMAT_A({first});",
+            f"    copy_init({first});",
+            f"    MATH((km_tile::{cxx}_init()));  // {function.name}'s setup",
+            f"    bool {out_room} = true;  // pack's alone: it guards the packs only",
+            f"    for (uint32_t {tile} = 0; km_ok && {tile} < {rows * columns}; "
+            f"{tile}++) {{",
+            "        tile_regs_acquire();",
+        ]
+        for dst, operand in enumerate(unit.operands):
+            buffer = buffers[fields[parameters.index(operand)]]
+            lines.append(f"        copy_tile({buffer}, {tile}, {dst});")
+        lines += [
+            f"        MATH((km_tile::{cxx}(0)));",
+            "        tile_regs_commit();",
+            "        tile_regs_wait();",
+            f"        {out_room} = {out_room} && compute.reserve_back({out.name}, 1);",
+            f"        if ({out_room}) {{",
+            f"            KM_PACK_FORMAT({out.name});",
+            f"            pack_tile(0, {out.name});",
+            f"            cb_push_back({out.name}, 1);",
+            "        }",
+            "        tile_regs_release();",
+            "    }",
+            *[f"    cb_pop_front({b}, {b}Pages);" for b in buffers.values()],
+            "}",
+            *[f"{sums} = 0;" for sums in counts],
+        ]
+        tensor = f"{camel(pages.tensor)}({pages.tensor})"
+        row = f"km_row{node.lineno}"
+        row_step = rect[2] if rect is not None else columns
+        whole = str(written[0]) == str(rows)
+        part = "" if whole else f"{row} < ({written[0]}) &&\n    "
+        movement = [
+            f"if ({made}) {{",
+            f"    for (uint32_t {row} = 0; {row} < {rows}; {row}++) {{",
+            f"        if (!movement.wait_front({out.name}, {columns}) ||",
+            f"            {'(' if part else ''}{part}!km::write_pages(movement, "
+            f"command, {tensor}, {pages.first} + {row} * {row_step}, {written[1]}, "
+            f"get_read_ptr({out.name})){')' if part else ''}) {{",
+            "            return false;",
+            "        }",
+            "        noc_async_writes_flushed();",
+            f"        cb_pop_front({out.name}, {columns});",
+            "    }",
+            "}",
+            *[f"{sums} = 0;" for sums in counts],
+        ]
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        self.compiled.includes |= {"pack", "ask"}
+        self.moved(node, pages.tensor, "page write")
+        self.wait(node, "compute", WAIT_OUTPUT)
+        self.wait(node, "mover B", WAIT_DATA)
+        return [Line("\n".join(movement), range_uses(pages, self), mover="B")], [
+            Line("\n".join(lines), {"km_ok"})
         ]
 
     def read_word(self, node, name, pages):
@@ -8262,6 +8400,17 @@ CXX_KEYWORDS = {
     "km",
     "uint32_t",
 }
+
+
+def product_setups(first, init):
+    """A loop's later product of sums whose setup (`init`: SrcA's and SrcB's formats,
+    the block's shape, a turn) is not the loop's first product's (`first`, set once
+    before the blocks): the lines that set its own before its K tiles and the first's
+    again after them; none when they are one."""
+    if first is None or first == init:
+        return "", ""
+    own = "".join(f"    {line}\n" for line in init.split("\n"))
+    return own, "".join(f"    {line}\n" for line in first.split("\n"))
 
 
 def sums_room(field_):

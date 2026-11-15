@@ -425,6 +425,7 @@ A handler of **another** class added to a live run is not built. It would need:
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
+| `y.tiles[r0:r1, c0:c1].write(gate(self.h, self.g))`, gate a tile function, h and g fields of sums of one shape | as the field's write | tile by tile each field's tile copied into the DST tile of its operand, gate's body on the math CPU, DST 0 packed into Y's format; both fields freed, both counts reset |
 | `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
@@ -1101,6 +1102,17 @@ A product's sum is in one of two places:
   32]`) or two broadcasts' arrived blocks (rows x k and k x columns, `b.cast(...)` or
   `b.arrive()`), as the dense project's grid form.
 
+A field of sums starts from zero at each command: its first block packs without the L1
+accumulation, and its count of sums is 0 at the handler's start; nothing of one
+command's sums is kept for the next. One loop may add two products into two fields
+(`self.h += self.p(xb, w1b)` and `self.g += self.p(xb, w3b)`, X's block read once for
+both): each is counted on mover B for its write, and a product whose setup differs from
+the loop's first (W's format, the block's shape, a turn) sets its own before its K
+tiles and the first's after them. A tile function of fields of sums is written as one
+rectangle (the table above): the README's SwiGLU layer,
+[31 swiglu](../../examples/31_swiglu/README.md), whose `up` handler writes
+`gate(self.h, self.g)`.
+
 The size rule: a sum in DST is at most 8 float32 tiles (4 in the half-sync DST, 8 in
 full sync); a larger sum is a float32 field, 4 KiB a tile of L1.
 
@@ -1772,7 +1784,8 @@ session gives more with `kernel_bytes`
 
 **The lines a call is described from.** A handler's streams of page ranges
 (`t.pages(first, count)`, a partition's share `s[part]`, a rectangle `t.tiles[r0:r1,
-c0:c1]`), their zip, `.write` of a page range, `.drain` and `.fill`, the assignments
+c0:c1]`), their zip, `.write` of a page range or of a rectangle (`t.tiles[r0:r1,
+c0:c1].write(...)`), `.drain` and `.fill`, the assignments
 before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write. A
 first page is a number of the call's words, the class's constants, `self.rank`, `size`
 and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the first tensor
@@ -1781,7 +1794,11 @@ written; each group's root writes block g, `width` tiles from g x width), the gr
 `base + step x g`. The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
 input that `run.chain` proves (as a written chain's,
-[the earlier input](chain.md#the-earlier-input-and-the-direct-input)).
+[the earlier input](chain.md#the-earlier-input-and-the-direct-input)). A rectangle of
+several rows that are not whole rows (a weight's columns, `w.tiles[0:K, c:c + n]`) is
+no range of tiles: it is read as an outside tensor, and refused when a call of the
+chain writes it. A call's `cores=(first, count)` puts it on its own group (the README's
+SwiGLU: `up` on 12 cores, `down` on 4).
 
 **Several outputs.** A handler that writes more than one tensor, each as block g of its
 group (the decode layer's x and its rows' squares, a tile a group), is a call with
@@ -1823,6 +1840,7 @@ island 0's program and `cores` in flat ranks.
 | a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor and states neither `reads=` nor `writes=` | `run.chain` | the handler, the line and why; it still runs as a command |
 | a body's `reads=` of a tensor a call of the chain writes; a read of a tensor another call's body writes (`writes=`) | `run.chain` | the call, the line, the tensor, the other call |
 | a call of a program made without the walk | `run.chain` | the handler; `chain=True` or a `km.chain` method |
+| a rectangle of rows not whole read from the call before's output or from a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | a `kc.Call` among a class's calls | `run.chain` | the call |
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
 | `km.past` of the call before's output, or of a tensor the handler does not read | `run.chain` | the call, the tensor |
