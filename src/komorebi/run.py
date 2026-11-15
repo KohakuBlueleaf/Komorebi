@@ -13,7 +13,7 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi
+from komorebi import abi, added
 from komorebi import chain as chain_module
 from komorebi import state as device_state
 from komorebi.dsl.front import ClassHandler, HandlerMethod
@@ -514,6 +514,30 @@ class Run:
         for held, cores in enumerate(self._holds or ()):
             cores[low:high] = held == program_field
         return handle
+
+    def addon(
+        self,
+        name,
+        parts,
+        handler=False,
+        number=None,
+        defines=None,
+        timeout=10.0,
+        message=False,
+    ):
+        """Adds overlay `name` to the live run: `parts` as Program.overlay's, built
+        against the loaded kernels, written into the room the load reserved, its table
+        entry given to every core by a command. Returns its number: with `handler` a
+        handler's, with `message` a dynamic handler's (its body a compute part)."""
+        return added.addon(
+            self, name, parts, handler, number, defines, timeout, message
+        )
+
+    @property
+    def added(self):
+        """What run.addon placed: {name: komorebi.added.Added}."""
+        room = getattr(self.backend, "room", None)
+        return dict(room.added) if room is not None else {}
 
     def transfer(self, handler, group, args, timeout):
         """A PUSH or PULL (the session's transfers) on `group` (first, count, program
