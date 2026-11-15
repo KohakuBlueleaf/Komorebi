@@ -318,6 +318,7 @@ class beside the C++ kernels written by hand:
 | Linear layer, 32 x 4096 x 4096, the handler above ([dense_class](experiments/language/dense_class/README.md)) | 94.2 µs | 92.4 µs |
 | Linear layer, 1024 x 4096 x 4096, casts along rows and down columns | 358.6 µs | 382.4 µs |
 | The ray tracer's trace pass ([raytrace_class](experiments/language/raytrace_class/README.md)) | 3,294.9 µs | 3,259.9 µs |
+| The rasterizer's fill pass, a small scene ([raster_class](experiments/language/raster_class/README.md)) | 88.3 µs | 118.9 µs |
 
 The gate's emitted arithmetic takes 1,597 cycles a tile against 1,901.5 for the
 hand-written body, in 37,632 B of kernel text against 38,640. Nine of the examples have
@@ -326,8 +327,9 @@ result, time and kernel text beside the hand's. What a handler's lines may be is
 [classes](docs/reference/classes.md), what a tile function may contain in
 [tile functions](docs/reference/tile.md).
 
-Not written as classes yet, and in work: a program whose movers walk a table of jobs
-(attention, the rasterizer), and a chain of kernels (the decode,
+In work: the lines for a program whose movers walk a table of jobs (attention is not
+a class yet; the rasterizer's passes are, with some of their moves still inline C++
+bodies), and a chain of kernels (the decode,
 [below](#a-core-goes-on-to-the-next-kernel-by-itself)).
 
 ## The programming model
