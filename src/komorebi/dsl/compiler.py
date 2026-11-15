@@ -31,6 +31,7 @@ from komorebi.dsl.tile.ir import (
     TensorParam,
 )
 from komorebi.dsl.tile.rows import row_program
+from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.errors import ProgramError
 from komorebi.movement import Pattern
@@ -173,6 +174,9 @@ class Value:
     # a range of a rectangle of tiles: (rows, columns, the tensor's tile columns),
     # C++ texts but the last; rows and columns ints where the build knows them
     rect: tuple | None = None
+    # a block a broadcast brought: each part's (first slot page, slot rows, pitch,
+    # transposed), pitch the slot's pages a row (ints, or None where a word)
+    parts: tuple | None = None
     # a rectangle's most rows and columns where the build knows them (a side's length,
     # or n of `c:min(c + n, e)`); its sides themselves may be words
     bounds: tuple | None = None
@@ -209,6 +213,9 @@ class Compiled:
     # overlay handler -> its overlay number; broadcast handler -> its km.Broadcast
     overlays: dict = field(default_factory=dict)
     broadcast_lines: dict = field(default_factory=dict)
+    # mover -> [(handler, its broadcast's line)] in the class's order: a core holds
+    # each one's arguments after the last's (kArgBroadcast + kBroadcastArgs i)
+    mover_broadcasts: dict = field(default_factory=dict)
     # handler -> (the size of its reduce's groups, the reduce's line)
     reduce_groups: dict = field(default_factory=dict)
     port_handlers: set = field(default_factory=set)  # handlers whose cores use ports
@@ -816,6 +823,22 @@ def scalar_words(unit, scalars):
     )
 
 
+def slot_part(part):
+    """A cast part's place in the slot: (first page, rows, pitch, transposed), the
+    rows and pitch ints where the build knows them (None where a word)."""
+    pages, pitch = part["pages"], part["pitch"]
+    sides = pages.sides if pages.sides is not None else ("1", pages.count)
+    bounds = pages.bounds or (None, None)
+    rows, columns = (
+        int(side) if str(side).isdigit() else most for side, most in zip(sides, bounds)
+    )
+    if part["transposed"]:  # a column of the rectangle a row of the slot
+        rows, columns = columns, (pitch or rows)
+    elif pitch is not None:
+        columns = pitch
+    return part["offset"], rows, columns, part["transposed"]
+
+
 def tile_format_refusal(formats):
     """None, or why a tile function is refused tiles of `formats`: float32 and the B
     family run on an fp32 Dst, the A family on a 16-bit one (tile_dest); a mix of
@@ -1069,11 +1092,15 @@ class HandlerCompiler:
         self.allow_words = False  # a body's word is read by the return only
         self.field_line = False  # a word field's words are read in a line setting one
         self.closing = []  # compute's lines after the handler's (a product's field)
+        # {block a cast outside a loop brought: its mover}, whose finish (the wait for
+        # compute to free the block) is at the cast
+        self.finished_casts = {}
         self.opening = []  # compute's lines before them (a field's sums count)
         self.opening_b = []  # mover B's (the same count)
         self.summed = {}  # a field of sums -> its counter's C++ name
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
         self.waited_fields = set()  # fields compute waited for (a product's, once)
+        self.stepped = {}  # a step's state field -> its pages (a state tile a page)
         self.leader_text = "0"  # self.leader: rank 0, or a reduce group's first rank
         self.stream_loops = []  # the numbers of the read loops around the statement
         # Per read loop around the statement: its tile function, its other tile
@@ -2762,6 +2789,9 @@ class HandlerCompiler:
         other = isinstance(call.args[1], ast.Name) and self.scope.get(call.args[1].id)
         if item and other and self.in_this_loop(item) and self.in_this_loop(other):
             return self.stream_product(node, value, function, item, other)
+        arrived = self.arrived_operand(node, call.args[1])
+        if item and self.in_this_loop(item) and arrived is not None:
+            return self.broadcast_product(node, value, function, item, arrived)
         if not item or item.kind != "streamed" or field_ is None:
             self.refuse(
                 node,
@@ -2868,6 +2898,156 @@ class HandlerCompiler:
             f"{block});"
         )
         return [], [Line(text)]
+
+    def arrived_operand(self, node, arg):
+        """`w`, `kv[i]` or either `[:, c0:c0 + n]`, w a block a broadcast brought:
+        (its Value, the part's slot geometry, the first column's C++, the columns or
+        None for the part's); None when `arg` names no such block."""
+        window = None
+        if (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.slice, ast.Tuple)
+            and len(arg.slice.elts) == 2
+        ):
+            window, arg = arg.slice.elts, arg.value
+        part = None
+        if isinstance(arg, ast.Subscript) and isinstance(arg.value, ast.Name):
+            part, arg = arg.slice, arg.value
+        value = isinstance(arg, ast.Name) and self.scope.get(arg.id)
+        if not value or value.kind != "arrived":
+            return None
+        drawn = f"write {arg.id}[i][:, c0:c0 + n], i its part in the cast"
+        if part is None and len(value.parts) > 1:
+            self.refuse(
+                node,
+                f"{arg.id} is a cast of {len(value.parts)} parts: a product reads one",
+                drawn,
+            )
+        index = 0 if part is None else self.known_int(part)
+        if index is None or not 0 <= index < len(value.parts):
+            self.refuse(node, f"{arg.id} has parts 0 .. {len(value.parts) - 1}", drawn)
+        first, columns = "0", None
+        if window is not None:
+            rows, cols = window
+            if not (
+                isinstance(rows, ast.Slice)
+                and rows.lower is rows.upper is rows.step is None
+                and isinstance(cols, ast.Slice)
+                and cols.step is None
+                and cols.lower is not None
+                and isinstance(cols.upper, ast.BinOp)
+                and isinstance(cols.upper.op, ast.Add)
+                and ast.dump(cols.upper.left) == ast.dump(cols.lower)
+            ):
+                self.refuse(node, "a block's columns are a window c0:c0 + n", drawn)
+            first = self.integer(cols.lower)
+            columns = self.known_int(cols.upper.right)
+            if columns is None:
+                self.refuse(
+                    node,
+                    "a window's width is an int the build knows",
+                    "write c0:c0 + n, n a constant",
+                )
+        return value, value.parts[index], first, columns, arg.id
+
+    def broadcast_product(self, node, value, function, item, arrived):
+        """`acc += f(xb, w)` (or `w[i][:, c0:c0 + n]`), w a broadcast's block brought
+        above the loop: tile t of block k by K row k x block + t of w's part (columns
+        from c0, acc's width; transposed where the cast turned it) into acc's DST;
+        w waited for before the loop's blocks, freed after them."""
+        block_value, (offset, rows, pitch, transposed), first, columns, name = arrived
+        state, number = self.loop_states[-1], self.stream_loops[-1]
+        mover = self.finished_casts.get(name)
+        if mover is not None and any(
+            letters is None or mover in letters for letters in state["letters"]
+        ):
+            other = "A" if mover == "B" else "B"
+            self.refuse(
+                node,
+                f"{name} was cast outside a loop, so mover {mover} waits at the cast "
+                "for compute to free the block, and compute frees it after this "
+                f"loop, some of whose stream's blocks mover {mover} moves",
+                f'read the loop\'s stream on mover {other}: pattern="{other}"',
+            )
+        width = value.width
+        if columns is None:
+            columns = pitch
+        if columns != width:
+            self.refuse(
+                node,
+                f"the block's part is {columns or 'a word of'} columns and "
+                f"{ast.unparse(node.target)} holds {width}",
+                f"take a window of {width}: w[:, c0:c0 + {width}]",
+            )
+        if pitch is None:
+            self.refuse(
+                node,
+                "the block's rows are a word apart in its slot",
+                "cast a rectangle whose columns the build knows",
+            )
+        if first.isdigit() and int(first) + width > pitch:
+            self.refuse(
+                node,
+                f"columns {first} .. {int(first) + width - 1} of a part of {pitch}",
+                f"take a window inside the part's {pitch} columns",
+            )
+        if state["other"] is not None or state["function"] not in (None, "product"):
+            self.refuse(
+                node,
+                "this loop has other tile lines, and a product holds the matrix unit's "
+                "setup for the loop",
+                "keep the loop to the product",
+            )
+        buffer = block_value.buffer
+        why = product_refusal(item.buffer.dtype, buffer.dtype)
+        if why is not None:
+            self.refuse(node, why, "cast tiles of a matrix format of the stream's")
+        fidelity = self.product_fidelity(node, function)
+        if self.placed(
+            node,
+            state,
+            function,
+            item.buffer.dtype,
+            buffer.dtype,
+            ("tensor", block_value.tensor),
+        ):
+            self.refuse(
+                node,
+                f"{function.name} turns the product, and a broadcast block's product "
+                "is built plain",
+                "drop the marker",
+            )
+        self.arrived_once(node, block_value)
+        x, w = f"{item.buffer.name}.mover_a", buffer.name
+        block = item.buffer.name + "Block"
+        flip = "true" if transposed else "false"
+        self.wait(node, "compute", WAIT_INPUT)
+        if state["function"] is None:
+            state["function"] = "product"
+        state["inits"].append(
+            Line(
+                f"km_ok = km_ok && km::broadcast_receive(compute, {w}, {w}Pages);\n"
+                "// the zeros' fills (vector unit) done before the matrix unit adds\n"
+                "MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
+                f"KM_UNPACK_FORMATS({w}, {x});\n"
+                f"matmul_block_init({x}, {w}, {flip}, {width}, 1, {block});",
+                {"km_ok"},
+            )
+        )
+        state["after"].append(
+            Line(f"if (km_ok) {{\n    km::broadcast_done({w}, {w}Pages);\n}}")
+        )
+        self.compiled.includes.add("matmul")
+        self.compiled.products.append(
+            (self.method.name, node.lineno, self.text(node), function, width, block)
+            + (fidelity,)
+        )
+        row = f"(km_block{number} * {block} + {item.first})"
+        text = (
+            f"matmul_block({item.cxx}, {w}, {item.first}, {offset} + {row} * {pitch} "
+            f"+ {first}, {value.dst}, {flip}, {width}, 1, {block});"
+        )
+        return [], [Line(text, text_uses(first, self))]
 
     def placed(self, node, state, function, left, right, weight):
         """Whether the product is turned (product_placement): refused when both
@@ -3873,6 +4053,7 @@ class HandlerCompiler:
                     "block": block,
                     "pattern": pattern,
                     "pattern_text": pattern_text,
+                    "letters": letters,
                     "repeat": repeat,
                     "buffer": buffer,
                     "width": self.row_width,
@@ -3922,6 +4103,7 @@ class HandlerCompiler:
                 "first": reads[0]["half"],
                 "count": reads[0]["pages"].count,  # the loop's tiles, as written
                 "tensors": {r["buffer"].name: r["pages"].tensor for r in reads},
+                "letters": [r["letters"] for r in reads],  # None: a pattern word
                 "repeat": reads[0]["repeat"],
                 "line": node.lineno,
             }
@@ -4793,6 +4975,10 @@ class HandlerCompiler:
             return self.write_function_of_sums(node, pages, summed)
         if self.tile_function_of(summed) is not None and self.dst_sums_of(summed):
             return self.write_function_of_dst(node, call, summed)
+        if self.tile_function_of(summed) is not None and self.step_of_dst(summed):
+            return self.write_step_of_dst(node, call, summed)
+        if self.field_name(summed) in self.stepped:
+            return self.write_state(node, pages, self.field_name(summed))
         if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
             self.refuse(node, "write one tile", "write pages.write(total)")
         name = call.args[0].id
@@ -5065,6 +5251,247 @@ class HandlerCompiler:
         write.args[0] = ast.Name(id=name, ctx=ast.Load())
         movement, compute = self.write(node, write)
         return movement, [Line(body), *compute]
+
+    def step_of_dst(self, call):
+        """(acc, field, index) of a step function's call `f(acc, self.s[r])`, acc DST
+        sums and self.s a field, or None."""
+        if len(call.args) != 2 or call.keywords:
+            return None
+        acc, slot = call.args
+        value = isinstance(acc, ast.Name) and self.scope.get(acc.id)
+        if not value or value.kind != "tile" or value.batch is not None:
+            return None
+        field_ = isinstance(slot, ast.Subscript) and self.field_name(slot.value)
+        return (acc.id, field_, slot.slice) if field_ else None
+
+    def write_step_of_dst(self, node, write, call):
+        """`pages.write(f(acc, self.s[r]))`, f a step-form function of acc (1 to 3 DST
+        tiles) and state r of the fp32 field self.s: the state into the DST tile after
+        the row, f, the row written as acc is and the state packed back into page r,
+        ordered by a token pack pushes and unpack takes (primed at the handler's start).
+        """
+        function = self.tile_function_of(call)
+        name, field_, index = self.step_of_dst(call)
+        value = self.scope[name]
+        width = value.width
+        if value.dst != 0 or not 1 <= width <= 3:
+            self.refuse(
+                node,
+                f"{name} is {width} tile(s) of DST from tile {value.dst}; a step takes "
+                "a row of 1 to 3 tiles from DST 0 and its state in the tile after them",
+                "sum the row in km.tile.zeros(km.fp32, n), n at most 3",
+            )
+        stored = self.compiled.fields[field_]
+        pages = stored.shape[0] if len(stored.shape) == 3 else None
+        if stored.format.dtype != "float32" or not isinstance(pages, int):
+            self.refuse(
+                node,
+                f"self.{field_} holds a step's states: fp32 tiles, a page each",
+                f"declare self.{field_}: km.L1[km.fp32, states, 32, 32]",
+            )
+        buffer, token = f"kField{camel(field_)}", f"kStepToken{camel(field_)}"
+        if field_ not in self.stepped:
+            if self.filled.get(field_) is None:
+                self.refuse(
+                    node,
+                    f"self.{field_} is not filled above in this handler: a step's "
+                    "states start from a fill",
+                    f"write self.{field_}.fill(km.{spelling('stream')}(t.pages(first, "
+                    f"{pages}))) before the loop",
+                )
+            self.filled[field_] = None
+            self.stepped[field_] = pages
+            self.other_buffer(
+                token,
+                "token",
+                "float32",
+                16,
+                1,
+                f"line {node.lineno}: the states' token",
+            )
+            self.compiled.summed_fields.add(buffer)  # pack writes the states
+            self.compiled.unpack_fp32.add(buffer)
+            self.opening.append(
+                Line(
+                    f"if (compute.reserve_back({token}, 1)) {{  // self.{field_}'s "
+                    "states: the fill's\n"
+                    f"    cb_push_back({token}, 1);\n}}"
+                )
+            )
+            self.closing.append(
+                Line(
+                    f"if (km_ok && compute.wait_front({token}, 1)) {{\n"
+                    f"    cb_pop_front({token}, 1);\n}}\n"
+                    f"cb_pop_front({buffer}, {buffer}Pages);",
+                    {"km_ok"},
+                )
+            )
+        slot = self.integer(index)
+        known = slot.rstrip("u").isdigit()
+        if known and not int(slot.rstrip("u")) < pages:
+            self.refuse(
+                node,
+                f"self.{field_} holds {pages} states, 0 .. {pages - 1}",
+                f"index it below {pages}",
+            )
+        bound = (
+            ""
+            if known
+            else (
+                f"if (!(({slot}) < {pages})) {{  // self.{field_}'s states\n"
+                "    compute.gave_up(km::kGaveBadItem, km::kWhereCInput);\n"
+                "    return;\n}\n"
+            )
+        )
+        unit, cxx = self.step_unit(node, function, width)
+        before = (
+            f"{bound}"
+            f"// {function.name}'s step: self.{field_}[{ast.unparse(index)}] into "
+            f"DST {width}\n"
+            f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages) &&\n"
+            f"    compute.wait_front({token}, 1);\n"
+            "if (km_ok) {\n"
+            f"    cb_pop_front({token}, 1);\n"
+            f"    KM_UNPACK_FORMAT_A({buffer});\n"
+            f"    copy_init({buffer});\n"
+            f"    copy_tile({buffer}, {slot}, {width});\n"
+            f"    MATH((km_tile::{cxx}_init()));\n"
+            f"    MATH((km_tile::{cxx}(0)));\n"
+            "}"
+        )
+        self.wait(node, "compute", WAIT_INPUT)
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        write.args[0] = ast.Name(id=name, ctx=ast.Load())
+        movement, compute = self.write(node, write)
+        packed = (
+            f"if (km_ok && compute.reserve_back({token}, 1)) {{  // pack's alone\n"
+            f"    KM_PACK_FORMAT({buffer});\n"
+            f"    pack_tile<true>({width}, {buffer}, {slot});\n"
+            f"    cb_push_back({token}, 1);\n"
+            "}\n"
+            "tile_regs_release();"
+        )
+        last = compute[-1]
+        at = last.text.rindex("tile_regs_release();")
+        last.text = (
+            last.text[:at] + packed + last.text[at + len("tile_regs_release();") :]
+        )
+        last.uses = last.uses | self.uses(index)
+        return movement, [Line(before, {"km_ok"} | self.uses(index)), *compute]
+
+    def step_unit(self, node, function, width):
+        """The step form's unit of `function(row, state)` over a row of `width` DST
+        tiles and the state tile after them: it returns (the row, the state's
+        per-row values) or (the row, the values, a word of word_max)."""
+        made = (function.function, ("step",), width)
+        for cxx, (key, unit) in self.compiled.units.items():
+            if key == made:
+                return unit, cxx
+        where = function_line(function)
+        drawn = "return (row, (m, l, ...)) or (row, (m, l), km.word_max(...))"
+        if len(inspect.signature(function.function).parameters) != 2:
+            self.refuse(
+                node,
+                f"the step function {function.name} ({where}) takes a row and its "
+                "state",
+                f"def {function.name}(row, state): ... {drawn}",
+            )
+        cxx = function.name
+        while cxx in self.compiled.units:
+            cxx += "_"
+        tensors = [
+            TensorParam(n, out, F32)
+            for n, out in (
+                ("row", False),
+                ("state", False),
+                ("result", True),
+                ("state_out", True),
+            )
+        ]
+        ir = KernelIR(cxx, tensors, [], {})
+        try:
+            with trace.Tracer(ir):
+                rows, states, results, outs = (trace.TensorProxy(t) for t in tensors)
+                for t in trace.grid(trace.num_tile_rows(rows)):
+                    got = function.function(
+                        trace.load(rows.tiles[t, :]), trace.load_state(states.tiles[t])
+                    )
+                    if not isinstance(got, tuple) or len(got) not in (2, 3):
+                        self.refuse(
+                            node,
+                            f"the step function {function.name} ({where}) returns "
+                            "the row and its state",
+                            drawn,
+                        )
+                    trace.store(results.tiles[t, :], got[0])
+                    word = got[2] if len(got) == 3 else None
+                    trace.store_state(outs.tiles[t], got[1], word=word)
+            fidelity = function.fidelity or "HiFi4"
+            unit = step_program(ir, width, width, fidelity=fidelity, matrix_sum=False)
+        except (PlanError, UnitError) as error:
+            self.refuse(
+                node,
+                f"the step function {function.name} ({where}) is not lowered by the "
+                f"tile compiler: {error}",
+                "write this body inline: km.cxx(..., gives=km.Tile)",
+            )
+        self.compiled.units[cxx] = (made, unit)
+        self.compiled.body_includes["compute"].append(f'#include "tile_{cxx}.hpp"')
+        return unit, cxx
+
+    def write_state(self, node, pages, field_):
+        """`t.pages(first, n).write(self.s)`, self.s a step's n states: after the last
+        step's token, each state copied into DST 0 and packed in t's format, written
+        by mover B a page at a time."""
+        count = self.stepped[field_]
+        if pages.rect is not None or pages.count != str(count):
+            self.refuse(
+                node,
+                f"self.{field_} is {count} states, a page each",
+                f"write {pages.tensor}.{spelling('pages')}(first, {count})"
+                f".write(self.{field_})",
+            )
+        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        out = self.out_buffer(
+            dtype, page_bytes, f"line {node.lineno}: {self.text(node)}"
+        )
+        buffer, token = f"kField{camel(field_)}", f"kStepToken{camel(field_)}"
+        tile = f"km_state{node.lineno}"
+        packed = "\n".join("        " + line for line in pack(0, out.name).split("\n"))
+        compute = (
+            f"// self.{field_}'s states, after the last step's\n"
+            f"km_ok = km_ok && compute.wait_front({token}, 1);\n"
+            "if (km_ok) {\n"
+            f"    KM_UNPACK_FORMAT_A({buffer});\n"
+            f"    copy_init({buffer});\n"
+            f"    for (uint32_t {tile} = 0; {tile} < {count}; {tile}++) {{\n"
+            "        tile_regs_acquire();\n"
+            f"        copy_tile({buffer}, {tile}, 0);\n"
+            f"{packed}\n"
+            "    }\n"
+            "}"
+        )
+        tensor = f"{camel(pages.tensor)}({pages.tensor})"
+        movement = (
+            f"for (uint32_t {tile} = 0; {tile} < {count}; {tile}++) {{\n"
+            f"    if (!movement.wait_front({out.name}, 1) ||\n"
+            f"        !km::write_pages(movement, command, {tensor}, {pages.first} + "
+            f"{tile}, 1, get_read_ptr({out.name}))) {{\n"
+            "        return false;\n"
+            "    }\n"
+            "    noc_async_writes_flushed();\n"
+            f"    cb_pop_front({out.name}, 1);\n"
+            "}"
+        )
+        self.compiled.includes |= {"pack", "ask"}
+        self.moved(node, pages.tensor, "page write")
+        self.wait(node, "compute", WAIT_OUTPUT)
+        self.wait(node, "mover B", WAIT_DATA)
+        return [Line(movement, range_uses(pages, self), mover="B")], [
+            Line(compute, {"km_ok"})
+        ]
 
     def write_function_of_sums(self, node, pages, call):
         """`t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of
@@ -6541,6 +6968,7 @@ class HandlerCompiler:
                 "make one broadcast a mover: give the other mover=",
             )
         self.movers[mover] = name
+        index = self.class_mover(node, mover)
         self.compiled.broadcast_lines.setdefault(
             self.method.name, f"line {node.lineno}, `{self.text(node)}`"
         )
@@ -6550,11 +6978,13 @@ class HandlerCompiler:
         self.scope[name] = Value(
             "broadcast", name, mover=mover, window=window, pattern=along, length=length
         )
+        self.scope[name].index = index  # its arguments' place among its mover's
         unread = placed.get(spelling("broadcast_unread"))
         if unread is not None:  # a word of the handler: its C++, the names it reads
             self.scope[name].unread = (self.integer(unread), self.uses(unread))
+        arg = "kArgBroadcast" + (f" + km::kBroadcastArgs * {index}" if index else "")
         movement = Line(
-            f"km::Broadcast {name}(movement, command, kArgBroadcast);\n"
+            f"km::Broadcast {name}(movement, command, {arg});\n"
             f"if (!{name}.ok()) {{\n    return false;\n}}\n"
             f"if (!{name}.included()) {{\n    return true;\n}}",
             mover=mover,
@@ -6572,6 +7002,29 @@ class HandlerCompiler:
                 counted[1],
             ]
         return [movement, counted[0]], [counted[1]]
+
+    def class_mover(self, node, mover):
+        """The place of this handler's broadcast among its mover's in the class: a
+        core holds each one's arguments after the last's. A core has KM_BROADCASTS
+        broadcast areas (a broadcast's number picks one): a class past them is
+        refused, naming the broadcasts it has."""
+        line = f"line {node.lineno}, `{self.text(node)}`"
+        held = self.compiled.mover_broadcasts.setdefault(mover, [])
+        for index, (handler, _) in enumerate(held):
+            if handler == self.method.name:  # the handler made again (a variant)
+                return index
+        areas = abi.headers()["KM_BROADCASTS"]
+        others = [b for each in self.compiled.mover_broadcasts.values() for b in each]
+        if len(others) >= areas:
+            named = "; ".join(f"{h}, {at}" for h, at in others)
+            self.refuse(
+                node,
+                f"the class runs {len(others)} broadcasts already ({named}); a core "
+                f"has {areas} broadcast areas, one a broadcast of the class",
+                "make this handler's broadcast in a class of its own",
+            )
+        held.append((self.method.name, line))
+        return len(held) - 1
 
     def broadcast_place(self, node, along, placed):
         """A broadcast's mover and band: `mover="A"` (NoC 0: a column's sender at its
@@ -6665,6 +7118,7 @@ class HandlerCompiler:
                     broadcast.window,
                     broadcast.mover,
                     broadcast.length,
+                    broadcast.index,
                 )
             )
             if dtype == "float32":
@@ -6724,7 +7178,13 @@ class HandlerCompiler:
         if broadcast.unread is not None:  # each core's slot pushed as it is, or cast
             text, uses = self.unread_push(broadcast, text, uses)
         tensors = ",".join(sorted({part["pages"].tensor for part in parts}))
-        self.scope[value] = Value("arrived", buffer.name, buffer=buffer, tensor=tensors)
+        self.scope[value] = Value(
+            "arrived",
+            buffer.name,
+            buffer=buffer,
+            tensor=tensors,
+            parts=tuple(slot_part(part) for part in parts),
+        )
         self.wait(node, f"mover {broadcast.mover}", WAIT_FREE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_DONE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_VALID)
@@ -6734,6 +7194,7 @@ class HandlerCompiler:
             movement.append(Line(f"{counted}++;", {counted}, mover=broadcast.mover))
             compute.append(Line(f"{counted}++;", {counted}))
         if not self.loops:
+            self.finished_casts[value] = broadcast.mover
             movement += self.end_outside_loop(name)
         return movement, compute
 
