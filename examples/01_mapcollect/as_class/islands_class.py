@@ -1,9 +1,7 @@
-"""Map/collect written as a class on two cards as the islands of one session: the
-class of mapcollect_class.py unchanged, made with the islands' tensors (its build
-prints what may cross a link); islands.py's MAP rounds on each island's own group and
-on island 0 reading an input island 1 holds, checked with islands.py's sums, beside
-the hand program (--beside). See README.md.
-"""
+"""Map/collect written as a class on two cards, the islands of one session: the class
+of mapcollect_class.py unchanged, made with the islands' tensors; islands.py's MAP
+rounds on each island's group and on island 0 reading island 1's input, checked with
+islands.py's sums, beside the hand program (--beside). See README.md."""
 
 import argparse
 import json

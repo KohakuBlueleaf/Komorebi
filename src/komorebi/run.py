@@ -251,12 +251,10 @@ class Run:
         block=None,
         part=False,
     ):
-        """Queues a command for `handler` on cores [first, first + count) (default all),
-        or on cluster `cluster`'s X280 thread; returns its handle. `result`: the event
-        has the result word; `queued`: the kernel picks the cores; `block`: bytes or an
-        array its handlers read; `part`: an island's part of a split group. A handler
-        of a program written as a class takes its arguments (tensors, ints, patterns)
-        in `args`, made into its words."""
+        """Queues a command for `handler` on cores [first, first + count) (default all)
+        or cluster `cluster`'s X280 thread; returns its handle. `result`: ask the result
+        word; `queued`: the kernel picks the cores; `block`: bytes its handlers read;
+        `part`: an island's part. A class's handler makes `args` into its words."""
         started = time.perf_counter()
         program_field, method = 0, None
         if isinstance(handler, HandlerMethod | ClassHandler):
