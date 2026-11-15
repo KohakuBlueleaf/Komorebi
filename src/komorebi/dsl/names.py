@@ -194,6 +194,8 @@ NAMES = {
         "dynamic handler the message names there",
         "handler",
     ),
+    "min": Name("min", "min(a, b): the smaller of ints of the handler, a word", None),
+    "max": Name("max", "max(a, b): the larger of ints of the handler, a word", None),
     "zip": Name(
         "zip",
         "for a, b in zip(km.Stream(..), km.Stream(..)): streams read in step, a "

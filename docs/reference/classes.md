@@ -103,7 +103,9 @@ words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, 
 | `pages.write(total)` (one page) | mover B: `wait_front`, `km::write_pages` of one page, `noc_async_writes_flushed`, `cb_pop_front` | the held tile packed into a page buffer, DST released |
 | `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B | `km::reduce`, the arrivals added in rank order |
 | `whole = km.reduce(acc, form="tree", group=S)`, `acc` n tiles | the same in `km::digit_group(command, me, 1, S)`: S consecutive ranks a group, n tiles a slot | each of the n tiles added through DST tile n (n + 1 tiles of DST) |
-| `t.tiles[r0:r1, c0:c1]`, where a page range is taken | the first page `r0 x T + c0` (T the tensor's tile columns); one row, or all T columns, is a page range; more rows a `km::Walk` of whole rows, `T` apart | |
+| `whole = km.reduce(self.part, form="tree", group=S)`, `self.part` a float32 field of sums | `km::reduce_arrive` on mover A into slots of the field's tiles; `km::reduce_emit` of the field's pages on mover B (a sender) | each arrival copied into DST and packed onto the field with the packer's L1 accumulation; the field handed on (Products) |
+| `t.tiles[r0:r1, c0:c1]`, where a page range is taken | the first page `r0 x T + c0` (T the tensor's tile columns); one row, or all T columns, is a page range; more rows a `km::Walk` of whole rows, `T` apart; r and c any ints of the handler (words at run time) | |
+| `n = min(a, b)`, `max(a, b)`, a and b ints | `(a < b ? a : b)`, `(a > b ? a : b)` | the same |
 | `if self.rank == self.leader:` and `pages.write(whole)` | the leader's write of the sum | |
 | `return word` under `if self.rank == self.leader:` | `movement.result(word)` on mover B | |
 | `word = pages.read()` (one page) | mover B: `km::read_pages` of the page into its word page, the barrier, the L1 cache invalidated, the page's first word | |
@@ -119,7 +121,8 @@ words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, 
 | `t = km.cxx(..., gives=km.Tile)` | | `tile_regs_acquire()` then the body, which leaves the tile in DST 0 |
 | `self.f.fill(km.Stream(t.pages(first, n)))` | mover A: `reserve` of the field, `km::read_pages` of its n tiles, the barrier, `cb_push_back` | |
 | `self.f.fill(km.Stream(t.tiles[r0:r1, c0:c1]))` | the same, a read a row; refused on the card when the rows are more than the field holds | |
-| `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks | | the blocks' product packed into the field with L1 accumulation (Products) |
+| `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
+| `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
 | `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
@@ -331,22 +334,62 @@ program's library silu and its product by b on the matrix unit, which copies no 
 ## Products
 
 A tile function whose body is `return a @ b` of its two parameters is a matrix
-product, the library's `matmul_block`, in two forms. Its operands are bfloat16 tiles;
-its sums float32.
+product, the library's `matmul_block`. Its operands are bfloat16 tiles; its sums
+float32.
 
-- **A sum in DST.** `acc += self.f(block, self.w)` in a loop over a stream adds the
-  product of each tile of the stream by the field's row of `acc`'s width of tiles into
-  `acc`, the sum over K. The field is `km.L1[km.bf16, K, n, 32, 32]`, K rows of n
-  tiles; `acc` is `km.tile.zeros(km.fp32, n)`, n float32 tiles of DST.
-- **A sum in a field.** `self.part += self.f(xs, ws)`, `self.part` a float32 field of
-  rows x columns tiles, `xs` a block of rows x k tiles and `ws` one of k x columns,
-  each a broadcast's arrived block (`b.cast(...)` or `b.arrive()`), adds the blocks'
-  product into the field in L1, block pair by block pair, as the dense project's grid
-  form does.
+A product's weight is in one of two forms:
 
-The size rule: a sum is held in DST while it is at most 8 float32 tiles (4 in the
-half-sync DST, 8 in full sync, and a reduce of it takes one more); a larger sum is a
-float32 field, 4 KiB a tile of L1.
+- **A field.** `acc += self.f(block, self.w)` in a loop over X's stream adds the product
+  of each tile of the stream by the field's row of `acc`'s width of tiles into `acc`.
+  The field is `km.L1[km.bf16, K, n, 32, 32]`, K rows of n tiles, filled whole before
+  the first product: the form for a weight that is kept (filled by one handler, read by
+  others, or read by several loops).
+- **A stream.** `for xb, wb in zip(km.Stream(x.tiles[0:1, k0:k1], block=b),
+  km.Stream(w.tiles[k0:k1, c:c + n], block=b * n)):` reads X's tiles and W's rows in
+  step, a tile of X's stream a row of W's (b K tiles a block of each), in one move of
+  the movers; each W block is used as it arrives and freed, so W's read and the
+  products overlap. X's stream is the zip's first: the loop counts its tiles, and the
+  last block holds the rest of K.
+
+A product's sum is in one of two places:
+
+- **DST.** `acc += self.f(...)`, `acc` a `km.tile.zeros(km.fp32, n)`: n float32 tiles of
+  DST, each W block's product added tile by tile.
+- **A field of sums.** `self.part += self.f(xb, wb)`, `self.part` a float32 field: the
+  blocks' product by subblocks of DST (h x w tiles, at most 4), each packed onto the
+  field's tiles with the packer's L1 accumulation (overwriting at the first sum). The
+  blocks are two streams' (the field one row of n tiles, `km.L1[km.fp32, 1, n, 32,
+  32]`) or two broadcasts' arrived blocks (rows x k and k x columns, `b.cast(...)` or
+  `b.arrive()`), as the dense project's grid form.
+
+The size rule: a sum in DST is at most 8 float32 tiles (4 in the half-sync DST, 8 in
+full sync); a larger sum is a float32 field, 4 KiB a tile of L1.
+
+`whole = km.reduce(acc, form="tree", group=S)` adds the group's sums at its first
+rank, and so does `whole = km.reduce(self.part, form="tree", group=S)` of a field of
+sums: mover A takes each arrival into a slot of the field's tiles, compute copies it
+into DST and packs it onto the field with the packer's L1 accumulation, then hands the
+field on, to mover B, which sends a sender's field to its receiver (`km::reduce_emit`),
+or to the leader's write. The reduce's size rule: of a sum in DST, its n tiles and one
+for the arrivals, at most 8 (n at most 7); of a field, the field and its slots in L1, a
+slot of the field's n float32 tiles for each round by tree (the bits of S - 1, 7 when
+the group is the command's) or for each other core of the group by owner (which takes
+`group=`). At 16 tiles in groups of 14: 4 slots, 256 KiB.
+
+A rectangle `t.tiles[r0:r1, c0:c1]` takes any ints of the handler as its bounds
+(command words, expressions of `self.rank`, `self.x`, `min` and `max`), its widths read
+at run time, so a last column of cores narrower than the others is the same line:
+`w.tiles[k0:k0 + KC, left:min(left + OW, N_TILES)]`. Where the line holds the
+rectangle's pages, the build needs a side's most: a side `c:c + n` is n, and
+`c:min(c + n, e)` at most n.
+
+- A cast's slot holds the most rows and columns, the rows at the most columns' pitch,
+  each row's words read; a side whose most the build cannot tell is refused.
+- A field's fill and a write of a field of sums take the field's pitch, a row of the
+  field a row of the rectangle; a side that may be more than the field's is refused.
+- A stream's blocks are whole rows: a stream of more than one row takes constant
+  columns (its rows may be words).
+- A step (`r0:r1:2`) is refused.
 
 `@km.tile_function(fidelity="HiFi2")` sets the matrix unit's fidelity, tt-metal's word
 (LoFi, HiFi2, HiFi3, HiFi4): the compute kernel's `math_fidelity`, so a class's
@@ -358,7 +401,7 @@ the grid form for more):
 ```python
 class Linear(km.Program):
     OH = km.symbol()  # the plan's
-    weight: km.L1[km.bf16, PART, WIDTH, 32, 32]
+    sums: km.L1[km.fp32, 1, WIDTH, 32, 32]
     part: km.L1[km.fp32, OH, OW, 32, 32]
 
     @km.tile_function(fidelity="HiFi2")
@@ -371,11 +414,12 @@ class Linear(km.Program):
         first = self.rank // SPLIT * WIDTH  # the group's columns of Y
         k0 = share * K_TILES // SPLIT
         k1 = (share + 1) * K_TILES // SPLIT
-        self.weight.fill(km.Stream(w.tiles[k0:k1, first : first + WIDTH]))
-        acc = km.tile.zeros(km.fp32, WIDTH)
-        for block in km.Stream(x.tiles[0:1, k0:k1], block=STREAM_BLOCK):
-            acc += self.project(block, self.weight)
-        whole = km.reduce(acc, form="tree", group=SPLIT)
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, k0:k1], block=CHUNK),
+            km.Stream(w.tiles[k0:k1, first : first + WIDTH], block=W_BLOCK),
+        ):
+            self.sums += self.project(xb, wb)
+        whole = km.reduce(self.sums, form="tree", group=SPLIT)
         if self.rank == self.leader:
             y.tiles[0:1, first : first + WIDTH].write(whole)
 
@@ -392,36 +436,42 @@ class Linear(km.Program):
             else:
                 xs = along.arrive()
             if down.sender():
-                ws = down.cast(w.tiles[k0 : k0 + KC, left : left + OW].read())
+                ws = down.cast(
+                    w.tiles[k0 : k0 + KC, left : min(left + OW, N_TILES)].read()
+                )
             else:
                 ws = down.arrive()
             self.part += self.project(xs, ws)
-        y.tiles[top : top + OH, left : left + OW].write(self.part)
+        y.tiles[top : top + OH, left : min(left + OW, N_TILES)].write(self.part)
 ```
 
-`split` is the K split: 96 cores in groups of 3 consecutive ranks, each group 4 columns
-of Y, each core a third of K (43 or 42 tiles); the field is the core's K rows of the
-group's columns, X's row of tiles streams past it, and the group's three sums are added
-by a tree in the group, the first rank its owner. `grid` is the grid form on an 8 x 8
-rectangle: core (x, y) makes Y's block of OH x 16 tiles; X's chunks of 4 K tiles are cast
-along the row and W's down the column, and each core adds the two blocks' product into
-its field.
+`split` is the dense project's K split for one row tile (its plan 14,1,16): 112 cores
+in groups of 14 consecutive ranks, each group 16 columns of Y, each core a fourteenth
+of K (9 or 10 tiles); X's tiles and W's rows stream in step, 2 K tiles a block, each
+pair's product packed onto the 16 tiles of `sums`; the group's sums are added by a tree
+of 4 rounds, the first rank its owner. `grid` is the grid form on the hand's 12 x 8
+rectangle: core (x, y) makes Y's block of OH x 11 tiles, the last column 7; X's chunks
+of 2 K tiles are cast along the row and W's down the column, and each core adds the two
+blocks' product into its field.
 
 | Line | Movers | Compute | Cost |
 |---|---|---|---|
-| `self.weight.fill(km.Stream(w.tiles[k0:k1, c0:c1]))` | mover A reads the field's rows, one read of c1 - c0 pages a row | waited for once a handler, before the first product; freed at the handler's end (or at the next fill, when another handler reads it) | the field's bytes, once a command |
-| `acc = km.tile.zeros(km.fp32, n)` | | `tile_regs_acquire()`, `fill_tile` of DST 0 .. n - 1; DST in full sync past 4 tiles | n fills on the vector unit |
-| `for block in km.Stream(x.tiles[0:1, k0:k1], block=8):` | one read stream | block k from the half its mover filled | the read of X's tiles |
-| `acc += self.project(block, self.weight)` | | before the blocks: the field's wait, a stall of the math CPU for the vector unit's fills, `matmul_block_init(in0, field, 0, n, 1, 8)`; a tile t of block k: `matmul_block(in0, field, t, (k x 8 + t) x n, 0, 0, n, 1, 8)` | n tile products a stream tile, 16 MVMUL words a phase (HiFi2 2 phases, HiFi4 4) |
-| `whole = km.reduce(acc, form="tree", group=3)` | `km::reduce_arrive` and `km::reduce_emit` of n tiles a slot, in `km::digit_group(command, me, 1, 3)` | the arrivals added tile by tile through DST tile n | 2 rounds; n float32 tiles (4 KiB each) sent a round, n adds |
-| `if self.rank == self.leader:` `y.tiles[0:1, c0:c1].write(whole)` | the owner (`rank - rank % 3`) writes n pages | float32 sums into Y's bfloat16: the n tiles copied into DST and packed again | the pack of n tiles, not priced |
+| `for xb, wb in zip(km.Stream(x.tiles[0:1, k0:k1], block=2), km.Stream(w.tiles[k0:k1, c0:c1], block=32)):` | two read streams in one move: X's run of K tiles, W's rows of c1 - c0 tiles (a `km::Walk`), 2 rows a block | block k of each from the half its mover filled; the rest of K in the last | the reads of X's tiles and of W's rows |
+| `self.sums += self.project(xb, wb)` | | before the blocks: `matmul_block_init(x, w, 0, 4, 1, 2)`, the pack's format; a block: the field reserved at the first, `pack_reconfig_l1_acc` on after it; for each subblock of 1 x 4 tiles the products over the block's K tiles, packed onto the field; both blocks freed | 32 tile products a pair; the pack and its L1 accumulation not priced |
+| `acc += self.project(xb, wb)`, `acc` n tiles of DST | | tile t of xb: `matmul_block(x, w, t, t x n, dst, 0, n, 1, b)` | n tile products a tile of X |
+| `self.f.fill(km.Stream(w.tiles[k0:k1, c0:c1]))`, a kept weight | mover A reads the field's rows, one read of c1 - c0 pages a row | waited for once a handler, before the first product; freed at the handler's end (or at the next fill, when another handler reads it) | the field's bytes, once a command |
+| `acc += self.project(block, self.w)` | | before the blocks: the field's wait, a stall of the math CPU for the vector unit's fills, `matmul_block_init(in0, field, 0, n, 1, 8)`; a tile t of block k: `matmul_block(in0, field, t, (k x 8 + t) x n, 0, 0, n, 1, 8)` | n tile products a stream tile, 16 MVMUL words a phase (HiFi2 2 phases, HiFi4 4) |
+| `whole = km.reduce(self.sums, form="tree", group=14)` | `km::reduce_arrive` of 16 tiles a slot on mover A; `km::reduce_emit` of the field's 16 pages on mover B, in `km::digit_group(command, me, 1, 14)` | each arrival's 16 tiles copied into DST and packed onto the field; the field pushed | 4 rounds; 16 float32 tiles (64 KiB) sent a round, 16 copies and packs |
+| `if self.rank == self.leader:` `y.tiles[0:1, c0:c1].write(whole)` | the owner (`rank - rank % 14`) writes 16 pages | the field's sums copied into DST 4 at a time and packed in Y's bfloat16 | the pack of 16 tiles |
 | `xs = along.cast(x.tiles[top:top + OH, k0:k0 + KC].read())`, `xs = along.arrive()` | the sender reads the block a row at a time and casts it; the others receive it | | the block's bytes from DRAM once a row (or column) of the rectangle |
-| `self.part += self.project(xs, ws)` | | both blocks received; the field reserved at the first pair; `matmul_block_init(xs, ws, 0, w, h, k)`, `pack_reconfig_l1_acc` on after the first pair; for each subblock of h x w tiles (h x w at most 4; 1 x 4 here) the products over k, packed onto the field's tiles; both blocks freed | rows x columns x k tile products a pair; the pack and its L1 accumulation not priced |
-| `y.tiles[top:top + OH, left:left + OW].write(self.part)` | mover B writes a row of OW pages at a time | the field pushed, its tiles copied and packed into Y's format, the sums' count reset | the pack of rows x columns tiles; Y's bytes |
+| `ws = down.cast(w.tiles[k0:k0 + KC, left:min(left + OW, N_TILES)].read())` | the slot holds KC x 11 tiles; the sender reads each row's `min(left + 11, 128) - left` tiles at the slot's pitch of 11 | | the columns' bytes |
+| `self.part += self.project(xs, ws)` | | both blocks received; the field reserved at the first pair; `matmul_block_init(xs, ws, 0, w, h, k)`, `pack_reconfig_l1_acc` on after the first pair; for each subblock of h x w tiles (4 x 1 here: 11 has no divisor up to 4) the products over k, packed onto the field's tiles; both blocks freed | rows x columns x k tile products a pair; the pack and its L1 accumulation not priced |
+| `y.tiles[top:top + OH, left:min(left + OW, N_TILES)].write(self.part)` | mover B writes each row's `min(left + 11, 128) - left` pages of the field's 11 | the field pushed, its tiles copied and packed into Y's format, the sums' count reset | the pack of rows x columns tiles; Y's bytes |
 
 A class that mixes tile formats (bfloat16 operands, float32 sums) reconfigures the
 unpack and the pack before each copy, product and pack (`reconfig_data_format`,
-`pack_reconfig_data_format`); one that does not has none.
+`pack_reconfig_data_format`); one that does not has none. A field of sums counts as a
+format compute packs.
 
 The build prints each product line's cost: the words the library issues, priced as the
 tile compiler's matrix unit runs them (`matrix_cost`), from blocks rotating to a block
@@ -429,37 +479,36 @@ alone, as the library's order is not known to it:
 
 ```text
 products (the library's matmul_block, priced by the tile compiler's matrix_cost; the library's order, rotation not known):
-  split, line 70, `acc += self.project(block, self.weight)`: project, a tile of the stream by 4 tile(s) of the field: 4 tile product(s), 128 MVMUL words (HiFi2), 135.0 to 770.0 cycles a stream tile; the unpack of the operands and the pack not priced
-  grid, line 91, `self.part += self.project(xs, ws)`: project, a pair of blocks into the field's 64 tiles over k = 4: 256 tile products, 8192 MVMUL words (HiFi2), 8199.0 to 49154.0 cycles a pair; the unpack, the pack and its L1 accumulation not priced
+  split, line 74, `self.sums += self.project(xb, wb)`: project, a pair of blocks into the field's 16 tiles over k = 2: 32 tile products, 1024 MVMUL words (HiFi2), 1031.0 to 6146.0 cycles a pair; the unpack, the pack and its L1 accumulation not priced
+  grid, line 97, `self.part += self.project(xs, ws)`: project, a pair of blocks into the field's 44 tiles over k = 2: 88 tile products, 2816 MVMUL words (HiFi2), 2823.0 to 16898.0 cycles a pair; the unpack, the pack and its L1 accumulation not priced
 ```
 
-On card 1 (a Blackhole p150a), seed 1, HiFi2 as the dense project's rows, against
-its hand kernels at the same shapes (their text by a build on a mock device):
+On card 1 (a Blackhole p150a), seed 1, HiFi2 as the dense project's rows, one load for
+both shapes, against its hand kernels at the same shapes (their text by a build on a
+mock device):
 
-| Y = X W, M x K x N | Plan | Values | Class | Hand (the dense project) |
-|---|---|---|---|---|
-| 32 x 4096 x 4096 | K split | integers: exact, 0 wrong; normal bfloat16: relative RMS 4.38e-3 against float64, the SwiGLU of two products and the gate 8.03e-3 | 111.9 us a command (median of 3); 88,032 B of kernel text | 92.4 us; 61,584 B |
-| 1024 x 4096 x 4096 | grid form | the same: exact; 4.38e-3, 8.03e-3 | 434.3 us; 88,096 B | 382.4 us; 69,296 B |
+| Y = X W, M x K x N | Plan | Values | Class | Hand (the dense project) | The first version of the class |
+|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | K split, groups of 14, 16 columns | integers: exact, 0 wrong; normal bfloat16: relative RMS 4.38e-3 against float64, the SwiGLU of two products and the gate 8.03e-3 | 94.2 us a command (median of 3); 90,192 B of kernel text | 92.4 us; 61,584 B | 111.9 us (groups of 3, 4 columns, the weight a field) |
+| 1024 x 4096 x 4096 | grid form, 12 x 8 | the same: exact; 4.38e-3, 8.03e-3 | 358.6 us; 90,192 B | 382.4 us; 69,296 B | 434.3 us (8 x 8) |
 
-The account, from the plans' parts run as commands of their own
-([linear_parts.py](../../experiments/dense_class/linear_parts.py)), against the card's
-DRAM ceiling of 495.6 GB/s and the matrix unit's word a cycle at 1,350 MHz:
+The account beside the first version's, whose terms were measured by the plans' parts
+run as commands of their own
+([linear_parts.py](../../experiments/dense_class/linear_parts.py), the first version's
+plans), against the card's DRAM ceiling of 495.6 GB/s:
 
-| K split, 32 x 4096 x 4096 | us | At the ceilings | Whose |
+| K split, 32 x 4096 x 4096 | First version | Now | Whose |
 |---|---|---|---|
-| W into the fields, 33.55 MB (`fill` alone) | 87.5 (383 GB/s) | 67.7 | the read's rate; the hand reads W at 363 GB/s |
-| X's stream and the products after the fill, X 8.45 MB, 172 tile products a core (`products` alone) | 24.4 | X 17.0; products 4.1 | the lowering's: the field is filled whole before the first product, where the hand reads X and multiplies under W's read; the form's: 6.2 MB of it (12.5 us at the ceiling) is X read by each group of 4 columns, the most a sum in DST takes with a reduce's tile |
-| the tree in groups of 3, the repack, Y's write | 0.1 (111.9 less the two) | | |
+| W into the field before the first product, 33.55 MB | 87.5 us (383 GB/s), then X's stream and the products, 24.4 | W read under the products: the whole command 94.2 us, W at 356 GB/s over it | the lowering's, gone: each W block used as it arrives (a product over two streams) |
+| X read by each group of 4 columns, 8.45 MB (6.2 MB more than the hand's) | in the 24.4 | X read once a group of 16 columns, 2.1 MB, as the hand's | the form's, gone: a group as wide as the hand's (a reduce of a field of sums) |
+| left: 1.8 us over the hand's (2 %) | | not split by term: no part was run. Its candidates: W in blocks of 2 K rows (64 KiB), three blocks of four on mover A (the reads' AAAB), where the hand reads chunks of 5 (160 KiB) on both movers in turn; after the last block its products, the tree's 4 rounds and Y's write, the hand's in form | |
 
-| Grid form, 1024 x 4096 x 4096 | us | At the ceilings | Whose |
+| Grid form, 1024 x 4096 x 4096 | First version | Now | Whose |
 |---|---|---|---|
-| the two casts, W 33.55 MB by 8 column senders, X 8.39 MB by 8 row senders, blocks received and freed (`casts` alone) | 402.6 (W 83 GB/s, 10.4 a sender) | 84.5 for both from DRAM | the form's: 8 senders of W at the hand's rate a sender (12 at 10.1, 121 GB/s; at that W's cast is 277 us) |
-| the products not under the casts, Y's write (8.4 MB) | 31.7 (434.3 less the casts) | the products 194 (8,192 tile products a core, under the casts); Y 17.0 | the last pair's products and the write after it |
+| W's casts by the column senders, 33.55 MB | 402.6 us by 8 senders (10.4 GB/s a sender) | 12 senders: at that rate a sender, 269 us | the form's, gone: 12 columns of 11, the last 7 (a rectangle whose bounds are words) |
+| the rest: X's casts, the products, the last pair, Y's write | 31.7 us after the casts | 358.6 us in all, 24 us under the hand's | not split by term: no part was run. K chunks of 2 (L1: at 4 the casts' slots and the K split's buffers are over a core's L1 with the runtime's), 64 casts a column where the hand casts 8 of 16 |
 
-The grid form here is 8 x 8 cores of blocks of 16 columns, where the hand's is 8 x 12
-of 11 (its last column 7): a rectangle's columns are a constant, so 12 columns of
-cores over 128 tiles of N are not written. The gate after the products, as the Tile
-functions section's: 7.3 us and 95.9 us.
+The gate after the products, as the Tile functions section's: 7.3 us and 92.7 us.
 
 ## Fields
 
@@ -676,7 +725,7 @@ Unfilled.apply, line 131, `acc += project(block, self.weight)  # unfilled`: self
 Narrow.apply, line 142, `acc += project(block, self.weight)  # narrow`: self.weight is K rows of 2 tiles and acc holds 1; declare self.weight: km.L1[km.bf16, K, 1, 32, 32] or make acc km.tile.zeros(km.fp32, 2)
 Mixed.apply, line 154, `acc += project(block, self.weight)  # mixed`: this loop has other tile lines, and a product holds the matrix unit's setup for the loop; keep the loop to the product
 Stepped.copy, line 204, `km.Stream(x.tiles[0:4:2, 0:4]).drain()  # stepped`: a rectangle of tiles is two slices, rows then columns, each with its start and end and no step; write x.tiles[r0:r1, c0:c1]
-Ragged.copy, line 210, `km.Stream(x.tiles[0:2, 0:n]).drain()  # ragged`: a rectangle of more than one row has a constant number of columns; write x.tiles[r0:r1, c:c + n], n a constant
+Ragged.copy, line 210, `km.Stream(x.tiles[0:2, 0:n]).drain()  # ragged`: a stream's blocks are whole rows of its rectangle, and this rectangle's columns are a word; stream x.tiles[r0:r1, c:c + n], n a constant, or one row of it
 Uneven.copy, line 216, `km.Stream(x.tiles[0:4, 0:3], block=4).drain()  # uneven`: a block of a rectangle of 3 columns is whole rows of it; give block= a multiple of 3
 Owned.apply, line 228, `whole = km.reduce(acc, form="owner")  # owned`: a reduce of 2 tiles by owner holds a slot of them for each other core of the group; reduce them by tree: form="tree"
 Tall.apply, line 242, `y.tiles[0:2, 0:1].write(acc)  # tall`: a page write of a rectangle is one row of it; write y.tiles[r:r + 1, c0:c1].write(...)
@@ -687,6 +736,15 @@ Untaken.use, line 467, `km.cxx("use(table);", takes=[self.table], on="pack")`: s
 Outside.copy, line 473, `first, count, more = items.pages(0, 1).read()[0:2]`: words 0 to 1 of a page of 1024 words for 3 names; give a slice of the page with a name each word
 Pushed.copy, line 480, `km.cxx("fill(made);", takes=[made])`: made is a write stream: its pages are pack's to fill; take it in a body on="pack"
 Unknown, line 483: compute option 'dst_full_sync': the host API has no such option; give math_fidelity or one of fp32_dest_acc_en, dst_full_sync_en, bfp8_pack_precise, math_approx_mode, enable_trisc2_rvv
+Unproduct.apply, line 583, `for h, g in zip(km.Stream(a.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:2], block=2)):`: streams in step with blocks of different sizes are a product's operands: a tile of one is a row of the other; keep the loop to `acc += self.f(a, b)`, f `return a @ b`
+Unblocked.apply, line 596, `acc += coarse(xb, wb)  # unblocked`: acc is 2 tiles wide: each block of the second stream is the first's 1 K tiles by 2 columns (2 tiles), and it is 3; stream w.tiles[k0:k1, c:c + 2] with block=2 beside x's block=1
+Swapped.apply, line 607, `acc += coarse(xb, wb)  # swapped`: the loop counts the first stream's tiles, and the product's first operand is not the first stream's block; zip x's stream first, then w's
+Unsummed.apply, line 616, `whole = km.reduce(self.sums, form="tree", group=2)  # unsummed`: self.sums holds no sums above in this handler; add products into it first: self.sums += self.f(a, b)
+Owners.apply, line 630, `whole = km.reduce(self.sums, form="owner")  # owners`: a reduce of self.sums by owner holds a slot of its 2 tiles for each other core of the group, and the group's size is the command's; give group=S, or reduce by tree: form="tree"
+Unbounded.apply, line 640, `arrived_blocks = down.cast(x.tiles[0:2, 0:n].read())  # unbounded`: a cast's slot holds the rectangle's most rows and columns, and the build knows no most for a side here; write each side r:r + m or r:min(r + m, e), m a constant
+Overwide.apply, line 656, `y.tiles[0:1, 0 : min(3, self.rank)].write(self.part)  # overwide`: self.part is 1 x 2 tiles; write a rectangle of them (a side a word: the build must know it is at most the field's); write y.tiles[r:r + 1, c:c + 2].write(self.part), or c:min(c + 2, e)
+Unfillable.load, line 664, `self.weight.fill(km.Stream(w.tiles[0:2, 0:n]))  # unfillable`: the rectangle's columns are a word and self.weight's rows are 2 tiles: the build must know they are at most 2; write w.tiles[r0:r1, c:min(c + 2, e)]
+Lone.copy, line 670, `km.Stream(x.pages(0, min(2))).drain()  # lone`: min(...) of level 1 takes two ints or more; write min(a, b)
 ```
 
 A range of items where a line moves whole pages (a fill, a page write, a word read, a
@@ -721,8 +779,8 @@ the packed text of the five CPUs, of 70,656 B.
 | [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
 | [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 36,996 / 37,936 B | 83.70 / 76.24 us a command (bfloat16, 12 cores, 64 tiles a core, 2 tiles an acquire; one tile an acquire and the first body 86.68 / 76.06); the emitted body 1,597 cycles a tile on the math CPU, 1,597.6 printed (the first body 1,656, 1,657.6 printed; the hand body 1,901.5 in the one-core harness) |
 | [14 message handlers](../../examples/14_message_handlers/as_class/README.md) | the same: exact in 3 of 3 runs, 1,013,360 messages of three handlers | 42,640 / 43,568 B (mock) | 10,987 / 11,149 us a run (median of 3) |
-| [linear layer](../../experiments/dense_class/README.md), 32 x 4096 x 4096, the K split | Y equal to the host's product (integers); 4.38e-3 relative RMS (normal bfloat16, HiFi2) | 88,032 / 61,584 B (mock) | 111.9 / 92.4 us a command (96 cores against 112) |
-| [linear layer](../../experiments/dense_class/README.md), 1024 x 4096 x 4096, the grid form | the same | 88,096 / 69,296 B (mock) | 434.3 / 382.4 us (8 x 8 cores against 8 x 12) |
+| [linear layer](../../experiments/dense_class/README.md), 32 x 4096 x 4096, the K split | Y equal to the host's product (integers); 4.38e-3 relative RMS (normal bfloat16, HiFi2) | 90,192 / 61,584 B (mock) | 94.2 / 92.4 us a command (112 cores, the hand's groups of 14 and blocks of 16) |
+| [linear layer](../../experiments/dense_class/README.md), 1024 x 4096 x 4096, the grid form | the same | 90,192 / 69,296 B (mock) | 358.6 / 382.4 us (12 x 8 cores, as the hand's) |
 | [tile rules](../../experiments/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
 | [ray tracer's trace pass](../../experiments/raytrace_class/README.md) (TRACE, tiny scene, the tree in L1) | the hand program's hit pages word for word: 0 of 18,874,368 words differ (the cycles vector apart), the walk's counts equal on every core; against numpy's trace 658,018 hits, none differs | 48,240 / 85,808 B (mock) | 3,294.9 / 3,259.9 us a command (120 cores, 32,768 packets; the tree loaded once, 23.7 us) |
 | [tile rules](../../experiments/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,248 B (stamped) | the emitted body 687.0 cycles a row of 2 tiles on the math CPU, 677.0 printed, 689.5 in the one-core harness (the first body 771.0, 753.0 printed); the hand norm 3,201.5 |
@@ -731,10 +789,10 @@ the packed text of the five CPUs, of 70,656 B.
 
 A rectangle per command; tile arithmetic outside a tile function (`tile * factors`
 in a handler's line); slices and `.columns` of a field; a rectangle of tiles with a
-step, or of columns that are not a constant (a last column of cores narrower than the
-others); a field filled from a broadcast; a product's operands other than a stream's
-tile and a field, or two broadcasts' blocks into a float32 field; a product and a tile
-function in one body; the fidelity derived from a tile function's tolerance (it is
+step; a stream of a rectangle of more than one row whose columns are words; a field
+filled from a broadcast; a product's operands other than a stream's tile and a field,
+two streams' blocks, or two broadcasts' blocks into a float32 field; a field of sums of
+more than one row from two streams; a product and a tile function in one body; the fidelity derived from a tile function's tolerance (it is
 given as `fidelity=`); a word field with a rectangle (`self.x`, a broadcast).
 
 A body's own buffer (a field only bodies fill, as a hand kernel's scratch or a page it

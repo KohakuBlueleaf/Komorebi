@@ -529,6 +529,8 @@ def mixed_formats(compiled):
     for buffer in compiled.buffers:
         if buffer.role in ("read", "field", "arrival", "broadcast"):
             unpacked.add(buffer.dtype)
+            if buffer.name in compiled.summed_fields:  # sums packed into the field
+                packed.add(buffer.dtype)
         elif buffer.role in ("write", "out"):
             packed.add(buffer.dtype)
             if buffer.name in compiled.unpack_fp32:  # a sum packed again
