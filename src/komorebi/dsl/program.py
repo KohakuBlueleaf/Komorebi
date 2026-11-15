@@ -7,7 +7,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from komorebi import _env, abi, layout, overlay
+from komorebi import _env, abi, formats, layout, overlay
 from komorebi import program as km_program
 from komorebi.dsl import compiler
 from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
@@ -441,13 +441,31 @@ def rectangle_args(compiled, rect, nocs):
     return program_args, (group.first, group.count)
 
 
+def dst_is_fp32(compiled):
+    """Whether the class's compute has an fp32 Dst: yes, unless its buffers are of
+    the A family, which the card reads right only into a 16-bit Dst; such a class
+    has no float32 tile unpacked to Dst (a sum in a field, an own fp32 field)."""
+    family = [b for b in compiled.buffers if formats.FAMILY.get(b.dtype) == "a"]
+    if not family:
+        return True
+    fp32 = [b for b in compiled.buffers if b.name in compiled.unpack_fp32]
+    if fp32:
+        raise ProgramError(
+            f"{compiled.name}: {family[0].what or family[0].name} is of the A family, "
+            "whose compute has a 16-bit Dst, and "
+            f"{fp32[0].what or fp32[0].name} is float32 tiles unpacked to Dst (fp32 "
+            "only): give the class's tiles the B family, or no float32 sum"
+        )
+    return False
+
+
 def compute_options(compiled):
     """The compute kernel's options: fp32 in DST; float32 buffers unpacked to it;
     DST in full-sync mode for a row-form tile function; then the class's own
     (compute=), over these."""
     options = {
         "math_fidelity": compiled.fidelity or "HiFi4",
-        "fp32_dest_acc_en": True,
+        "fp32_dest_acc_en": dst_is_fp32(compiled),
     }
     if compiled.full_dst:  # a row-form tile function's DST tiles past the half
         options["dst_full_sync_en"] = True

@@ -18,7 +18,7 @@ from komorebi.dsl import front
 from komorebi.dsl.names import kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line
 from komorebi.dsl.tile import trace, unit_program
-from komorebi.dsl.tile.ir import BF16, F32, KernelIR, PlanError, TensorParam
+from komorebi.dsl.tile.ir import BF16, BLOCK_B, F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.errors import ProgramError
@@ -62,7 +62,7 @@ ALONG = {"row": "A", "column": "B"}
 # A tile function's stamps page: the sequence, the calls, 16 empty spans (a wall-clock
 # pair around one tensix_sync), then each call's span from word 18.
 SPANS_EMPTY, SPANS_FIRST = 16, 18
-TILE_FORMATS = {"float32": F32, "bfloat16": BF16}
+TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 # An inline body's CPU (on=): a mover, one compute CPU, or compute's three; the #if of
 # each one CPU's code.
 COMPUTE_CPUS = ("unpack", "math", "pack")
@@ -434,6 +434,49 @@ def word_field(value):
     )
 
 
+# The formats a product's operand may be (each side its own), by exponent family:
+# float32 is held as tf32 and goes with either.
+PRODUCT_FAMILIES = {
+    "b": ("bfloat16", "bfp8_b", "bfp4_b", "bfp2_b"),
+    "a": ("float16", "bfp8", "bfp4", "bfp2"),
+}
+
+
+def product_refusal(left, right):
+    """None, or why a product of a `left` tile with a `right` tile is refused: each
+    side a matrix format (float32 or one of PRODUCT_FAMILIES), both of one family."""
+    matrix = ("float32", *PRODUCT_FAMILIES["b"], *PRODUCT_FAMILIES["a"])
+    for side, dtype in (("left", left), ("right", right)):
+        if dtype not in matrix:
+            return (
+                f"a product's {side} operand is {dtype}: the matrix unit takes "
+                f"{', '.join(matrix)}"
+            )
+    families = {
+        f for f, names in PRODUCT_FAMILIES.items() for d in (left, right) if d in names
+    }
+    if len(families) > 1:
+        return (
+            f"a product of {left} and {right}: its operands are of one exponent "
+            "family (bfloat16 and bfp*_b, or float16 and bfp*; float32 goes with "
+            "either)"
+        )
+    return None
+
+
+def tile_format_refusal(formats):
+    """None, or why a tile function is refused tiles of `formats`: its code runs on
+    an fp32 Dst, which reads the A family wrong (the card: each datum 2^-15 off)."""
+    wrong = [f for f in formats if f not in TILE_FORMATS]
+    if not wrong:
+        return None
+    return (
+        f"a tile function takes tiles of float32 or the B family ("
+        f"{', '.join(TILE_FORMATS)}), not {', '.join(wrong)}: its code runs on an "
+        "fp32 Dst, which the card fills wrong from the A family"
+    )
+
+
 def field_refused(compiled, name, why, instead):
     """A refusal of field `name`: the class, the field, its line in the source."""
     lines = Path(compiled.source).read_text().split("\n")
@@ -484,7 +527,7 @@ def bind_fields(compiled, plan, l1):
                 f"{elements} items are not whole tiles ({TILE_ELEMENTS} a tile)",
                 "give sizes whose product is a multiple of 1,024",
             )
-        page_bytes = TILE_ELEMENTS * value.format.itemsize
+        page_bytes = value.format.tile_bytes
         shape = " x ".join(
             f"{n} = {solved[n]}" if isinstance(n, str) else str(n) for n in value.shape
         )
@@ -567,17 +610,17 @@ def solve(compiled, symbol, plan, l1, name):
     """The largest value of `symbol` for which every field is whole tiles and the
     fields and buffers fit `l1` bytes."""
     used = sum(sum(b.pages) * b.page_bytes for b in compiled.buffers)
-    fixed, per = 0, 0  # bytes without the symbol, and bytes per unit of it
+    fixed, per = 0, 0  # without the symbol, and per unit of it: 1/1,024ths of bytes
     step = 1
     for value in compiled.fields.values():
-        rest = field_elements(value, {**plan, symbol: 1}) * value.format.itemsize
+        items = field_elements(value, {**plan, symbol: 1})
+        rest = items * value.format.tile_bytes
         if symbol in value.shape:
             per += rest
-            items = rest // value.format.itemsize
             step = math.lcm(step, TILE_ELEMENTS // math.gcd(items, TILE_ELEMENTS))
         else:
             fixed += rest
-    room = l1 - used - fixed
+    room = (l1 - used) * TILE_ELEMENTS - fixed
     value = room // per // step * step if per and room > 0 else 0
     if value < 1:
         raise field_refused(
@@ -2122,11 +2165,13 @@ class HandlerCompiler:
                 f"write acc += self.{function.name}(block, self.w)",
             )
         stored = self.compiled.fields[field_]
-        if item.buffer.dtype != "bfloat16" or stored.format.dtype != "bfloat16":
+        why = product_refusal(item.buffer.dtype, stored.format.dtype)
+        if why is not None:
             self.refuse(
                 node,
-                "a product's operands are bfloat16 tiles (the matrix unit's)",
-                "stream a bfloat16 tensor and declare the field km.bf16",
+                why,
+                "stream a tensor of a matrix format and declare the field in one of "
+                "its family",
             )
         columns = stored.shape[1] if len(stored.shape) == 4 else None
         if columns != value.width:
@@ -2276,12 +2321,9 @@ class HandlerCompiler:
     def stream_operands(self, node, function, a, b, columns, target):
         """Two streams' blocks as a product's operands: bfloat16, b's block k rows
         of `columns` for each of a's k tiles (a: one row of tiles a block)."""
-        if a.buffer.dtype != "bfloat16" or b.buffer.dtype != "bfloat16":
-            self.refuse(
-                node,
-                "a product's operands are bfloat16 tiles (the matrix unit's)",
-                "stream bfloat16 tensors",
-            )
+        why = product_refusal(a.buffer.dtype, b.buffer.dtype)
+        if why is not None:
+            self.refuse(node, why, "stream tensors of matrix formats of one family")
         if a.width != 1 or b.buffer.block != a.buffer.block * columns:
             self.refuse(
                 node,
@@ -2392,12 +2434,9 @@ class HandlerCompiler:
                 f"self.{field_} holds sums: fp32 tiles, rows x columns of them",
                 f"declare self.{field_}: km.L1[km.fp32, rows, columns, 32, 32]",
             )
-        if any(buffer.dtype != "bfloat16" for buffer in blocks):
-            self.refuse(
-                node,
-                "a product's operands are bfloat16 tiles (the matrix unit's)",
-                "cast bfloat16 tensors' tiles",
-            )
+        why = product_refusal(blocks[0].dtype, blocks[1].dtype)
+        if why is not None:
+            self.refuse(node, why, "cast tiles of matrix formats of one family")
         rows, columns = self.field_sides(node, field_)
         a, b = blocks
         inner = a.block // rows if rows and a.block % rows == 0 else 0
@@ -3357,6 +3396,9 @@ class HandlerCompiler:
                 formats.append(item.buffer.dtype)
             else:
                 formats.append(self.compiled.fields[field].format.dtype)
+        why = tile_format_refusal(formats)
+        if why is not None:
+            self.refuse(node, f"{function.name}: {why}", "give it tiles of those")
         unit, cxx = self.tile_unit(node, function, formats, width, fields)
         if state["function"] not in (None, cxx):
             self.refuse(
@@ -3370,13 +3412,14 @@ class HandlerCompiler:
             (operands[parameters.index(p.a)][0], operands[parameters.index(p.w)][0])
             for p in unit.products
         ]
-        if any(item.buffer.dtype != "bfloat16" for pair in products for item in pair):
-            self.refuse(
-                node,
-                "a product's operands are bfloat16 tiles (the matrix unit's), and "
-                f"{function.name}'s are not",
-                "stream bfloat16 tensors into the product",
-            )
+        for a, w in products:
+            why = product_refusal(a.buffer.dtype, w.buffer.dtype)
+            if why is not None:
+                self.refuse(
+                    node,
+                    f"{why}, in {function.name}",
+                    "stream tensors of matrix formats of one family into it",
+                )
         if products:
             fidelity = unit.fidelity
             if self.compiled.fidelity not in (None, fidelity):
@@ -4311,7 +4354,7 @@ class HandlerCompiler:
         self.pages_only(node, pages)
         dtype, page_bytes = self.tensor_format(node, pages.tensor)
         value = self.compiled.fields[field]
-        if (dtype, page_bytes) != (value.format.dtype, 1024 * value.format.itemsize):
+        if (dtype, page_bytes) != (value.format.dtype, value.format.tile_bytes):
             self.refuse(
                 node,
                 f"{pages.tensor} has {dtype} pages and self.{field} "

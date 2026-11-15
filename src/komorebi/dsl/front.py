@@ -18,16 +18,25 @@ from komorebi.tensor import Tensor
 
 @dataclass(frozen=True)
 class Format:
-    """A data format of a tile or a field: its dtype name and bytes an item."""
+    """A data format of a tile or a field: its dtype name, bytes an item (0: a block
+    format, which has a tile's bytes only) and bytes a 32 x 32 tile."""
 
     dtype: str
     itemsize: int
+    tile_bytes: int
 
 
 FORMATS = {
-    "fp32": Format("float32", 4),
-    "bf16": Format("bfloat16", 2),
-    "u32": Format("uint32", 4),
+    "fp32": Format("float32", 4, 4096),
+    "bf16": Format("bfloat16", 2, 2048),
+    "u32": Format("uint32", 4, 4096),
+    "fp16": Format("float16", 2, 2048),
+    "bfp8": Format("bfp8", 0, 1088),
+    "bfp4": Format("bfp4", 0, 576),
+    "bfp2": Format("bfp2", 0, 320),
+    "bfp8_b": Format("bfp8_b", 0, 1088),
+    "bfp4_b": Format("bfp4_b", 0, 576),
+    "bfp2_b": Format("bfp2_b", 0, 320),
 }
 
 
@@ -123,7 +132,7 @@ class L1:
         if not isinstance(format_, Format):
             raise ProgramError(
                 f"km.{spelling('field')}[format, *shape]: the format first, km.fp32, "
-                "km.bf16 or km.u32"
+                "km.bf16, km.u32, km.fp16 or a block format (km.bfp8_b, ...)"
             )
         if not shape or not all(
             isinstance(n, Symbol) or (isinstance(n, int) and not isinstance(n, bool))

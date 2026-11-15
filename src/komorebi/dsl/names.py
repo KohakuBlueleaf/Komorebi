@@ -278,6 +278,13 @@ NAMES = {
     "fp32": Name("fp32", "km.fp32: float32", "float32"),
     "bf16": Name("bf16", "km.bf16: bfloat16", "bfloat16"),
     "u32": Name("u32", "km.u32: a 32-bit word", "uint32"),
+    "fp16": Name("fp16", "km.fp16: float16, the A family's IEEE half", "float16"),
+    "bfp8": Name("bfp8", "km.bfp8: block float, 7-bit magnitudes, A family", "bfp8"),
+    "bfp4": Name("bfp4", "km.bfp4: block float, 3-bit magnitudes, A family", "bfp4"),
+    "bfp2": Name("bfp2", "km.bfp2: block float, 1-bit magnitudes, A family", "bfp2"),
+    "bfp8_b": Name("bfp8_b", "km.bfp8_b: block float, 7-bit magnitudes", "bfp8_b"),
+    "bfp4_b": Name("bfp4_b", "km.bfp4_b: block float, 3-bit magnitudes", "bfp4_b"),
+    "bfp2_b": Name("bfp2_b", "km.bfp2_b: block float, 1-bit magnitudes", "bfp2_b"),
 }
 
 
