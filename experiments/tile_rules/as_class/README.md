@@ -53,12 +53,13 @@ The values are ../rules.py's for the norm: normal numbers, the first row of tile
 times 100, a weight `1 + 0.1 N(0, 1)`; the output against float64, the stated
 tolerance 1e-5.
 
-Card 1, 12 cores, 32 rows of 2 tiles a core (384 calls), seed 1, host load 1.55, one
-run.
+Card 1, 12 cores, 32 rows of 2 tiles a core (384 calls), seed 1, one run of each
+body: the tile compiler's first row form (host load 1.55), then its body with the
+replay rule and the step form.
 
-| Body | Printed at the build | On the card, class | Harness (../README.md) | Largest relative error | Command |
-|---|---|---|---|---|---|
-| norm, row form | 753.0 a row | 771.0 (raw 780 to 804) | 771.5 (hand norm 3,201.5) | 2.33e-7 | 38.92 µs |
+| Body | Printed at the build | On the card, class | Harness (../README.md) | Largest relative error | Command | Kernel text |
+|---|---|---|---|---|---|---|
+| norm, row form, first | 753.0 a row (649 instructions) | 771.0 (raw 780 to 804) | 771.5 (hand norm 3,201.5) | 2.33e-7 | 38.92 µs | 41,376 B |
+| norm, row form, now | 677.0 a row (617 instructions) | 687.0 (raw 696 to 760) | 689.5 | 2.33e-7 | 37.22 µs | 41,248 B |
 
-The build printed 649 instructions and that the product-into-add rule fired 8 times.
-Kernel text 41,376 B.
+The build printed for both that the product-into-add rule fired 8 times.

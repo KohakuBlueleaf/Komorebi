@@ -163,7 +163,7 @@ A **tile function** is a Python function of tiles that the tile compiler
 `@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
 called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
 stream form: `+`, `-`, `*`, number constants, `trace.silu`, `trace.sigmoid`,
-`trace.rsqrt` of up to three tiles, one result. From
+`trace.rsqrt`, `trace.exp` (`error=`, `over=`) of up to three tiles, one result. From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
@@ -252,8 +252,8 @@ registers for the loop.
 read the wall clock around each call between two `tensix_sync()`, as the tile
 compiler's measurements do, and writes page `rank` of `t` (uint32 pages of 19 words or
 more): the command's sequence, the calls, 16 empty spans, then each call's span. From
-the same example on the card: 768 calls, a median span of 1,666 cycles less the empty
-span of 10, 1,656 cycles a tile, against the 1,657.6 the build prints. In the row form
+the same example on the card: 768 calls, a median span of 1,606 cycles less the empty
+span of 10, 1,596 cycles a tile, against the 1,597.6 the build prints. In the row form
 the cost and the span are a row's.
 
 What the tile compiler does not lower is refused, naming the handler's line, the
@@ -481,10 +481,10 @@ the packed text of the five CPUs, of 70,656 B.
 | [07 work cluster](../../examples/07_work_cluster/as_class/README.md) | the same: 204 rounds, sum 1,004,917, every state word | 21,200 / 21,424 B (mock) | the thread's loop 10.55 / 10.75 ms |
 | [11 movement](../../examples/11_movement/as_class/README.md) | the same: every copy exact (level 1a) | 38,288 / 36,720 B | READ AAAB 308.74 / 310.44 GB/s (level 1a) |
 | [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
-| [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,712 / 38,640 B | 86.68 / 76.06 us a command (bfloat16, 12 cores, 64 tiles a core); the emitted body 1,656 cycles a tile on the math CPU, 1,657.6 printed |
+| [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,536 / 38,640 B | 86.68 / 76.06 us a command (bfloat16, 12 cores, 64 tiles a core, the tile compiler's first body); the emitted body 1,596 cycles a tile on the math CPU, 1,597.6 printed (the first body 1,656, 1,657.6 printed; the hand body 1,901.5 in the one-core harness) |
 | [14 message handlers](../../examples/14_message_handlers/as_class/README.md) | the same: exact in 3 of 3 runs, 1,013,360 messages of three handlers | 42,640 / 43,568 B (mock) | 10,987 / 11,149 us a run (median of 3) |
 | [tile rules](../../experiments/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
-| [tile rules](../../experiments/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,376 B (stamped) | the emitted body 771.0 cycles a row of 2 tiles on the math CPU, 753.0 printed; 771.5 in the one-core harness, 3,201.5 its hand norm |
+| [tile rules](../../experiments/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,248 B (stamped) | the emitted body 687.0 cycles a row of 2 tiles on the math CPU, 677.0 printed, 689.5 in the one-core harness (the first body 771.0, 753.0 printed); the hand norm 3,201.5 |
 
 ## Not in this version
 

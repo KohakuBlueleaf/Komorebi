@@ -24,8 +24,8 @@ python gate_class.py --beside --cores 12   # the hand program first, then the cl
 The build prints the body's cost by the tile compiler's model:
 
 ```text
-tile functions (the math CPU's vector-unit cycles a tile by the tile compiler's cost model; the copies into DST and the pack not priced):
-  gate, line 54, `results.push(silu_gate(x, g))`: silu_gate on a, b (tile_silu_gate.hpp): 1614 instructions, 1657.6 cycles a tile; load_macro: refused: the row computes with 46 instructions (17 MAD-class); a macro arms at most one a sub-unit (simple, MAD, round); replay: 32 of 50 instructions of each row recorded once; tolerance 1e-06 relative against float64
+tile functions (the math CPU's vector-unit cycles a tile, or a row of the row form, by the tile compiler's cost model; the copies into DST and the pack not priced):
+  gate, line 54, `results.push(silu_gate(x, g))`: silu_gate on a, b (tile_silu_gate.hpp): 1426 instructions, 1597.6 cycles a tile; load_macro: refused: the row computes with 40 instructions (17 MAD-class); a macro arms at most one a sub-unit (simple, MAD, round); replay: 32 of 44 instructions of each row recorded once; tolerance 1e-06 relative against float64
 ```
 
 The class runs with the hand program's bfloat16 values and check, and with float32
@@ -34,21 +34,28 @@ function's stated tolerance being 1e-6.
 
 ## Numbers
 
-A Blackhole p150a, card 1, `python gate_class.py --beside --cores 12 --tiles 64`
-(pattern `AAAB`, seed 1, host load 1.9), one run. Card time is the command's, from its
-issue to its event; kernel text the packed text of the five CPUs.
+A Blackhole p150a, card 1, pattern `AAAB`, seed 1, 12 cores, 64 tiles a core, one
+run of each. Card time is the command's, from its issue to its event; kernel text the
+packed text of the five CPUs. The tile compiler's body changed once between the runs:
+first `python gate_class.py --beside --cores 12 --tiles 64` (host load 1.9), the body
+of 1,614 instructions (1,657.6 cycles printed); then, with the tile compiler's replay
+rule and step form, `python gate_class.py --cores 12 --tiles 64 --formats float32`
+(host load 1.1), the body above.
 
-| Program | Values | Values wrong | Largest relative error | Card time | Kernel text |
-|---|---|---|---|---|---|
-| hand (`../gate.py`) | bfloat16 | 0 of 786,432 | 1.45e-2 (values of 2^-4 or more) | 76.06 µs | 38,640 B |
-| class | bfloat16 | 0 of 786,432 | 3.89e-3 (values of 2^-4 or more) | 86.68 µs | 37,712 B |
-| class | float32 | 0 of 786,432 | 2.46e-7 against float64 (every value) | 97.74 µs | 37,712 B |
-| class, timed | float32 | 0 of 786,432 | 2.46e-7 | 102.46 µs | 40,176 B |
+| Program | Body | Values | Values wrong | Largest relative error | Card time | Kernel text |
+|---|---|---|---|---|---|---|
+| hand (`../gate.py`) | | bfloat16 | 0 of 786,432 | 1.45e-2 (values of 2^-4 or more) | 76.06 µs | 38,640 B |
+| class | first | bfloat16 | 0 of 786,432 | 3.89e-3 (values of 2^-4 or more) | 86.68 µs | 37,712 B |
+| class | first | float32 | 0 of 786,432 | 2.46e-7 against float64 (every value) | 97.74 µs | 37,712 B |
+| class, timed | first | float32 | 0 of 786,432 | 2.46e-7 | 102.46 µs | 40,176 B |
+| class | above | float32 | 0 of 786,432 | 2.46e-7 | 94.46 µs | 37,536 B |
+| class, timed | above | float32 | 0 of 786,432 | 2.46e-7 | 99.46 µs | 40,000 B |
 
-The math CPU's span of a call, 768 calls on 12 cores: median 1,666 cycles less the
-empty span (10) is 1,656 cycles a tile, against the 1,657.6 the build prints and the
-1,656.5 of the same body in [tile_rules](../../../experiments/tile_rules/README.md)
-(the hand body there: 1,901.5). The class's bfloat16 command is 14 % longer than the
+The math CPU's span of a call, 768 calls on 12 cores, less the empty span (10): the
+body above 1,596 cycles a tile (median 1,606), against the 1,597.6 the build prints;
+the first body 1,656 (median 1,666), against 1,657.6 printed and the 1,656.5 of the
+same body in [tile_rules](../../../experiments/tile_rules/README.md) (the hand body
+there: 1,901.5). The class's bfloat16 command is 14 % longer than the
 hand program's: it holds DST for one tile at a time and packs it, the hand program
 copies, computes and packs eight tiles an acquire. Its error is smaller: the hand
 program multiplies by b on the matrix unit at its default fidelity, the emitted body
