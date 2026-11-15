@@ -48,6 +48,7 @@ void kernel_main() {
         const uint32_t chunk_tiles = plan(kSpKc), subblock_height = plan(kSpSh);
         const uint32_t subblock_width = plan(kSpSw), group_size = plan(kSpS);
         const uint32_t block_tiles = block_height * block_width;
+        const km::Pattern pattern = chunk_pattern(plan(kSpPattern));
         const uint32_t reduce_form = split_form(command), mode = command.a4;
         if (mode == kSplitOp) {
             if (split_op_part(command, kOpCompute)) {
@@ -72,8 +73,8 @@ void kernel_main() {
             const uint32_t chunk_length = (
                 k_part.len - offset < chunk_tiles ? k_part.len - offset : chunk_tiles
             );
-            const uint32_t a_half = km::block_half(kChunksA, kChunkPattern, chunk);
-            const uint32_t w_half = km::block_half(kChunksW, kChunkPattern, chunk);
+            const uint32_t a_half = km::block_half(kChunksA, pattern, chunk);
+            const uint32_t w_half = km::block_half(kChunksW, pattern, chunk);
             ok = (
                 compute.wait_front(a_half, block_height * chunk_tiles) &&
                 compute.wait_front(w_half, chunk_tiles * block_width)

@@ -1,5 +1,5 @@
-// The K chunks of a core as two streams, A's and W's, dealt to both movers by AB: chunk
-// q of both goes to the halves of the mover that the pattern names.
+// The K chunks of a core as two streams, A's and W's, dealt to the movers by the plan's
+// pattern (AB, AAAB): chunk q of both goes to the halves of the mover it names.
 #pragma once
 
 #include <stdint.h>
@@ -9,7 +9,11 @@
 
 constexpr km::BufferPair kChunksA = {kCbSa, kCbSaMoverB};
 constexpr km::BufferPair kChunksW = {kCbSw, kCbSwMoverB};
-constexpr km::Pattern kChunkPattern = km::kPatternAB;
+
+// The pattern a plan's kSpPattern word names.
+inline km::Pattern chunk_pattern(uint32_t word) {
+    return word == kSplitAAAB ? km::kPatternAAAB : km::kPatternAB;
+}
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "api/dataflow/dataflow_api.h"
@@ -31,6 +35,7 @@ bool move_chunks(
     const uint32_t n_tiles = plan(kSpNt), block_height = plan(kSpOh);
     const uint32_t block_width = plan(kSpOw), chunk_tiles = plan(kSpKc);
     const uint32_t blocks_per_row = plan(kSpNbw), group_size = plan(kSpS);
+    const km::Pattern pattern = chunk_pattern(plan(kSpPattern));
     const km::Group group = km::digit_group(command, core.me(), 1, group_size);
     const uint32_t group_index = (core.me() - km::first(command)) / group_size;
     const uint32_t first_row = group_index / blocks_per_row * block_height;
@@ -73,12 +78,8 @@ bool move_chunks(
         last_length,
         columns
     };
-    const km::Stream a_chunks(
-        km::kMoveRead, a_matrix, a_walk, 1, kChunksA, kChunkPattern
-    );
-    const km::Stream w_chunks(
-        km::kMoveRead, w_matrix, w_walk, 1, kChunksW, kChunkPattern
-    );
+    const km::Stream a_chunks(km::kMoveRead, a_matrix, a_walk, 1, kChunksA, pattern);
+    const km::Stream w_chunks(km::kMoveRead, w_matrix, w_walk, 1, kChunksW, pattern);
     return km::move(core, a_chunks, w_chunks);
 }
 #endif

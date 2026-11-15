@@ -1,7 +1,5 @@
-// The sum's two sets of ports and arrival slots: a command with kSplitSecondSet in a3
-// takes the upper half of both, so it may be in flight beside one that takes the lower
-// half (the parts of one never meet the other's). A command without it takes them as
-// before, every port and every slot.
+// The sum's two sets of ports and arrival slots: kSplitSecondSet in a3 takes the upper
+// half of both, the lower set every port and slot; two commands' parts never meet.
 #pragma once
 
 #include <stdint.h>

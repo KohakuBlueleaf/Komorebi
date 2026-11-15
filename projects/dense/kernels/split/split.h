@@ -28,7 +28,8 @@ constexpr uint32_t kSplitFull = 0;
 constexpr uint32_t kSplitParts = 1;
 constexpr uint32_t kSplitOp = 2;
 
-// A and W chunks in two pairs (chunks.hpp): each half holds one chunk of its mover.
+// A and W chunks in two pairs (chunks.hpp): a half holds one chunk of its mover (mover
+// A's half may hold more: the plan's depth, dense/plan.py).
 constexpr uint32_t kCbSa = 0;        // mover A's A chunks: oh x kc tiles
 constexpr uint32_t kCbSw = 1;        // mover A's W chunks: kc x ow tiles
 constexpr uint32_t kCbSaMoverB = 5;  // mover B's A chunks
@@ -38,8 +39,8 @@ constexpr uint32_t kCbSum = 24;    // this core's part, fp32: P = oh x ow tiles
 constexpr uint32_t kCbSplitOut = 16;  // the group's sum in bf16 at its root: P tiles
 constexpr uint32_t kSumBytes = 4096;
 
-// The plan, the same words on every kernel of a core: tiles M, K, N; group size S;
-// block oh x ow; K chunk kc; subblock sh x sw; blocks per row; arrival buffer pages.
+// The plan, the same words on every core's kernels: tiles M, K, N; group size S; block
+// oh x ow; K chunk kc; subblock sh x sw; blocks per row; arrival pages; pattern.
 constexpr uint32_t kSpMt = 0;
 constexpr uint32_t kSpKt = 1;
 constexpr uint32_t kSpNt = 2;
@@ -51,7 +52,10 @@ constexpr uint32_t kSpSh = 7;
 constexpr uint32_t kSpSw = 8;
 constexpr uint32_t kSpNbw = 9;
 constexpr uint32_t kSpArrive = 10;
-constexpr uint32_t kSplitWords = 11;
+constexpr uint32_t kSpPattern = 11;
+constexpr uint32_t kSplitWords = 12;
+constexpr uint32_t kSplitAB = 0;
+constexpr uint32_t kSplitAAAB = 1;
 // A program takes up to kSplitPlans plans, plan p at argument p * kSplitWords: shapes
 // that share every buffer (oh, ow, kc, sh, sw and the arrival pages).
 constexpr uint32_t kSplitPlans = 8;
