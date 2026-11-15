@@ -5,7 +5,9 @@ Python: calling one outside a class's handler raises ProgramError.
 
 import importlib
 import inspect
+import numbers
 import operator
+import struct
 from dataclasses import dataclass
 
 from komorebi import abi
@@ -617,6 +619,15 @@ def word_of(handler, parameter, kind, value):
     if kind == "pattern":
         pattern = value if isinstance(value, Pattern) else Pattern(value)
         return pattern.word
+    if kind == "float":
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise ProgramError(f"{handler}: {parameter} is a float, got {value!r}")
+        try:
+            return struct.unpack("<I", struct.pack("<f", float(value)))[0]
+        except OverflowError:
+            raise ProgramError(
+                f"{handler}: {parameter} = {value!r}: past float32's range"
+            ) from None
     if isinstance(value, bool) or not hasattr(value, "__index__"):
         raise ProgramError(f"{handler}: {parameter} is an int, got {value!r}")
     value = operator.index(value)

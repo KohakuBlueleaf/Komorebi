@@ -108,8 +108,9 @@ L1 they take. The files are kept; a compile error names their lines, and an inli
 body's lines name the Python file's.
 
 `Run.submit(Class.handler, group, args=(...))` makes the command words from the
-arguments: a tensor's reference word (`tensor.address`), an int (32 bits), a pattern's
-word, in the order of the parameters (a constant parameter's value, at its place, is
+arguments: a tensor's reference word (`tensor.address`), an int (32 bits), a float
+(`scale: float`: the value's float32 bits; a number that is no float32 or not a number
+is refused, naming the parameter), a pattern's word, in the order of the parameters (a constant parameter's value, at its place, is
 no word: it picks the handler built for it); a tensor whose `pages` a line uses whole adds a
 word, its page count. A handler that returns a word asks for the result. For arrays of
 words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, and
@@ -992,9 +993,8 @@ SCALE`: an expression of the loop's tiles, numbers, module constants and the til
 arithmetic above is the tile function of the tiles it names, in the order it names
 them, and is emitted as that function's call is (`tile_line_N` in the build's list,
 N the line): its unit program is the same, word for word, as the one a
-`@km.tile_function` of the same expression gives. A word of the command, a field or
-`self` in such an expression is refused at its line (the unit program's numbers are
-immediates built into its code); a call that is no tile arithmetic (`km.cxx(...)`)
+`@km.tile_function` of the same expression gives. A field or `self` in such an
+expression is refused at its line; a call that is no tile arithmetic (`km.cxx(...)`)
 leaves the line to its own form. On the card
 ([tile lines](../../experiments/language/tile_lines/README.md), bf16 tiles, 768 a
 command on 12 cores): `results.push(km.silu(x) * y)` equal datum for datum to the tile
@@ -1002,6 +1002,27 @@ function's call, 82.1 us both; `x / y` within 1.6e-7 of float64 at 30.3 us again
 75.5 us for the inline body of tt-metal's `div_binary_tile`; `km.sqrt(x)` within 9.5e-8
 at 40.2 us against 53.9 us for `sqrt_tile`; `km.minimum(abs(x), y)` exact; four tiles
 `x * y + z * w` within 6.0e-8.
+
+**A float word in tile arithmetic.** A handler parameter `scale: float` is one command
+word, the value's float32 bits (the host packs it at submit and in a chain's calls). In
+a tile expression (`results.push(x * scale)`) or as a tile function's argument
+(`results.push(affine(x, scale, shift))`, `def affine(x, scale, shift): return x *
+scale + shift`) it is a run-time scalar: the call passes its bits
+(`km_tile::affine(dst, scale_bits, shift_bits)`), and the unit program loads each into
+a work register it holds across the rows, by two `TT_SFPLOADI` whose halves the core
+builds from the argument, before the rows; the rows and their replay are the same
+words as for a number. Each command takes its own value, with no build. An inline body
+takes it as a C++ `float` of its name (`takes=[scale]`; tt-metal's `mul_unary_tile`
+takes the bits: `__builtin_bit_cast(uint32_t, scale)`). Refused at the line: an `int`
+word in a tile expression or a tile function's call (annotate it `float`), a float
+word in the handler's integer arithmetic (a slice bound, a range, a count), a division
+by a float word (pass its reciprocal and multiply), and a float word of a function
+called on a row (the row form's numbers are immediates). On the card
+([run-time scalars](../../experiments/language/tile_lines/README.md#run-time-scalars-in-a-tile-function)):
+bf16 tiles, 768 a command on 12 cores, four scales one command each:
+`results.push(x * scale)` equal datum for datum to the inline body of tt-metal's
+`mul_unary_tile` at each, 15.5 to 16.3 us against 33.6 to 34.0 us; `affine(x, scale,
+shift)` within 5.9e-8 of float64 at the same time.
 
 A function called on a row of a stream of `row=` tiles is traced in the tile
 compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows of the
@@ -1770,18 +1791,18 @@ two forms, and they give the same records
 ```python
 class Steps(km.Program):
     @km.handler
-    def scale(self, a: km.Tensor, out: km.Tensor, factor: int, width: int): ...
+    def scale(self, a: km.Tensor, out: km.Tensor, factor: float, width: int): ...
 
     @km.chain
-    def steps(self, x, y, z, s, t, factor: int, width: int, tiles: int):
+    def steps(self, x, y, z, s, t, factor: float, width: int, tiles: int):
         self.scale(x, y, factor, width)
-        self.scale(y, z, THREE, width)
+        self.scale(y, z, 3.0, width)
         self.add(z, km.past(y), s, width)  # y: written two calls back
         self.sum(s, t, tiles)
 
 
-chain = run.chain(program.steps(x, y, z, s, t, bits(5), 2, 16), cores=(0, 8))
-listed = run.chain([Steps.scale(x, y, bits(5), 2), ...], cores=(0, 8))
+chain = run.chain(program.steps(x, y, z, s, t, 5.0, 2, 16), cores=(0, 8))
+listed = run.chain([Steps.scale(x, y, 5.0, 2), ...], cores=(0, 8))
 run.wait(run.submit(chain))
 ```
 

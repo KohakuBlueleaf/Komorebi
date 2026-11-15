@@ -86,3 +86,36 @@ five times and compares against float64.
   shows at this size.
 - act over the 4 DST tiles adds 4.4 us a command, about 1.1 us a tile. The field form
   costs 0.6 us more than the DST form: the copy of each field tile into DST.
+
+## Run-time scalars in a tile function
+
+Question: does a float word of the command, used in a tile expression
+(`results.push(x * scale)`) or passed to a tile function (`affine(x, scale, shift)`,
+`x * scale + shift`), give what the inline body of tt-metal's `mul_unary_tile` gives,
+with each command its own value?
+
+`scalars.py` makes the class `Scalars` with three handlers on 12 cores, 64 bf16 tiles a
+core, each into a float32 tensor: `line` (`results.push(x * scale)`), `called`
+(`results.push(affine(x, scale, shift))`) and `body` (`mul_unary_tile(0,
+__builtin_bit_cast(uint32_t, scale))` after `binop_with_scalar_tile_init()`, an inline
+body that takes `scale` as a C++ float). The class is loaded once, and each handler runs
+one command for each (scale, shift) of (2.0, 0.5), (-0.75, 3.0), (0.001, -1.0) and
+(15000.0, 0.0). Each result is compared against float64.
+
+### Measured (one card, 12 cores, 768 tiles a command)
+
+| scale | line: rms rel. | line == body | called (shift): rms rel. | us a command: line / called / body |
+|---:|---:|:---:|---:|---|
+| 2.0 | 0 | yes | 1.7e-11 (0.5) | 18.6 / 16.1 / 34.0 |
+| -0.75 | 0 | yes | 2.4e-10 (3.0) | 15.8 / 16.9 / 33.9 |
+| 0.001 | 2.5e-8 | yes | 2.7e-8 (-1.0) | 15.5 / 16.3 / 33.8 |
+| 15000.0 | 0 | yes | 0 (0.0) | 16.3 / 16.3 / 33.6 |
+
+- `line` equals the body datum for datum at every scale: one fp32 product a datum,
+  rounded once. A product that float32 holds exactly is exact.
+- Each command took its own word with no build between them: the loads before the rows
+  are two `TT_SFPLOADI` a word, and the rows replay as for a number.
+- The line takes 0.47 of the body's time. The body copies each tile into Dst and runs
+  the library's loop; the line's eight tiles a call share one setup.
+- `called` adds the shift in the same `SFPMAD` (one rounding), at the line's time.
+- The first command (18.6 us) includes the first use of the class's code.
