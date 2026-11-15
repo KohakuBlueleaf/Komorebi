@@ -159,6 +159,19 @@ broadcast that casts words alone. Its casts are `cast(block, word)` with no `res
 `finish` is still called on every core. Each cast waits until every receiver took the
 last word, so one cast costs a round trip to the farthest receiver.
 
+At `finish` a receiver clears its VALID, and with the program's `broadcast_wait` (on by
+default; `KM_BROADCAST_WAIT` 1) it then marks the caster, which waits for every
+receiver's mark under the core's wait limit and stop, so the next command's first cast
+cannot land before that clear. Its cost on one p150a
+([17_leader_overlay](../../examples/17_leader_overlay/README.md)): the cast itself
+unchanged, a command of 2,000 casts 0.2 % longer, a command that is one cast of a word
+4.94 against 5.38 µs (+0.44 µs). `km.Program(..., broadcast_wait=False)` (and the same
+keyword at a class's making) builds the kernels with `KM_BROADCAST_WAIT` 0, without that
+wait. A program built so follows one more rule: a command that casts a word on a
+broadcast is not followed at once by a command that casts on the same broadcast's
+cores; if it is, the next cast's VALID can land before a receiver's clear, that
+receiver misses it and the command gives up at the wait limit.
+
 ## Casting an overlay
 
 The word can name an overlay ([Overlays](overlays.md)): the leader picks the code its

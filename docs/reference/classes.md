@@ -70,6 +70,7 @@ run.submit(
 | `l1` | without a session, the bytes left for buffers (`Session.l1()[1]`): the buffers alone must fit, a field's last symbol takes what they leave |
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
+| `broadcast_wait` | as a `Program`'s ([host](host.md#program)): `False` builds the kernels without a word broadcast's wait at `finish`, in a build folder of its own |
 
 The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
 service's reader part built for every example and project that builds without a card

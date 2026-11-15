@@ -10,6 +10,12 @@
 #include "km_relay.hpp"
 #include "km_worker.hpp"
 
+// 1 (the default): a word-only cast's caster waits at finish until every receiver
+// cleared VALID; 0 (km.Program(broadcast_wait=False)) leaves that wait out
+#if !defined(KM_BROADCAST_WAIT)
+#define KM_BROADCAST_WAIT 1
+#endif
+
 namespace km {
 
     constexpr uint32_t kBroadcastNone = 0xFF;  // rank of a core that is not in the broadcast
@@ -261,8 +267,8 @@ namespace km {
             // word-only: a receiver marks a block past its last once it cleared VALID;
             // its caster waits for every mark: its next VALID lands after the clear
             if (
-                !caster() && args_.pages == 0 && block_count_ != 0 &&
-                !took_word(block_count_)
+                KM_BROADCAST_WAIT != 0 && !caster() && args_.pages == 0 &&
+                block_count_ != 0 && !took_word(block_count_)
             ) {
                 return false;
             }
@@ -287,7 +293,7 @@ namespace km {
                     return false;
                 }
                 if (
-                    args_.pages == 0 &&
+                    KM_BROADCAST_WAIT != 0 && args_.pages == 0 &&
                     !wait_done(
                         block_count_ + 1,
                         block_count_,
@@ -687,6 +693,11 @@ namespace km {
             return args_.receivers + (args_.next != kBroadcastNoNext ? 1 : 0);
         }
 
+        // The rows a wait reads: rows(), or its first `last` (KM_BROADCAST_WAIT).
+        uint32_t waited(uint32_t last) const {
+            return KM_BROADCAST_WAIT != 0 && last < rows() ? last : rows();
+        }
+
         volatile tt_l1_ptr uint32_t* area_word(uint32_t offset) const {
             return l1(area_ + offset);
         }
@@ -759,14 +770,13 @@ namespace km {
         bool wait_done(
             uint32_t blocks, uint32_t block, uint32_t word = 0, uint32_t last = ~0u
         ) {
-            const uint32_t rows_waited = last < rows() ? last : rows();
             uint32_t receiver = 1;
             const uint64_t started = wall64();
             const uint32_t code = core_.poll_at(
                 kWhereBroadcastDone,
                 [&] {
                     while (
-                        receiver <= rows_waited &&
+                        receiver <= waited(last) &&
                         broadcast_reached(
                             area_word(KM_BROADCAST_DONE + 16 * receiver)[word],
                             receiver > args_.receivers ? 0 : sequence_,
@@ -775,7 +785,7 @@ namespace km {
                     ) {
                         receiver++;
                     }
-                    return receiver > rows_waited;
+                    return receiver > waited(last);
                 },
                 core_.args().wait_limit
             );
