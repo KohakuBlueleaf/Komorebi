@@ -220,11 +220,11 @@ collectives and the link service.
 The class and tile languages against the hand programs: emitted bodies, programs written
 as classes and what a class cannot say yet.
 
-- [attention_class](language/attention_class/README.md): whether the attention project's
-  program can be written as a class, every arithmetic body the hand program's and every
-  move a class line. Not yet: a table of 13 things the hand program does and no line
-  says, the first three built (the compute body's own buffers, float32 unpacked to DST,
-  the profile page), the others not; no class file and no card run for the pass.
+- [attention_class](language/attention_class/README.md): the attention project's
+  program as a class, every move a class line (the job table's entries, Q's rows held
+  through the job, the K / V cast in bands, the output rows) and every compute step the
+  hand's. Beside the hand program in one session, O is equal word for word on t1 and
+  causal64, 57.75 us a command against the hand's 57.64 us.
 - [dense_class](language/dense_class/README.md): the dense project's linear layer, Y = X W, as
   a class in the project's own two plans (the K split on 112 cores, the grid form on 12 x
   8), its SwiGLU gate a second tile function. Y equals the host's product for integers;

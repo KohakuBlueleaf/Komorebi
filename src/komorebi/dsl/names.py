@@ -76,6 +76,26 @@ NAMES = {
         "forward", "self.forward(rank, message): the message, on to rank", "forward"
     ),
     "consume": Name("consume", "self.consume(): the message, ended here", "consume"),
+    # a page's words as a table (every CPU of the handler)
+    "entry": Name(
+        "Entry",
+        "class Job(km.Entry): an entry's named words (int annotations), 0, 1, ...",
+        None,
+    ),
+    "entries": Name(
+        "entries",
+        "pages.entries(Job, first=, size=, count=): a page's words as a table of "
+        "entries, read on every CPU of the handler",
+        None,
+    ),
+    "entries_first": Name("first", "entries(first=w): the first entry's word", None),
+    "entries_size": Name("size", "entries(size=n): the words an entry", None),
+    "entries_count": Name(
+        "count", "entries(count=w): the word that holds the entries' count", None
+    ),
+    "entries_fixed": Name(
+        "fixed", "entries(fixed=n): n entries, known at build (no count word)", None
+    ),
     # moves
     "stream": Name("Stream", "km.Stream(pages, block=, pattern=): a stream", "stream"),
     "write_stream": Name("write", "km.Stream(..., write=True): a write stream", None),
@@ -93,7 +113,13 @@ NAMES = {
     ),
     "item_size": Name("size", "items(..., size=B): the bytes an item", None),
     "tiles": Name(
-        "tiles", "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major", None
+        "tiles",
+        "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major; [r0:r1:s, "
+        "c0:c1] its rows s apart",
+        None,
+    ),
+    "transposed": Name(
+        "T", "tensor.tiles[...].T: a cast's part, the rectangle's columns in turn", None
     ),
     "read": Name(
         "read",
@@ -116,6 +142,19 @@ NAMES = {
     "broadcast": Name("Broadcast", "km.Broadcast(self, along=): a broadcast", None),
     "along": Name("along", "a broadcast's direction: row or column", None),
     "window": Name("window", "a broadcast's blocks in flight", "window"),
+    "broadcast_mover": Name(
+        "mover", 'a broadcast\'s mover, "A" (NoC 0) or "B" (NoC 1)', None
+    ),
+    "broadcast_unread": Name(
+        "unread",
+        "a broadcast's word: when not 0, each core's mover pushes each block unread",
+        None,
+    ),
+    "broadcast_length": Name(
+        "length",
+        "a broadcast's band: so many cores of the row or column a sender",
+        None,
+    ),
     "sender": Name("sender", "broadcast.sender(): this core sends", "sender"),
     "cast": Name("cast", "broadcast.cast(pages): the block, to the others", "cast"),
     "arrive": Name("arrive", "broadcast.arrive(): the block, arrived", "arrive"),
@@ -140,6 +179,24 @@ NAMES = {
     "include": Name(
         "include",
         "km.cxx(..., include=[...]): #include lines for the body's CPU alone",
+        None,
+    ),
+    "at": Name(
+        "at",
+        'km.cxx(..., at="start"): the body at its kernel\'s start, before the '
+        'commands; at="end": after the run',
+        None,
+    ),
+    "defines": Name(
+        "defines",
+        "class P(km.Program, defines={...}): the kernels' defines; made with "
+        "defines= too",
+        None,
+    ),
+    "startup": Name(
+        "Startup",
+        'class P(km.Program, startup=km.Startup("a", "b", "out", order="reverse")): '
+        "compute's start-up by those fields",
         None,
     ),
     "compute_options": Name(

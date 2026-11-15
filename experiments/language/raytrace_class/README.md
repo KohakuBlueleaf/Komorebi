@@ -21,11 +21,12 @@ class (`compute={"enable_trisc2_rvv": True, "dst_full_sync_en": True}`):
   its command words in the hand's order (a0 to a4):
 
 ```python
-first, count = directory.pages(self.rank, 1).read()[0:2]
-hit = km.Stream(hits.items(first, count, size=HIT), write=True, pattern="B")
+for span in directory.pages(self.rank, 1).entries(Span, size=2, fixed=1):
+    ...  # the lines below, inside it; class Span(km.Entry): first: int; count: int
+hit = km.Stream(hits.items(span.first, span.count, size=HIT), write=True, pattern="B")
 image = km.cxx("image = tree;", takes=[self.tree], gives=int, on="pack")
 km.cxx("...setup...", takes=[image], on="pack", include=[".../walk.hpp"])
-for rays in km.Stream(packets.items(first, count, size=PACKET), pattern="A"):
+for rays in km.Stream(packets.items(span.first, span.count, size=PACKET), pattern="A"):
     km.cxx("...the walk of one packet...", takes=[rays, hit, mode], on="pack")
 report = km.Stream(profile.pages(self.rank, 1), write=True, pattern="B")
 km.cxx("...finish, the profile page...", takes=[report], on="pack")
@@ -121,7 +122,7 @@ was compiled; the streams alone cannot say which, and it was not chased on the c
 | Line | Lowered to | Before it |
 |---|---|---|
 | `t.items(first, count, size=B)` in `km.Stream(...)`, read or `write=True` | the stream of `km::items(T(t), B, P)`: item i is page i / P, byte (i % P) x B; the pair's pages are B bytes; a size that does not divide the page is refused at its line | the reader's `noc_async_read` at `get_noc_addr(packet / 64, ..., packet % 64 x 1,408)`, into a field named by its buffer |
-| `first, count = directory.pages(self.rank, 1).read()[0:2]` | mover A reads the page into a page it pushes to compute, mover B into its own; unpack takes the two words and hands them to math and pack by mailbox | the reader's header page to compute, the writer's second read |
+| `for span in directory.pages(self.rank, 1).entries(Span, size=2, fixed=1)` (the handler's body inside it) | mover A reads the page into a page it pushes to compute, mover B into its own; compute takes the page as pushed, each CPU reads `span.first` and `span.count` from it (a table of one entry: no loop) | the reader's header page to compute, the writer's second read |
 | `km.cxx(..., takes=[rays], on="pack")` in the stream loop | unpack hands the item's L1 address to pack before the body, pack hands a release back after it, then unpack frees the block | the reader's own loop and unpack's own hand-off loop |
 | `takes=[hit]`, a write stream, on pack in the loop | the loop's page of `hit`: reserved with the block (0 when compute gave up), pushed after it, moved with the read | the writer's own loop over a field named by its buffer |
 | `takes=[report]`, a write stream, outside a loop | one block reserved, pushed after the body, moved by the movers at that line | the writer's profile page |
@@ -144,7 +145,7 @@ copies them from there. The class says the same page with these lines:
 ```python
 handoff: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_a")  # the reader's words
 ...
-for rays in km.Stream(packets.items(first, count, size=PACKET), pattern="A"):
+for rays in km.Stream(packets.items(span.first, span.count, size=PACKET), pattern="A"):
     ...
 km.cxx(
     "...wait, read, total, pages into handoff...",
@@ -225,6 +226,13 @@ stamps.
 The page's lines add 1,552 B to the total: by CPU, mover A +224, mover B +1,508,
 unpack -196 (the packets now come from one half, pattern "A"). check.py compares the reader's and
 the writer's words beside the walk's counts.
+
+The directory's two words are now read by the table-of-entries line
+([classes](../../../docs/reference/classes.md), Tables of entries) in place of
+`read()[0:2]`. On card 0, the median of 5: 3,290.3 us (two runs, 3,290.28 and 3,290.52)
+against 3,289.6 us for the class before, in the same job; kernel text 49,712 B against
+49,792; the hit pages equal to the class before's and the hand's, 0 of 18,874,368 words
+differ, the profile's counts equal.
 
 ## The lines in the rasterizer
 

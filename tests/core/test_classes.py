@@ -210,7 +210,7 @@ def coarse(x, w):
 class Stepped(km.Program):
     @km.handler
     def copy(self, x: km.Tensor):
-        km.Stream(x.tiles[0:4:2, 0:4]).drain()  # stepped
+        km.Stream(x.tiles[0:4, 0:4:2]).drain()  # stepped
 
 
 class Ragged(km.Program):
@@ -672,13 +672,6 @@ class Outside(km.Program):
         first, count, more = items.pages(0, 1).read()[0:2]
 
 
-class Pushed(km.Program):
-    @km.handler
-    def copy(self, items: km.Tensor, out: km.Tensor):
-        made = km.Stream(out.pages(0, 1), write=True)
-        km.cxx("fill(made);", takes=[made])
-
-
 class Unknown(km.Program, compute={"dst_full_sync": True}):
     @km.handler
     def copy(self, items: km.Tensor):
@@ -691,7 +684,6 @@ class Unknown(km.Program, compute={"dst_full_sync": True}):
         (Unpacked, "size=1000)).drain()", "items of 1000 B in pages of 4096 B"),
         (Untaken, 'takes=[self.table], on="pack")', "no other handler keeps it"),
         (Outside, "first, count, more =", "words 0 to 1 of a page of 1024 words"),
-        (Pushed, 'km.cxx("fill(made);"', "its pages are pack's to fill"),
     ],
 )
 def test_a_body_line_the_compiler_does_not_take_is_refused_by_its_line(

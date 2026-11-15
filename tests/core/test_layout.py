@@ -116,6 +116,19 @@ def test_column_broadcasts_send_from_the_start_of_the_nocs_direction():
     assert upward[0].sender == (2, 3) and upward[0].cores[-1] == (2, 1)
 
 
+def test_broadcasts_in_bands_each_send_from_the_bands_start():
+    down = broadcasts(GRID, PANELS, (2, 0, 1, 5), "column", 0, length=2)
+    assert [broadcast.cores for broadcast in down] == [
+        ((2, 0), (2, 1)),
+        ((2, 2), (2, 3)),
+        ((2, 4),),
+    ]
+    upward = broadcasts(GRID, PANELS, (2, 0, 1, 4), "column", 1, length=2)
+    assert [broadcast.sender for broadcast in upward] == [(2, 1), (2, 3)]
+    with pytest.raises(ValueError, match="band of 0 cores"):
+        broadcasts(GRID, PANELS, (2, 0, 1, 4), "column", 0, length=0)
+
+
 def test_row_broadcasts_are_cut_at_the_panel_boundary():
     found = broadcasts(GRID, PANELS, (4, 0, 4, 1), "row", 1)
     assert [broadcast.cores for broadcast in found] == [

@@ -85,6 +85,34 @@ class Tile:
     """`gives=km.Tile`: what an inline body of compute leaves in DST 0."""
 
 
+# compute_kernel_hw_startup's source orders: how its two inputs map on SrcA and SrcB.
+STARTUP_ORDERS = {"regular": "SrcOrder::Regular", "reverse": "SrcOrder::Reverse"}
+
+
+class Startup:
+    """`startup=km.Startup("a", "b", "out", order="reverse")` of a class: compute's
+    start-up (compute_kernel_hw_startup) by those fields' buffers, two inputs and
+    an output (or one input and the output), in the source order given."""
+
+    def __init__(self, *fields, order="regular"):
+        if not 2 <= len(fields) <= 3 or not all(isinstance(f, str) for f in fields):
+            raise ProgramError(
+                f"km.{spelling('startup')}(...): the names of two input fields and an "
+                "output field (or one input and the output)"
+            )
+        if order not in STARTUP_ORDERS:
+            raise ProgramError(
+                f"km.{spelling('startup')}(order={order!r}): one of "
+                f"{', '.join(map(repr, STARTUP_ORDERS))}"
+            )
+        if len(fields) == 2 and order != "regular":
+            raise ProgramError(
+                f"km.{spelling('startup')}: a source order is of two inputs; name "
+                "both"
+            )
+        self.fields, self.order = fields, order
+
+
 class L1:
     """`km.L1[format, *shape]`: the annotation of a field resident in the L1, each
     size an int or a km.symbol() of the class."""
@@ -134,6 +162,30 @@ class Message:
 
 
 MESSAGE_WORDS = 16  # a message of 64 bytes, the runtime's default
+
+
+class Entry:
+    """`class Job(km.Entry)` with int annotations: an entry of a page's table of words
+    (`pages.entries(Job, ...)`), its named words 0, 1, ... in order."""
+
+    words = {}  # name -> its word in the entry
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        names = list(inspect.get_annotations(cls))
+        if not names or not all(
+            inspect.get_annotations(cls)[name] is int for name in names
+        ):
+            raise ProgramError(
+                f"{cls.__name__}: an entry's words are ints, one at least"
+            )
+        cls.words = {name: word for word, name in enumerate(names)}
+
+    def __init__(self, **words):
+        raise ProgramError(
+            f"km.{spelling('entry')} is read by the compiler from a handler's lines; "
+            "Python never makes one"
+        )
 
 
 class ClassHandler(Handler):
@@ -328,10 +380,12 @@ def exports():
         "handler": handler,
         "tile_function": tile_function,
         "message": Message,
+        "entry": Entry,
         "field": L1,
         "symbol": symbol,
         "own": own,
         "tile_value": Tile,
+        "startup": Startup,
         "tensor": Tensor,
         "stream": line_only("stream"),
         "reduce": line_only("reduce"),

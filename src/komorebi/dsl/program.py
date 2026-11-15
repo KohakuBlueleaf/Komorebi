@@ -10,7 +10,7 @@ from pathlib import Path
 from komorebi import _env, abi, layout, overlay
 from komorebi import program as km_program
 from komorebi.dsl import compiler
-from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS
+from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
 from komorebi.dsl.tile import emit
@@ -55,19 +55,30 @@ class Built:
         return named
 
 
-def prepare(cls, compute=None):
+def prepare(cls, compute=None, defines=None, startup=None):
     """Makes `cls`, a class deriving Program, a program written as a class if it has
     handler methods: its handlers numbered, its constructor the compiler; `compute`
-    the class's compute options (checked when it is compiled)."""
+    the class's compute options (checked when it is compiled), `defines` its
+    kernels' defines, `startup` compute's start-up (a km.Startup)."""
     methods = compiler.handler_methods(cls)
     if not methods:
-        if compute is not None:
-            raise ProgramError(
-                f"{cls.__name__}: {spelling('compute_options')}= is a class's with "
-                "handlers (an ordinary program takes Program(compute=...))"
-            )
+        for given, kind in ((compute, "compute_options"), (defines, "defines")):
+            if given is not None:
+                raise ProgramError(
+                    f"{cls.__name__}: {spelling(kind)}= is a class's with handlers "
+                    f"(an ordinary program takes Program({spelling(kind)}=...))"
+                )
+        if startup is not None:
+            raise ProgramError(f"{cls.__name__}: startup= is a class's with handlers")
         return
+    if startup is not None and not isinstance(startup, Startup):
+        raise ProgramError(
+            f"{cls.__name__}: startup= is a km.{spelling('startup')}(...), got "
+            f"{startup!r}"
+        )
     cls.compute_given = dict(compute or {})
+    cls.defines_given = defines_checked(cls.__name__, defines)
+    cls.startup_given = startup
     user_max = abi.headers()["KM_HANDLER_USER_MAX"]
     if len(methods) > user_max:
         raise ProgramError(f"{cls.__name__}: {len(methods)} handlers, {user_max} most")
@@ -88,13 +99,15 @@ def make(
     nocs=None,
     session=None,
     trace=0,
+    defines=None,
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
-    by name; `session` (its load's L1 table checked, l1_checked; `trace` the load's) or
-    `l1` (Session.l1()[1], the buffers alone); with broadcasts, `rect` (x, y, columns,
-    rows; the whole grid if not given) and `nocs` (Session.load gives the session's)."""
+    by name; `session` (its L1 table checked, l1_checked; `trace` the load's) or `l1`
+    (Session.l1()[1]); with broadcasts `rect` (x, y, columns, rows; the grid if not
+    given) and `nocs`; `defines` the kernels' defines over the class's."""
     cls = type(self)
+    defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
     if session is not None:
         l1 = reserve_of(session)[0].l1()[1] if l1 is None else l1
@@ -115,6 +128,8 @@ def make(
     built = write(cls, compiled, room, key)
     for line in built.report:
         log(line)
+    if defines:
+        log("  defines: " + ", ".join(f"{k}={v}" for k, v in defines.items()))
     report = may_cross(compiled, tensors)
     setattr(self, spelling("may_cross"), report)
     for line in report:
@@ -156,6 +171,7 @@ def make(
         compile_args={"movement": movement_args} if movement_args else {},
         compute=compute_options(compiled),
         args=program_args,
+        defines=defines,
         depth=depth,
         handlers=built.folder / header_name(compiled),
     )
@@ -166,11 +182,33 @@ def make(
         sources["writer"] = sources["reader"]
         if f"{name}/compute.cpp" in built.files:
             sources["compute"] = built.folder / name / "compute.cpp"
-        self.overlay(name, sources)
+        self.overlay(name, sources, defines=defines or None)
     if compiled.overlays:
         self.slots()
     if session is not None:
         l1_checked(self, session, l1, trace, log)
+
+
+def defines_checked(name, defines):
+    """The defines of a class or a make, by name: each a C++ name the runtime's do
+    not take (they start KM_), each value an int or a string; as strings."""
+    if defines is None:
+        return {}
+    if not isinstance(defines, dict):
+        raise ProgramError(
+            f"{name}: {spelling('defines')}= is a dict of names and values"
+        )
+    checked = {}
+    for key, value in defines.items():
+        if not (isinstance(key, str) and key.isidentifier()) or key.startswith("KM_"):
+            raise ProgramError(
+                f"{name}: define {key!r}: a C++ name, not one of the runtime's "
+                "(KM_...)"
+            )
+        if isinstance(value, bool) or not isinstance(value, int | str):
+            raise ProgramError(f"{name}: define {key} = {value!r}: an int or a string")
+        checked[key] = str(value)
+    return checked
 
 
 class Unbuilt:
@@ -369,9 +407,11 @@ def rectangle_args(compiled, rect, nocs):
     )
     fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
     by_mover = {}
-    for number, (along, buffer, window) in enumerate(compiled.broadcasts):
-        noc = 0 if along == "row" else 1
-        by_mover[compiler.ALONG[along]] = layout.broadcast_args(
+    for number, (along, buffer, window, mover, length) in enumerate(
+        compiled.broadcasts
+    ):
+        noc = 0 if mover == "A" else 1  # each mover runs on its own NoC
+        by_mover[mover] = layout.broadcast_args(
             nocs.grid,
             nocs.panels,
             group,
@@ -381,6 +421,7 @@ def rectangle_args(compiled, rect, nocs):
             nocs.noc0,
             nocs.noc_xy,
             (number, buffer.index_a, window, buffer.block),
+            length,
         )
     cells = {
         y * grid_width + x: (x - first_x, y - first_y)
@@ -551,6 +592,10 @@ def header(compiled):
         lines += ["", f"constexpr uint32_t kMessageWords = {MESSAGE_WORDS};"]
     for cls, words in compiled.messages.items():
         lines += [f"// {cls}: a message's words (word 0 the runtime's mark)."]
+        for word, index in words.items():
+            lines.append(f"constexpr uint32_t k{cls}{camel(word)} = {index};")
+    for cls, words in compiled.entries.items():
+        lines += ["", f"// {cls}: an entry's words in a table of entries."]
         for word, index in words.items():
             lines.append(f"constexpr uint32_t k{cls}{camel(word)} = {index};")
     for buffer in compiled.buffers:
@@ -823,6 +868,7 @@ def dynamic_source(compiled):
         "",
         "void kernel_main() {",
         f"{INDENT}km::Compute compute;",
+        *kernel_bodies(compiled, "start", "compute"),
         f"{INDENT}compute.run([&](const km_command_t& command) {{",
         f"{INDENT * 2}if (km::handler(command) != kHandler{camel(name)}) {{  "
         f"// line {compiled.lines[name]}",
@@ -830,6 +876,7 @@ def dynamic_source(compiled):
         f"{INDENT * 2}}}",
         *render(prune(compiled.compute[name]), 2),
         f"{INDENT}}});",
+        *kernel_bodies(compiled, "end", "compute"),
         "}",
     ]
     return "\n".join(lines) + "\n"
@@ -849,13 +896,42 @@ def movement_source(compiled):
     ]
     lines += [f'#include "{header_name(compiled)}"', "", "void kernel_main() {"]
     lines += [INDENT + line for line in tensor_aliases(compiled)]
-    lines += [
-        f"{INDENT}km::Movement movement;",
-        f"{INDENT}movement.run([&](const km_command_t& command) {{",
-    ]
+    lines += [f"{INDENT}km::Movement movement;"]
+    lines += kernel_bodies(compiled, "start", "movement")
+    lines += [f"{INDENT}movement.run([&](const km_command_t& command) {{"]
     lines += cases(compiled, compiled.movement, "return true;", 2, "movement")
-    lines += [f"{INDENT}}});", "}"]
+    lines += [f"{INDENT}}});", *kernel_bodies(compiled, "end", "movement"), "}"]
     return "\n".join(lines) + "\n"
+
+
+def kernel_bodies(compiled, at, kernel):
+    """The lines of the inline bodies at `kernel`'s start or end (km.cxx at=)."""
+    lines = []
+    for body in compiled.kernel_bodies.get((at, kernel), []):
+        lines.append(f"{INDENT}// the class's body at the kernel's {at}")
+        lines += [INDENT + line if line else "" for line in body.split("\n")]
+    return lines
+
+
+def startup_line(compiled, first_in, first_out):
+    """compute's start-up: the class's (km.Startup, by its fields' buffers) or the
+    default, by the first buffers it takes and gives."""
+    startup = compiled.startup
+    if startup is None:
+        return f"compute_kernel_hw_startup({first_in}, {first_out});"
+    names = []
+    for name in startup.fields:
+        buffer = next(
+            (b for b in compiled.buffers if b.name == f"kField{camel(name)}"), None
+        )
+        if buffer is None:
+            raise ProgramError(
+                f"{compiled.name}: km.{spelling('startup')} names {name!r}, not a "
+                f"field of the class ({', '.join(compiled.fields) or 'none'})"
+            )
+        names.append(buffer.name)
+    order = "" if startup.order == "regular" else f"<{STARTUP_ORDERS[startup.order]}>"
+    return f"compute_kernel_hw_startup{order}({', '.join(names)});"
 
 
 COMPUTE_INCLUDES = [
@@ -902,11 +978,12 @@ def compute_source(compiled):
             first_out += ".mover_a"
     lines += [
         f"{INDENT}km::Compute compute;",
-        f"{INDENT}compute_kernel_hw_startup({first_in}, {first_out});",
+        INDENT + startup_line(compiled, first_in, first_out),
+        *kernel_bodies(compiled, "start", "compute"),
         f"{INDENT}compute.run([&](const km_command_t& command) {{",
     ]
     lines += cases(compiled, compiled.compute, "break;", 2, "compute")
-    lines += [f"{INDENT}}});", "}"]
+    lines += [f"{INDENT}}});", *kernel_bodies(compiled, "end", "compute"), "}"]
     return "\n".join(lines) + "\n"
 
 
