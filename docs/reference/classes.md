@@ -420,9 +420,20 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    one with args (named ahead); its tensor, one row in each core's L1, may be made
    before the load or while the run is live (it takes the L1 the area leaves, 64 KiB
    by default).
+7. **Its own overlays** (`@km.handler(overlay=True)`): numbered by the add, each
+   declared number plus the lowest shift that leaves every number free (the run's
+   overlays, added code, earlier added classes' own) and below every program field's
+   overlay; a later field whose number they took is refused by name. Their parts are
+   built as the class's (its formats, its args' defines), go into the room the load
+   reserved, and the host writes their table entries (each part's address and bytes)
+   into every core's overlay area: no command, and nothing in the kernels, which count
+   every number in a run loaded as a dict. A class named ahead has its own overlays'
+   parts built at the load and the slots sized by them (two where the class's part
+   loads its own overlay while it runs); without ahead, a kernel with one slot is
+   refused by name.
 
 Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
-`opt` levels or NoCs, overlays of its own or a dynamic handler, buffers
+`opt` levels or NoCs, a dynamic handler, buffers
 past the switch area or a part past its slot, an island run, a traced run and a merged
 program. The slots cannot grow under a live run: the load sizes them by the parts of the
 classes named with `Program.ahead(other)`, which the load also builds, or by
