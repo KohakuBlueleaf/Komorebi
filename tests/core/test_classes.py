@@ -3,12 +3,16 @@ made, with a sentence that names the handler and the line (no card)."""
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import komorebi as km
+from komorebi import overlay
 from komorebi.dsl.compiler import Refused, compile_class
 from komorebi.dsl.nodes import prune, render
+from komorebi.errors import ProgramError
+from komorebi.session import Session
 from komorebi.tensor import Tensor
 
 
@@ -451,6 +455,87 @@ def test_inline_bodies_reach_items_words_cpus_and_kept_fields():
     assert compiled.compute_options == WALK
     assert [b.page_bytes for b in compiled.buffers if b.role == "read"] == [512]
     assert len(compiled.handovers) == 4
+
+
+class Budget:
+    """A session's L1 as its load counts it (Session.l1_rows), without a card."""
+
+    channel, largest_page, transfer_chunk = object(), 2048, None
+    l1_rows = Session.l1_rows
+
+    def __init__(self, free):
+        self.free = free
+
+    def l1(self):
+        return 0, self.free
+
+    def l1_held(self):
+        return []
+
+
+def test_a_class_built_for_a_session_leaves_the_loads_rows():
+    alone = made(Unsolved, l1=1_000_000, source=tensor("bfloat16"))
+    lines = []
+    loaded = Unsolved(
+        log=lines.append, session=Budget(1_000_000), source=tensor("bfloat16")
+    )
+    assert "  plan: TILES = 240" in alone.built.report
+    assert "  plan: TILES = 225" in loaded.built.report  # 15 tiles the runtime's
+    table = lines[-1]
+    for row in ("control block and overlay area", "host transfer buffer"):
+        assert row in table
+    assert "slots: reader, 1 x 9,216 B (at most)" in table
+    with pytest.raises(ProgramError, match="its buffers take 999424 B, 940784 B"):
+        Unsolved(
+            log=lambda line: None,
+            session=Budget(1_000_000),
+            plan={"TILES": 240},
+            source=tensor("bfloat16"),
+        )
+
+
+def test_the_load_refuses_a_service_part_over_the_reserve(monkeypatch, tmp_path):
+    most = overlay.SERVICE_SLOT_MOST
+    for extent, refused in ((most, False), (most + 1, True)):
+        linked = SimpleNamespace(image=b"", extent=extent)
+
+        def made_part(*args, part=linked, **kw):
+            return part
+
+        monkeypatch.setattr(overlay, "build_part", made_part)
+        build = [[overlay.service()], overlay.Slots(), {"brisc": None}, tmp_path]
+        if refused:
+            with pytest.raises(overlay.OverlayError, match="over SERVICE_SLOT_MOST"):
+                overlay.build_overlays(*build)
+        else:
+            assert overlay.build_overlays(*build).slots == {"reader": (1, most)}
+
+
+class Patterned(km.Program):
+    @km.handler
+    def copy(self, source: km.Tensor):
+        km.Stream(source.pages(0, 8), pattern="A").drain()
+        km.Stream(source.pages(8, 8)).drain()
+
+
+def test_a_stated_pattern_is_used_and_an_unstated_one_is_the_default():
+    compiled = compile_class(Patterned, {}, {"source": tensor("bfloat16")})
+    assert [b.patterns for b in compiled.buffers] == [
+        {"kRead0Pattern": "A"},
+        {"kRead1Pattern": "AAAB"},
+    ]
+
+
+class Compared(km.Program):
+    @km.handler
+    def copy(self, source: km.Tensor, n: int):
+        km.Stream(source.pages(0, n + (n < 4) * 2)).drain()
+
+
+def test_a_comparison_inside_arithmetic_keeps_its_parentheses():
+    compiled = compile_class(Compared, {}, {"source": tensor("bfloat16")})
+    movement = "\n".join(render(prune(compiled.movement["copy"]), 0))
+    assert "Source(source), 0, (n + ((n < 4) * 2))," in movement
 
 
 class Unpacked(km.Program):

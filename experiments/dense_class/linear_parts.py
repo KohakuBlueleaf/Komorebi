@@ -86,7 +86,7 @@ def made(session):
     return Parts(
         log=log,
         rect=(0, 0, GRID, GRID),
-        l1=session.l1()[1],
+        session=session,
         **tensors,
     )
 

@@ -46,6 +46,9 @@ OVERLAY = re.compile(
     r"constexpr\s+uint32_t\s+kOverlay(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;"
 )
 ALIGN = 64  # slots, images and DRAM copies are whole 64-byte lines
+# The service overlay's slot at its most: a class's build counts it, the load refuses a
+# larger part. Built 8,640 B (8,840 B with KM_CHECK_NOC_SOURCES), rounded up to 9 KiB.
+SERVICE_SLOT_MOST = 9216
 LINK_BASE = 0x100000  # the first of the two links; the second is one line above
 LINK_LENGTH = 1 << 20
 ENTRY = "km_overlay_entry"
@@ -541,6 +544,12 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
             extents.setdefault(part, []).append(linked.extent)
             if overlay.number == number:
                 served[part] = linked.extent
+                if linked.extent > SERVICE_SLOT_MOST:
+                    raise OverlayError(
+                        f"the service overlay's {part} part takes {linked.extent:,} "
+                        f"B, over SERVICE_SLOT_MOST ({SERVICE_SLOT_MOST:,} B), which a "
+                        "class's build counts for it: raise it"
+                    )
             log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
     slots = {}
     for kernel, (count, size) in declared.items():

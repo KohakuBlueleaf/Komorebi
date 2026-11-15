@@ -54,7 +54,7 @@ class TracePass(km.Program, compute=WALK):
             on="pack",
             include=["../../../../projects/raytrace/kernels/walk.hpp"],
         )
-        for rays in km.Stream(packets.items(first, count, size=PACKET), pattern="A"):
+        for rays in km.Stream(packets.items(first, count, size=PACKET)):
             km.cxx(
                 """
                 const uint32_t* page = reinterpret_cast<const uint32_t*>(rays);
@@ -117,5 +117,5 @@ def made(session, tree_pages, tensors, log):
     """The class made with the scene's tree pages and example tensors of each name,
     one command at a time as the hand program."""
     return TracePass(
-        log=log, plan={"TREE": tree_pages}, l1=session.l1()[1], depth=1, **tensors
+        log=log, plan={"TREE": tree_pages}, session=session, depth=1, **tensors
     )
