@@ -87,9 +87,6 @@ work on the heads their card holds.
 ```python
 import komorebi as km
 
-DT, DV = 2, 2  # tiles a row of Q / K, and of V: a head of 64
-R, KB = 13, 12  # query rows a job; key rows a block
-
 
 class Job(km.Entry):
     """A row of a core's job table: the first pages of its queries, keys, values and
@@ -106,6 +103,11 @@ class Job(km.Entry):
 class Attention(
     km.Program, compute={"math_fidelity": "HiFi2", "fp32_dest_acc_en": True}
 ):
+    DT = km.constant(2)  # tiles a row of Q and of K: a head of 64
+    DV = km.constant(2)  # tiles a row of V
+    R = km.constant(13)  # query rows a job
+    KB = km.constant(12)  # key rows a block; Attention(..., KB=8) is another build
+
     state: km.L1[km.fp32, 2 * R, 32, 32] = km.own(push=None)  # each row's max and sum
     acc: km.L1[km.fp32, R * (DV + 1), 32, 32] = km.own(push=None)  # O as it builds
 
@@ -119,14 +121,17 @@ class Attention(
         down = km.Broadcast(self, along="column", length=10, mover="A", window=2)
         jobs = tables.pages(self.rank, 1).entries(Job, first=8, size=8, count=0)
         for job in jobs:
-            q0, k0, v0, o0 = job.q // DT, job.k // DT, job.v // DV, job.o // DV
-            queries = km.Stream(q.tiles[q0 : q0 + job.rows, 0:DT], block=R * DT)
-            for b in range((job.keys + KB - 1) // KB):
-                kr, vr = k0 + b * KB, v0 + b * KB
+            q0, o0 = job.q // self.DT, job.o // self.DV
+            k0, v0 = job.k // self.DT, job.v // self.DV
+            queries = km.Stream(
+                q.tiles[q0 : q0 + job.rows, 0 : self.DT], block=self.R * self.DT
+            )
+            for b in range((job.keys + self.KB - 1) // self.KB):
+                kr, vr = k0 + b * self.KB, v0 + b * self.KB
                 if down.sender():
                     kv = down.cast(
-                        k.tiles[kr : min(kr + KB, k0 + job.keys), 0:DT].T,
-                        v.tiles[vr : min(vr + KB, v0 + job.keys), 0:DV],
+                        k.tiles[kr : min(kr + self.KB, k0 + job.keys), 0 : self.DT].T,
+                        v.tiles[vr : min(vr + self.KB, v0 + job.keys), 0 : self.DV],
                     )
                 else:
                     kv = down.arrive()
@@ -137,7 +142,9 @@ class Attention(
                     takes=[queries, kv, job, b, self.state, self.acc],
                     include=["flash.hpp"],
                 )
-            out = km.Stream(o.tiles[o0 : o0 + job.rows, 0:DV], write=True, block=DV)
+            out = km.Stream(
+                o.tiles[o0 : o0 + job.rows, 0 : self.DV], write=True, block=self.DV
+            )
             for row in range(job.rows):
                 km.cxx(
                     "Flash<out_buffer, state, acc>::finalize(row);",
