@@ -21,8 +21,8 @@ import torch  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi import abi, formats  # noqa: E402
 from komorebi import session as session_module  # noqa: E402
-from projects.decode import card, real  # noqa: E402
 from projects.decode import model as md  # noqa: E402
+from projects.decode import real  # noqa: E402
 from projects.nn import front, models, nn, table  # noqa: E402
 
 MODEL = md.MODELS["qwen3-1.7b"]
@@ -382,7 +382,7 @@ def main():
     data = np.load(args.data)
     report = {"model": MODEL.name, "position": args.position, "calls": args.calls}
     results = {}
-    with km.Session(log=log, kernel_bytes=card.CHAIN_KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:  # its kernel buffer follows the kernels
         device = table.Device(session, MODEL, 2.0, log)
         log("loaded")
         try:

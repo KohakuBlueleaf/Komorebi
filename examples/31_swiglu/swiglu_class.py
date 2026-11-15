@@ -78,7 +78,6 @@ DESCRIPTOR = (
     "tt_metal/third_party/umd/tests/cluster_descriptor_examples/blackhole_P150.yaml"
 )
 JIT_CACHE = ROOT / "build" / "ttcache-formats"  # the jobs' cache: mock's and card's
-KERNEL_BYTES = 80 * 1024  # a class with a chain's walk: over the default 70,656 B
 RUNS = 5  # each form's timed runs
 STARTED = time.monotonic()
 
@@ -161,7 +160,7 @@ def build():
     km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     km_session.Session.load = build_only()
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         t = tensors_of(session, inputs(), empty=True)
         session.load(SwiGLU(log=log, session=session, **t))
     return 0
@@ -174,7 +173,7 @@ def card():
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     data = inputs()
     result = {"shape": [32, 1024, 3072], "cores": {"up": 12, "down": 4}}
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         t = tensors_of(session, data, empty=False)
         names = ("x", "w1", "w3", "w2", "hidden", "y")
         x, w1, w3, w2, hidden, y = (t[n] for n in names)

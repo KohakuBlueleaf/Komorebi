@@ -4,6 +4,7 @@ makes the session's tensors again at their addresses and writes into them what t
 were given (docs/reference/host.md)."""
 
 import gc
+import sys
 import time
 import weakref
 
@@ -135,8 +136,9 @@ def reopen(session, size, worker_l1, why):
     again and writes into it what it was given, with a line before and after."""
     started = time.perf_counter()
     kept = session._kept
+    before = session.l1()[0]
     session.log(
-        f"kernel buffer {session.l1()[0]:,} -> {size:,} B ({why}): the card is closed "
+        f"kernel buffer {before:,} -> {size:,} B ({why}): the card is closed "
         "and opened again"
     )
     session.channel = None  # the mapping goes with the device
@@ -146,8 +148,14 @@ def reopen(session, size, worker_l1, why):
     kept.remake(session)
     tensors = kept.live()
     written = sum(rewrite(session, tensor) for tensor in tensors)
+    took = time.perf_counter() - started
     session.log(
         f"kernel buffer {session.l1()[0]:,} B: card opened again, {len(tensors)} "
-        f"tensor(s) made again and {written:,} B written "
-        f"({time.perf_counter() - started:.2f} s)"
+        f"tensor(s) made again and {written:,} B written ({took:.2f} s)"
     )
+    if not getattr(session, "log_given", True):  # a reopen is said without a log too
+        print(
+            f"komorebi: kernel buffer {before:,} -> {size:,} B ({why}): the card was "
+            f"opened again, {len(tensors)} tensor(s) made again ({took:.2f} s)",
+            file=sys.stderr,
+        )

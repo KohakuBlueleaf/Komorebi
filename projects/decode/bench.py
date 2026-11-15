@@ -671,9 +671,7 @@ def main():
     results, ok, stamped = [], True, {}  # stamped: {(length, case): stamps}
     if args.loop_check:
         looped = chain(model, layers, args.seed, args.context, args.lengths[0])
-    kernel_bytes = None if args.no_chain else card.CHAIN_KERNEL_BYTES
-    kernel_bytes = card.STAMPED_KERNEL_BYTES if args.stamps else kernel_bytes
-    with km.Session(log=log, kernel_bytes=kernel_bytes) as session:
+    with km.Session(log=log) as session:  # its kernel buffer follows the kernels
         decode = card.Decode(
             session,
             model,

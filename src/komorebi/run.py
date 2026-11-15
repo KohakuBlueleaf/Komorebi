@@ -1878,6 +1878,9 @@ class Run:
             {key: value for key, value in fin.items() if key != "words"}
         )
         self._read_back(stop_grid)
+        release = getattr(self.backend, "release_l1", None)
+        if release is not None:  # the next load of the session has its L1
+            release()
 
     def _read_back(self, stop_grid=False):
         blocks, trace_rows = self.backend.read_back(stop_grid=stop_grid)

@@ -1066,7 +1066,8 @@ on a given device, an island or mesh session), the load is refused.
 **The rule.** Until the first load, do not change an array once it is given to the
 session, and write tensors through `session.tensor`, `session.write` or
 `tensor.write`. A session that loads a second, larger program gives `kernel_bytes`
-the size the refusal names.
+the size the refusal names, or runs the script again: the refusal is remembered and
+the next run opens at that size.
 
 **The guard.** The refusals: `km.KernelSizeError` (or `km.L1BudgetError` for a
 smaller buffer) naming why and the size that holds the kernels; `km.KomorebiError`
