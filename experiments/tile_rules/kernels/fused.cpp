@@ -1,9 +1,5 @@
-// Tile-rules bodies with a product inside (BODY 28: silu(a @ w1); 29: silu(a @ w1)
-// (a @ w3); 30: 29 with the live-row band): per unit one tile of A, W1 (and W3), every
-// unit's tiles in L1 before the first (the buffers hold them all: no unit waits for
-// the reader), the products' operands unpacked in the body's order, then the emitted
-// body (its products' words, the vector unit's stall on them, the vector code), timed
-// on the math CPU from the products' issue to a tensix_sync after the body.
+// Tile-rules bodies with products inside (BODY 28, 29, 30), timed on the math CPU;
+// every unit's tiles are in L1 before the first: experiments/tile_rules/README.md.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
