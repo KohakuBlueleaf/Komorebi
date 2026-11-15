@@ -75,96 +75,106 @@ share of the work.
 ### As a Python class
 
 On `main`, after 0.2.0 (experimental). A method marked as a handler is compiled, when
-the class is made, into the C++ kernels of the next section: its streams become the
-data-movement code and the buffers, its parameters the command's words. The arithmetic
-is a tile function, which the tile compiler turns into the vector and matrix units'
-instructions.
+the class is made, into the C++ kernels of the next section: its streams and
+broadcasts become the data-movement code and the buffers, its parameters the
+command's words. An inline C++ body runs on the compute units with the streams and
+fields it takes.
 
-The gate of a SwiGLU layer, `out = silu(a) * b`, over two tensors in DRAM (reduced
-from [22_gate/as_class](examples/22_gate/as_class/README.md)):
+Multi-head attention on two cards, the heads sharded over them. The class names
+tensors, never cards: the host places each tensor by a hint, and each card's cores
+work on the heads their card holds.
 
 ```python
 import komorebi as km
 
-
-@km.tile_function(tolerance=1e-6)  # the largest relative error against float64
-def silu_gate(a, b):
-    return km.silu(a) * b
+DT, DV = 2, 2  # tiles a row of Q / K, and of V: a head of 64
+R, KB = 13, 12  # query rows a job; key rows a block
 
 
-class Gate(km.Program):
-    BLOCK = km.constant(8)  # tiles a block: fixed at the build, Gate(..., BLOCK=4)
+class Job(km.Entry):
+    """A row of a core's job table: the first pages of its queries, keys, values and
+    output, and how many rows of each."""
+
+    q: int
+    k: int
+    v: int
+    o: int
+    rows: int
+    keys: int
+
+
+class Attention(
+    km.Program, compute={"math_fidelity": "HiFi2", "fp32_dest_acc_en": True}
+):
+    state: km.L1[km.fp32, 2 * R, 32, 32] = km.own(push=None)  # each row's max and sum
+    acc: km.L1[km.fp32, R * (DV + 1), 32, 32] = km.own(push=None)  # O as it builds
 
     @km.handler
-    def gate(
-        self,
-        a: km.Tensor,
-        b: km.Tensor,
-        out: km.Tensor,
-        tiles: int,
-        pattern: km.Pattern,
+    def attend(
+        self, q: km.Tensor, k: km.Tensor, v: km.Tensor, o: km.Tensor, tables: km.Tensor
     ):
-        first = self.rank * tiles  # this core's share
-        results = km.Stream(
-            out.pages(first, tiles), write=True, block=self.BLOCK, pattern=pattern
-        )
-        for x, g in zip(
-            km.Stream(a.pages(first, tiles), block=self.BLOCK, pattern=pattern),
-            km.Stream(b.pages(first, tiles), block=self.BLOCK, pattern=pattern),
-        ):
-            results.push(silu_gate(x, g))
+        # A column of cores works on one head. Its first core reads each block of K
+        # and V from DRAM once and casts it down the column; the others take it from
+        # the NoC, so K and V are read once a column, not once a core.
+        down = km.Broadcast(self, along="column", length=10, mover="A", window=2)
+        jobs = tables.pages(self.rank, 1).entries(Job, first=8, size=8, count=0)
+        for job in jobs:
+            q0, k0, v0, o0 = job.q // DT, job.k // DT, job.v // DV, job.o // DV
+            queries = km.Stream(q.tiles[q0 : q0 + job.rows, 0:DT], block=R * DT)
+            for b in range((job.keys + KB - 1) // KB):
+                kr, vr = k0 + b * KB, v0 + b * KB
+                if down.sender():
+                    kv = down.cast(
+                        k.tiles[kr : min(kr + KB, k0 + job.keys), 0:DT].T,
+                        v.tiles[vr : min(vr + KB, v0 + job.keys), 0:DV],
+                    )
+                else:
+                    kv = down.arrive()
+                # softmax(Q K^T) V over this block of keys, kept as a running max, sum
+                # and O: inline C++ on the matrix and vector units
+                km.cxx(
+                    "Flash<kv_buffer, state, acc>::block(job_rows, job_keys, b);",
+                    takes=[queries, kv, job, b, self.state, self.acc],
+                    include=["flash.hpp"],
+                )
+            out = km.Stream(o.tiles[o0 : o0 + job.rows, 0:DV], write=True, block=DV)
+            for row in range(job.rows):
+                km.cxx(
+                    "Flash<out_buffer, state, acc>::finalize(row);",
+                    takes=[out, row, self.state, self.acc],
+                )
 
 
-program = Gate(a=a, b=b, out=out)  # compiled here: the kernels and the header
-run = session.load(program)
-words = (a, b, out, tiles, km.Pattern("AAAB"))
-run.wait(run.submit(Gate.gate, (0, 120), args=words))
+with km.Session(cards=[0, 1]) as session:  # two cards as one run: 236 flat ranks
+    # split=0: a tensor's rows are dealt over the ranks, so half the heads are in each
+    # card's DRAM and every core's jobs name pages its own card holds
+    q = session.tensor(q_rows, "bfloat16", "tile", split=0)
+    k = session.tensor(k_rows, "bfloat16", "tile", like=q)
+    v = session.tensor(v_rows, "bfloat16", "tile", like=q)
+    o = session.empty(q_rows.shape, "bfloat16", "tile", like=q)
+    tables = session.tensor(job_tables, "uint32", split=0)  # a page of jobs a rank
+    program = Attention(q=q, k=k, v=v, o=o, tables=tables)  # compiled here
+    run = session.load(program)  # a copy of the kernels on each card
+    words = (q, k, v, o, tables)
+    run.wait(run.submit(Attention.attend, (0, session.ranks), args=words))
+    result = o.read()
 ```
 
-A class can also keep a field in each core's L1, multiply in the matrix unit, and add
-up what a group of cores made. This handler is a linear layer at a decode step, `Y = X
-W` for one tile row of X: a group of 14 cores makes 16 columns of Y, each core from a
-fourteenth of K, and the group's parts are added up a tree to its first core, which
-writes them. Reduced from
-[dense_class](experiments/language/dense_class/README.md):
-
-```python
-class Linear(km.Program):
-    K_TILES = km.constant(128)  # K = 4096; Linear(..., K_TILES=256) another build
-    SPLIT = km.constant(14)  # cores a group, each a fourteenth of K
-    WIDTH = km.constant(16)  # a group's columns of Y, in tiles
-    CHUNK = km.constant(2)  # K tiles a block
-    W_BLOCK = CHUNK * WIDTH  # derived: follows an override of either
-
-    sums: km.L1[km.fp32, 1, WIDTH, 32, 32]  # a field in each core's L1
-
-    @km.tile_function(fidelity="HiFi2")
-    def project(x, w):
-        return x @ w  # the matrix unit
-
-    @km.handler
-    def split(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
-        share = self.rank % self.SPLIT  # this core's part of K
-        first = self.rank // self.SPLIT * self.WIDTH  # its group's columns of Y
-        k0 = share * self.K_TILES // self.SPLIT
-        k1 = (share + 1) * self.K_TILES // self.SPLIT
-        for xb, wb in zip(
-            km.Stream(x.tiles[0:1, k0:k1], block=self.CHUNK),
-            km.Stream(w.tiles[k0:k1, first : first + self.WIDTH], block=self.W_BLOCK),
-        ):
-            self.sums += self.project(xb, wb)
-        whole = km.reduce(self.sums, form="tree", group=self.SPLIT)
-        if self.rank == self.leader:  # the group's first core
-            y.tiles[0:1, first : first + self.WIDTH].write(whole)
-```
-
-What a handler's lines may be is in [classes](docs/reference/classes.md), what a tile
-function may contain in [tile functions](docs/reference/tile.md). Nine of the examples
+Reduced from [attention_class](experiments/language/attention_class/README.md), which
+has the whole class (the causal mask, the constant tiles, `flash.hpp`), and from
+[01_mapcollect on two islands](examples/01_mapcollect/as_class/README.md). What a
+handler's lines may be is in [classes](docs/reference/classes.md), what a tile
+function may contain in [tile functions](docs/reference/tile.md), how tensors are
+placed over cards in [islands](docs/reference/islands.md). Smaller classes to start
+from: [22_gate](examples/22_gate/as_class/README.md) (a tile function for the
+arithmetic) and [dense_class](experiments/language/dense_class/README.md) (a linear
+layer: a field of sums, the matrix unit, a reduce over a group). Nine of the examples
 have a class beside the hand program (`as_class/` in each).
 
 ### As C++ kernels
 
-The same gate by hand: a data-movement kernel and a compute kernel. The core's two
+A program by hand is a data-movement kernel and a compute kernel. This one is the gate
+of a SwiGLU layer, `out = silu(a) * b`, over two tensors in DRAM. The core's two
 data-movement CPUs, the movers, bring its share of `a` and `b` from DRAM into L1 and
 take `out` back, sharing every stream by a pattern (`AAAB`: mover A three of every
 four blocks, mover B the fourth). The compute kernel does the math in the vector unit,
