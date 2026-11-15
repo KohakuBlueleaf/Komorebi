@@ -414,6 +414,27 @@ Refused at the line:
 - a take on one compute CPU or on a mover;
 - a take outside the block of lines where the stream was made.
 
+### Items with a step
+
+`t.items(first=f, count=n, size=B, step=s)` is items f, f + s, ..., n of them, of B
+bytes in t's pages (the keywords of `.entries`; `step=` left out is 1, the run of
+`t.items(first, n, size=B)`). A stream of them is a `km::Walk` of one item a row and
+a row pitch of s items over `km::items`: one item of each of several pages, as a slice
+of every core's counters page. From the rasterizer's SUM
+([region_class](../../experiments/language/raster_class/region_class.py)), slice
+`part` of each counting core's page of 128 items:
+
+```python
+entries = km.Stream(counters.items(first=part, count=counting, size=64, step=128))
+```
+
+`count=` and `step=` are each an int or a word of the handler (a parameter, an entry's
+word); their most is n where n is an int, and none otherwise (refused where a most is
+needed, as a rectangle's rows are). Refused at the line: a missing `first=`, `count=`
+or `size=`, another keyword, an item size that does not divide the page, a count or
+step that is an expression (`n * 2`: the build bounds an int or a word, not this), and
+a count or step under 1.
+
 ## Tables of entries
 
 A page of words can be a table: `t.pages(i, 1).entries(Job, first=F, size=S,

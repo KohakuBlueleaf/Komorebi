@@ -117,6 +117,12 @@ NAMES = {
         None,
     ),
     "item_size": Name("size", "items(..., size=B): the bytes an item", None),
+    "item_step": Name(
+        "step",
+        "items(first=, size=, count=, step=s): item first, first + s, ...: one item "
+        "every s",
+        None,
+    ),
     "tiles": Name(
         "tiles",
         "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major; [r0:r1:s, "

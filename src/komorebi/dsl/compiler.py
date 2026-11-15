@@ -2017,6 +2017,8 @@ class HandlerCompiler:
         """`t.items(first, count, size=B)`: items of B bytes packed in t's pages, a
         whole number a page; a stream moves them as pages of B bytes."""
         tensor = node.func.value.id
+        if not node.args:  # first=, count=, size=, step=: the keyword form
+            return self.stepped_items(node, tensor)
         sizes = [k.value for k in node.keywords if k.arg == spelling("item_size")]
         if len(node.args) != 2 or len(sizes) != 1 or len(node.keywords) != 1:
             self.refuse(
@@ -2042,6 +2044,79 @@ class HandlerCompiler:
             tensor=tensor,
             cxx=" ".join(sorted(used)),
             items=(size, page_bytes // size),
+        )
+
+    def stepped_items(self, node, tensor):
+        """`t.items(first=f, count=n, size=B, step=s)`: items f, f + s, ... (n of
+        them), a `km::Walk` of one item a row and a row pitch of s items."""
+        names = ("entries_first", "entries_count", "item_size", "item_step")
+        given = {k.arg: k.value for k in node.keywords}
+        words = [spelling(n) for n in names]
+        if set(given) - set(words) or not set(words[:3]) <= set(given):
+            self.refuse(
+                node,
+                f"{spelling('items')}({', '.join(w + '=' for w in words)}): the first "
+                "item, their count, the bytes an item and the items from one to the "
+                f"next ({spelling('item_step')}= 1 if left out)",
+                "give first=, count= and size= (and step=), and no other keyword",
+            )
+        size = self.constant_int(given[words[2]])
+        _, page_bytes = self.tensor_format(node, tensor)
+        if size < 1 or page_bytes % size:
+            self.refuse(
+                node,
+                f"items of {size} B in pages of {page_bytes} B: a page holds a whole "
+                "number of items",
+                f"give a {spelling('item_size')} that divides {page_bytes}",
+            )
+        bounded = {}
+        for word in (words[1], words[3]):
+            if word not in given:
+                continue
+            value = given[word]
+            known = self.known_int(value)
+            if known is None and not self.is_word(value):
+                self.refuse(
+                    node,
+                    f"{word}= {ast.unparse(value)}: the build bounds an int or a word "
+                    "of the handler, not this",
+                    f"give {word}= an int or a word (a parameter, an entry's word)",
+                )
+            if known is not None and known < 1:
+                self.refuse(node, f"{word}= {known}: 1 or more", f"give {word}= >= 1")
+            bounded[word] = known
+        first = self.integer(given[words[0]])
+        count = self.integer(given[words[1]])
+        step = self.integer(given[words[3]]) if words[3] in given else "1"
+        used = set()
+        for value in given.values():
+            used |= self.uses(value)
+        rect = None if step == "1" else (count, 1, step)
+        return Value(
+            "range",
+            first=first,
+            count=count,
+            tensor=tensor,
+            cxx=" ".join(sorted(used)),
+            items=(size, page_bytes // size),
+            rect=rect,
+            bounds=(bounded[words[1]], 1),
+            sides=(count, 1),
+        )
+
+    def is_word(self, node):
+        """Whether `node` is a name or attribute the handler holds as an int word."""
+        if isinstance(node, ast.Name):
+            value = self.scope.get(node.id)
+            return value is not None and value.kind in ("int", "word")
+        return (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and (
+                getattr(self.scope.get(node.value.id), "kind", None)
+                in ("entry", "entries")
+                or node.value.id == "self"
+            )
         )
 
     def partition(self, node, name, call):
