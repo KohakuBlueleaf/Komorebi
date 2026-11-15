@@ -56,9 +56,12 @@ ADD = "kernel"
 # output dim sharded into a copy of Y: the kernels' all-gather at the call's end
 # (kernel) or the host's after it (host) (--gather)
 GATHER = "kernel"
-# the grid plan: W's read spread over the column broadcast's ranks (--spread; not yet
-# run exact on a card: off)
-SPREAD = False
+# the grid plan: W's read spread over the column broadcast's ranks (--spread): "auto"
+# where the column's sender reading each block alone bounds a step (spreads())
+SPREAD = "auto"
+# the sender alone reads a W tile in 199 ns, a rank makes a tile product in 25.5 ns:
+# that read bounds a step below 7.8 tile rows of block height (bm)
+SPREAD_HEIGHT_MOST = 7
 # The account's words (kernels/linear/linear.h kAcWFree ..), by name: cycles, but the
 # tiles and products (counts) and the ends and start (wall clocks)
 ACCOUNT_WORDS = (
@@ -189,8 +192,11 @@ def extra_buffers(plan):
 
 def spreads(plan):
     """Whether W's read is spread over the column's ranks (--spread): the 2d layout,
-    a column broadcast of more than one rank."""
-    return SPREAD and plan.layout == "2d" and plan.rows > 1
+    a column broadcast of more than one rank; "auto" also blocks of at most
+    SPREAD_HEIGHT_MOST tile rows and at least two K tiles (rows to share)."""
+    if SPREAD == "off" or plan.layout != "2d" or plan.rows < 2:
+        return False
+    return SPREAD == "on" or (plan.bm <= SPREAD_HEIGHT_MOST and plan.kb >= 2)
 
 
 def slice_pages(plan):
@@ -1273,10 +1279,10 @@ def main():
     )
     parser.add_argument(
         "--spread",
-        choices=["on", "off"],
-        default="off",
-        help="the grid plan: W's read spread over the column's ranks, or the column's "
-        "sender reads it all",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="the grid plan: W's read spread over the column's ranks (auto: where the "
+        "sender's read bounds a step), or the column's sender reads it all",
     )
     parser.add_argument(
         "--shapes",
@@ -1304,7 +1310,7 @@ def main():
     global SPREAD
     ACCOUNT, SPLIT_REDUCE, ADD = args.account, args.reduce, args.add
     GATHER = args.gather
-    SPREAD = args.spread == "on"
+    SPREAD = args.spread
     NOCS = tuple(int(value) for value in args.nocs.split(","))
     VALID_SENT = args.valid == "sent"
     if args.subblock:

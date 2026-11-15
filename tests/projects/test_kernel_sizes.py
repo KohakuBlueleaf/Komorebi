@@ -38,6 +38,12 @@ CASES = {
     "raster_frame": [
         *("projects/raster/card_thread.py", "--scene", "s10k", "--steps", "4"),
     ],
+    # programs written as classes: each built from its class, as made at its load
+    "class_mapcollect": ["examples/01_mapcollect/as_class/mapcollect_class.py"],
+    "class_merge_tree": ["examples/02_merge_tree/as_class/merge_class.py"],
+    "class_broadcast": ["examples/03_broadcast/as_class/broadcast_class.py"],
+    "class_movement": ["examples/11_movement/as_class/movement_class.py"],
+    "class_overlays": ["examples/12_overlays/as_class/overlays_class.py"],
 }
 
 
