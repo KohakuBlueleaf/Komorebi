@@ -1390,9 +1390,30 @@ has one set of compute options. The fidelity is the programs' to agree on: a cla
 whose tile functions have no product gives `compute={"math_fidelity": ...}`.
 
 Refused when the class is made in this form (`ProgramError`, naming the handler's
-line): a dynamic handler (a program in the runtime's form has no message loop of its
-own), a body at a kernel's start or end (`km.cxx(..., at="start")`: the runtime owns
-the kernels' start and end), and `startup=` (the start-up is the runtime's).
+line), each with what lifting it would need (none of it is built):
+
+- **A body at a kernel's start** (`km.cxx(..., at="start")`): the runtime owns the
+  kernels' start. The place exists in a dict's run: every part of a program is called
+  with the load command (`KM_HANDLER_LOAD`) when a group takes the program, where
+  compute runs the start-up today, so the body would run there. A list's run sends no
+  load, so it would need one sent to every core at the run's start.
+- **A body at a kernel's end** (`at="end"`): no part is called when the run stops; it
+  would need the runtime's loop to call each program's parts once at the stop.
+- **`startup=`** (a start-up of the class's own, `km.Startup`): the start-up is the
+  runtime's, on the first buffer below 16 and the first from 16. The same load call
+  has the place: the start-up there would take the class's buffers and order, and
+  each command's two format calls the same buffers.
+- **A dynamic handler**: the runtime's form has no message loop of a program's own;
+  it would need the runtime's message kernels to serve a program field, and two
+  programs' dynamic handlers in one run are not built either
+  ([overlays](overlays.md#not-in-this-version)).
+
+An overlay handler is not refused: it is one of the program's own overlays (above).
+
+A class made in the kernel form and given to a list or a dict is refused at the load
+(`ProgramError`) with `form="runtime"` named, and with what that form would refuse in
+the class when it uses one of the above, so it is not rebuilt only to be refused
+again.
 
 On the card (card 0, AICLK 1,350 MHz), each figure a command's time on the events,
 the median of 5:
@@ -1408,7 +1429,8 @@ program's `load()` is part of it (113 cycles a command in
 [example 16](../../examples/16_two_programs/README.md), 0.08 us); the rest is the parts'
 code, called through a part's entry instead of inlined into the kernel's loop, and
 not split further by measurement. These two rows were measured before each command set
-its start-up's formats again (two calls on compute a command).
+its start-up's formats again; with those two calls a command, a later run gave 81.64 us
+and 95.16 us: no cost above the noise, so every command makes them.
 
 Two classes in one run, both in this form (the Linear above with one row tile a block,
 the Gate at Linear's fidelity with blocks of one tile):
@@ -1418,9 +1440,10 @@ the Gate at Linear's fidelity with blocks of one tile):
   from the host's submit to its event, then the gate on those 112 cores 0 wrong
   (47.9 us); `run.load(linear, ...)` back 4.68 us, and the split exact again (95.5 us).
   Example 16 measures a load on the cores: 3,529 to 3,791 cycles (2.6 to 2.8 us).
-- **A list**, every core both: the split exact. The gate's output was wrong on the run
-  before each command set its formats again (the cause in
-  [hazards](hazards.md#formats-another-program-left-on-the-same-cores)).
+- **A list**, every core both: the split exact (113.4 us, its first command), then the
+  gate on 120 cores 0 wrong (52.1 us). Before each command set its formats again, the
+  gate's output after the split was wrong
+  ([hazards](hazards.md#formats-another-program-left-on-the-same-cores)).
 
 [12 overlays](../../examples/12_overlays/as_class/README.md)' class in this form (its two
 handlers are overlays): 40 commands, every word as the example checks it; mix on mover

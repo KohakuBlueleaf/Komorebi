@@ -301,7 +301,8 @@ load runs the start-up again on the new program's buffers.
 
 **The guard.** For a class in the runtime's form: each command starts by setting the
 formats of the runtime's start-up on the program's buffers again (two calls on
-compute). For a hand-written part, nothing.
+compute, no cost above the noise on the card). For a hand-written part, nothing: a hand
+program in a list must do the same.
 
 Described in [Programs written as classes, the runtime's form](classes.md#the-runtimes-form)
 and [Host API, several programs in one run](host.md#several-programs-in-one-run).
