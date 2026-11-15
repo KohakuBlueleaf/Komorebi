@@ -84,6 +84,9 @@ NAMES = {
     "push": Name("push", "out.push(tile): a tile into a write stream", None),
     "fill": Name("fill", "self.field.fill(km.Stream(pages)): pages into a field", None),
     "pages": Name("pages", "tensor.pages(first, count): a range of pages", "page"),
+    "tiles": Name(
+        "tiles", "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major", None
+    ),
     "read": Name(
         "read",
         "pages.read(): the pages, read (a cast's block); word = pages.read() of one "
@@ -98,6 +101,9 @@ NAMES = {
     ),
     "reduce": Name("reduce", "km.reduce(tile, form=): the group's sum", "reduce"),
     "form": Name("form", "a reduce's form: owner or tree", "form"),
+    "group": Name(
+        "group", "km.reduce(t, group=S): in groups of S consecutive ranks", None
+    ),
     "broadcast": Name("Broadcast", "km.Broadcast(self, along=): a broadcast", None),
     "along": Name("along", "a broadcast's direction: row or column", None),
     "window": Name("window", "a broadcast's blocks in flight", "window"),
