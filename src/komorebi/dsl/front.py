@@ -85,6 +85,34 @@ class Tile:
     """`gives=km.Tile`: what an inline body of compute leaves in DST 0."""
 
 
+# compute_kernel_hw_startup's source orders: how its two inputs map on SrcA and SrcB.
+STARTUP_ORDERS = {"regular": "SrcOrder::Regular", "reverse": "SrcOrder::Reverse"}
+
+
+class Startup:
+    """`startup=km.Startup("a", "b", "out", order="reverse")` of a class: compute's
+    start-up (compute_kernel_hw_startup) by those fields' buffers, two inputs and
+    an output (or one input and the output), in the source order given."""
+
+    def __init__(self, *fields, order="regular"):
+        if not 2 <= len(fields) <= 3 or not all(isinstance(f, str) for f in fields):
+            raise ProgramError(
+                f"km.{spelling('startup')}(...): the names of two input fields and an "
+                "output field (or one input and the output)"
+            )
+        if order not in STARTUP_ORDERS:
+            raise ProgramError(
+                f"km.{spelling('startup')}(order={order!r}): one of "
+                f"{', '.join(map(repr, STARTUP_ORDERS))}"
+            )
+        if len(fields) == 2 and order != "regular":
+            raise ProgramError(
+                f"km.{spelling('startup')}: a source order is of two inputs; name "
+                "both"
+            )
+        self.fields, self.order = fields, order
+
+
 class L1:
     """`km.L1[format, *shape]`: the annotation of a field resident in the L1, each
     size an int or a km.symbol() of the class."""
@@ -332,6 +360,7 @@ def exports():
         "symbol": symbol,
         "own": own,
         "tile_value": Tile,
+        "startup": Startup,
         "tensor": Tensor,
         "stream": line_only("stream"),
         "reduce": line_only("reduce"),

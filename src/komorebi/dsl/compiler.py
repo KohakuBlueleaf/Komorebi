@@ -231,6 +231,10 @@ class Compiled:
     # Each value an inline body or a line hands between compute CPUs by mailbox.
     handovers: list = field(default_factory=list)
     compute_options: dict = field(default_factory=dict)  # the class's compute=
+    entries: dict = field(default_factory=dict)  # km.Entry class name -> words
+    # The inline bodies at a kernel's start or end (at=): (at, kernel) -> texts.
+    kernel_bodies: dict = field(default_factory=dict)
+    startup: object = None  # the class's km.Startup, or None (the default start-up)
 
 
 def handler_methods(cls):
@@ -295,6 +299,7 @@ def compile_class(cls, plan, tensors, l1=None):
         HandlerCompiler(compiled, method, names, plan, tensors).run()
     bind_fields(compiled, plan, l1)
     compiled.compute_options = class_compute(cls, compiled)
+    compiled.startup = getattr(cls, "startup_given", None)
     return compiled
 
 
@@ -5034,10 +5039,12 @@ class HandlerCompiler:
                 "put them on the body's first lines",
             )
         text = "\n".join(lines[included:])
-        on, takes, gives, includes = "compute", [], None, []
+        on, takes, gives, includes, at = "compute", [], None, [], None
         for keyword_ in call.keywords:
             value = keyword_.value
-            if keyword_.arg == spelling("on"):
+            if keyword_.arg == spelling("at"):
+                at = self.kernel_at(node, value)
+            elif keyword_.arg == spelling("on"):
                 if not (isinstance(value, ast.Constant) and value.value in BODY_CPUS):
                     self.refuse(
                         node,
@@ -5081,8 +5088,10 @@ class HandlerCompiler:
                 self.refuse(
                     node,
                     f"km.cxx has no {keyword_.arg}=",
-                    "use takes=, gives=, on= and include=",
+                    "use takes=, gives=, on=, include= and at=",
                 )
+        if at is not None:
+            self.kernel_takes(node, takes, gives, name)
         if (gives is None) != (name is None):
             self.refuse(
                 node,
@@ -5143,11 +5152,45 @@ class HandlerCompiler:
             body = f"tile_regs_acquire();\n{body}"
         if cpu is not None:  # its CPU's alone
             body = f"#if {guard}\n{body}\n#endif"
+        if at is not None:  # at the kernel's start or end, not in the handler
+            if mover is not None:
+                body = f"#if {guard}\n{body}\n#endif"
+            self.compiled.kernel_bodies.setdefault((at, kernel), []).append(body)
+            return [], []
         lines = [*before, Line(body, uses, mover=mover), *after]
         moves, self.body_moves = self.body_moves, []
         if mover is None:
             return moves, lines
         return lines, []
+
+    def kernel_at(self, node, value):
+        """`at="start"` or `at="end"`: a body at its kernel's start (before the
+        commands, after the start-up) or end (after the run)."""
+        if not (isinstance(value, ast.Constant) and value.value in ("start", "end")):
+            self.refuse(
+                node,
+                "at= is the kernel's start or its end",
+                'write at="start" or at="end"',
+            )
+        return value.value
+
+    def kernel_takes(self, node, takes, gives, name):
+        """A body at a kernel's start or end takes the class's own fields alone (no
+        handler's value is made there) and gives nothing."""
+        if gives is not None or name is not None:
+            self.refuse(
+                node,
+                "a body at a kernel's start or end gives nothing to the handler",
+                "drop gives= and the name",
+            )
+        for item in takes:
+            if self.field_name(item) not in self.compiled.own:
+                self.refuse(
+                    node,
+                    "a body at a kernel's start or end takes the class's own fields "
+                    "alone: no handler's value is made there",
+                    f"take fields declared km.{spelling('own')}(), or drop at=",
+                )
 
     def body_text(self, node, call):
         """A body's text: a string, a string constant of the class's module, or a sum

@@ -148,6 +148,9 @@ and a name of the handler's with that prefix is refused.
 | `for i in range(n):` | a loop | a loop |
 | `km.cxx("...", takes=[n], on="mover_b")` | the C++ as written, on the CPU `on` names (Inline bodies) | compute's three CPUs when `on` is not given; `on="unpack"`, `"math"`, `"pack"`: that CPU's alone |
 | `class P(km.Program, compute={...})` | | the compute kernel's options, by the host API's names, over the ones the class's lines set |
+| `class P(km.Program, defines={...})`, and `P(..., defines={...})` | the kernels' defines (the make's over the class's) | the same |
+| `km.cxx(..., at="start")`, `at="end"` | the body at the kernel's start (after `km::Movement`) or after its run | after the start-up, before the commands; or after the run |
+| `class P(km.Program, startup=km.Startup("a", "b", "out", order="reverse"))` | | `compute_kernel_hw_startup<SrcOrder::Reverse>` of those fields' buffers, in place of the default |
 | `w = km.cxx(..., gives=int)` | `uint32_t w = 0;` then the body, which sets it | the same |
 | `t = km.cxx(..., gives=km.Tile)` | | `tile_regs_acquire()` then the body, which leaves the tile in DST 0 |
 | `km.cxx(..., takes=[report], on="mover_b")` after pack's body over `report` | mover B: the page waited for, the body, then the movers' write of it | (A page from several CPUs' words) |
@@ -304,6 +307,27 @@ km.cxx(
 The page is mover B's: a body on mover A that takes it, a body on mover B before
 pack's, and a stream whose block is not mover B's (pattern other than `"B"`) are
 refused.
+
+## Defines, the start-up, a kernel's start and end
+
+`class P(km.Program, defines={"FLASH_CAUSAL": 1})` gives the kernels (the movement
+source and the compute kernel, and the class's overlays) those defines, each an int or
+a string; `P(..., defines={...})` adds or replaces some at the make (a causal call
+beside a full one). A name of the runtime's (`KM_...`) is refused, and so is a value
+that is not an int or a string. The build's report prints them.
+
+`km.cxx(..., at="start")` puts the body at its kernel's start, before the first
+command: on compute after the start-up, on the movers after their runtime is made; at
+`at="end"` after the run (the kernel's last lines). It takes the class's own fields
+alone (no handler's value is made there), gives nothing, and runs once a kernel, not
+once a command; the names it declares are seen by the handlers' bodies (a constant
+tile built once into an own field, an `init` of the vector unit). `on=` names its CPU
+as for any body. compute's start-up is `compute_kernel_hw_startup` of the first buffer
+the class reads and the first it writes; `startup=km.Startup("a", "b", "out",
+order="reverse")` makes it of the fields a, b and out, in that source order
+(`SrcOrder::Reverse`, the matrix unit's), as a hand kernel's start-up names its
+operands. The start-up sets the unpacker, the math and the packer by those buffers'
+formats and tiles.
 
 ## Tile functions
 

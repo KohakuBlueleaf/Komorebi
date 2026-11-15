@@ -142,6 +142,24 @@ NAMES = {
         "km.cxx(..., include=[...]): #include lines for the body's CPU alone",
         None,
     ),
+    "at": Name(
+        "at",
+        'km.cxx(..., at="start"): the body at its kernel\'s start, before the '
+        'commands; at="end": after the run',
+        None,
+    ),
+    "defines": Name(
+        "defines",
+        "class P(km.Program, defines={...}): the kernels' defines; made with "
+        "defines= too",
+        None,
+    ),
+    "startup": Name(
+        "Startup",
+        'class P(km.Program, startup=km.Startup("a", "b", "out", order="reverse")): '
+        "compute's start-up by those fields",
+        None,
+    ),
     "compute_options": Name(
         "compute",
         "class P(km.Program, compute={...}): the compute kernel's options, by the "
