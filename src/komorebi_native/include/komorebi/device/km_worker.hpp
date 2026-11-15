@@ -616,7 +616,7 @@ namespace km {
         }
 
         uint32_t arg(uint32_t index) const {
-            return get_arg_val<uint32_t>(kComputeArgs + index);
+            return get_arg_val<uint32_t>(kComputeArgs + KM_PROGRAM_ARGS_AT + index);
         }
 
         // The control block's address and the wait limit (1024-cycle units).

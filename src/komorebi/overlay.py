@@ -437,7 +437,7 @@ def linked_facts(recipe, elf, base, undefined):
 
 def part_defines(overlay, kernel):
     """The defines of one part's build, and its compile arguments (None: the
-    kernel's)."""
+    kernel's; a program's own overlay may carry the program's)."""
     function = FUNCTION
     if overlay.program:
         function = PROGRAM_FUNCTION
@@ -451,7 +451,8 @@ def part_defines(overlay, kernel):
         **({"KM_MESSAGE_PART": 1, "KM_MESSAGE_PARTS": 1} if overlay.message else {}),
         **overlay.defines,
     }
-    compile_args = overlay.compile_args.get(kernel, []) if overlay.program else None
+    given = overlay.program or overlay.compile_args
+    compile_args = overlay.compile_args.get(kernel, []) if given else None
     return defines, compile_args
 
 
@@ -673,7 +674,12 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
         for kernel, part in overlay.parts():
             # the service part sizes its slot (at least), whatever was declared
             size = None if overlay.number == number else declared[kernel][1]
-            linked = build_part(by_part[part], overlay, kernel, part, cache, size)
+            builder = getattr(overlay, "build_part", None)  # a part of several units
+            linked = (
+                builder(by_part[part], kernel, part, cache, size)
+                if builder is not None
+                else build_part(by_part[part], overlay, kernel, part, cache, size)
+            )
             images[overlay.number, part] = linked.image
             extents.setdefault(part, []).append(linked.extent)
             if overlay.number == number:

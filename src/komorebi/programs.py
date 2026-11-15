@@ -114,11 +114,6 @@ def plan(spec, cores):
         _same(held, "compute", "compute options")
         _same(held, "opt", "opt levels")
         _same_nocs(held, "programs that share cores")
-        if len(held) > 1 and any(program.args is not None for program in held):
-            raise ProgramError(
-                f"{', '.join(p.name for p in held)}: programs that share cores take no "
-                "per-core args"
-            )
     if ranges is not None:  # one build of the runtime's kernels serves every group
         _same_nocs(programs, "programs whose groups switch")
     for program in programs if ranges is not None else ():
@@ -130,6 +125,7 @@ def plan(spec, cores):
     for index, program in enumerate(programs):
         program.program_field = index
     shift_overlays(programs)
+    args_places(programs, cores)
     return Plan(
         tuple(programs),
         tuple(groups),
@@ -139,15 +135,52 @@ def plan(spec, cores):
     )
 
 
+def args_places(programs, cores):
+    """Each program's args_at: in a run of several, every core holds every program's
+    per-core args (a group may switch to any), program p's after the earlier ones',
+    each as wide as its longest list on any core."""
+    at = 0
+    for program in programs:
+        program.args_at = at if len(programs) > 1 else 0
+        if len(programs) > 1 and program.args is not None:
+            at += max(
+                (
+                    len(part)
+                    for core in range(cores)
+                    for part in program.core_args(core)
+                ),
+                default=0,
+            )
+
+
+def core_args(placed, core):
+    """(reader, writer, compute) args of `core` in a run of several programs: every
+    program's at its args_at, zeros between."""
+    lists = ([], [], [])
+    for program in placed.programs:
+        if program.args is None:
+            continue
+        for kernel, part in zip(lists, program.core_args(core), strict=True):
+            kernel += [0] * (program.args_at - len(kernel)) + list(part)
+    return lists
+
+
 def check(program, count):
     """Refuses what a program in the runtime's form does not have (yet)."""
     if program.form() != "program":
+        refused = getattr(program, "runtime_refused", None)  # a class's
+        made = (
+            ""
+            if refused is None
+            else '; make the class with form="runtime"'
+            + (f", which refuses it: {refused}" if refused else "")
+        )
         if count > 1:
             raise ProgramError(
                 f"{program.name}: several programs in one run are each in the "
-                "runtime's form (km_program); its sources define kernel_main"
+                f"runtime's form (km_program); its sources define kernel_main{made}"
             )
-        raise ProgramError(f"{program.name}: its sources define kernel_main")
+        raise ProgramError(f"{program.name}: its sources define kernel_main{made}")
     if program.messages is not None:
         raise ProgramError(f"{program.name}: a dynamic handler needs the kernel form")
     if program.compile_args.get("movement") or any(
@@ -189,14 +222,24 @@ def shift_overlays(programs):
 
 def own_overlays(program):
     """A program's own overlays as the run numbers them (its shift added, also to the
-    numbers its parts name: KM_OVERLAY_SHIFT)."""
+    numbers its parts name: KM_OVERLAY_SHIFT); built with the program's compile
+    arguments and its args' place when it has them, as its parts are."""
     shift = program.overlay_shift
+    defines = {"KM_OVERLAY_SHIFT": str(shift)}
+    if program.args_at:
+        defines["KM_PROGRAM_ARGS_AT"] = str(program.args_at)
+    compile_args = {
+        kernel: program.kernel_compile_args(kernel) for kernel in overlay.KERNELS
+    }
+    if not any(compile_args.values()):
+        compile_args = {}
     return [
         overlay.Overlay(
             each.name,
             each.number + shift,
             each.sources,
-            {**each.defines, "KM_OVERLAY_SHIFT": str(shift)},
+            {**each.defines, **defines},
+            compile_args=compile_args,
         )
         for each in program.overlays.values()
     ]
@@ -277,6 +320,8 @@ def program_overlay(program, switch=False):
     defines = dict(program.defines)
     if program.overlays:  # the numbers its parts name, as the run numbers them
         defines["KM_OVERLAY_SHIFT"] = str(program.overlay_shift)
+    if program.args_at:
+        defines["KM_PROGRAM_ARGS_AT"] = str(program.args_at)
     if switch:
         cb_in, cb_out = start_buffers(program.buffers)
         defines |= {
@@ -293,6 +338,15 @@ def program_overlay(program, switch=False):
             kernel: program.kernel_compile_args(kernel) for kernel in overlay.KERNELS
         },
     )
+
+
+def program_overlays(program, switch=False, alone=True):
+    """The overlays that hold `program`: its own (program_overlay), or a merged
+    program's part and the sources it places as overlays (komorebi.merge)."""
+    parts = getattr(program, "part_overlays", None)
+    if parts is not None:
+        return parts(switch, alone)
+    return [program_overlay(program, switch)]
 
 
 def rectangles(first, count, row):

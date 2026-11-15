@@ -4,6 +4,7 @@ the sizes printed, and the made object is a Program of those files.
 """
 
 import hashlib
+import importlib
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -61,6 +62,10 @@ def prepare(cls, compute=None, defines=None, startup=None):
     handler methods: its handlers numbered, its constructor the compiler; `compute`
     the class's compute options (checked when it is compiled), `defines` its
     kernels' defines, `startup` compute's start-up (a km.Startup)."""
+    parents = [base for base in cls.__bases__ if getattr(base, "built_handlers", None)]
+    if len(parents) > 1:  # class Layer(Attention, Linear): the classes merged
+        merged = importlib.import_module("komorebi.dsl.merged")  # it imports this
+        return merged.prepare(cls, parents, compute, defines, startup)
     cls.constants_declared = front.constants_of(cls)
     methods = compiler.handler_methods(cls)
     if not methods:
@@ -114,13 +119,20 @@ def make(
     defines=None,
     handlers=None,
     broadcast_wait=False,
+    form="kernel",
+    beside=(),
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
-    by name; `session` (its L1 table checked; `trace` the load's) or `l1`; `rect` and
-    `nocs` a broadcast's; `defines` over the class's; `handlers` the sets of the
-    constant parameters (handler_sets); `broadcast_wait` a Program's; a constant."""
+    by name; `session` (L1 table checked; `trace` the load's) or `l1`; `rect`, `nocs` a
+    broadcast's; `defines` over the class's; `handlers` constant parameters' sets;
+    `broadcast_wait` a Program's; `form`; `beside` programs it leaves room for."""
     cls = type(self)
+    if form not in FORMS:
+        raise ProgramError(
+            f"{cls.__name__}: {spelling('program_form')}={form!r}: one of "
+            f"{', '.join(FORMS)}"
+        )
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
     values, tensors = constants_given(cls, plan, tensors)
@@ -131,11 +143,21 @@ def make(
         room = l1 - runtime_bytes(session, trace)
     else:
         room = l1
-    compiled = compiler.compile_class(cls, plan, tensors, room, values, sets)
+    reserved = beside_indices(cls.__name__, beside)
+    compiled = compiler.compile_class(cls, plan, tensors, room, values, sets, reserved)
     if found:
         first_use.reserve(cls, compiled, found, plan, tensors, room, values, sets)
+    # what km.merge builds this program's handlers again with (komorebi.dsl.merged)
+    self.make_given = {
+        "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
+        "session": session, "l1": l1, "trace": trace, "depth": depth, "rect": rect,
+        "nocs": nocs, "defines": defines, "broadcast_wait": broadcast_wait,
+    }  # fmt: skip
     constants_made(self, cls, values, compiled)
     self.constant_handlers = compiled.variants
+    refused = runtime_refused(compiled)
+    if form == "runtime" and refused:
+        raise ProgramError(refused)
     program_args = None
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
@@ -156,7 +178,8 @@ def make(
         keyed[spelling("first_use")] = first_use.keyed(found)
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}
     key = sources_key(plan, tensors, solved, depth, rect, nocs, broadcast_wait, keyed)
-    built = write(cls, compiled, room, key)
+    key = form_key(key, form, reserved)
+    built = write(cls, compiled, room, key, form)
     for line in built.report:
         log(line)
     if defines:
@@ -190,6 +213,12 @@ def make(
     for name in compiled.tensors:
         movement_args += tensors[name].tensor_args()
     kernels = built.folder
+    if form == "runtime":  # the parts of a program under the runtime's kernels
+        kernels = {
+            "reader": built.folder / "movement.cpp",
+            "compute": built.folder / "compute.cpp",
+            "writer": built.folder / "movement.cpp",
+        }
     if compiled.dynamic:
         reader, writer = runtime_kernels()
         kernels = {
@@ -202,8 +231,8 @@ def make(
         name=compiled.name.lower(),
         kernels=kernels,
         buffers=buffers,
-        compile_args={"movement": movement_args} if movement_args else {},
-        compute=compute_options(compiled),
+        compile_args=form_compile_args(movement_args, form),
+        compute=beside_compute(compute_options(compiled), beside),
         args=program_args,
         defines=defines,
         depth=depth,
@@ -212,6 +241,7 @@ def make(
     )
     self.built = built
     self.log = log
+    self.runtime_refused = refused  # what form="runtime" would refuse ("": nothing)
     for name in compiled.overlays:
         sources = {"reader": built.folder / name / "movement.cpp"}
         sources["writer"] = sources["reader"]
@@ -773,6 +803,154 @@ def camel(name):
     return "".join(part.capitalize() for part in name.split("_"))
 
 
+FORMS = ("kernel", "runtime")
+
+
+def form_compile_args(movement_args, form):
+    """The movers' compile arguments: as "movement" in the kernel form, as the reader's
+    and the writer's in the runtime's (its parts are built per kernel)."""
+    if not movement_args:
+        return {}
+    if form == "runtime":
+        return {"reader": list(movement_args), "writer": list(movement_args)}
+    return {"movement": movement_args}
+
+
+def form_key(key, form, reserved=()):
+    """The build key of a form and of the indices left to other programs: the kernel
+    form's without any as it was, the others apart."""
+    if form == "kernel" and not reserved:
+        return key
+    made = f"{key} form={form} reserved={sorted(reserved)}"
+    return hashlib.sha256(made.encode()).hexdigest()[:8]
+
+
+def beside_indices(name, beside):
+    """The buffer indices of the programs a class is made beside (a list load shares
+    one L1 layout: its buffers take others)."""
+    if isinstance(beside, km_program.Program):
+        beside = (beside,)
+    indices = set()
+    for other in beside:
+        if not isinstance(other, km_program.Program):
+            raise ProgramError(f"{name}: beside= takes programs, got {other!r}")
+        indices |= {buffer.index for buffer in other.buffers}
+    return indices
+
+
+def beside_compute(options, beside):
+    """The compute options with the unpack modes of the programs a class is made
+    beside, at their indices (which it leaves): one run's programs share one set."""
+    if isinstance(beside, km_program.Program):
+        beside = (beside,)
+    for other in beside:
+        modes = other.compute.get("unpack_to_dest_mode", {})
+        if modes:
+            options.setdefault("unpack_to_dest_mode", {}).update(modes)
+    return options
+
+
+def runtime_refused(compiled):
+    """runtime_refusals' message, or "" when the runtime's form takes the class."""
+    try:
+        runtime_refusals(compiled)
+    except ProgramError as error:
+        return str(error)
+    return ""
+
+
+def runtime_refusals(compiled):
+    """What the runtime's form has no place for, refused at its line: a dynamic
+    handler, a body at a kernel's start or end, a km.Startup."""
+    name, form = compiled.name, f'{spelling("program_form")}="runtime"'
+    if compiled.dynamic:
+        raise ProgramError(
+            f"{name}.{compiled.dynamic} (line {compiled.lines[compiled.dynamic]}): a "
+            f"dynamic handler; in {form} a program has none"
+        )
+    for at, line in compiled.kernel_body_lines:
+        raise ProgramError(
+            f"{name}: the body at the kernel's {at} (line {line}): in {form} the "
+            "runtime owns the kernels' start and end; put it in the handler"
+        )
+    if compiled.startup is not None:
+        raise ProgramError(
+            f"{name}: startup=: in {form} compute's start-up is the "
+            "runtime's, on the first buffer below 16 and the first from 16 on"
+        )
+
+
+def runtime_movement_source(compiled):
+    """The movement source in the runtime's form: the handler switch as a function
+    on the mover's runtime, called by each mover's km_program."""
+    lines = [
+        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
+        "// its parts on the runtime's reader (RISCV_0) and writer (RISCV_1).",
+        *movement_includes(compiled),
+        '#include "komorebi/device/km_program.hpp"',
+        f'#include "{header_name(compiled)}"',
+        "",
+        "static bool km_handlers(",
+        f"{INDENT}km::MoverRuntime& km_core, const km_command_t& command",
+        ") {",
+        *PART_MOVEMENT,
+        *(INDENT + line for line in tensor_aliases(compiled)),
+        *cases(compiled, compiled.movement, "return true;", 1, "movement"),
+        "}",
+        "",
+        "#if defined(COMPILE_FOR_BRISC)",
+        "void km_program(km::Reader& reader, const km_command_t& command) {",
+        f"{INDENT}km_handlers(reader, command);",
+        "}",
+        "#else",
+        "bool km_program(km::Writer& writer, const km_command_t& command) {",
+        f"{INDENT}return km_handlers(writer, command);",
+        "}",
+        "#endif",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def runtime_compute_source(compiled):
+    """The compute source in the runtime's form: the handler switch as compute's
+    km_program (the start-up is the runtime's)."""
+    lines = [
+        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
+        "// its part on compute, under the runtime's compute kernel.",
+        *compute_includes(compiled),
+        '#include "api/compute/reconfig_data_format.h"',
+        '#include "komorebi/device/km_program.hpp"',
+        f'#include "{header_name(compiled)}"',
+        "",
+        "void km_program(km::Compute& compute, const km_command_t& command) {",
+        *start_formats(compiled),
+        *cases(compiled, compiled.compute, "break;", 1, "compute"),
+        "}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def start_formats(compiled):
+    """A runtime-form command's first lines on compute: the formats of the runtime's
+    start-up on this program's buffers (programs.start_buffers: the first index below
+    16, the first from 16), as the kernel form's code finds them. In a run of several
+    programs on a core, the last command may have been another program's."""
+    indices = sorted(
+        index
+        for buffer in compiled.buffers
+        for index in (buffer.index_a, buffer.index_b)
+        if index is not None
+    )
+    inputs = [index for index in indices if index < 16]
+    outputs = [index for index in indices if index >= 16]
+    lines = [INDENT + "// the start-up's formats on this program's buffers"]
+    if inputs:
+        lines.append(f"{INDENT}reconfig_data_format({inputs[0]}, {inputs[0]});")
+    if outputs:
+        lines.append(f"{INDENT}pack_reconfig_data_format({outputs[0]});")
+    return lines if len(lines) > 1 else []
+
+
 def sources_key(plan, tensors, solved, depth, rect, nocs, wait=False, constants=None):
     """A short hash of what changes a class's generated sources: the plan, the field
     sizes solved from the L1 left (`solved`; not that L1, a mock session's and the
@@ -789,7 +967,7 @@ def sources_key(plan, tensors, solved, depth, rect, nocs, wait=False, constants=
     return hashlib.sha256(repr(made).encode()).hexdigest()[:8]
 
 
-def write(cls, compiled, l1, key):
+def write(cls, compiled, l1, key, form="kernel"):
     """Writes the header, the two kernels and program.py into build/<name>-<key>/
     beside the class's source (`key`, sources_key: two instances made otherwise do
     not share a folder); returns what was written and the report."""
@@ -806,6 +984,9 @@ def write(cls, compiled, l1, key):
     for cxx, (_, unit) in compiled.units.items():  # the tile functions' bodies
         files[f"tile_{cxx}.hpp"] = emit(unit)
         files[f"tile_{cxx}.txt"] = unit.dump() + "\n"
+    if form == "runtime":
+        files["movement.cpp"] = runtime_movement_source(compiled)
+        files["compute.cpp"] = runtime_compute_source(compiled)
     if compiled.dynamic:  # compute alone: the runtime's movers carry the messages
         del files["movement.cpp"]
         files["compute.cpp"] = dynamic_source(compiled)
