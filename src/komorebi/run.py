@@ -637,13 +637,15 @@ class Run:
         defines=None,
         timeout=10.0,
         message=False,
+        compile_args=None,
     ):
         """Adds overlay `name` to the live run: `parts` as Program.overlay's, built
-        against the loaded kernels, written into the room the load reserved, its table
-        entry given to every core by a command. Returns its number: with `handler` a
-        handler's, with `message` a dynamic handler's (its body a compute part)."""
+        against the loaded kernels (`compile_args` {kernel: [words]} in place of
+        theirs), written into the room the load reserved, its table entry given to
+        every core by a command. Returns its number (a handler's, a dynamic handler's).
+        """
         return added.addon(
-            self, name, parts, handler, number, defines, timeout, message
+            self, name, parts, handler, number, defines, timeout, message, compile_args
         )
 
     @property

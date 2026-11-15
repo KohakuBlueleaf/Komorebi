@@ -344,6 +344,15 @@ def kernel_build(program, kernel, defines):
     return build
 
 
+def added_path(placed):
+    """The runtime's kernels' define of the path of a handler added to the live run
+    (run.addon), when every program of the load names slot bytes for it, as the
+    load's room requires (added.room); a program's own defines stay its parts'."""
+    if placed and all("KM_ADDED_HANDLERS" in p.defines for p in placed):
+        return [("KM_ADDED_HANDLERS", "1")]
+    return []
+
+
 def slot_area(base, size, used, slow_code):
     """The slots' (address, bytes, buffer index): `size` bytes as the first circular
     buffer, at the L1 base `base`, on an index not in `used`; refused (SlowCodeError)
@@ -2614,6 +2623,7 @@ class _Backend:
                 ]
             defines += island
             defines += self._one_island()
+            defines += added_path(placed.programs)
             first = held[0] if held else None
             if placed.switch and first is None:
                 first = placed.programs[0]  # one build for every group's kernels
