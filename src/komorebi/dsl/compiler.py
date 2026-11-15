@@ -787,6 +787,26 @@ def tile_format_refusal(formats):
     )
 
 
+class SrcaSwitch:
+    """A tile call's SrcA format set again before each unpack into it (a product's w,
+    each copied operand) when those are not of one format: the call's setup sets it
+    once, for the first of them, and the unpacker reads every later tile as that."""
+
+    def __init__(self, products, copied):
+        read = [w.buffer.dtype for _, w in products] + [c.buffer.dtype for c in copied]
+        self.on = len(set(read)) > 1
+
+    def product(self, a, w):
+        if not self.on:
+            return []
+        return [f"KM_UNPACK_FORMATS({w.buffer.name}.mover_a, {a.buffer.name}.mover_a);"]
+
+    def copy(self, item):
+        if not self.on:
+            return []
+        return [f"KM_UNPACK_FORMAT_A({item.buffer.name}.mover_a);"]
+
+
 def tile_dest(formats):
     """The Dst a tile function on tiles of `formats` runs on: "fp16a" for the A
     family, else "fp32"."""
@@ -4207,6 +4227,12 @@ class HandlerCompiler:
         timed = self.method.stamps is not None and not self.method.overlay
         count = len(unit.operands)
         slots = DST_HALF // count if width == 1 else 1
+        copied = [
+            operands[parameters.index(operand)][0]
+            for operand in unit.operands
+            if operand is not None
+        ]
+        switch = SrcaSwitch(products, copied)
         number = self.stream_loops[-1]
         lines = ["tile_regs_acquire();"]
         if slots > 1:  # the calls of `slots` tiles an acquire, each its own DST tiles
@@ -4219,6 +4245,7 @@ class HandlerCompiler:
                 f"for (uint32_t {slot} = 0; {slot} < {batch}; {slot}++) {{",
             ]
             for a, w in products:  # unpacked in the unit's issue order
+                lines += [f"    {line}" for line in switch.product(a, w)]
                 lines.append(
                     f"    UNPACK((llk_unpack_AB_matmul({a.cxx}, {w.cxx}, {a.first} + "
                     f"{slot}, {w.first} + {slot}, 1, 1, 1)));"
@@ -4227,6 +4254,7 @@ class HandlerCompiler:
                 if operand is None:  # a product's Dst tile
                     continue
                 item, _ = operands[parameters.index(operand)]
+                lines += [f"    {line}" for line in switch.copy(item)]
                 lines.append(
                     f"    copy_tile({item.cxx}, {item.first} + {slot}, "
                     f"{count} * {slot} + {dst});"
@@ -4235,6 +4263,7 @@ class HandlerCompiler:
             lines += ["    " + line for line in self.timed_call(call_, timed)] + ["}"]
         elif width == 1:
             for a, w in products:  # unpacked in the unit's issue order
+                lines += switch.product(a, w)
                 lines.append(
                     f"UNPACK((llk_unpack_AB_matmul({a.cxx}, {w.cxx}, {a.first}, "
                     f"{w.first}, 1, 1, 1)));"
@@ -4243,6 +4272,7 @@ class HandlerCompiler:
                 if operand is None:  # a product's Dst tile
                     continue
                 item, _ = operands[parameters.index(operand)]
+                lines += switch.copy(item)
                 lines.append(f"copy_tile({item.cxx}, {item.first}, {dst});")
         else:  # the row form: the row in DST 0 .. width - 1, the field's tile after
             item = streamed[0]

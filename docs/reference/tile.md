@@ -154,7 +154,9 @@ of the B family (bf16, bfp8_b, bfp4_b, bfp2_b), which run on an fp32 `Dst`, or t
 of the A family (fp16, bfp8, bfp4, bfp2), which run on a 16-bit `Dst`: the same words,
 each `SFPLOAD` and `SFPSTORE` in the FP16A mode, the vector code in fp32 between them
 ([tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function)).
-The two families are not mixed in one function. Constants become `SFPLOADI` immediates, or one of the constant registers
+The two families are not mixed in one function. Operands of different formats of one
+family are taken: the call sets SrcA's format again before each unpack into it (a
+product's W, each copied operand) when those are not of one format. Constants become `SFPLOADI` immediates, or one of the constant registers
 when that saves words: the three programmable ones (LReg 12 to 14), then LReg 11, which
 the unit sets after its setup and restores to -1.0 at its end.
 

@@ -283,7 +283,8 @@ of those values against the float64 gate of the float32 inputs (the storage's er
 The A family's computation is the less precise (its products' sums and its result are
 truncated to 11 bits, the B family's kept in fp32), its inputs the more precise; with
 both, fp16 is about 1.5e-3 against bf16's 3.5e-3, and a bfp8 weight's storage dominates
-either family. x * y alone, fp16: 4.13e-4, each datum its product truncated.
+either family. x * y alone, fp16: 4.13e-4, each datum its product truncated; fp16 x
+bfp8 3.95e-4; bf16 x bfp8_b exact.
 
 ## Not in this version
 

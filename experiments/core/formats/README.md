@@ -189,6 +189,11 @@ products' sums and its result are truncated to 11 bits in the 16-bit Dst: x * y 
 tiles, an exact product in the vector registers, read back equal to it rounded toward
 zero in 99.998 % of datums (to nearest even in 50 %), rms rel 4.13e-4.
 
+`--set fix`: x * y of two streams of two formats, which the call read wrong before
+it set SrcA's format before each copy (the second operand read in the first's
+format: rms rel 2.9e4 for fp16 x bfp8, infinite for bf16 x bfp8_b); after it, fp16 x
+bfp8 3.95e-4 (the store's truncation) and bf16 x bfp8_b exact.
+
 `--set edges`, fp16 tensors in three groups of tiles: a product's sums of std 45,000
 (37,700 above 65,504), values of magnitude 10^U(-6, -1) (under 2^-14 and around it),
 and ordinary ones. A sum above 65,504 never read infinity: each read as itself
