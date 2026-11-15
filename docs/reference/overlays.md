@@ -333,7 +333,10 @@ service part (9,088 bytes on one card, 41,280 on an island of two cards), when t
 left has the room beside the program's slots; else the reader slots, as large as the
 service part at least, when that holds more of the program's parts at once or leaves
 more L1 (as before this choice). A program's slots are sized to its own parts and
-keep their count either way; `slots(service="own")` or `"shared"` decides it. In the
+keep their count either way; `slots(service="own")` or `"shared"` decides it. A
+program with no overlays of its own (and no added handlers) has the reader slots
+alone, the same layout: its reader is built without the own slot's code (320 to 400
+bytes of BRISC text less: the gate class, Linear, attention). In the
 reader
 kernel only the load stays, about 3.7 KB less text in the ray tracer than with the
 code compiled in. Handlers 241 to 248 are the runtime's for this: the writer and the
