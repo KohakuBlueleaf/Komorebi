@@ -9,7 +9,7 @@ tags:
 # Programs written as classes
 
 Status: experimental. The lines of this page are those of levels 1 and 2 (tile
-functions); seven example scripts run as classes beside their hand programs, on one
+functions); eight scripts run as classes beside their hand programs, on one
 Blackhole card and on two ([below](#measured)).
 
 A class deriving `km.Program` whose methods are decorated with `km.handler` is a
@@ -389,6 +389,7 @@ the packed text of the five CPUs, of 70,656 B.
 | [11 movement](../../examples/11_movement/as_class/README.md) | the same: every copy exact (level 1a) | 38,288 / 36,720 B | READ AAAB 308.74 / 310.44 GB/s (level 1a) |
 | [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
 | [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,712 / 38,640 B | 86.68 / 76.06 us a command (bfloat16, 12 cores, 64 tiles a core); the emitted body 1,656 cycles a tile on the math CPU, 1,657.6 printed |
+| [tile rules](../../experiments/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
 
 ## Not in this version
 
