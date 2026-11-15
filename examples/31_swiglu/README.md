@@ -41,3 +41,37 @@ holds 81,664 B of text.
   between them. The chain's time includes its walk and `down`'s wait for `up`'s marks.
 - The hand program, projects/dense SwiGLU, holds every weight in each core's L1 (D x H
   tiles a weight). At this shape that is 6 MB a weight, so it cannot run here.
+
+## up and down as overlays
+
+`swiglu_overlays.py` makes the same handlers overlays and runs the chain at each slot
+count:
+
+```python
+class OverlaySwiGLU(SwiGLU):
+    up = km.handler(overlay=True)(SwiGLU.up.function)
+    down = km.handler(overlay=True)(SwiGLU.down.function)
+```
+
+In a chain, an overlay handler's record loads its overlay, waits for its input whole,
+then calls the part ([classes, overlay handlers in the walk](../../docs/reference/classes.md#chains)).
+The resident `down` reads its W2 columns while `up`'s blocks are still being marked;
+as an overlay it reads nothing until every block of the hidden it reads is marked.
+Card 0, 2026-11-16, AICLK 800 MHz, one job, 50 timed chains a form after a first
+command; hidden and y equal word for word to the resident chain's in every form:
+
+| The chain | us on the card | us from the host | Slots a part |
+|---|---:|---:|---:|
+| resident | 105.67 | 246.77 | |
+| overlays, the default slots | 111.92 | 253.93 | 2 |
+| overlays, 1 slot | 115.70 | 257.13 | 1 |
+
+- At the default slots (a slot a handler) both overlays stay held after the first
+  command, so a record loads nothing: the 6.25 us over the resident chain is the wait
+  for the whole input (`down`'s W2 reads no longer start ahead of the hidden's marks).
+- At 1 slot each record loads its overlay (both, every chain): 3.78 us more for two
+  loads, each waiting for the core's other CPUs to end the record before.
+
+```
+python examples/31_swiglu/swiglu_overlays.py             # resident, default slots, 1 slot
+```
