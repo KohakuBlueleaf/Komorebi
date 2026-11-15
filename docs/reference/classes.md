@@ -441,6 +441,14 @@ program. The slots cannot grow under a live run: the load sizes them by the part
 classes named with `Program.ahead(other)`, which the load also builds, or by
 `Program.slots(bytes=)`.
 
+What an added class cannot be, refused by name at the add:
+
+| An added class that is | The message names | What adding it would take |
+|---|---|---|
+| a class with a dynamic handler | `a dynamic handler (its queues and tables are set at the launch)` | the dynamic run's queues in DRAM and its tables on every core reserved at the load for a class named ahead, or the dynamic service loaded again at the add |
+| added to a traced run | `a traced run (the trace buffer is placed at launch)` | trace room and numbers for its handlers given at the add; today the trace's layout is fixed at the launch |
+| a merged program | `a merged program (merge its sources with the load's)` | merged into the loaded merged program's dispatch table at the add: its merged parts built again against the live table |
+
 On the card (cores 0 to 59 the gate, 60 to 119 the added class, a row of 4 tiles times
 4 x 4 tiles with an fp32 field and a bfloat8_b weight stream that the gate does not
 have): its words exact; the add took 7.84 s (its parts linked and checked on its own
