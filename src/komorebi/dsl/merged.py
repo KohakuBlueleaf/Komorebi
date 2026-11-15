@@ -570,7 +570,8 @@ def build(self):
         keyed[spelling("chain")] = True
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}
     key = made.sources_key(plan, tensors, solved, depth, rect, nocs, wait, keyed, guard)
-    built = made.write(None, compiled, room, key)
+    base = class_thread.header_text(class_thread.merged_parts(self, compiled, tensors))
+    built = made.write(None, compiled, room, key, thread=base)
     for line in self.report():
         log(line)
     for line in built.report:

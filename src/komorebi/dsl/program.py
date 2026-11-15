@@ -21,6 +21,7 @@ from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
 
 BUILD = "build"
+TEXT_KEY_CHARS = 16  # hex digits of a build folder's name: the digest of its text
 # A core's kernels as a CommandTimeout names them, and the CPU a class's wait is on.
 CPUS = {"reader": "mover A", "writer": "mover B", "compute": "compute"}
 INDENT = "    "
@@ -32,12 +33,15 @@ ARG_X, ARG_Y, ARG_INCLUDED, ARG_COLUMNS, ARG_ROWS, ARG_BROADCAST = 0, 1, 2, 3, 4
 @dataclass(frozen=True)
 class Built:
     """What the build of a class wrote and chose: its folder, the files, the buffers'
-    lines, and the waits of its code by handler and CPU."""
+    lines, and the waits of its code by handler and CPU; `make` the key of the make
+    that wrote it (sources_key), `digest` the files' (text_key)."""
 
     folder: Path
     files: dict
     report: list
     waits: list
+    make: str = ""
+    digest: str = ""
 
     def lines(self, cores):
         """For each of `cores` (a CommandTimeout's) whose CPU gave up waiting, the
@@ -192,7 +196,10 @@ def make(
         plan, tensors, solved, depth, rect, nocs, broadcast_wait, keyed, guard
     )
     key = form_key(key, form, reserved)
-    built = write(cls, compiled, room, key, form)
+    base = class_thread.header_text(
+        class_thread.class_parts(self, compiled, tensors, found)
+    )
+    built = write(cls, compiled, room, key, form, thread=base)
     for line in built.report:
         log(line)
     if defines:
@@ -1101,13 +1108,30 @@ def sources_key(
     return hashlib.sha256(repr(made).encode()).hexdigest()[:8]
 
 
-def write(cls, compiled, l1, key, form="kernel"):
-    """Writes the header, the two kernels and program.py into build/<name>-<key>/
-    beside the class's source (`key`, sources_key: two instances made otherwise do
-    not share a folder); returns what was written and the report."""
-    folder = Path(compiled.source).resolve().parent / BUILD
-    folder = folder / f"{compiled.name.lower()}-{key}"
-    folder.mkdir(parents=True, exist_ok=True)
+def text_key(files):
+    """A short hash of the files a build wrote: each name and text, in name order,
+    and nothing else (not the report, which holds the folder's own path and the L1)."""
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        text = files[name].encode()
+        digest.update(f"{name}\0{len(text)}\0".encode() + text)
+    return digest.hexdigest()[:TEXT_KEY_CHARS]
+
+
+def put(path, text):
+    """Writes `text` to `path` unless the file already holds it: a folder named by its
+    text is never trusted by its name, and a file that is equal is left as it is."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.read_text() == text:
+        return
+    path.write_text(text)
+
+
+def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
+    """Writes the class's files into build/<name>-<digest>/ beside its source, `digest`
+    text_key of the files (equal text is one folder, whoever made it; text that differs
+    never is); `make` is sources_key, reported; `key` names the folder instead (a first
+    use's); `thread` is class_thread's base header; an equal file is not written."""
     files = {
         header_name(compiled): header(compiled),
         thread_header_name(compiled): thread_header(compiled),
@@ -1124,14 +1148,20 @@ def write(cls, compiled, l1, key, form="kernel"):
     if compiled.dynamic:  # compute alone: the runtime's movers carry the messages
         del files["movement.cpp"]
         files["compute.cpp"] = dynamic_source(compiled)
+    if thread is not None:
+        files[thread_header_name(compiled)] = thread
     for name, text in files.items():
-        text = resume_lines(text, name)
-        files[name] = text
-        (folder / name).parent.mkdir(exist_ok=True)
-        (folder / name).write_text(text)
+        files[name] = resume_lines(text, name)
+    digest = text_key(files)
+    folder = Path(compiled.source).resolve().parent / BUILD
+    folder = folder / f"{compiled.name.lower()}-{key or digest}"
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        put(folder / name, text)
     report = summary(compiled, folder, files, l1)
-    (folder / "program.txt").write_text("\n".join(report) + "\n")
-    return Built(folder, files, report, compiled.waits)
+    report.insert(1, f"  make {make}, files {digest}")
+    put(folder / "program.txt", "\n".join(report) + "\n")
+    return Built(folder, files, report, compiled.waits, make, digest)
 
 
 def resume_lines(text, name):

@@ -1,5 +1,70 @@
 # The decode layer, as a class
 
+## The whole layer as one class
+
+`decode_layer.py` is the layer of the decode project as one class, `DecodeLayer`: qkv,
+attend, o, gate_up and down, each a handler in the hand's plan (112 cores in groups of
+7, 120 in 15, 120 in 15, 96 in 2, 120 in 15). Each product is the hand's K split in the
+class's lines. The group's root then runs the hand's operation as an inline body that
+takes the reduce's sum (`km.cxx(ADD, takes=[whole, residual, out, part, ...])`). The
+operations are in `layer.hpp`, the hand's C++ on the class's buffers. Attend's cores
+merge their states up a tree by `km.reduce(self.state, form="tree",
+combine=MERGE)`, and the root appends the token's key and value to the cache from mover
+bodies with `writes=[keys]` and `writes=[values]`. `run_layer.py` runs the hand's
+program (`card.Decode`, a command a step) and then the class, on the same x, weights and
+cache at T 256 (position 255). It compares every output word with the hand's and with
+float64 (`model.layer`), then times ten layers each way.
+
+Card 0, a Blackhole p150a, AICLK 800 MHz, 2026-11-16, a command a step (each waited for,
+the dispatcher's microseconds; the class's median of ten layers, the hand's mean of ten
+tokens):
+
+| Step | Words that differ from the hand's | Against float64, hand / class (max rel) | Hand, us | Class, us |
+|---|---|---|---:|---:|
+| qkv | qkv 0 of 131,072 | 1.13e-2 / 1.13e-2 | 63.83 | 64.39 |
+| attend | a 0 of 65,536 | 1.00e-2 / 1.00e-2 | 50.24 | 47.27 |
+| o | x1 0 of 65,536, squares2 0 of 8,192 | 3.79e-3 / 3.79e-3 | 33.90 | 36.14 |
+| gate_up | gated 0 of 196,608 | 7.43e-3 / 7.43e-3 | 131.24 | 140.64 |
+| down | x 0 of 65,536, squares1 0 of 8,192 | 6.54e-3 / 6.54e-3 | 72.65 | 72.88 |
+| layer | | | 363.17 | 361.23 |
+
+The five handlers are resident (170,368 B of kernel text, so the session opens with
+`kernel_bytes` 200 KiB). An earlier run with them as overlays gave the same words in
+430.87 us a layer, each step 10 to 20 us slower. The overlay loads before each command
+are the likely difference; they were not timed apart.
+
+**The bodies, and which could become tile functions.** Tile functions of fields
+written, with division, `km.sqrt`, `km.reciprocal`, `km.minimum`, tile expressions in
+a line and float parameters, are on main.
+
+| Body | What it does | As a tile function |
+|---|---|---|
+| ADD (o, down) | sum + residual into x, and each row's sum of squares of x as a diagonal tile | The add, yes. The squares are a product of x with x transposed, keeping the diagonal: not a tile function today |
+| GATE (gate_up) | 1 / rms from the squares, then silu(gate) x up on the scaled sums | The 1 / rms and the product, yes (`km.sqrt`, `km.reciprocal`, a division on the fields of sums). silu needs an exp, which was not checked here |
+| SCALE (qkv) | 1 / rms, then each head's norm (over 128 columns: a row mean by a product with the mean tile) and the rotation (rows of the rope table) | The scaling, yes. The head's mean is a product with a constant tile, and the rotation reads rows a mover put into tiles: not today |
+| ATTEND, MERGE, FINISH | scores Q K^T, the running max, exp, sum, P V; the merge's rescale; the output over the sum | The arithmetic per tile, yes. The products Q K^T and P V over a core's keys and the row max are not tile functions today |
+| QK_READ, ATTEND_KEYS, ATTEND_VALUES, TOKEN | movers' reads of rows of the rope table and the cache, the append, the token's copy | No: they move data, they do not compute it |
+
+**As a chain: open.** `chain_calls` now describes calls of several groups:
+- a write or read under the leader's `if` after the reduce, or under `if self.rank % G
+  == 0:`, is each group's root's;
+- a K share written out over each group's ranks is the call's share of K.
+
+On that basis the layer as the host's list and as a `km.chain` method gave equal
+records. On the card, the class with the chain's walk hung on its first plain command,
+qkv. A second run without the walk, with the same driver change, hung the same way. Both
+needed a card reset, and the cause is not found. So `DecodeLayer` here is the class that
+ran (the table above), and the chain form is not in this folder.
+
+**Overlays in a chain.** A chain's walk refuses overlay handlers, but the hand's
+decode keeps its operations as overlays inside its chain. A class with overlay handlers
+in a chain would need the walk to load a record's handler parts before the record runs
+(the service overlay's load, from the chain's case), and the next record's load to
+overlap the current one, as the hand's chain does. That is a gap, not a design limit:
+the walk and the overlay service exist apart, and joining them is the work.
+
+## The products alone (layer_class.py)
+
 **Fixed.** Until 2026-11-16 `layer_class.py` ran only qkv and o unless given
 `--known-wrong`: gate_up and down, run after another product, gave wrong sums that
 changed from run to run, and a run of the four in a mixed order hung the card. The class
