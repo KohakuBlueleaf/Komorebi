@@ -360,6 +360,25 @@ def account(model, cases, attend=()):
     return out
 
 
+def waiting(run):
+    """After a failure: each core that a kernel of is in a runtime wait, the waits by
+    kernel with their command's sequence (the dispatcher's inspect)."""
+    try:
+        cores = run.inspect(timeout=2.0)
+    except km.KomorebiError as error:
+        return f"no inspect: {error}"
+    out = []
+    for core in cores:
+        roles = {
+            role: f"{state['where']} @{state['sequence']}"
+            for role, state in core.get("live", {}).items()
+            if isinstance(state, dict) and state["where"] is not None
+        }
+        if roles:
+            out.append({"core": core["core"]} | roles)
+    return out
+
+
 def main():
     args = parse()
     model = md.from_config(args.config) if args.config else md.MODELS[args.model]
@@ -445,6 +464,8 @@ def main():
             log(f"failed: {report['failed']}")
             ok = False
             report["thread_result"] = decode.run.thread_result(timeout=0.5)._asdict()
+            report["waiting"] = waiting(decode.run)
+            log(f"waiting: {json.dumps(report['waiting'])}")
         decode.run.stop()
         log("run stopped")
         stats = decode.stats()

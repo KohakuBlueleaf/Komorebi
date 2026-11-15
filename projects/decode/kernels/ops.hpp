@@ -15,6 +15,21 @@ namespace decode {
         return rows == 0u || rows > 32u ? 32u : rows;
     }
 
+    // Whether the model's q and k norms and rotation run on this block: a3's DC_QK,
+    // and a block of q's or k's columns of qkv (q's half of them, then k's quarter).
+    template <typename Kernel>
+    inline bool qk_block(const Kernel& kernel, const SplitBlock& block) {
+        const uint32_t n_tiles = kernel.arg(block.plan + kSpNt);
+        return (
+            (block.command->a3 & DC_QK) != 0u && block.first_column < n_tiles / 4 * 3
+        );
+    }
+
+    template <typename Kernel>
+    inline bool qk_key(const Kernel& kernel, const SplitBlock& block) {
+        return block.first_column >= kernel.arg(block.plan + kSpNt) / 2;
+    }
+
 }  // namespace decode
 
 #if defined(COMPILE_FOR_TRISC)

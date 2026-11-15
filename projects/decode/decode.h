@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-/* The operations at a group's root after the sum: add (a7 residual, a9 squares out),
- * gate, scale (a7 squares in, a9 epsilon); attend on every core of a group (below). */
+/* At a group's root after the sum: add (a7 residual, a9 squares out), gate (a7 squares
+ * in, a9 epsilon), scale (a7, epsilon its DC_EPSILON); attend on every core (below). */
 enum {
     DC_OVERLAY_ADD = 1,
     DC_OVERLAY_GATE = 2,
@@ -79,6 +79,23 @@ enum { DC_HANDLER_LAYERS = 1 };
  * first ones; LAYERS' a6 the same for each step (positions a5 + step x rows on). */
 enum { DC_ROWS_SHIFT = 16, DC_ROWS_MASK = 0x3F };
 
+/* qkv's a3 with DC_QK: on q's and k's blocks the model's norm of each head and the
+ * rotary embedding after scale; a8 the qk tensor (tiles), a9 position | layer << 16. */
+enum {
+    DC_QK = 0x400000,     /* a3 bit 22 */
+    DC_CB_ROPE_ROWS = 26, /* DC_CB_TOKEN's: the reader's scratch, the band's rows */
+    DC_CB_ROPE = 13,     /* DC_CB_QUERY's: those rows as tiles, cos's 4, then sin's 4 */
+    DC_CB_HEAD = 3,      /* DC_CB_BLOCK's: the head's mean tile, the norm weight's 4 */
+    DC_CB_NORMED = 11,   /* DC_CB_UP's: a head's 4 tiles normed, to be rotated */
+    DC_HEAD_ITEM = 8,    /* DC_CB_HEAD's item: the buffer whole, 5 pages used */
+    DC_QK_HEAD_MEAN = 2, /* the qk tensor's tiles: the identity, the mean, the head's */
+    DC_QK_WEIGHTS = 3,   /* mean; layer l's q norm weight at 3 + 8 l, its k's at 7 + 8 l
+                          */
+    DC_QK_LAYERS = 64,   /* layers at most */
+    DC_QK_ROTARY = 515,  /* 3 + 8 x 64: position p's row in page 515 + p / 4 */
+    DC_ROPE_ROW = 512    /* a position's row: cos, then sin signed as rotate_half's */
+};
+
 enum {
     DC_WORD_SPLIT,        /* the SPLIT handler */
     DC_WORD_REDUCE,       /* the reduce form */
@@ -112,6 +129,7 @@ enum {
     DC_TENSOR_SQUARES2, /* x1's */
     DC_TENSOR_A,        /* attention's output: [32, heads x 128] */
     DC_TENSOR_ATTEND,   /* attend's constants: DC_ATTEND_CONSTANTS tiles */
+    DC_TENSOR_QK,       /* qkv's q and k norms and rotation (DC_QK_*), rows of 256 */
     DC_TENSORS = 16
 };
 

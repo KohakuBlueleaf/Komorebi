@@ -50,6 +50,20 @@ namespace rows {
     }
 
     template <int I>
+    inline void add(uint32_t a, uint32_t b, uint32_t out, VectorMode mode) {
+        MATH((SFPU_BINARY_CALL(
+            DST_SYNC_MODE,
+            DST_ACCUM_MODE,
+            calculate_sfpu_binary,
+            (APPROX, ckernel::BinaryOp::ADD, I, DST_ACCUM_MODE),
+            a,
+            b,
+            out,
+            mode
+        )));
+    }
+
+    template <int I>
     inline void mul(uint32_t a, uint32_t b, uint32_t out, VectorMode mode) {
         MATH((SFPU_BINARY_CALL(
             DST_SYNC_MODE,

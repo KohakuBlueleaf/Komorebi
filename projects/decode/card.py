@@ -120,6 +120,15 @@ class Decode:
         }
         self.tensors["constants"] = dense_card.bf16_tensor(session, md.constants())
         self.tensors["attend"] = dense_card.bf16_tensor(session, md.attend_constants())
+        if layers > D["DC_QK_LAYERS"]:
+            raise ValueError(
+                f"{layers} layers: the qk tensor holds {D['DC_QK_LAYERS']}"
+            )
+        qk = md.qk_pages(model, context + md.TILE)  # a band past the cache's last row
+        self.tensors["qk"] = session.empty(
+            (md.TILE, md.TILE * len(qk)), "bfloat16", "tile"
+        )
+        session.write(self.tensors["qk"], qk)
         shapes = products | {name: model.shapes()[name] for name in md.APART}
         cache = (model.kv_heads * context, model.head_dim)
         shapes |= dict.fromkeys(("keys", "values"), cache)
@@ -185,7 +194,13 @@ class Decode:
             },
             number=D["DC_OVERLAY_GATE"],
         )
-        program.overlay("scale", KERNELS / "scale", number=D["DC_OVERLAY_SCALE"])
+        epsilon = np.array([self.model.eps], np.float32).view(np.uint32)[0]
+        program.overlay(
+            "scale",
+            KERNELS / "scale",
+            number=D["DC_OVERLAY_SCALE"],
+            defines={"DC_EPSILON": int(epsilon)},
+        )
         program.overlay(
             "attend",
             KERNELS / "attend",
@@ -266,7 +281,11 @@ class Decode:
         seconds = 0.0
         for name, pages in md.fused(weights).items():
             seconds += self.write(self.weights[layer][name], pages)
-        return seconds
+        pages = md.qk_weight_pages(weights["q_norm"][1], weights["k_norm"][1])
+        started = time.perf_counter()
+        first = D["DC_QK_WEIGHTS"] + 2 * D["DC_HEAD_TILES"] * layer
+        self.session.write(self.tensors["qk"], pages, first=first)
+        return seconds + time.perf_counter() - started
 
     def write_cache(self, layer, keys, values):
         """A layer's cache ([KV heads, n, width] values each, rows past n zero) into its
