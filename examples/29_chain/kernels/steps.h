@@ -5,9 +5,8 @@
 
 #include "komorebi/device/km_group.hpp"
 
-// a1 the input, a2 the output, a3 ADD's second input (SUM: tiles a group; TOTAL: the
-// scratch), a4 the chain mode, a5 the factor, a6 tiles a core, a7 SUM's group, a8
-// below.
+// a1 in, a2 out, a3 ADD's second input (SUM: tiles a group, TOTAL: scratch), a4 the
+// chain mode, a5 the factor, a6 tiles a core, a7 SUM's and TOTAL's group, a8 ADD's.
 constexpr uint32_t kHandlerScale = 1;  // output tile = factor x input tile
 constexpr uint32_t kHandlerAdd = 2;    // input + second input's tile (a8 1: page 0)
 constexpr uint32_t kHandlerSum = 3;    // the group's input tiles summed, at its root
