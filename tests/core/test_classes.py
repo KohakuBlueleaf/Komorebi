@@ -500,7 +500,7 @@ def test_a_class_built_for_a_session_leaves_the_loads_rows():
     table = lines[-1]
     for row in ("control block and overlay area", "host transfer buffer"):
         assert row in table
-    assert "slots: reader, 1 x 9,216 B (at most)" in table
+    assert "slots: service (reader), 1 x 9,216 B (at most)" in table
     with pytest.raises(ProgramError, match="its buffers take 999424 B, 891632 B"):
         Unsolved(
             log=lambda line: None,
