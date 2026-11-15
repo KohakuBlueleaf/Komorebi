@@ -405,22 +405,49 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    command and returns when it is done. Where that order is not given, by name: the
    host refuses a command to a group whose cores do not hold the class
    (`does not hold`), and `run.load` refuses a group that does not contain the
-   class's rectangle; a thread's command to cores that never loaded the class reaches
-   them unchecked (only their compute refuses it, `program start`). The row costs the
+   class's rectangle; the dispatcher refuses a command of the class, from any source (a
+   thread, a stream, a graph), to a group with a core that does not hold it, by its
+   table of the field each core holds (`CommandRejected`, reason 13, `program`), so no
+   CPU of such a core takes it and the run goes on. The row costs the
    load command little: 6.80 and 4.78 µs (first load, second) with a 64 B row and 7.86
    and 4.60 µs with a 128 B row, against 8.02 and 4.34 µs for a class without args and
    7.84 and 4.38 µs for the loaded gate. The row read is built into the load's kernels
    only when a class with per-core args is named with `Program.ahead(other)` before
    the load (412 B of the reader's text, about 40 B of each other CPU's); a load
    without one pays nothing, and an add of a class with per-core args to it is refused
-   by name. Word fields stay refused (their L1 tensors are made with the class).
+   by name. A word field (`km.L1[km.u32, n]`) is one more per-core arg: its tensor's
+   address, compute's word, goes in the row, so a class with word fields is added as
+   one with args (named ahead); its tensor, one row in each core's L1, may be made
+   before the load or while the run is live (it takes the L1 the area leaves, 64 KiB
+   by default).
+7. **Its own overlays** (`@km.handler(overlay=True)`): numbered by the add, each
+   declared number plus the lowest shift that leaves every number free (the run's
+   overlays, added code, earlier added classes' own) and below every program field's
+   overlay; a later field whose number they took is refused by name. Their parts are
+   built as the class's (its formats, its args' defines) and go into the room the load
+   reserved; each group's cores write their table entries (each part's address and
+   bytes) by the entry command of the service overlay. A class named ahead has its own
+   overlays' parts built at the load, the slots sized by them (a slot more in a kernel
+   where its part loads its own overlay while it runs) and the entry command's code
+   built into the service overlay (`KM_ADDED_ENTRY`, 448 B of its reader part); a
+   load naming no such class pays nothing, and a class with its own overlays added
+   to it is refused by name (unless the program names slot bytes, which builds the
+   entry command too). Without ahead, a kernel with one slot is refused by name.
 
 Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
-`opt` levels or NoCs, word fields, overlays of its own or a dynamic handler, buffers
+`opt` levels or NoCs, a dynamic handler, buffers
 past the switch area or a part past its slot, an island run, a traced run and a merged
 program. The slots cannot grow under a live run: the load sizes them by the parts of the
 classes named with `Program.ahead(other)`, which the load also builds, or by
 `Program.slots(bytes=)`.
+
+What an added class cannot be, refused by name at the add:
+
+| An added class that is | The message names | What adding it would take |
+|---|---|---|
+| a class with a dynamic handler | `a dynamic handler (its queues and tables are set at the launch)` | the dynamic run's queues in DRAM and its tables on every core reserved at the load for a class named ahead, or the dynamic service loaded again at the add |
+| added to a traced run | `a traced run (the trace buffer is placed at launch)` | trace room and numbers for its handlers given at the add; today the trace's layout is fixed at the launch |
+| a merged program | `a merged program (merge its sources with the load's)` | merged into the loaded merged program's dispatch table at the add: its merged parts built again against the live table |
 
 On the card (cores 0 to 59 the gate, 60 to 119 the added class, a row of 4 tiles times
 4 x 4 tiles with an fp32 field and a bfloat8_b weight stream that the gate does not
