@@ -359,8 +359,11 @@ where `copy`.
 ## Code added to a live run
 
 `run.addon(name, parts, handler=False, number=None, defines=None, timeout=10.0,
-message=False)` adds an overlay to a run that is loaded and live. Its parts are built
-against the loaded kernels, exactly as the load builds its overlays, then written into
+message=False, compile_args=None)` adds an overlay to a run that is loaded and live. Its
+parts are built against the loaded kernels, exactly as the load builds its overlays (with
+`compile_args`, `{kernel: [words]}`, in place of the kernels' own: a load in the runtime's
+form runs the runtime's kernels, which have none, so a part that reads a program's
+compile arguments is given them), then written into
 room the load reserved, and every core is given the overlay's table entry by a command
 of the runtime's service overlay. The host writes no core's L1. The call returns the
 overlay's number. From then on the overlay is named, loaded and called as any overlay
@@ -408,8 +411,10 @@ bytes (`Program.slots(bytes=...)`, which defines `KM_ADDED_HANDLERS`) look at th
 handler mask before the body. A command whose handler has its bit set is entered: the
 reader loads the overlay of that number as any `load()`, and each kernel with a part
 calls it with the command. A tile's first command of that handler loads the parts,
-and later commands find them held. Without that define the kernels have no such path
-and cost nothing. It costs 2,560 B of kernel text on the decode program (148 B on the
+and later commands find them held. In the runtime's form the define is given to the
+runtime's kernels when every program of the load names slot bytes (the gate class in a
+list of two: 30,416 B of kernel text without it, 33,088 B with it). Without that define
+the kernels have no such path and cost nothing. It costs 2,560 B of kernel text on the decode program (148 B on the
 reader, 844 B on the writer, 484 to 544 B on each compute core), and an added handler
 is refused there. A load that names slot bytes for a kernel gives that kernel slots
 even when no overlay of the load has a part there.
