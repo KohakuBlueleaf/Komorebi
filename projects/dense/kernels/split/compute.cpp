@@ -12,6 +12,7 @@
 #include "api/compute/tile_move_copy.h"
 #include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
+#include "sets.hpp"
 #include "split.h"
 #include "split_op.hpp"
 
@@ -47,7 +48,7 @@ void kernel_main() {
         const uint32_t chunk_tiles = plan(kSpKc), subblock_height = plan(kSpSh);
         const uint32_t subblock_width = plan(kSpSw), group_size = plan(kSpS);
         const uint32_t block_tiles = block_height * block_width;
-        const uint32_t reduce_form = command.a3, mode = command.a4;
+        const uint32_t reduce_form = split_form(command), mode = command.a4;
         if (mode == kSplitOp) {
             if (split_op_part(command, kOpCompute)) {
                 split_op(compute, command);
@@ -58,17 +59,6 @@ void kernel_main() {
         const km::Partition k_part = km::partition(k_tiles, group.rank, group.size);
         const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
         const bool full = mode == kSplitFull;
-        // The sum's pops: a root's unpack writes its own count, a sender's writer adds
-        // to the shared one; a core's role changes with the plan, so unpack takes it.
-        UNPACK(
-            (get_local_cb_interface(kCbSum).tiles_acked = static_cast<uint16_t>(
-                ckernel::reg_read(
-                    static_cast<uint32_t>(
-                        reinterpret_cast<uintptr_t>(get_cb_tiles_acked_ptr(kCbSum))
-                    )
-                )
-            ))
-        );
         const bool room = compute.reserve_back(kCbSum, block_tiles);
         bool ok = true;  // the same on all three threads (wait_front tells them)
         matmul_block_init(
@@ -142,17 +132,24 @@ void kernel_main() {
         copy_init(kCbArrive);
         if (ok && full) {
             pack_reconfig_l1_acc(1);
-            ok = km::reduce(compute, arrival, group, reduce_form, [&](uint32_t slot) {
-                for (uint32_t tile = 0; tile < block_tiles; ++tile) {
-                    move_tile(
-                        kCbArrive, km::slot_page(arrival, slot) + tile, kCbSum, tile
-                    );
+            ok = reduce_set(
+                compute, command, arrival, group, reduce_form, [&](uint32_t slot) {
+                    for (uint32_t tile = 0; tile < block_tiles; ++tile) {
+                        move_tile(
+                            kCbArrive, km::slot_page(arrival, slot) + tile, kCbSum, tile
+                        );
+                    }
                 }
-            });
+            );
         }
         pack_reconfig_l1_acc(0);
         if (ok && full && room) {
             cb_push_back(kCbSum, block_tiles);
+        }
+        // A root's unpack pops the sum, a sender's writer pops it: roles change with
+        // the plan, so unpack counts the writer's pop too (one item: the whole buffer).
+        if (ok && full && group.rank != 0) {
+            UNPACK((get_local_cb_interface(kCbSum).tiles_acked += block_tiles));
         }
         if (ok && full && group.rank == 0 && split_op_part(command, kOpCompute)) {
             ok = split_op(compute, command);         // the operation takes the sum

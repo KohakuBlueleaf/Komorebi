@@ -5,6 +5,7 @@
 #include "api/dataflow/dataflow_api.h"
 #include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
+#include "sets.hpp"
 #include "split.h"
 #include "split_op.hpp"
 
@@ -19,7 +20,7 @@ void kernel_main() {
         const auto plan = [&](uint32_t word) {
             return reader.arg(plan_words(command) + word);
         };
-        const uint32_t reduce_form = command.a3, mode = command.a4;
+        const uint32_t reduce_form = split_form(command), mode = command.a4;
         const uint32_t block_height = plan(kSpOh), block_width = plan(kSpOw);
         const km::Group group = km::digit_group(command, reader.me(), 1, plan(kSpS));
         if (mode == kSplitOp) {
@@ -30,7 +31,7 @@ void kernel_main() {
             return;
         }
         if (mode == kSplitFull &&
-            km::reduce_arrive(
+            arrive_set(
                 reader,
                 command,
                 {kCbArrive, plan(kSpArrive), block_height * block_width},

@@ -5,6 +5,7 @@
 #include "api/dataflow/dataflow_api.h"
 #include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
+#include "sets.hpp"
 #include "split.h"
 #include "split_op.hpp"
 
@@ -14,7 +15,7 @@ void kernel_main() {
     using W = km::Tensor<A::next_compile_time_args_offset()>;
     km::Writer writer;
     writer.run([&](const km_command_t& command) {
-        const uint32_t y_address = command.a2, reduce_form = command.a3;
+        const uint32_t y_address = command.a2, reduce_form = split_form(command);
         const uint32_t mode = command.a4;
         if (km::handler(command) != kHandlerSplit) {
             return true;
@@ -42,7 +43,7 @@ void kernel_main() {
         const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
         if (group.rank != 0) {
             return (
-                km::reduce_emit(
+                emit_set(
                     writer, command, arrival, group, reduce_form, kCbSum, block_tiles
                 )
             );

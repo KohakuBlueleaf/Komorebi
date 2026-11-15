@@ -6,9 +6,21 @@
 
 #include "../dense.h"
 
-// SPLIT: a0 A, a1 W, a2 Y (tile tensors), a3 reduce_form (0 owner, 1 tree), a4 mode, a5
-// the plan (0 the first), a6 the operation after the sum (split_op.hpp), a7 to a9 its.
+// SPLIT: a0 A, a1 W, a2 Y, a3 reduce form (0 owner, 1 tree) | kSplitSecondSet, a4 mode,
+// a5 the plan (0 the first), a6 the operation after the sum (split_op.hpp), a7-a9 its.
 constexpr uint32_t kHandlerSplit = 1;
+
+// a3: the sum in the upper half of ports and arrival slots (sets.hpp), in flight beside
+// a command without it; every plan's sum then fits a half (KM_PORTS / 2 tree rounds).
+constexpr uint32_t kSplitSecondSet = 0x100;
+
+inline uint32_t split_form(const km_command_t& command) {
+    return command.a3 & 0xFFu;
+}
+
+inline bool split_second_set(const km_command_t& command) {
+    return (command.a3 & kSplitSecondSet) != 0;
+}
 
 // SPLIT modes: the full call; the parts only (no reduce: each core packs its part and
 // drops it, nothing written); the operation only (no product: every core calls it).
