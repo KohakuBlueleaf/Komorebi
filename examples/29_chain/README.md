@@ -57,6 +57,7 @@ script builds one on purpose; the text is in the output below).
 | `kernels/reader.cpp` | `km::chain_start()` once; for a chain command `km::chain_reader` walks the records and calls the step for each one this core is in; a step waits for its marks (`km::chain_input`), reads its tiles, scales or adds them in L1, hands them to the writer; the sum also adds the part of each tree round it receives |
 | `kernels/writer.cpp` | for a chain command `km::chain_writer`; a step writes its tiles and marks the cores of the next record that read them (`km::chain_mark`); in the sum a rank other than the root waits for its receiver's credit (`km::chain_credit`), then sends its part |
 | `kernels/compute.cpp` | the movers do the work; in a chain command compute takes each record in turn (`km::chain_compute`), as every kernel of a core does |
+| `kernels/runtime/` | the same program in the runtime's form: each part's `km_program` calls the kernel form's function for a command; the runtime's reader zeroes the chain's words before its first command |
 
 Each record names its handler (the info word's top byte), so a core goes from SCALE to
 ADD to SUM by itself; the chain command is sent to the first call's handler with a4 the
@@ -69,6 +70,7 @@ program and the decode project's.
 
 ```
 python chain_steps.py                 # 8 cores, 2 tiles a core, 200 timed runs a way
+python chain_steps.py --form runtime  # the same as parts the runtime's kernels call
 ```
 
 The script runs a command a step with factor 2, the chain with 5, then 7 and 3, and
@@ -91,12 +93,16 @@ The card does the same work either way: about 31 us a call, most likely the move
 integer loops over 2,048 to 5,120 words a core (not timed apart here). What the chain
 removes is the host's part: three of the four round trips from a submit to its event,
 about 145 us each here (host less card: 573.0 us for four, 140.6 for one).
-The four records cost the card 4.3 us less than four commands. In the decode project
+The four records cost the card 4.3 us less than four commands.
+
+In the runtime's form (card 1, 2026-11-16) every word is exact again; the card takes
+131.5 / 126.7 us a run (a command a step / one chain, the kernel form 130.6 / 126.1 in
+the same job), the host 838.9 / 302.8 (the kernel form 704.5 / 266.9). In the decode project
 the same chain runs a whole token (140 records) as one command; its layer is 315 us
 at T 4096, within the spread of its own chain before the move to the framework.
 
 ## Output
 
 ```
-{"cores": 8, "width": 2, "tiles": 16, "refused": "call 2 (add): core 0 reads y tile 2, written by call 0 (scale x) (block 1), and nothing it waits for tells it that block is complete", "kernel": "none", "checks": {"steps x2": {"y": 0, "z": 0, "s": 0, "t": 0}, "chain x5": {"y": 0, "z": 0, "s": 0, "t": 0}, "steps x7": {"y": 0, "z": 0, "s": 0, "t": 0}, "chain x3": {"y": 0, "z": 0, "s": 0, "t": 0}, "after timing": {"y": 0, "z": 0, "s": 0, "t": 0}}, "microseconds_a_run": {"steps": 703.6, "chain": 266.91}, "card_microseconds_a_run": {"steps": 130.58, "chain": 126.25}, "earlier_proven": true, "ok": true, "wall_s": 15.5}
+{"cores": 8, "width": 2, "tiles": 16, "form": "kernel", "refused": "call 2 (add): core 0 reads y tile 2, written by call 0 (scale x) (block 1), and nothing it waits for tells it that block is complete", "kernel": "none", "checks": {"steps x2": {"y": 0, "z": 0, "s": 0, "t": 0}, "chain x5": {"y": 0, "z": 0, "s": 0, "t": 0}, "steps x7": {"y": 0, "z": 0, "s": 0, "t": 0}, "chain x3": {"y": 0, "z": 0, "s": 0, "t": 0}, "after timing": {"y": 0, "z": 0, "s": 0, "t": 0}}, "microseconds_a_run": {"steps": 704.49, "chain": 266.91}, "card_microseconds_a_run": {"steps": 130.58, "chain": 126.12}, "earlier_proven": true, "ok": true, "wall_s": 15.3}
 ```

@@ -230,5 +230,30 @@ when the slot holds it). A record cannot name a handler of a program placed as a
 overlay ([a program as an overlay](overlays.md#a-program-as-an-overlay)) other than
 the chain's own: the record's command keeps the chain command's program field, and the
 walk runs inside one program's kernels, so the runtime's load of another program
-between two records does not happen. Whether a program in the runtime's form runs a
-chain at all has not been tried.
+between two records does not happen.
+
+## In the runtime's form
+
+A program in the runtime's form ([a program as an overlay](overlays.md#a-program-as-an-overlay))
+runs chains as one of the kernel form does: its parts call the same device calls
+(`km::chain_reader`, `chain_writer`, `chain_compute`, the marks and the credits) from
+`km_program`, and the walk of a chain command runs inside the one call of the part.
+The runtime's reader zeroes the chain's words once before its first command
+(`km::chain_start`) when a program of the run declares buffer 32; a part does not call
+it. The chain's stamps (`KM_CHAIN_STAMPS`) are not compiled into parts.
+
+Example 29 runs both forms (`--form runtime`: `kernels/runtime/`, parts that call the
+kernel form's step functions), 200 runs a way, one Blackhole p150a, 2026-11-16:
+
+| Example 29 | kernel form | runtime's form |
+|---|---:|---:|
+| on the host, us a run: a command a step / one chain | 704.5 / 266.9 | 838.9 / 302.8 |
+| on the card, us a run: a command a step / one chain | 130.6 / 126.1 | 131.5 / 126.7 |
+| every word of y, z, s, t | exact | exact |
+
+The card's time is the same in both forms within 1 us. The host's is about 34 us a
+command more in the runtime's form; the chain still removes three of its four round trips.
+
+A run whose groups switch program (`run.load(program, group=)`) sets up buffers 0 to 31
+only, so it refuses a program that declares buffer 32: a chain runs in a run whose
+cores hold their programs from the start.
