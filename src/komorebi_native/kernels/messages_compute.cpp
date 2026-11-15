@@ -70,8 +70,14 @@ void kernel_main() {
                     km::l1(packet.base + part.order[0] * packet.message_bytes)[0]
                 );
                 *packet.current = km::messages_handler(word);
+                // a handler not in the list: one the run added (the reader checked)
+                const uint32_t listed = km::message_overlay(word);
                 handle(
-                    compute, messages, part, km::message_overlay(word), command.sequence
+                    compute,
+                    messages,
+                    part,
+                    listed != 0 ? listed : km::messages_handler(word),
+                    command.sequence
                 );
                 first = end;
             }

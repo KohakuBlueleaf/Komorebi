@@ -636,6 +636,11 @@ def _check_sources(sources):
                 "kernel and its loop; a program merges in the runtime's form, each "
                 "source defining km_program (docs/reference/host.md)"
             )
+        if source.overlays:
+            raise ProgramError(
+                f"{source.name}: it has overlays of its own, whose numbers a merged "
+                "program's sources placed as overlays take; not merged"
+            )
         programs.check(source, 1)
 
 

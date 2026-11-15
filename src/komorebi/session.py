@@ -24,6 +24,7 @@ import numpy as np
 from komorebi import (
     _env,
     abi,
+    added,
     chain,
     dram,
     formats,
@@ -1179,11 +1180,14 @@ class Session:
         link=None,
         tensors=0,
         recover=True,
+        reserve=added.RESERVE,
     ):
         """Launches `program` (or programs in the runtime's form: a list, every core
         holding each, or {program: (first, count)}) on every core, then the dispatcher,
         then the X280 thread (`thread` "card" or "host"); returns a Run. The arguments
-        are described in docs/reference/host.md."""
+        are described in docs/reference/host.md (`reserve`: room for Run.addon)."""
+        if reserve < 0:
+            raise ValueError(f"reserve={reserve}: bytes, 0 or more")
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         self.island = _island(island, self.grid)
@@ -1295,6 +1299,7 @@ class Session:
             plan, port_lines = _port_lines(owner, dispatch, rings, served)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
+            backend.reserve = reserve
             if ranks is not None:
                 ranks = _x280_words(self, program, dispatch, rings, regions, plan)
             descriptor = backend.describe(
@@ -2697,10 +2702,18 @@ class _Backend:
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
             raise L1BudgetError(program.name, table, self._held_bytes())
-        image_rows, placed = overlay.dram_rows(built)
+        reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
+        image_rows, placed = overlay.dram_rows(built, reserve)
         image = _words(session, image_rows)
         slot_base = self._slot_buffer(descriptor, built.slot_bytes)
         self.io.append(image)
+        self.room = added.room(
+            self,
+            image,
+            len(built.images),
+            [added.group(0, len(self.control_rows), recipes, built)],
+            [program],
+        )
         area = overlay.area_words(
             built, placed, image.address, image.aligned_page_bytes, slot_base
         )
@@ -2803,6 +2816,8 @@ class _Backend:
                     }
                 )
             held = [placed.programs[index] for index in group.programs]
+            # a group that may switch program holds every program's own overlays
+            owners = placed.programs if placed.switch else held
             fits = False
             while not fits:  # a merged program over L1 places a source as an overlay
                 declared = placed.programs[0].overlay_slots
@@ -2814,6 +2829,11 @@ class _Backend:
                             for part in programs.program_overlays(
                                 program, placed.switch, len(placed.programs) == 1
                             )
+                        ),
+                        *(
+                            each
+                            for owner in owners
+                            for each in programs.own_overlays(owner)
                         ),
                         overlay.service(),
                     ],
@@ -2847,7 +2867,7 @@ class _Backend:
             mine = {}
             for key, image in made.images.items():
                 at = key
-                if key[0] == service:  # a copy for each different build of it
+                if key[0] == service or key in images:  # a copy for each build of it
                     same = [k for k, v in images.items() if k[:2] == key and v == image]
                     at = same[0] if same else (*key, len(images))
                 images[at] = image
@@ -2868,12 +2888,25 @@ class _Backend:
                     table,
                     self._held_bytes(),
                 )
-        image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
+        reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
+        image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
         image = _words(session, image_rows)
         slot_base = self._slot_buffer(
             descriptor, max(made.slot_bytes for made in built)
         )
         self.io.append(image)
+        self.room = added.room(
+            self,
+            image,
+            len(images),
+            [
+                added.group(group.first, group.count, by_group[number], made)
+                for number, (group, made) in enumerate(
+                    zip(placed.groups, built, strict=True)
+                )
+            ],
+            placed.programs,
+        )
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}

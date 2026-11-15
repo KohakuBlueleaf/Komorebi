@@ -52,6 +52,12 @@ def parse():
         "--compiled", action="store_true", help="the operations compiled in"
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--addon",
+        default="",
+        help="overlays not loaded (a comma list, e.g. shift): run.addon adds each to "
+        "the live run, with its number, before the first command",
+    )
     return parser.parse_args()
 
 
@@ -139,7 +145,7 @@ def plan(nocs, rect, along):
 
 
 # --8<-- [start:program]
-def program(tensors, arguments_of, compiled):
+def program(tensors, arguments_of, compiled, later=()):
     """Three kernels of the kernel form; four overlays and 3 reader slots, 1 compute
     slot, or (compiled) the four operations in the kernels."""
     values, results, times = tensors
@@ -166,7 +172,8 @@ def program(tensors, arguments_of, compiled):
     if compiled:
         return made
     for name in OVERLAYS:  # mix/reader.cpp ... shift/reader.cpp and compute.cpp
-        made.overlay(name, KERNELS / name)
+        if name not in later:  # added to the live run instead (--addon)
+            made.overlay(name, KERNELS / name)
     return made.slots(count={"reader": 3, "compute": 1})
 
 
@@ -272,8 +279,14 @@ def main():
         times = session.empty(
             (max(1, len(timed)) * group.count, 4 * TIMED_ROUNDS), "uint32"
         )
-        made = program((values_tensor, results, times), arguments_of, args.compiled)
+        later = [name for name in args.addon.split(",") if name]
+        made = program(
+            (values_tensor, results, times), arguments_of, args.compiled, later
+        )
         run = session.load(made)
+        for name in later:  # the leader casts its number as any overlay's
+            number = OVERLAYS.index(name) + 1
+            run.addon(name, KERNELS / name, number=number)
         sizes = dict(made.sizes.text)
         built = made.overlays_built
         mhz = [aiclk_mhz(session.card)]
@@ -318,6 +331,8 @@ def main():
         "rect": rect,
         "along": args.along,
         "compiled": args.compiled,
+        "addon": args.addon,
+        "added": {name: each.parts for name, each in run.added.items()},
         "choices": args.choices,
         "cores": len(cells),
         "broadcasts": len(set(senders.values())),

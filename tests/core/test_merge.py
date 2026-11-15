@@ -89,6 +89,10 @@ def test_what_is_refused(tmp_path):
     threaded.thread(sources=[tmp_path / "t.c"], regions={"state": 64})
     with pytest.raises(ProgramError, match="merge it first"):
         km.merge(sums, threaded)
+    extra = made(tmp_path, "extra", {"go": 1})
+    extra.overlay("more", {"reader": tmp_path / "extra" / "reader.cpp"}, number=1)
+    with pytest.raises(ProgramError, match="overlays of its own"):
+        km.merge(sums, extra)
     one = made(tmp_path, "one", {"a": 1}, args=lambda core: ([], [], []))
     two = made(tmp_path, "two", {"b": 1}, args=lambda core: ([], [], []))
     with pytest.raises(ProgramError, match="one source of a merged program"):

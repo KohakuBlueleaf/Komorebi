@@ -129,6 +129,7 @@ def plan(spec, cores):
             )
     for index, program in enumerate(programs):
         program.program_field = index
+    shift_overlays(programs)
     return Plan(
         tuple(programs),
         tuple(groups),
@@ -149,15 +150,56 @@ def check(program, count):
         raise ProgramError(f"{program.name}: its sources define kernel_main")
     if program.messages is not None:
         raise ProgramError(f"{program.name}: a dynamic handler needs the kernel form")
-    if program.overlays:
-        raise ProgramError(
-            f"{program.name}: overlays of a program in the runtime's form are not "
-            "supported yet"
-        )
     if program.compile_args.get("movement") or any(
         not isinstance(value, list | tuple) for value in program.compile_args.values()
     ):
         raise ProgramError(f"{program.name}: compile_args are lists, per kernel")
+
+
+def shift_overlays(programs):
+    """Gives each program's own overlays their numbers in the run: its own numbers
+    plus the largest of each program before it (Program.overlay_shift). The programs
+    take 62 down; ProgramError when the overlays reach them."""
+    service = overlay.constants()["kOverlayService"]
+    shift = 0
+    for program in programs:
+        program.overlay_shift = shift
+        shift += max((each.number for each in program.overlays.values()), default=0)
+    declared = programs[0].overlay_slots  # the first program's slots are the run's
+    for kernel in overlay.KERNELS:
+        count = declared.count
+        count = count.get(kernel) if isinstance(count, dict) else count
+        if count == 1 and any(
+            kernel in each.sources for p in programs for each in p.overlays.values()
+        ):
+            raise ProgramError(
+                f"{programs[0].name}: one {kernel} slot, and a program's {kernel} part "
+                "loads its own overlay into another slot while it runs; give it two "
+                "(Program.slots)"
+            )
+    lowest = service - len(programs)  # program field p is overlay service - 1 - p
+    if shift >= lowest:
+        raise ProgramError(
+            f"{', '.join(p.name for p in programs)}: their own overlays take numbers 1 "
+            f"to {shift} in the run (each program's after the largest of those before "
+            f"it) and the {len(programs)} programs {lowest} to {service - 1}; fewer "
+            "overlays or programs, or smaller numbers"
+        )
+
+
+def own_overlays(program):
+    """A program's own overlays as the run numbers them (its shift added, also to the
+    numbers its parts name: KM_OVERLAY_SHIFT)."""
+    shift = program.overlay_shift
+    return [
+        overlay.Overlay(
+            each.name,
+            each.number + shift,
+            each.sources,
+            {**each.defines, "KM_OVERLAY_SHIFT": str(shift)},
+        )
+        for each in program.overlays.values()
+    ]
 
 
 def _range(program, group, cores):
@@ -233,6 +275,8 @@ def program_overlay(program, switch=False):
     `switch`, its compute parts run the hardware start-up on its buffers at a load."""
     sources = {kernel: Path(path) for kernel, path in program.sources().items()}
     defines = dict(program.defines)
+    if program.overlays:  # the numbers its parts name, as the run numbers them
+        defines["KM_OVERLAY_SHIFT"] = str(program.overlay_shift)
     if switch:
         cb_in, cb_out = start_buffers(program.buffers)
         defines |= {

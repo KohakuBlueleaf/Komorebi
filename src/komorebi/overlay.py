@@ -5,6 +5,7 @@ the overlay area and DRAM image the session writes. The device side is km_overla
 
 import functools
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -55,6 +56,7 @@ ISLAND_SERVICE_SLOT_MOST = 43008
 LINK_BASE = 0x100000  # the first of the two links; the second is one line above
 LINK_LENGTH = 1 << 20
 ENTRY = "km_overlay_entry"
+INCLUDED = re.compile(r'^# \d+ "([^"<]+)"', re.M)  # a preprocessed file's line markers
 # File-static state of the math library that a part keeps its own copy of: the entry
 # marks it unknown (km_overlay_entry.hpp), so a copy is not a second runtime state.
 RESETS = (
@@ -425,13 +427,9 @@ def linked_facts(recipe, elf, base, undefined):
     )
 
 
-def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
-    """Builds and checks one part: compiled with the runtime's commands, position-
-    independent, linked at two bases; kept under `cache` by a hash of its preprocessed
-    source, the recipe and the persistent ELF. Returns the first link's Linked."""
-    stem = f"{re.sub(r'[^\w.-]', '_', overlay.name)}-{part}"
-    scratch = Path(cache) / "sources"
-    scratch.mkdir(parents=True, exist_ok=True)
+def part_defines(overlay, kernel):
+    """The defines of one part's build, and its compile arguments (None: the
+    kernel's)."""
     function = FUNCTION
     if overlay.program:
         function = PROGRAM_FUNCTION
@@ -446,6 +444,18 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
         **overlay.defines,
     }
     compile_args = overlay.compile_args.get(kernel, []) if overlay.program else None
+    return defines, compile_args
+
+
+def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None):
+    """Builds and checks one part: compiled with the runtime's commands, position-
+    independent, linked at two bases; kept under `cache` by a hash of its preprocessed
+    source, the recipe and the persistent ELF. Returns the first link's Linked;
+    `index`: a file where its Linked and the files it includes are kept (built())."""
+    stem = f"{re.sub(r'[^\w.-]', '_', overlay.name)}-{part}"
+    scratch = Path(cache) / "sources"
+    scratch.mkdir(parents=True, exist_ok=True)
+    defines, compile_args = part_defines(overlay, kernel)
     recipe_key = hashlib.sha256(
         repr((recipe, defines, compile_args)).encode()
     ).hexdigest()[:16]
@@ -483,7 +493,102 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
             )
         links.append(linked_facts(recipe, elf, base, undefined))
     check(overlay.name, part, *links, persistent_facts(recipe), slot_bytes)
+    if index is not None:
+        keep(index, links[0], preprocessed, work / f"part-{LINK_BASE:x}.elf")
     return links[0]
+
+
+def included(preprocessed):
+    """The files a preprocessed source was made of (its line markers), that exist."""
+    folder = Path(preprocessed).parent  # where the preprocessor ran
+    found = set(INCLUDED.findall(Path(preprocessed).read_text(errors="replace")))
+    paths = {str((folder / path).resolve()) for path in found}
+    return sorted(path for path in paths if Path(path).is_file())
+
+
+def file_digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def built_key(recipe, overlay, kernel):
+    """The key of a part in the cache of built parts: its source file, its defines and
+    compile arguments, the recipe, the persistent kernel's ELF and the link script."""
+    defines, compile_args = part_defines(overlay, kernel)
+    digest = hashlib.sha256(
+        repr(
+            (
+                str(Path(overlay.sources[kernel]).resolve()),
+                recipe,
+                defines,
+                compile_args,
+                SCRIPT + recipe.provided(),
+            )
+        ).encode()
+    )
+    digest.update(recipe.elf.read_bytes())
+    return digest.hexdigest()[:32]
+
+
+def keep(index, linked, preprocessed, elf):
+    """Writes a built part's index: its Linked, its ELF, every file it includes with
+    its digest."""
+    record = {
+        "linked": {
+            "base": linked.base,
+            "entry": linked.entry,
+            "relocations": list(linked.relocations),
+            "symbols": {k: list(v) for k, v in linked.symbols.items()},
+            "undefined": list(linked.undefined),
+            "extent": linked.extent,
+            "image": linked.image.hex(),
+        },
+        "elf": str(elf),
+        "files": {path: file_digest(path) for path in included(preprocessed)},
+    }
+    index.parent.mkdir(parents=True, exist_ok=True)
+    temporary = index.with_name(f".{index.name}-{os.getpid()}")
+    temporary.write_text(json.dumps(record))
+    os.replace(temporary, index)
+
+
+def built(index):
+    """(Linked, ELF) of a part's index whose included files are unchanged, else None:
+    nothing is compiled, linked or read with the toolchain."""
+    if not index.is_file():
+        return None
+    record = json.loads(index.read_text())
+    for path, digest in record["files"].items():
+        if not Path(path).is_file() or file_digest(path) != digest:
+            return None
+    saved = record["linked"]
+    linked = Linked(
+        saved["base"],
+        saved["entry"],
+        tuple(saved["relocations"]),
+        {k: tuple(v) for k, v in saved["symbols"].items()},
+        tuple(saved["undefined"]),
+        saved["extent"],
+        bytes.fromhex(saved["image"]),
+    )
+    return linked, Path(record["elf"])
+
+
+def build_part_cached(recipe, overlay, kernel, part, cache, slot_bytes=None):
+    """build_part behind the cache of built parts (`cache`/built): a part whose key
+    and included files are unchanged is not built again. (Linked, ELF, whether it was
+    in the cache); a part larger than `slot_bytes` is refused either way."""
+    index = Path(cache) / "built" / f"{built_key(recipe, overlay, kernel)}-{part}.json"
+    found = built(index)
+    if found is not None:
+        linked, elf = found
+        if slot_bytes is not None and linked.extent > slot_bytes:
+            raise OverlayError(
+                f"overlay {overlay.name}, {part} part: {linked.extent} bytes (code, "
+                f"data and .bss) do not fit its slot of {slot_bytes} bytes"
+            )
+        return linked, elf, True
+    linked = build_part(recipe, overlay, kernel, part, cache, slot_bytes, index)
+    return linked, built(index)[1], False
 
 
 @dataclass(frozen=True)
@@ -500,12 +605,18 @@ class Slots:
         count = self.count.get(kernel) if isinstance(self.count, dict) else self.count
         size = self.bytes.get(kernel) if isinstance(self.bytes, dict) else self.bytes
         if count is None:
-            count = min(sum(kernel in o.sources for o in overlays), most)
+            count = max(min(sum(kernel in o.sources for o in overlays), most), 1)
         if not 1 <= count <= most:
             raise ValueError(f"{kernel} slots: {count}, not in 1..{most}")
         if size is not None and (size <= 0 or size % ALIGN):
             raise ValueError(f"{kernel} slot bytes {size}: a multiple of {ALIGN}")
         return count, size
+
+    def reserved(self, kernel):
+        """Whether `kernel` has slots though no overlay has a part there: its `bytes`
+        are named, for code added to the live run (run.addon)."""
+        size = self.bytes.get(kernel) if isinstance(self.bytes, dict) else self.bytes
+        return size is not None
 
 
 @dataclass(frozen=True)
@@ -546,7 +657,9 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
     declared, images, extents, served = {}, {}, {}, {}
     number = constants()["kOverlayService"]
     for kernel in KERNELS:
-        if any(kernel in overlay.sources for overlay in overlays):
+        if declared_slots.reserved(kernel) or any(
+            kernel in overlay.sources for overlay in overlays
+        ):
             declared[kernel] = declared_slots.of(kernel, overlays)
     for overlay in overlays:
         for kernel, part in overlay.parts():
@@ -572,19 +685,21 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
     slots = {}
     for kernel, (count, size) in declared.items():
         for part in KERNEL_PARTS[kernel]:
-            largest = -(-max(extents[part]) // ALIGN) * ALIGN
+            largest = -(-max(extents.get(part, [0])) // ALIGN) * ALIGN
             least = -(-served.get(part, 0) // ALIGN) * ALIGN
             slots[part] = (count, max(size, least) if size is not None else largest)
     return Built(images, slots)
 
 
-def dram_rows(built):
+def dram_rows(built, reserve=0):
     """The DRAM image: every part's image in 8 pages (a copy in each bank, page i in
     bank i % 8), as uint32 rows; and {(number, part): (row of its first copy, bytes)}.
+    `reserve`: bytes of room after them in each bank, for parts added later (zeros).
     """
     banks = constants()["kOverlayBanks"]
     width = max(len(image) for image in built.images.values())
-    rows = np.zeros((banks * len(built.images), width // 4), np.uint32)
+    rooms = -(-reserve // width)
+    rows = np.zeros((banks * (len(built.images) + rooms), width // 4), np.uint32)
     placed = {}
     for index, (key, image) in enumerate(sorted(built.images.items())):
         words = np.frombuffer(image, np.uint32)
