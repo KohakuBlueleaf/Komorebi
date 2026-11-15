@@ -249,6 +249,8 @@ class Compiled:
     entries: dict = field(default_factory=dict)  # km.Entry class name -> words
     # The inline bodies at a kernel's start or end (at=): (at, kernel) -> texts.
     kernel_bodies: dict = field(default_factory=dict)
+    kernel_body_lines: list = field(default_factory=list)  # their lines, in order
+    reserved: set = field(default_factory=set)  # indices left to other programs
     startup: object = None  # the class's km.Startup, or None (the default start-up)
     # A handler with constant parameters -> [(its set of values, the handler built
     # for them)] (handler_variants).
@@ -283,13 +285,16 @@ def class_annotations(cls):
     return merged
 
 
-def compile_class(cls, plan, tensors, l1=None, constants=None, handlers=None):
-    """Compiles each handler of `cls`; `plan` the program's sizes by name, `tensors`
-    an example tensor of each tensor parameter, `l1` the bytes left for buffers (an
-    unknown symbol takes what the others leave), `constants` the class's constants'
-    values, `handlers` the sets of the constant parameters (handler_variants)."""
+def compile_class(
+    cls, plan, tensors, l1=None, constants=None, handlers=None, reserved=()
+):
+    """Compiles each handler of `cls`; `plan` sizes by name, `tensors` an example of
+    each tensor parameter, `l1` the bytes left for buffers, `constants` the constants'
+    values, `handlers` the constant parameters' sets (handler_variants), `reserved`
+    buffer indices its buffers do not take (an unknown symbol takes what is left)."""
     methods = handler_methods(cls)
     compiled = Compiled(cls.__name__, inspect.getsourcefile(methods[0].function))
+    compiled.reserved = set(reserved)
     declared_constants(compiled, cls, constants)
     compiled.fields = {
         name: front.Field(
@@ -389,6 +394,139 @@ def handler_variants(compiled, methods, handlers):
 def variant_word(value):
     """A constant parameter's value as a part of a C++ name."""
     return str(value).replace(".", "p").replace("-", "m")
+
+
+@dataclass
+class MergedPart:
+    """One class of a merged program (komorebi.dsl.merged): the class, its plan, its
+    example tensors, its constants' values, its handlers [(merged number, method)],
+    the prefix of its tensors that take an alias of their own."""
+
+    cls: type
+    plan: dict
+    tensors: dict
+    constants: dict
+    methods: list
+    prefix: str
+
+
+def compile_merged(name, parts, l1=None):
+    """Compiles the handlers of several classes as ONE program: each handler's lines
+    read its own class's constants, plan and tensors; a field of one name in two
+    classes is one field when declared alike, else refused naming both. Returns the
+    Compiled and the example tensors by the names its kernels give them."""
+    methods = [method for part in parts for _, method in part.methods]
+    compiled = Compiled(name, inspect.getsourcefile(methods[0].function))
+    merged_fields(compiled, parts)
+    compiled.field_users = field_users(methods, compiled.fields)
+    for method in methods:
+        if arrive_of(source_of(method.function)[0]):
+            raise Refused(
+                f"{name}: {method.owner.__name__}.{method.name} is a dynamic handler, "
+                "whose message loop is its program's own kernels; not merged"
+            )
+    plan, tensors, order = {}, {}, []
+    for part in parts:
+        for key, value in part.plan.items():
+            if plan.setdefault(key, value) != value:
+                raise Refused(
+                    f"{name}: the plan's {key} is {plan[key]!r} in one class and "
+                    f"{value!r} in {part.cls.__name__}; one value a merged program"
+                )
+        declared_constants(compiled, part.cls, part.constants)
+        compiled.tensors = []  # this class's tensor parameters
+        for number, method in part.methods:
+            compiled.handlers[method.name] = number
+            if method.overlay:
+                compiled.overlays[method.name] = len(compiled.overlays) + 1
+            HandlerCompiler(compiled, method, handler_names(method), part.plan,
+                            part.tensors).run()  # fmt: skip
+        aliases = {}
+        for tensor in compiled.tensors:
+            example = part.tensors.get(tensor)
+            if tensor in tensors and tensors[tensor] is not example:
+                aliases[tensor] = f"{part.prefix}_{tensor}"
+            key = aliases.get(tensor, tensor)
+            if key not in tensors:
+                tensors[key] = example
+                order.append(key)
+        for _, method in part.methods:
+            merged_aliases(compiled, method.name, aliases)
+    compiled.tensors = order
+    compiled.declared, compiled.class_constants = {}, {}
+    bind_fields(compiled, plan, l1)
+    options = [(part.cls, class_compute(part.cls, compiled)) for part in parts]
+    for cls, given in options[1:]:
+        if given != options[0][1]:
+            raise Refused(
+                f"{name}: compute options {options[0][1]} of "
+                f"{options[0][0].__name__} and {given} of {cls.__name__}: one compute "
+                "kernel takes one set"
+            )
+    compiled.compute_options = options[0][1]
+    startups = {id(getattr(part.cls, "startup_given", None)) for part in parts}
+    if len(startups) > 1:
+        raise Refused(f"{name}: the classes give different start-ups; give one")
+    compiled.startup = getattr(parts[0].cls, "startup_given", None)
+    return compiled, tensors
+
+
+def merged_fields(compiled, parts):
+    """The fields of every class of a merged program, each shape by its own class's
+    constants; one name in two classes one field when declared alike."""
+    owners = {}
+    for part in parts:
+        declared_constants(compiled, part.cls, part.constants)
+        for field_name, value in class_annotations(part.cls).items():
+            if not isinstance(value, front.Field):
+                continue
+            made = front.Field(
+                value.format,
+                tuple(shape_size(compiled, field_name, n) for n in value.shape),
+            )
+            own = inspect.getattr_static(part.cls, field_name, None)
+            push = own.push if isinstance(own, front.Own) else "none"
+            if field_name in owners and owners[field_name][1:] != (made, push):
+                raise Refused(
+                    f"{compiled.name}: field {field_name} is {owners[field_name][1]} "
+                    f"in {owners[field_name][0]} and {made} in {part.cls.__name__}; "
+                    "a field of one name is one field: declare it alike, or rename "
+                    "one"
+                )
+            owners[field_name] = (part.cls.__name__, made, push)
+            compiled.fields[field_name] = made
+            if isinstance(own, front.Own):
+                compiled.own[field_name] = own.push
+    for field_name, value in list(compiled.fields.items()):
+        if word_field(value):  # as compile_class: words in each core's row
+            if field_name in compiled.own:
+                raise field_refused(
+                    compiled,
+                    field_name,
+                    "a field of words is the host's, not a body's own",
+                    "declare it of whole tiles",
+                )
+            compiled.word_fields[field_name] = value.shape[0]
+            del compiled.fields[field_name]
+
+
+def merged_aliases(compiled, handler, aliases):
+    """A merged handler whose tensors another class's share a name with: its movement
+    lines in a block of their own that names each by its own alias."""
+    if not aliases:
+        return
+    lines = [
+        Line(f"using {camel_of(tensor)} [[maybe_unused]] = {camel_of(alias)};")
+        for tensor, alias in aliases.items()
+    ]
+    compiled.movement[handler] = [
+        Block("{", "}", [*lines, *compiled.movement[handler]])
+    ]
+
+
+def camel_of(name):
+    """A tensor parameter's C++ type name (komorebi.dsl.program.camel)."""
+    return "".join(part.capitalize() for part in name.split("_"))
 
 
 def handler_names(method):
@@ -795,6 +933,7 @@ def next_index(compiled):
     taken = {b.index_a for b in compiled.buffers} | {
         b.index_b for b in compiled.buffers
     }
+    taken |= compiled.reserved
     index = FIRST_OTHER
     while index in taken:
         index += 1
@@ -3327,6 +3466,7 @@ class HandlerCompiler:
             taken = {b.index_a for b in self.compiled.buffers} | {
                 b.index_b for b in self.compiled.buffers
             }
+            taken |= self.compiled.reserved
             index = first
             while index in taken or index + 1 in taken:
                 index += 2
@@ -4850,6 +4990,7 @@ class HandlerCompiler:
         taken = {b.index_a for b in self.compiled.buffers} | {
             b.index_b for b in self.compiled.buffers
         }
+        taken |= self.compiled.reserved
         index = FIRST_WRITE
         while index in taken:
             index += 1
@@ -5697,6 +5838,7 @@ class HandlerCompiler:
         taken = {b.index_a for b in self.compiled.buffers} | {
             b.index_b for b in self.compiled.buffers
         }
+        taken |= self.compiled.reserved
         index = FIRST_OTHER
         while index in taken:
             index += 1
@@ -6594,6 +6736,7 @@ class HandlerCompiler:
             if mover is not None:
                 body = f"#if {guard}\n{body}\n#endif"
             self.compiled.kernel_bodies.setdefault((at, kernel), []).append(body)
+            self.compiled.kernel_body_lines.append((at, node.lineno))
             return [], []
         lines = [*before, Line(body, uses, mover=mover), *after]
         moves, self.body_moves = self.body_moves, []

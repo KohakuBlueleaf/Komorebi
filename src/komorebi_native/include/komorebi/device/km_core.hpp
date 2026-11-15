@@ -13,6 +13,12 @@
 #include "km_command.hpp"
 #include "km_island.hpp"
 
+// Where a program's own arguments start among a run's (a part of program p in a run of
+// several: after the earlier programs'; komorebi.programs); 0 unless the host gives it.
+#if !defined(KM_PROGRAM_ARGS_AT)
+#define KM_PROGRAM_ARGS_AT 0
+#endif
+
 #if defined(KM_CHECK_NOC_SOURCES) && !defined(COMPILE_FOR_TRISC)
 namespace km {
 
@@ -751,9 +757,10 @@ namespace km {
             return rank - rank_offset_;
         }
 
-        // The program's argument `index` (after the start-up arguments).
+        // The program's argument `index` (after the start-up arguments; a program's
+        // part in a run of several: after the earlier programs', KM_PROGRAM_ARGS_AT).
         uint32_t arg(uint32_t index) const {
-            return get_arg_val<uint32_t>(kArgs + index);
+            return get_arg_val<uint32_t>(kArgs + KM_PROGRAM_ARGS_AT + index);
         }
 
         volatile tt_l1_ptr uint32_t* control(uint32_t offset) const {

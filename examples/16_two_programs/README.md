@@ -22,7 +22,7 @@ buffer 16 (2 pages of 4,096 B), and a third buffer, 24.
 | scale | `SCALE` (1) | a0 the input's DRAM address, a1 tiles (16), a2 the output's DRAM address, a3 the first output page, a6 the first tile | doubles its share of the tiles and writes each to page a3 + its place |
 | widen | `WIDEN` (1) | as `SCALE` | writes its share of the tiles as float32 to page a3 + its place |
 
-The script runs six phases:
+The script runs seven phases:
 
 - disjoint: `session.load({sum: (0, 88), scale: (88, 32)})`. Commands to the two programs
   alternate, each to a random group inside its program's cores. The host must refuse a
@@ -40,6 +40,12 @@ The script runs six phases:
   `run.load(sum, group=part)` and a SUM to all of sum's cores; `--switches` loads.
 - load: the cycles of a load command, to another program and to the one held, on 1 core
   and on every core.
+- merged: `session.load(km.merge(sum, scale))`, ONE program
+  ([merged](../../docs/reference/host.md#programs-merged-into-one)): sum's handlers keep
+  1 and 2, scale's become 3 and 4. Commands alternate on random groups (SUM by
+  `merged.handler("sum")`, SCALE by scale's own handle, mapped); then the cycles a
+  command of sum alone, of the two as a list and merged. `--overlay` places scale's
+  code as an overlay with the merge's marker.
 
 The host checks every value of the sums and the doubled tiles.
 
@@ -115,3 +121,23 @@ What the numbers say:
 - A load command (`run.load`) costs about 3,100 to 3,500 cycles (2.3 to 2.6 µs) on one
   core or on 120, whether or not the program changes: the five cores meet, wait for their
   buffers to be empty and set them up again; the parts stay in their slots.
+
+### Merged into one program
+
+`python two_programs.py --phase merged` and `--phase merged --overlay`, 120 cores, 40
+rounds, AICLK 1,350 MHz before and after, 2026-11-16: 80 commands each, every result
+exact. Cycles a command as above (1 core / 120 cores):
+
+| | sum alone | as a list | merged | merged, scale an overlay |
+|---|---:|---:|---:|---:|
+| empty command (sum's) | 1,051 / 1,216 | 1,057 / 1,206 | 1,092 / 1,235 | 1,093 / 1,239 |
+| sum of 16 tiles | 6,451 / 2,136 | 6,461 / 2,118 | 5,831 / 2,175 | 5,847 / 2,158 |
+| empty command (scale's, its number mapped) | | | 1,156 / 1,307 | 1,266 / 1,428 |
+
+On this head one program's empty command costs 1,051 cycles, not the 707 of the table
+above, which an earlier head measured. Merged adds about 40 cycles (the table and the
+call of the source), a command of scale about 65 more (its command copied with scale's
+own number), and with scale an overlay about 110 more again (the overlay's check and
+call). The merged parts (reader 3,264 B, writer 2,816, unpack 4,544, math 2,432, pack
+3,328) are larger than sum's and scale's together; with scale an overlay the part's
+reader grows to 5,440 B (the overlay's load is compiled into it).
