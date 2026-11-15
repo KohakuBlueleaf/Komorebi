@@ -1,5 +1,6 @@
-// Linear writer (NoC1 by default): W's column broadcast a window of columns; other
-// islands' tiles put in chunks through the link cores' rings, one sync, its own Y.
+// Linear writer (NoC1 by default): W's column broadcast over this island's K, its
+// own window of Y written (or, LINEAR_ADD, its partial added with the other's).
+#include <stddef.h>
 #include <stdint.h>
 
 #include "../dense.h"
@@ -8,6 +9,10 @@
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "linear.h"
+
+#if defined(LINEAR_SPLIT)  // the K-split plan (linear.h): its own body
+#include "ksplit_writer.hpp"
+#else
 
 namespace {
 
@@ -44,6 +49,36 @@ namespace {
         return true;
     }
 
+    // Waits until word COUNT of port `port` of this core holds `marker`. False: gave
+    // up (recorded).
+    bool marked(
+        const km::Writer& writer,
+        const km_command_t& command,
+        uint32_t port,
+        uint32_t marker
+    ) {
+        volatile tt_l1_ptr uint32_t* words = km::port_words(writer, port);
+        const uint32_t code = writer.poll_at(
+            km::kWherePort,
+            [&] {
+                invalidate_l1_cache();
+                return words[KM_PORT_COUNT] == marker;
+            },
+            writer.args().wait_limit
+        );
+        if (code != km::kGaveNone) {
+            writer.gave_up(
+                km::kStWriter,
+                code,
+                km::kWherePort,
+                km::slot(command) | port << 8,
+                command.sequence
+            );
+            return false;
+        }
+        return true;
+    }
+
     // One token to port `port` of rank `rank`, wherever it is (another island's
     // through the relay).
     bool tell(
@@ -62,13 +97,9 @@ namespace {
         );
     }
 
-    // Every island's partial sums are in its DRAM once this returns on every core:
-    // up the island's tree, its leader to the other leaders, down the tree.
-    bool everywhere(
-        const km::Writer& writer,
-        const km_command_t& command,
-        volatile tt_l1_ptr uint32_t* stamps
-    ) {
+    // This CPU's writes have landed (acknowledged), so other cores may read them from
+    // DRAM. False: gave up (recorded).
+    bool landed(const km::Writer& writer, const km_command_t& command) {
         const uint32_t code = writer.poll_at(
             km::kWhereData,
             [] {
@@ -82,51 +113,7 @@ namespace {
             );
             return false;
         }
-        const km::Group group = km::group_of(command, writer.me());
-        const km::Group local = group.local();
-        const uint32_t rank = local.rank;
-        const uint32_t children = (
-            (2 * rank + 1 < local.size ? 1 : 0) + (2 * rank + 2 < local.size ? 1 : 0)
-        );
-        if (children != 0 && !counted(writer, command, kPortUp, children)) {
-            return false;
-        }
-        stamps[kStampUp] = km::wall();
-        if (rank != 0) {
-            if (!tell(writer, command, km::core_of(local, (rank - 1) / 2), kPortUp)) {
-                return false;
-            }
-            if (!counted(writer, command, kPortDown, 1)) {
-                return false;
-            }
-            stamps[kStampDown] = km::wall();
-        } else {
-            const km::Group leaders = group.leaders();
-            for (uint32_t part = 0; part < leaders.size; ++part) {
-                if (
-                    part != leaders.rank &&
-                    !tell(writer, command, group.leader(part), kPortCross)
-                ) {
-                    return false;
-                }
-            }
-            if (
-                leaders.size > 1 &&
-                !counted(writer, command, kPortCross, leaders.size - 1)
-            ) {
-                return false;
-            }
-            stamps[kStampDown] = km::wall();
-        }
-        for (uint32_t child = 2 * rank + 1; child < 2 * rank + 3; ++child) {
-            if (
-                child < local.size &&
-                !tell(writer, command, km::core_of(local, child), kPortDown)
-            ) {
-                return false;
-            }
-        }
-        return tell(writer, command, km::core_of(local, rank), kPortGo);
+        return true;
     }
 
 }  // namespace
@@ -139,6 +126,9 @@ void kernel_main() {
     constexpr auto t_args = (
         TensorAccessorArgs<y_args.next_compile_time_args_offset()>()
     );
+    constexpr auto s_args = (
+        TensorAccessorArgs<t_args.next_compile_time_args_offset()>()
+    );
     km::Writer writer;
     const auto core = [&](uint32_t word) {
         return writer.arg(kArgCore + word);
@@ -146,24 +136,19 @@ void kernel_main() {
     const auto plan = [&](uint32_t word) {
         return core(kCorePlan + word);
     };
-    // the tiles put: chunks from a buffer of two, its place kept across commands (a
-    // put never crosses the buffer's end)
-    const uint32_t chunk = put_chunk(plan(kPlSh) * plan(kPlSw));
-    uint32_t ring_at = 0;
+    uint32_t parity = 0;  // LINEAR_ADD: the command's set of S
     writer.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerLinear) {
             return true;
         }
         volatile tt_l1_ptr uint32_t* stamps = km::l1(get_write_ptr(kCbStamp));
         stamps[kStampStart] = km::wall();
-        stamps[kStampPut] = 0;  // 0: no sync this command
+        stamps[kStampPut] = 0;  // 0: no addition across this command
         stamps[kStampSynced] = 0;
         stamps[kStampSettled] = 0;
         stamps[kStampUp] = 0;
         stamps[kStampDown] = 0;
-        for (uint32_t word = kStampFed; word <= kStampPieces; ++word) {
-            stamps[word] = 0;
-        }
+        LINEAR_ACCOUNT_DO(uint32_t account[kAcYWrite - kAcWFree + 1] = {});
         const uint32_t w = command.a1, y = command.a2, s = command.a3;
         const uint32_t k_whole = command.a4, n_whole = command.a5;
         const uint32_t m_tiles = plan(kPlMt), here = km::island();
@@ -171,29 +156,15 @@ void kernel_main() {
         invalidate_l1_cache();  // the tensor table
         const Span mine = k_part(w, here, k_whole, n_whole);
         const uint32_t x = command.a0;
-        bool sync = LINEAR_EXCHANGES && exchanging(x, w, y, m_tiles, k_whole, n_whole);
         // the rows this island makes: the plan's rows start at its first
         const Span made = made_rows(x, here, m_tiles, k_whole);
-        const auto window_of = [&](uint32_t to) {
-            return window(x, y, here, to, m_tiles, k_whole, n_whole);
-        };
         const Holding y_here = holding(y, here, m_tiles * n_whole);
         const auto y_matrix = TensorAccessor(y_args, y_here.address);
-        // this core's pages put and not yet counted (their tiles already freed)
-        uint32_t outstanding = 0, holder = here;
-        km::PutRun run;
+        // the input-dim-sharded form's addition here: two islands, Y a copy
+        const bool adding = LINEAR_ADDS && islands == 2 && copied(y);
+        const auto s_matrix = TensorAccessor(s_args, holding(s, here, 1).address);
         const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
         const uint32_t block_tiles = block_height * block_width;
-        const auto settle = [&] {
-            if (outstanding == 0) {
-                return true;
-            }
-            if (!km::put_wait(writer, command, outstanding, holder)) {
-                return false;
-            }
-            outstanding = 0;
-            return true;
-        };
         if (mine.count != 0 && core(kCoreRank) != 0) {
             km::Broadcast broadcast(writer, command, kArgBroadcast);
 #if defined(LINEAR_VALID_SENT)
@@ -219,114 +190,43 @@ void kernel_main() {
             const Sent sent = {core(kCoreSetPages), core(kCoreSent)};
             const Holding w_here = holding(w, here, k_whole * n_whole);
             const auto w_matrix = TensorAccessor(w_args, w_here.address);
+            // LINEAR_SPREAD: the column broadcast's ranks (sender 0), when a receiver's
+            // rows of a block fit its slice buffer; the sender's slots, multicast area
+            const auto cast_arg = [&](uint32_t offset) {
+                return writer.arg(kArgBroadcast + offset / 4);
+            };
+            const uint32_t column_ranks = (
+                cast_arg(offsetof(km::BroadcastArgs, receivers)) + 1
+            );
+            const uint32_t mc_start = cast_arg(offsetof(km::BroadcastArgs, mc_start));
+            const uint32_t mc_end = cast_arg(offsetof(km::BroadcastArgs, mc_end));
+            const LocalCBInterface& slice_cb = get_local_cb_interface(kCbWSlice);
+            const LocalCBInterface& column_cb = get_local_cb_interface(kCbCol);
+            const uint32_t block_bytes = broadcast.pages() * column_cb.fifo_page_size;
+            const bool spread = (
+                LINEAR_SPREADS && broadcast.included() && column_ranks > 1 &&
+                blocks_of(k_block_tiles, column_ranks) * plan(kPlBn) * kBf16Bytes <=
+                    slice_cb.fifo_size
+            );
+            const uint32_t slice_base = slice_cb.fifo_limit - slice_cb.fifo_size;
+            const uint32_t port_base = writer.args().control + KM_CONTROL_PORT;
             uint32_t step = 0;
-            for (uint32_t turn = 1; turn <= islands; ++turn) {
-                const uint32_t to = island_at(here, turn);
-                const Span window = window_of(to);
-                if (window.count == 0 || (!LINEAR_EXCHANGES && to != here)) {
-                    continue;
-                }
-                const bool own = !LINEAR_EXCHANGES || to == here;
-                if (own && sync) {  // every put counted, then every island's
-                    stamps[kStampPut] = km::wall();
-                    if (!settle()) {
-                        return false;
-                    }
-                    stamps[kStampSettled] = km::wall();
-                    if (!everywhere(writer, command, stamps)) {
-                        return false;
-                    }
-                    stamps[kStampSynced] = km::wall();
-                    sync = false;
-                }
+            bool finished = false;  // the column broadcast (LINEAR_ADD: before the sum)
+            // this island's own columns of the rows it makes (none: nothing to make)
+            const Span window = (
+                ::window(x, w, y, here, here, m_tiles, k_whole, n_whole)
+            );
+            if (window.count != 0) {
                 const uint32_t column_end = (
                     first_column + plan(kPlPcN) < window.count
                         ? first_column + plan(kPlPcN)
                         : window.count
                 );
-                const uint32_t s_address = holding(s, to, 1).address;
-                const uint32_t s_set = sent_set(here, to);
-
-                // Another island's tiles handed .. `upto` - 1 of this core's stream
-                // (its blocks in order) put to S in chunks; `rest`: a last shorter one.
-                uint32_t handed = 0;
-                const auto send = [&](uint32_t upto, bool rest) {
-                    while (handed < upto && (upto - handed >= chunk || rest)) {
-                        uint32_t count = upto - handed < chunk ? upto - handed : chunk;
-                        if (count > 2 * chunk - ring_at) {
-                            count = 2 * chunk - ring_at;  // to the buffer's end
-                        }
-                        uint32_t clock = km::wall();
-                        const auto lap = [&](uint32_t word) {
-                            const uint32_t now = km::wall();
-                            stamps[word] += now - clock;
-                            clock = now;
-                        };
-                        if (!writer.wait_front(kCbSend, count)) {
-                            return false;
-                        }
-                        lap(kStampFed);
-                        // a run of `count` pages, its bytes into the rings at once
-                        if (!km::put_pages(
-                            writer,
-                            command,
-                            to,
-                            s_address,
-                            kBf16Bytes,
-                            sent.page(s_set, handed),
-                            count,
-                            run
-                        )) {
-                            return false;
-                        }
-                        lap(kStampLine);
-                        if (!km::put_piece(
-                            writer, command, run, get_read_ptr(kCbSend), count
-                        )) {
-                            return false;
-                        }
-                        lap(kStampPiece);
-                        stamps[kStampTurn] += run.turn;
-                        stamps[kStampWrite] += run.write;
-                        stamps[kStampPieces] += run.piece;
-                        outstanding += count - run.waited;  // no rings: waited there
-                        holder = to;
-                        cb_pop_front(kCbSend, count);
-                        handed += count;
-                        ring_at = (ring_at + count) % (2 * chunk);
-                    }
-                    return true;
-                };
-                // Tiles handed .. `upto` - 1 freed unput (a block outside the window).
-                const auto drop = [&](uint32_t upto) {
-                    while (handed < upto) {
-                        uint32_t count = upto - handed < chunk ? upto - handed : chunk;
-                        if (count > 2 * chunk - ring_at) {
-                            count = 2 * chunk - ring_at;
-                        }
-                        if (!writer.wait_front(kCbSend, count)) {
-                            return false;
-                        }
-                        cb_pop_front(kCbSend, count);
-                        handed += count;
-                        ring_at = (ring_at + count) % (2 * chunk);
-                    }
-                    return true;
-                };
-
-                // Output block `block` at (block_row, block_column) made: its own
-                // window's Y written by subblock; another island's tiles to S.
+                // Output block `block` at (block_row, block_column) made: its
+                // window's Y written by subblock.
                 const auto put = [&](
                     uint32_t block, uint32_t block_row, uint32_t block_column
                 ) {
-                    if (!own) {
-                        const uint32_t made = (block + 1) * block_tiles;
-                        const bool last = block + 1 == blocks_high * blocks_wide;
-                        if (block_row < row_end && block_column < column_end) {
-                            return send(made, last);
-                        }
-                        return send(made - block_tiles, true) && drop(made);
-                    }
                     for (
                         uint32_t subblock_row = 0; subblock_row < block_height;
                         subblock_row += subblock_height
@@ -335,9 +235,11 @@ void kernel_main() {
                             uint32_t subblock_column = 0; subblock_column < block_width;
                             subblock_column += subblock_width
                         ) {
+                            LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
                             if (!writer.wait_front(kCbYOut, subblock_tiles)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcYWait - 16], since));
                             uint32_t source = get_read_ptr(kCbYOut);
                             const uint32_t column = block_column + subblock_column;
                             const uint32_t left = (
@@ -381,10 +283,43 @@ void kernel_main() {
                             if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcYWrite - 16], since));
                             cb_pop_front(kCbYOut, subblock_tiles);
                         }
                     }
                     return true;
+                };
+
+                // LINEAR_ADD: output block `block` made, its partial to this island's
+                // set of S, a subblock at a time.
+                const auto to_s = [&](uint32_t block) {
+                    for (
+                        uint32_t tile = 0; tile < block_tiles; tile += subblock_tiles
+                    ) {
+                        LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
+                        if (!writer.wait_front(kCbYOut, subblock_tiles)) {
+                            return false;
+                        }
+                        LINEAR_ACCOUNT_DO(lap(account[kAcYWait - 16], since));
+                        const uint32_t first = (
+                            sent.page(add_set(parity, here), block * block_tiles + tile)
+                        );
+                        const uint32_t source = get_read_ptr(kCbYOut);
+                        for (uint32_t k = 0; k < subblock_tiles; ++k) {
+                            noc_async_write_page(
+                                first + k, s_matrix, source + k * kBf16Bytes
+                            );
+                        }
+                        if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
+                            return false;
+                        }
+                        LINEAR_ACCOUNT_DO(lap(account[kAcYWrite - 16], since));
+                        cb_pop_front(kCbYOut, subblock_tiles);
+                    }
+                    return true;
+                };
+                const auto made = [&](uint32_t block, uint32_t row, uint32_t column) {
+                    return adding ? to_s(block) : put(block, row, column);
                 };
 
                 bool pending = false;
@@ -405,51 +340,155 @@ void kernel_main() {
                     const uint32_t columns_read = (
                         left < block_width ? left : block_width
                     );
+                    // W's rows of K block `k_block` this rank reads (all on the
+                    // sender, unless spread): (first row of the block, rows)
+                    const auto k_rows = [&](uint32_t k_block) {
+                        const uint32_t k_start = k_block * k_block_tiles;
+                        return (
+                            mine.count - k_start < k_block_tiles
+                                ? mine.count - k_start
+                                : k_block_tiles
+                        );
+                    };
+                    const auto rows_of = [&](uint32_t k_block) {
+                        const uint32_t k_length = k_rows(k_block);
+                        if (!spread) {
+                            return km::Partition{0, k_length};
+                        }
+                        return km::partition(k_length, broadcast.rank(), column_ranks);
+                    };
+                    // Those rows read into `into` (its first row there), a row's tiles
+                    // at consecutive indices of this island's part of W
+                    const auto read_rows = [&](uint32_t k_block, uint32_t into) {
+                        const km::Partition rows = rows_of(k_block);
+                        for (uint32_t row = 0; row < rows.len; ++row) {
+                            const uint32_t index = (
+                                w_here.index(
+                                    (
+                                        mine.first + k_block * k_block_tiles +
+                                        rows.start + row
+                                    ) *
+                                        n_whole +
+                                    window.first + block_column
+                                )
+                            );
+                            for (uint32_t column = 0; column < columns_read; ++column) {
+                                noc_async_read_page(
+                                    index + column,
+                                    w_matrix,
+                                    into + (row * block_width + column) * kBf16Bytes
+                                );
+                            }
+                        }
+                    };
+                    bool ahead = false;  // a receiver's rows of this step already read
                     for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
+                        LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
+                        const uint32_t marker = (
+                            (command.sequence & 0xFFFFu) << 16 | ((step + 1) & 0xFFFFu)
+                        );
                         if (!broadcast.sender()) {
+                            if (spread) {
+                                // its rows into the sender's slot once reserved, then
+                                // the next block's rows read ahead
+                                if (!ahead) {
+                                    read_rows(k_block, slice_base);
+                                }
+                                const km::Partition rows = rows_of(k_block);
+                                if (
+                                    !marked(writer, command, kPortReady, marker) ||
+                                    !flushed(writer, km::kStWriter, km::kFlushReads)
+                                ) {
+                                    return false;
+                                }
+                                if (rows.len != 0) {
+                                    noc_async_write(
+                                        slice_base,
+                                        writer.core_noc(
+                                            cast_arg(
+                                                offsetof(km::BroadcastArgs, sender)
+                                            ),
+                                            column_cb.fifo_limit - column_cb.fifo_size +
+                                                step % broadcast.window() *
+                                                    block_bytes +
+                                                rows.start * block_width * kBf16Bytes
+                                        ),
+                                        rows.len * block_width * kBf16Bytes
+                                    );
+                                }
+                                if (!landed(writer, command)) {
+                                    return false;
+                                }
+                                noc_semaphore_inc(
+                                    writer.core_noc(
+                                        cast_arg(offsetof(km::BroadcastArgs, sender)),
+                                        port_base + kPortSlices * KM_PORT_STRIDE +
+                                            4 * KM_PORT_COUNT
+                                    ),
+                                    1
+                                );
+                                ahead = k_block + 1 < k_blocks;
+                                if (ahead) {
+                                    read_rows(k_block + 1, slice_base);
+                                }
+                                LINEAR_ACCOUNT_DO(lap(account[kAcWRead - 16], since));
+                            }
                             if (!broadcast.arrive(step)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcWCast - 16], since));
                         } else {
                             const uint32_t base = broadcast.reserve(step);
                             if (base == 0) {
                                 return false;
                             }
-                            const uint32_t k_start = k_block * k_block_tiles;
-                            const uint32_t k_length = (
-                                mine.count - k_start < k_block_tiles
-                                    ? mine.count - k_start
-                                    : k_block_tiles
-                            );
-                            for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
-                                // W's rows this island holds, read here: a row's
-                                // tiles at consecutive indices of its part
-                                const uint32_t index = (
-                                    w_here.index(
-                                        (mine.first + k_start + k_tile) * n_whole +
-                                        window.first + block_column
-                                    )
+                            LINEAR_ACCOUNT_DO(lap(account[kAcWFree - 16], since));
+                            const km::Partition rows = rows_of(k_block);
+                            if (spread) {  // the receivers may fill their rows now
+                                // the marker from the same word (and 16-byte offset)
+                                // as it lands at: this sender's own ready port
+                                volatile tt_l1_ptr uint32_t* words = (
+                                    km::port_words(writer, kPortReady)
                                 );
-                                for (
-                                    uint32_t column = 0; column < columns_read; ++column
-                                ) {
-                                    noc_async_read_page(
-                                        index + column,
-                                        w_matrix,
-                                        base +
-                                            (k_tile * block_width + column) * kBf16Bytes
-                                    );
-                                }
+                                words[KM_PORT_COUNT] = marker;
+                                noc_semaphore_set_multicast(
+                                    port_base + kPortReady * KM_PORT_STRIDE +
+                                        4 * KM_PORT_COUNT,
+                                    get_noc_multicast_addr(
+                                        mc_start & 0xFFFFu,
+                                        mc_start >> 16,
+                                        mc_end & 0xFFFFu,
+                                        mc_end >> 16,
+                                        port_base + kPortReady * KM_PORT_STRIDE +
+                                            4 * KM_PORT_COUNT
+                                    ),
+                                    column_ranks - 1
+                                );
+                            }
+                            read_rows(
+                                k_block, base + rows.start * block_width * kBf16Bytes
+                            );
+                            if (
+                                spread &&
+                                !counted(writer, command, kPortSlices, column_ranks - 1)
+                            ) {
+                                return false;
                             }
                             if (!flushed(writer, km::kStWriter, km::kFlushReads)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcWRead - 16], since));
+                            LINEAR_ACCOUNT_DO(
+                                account[kAcWTiles - 16] += k_rows(k_block) *
+                                    columns_read
+                            );
                             if (!broadcast.cast(step)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcWCast - 16], since));
                         }
                         if (k_block == 0 && pending) {
-                            if (!put(pending_block, pending_row, pending_column)) {
+                            if (!made(pending_block, pending_row, pending_column)) {
                                 return false;
                             }
                             pending = false;
@@ -460,23 +499,71 @@ void kernel_main() {
                     pending_row = block_row;
                     pending_column = block_column;
                 }
-                if (pending && !put(pending_block, pending_row, pending_column)) {
+                if (pending && !made(pending_block, pending_row, pending_column)) {
                     return false;
                 }
+                if (adding) {
+                    // The partial in S, the other island's brought here; the reader
+                    // is told, and compute's sums become Y.
+                    const uint32_t tiles = blocks_high * blocks_wide * block_tiles;
+                    const uint32_t rank = (
+                        km::group_of(command, writer.me()).local().rank
+                    );
+                    km::Gather posted = {};
+                    // the column broadcast ends first: compute pops its padding before
+                    // the addition
+                    finished = true;
+                    if (
+                        !broadcast.finish() || !landed(writer, command) ||
+                        !km::gather_pages(
+                            writer,
+                            command,
+                            s,
+                            sent.page(add_set(parity, here), 0),
+                            tiles,
+                            island_at(here, 1),
+                            posted,
+                            km::keeper(rank, kPortAdd)
+                        )
+                    ) {
+                        return false;
+                    }
+                    stamps[kStampPut] = km::wall();
+                    if (!km::gathered(writer, command, kPortAdd, tiles)) {
+                        return false;
+                    }
+                    stamps[kStampSettled] = km::wall();
+                    stamps[kStampUp] = stamps[kStampSettled];
+                    stamps[kStampDown] = stamps[kStampSettled];
+                    if (!tell(writer, command, writer.me(), kPortGo)) {
+                        return false;
+                    }
+                    stamps[kStampSynced] = km::wall();
+                    for (
+                        uint32_t block = 0; block < blocks_high * blocks_wide; ++block
+                    ) {
+                        if (!put(
+                            block,
+                            first_row + block / blocks_wide * block_height,
+                            first_column + block % blocks_wide * block_width
+                        )) {
+                            return false;
+                        }
+                    }
+                    if (!km::gather_wait(writer, command, posted)) {
+                        return false;
+                    }
+                }
             }
-            if (!settle() || !broadcast.finish()) {
+            if (!finished && !broadcast.finish()) {
                 return false;
             }
-        }
-        if (sync) {
-            stamps[kStampPut] = km::wall();
-            stamps[kStampSettled] = stamps[kStampPut];
-            if (!everywhere(writer, command, stamps)) {
-                return false;
-            }
-            stamps[kStampSynced] = km::wall();
         }
         stamps[kStampEnd] = km::wall();
+        parity ^= 1u;
+        LINEAR_ACCOUNT_DO(for (uint32_t word = kAcWFree; word <= kAcYWrite; ++word) {
+            stamps[word] = account[word - kAcWFree];
+        });
         if (command.a6 == 0) {
             return true;
         }
@@ -489,3 +576,4 @@ void kernel_main() {
         return flushed(writer, km::kStWriter, km::kFlushSent);
     });
 }
+#endif  // LINEAR_SPLIT
