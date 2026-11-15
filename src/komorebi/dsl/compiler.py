@@ -7013,6 +7013,8 @@ class HandlerCompiler:
                 value.waited = True
             bound.append(f"const uint32_t {item.id} = {value.buffer.name};")
             return set()
+        if value.kind == "reduced" and value.summed:
+            return self.take_sum(node, item.id, value, where, bound, before, after)
         self.refuse(
             node,
             f"{item.id} is a {value.kind} here: a body takes ints, partitions, "
@@ -7020,6 +7022,41 @@ class HandlerCompiler:
             "tensors (on a mover) and written tiles",
             "pass those",
         )
+
+    def take_sum(self, node, name, value, where, bound, before, after):
+        """A reduce's sum of a field, taken by a body of compute's three at the root:
+        the field's buffer and first tile bound (the group's sum, fp32), waited for
+        before the body and freed after it, as the hand's operation on the sum."""
+        field_ = value.summed
+        if not self.in_leader or value.popped:
+            self.refuse(
+                node,
+                f"{name} is the reduce's sum of self.{field_}, which only the leader "
+                "holds, once",
+                f"take it once in a body under `if self.{spelling('rank')} == "
+                f"self.{spelling('leader')}:`",
+            )
+        if where != "compute":
+            self.refuse(
+                node,
+                f"{name} is the group's sum in compute's L1 (fp32 tiles of "
+                f"self.{field_}): a body of compute's three takes it",
+                f"drop {spelling('on')}= from this body",
+            )
+        value.popped = True
+        self.leader_writes.add(name)
+        buffer = f"kField{camel(field_)}"
+        before.append(
+            Line(
+                f"if (!compute.wait_front({buffer}, {buffer}Pages)) {{  // {name}\n"
+                "    return;\n}"
+            )
+        )
+        bound.append(f"const uint32_t {name}{spelling('tile_buffer')} = {buffer};")
+        bound.append(f"const uint32_t {name}{spelling('tile_index')} = 0;")
+        after.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);  // {name} freed"))
+        self.wait(node, "compute", WAIT_INPUT)
+        return set()
 
     def cpu_address(self, node, name, address, cpu, bound, before, after, release):
         """An L1 address unpack knows, for a body on one compute CPU: unpack's own;
