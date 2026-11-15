@@ -219,3 +219,22 @@ def hand_with_overlay(tmp_path):
     part.write_text("uint32_t km_overlay(km::MoverRuntime& kernel) { return 1; }\n")
     program.overlay("part", {"reader": part}, number=1)
     return program
+
+
+def test_a_kernel_form_class_in_a_run_of_several_is_told_the_form(tmp_path):
+    other = hand(tmp_path, "other", [30])
+    with pytest.raises(ProgramError, match=r'kernel_main; make the class with form="'):
+        programs.plan([made(Copy), other], 120)
+    with pytest.raises(ProgramError, match=r"which refuses it: Walk.walk \(line"):
+        programs.plan({made(Walk): (0, 60), other: (60, 60)}, 120)
+    with pytest.raises(ProgramError, match=r"kernel_main$"):
+        programs.plan([hand_kernel(tmp_path), other], 120)
+
+
+def hand_kernel(tmp_path):
+    """A hand program in the kernel form."""
+    folder = tmp_path / "kernel"
+    folder.mkdir()
+    for kernel in ("reader", "writer", "compute"):
+        (folder / f"{kernel}.cpp").write_text("void kernel_main() {}\n")
+    return km.Program("kernel", kernels=folder, handlers={"one": 1})

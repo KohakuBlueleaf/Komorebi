@@ -168,12 +168,19 @@ def core_args(placed, core):
 def check(program, count):
     """Refuses what a program in the runtime's form does not have (yet)."""
     if program.form() != "program":
+        refused = getattr(program, "runtime_refused", None)  # a class's
+        made = (
+            ""
+            if refused is None
+            else '; make the class with form="runtime"'
+            + (f", which refuses it: {refused}" if refused else "")
+        )
         if count > 1:
             raise ProgramError(
                 f"{program.name}: several programs in one run are each in the "
-                "runtime's form (km_program); its sources define kernel_main"
+                f"runtime's form (km_program); its sources define kernel_main{made}"
             )
-        raise ProgramError(f"{program.name}: its sources define kernel_main")
+        raise ProgramError(f"{program.name}: its sources define kernel_main{made}")
     if program.messages is not None:
         raise ProgramError(f"{program.name}: a dynamic handler needs the kernel form")
     if program.compile_args.get("movement") or any(

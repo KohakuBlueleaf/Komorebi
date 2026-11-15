@@ -141,8 +141,9 @@ def make(
     compiled = compiler.compile_class(cls, plan, tensors, room, values, sets, reserved)
     constants_made(self, cls, values, compiled)
     self.constant_handlers = compiled.variants
-    if form == "runtime":
-        runtime_refusals(compiled)
+    refused = runtime_refused(compiled)
+    if form == "runtime" and refused:
+        raise ProgramError(refused)
     program_args = None
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
@@ -223,6 +224,7 @@ def make(
     )
     self.built = built
     self.log = log
+    self.runtime_refused = refused  # what form="runtime" would refuse ("": nothing)
     for name in compiled.overlays:
         sources = {"reader": built.folder / name / "movement.cpp"}
         sources["writer"] = sources["reader"]
@@ -824,6 +826,15 @@ def beside_compute(options, beside):
         if modes:
             options.setdefault("unpack_to_dest_mode", {}).update(modes)
     return options
+
+
+def runtime_refused(compiled):
+    """runtime_refusals' message, or "" when the runtime's form takes the class."""
+    try:
+        runtime_refusals(compiled)
+    except ProgramError as error:
+        return str(error)
+    return ""
 
 
 def runtime_refusals(compiled):
