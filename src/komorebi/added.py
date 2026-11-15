@@ -247,6 +247,29 @@ def entry_words(number, handler, placed, message=False):
     return words
 
 
+def _mirror(run, each, number, words):
+    """The entry in the host's copy of the overlay area of group `each`'s cores
+    (control_rows): a reset list writes the area as the host holds it."""
+    rows = getattr(run.backend, "control_rows", None)
+    if rows is None:
+        return
+    c, h = overlay.constants(), abi.headers()
+    start = run.backend.control_offset + h["KM_CONTROL_BYTES"] // 4
+    flags = words[h["KM_ENTRY_NUMBER"]]
+    area = rows[each.first : each.first + each.count, start:]
+    for part in range(len(overlay.PARTS)):
+        at = (c["kOverlayTable"] + 8 * (len(overlay.PARTS) * number + part)) // 4
+        lines = words[h["KM_ENTRY_BYTES"] + part // 2] >> 16 * (part % 2) & 0xFFFF
+        area[:, at] = words[h["KM_ENTRY_ADDRESS"] + part]
+        area[:, at + 1] = 64 * lines
+    count = area[:, c["kOverlayCount"]]
+    area[:, c["kOverlayCount"]] = np.maximum(count, number + 1)
+    if flags & h["KM_ENTRY_HANDLER"]:
+        area[:, c["kOverlayHandlers"] // 4 + (number >> 5)] |= 1 << (number & 31)
+    if flags & h["KM_ENTRY_MESSAGE"]:
+        area[:, c["kOverlayMessages"] // 4] |= 1 << number
+
+
 def addon(
     run,
     name,
@@ -297,18 +320,21 @@ def addon(
     write_s = time.perf_counter() - started
     started = time.perf_counter()
     entry = abi.headers()["KM_HANDLER_ENTRY"]
+    words = [entry_words(made.number, handler, mine, message) for mine in placed]
     handles = [
-        run._queue_command(
-            entry,
-            (each.first, each.count),
-            entry_words(made.number, handler, mine, message),
-        )
-        for each, mine in zip(room.groups, placed, strict=True)
+        run._queue_command(entry, (each.first, each.count), mine)
+        for each, mine in zip(room.groups, words, strict=True)
     ]
     for handle in handles:
         event = run.wait(handle, timeout)
         if event.kind != "done":
             raise AddError(f"{name}: the entry command ended {event.kind}: {event}")
+    for each, mine in zip(room.groups, words, strict=True):
+        _mirror(run, each, made.number, mine)
+    if getattr(run, "recovery", None) is not None and not run.keep_resets():
+        log(
+            f"added {name}: the reset lists were not kept again: {run.recovery_refused}"
+        )
     entry_s = time.perf_counter() - started
     for each in room.groups:
         each.numbers.add(made.number)

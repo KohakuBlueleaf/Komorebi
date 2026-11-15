@@ -642,6 +642,9 @@ class Run:
         again each core that did not leave; `exclude` (link cores) get none. Sets
         `recovery`, or `recovery_refused` with the reason; True when kept."""
         started = time.perf_counter()
+        if self.recovery is not None:  # again (run.addon): the new lists replace them
+            self._reserved.remove((self.recovery["offset"], self.recovery["bytes"]))
+            self.recovery = None
         launch = getattr(self.backend, "launch", None)
         if launch is None:
             self.recovery_refused = "the session's backend has no launch to reload"

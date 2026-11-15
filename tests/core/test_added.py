@@ -6,6 +6,7 @@ compiler."""
 import dataclasses
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import komorebi as km
@@ -227,6 +228,30 @@ def test_a_dynamic_handler_takes_its_number_below_17_and_marks_its_entry(
     run, *_ = fake_run(a_room())
     with pytest.raises(added.AddError, match="no dynamic handlers as parts"):
         added.addon(run, "report", folder, message=True)
+
+
+def test_the_hosts_copy_of_the_area_gets_the_entry_for_the_reset_lists(
+    tmp_path, cached
+):
+    c, h = overlay.constants(), abi.headers()
+    start = 8 + h["KM_CONTROL_BYTES"] // 4  # a control offset of 8 words
+    room = a_room(groups=2, messages={1})
+    run, *_ = fake_run(room)
+    rows = np.zeros((40, start + c["kOverlayAreaBytes"] // 4), np.uint32)
+    run.backend.control_rows, run.backend.control_offset = rows, 8
+    scale = added.addon(run, "scale", parts(tmp_path / "s", ("reader",)), number=40)
+    report = added.addon(
+        run, "report", parts(tmp_path / "r", ("compute",)), message=True
+    )
+    area = rows[:, start:]
+    table = c["kOverlayTable"] // 4 + 2 * len(overlay.PARTS) * scale
+    assert (area[:32, table] == 0x10100).all() and (area[:32, table + 1] == 128).all()
+    assert (area[32:] == 0).all()  # cores of no group
+    assert (area[:32, c["kOverlayCount"]] == 41).all()
+    assert (area[:32, c["kOverlayMessages"] // 4] == 1 << report).all()
+    assert not area[
+        :32, c["kOverlayHandlers"] // 4 : c["kOverlayHandlers"] // 4 + 2
+    ].any()
 
 
 def index_of(tmp_path, included_text="int a;"):
