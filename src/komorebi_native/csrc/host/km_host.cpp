@@ -2016,7 +2016,8 @@ namespace {
             uint64_t island,
             const std::vector<uint8_t>& link,
             uint32_t first_row,
-            uint32_t rows
+            uint32_t rows,
+            uint32_t channel_region
         ) {
             require_open();
             rows = rows == 0 ? grid_y_ - std::min(first_row, grid_y_) : rows;
@@ -2156,6 +2157,7 @@ namespace {
             arguments.upload_bytes = upload_bytes_;
             arguments.messages_handler = messages_handler;
             arguments.programs = programs.empty() ? 0 : 1;
+            arguments.channel_region = channel_region;  // a thread's transfers' bound
             arguments.island = island;
             if (!programs.empty()) {
                 std::vector<uint8_t> held(KM_CORES_MAX, 0xFF);
@@ -3374,7 +3376,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("island") = 0,
             nb::arg("link") = std::vector<uint8_t>{},
             nb::arg("first_row") = 0,
-            nb::arg("rows") = 0
+            nb::arg("rows") = 0,
+            nb::arg("channel_region") = 0
         ).def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
         .def_ro("upload_bytes", &Dispatch::upload_bytes_)

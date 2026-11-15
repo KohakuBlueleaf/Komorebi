@@ -87,7 +87,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   reason (`KMD_REJECT_*`) in the status's auxiliary; the session goes on. Reasons: 1 a handler
   from 240 to 249, which this kernel does not serve (`KM_HANDLER_LOAD`, 240, and
   `KM_HANDLER_COPY`, 245, from the host or a work cluster, and `KMD_HANDLER_INSPECT`,
-  243, from the host excepted, below; 241 and 242 from the host); 2 flag bit 0 set, or
+  243, from the host excepted, below; 241 and 242 from the host, and from a work cluster
+  when their region word, a6, is the session's region from the argument block); 2 flag bit 0 set, or
   `KMD_FLAG_DISPATCHER` on no command of the dispatcher's own; 3 a
   group outside
   the grid (`count == 0 || first > cores || count > cores - first`, with no sum that
@@ -117,6 +118,10 @@ These rules are part of the protocol; a host that relies on anything else is wro
   held), whichever source sent it. A load with a program field of 64 or more, a queued
   one, or one in a run without the table is rejected with 13; from a stream or a graph
   with 1.
+- **The session's channel region.** The argument block's `channel_region`
+  (`KMD_ARGS_VERSION` 5, the 32 bits beside `programs`) is the size of the session's
+  region of the host channel, 0 without one: a work cluster's PUSH or PULL is taken
+  only when its region word (a6) equals it and it is not 0.
 - **Islands.** The argument block's `island` (`KMD_ARGS_VERSION` 4) is this island's
   flat ranks, `first | count << 16`; 0: one island, a rank is its core. Groups are flat:
   `take()` cuts a command's group by the island's range (`island_part`) and checks,

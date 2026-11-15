@@ -1053,6 +1053,11 @@ class Session:
                 raise ChannelError(self._words_missing(words, want, timeout))
             self.transfer_cycles += channel_module.cycles(words)
 
+    def _channel_region(self):
+        """The region's bytes for the dispatcher (a thread's transfers stay inside
+        it), 0 without a mapped channel."""
+        return self._region.bytes if self.channel is not None else 0
+
     @staticmethod
     def _words_arrived(words, want, timeout):
         """Waits (bounded) until every rank's sequence word is the one expected."""
@@ -1272,6 +1277,7 @@ class Session:
                 ),
                 island=_island_word(self.island),
                 link=list(link.line(dispatch)) if link is not None else [],
+                channel_region=self._channel_region(),
             )
             check_bases(lim_bases(dispatch.lim_base))
             # an island's ports serve its ranks, not its link cores
@@ -1516,6 +1522,7 @@ class Session:
                         link=list(line),
                         first_row=first_row,
                         rows=count,
+                        channel_region=self._channel_region(),
                     )  # fmt: skip
                 )
                 check_bases(lim_bases(dispatch.lim_base))
