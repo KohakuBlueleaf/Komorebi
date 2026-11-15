@@ -5236,6 +5236,7 @@ class HandlerCompiler:
             )
         self.producer(node, field_, "product")
         buffer, held = f"kField{camel(field_)}", f"km_packed_{field_}"
+        self.compiled.summed_fields.add(buffer)  # pack writes it: one of its formats
         if field_ not in self.packed:
             self.packed[field_] = held
             self.opening.append(

@@ -180,6 +180,11 @@ def test_the_field_is_written_then_taken_on_the_left_row_by_row():
     assert text.index("MATH((km_tile::act(3)));") < freed  # relu before the pack
 
 
+def test_the_field_is_packed_in_its_own_format():
+    header = (folder_of(Hidden) / "hidden.h").read_text()
+    assert "#define KM_PACK_FORMAT(cb) pack_reconfig_data_format(cb)" in header
+
+
 def test_a_steps_row_goes_into_the_field_and_its_state_after():
     text = (folder_of(Stepped) / "compute.cpp").read_text()
     row = text.index("pack_tile(1, kFieldP);")
