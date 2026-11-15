@@ -129,6 +129,7 @@ words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, 
 | `t = km.cxx(..., gives=km.Tile)` | | `tile_regs_acquire()` then the body, which leaves the tile in DST 0 |
 | `self.f.fill(km.Stream(t.pages(first, n)))` | mover A: `reserve` of the field, `km::read_pages` of its n tiles, the barrier, `cb_push_back` | |
 | `self.f.fill(km.Stream(t.tiles[r0:r1, c0:c1]))` | the same, a read a row; refused on the card when the rows are more than the field holds | |
+| `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
@@ -195,6 +196,7 @@ What a body takes, by where it runs:
 | a write stream | | on pack: `name`, the L1 address of the page it fills (0 when compute gave up); in a stream loop the loop's page, reserved with the block and pushed after it (block= the loop's); outside one, one block reserved, pushed after the body and moved by the movers at that line | |
 | a field filled above in the handler | its buffer, freed after the body | its L1 address (unpack's own, handed to math or pack), freed after the body | mover B: its L1 address, freed after the body |
 | a field another handler fills (kept) | its buffer, waited for, never freed (the filler frees its last fill before the next) | its L1 address, waited for once, handed to math or pack | mover B: its L1 address |
+| an own field (`km.own()`) | `name`, its buffer, no wait, no free | the same | the same |
 | a tensor parameter | | | `name`, a `km::Tensor` of its command word (its accessor, `.word`) for `km::read_pages`, `km::write_pages` and the dataflow calls |
 | a tile written to a page (`pages.write(t)` below) | | | mover B: its buffer, waited for once |
 
@@ -220,9 +222,30 @@ ray tracer's trace pass, [raytrace_class](../../experiments/raytrace_class/READM
 | `compute={...}`, `on=`, `include=` | none: options of the build, an `#if` |
 | a tensor | a `km::Tensor` made from its word (its accessor) |
 
-A body's own buffer (one that only bodies use, as a hand kernel's scratch space) is not
-needed by these lines: the trace pass's buffers are streams, a page's words and its
-field. It is not built (Not in this version).
+### A body's own buffer
+
+A field whose value is `km.own()` is a buffer that only bodies use, as a hand kernel's
+scratch space: a FIFO between compute's CPUs, a tile written in place, a constant
+built once. From [own_buffer](../../experiments/own_buffer/README.md):
+
+```python
+total: km.L1[km.fp32, 1, 32, 32] = km.own(push=None)  # written in place
+step: km.L1[km.bf16, 1, 32, 32] = km.own()  # pack's token: total is written
+delay: km.L1[km.bf16, 2, 32, 32] = km.own()  # pack to unpack, one step late
+```
+
+It is a buffer of its format and pages (8 up, with the other fields), in the build's
+L1 table, and the report says "own: used by bodies, not filled by a line". A body
+takes it by name (`takes=[self.total]` binds `total`, its buffer index); the bodies do
+their own reserve, push, wait and free. A float32 one is unpacked to DST as float32. A
+buffer has one producer: the build finds `cb_push_back(name, ...)` in the bodies that
+take the field and refuses a push on a second CPU. `km.own(push="pack")` names the one
+CPU that pushes, and `km.own(push=None)` says the field is written in place and never
+pushed. A line that fills an own field, and a field of words declared own, are
+refused. The pack and unpack CPUs share no variable, so state written in place needs a
+token from the writer to the reader (`step` above), as the attention pass's has. A
+body that copies from buffers of two formats sets the unpacker's format before each
+copy (`reconfig_data_format_srca(total)`): `copy_init` keeps the one it finds.
 
 ## Tile functions
 

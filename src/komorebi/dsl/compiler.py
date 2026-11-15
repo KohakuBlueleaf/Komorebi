@@ -206,6 +206,8 @@ class Compiled:
     constants: dict = field(default_factory=dict)  # plan names used -> value
     rectangle: bool = False  # self.x or self.y used
     fields: dict = field(default_factory=dict)  # name -> front.Field
+    own: dict = field(default_factory=dict)  # an own field -> its push (front.Own)
+    pushers: dict = field(default_factory=dict)  # own field -> {CPU: (handler, line)}
     word_fields: dict = field(
         default_factory=dict
     )  # a field of km.u32 words: name -> n
@@ -248,7 +250,20 @@ def compile_class(cls, plan, tensors, l1=None):
         for name, value in inspect.get_annotations(cls).items()
         if isinstance(value, front.Field)
     }
+    compiled.own = {
+        name: cls.__dict__[name].push
+        for name in compiled.fields
+        if isinstance(cls.__dict__.get(name), front.Own)
+    }
     for name, value in list(compiled.fields.items()):
+        if word_field(value) and name in compiled.own:
+            raise field_refused(
+                compiled,
+                name,
+                "a field of words is the host's, not a body's own",
+                "declare it of whole tiles, km.L1[format, n, 32, 32] = "
+                f"km.{spelling('own')}()",
+            )
         if word_field(value):  # words in each core's row of an L1 tensor
             compiled.word_fields[name] = value.shape[0]
             del compiled.fields[name]
@@ -456,9 +471,16 @@ def bind_fields(compiled, plan, l1):
             page_bytes,
             (elements // TILE_ELEMENTS,),
             1,
-            f"field {name}: {value.format.dtype}, {shape}",
+            f"field {name}: {value.format.dtype}, {shape}"
+            + (
+                "; own: used by bodies, not filled by a line"
+                if name in compiled.own
+                else ""
+            ),
         )
         compiled.buffers.append(buffer)
+        if name in compiled.own and value.format.dtype == "float32":
+            compiled.unpack_fp32.add(buffer.name)  # unpacked to DST as float32
         for n in value.shape:
             if isinstance(n, str):
                 compiled.constants[n] = solved[n]
@@ -3900,6 +3922,12 @@ class HandlerCompiler:
     def fill(self, node, call, field):
         """`self.f.fill(km.Stream(t.pages(first, n)))`: mover A reads the n pages into
         the field's L1 and hands it on; one km.cxx body takes it, then it is free."""
+        if field in self.compiled.own:
+            self.refuse(
+                node,
+                f"self.{field} is an own field: only bodies use it, no line fills it",
+                f"declare it without km.{spelling('own')}() to fill it from a stream",
+            )
         stream = call.args[0] if len(call.args) == 1 and not call.keywords else None
         if not (
             self.construct(stream) == "stream"
@@ -4060,6 +4088,42 @@ class HandlerCompiler:
         if not kept:
             after.append(Line(f"cb_pop_front({buffer}, {pages_name});"))
         self.wait(node, "compute", WAIT_INPUT)
+
+    def take_own(self, node, field, where, text, bound):
+        """An own field a body takes: its buffer index by its name, on any CPU, no wait
+        and no free. The CPU whose bodies push it (cb_push_back of the name: a mover's,
+        or compute's pack CPU) is one: the field's push=, or the one the bodies show."""
+        bound.append(f"const uint32_t {field} = kField{camel(field)};")
+        if not re.search(rf"\bcb_push_back\s*\(\s*{field}\b", text):
+            return
+        cpu = {"A": "mover_a", "B": "mover_b"}.get(where, "pack")
+        declared = self.compiled.own[field]
+        own = f"km.{spelling('own')}"
+        if declared is None:
+            self.refuse(
+                node,
+                f"self.{field} is {own}(push=None): written in place, never pushed, "
+                "and this body pushes it",
+                f"drop the push, or declare {own}(push={cpu!r})",
+            )
+        if declared != "found" and declared != cpu:
+            self.refuse(
+                node,
+                f"self.{field} is pushed by {declared} ({own}(push={declared!r})), "
+                f"and this body pushes it on {cpu}: a buffer has one producer",
+                f"push it on {declared} alone",
+            )
+        pushers = self.compiled.pushers.setdefault(field, {})
+        others = {c: at for c, at in pushers.items() if c != cpu}
+        if others:
+            (other, (handler, line)), *_ = others.items()
+            self.refuse(
+                node,
+                f"self.{field} is pushed on {other} too ({handler}, line {line}): a "
+                "buffer has one producer",
+                f"push it on one CPU, and say which: {own}(push={other!r})",
+            )
+        pushers.setdefault(cpu, (self.method.name, node.lineno))
 
     def field_use(self, node):
         """Refuses any other use of a field: `@`, slices and `.columns` of a field
@@ -4756,6 +4820,9 @@ class HandlerCompiler:
         uses, bound, before, after = set(), [], [], []
         for item in takes:
             field = self.field_name(item)
+            if field in self.compiled.own:
+                self.take_own(node, field, where, text, bound)
+                continue
             if field:
                 self.take_field(node, field, where, bound, before, after)
                 continue

@@ -11,6 +11,7 @@ import komorebi as km
 from komorebi import overlay
 from komorebi.dsl.compiler import Refused, compile_class
 from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.program import compute_options
 from komorebi.errors import ProgramError
 from komorebi.session import Session
 from komorebi.tensor import Tensor
@@ -509,6 +510,72 @@ def test_the_load_refuses_a_service_part_over_the_reserve(monkeypatch, tmp_path)
                 overlay.build_overlays(*build)
         else:
             assert overlay.build_overlays(*build).slots == {"reader": (1, most)}
+
+
+class Owned(km.Program):
+    state: km.L1[km.fp32, 2, 32, 32] = km.own(push=None)
+    fifo: km.L1[km.bf16, 3, 32, 32] = km.own()
+
+    @km.handler
+    def step(self, source: km.Tensor):
+        for tile in km.Stream(source.pages(0, 8)):
+            km.cxx("pack_tile<true>(0, state, 1);", takes=[tile, self.state])
+            km.cxx("cb_push_back(fifo, 1);", takes=[self.fifo], on="pack")
+            km.cxx("cb_pop_front(fifo, 1);", takes=[self.fifo], on="unpack")
+
+
+class OwnedFilled(km.Program):
+    state: km.L1[km.fp32, 2, 32, 32] = km.own(push=None)
+    fifo: km.L1[km.bf16, 3, 32, 32] = km.own()
+
+    @km.handler
+    def load(self, source: km.Tensor):
+        self.fifo.fill(km.Stream(source.pages(0, 3)))
+
+
+class OwnedTwice(km.Program):
+    state: km.L1[km.fp32, 2, 32, 32] = km.own(push=None)
+    fifo: km.L1[km.bf16, 3, 32, 32] = km.own()
+
+    @km.handler
+    def step(self, source: km.Tensor):
+        for tile in km.Stream(source.pages(0, 8)):
+            km.cxx("cb_push_back(fifo, 1);", takes=[tile, self.fifo], on="pack")
+
+    @km.handler
+    def give(self, source: km.Tensor):
+        km.Stream(source.pages(0, 1)).drain()
+        km.cxx("cb_push_back(fifo, 1);", takes=[self.fifo], on="mover_a")
+
+
+class OwnedPushed(km.Program):
+    state: km.L1[km.fp32, 2, 32, 32] = km.own(push=None)
+    fifo: km.L1[km.bf16, 3, 32, 32] = km.own()
+
+    @km.handler
+    def give(self, source: km.Tensor):
+        km.cxx("cb_push_back(state, 1);", takes=[self.state], on="pack")
+
+
+def test_an_own_field_is_a_buffer_of_bodies_with_one_producer():
+    compiled = compile_class(Owned, {}, {"source": tensor("bfloat16")})
+    owned = {b.name: b for b in compiled.buffers if b.role == "field"}
+    assert owned["kFieldState"].pages == (2,) and owned["kFieldFifo"].pages == (3,)
+    assert owned["kFieldFifo"].what.endswith(
+        "own: used by bodies, not filled by a line"
+    )
+    unpacked = compute_options(compiled)["unpack_to_dest_mode"]  # float32 in DST
+    assert unpacked[owned["kFieldState"].index_a] == "UnpackToDestFp32"
+    compute = "\n".join(render(prune(compiled.compute["step"]), 0))
+    assert "const uint32_t state = kFieldState;" in compute
+    assert "kFieldFifo)" not in compute  # no wait, no free: the bodies' own
+    for cls, match in (
+        (OwnedFilled, "is an own field: only bodies use it, no line fills it"),
+        (OwnedTwice, "is pushed on pack too .step, line .*: a buffer has one"),
+        (OwnedPushed, r"is km.own\(push=None\): written in place, never pushed"),
+    ):
+        with pytest.raises(Refused, match=match):
+            compile_class(cls, {}, {"source": tensor("bfloat16")})
 
 
 class Patterned(km.Program):
