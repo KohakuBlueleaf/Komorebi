@@ -74,3 +74,25 @@ def test_a_symbol_left_to_the_build_needs_the_l1():
     line = line_of("count: km.L1[km.fp32, TILES, 32, 32]")
     with pytest.raises(Refused, match=rf"^Unsolved.count, line {line}, .*l1=session"):
         made(Unsolved, source=tensor("bfloat16"))
+
+
+@km.tile_function
+def product(a, b):
+    return a @ b
+
+
+class Product(km.Program):
+    @km.handler
+    def multiply(self, a: km.Tensor, b: km.Tensor, out: km.Tensor):
+        results = km.Stream(out.pages(0, 1), write=True)
+        for x, y in zip(km.Stream(a.pages(0, 1)), km.Stream(b.pages(0, 1))):
+            results.push(product(x, y))
+
+
+def test_a_matrix_product_in_a_tile_function_is_refused_by_its_line():
+    line = line_of("results.push(product(x, y))")
+    product_line = line_of("return a @ b")
+    with pytest.raises(
+        Refused, match=rf"^Product.multiply, line {line}, .*line {product_line}, has a"
+    ):
+        made(Product, a=tensor("float32"), b=tensor("float32"), out=tensor("float32"))

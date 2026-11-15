@@ -8,9 +8,9 @@ tags:
 
 # Programs written as classes
 
-Status: experimental. The lines of this page are those of level 1; six example scripts
-run as classes beside their hand programs, on one Blackhole card and on two
-([below](#measured)).
+Status: experimental. The lines of this page are those of levels 1 and 2 (tile
+functions); seven example scripts run as classes beside their hand programs, on one
+Blackhole card and on two ([below](#measured)).
 
 A class deriving `km.Program` whose methods are decorated with `km.handler` is a
 program written as a class. Made, it is compiled: each handler's body is read with
@@ -153,6 +153,73 @@ owner); a broadcast's buffer `window` blocks of the pages it casts. Buffer indic
 0 up for reads, 8 up for arrivals, broadcasts and fields, 16 up for writes; 26 to 31
 are the runtime's. Compute's tiles are in DST as float32; a float32 buffer is unpacked
 to it unrounded.
+
+## Tile functions
+
+A **tile function** is a Python function of tiles that the tile compiler
+([Tile functions](tile.md)) traces and emits for compute: decorated with
+`@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
+called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
+stream form: `+`, `-`, `*`, number constants, `trace.silu`, `trace.sigmoid`,
+`trace.rsqrt` of up to three tiles, one result. From
+[22 gate](../../examples/22_gate/as_class/gate_class.py):
+
+```python
+@km.tile_function(tolerance=TOLERANCE)
+def silu_gate(a, b):
+    """The gate of two tiles: what the tile compiler emits for compute."""
+    return trace.silu(a) * b
+
+
+class Gate(km.Program):
+    """gate: each core's `tiles` pages of a and b from rank x tiles, silu(a) * b into
+    the same pages of out, block by block in the command's pattern."""
+
+    @km.handler
+    def gate(
+        self,
+        a: km.Tensor,
+        b: km.Tensor,
+        out: km.Tensor,
+        tiles: int,
+        pattern: km.Pattern,
+    ):
+        first = self.rank * tiles
+        results = km.Stream(
+            out.pages(first, tiles), write=True, block=BLOCK, pattern=pattern
+        )
+        for x, g in zip(
+            km.Stream(a.pages(first, tiles), block=BLOCK, pattern=pattern),
+            km.Stream(b.pages(first, tiles), block=BLOCK, pattern=pattern),
+        ):
+            results.push(silu_gate(x, g))
+```
+
+| Line | Movers | Compute |
+|---|---|---|
+| `for x, g in zip(km.Stream(...), km.Stream(...)):` | the read streams in one `movement.move` with the write streams the loop pushes to | block k of each stream from the half its mover filled; the streams have one count, block and repeat |
+| `results.push(f(x, g))`, `t = f(x, g)` | | once before the blocks `copy_init` and the body's setup (`km_tile::f_init()`); a tile: DST held, each operand copied into DST in the order of the unit program's operands, `km_tile::f(0)` on the math CPU, DST 0 packed into the write stream at the tile's place |
+
+The build traces the function on tiles of the streams' formats (`unit_program(ir,
+load_macro=True)`), writes the body as `tile_<f>.hpp` and its unit program as text,
+`tile_<f>.txt`, and prints its cost beside the buffers: the instructions and cycles a
+tile on the math CPU by the cost model (the vector unit only, the copies and the pack
+not priced), the rules that fired, and the tolerance the decorator states
+(`tolerance=`, the largest relative error against float64). A loop that calls a tile
+function holds no other tile line: the body's setup holds the vector unit's constant
+registers for the loop.
+
+`@km.handler(stamps="t")` on a handler that calls a tile function makes the math CPU
+read the wall clock around each call between two `tensix_sync()`, as the tile
+compiler's measurements do, and writes page `rank` of `t` (uint32 pages of 19 words or
+more): the command's sequence, the calls, 16 empty spans, then each call's span. From
+the same example on the card: 768 calls, a median span of 1,666 cycles less the empty
+span of 10, 1,656 cycles a tile, against the 1,657.6 the build prints.
+
+What the tile compiler does not lower is refused, naming the handler's line, the
+function and the compiler's sentence, with "write this body inline: km.cxx(...,
+gives=km.Tile)". A matrix product `a @ b` in a tile function is refused: the tile
+compiler has no lowering of one yet.
 
 ## Fields
 
@@ -298,6 +365,7 @@ made, naming the handler, the line and what to write instead (the classes of
 Sliced.copy, line 30, `km.Stream(source[1:4]).drain()`: a tensor is in DRAM: a slice is not a value; take a part: source[self.partition(...)], or use a stream or read()
 Unled.merge, line 40, `output.pages(0, 1).write(whole)`: whole is the reduce's sum, which only the leader holds; write it under `if self.rank == self.leader:`
 Unsolved.count, line 45, `count: km.L1[km.fp32, TILES, 32, 32]`: TILES is solved against the L1 the buffers leave; make the program with l1=session.l1()[1]
+Product.multiply, line 89, `results.push(product(x, y))`: the tile function product, line 81, has a matrix product (`@`), and the tile compiler has no lowering of one yet; make the product in a km.cxx body (gives=km.Tile) until it has
 ```
 
 A `CommandTimeout` of a program made from a class names, for each core that did not
@@ -320,12 +388,13 @@ the packed text of the five CPUs, of 70,656 B.
 | [07 work cluster](../../examples/07_work_cluster/as_class/README.md) | the same: 204 rounds, sum 1,004,917, every state word | 21,200 / 21,424 B (mock) | the thread's loop 10.55 / 10.75 ms |
 | [11 movement](../../examples/11_movement/as_class/README.md) | the same: every copy exact (level 1a) | 38,288 / 36,720 B | READ AAAB 308.74 / 310.44 GB/s (level 1a) |
 | [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
+| [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,712 / 38,640 B | 86.68 / 76.06 us a command (bfloat16, 12 cores, 64 tiles a core); the emitted body 1,656 cycles a tile on the math CPU, 1,657.6 printed |
 
 ## Not in this version
 
-A rectangle per command; tile expressions (`tile * factors`, `block @ self.weight`);
-`@`, slices and `.columns` of a field; a message that names its handler (several
-dynamic handlers of one loop).
+A rectangle per command; tile arithmetic outside a tile function (`tile * factors`
+in a handler's line); a matrix product (`block @ self.weight`); slices and `.columns`
+of a field; a message that names its handler (several dynamic handlers of one loop).
 
 A group switched to a class's program (`kmx_load`): a load switches between programs
 in the runtime's form, parts on the runtime's reader, writer and compute, and a class

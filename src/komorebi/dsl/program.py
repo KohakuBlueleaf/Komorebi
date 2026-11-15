@@ -12,6 +12,7 @@ from komorebi.dsl import compiler
 from komorebi.dsl.front import MESSAGE_WORDS
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.tile import emit
 from komorebi.errors import ProgramError
 
 BUILD = "build"
@@ -331,6 +332,9 @@ def write(cls, compiled, l1):
         "compute.cpp": compute_source(compiled),
         **parts(compiled),
     }
+    for cxx, (_, unit) in compiled.units.items():  # the tile functions' bodies
+        files[f"tile_{cxx}.hpp"] = emit(unit)
+        files[f"tile_{cxx}.txt"] = unit.dump() + "\n"
     if compiled.dynamic:  # compute alone: the runtime's movers carry the messages
         del files["movement.cpp"]
         files["compute.cpp"] = dynamic_source(compiled)
@@ -764,6 +768,7 @@ def summary(compiled, folder, files, l1):
         )
     for name, value in sorted(compiled.constants.items()):
         report.append(f"  {spelling('plan')}: {name} = {value}")
+    report += tile_costs(compiled)
     room = "" if l1 is None else f" of {l1} B left for buffers"
     report.append(f"  L1: the buffers take {total} B{room}")
     if l1 is not None and total > l1:
@@ -772,6 +777,38 @@ def summary(compiled, folder, files, l1):
             "give smaller blocks in the plan"
         )
     return report
+
+
+def tile_costs(compiled):
+    """Per call of a tile function: its unit program's cost on the math CPU (the
+    tile compiler's model, the vector unit only), the rules that fired, the stated
+    tolerance."""
+    if not compiled.tile_calls:
+        return []
+    lines = [
+        "tile functions (the math CPU's vector-unit cycles a tile by the tile "
+        "compiler's cost model; the copies into DST and the pack not priced):"
+    ]
+    for handler, line, text, function, cxx in compiled.tile_calls:
+        unit = compiled.units[cxx][1]
+        count, cycles, _ = unit.cost("math")
+        rules = [
+            f"{p.name}: {'; '.join(p.done)}"
+            for p in unit.passes
+            if p.done and p.name in ("load_macro", "replay", "fuse_mad")
+        ]
+        tolerance = (
+            "not stated"
+            if function.tolerance is None
+            else f"{function.tolerance:g} relative against float64"
+        )
+        lines.append(
+            f"  {handler}, line {line}, `{text}`: {function.name} on "
+            f"{', '.join(unit.operands)} (tile_{cxx}.hpp): {count} instructions, "
+            f"{cycles} cycles a tile; {'; '.join(rules) or 'no rule fired'}; "
+            f"tolerance {tolerance}"
+        )
+    return lines
 
 
 def lines_of(program, error):

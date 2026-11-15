@@ -28,7 +28,8 @@ NAMES = {
     "stamps": Name(
         "stamps",
         'km.handler(overlay=True, stamps="t"): its load and call cycles, a page a '
-        "mover of tensor t",
+        'mover of tensor t; km.handler(stamps="t") of a handler calling a tile '
+        "function: the math CPU's cycles of each call, a page a rank",
         None,
     ),
     "field": Name("L1", "km.L1[format, *shape]: a field resident in the L1", None),
@@ -113,6 +114,24 @@ NAMES = {
         "Tile", "gives=km.Tile: the tile a body leaves in DST 0", "tile"
     ),
     "on": Name("on", "the CPU of an inline body", None),
+    "tile_function": Name(
+        "tile_function",
+        "@km.tile_function: a function of tiles, traced and emitted for compute by "
+        "the tile compiler; a handler calls it on the tiles of its streams",
+        None,
+    ),
+    "tolerance": Name(
+        "tolerance",
+        "@km.tile_function(tolerance=1e-6): its stated largest relative error "
+        "against float64, printed with its cost",
+        None,
+    ),
+    "zip": Name(
+        "zip",
+        "for a, b in zip(km.Stream(..), km.Stream(..)): streams read in step, a "
+        "tile of each a turn",
+        None,
+    ),
     "tile_buffer": Name(
         "_buffer",
         "tile_buffer in a body: a stream tile's buffer (the loop's name)",
