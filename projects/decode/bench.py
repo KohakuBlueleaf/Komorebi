@@ -85,6 +85,19 @@ def parse():
     parser.add_argument(
         "--trace", default=None, help="an .npz of every core's stamps of each command"
     )
+    parser.add_argument(
+        "--deadline",
+        type=float,
+        default=None,
+        help="a command's deadline in s (default: from the run's size)",
+    )
+    parser.add_argument(
+        "--bodies",
+        nargs="*",
+        default=list(card.DEFAULT_BODIES),
+        choices=list(card.BODIES),
+        help="the operations whose vector bodies are emitted (bodies.py)",
+    )
     return parser.parse_args()
 
 
@@ -384,6 +397,7 @@ def main():
     model = md.from_config(args.config) if args.config else md.MODELS[args.model]
     layers = args.layers or model.layers
     report = {"model": model.name, "layers": layers, "tokens": args.tokens}
+    report["bodies"] = args.bodies
     report["layer_bytes"] = model.layer_bytes()
     report["plans"] = {
         f"{k}x{n}": plan.words()
@@ -392,7 +406,7 @@ def main():
         ).items()
     }
     index = visible_card()
-    deadline = round(max(1.0, args.tokens * layers * 2e-3 + 0.5), 3)
+    deadline = args.deadline or round(max(1.0, args.tokens * layers * 2e-3 + 0.5), 3)
     results, ok = [], True
     if args.loop_check:
         looped = chain(model, layers, args.seed, args.context, args.lengths[0])
@@ -407,6 +421,7 @@ def main():
             chunk=args.chunk,
             patterns=patterns(args),
             context=args.context,
+            bodies=args.bodies,
         )
         log(
             f"loaded: {len(decode.plans)} plans, deadline {deadline} s, "
