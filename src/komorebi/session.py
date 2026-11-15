@@ -25,6 +25,7 @@ from komorebi import (
     _env,
     abi,
     added,
+    added_program,
     chain,
     dram,
     formats,
@@ -1364,6 +1365,7 @@ class Session:
         tensors=0,
         recover=True,
         reserve=added.RESERVE,
+        buffers=None,
     ):
         """Session.load's one try on the card as it is opened."""
         arguments = {k: v for k, v in locals().items() if k != "self"}
@@ -1484,6 +1486,7 @@ class Session:
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
             backend.reserve = reserve
+            backend.added_buffers = added_program.buffers_given(buffers)
             if ranks is not None:
                 ranks = _x280_words(self, program, dispatch, rings, regions, plan)
             descriptor = backend.describe(
@@ -2749,6 +2752,7 @@ class _Backend:
             self.switch_layouts[program.program_field] = layout
             end = max(end, last)
         self.switch_base = l1_bytes - kernel_free
+        self.switch_start, self.switch_shift = start, 0  # an added program's start
         return end
 
     def _describe_groups(self, launch, placed, sources, args, grid):
@@ -2767,6 +2771,7 @@ class _Backend:
         island, ranks, links = self._placed_links(placed, grid)
         if placed.switch:  # the runtime's buffers first, then room for the largest
             reserve = -(-self._switch_layouts(placed) // align) * align
+            reserve = added_program.pad_reserve(self, placed, reserve)
             self.switch_reserve = reserve - self.switch_base
         for number, group in enumerate(placed.groups):
             held = [placed.programs[index] for index in group.programs]
@@ -2778,9 +2783,8 @@ class _Backend:
                 cbs = self._runtime_cbs() + _program_cbs(buffers)
                 _, end = programs.buffer_layout(cbs, self.switch_base)
                 pad = reserve - -(-end // align) * align
-                if pad > 0:
-                    index = min(set(range(32)) - {cb[0] for cb in cbs})
-                    cbs.append((index, "uint32", pad, 1))
+                if pad > 0:  # one index on every group: an add resizes it
+                    cbs.append((self.switch_pad, "uint32", pad, 1))
             for index, fmt, page, pages in cbs:
                 launch.cb(cores, index, fmt, page, page * pages)
                 self.cb_indices.add(index)
@@ -2889,6 +2893,7 @@ class _Backend:
             for layout in self.switch_layouts.values():
                 for key, (at, *rest) in layout.items():
                     layout[key] = (at + size, *rest)
+            self.switch_shift = size
         self.session.log(f"slots: {size:,} B from {address:#x} (buffer {index})")
         return address
 
@@ -3059,6 +3064,7 @@ class _Backend:
                             for owner in owners
                             for each in programs.own_overlays(owner)
                         ),
+                        *added_program.ahead_overlays(self, placed, number, recipes),
                         overlay.service(),
                     ],
                     declared,
@@ -3113,6 +3119,7 @@ class _Backend:
                 for made in built
             ]
             rows[2:2] = slot_rows(common.slots, common.service, common.why)
+            added_program.grow_area(self, descriptor, rows, placed)
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
             if not fits:
@@ -3144,6 +3151,7 @@ class _Backend:
             placed.programs,
         )
         added.build_ahead(session, self.room, placed.programs)  # Program.ahead's parts
+        added_program.build_ahead(session, self, self.room, placed)  # classes ahead
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}

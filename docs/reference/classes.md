@@ -360,17 +360,49 @@ Sets with different blocks share the template's ring. A block never wraps the ri
 end, so a ring left at a position that is not a multiple of the next set's block makes
 that command give up ([hazards](hazards.md#sets-of-a-handler-on-one-ring-with-blocks-that-do-not-divide-each-others)).
 
-A handler of **another** class added to a live run is not built. It would need:
+### Another class added to a live run
 
-1. its own buffers and fields, which the load's L1 layout does not have, placed in L1
-   the load left free and given to every core's circular buffer table by a command;
-2. its streams' buffer indices free in the loaded kernels, and its fields' L1
-   addresses as command words, not program arguments;
-3. its tensors' compile arguments (`km::Tensor<n>`) equal to the loaded kernel's, or
-   carried as words;
-4. its class's header (handlers, buffers, formats) built against the loaded kernels'
-   recipe, the formats in one exponent family with the load's;
-5. its compute options (fidelity, accumulation) equal to the load's, set once a kernel.
+A handler of **another** class can be added to a live run whose groups switch program
+(a run loaded with a dict): `run.addon(Other(..., form="runtime"))` makes the class one
+more program of the run and returns its program field; `run.load(other, group)` gives a
+group its buffers and its parts, and `run.submit(Other.handler, group, args=...)` runs
+it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are met so:
+
+1. **Its buffers and fields** lie in the switch area above the runtime's buffers, which
+   the load keeps on every core: the largest program's layout, grown by default into
+   what the load's L1 table leaves free less 64 KiB (`session.load(..., buffers=N)`
+   states or caps it). Its record (its buffers' four words and its parts' table
+   entries) is written to DRAM; the load command sets its buffers up as for a program
+   given at the start.
+2. **Its buffer indices** are any the loaded kernels' buffers do not use with another
+   format: make it with `beside=` the loaded class to leave that class's indices.
+3. **Its tensors** are command words, as every runtime-form class's are.
+4. **Its formats.** The kernel build bakes a table of each buffer index's formats
+   (unpack source and destination, pack source and destination, the tile sizes) into
+   every part as constants. The added class's parts are compiled against a copy of the
+   loaded kernels' table with its own buffers' entries, recomputed by tt-metal's
+   functions over the load's formats and its own; the copy must equal the kernels' at
+   every other index (an added format that would change the shared Dst format is
+   refused). Its fp32 fields' `UnpackToDestFp32`, per buffer index, comes with it. The
+   loaded kernels are not rebuilt.
+5. **Its compute options** that are one a kernel (fidelity, `fp32_dest_acc_en`,
+   `dst_full_sync_en`, `math_approx_mode`, `bfp8_pack_precise`) equal the load's;
+   refused by name with both values.
+
+Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
+`opt` levels or NoCs, per-core args (a rectangle, a broadcast, `self.x`: a run's
+per-core args are set at the launch), overlays of its own or a dynamic handler, buffers
+past the switch area or a part past its slot, an island run, a traced run and a merged
+program. The slots cannot grow under a live run: the load sizes them by the parts of the
+classes named with `Program.ahead(other)`, which the load also builds, or by
+`Program.slots(bytes=)`.
+
+On the card (cores 0 to 59 the gate, 60 to 119 the added class, a row of 4 tiles times
+4 x 4 tiles with an fp32 field and a bfloat8_b weight stream that the gate does not
+have): its words exact; the add took 7.84 s (its parts linked and checked on its own
+tables) and 72 ms with the class named ahead; its command 9.42 and 9.40 µs against 9.26
+and 9.42 µs loaded at the start; the gate 22.84 µs before the add, 22.40 after and
+22.58 after its group switched back, 0 wrong, the same largest error each time.
 
 ## The lines of a handler
 

@@ -454,10 +454,14 @@ kernel, which pushes its pages to the host's memory.
 
 In the [nn project](projects/nn/README.md) a call takes 140.9 µs with the host
 submitting and waiting, 23.0 µs with the host appending to an open list, and 4.4 µs
-replaying a written list. The list and its thread are that project's; a kernel added
-to a live run is the framework's ([30_add_overlay](examples/30_add_overlay/),
-[a set compiled on its first use](docs/reference/classes.md#a-set-compiled-on-its-first-use)).
-The two have not run as one program yet.
+replaying a written list. The list and its thread are that project's. Adding a kernel
+to a live run is the framework's: `run.addon(program)` makes another class one more
+program of the run, compiled against the loaded kernels, and a group then loads and
+runs it ([another class added to a live run](docs/reference/classes.md#another-class-added-to-a-live-run),
+[30_add_overlay](examples/30_add_overlay/)). On the card a class added this way gave
+exact results at the time of the same class loaded at the start (9.4 µs a command),
+beside a loaded program that ran as before. The list calling an added class has not
+run yet.
 
 ### One program on the grid
 

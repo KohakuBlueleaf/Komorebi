@@ -54,7 +54,9 @@
 #include "impl/context/metal_context.hpp"
 #include "impl/kernels/kernel.hpp"
 #include "impl/program/program_impl.hpp"
+#include "impl/data_format/hw_data_format.hpp"
 #include "jit_build/build_env_manager.hpp"
+#include "jit_build/data_format.hpp"
 #include <llrt/llrt.hpp>
 #include <llrt/tt_cluster.hpp>
 #include <umd/device/chip_helpers/sysmem_buffer.hpp>
@@ -1164,6 +1166,76 @@ namespace {
         return nb::ndarray<nb::numpy, T, nb::ndim<1>>(owned->data(), 1, shape, owner);
     }
 
+    // The format tables tt-metal's build gives a kernel for buffer formats `formats`
+    // (one an index, "" none) as hardware codes: unpack src, dst, pack src, dst.
+    std::vector<std::vector<uint32_t>> format_tables(
+        const std::vector<std::string>& formats,
+        bool fp32_dest_acc_en,
+        const std::vector<std::string>& unpack,
+        bool bfp8_pack_precise
+    ) {
+        std::vector<tt::DataFormat> buffers;
+        for (const auto& name : formats) {
+            buffers.push_back(
+                name.empty() ? tt::DataFormat::Invalid : data_format(name)
+            );
+        }
+        std::vector<tt::tt_metal::UnpackToDestMode> modes;
+        for (const auto& mode : unpack) {
+            modes.push_back(
+                mode == "UnpackToDestFp32"
+                    ? tt::tt_metal::UnpackToDestMode::UnpackToDestFp32
+                    : tt::tt_metal::UnpackToDestMode::Default
+            );
+        }
+        modes.resize(buffers.size(), tt::tt_metal::UnpackToDestMode::Default);
+        auto precision = tt::get_data_exp_precision(buffers);
+        auto conditional = (
+            precision == tt::ExpPrecision::A
+                ? tt::DataFormat::Float16
+                : tt::DataFormat::Float16_b
+        );
+        if (
+            fp32_dest_acc_en &&
+            (tt::is_all_fp32_formats(buffers) || precision == tt::ExpPrecision::B)
+        ) {
+            conditional = tt::DataFormat::Tf32;
+        }
+        auto unpack_src = tt::get_unpack_src_formats(buffers);
+        auto unpack_dst = (
+            tt::get_unpack_dst_formats(buffers, conditional, fp32_dest_acc_en, modes)
+        );
+        auto pack_src = (
+            tt::get_pack_src_formats(
+                buffers,
+                conditional,
+                fp32_dest_acc_en,
+                bfp8_pack_precise,
+                false,
+                tt::ARCH::BLACKHOLE
+            )
+        );
+        auto pack_dst = tt::get_pack_dst_formats(buffers);
+        for (size_t i = 0; i < unpack_src.size(); ++i) {  // as genfiles equalizes them
+            if (unpack_src[i] == tt::DataFormat::Invalid) {
+                unpack_src[i] = pack_dst[i];
+            } else if (pack_dst[i] == tt::DataFormat::Invalid) {
+                pack_dst[i] = unpack_src[i];
+            }
+        }
+        std::vector<std::vector<uint32_t>> out;
+        for (const auto* table : {&unpack_src, &unpack_dst, &pack_src, &pack_dst}) {
+            std::vector<uint32_t> codes;
+            for (auto format : *table) {
+                codes.push_back(
+                    static_cast<uint32_t>(tt::tt_metal::host_data_format_to_hw(format))
+                );
+            }
+            out.push_back(std::move(codes));
+        }
+        return out;
+    }
+
     // tt-metal's block-float encoder (fp32 tiles, faces in turn, to words; bits 8, 4,
     // 2). It asks the runtime's HAL, which opens the driver if no device is open yet.
     Words bfp_encode(const Floats& values, uint32_t bits, bool family_a) {
@@ -1322,6 +1394,26 @@ namespace {
                 }
             }
             throw std::invalid_argument("no circular buffer " + std::to_string(index));
+        }
+
+        // Adds `extra` bytes to buffer `index` (one page) on every group's cores, each
+        // its own size: the area a run that switches program keeps for added ones.
+        void grow_cb(uint8_t index, uint32_t extra) {
+            bool found = false;
+            for (auto& descriptor : desc_.cbs) {
+                for (auto& format : descriptor.format_descriptors) {
+                    if (format.buffer_index == index) {
+                        descriptor.total_size += extra;
+                        format.page_size = descriptor.total_size;
+                        found = true;
+                    }
+                }
+            }
+            if (!found) {
+                throw std::invalid_argument(
+                    "no circular buffer " + std::to_string(index)
+                );
+            }
         }
 
         // A kernel from a file on `cores`, args (x, y, words) per core; processor 0 or
@@ -3278,7 +3370,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("index"),
             nb::arg("page_size"),
             nb::arg("total_size")
-        ).def(
+        ).def("grow_cb", &Launch::grow_cb, nb::arg("index"), nb::arg("extra")).def(
             "reset_core",
             &Launch::reset_core,
             nb::arg("x"),
@@ -3296,6 +3388,14 @@ NB_MODULE(_km_host, m) {
             nb::arg("ready_mask") = 0,
             nb::arg("ready_value") = 0
         );
+    m.def(
+        "format_tables",
+        &format_tables,
+        nb::arg("formats"),
+        nb::arg("fp32_dest_acc_en"),
+        nb::arg("unpack"),
+        nb::arg("bfp8_pack_precise") = false
+    );
     m.def(
         "bfp_encode",
         &bfp_encode,
