@@ -369,9 +369,11 @@ class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
 
-    def __init__(self, function, overlay=False, stamps=None):
+    def __init__(self, function, overlay=None, stamps=None):
         self.function = function
-        self.overlay = overlay  # its code is an overlay: loaded into a slot, called
+        # its code is an overlay (loaded into a slot, called); False: resident, kept
+        # so in a merged program too; None: resident, which a merged build may move
+        self.overlay = overlay
         self.stamps = stamps  # the tensor parameter its load and call cycles go to
         self.name = function.__name__
         self.number = None
@@ -517,10 +519,11 @@ def word_of(handler, parameter, kind, value):
     return value
 
 
-def handler(function=None, *, overlay=False, stamps=None):
+def handler(function=None, *, overlay=None, stamps=None):
     """Makes a method of a class deriving km.Program a handler; `overlay=True`: its
-    code is built apart as an overlay, loaded into a slot when a command needs it;
-    `stamps="t"`: each mover's load and call cycles to tensor parameter t."""
+    code is built apart as an overlay, loaded into a slot when a command needs it
+    (False: resident, also in a merged program); `stamps="t"`: each mover's load and
+    call cycles to tensor parameter t."""
     if function is None:
         return lambda function: HandlerMethod(function, overlay, stamps)
     return HandlerMethod(function, overlay, stamps)

@@ -4,6 +4,7 @@ the sizes printed, and the made object is a Program of those files.
 """
 
 import hashlib
+import importlib
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -61,6 +62,10 @@ def prepare(cls, compute=None, defines=None, startup=None):
     handler methods: its handlers numbered, its constructor the compiler; `compute`
     the class's compute options (checked when it is compiled), `defines` its
     kernels' defines, `startup` compute's start-up (a km.Startup)."""
+    parents = [base for base in cls.__bases__ if getattr(base, "built_handlers", None)]
+    if len(parents) > 1:  # class Layer(Attention, Linear): the classes merged
+        merged = importlib.import_module("komorebi.dsl.merged")  # it imports this
+        return merged.prepare(cls, parents, compute, defines, startup)
     cls.constants_declared = front.constants_of(cls)
     methods = compiler.handler_methods(cls)
     if not methods:
@@ -131,6 +136,12 @@ def make(
     else:
         room = l1
     compiled = compiler.compile_class(cls, plan, tensors, room, values, sets)
+    # what km.merge builds this program's handlers again with (komorebi.dsl.merged)
+    self.make_given = {
+        "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
+        "session": session, "l1": l1, "trace": trace, "depth": depth, "rect": rect,
+        "nocs": nocs, "defines": defines, "broadcast_wait": broadcast_wait,
+    }  # fmt: skip
     constants_made(self, cls, values, compiled)
     self.constant_handlers = compiled.variants
     program_args = None

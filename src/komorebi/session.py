@@ -1210,6 +1210,10 @@ class Session:
         holding each, or {program: (first, count)}) on every core, then the dispatcher,
         then the X280 thread (`thread` "card" or "host"); returns a Run. The arguments
         are described in docs/reference/host.md (`reserve`: room for Run.addon)."""
+        arguments = {k: v for k, v in locals().items() if k != "self"}
+        fits = getattr(program, "fits_kernels", None)  # a merged class's: a load again
+        if fits is not None and not program.fitting:  # with a handler as an overlay
+            return fits(self, arguments)
         if reserve < 0:
             raise ValueError(f"reserve={reserve}: bytes, 0 or more")
         if self.run is not None and not self.run.stopped:

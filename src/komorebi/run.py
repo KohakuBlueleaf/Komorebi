@@ -491,6 +491,9 @@ class Run:
                 raise ValueError(f"{handler.name}: no program of its class in the run")
             if len(fields) > 1:
                 raise ValueError(self._class_form_refused(handler, fields))
+            merged = getattr(self.programs[fields[0]], "merged_number", None)
+            if merged is not None:  # a merged class's: its number there
+                return merged(handler), fields[0]
             return int(handler), fields[0]
         if handler.__class__ is not int:
             handler = (

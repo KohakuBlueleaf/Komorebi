@@ -5,6 +5,7 @@ and its own handler numbers; the merged program's part maps a command to its sou
 
 import dataclasses
 import hashlib
+import importlib
 import re
 from pathlib import Path
 
@@ -119,8 +120,20 @@ extern "C" uint32_t {function}(
 def merge(
     *sources, name=None, overlay=(), resident=(), session=None, l1=None, log=print
 ):
-    """ONE program from `sources` (programs in the runtime's form): see Merged. A
-    class or a program in the kernel form is refused with the way to merge it."""
+    """ONE program from `sources`: programs in the runtime's form (Merged), or made
+    class programs (komorebi.dsl.merged, one program in the kernel form). A program
+    in the kernel form, and a class with a hand program, are refused with the way."""
+    classes = [hasattr(source, "make_given") for source in sources]
+    if any(classes) and all(classes):
+        made = importlib.import_module("komorebi.dsl.merged")  # it imports the DSL
+        return made.merge_made(sources, name, overlay, resident, session, l1, log)
+    if any(classes):
+        raise ProgramError(
+            f"{', '.join(getattr(s, 'name', repr(s)) for s in sources)}: a class with "
+            "a hand program: a class is built in the kernel form (its kernel_main and "
+            "loop), a hand program merges in the runtime's form; merge classes with "
+            "classes, hand programs with hand programs (docs/reference/host.md)"
+        )
     return Merged(sources, name, overlay, resident, session, l1, log)
 
 
