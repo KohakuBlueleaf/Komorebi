@@ -31,6 +31,14 @@ class Written(km.Program):
         t.pages(self.rank, 1).write(total)
 
 
+class Expressed(km.Program):
+    @km.handler
+    def mix(self, a: km.Tensor, out: km.Tensor, width: int):
+        results = km.Stream(out.pages(self.rank * width, width), write=True)
+        for x in km.Stream(a.pages(self.rank * width, width)):
+            results.push(x + x * x)  # a tile expression in the handler's line
+
+
 GUARDED = """
 tile_regs_acquire();
 copy_tile(tile_buffer, tile_index, 0);
@@ -90,6 +98,7 @@ def test_each_other_path_guards_only_the_packs():
     seen = check(compute_of(cf.made(cf.Handlers, given)))  # copy, function, body tile
     assert "pack_tile<true>(0, km_out0, km_tile0);" in seen
     assert "pack_tile(0, kOut0);" in check(compute_of(cf.made(Written, given)))
+    assert check(compute_of(cf.made(Expressed, given)))
     gc = importlib.import_module("gate_class")
     x = given["x"]
     gate = gc.Gate(a=x, b=x, out=given["y"], l1=1 << 20, log=cf.quiet)
