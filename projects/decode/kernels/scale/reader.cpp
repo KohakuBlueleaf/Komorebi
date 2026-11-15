@@ -88,12 +88,16 @@ static bool read_head(km::Reader& reader, const SplitBlock& block) {
 
 uint32_t km_overlay(km::Reader& reader, const SplitBlock& block) {
     const km_command_t& command = *block.command;
-    if (
-        !decode::read_item(reader, command, DC_CB_PARTS, command.a7, 0, DC_PARTS) ||
-        !decode::read_item(reader, command, DC_CB_CONSTANT, command.a8, 0, DC_CONSTANTS)
-    ) {
+    if (!decode::read_item(reader, command, DC_CB_PARTS, command.a7, 0, DC_PARTS)) {
         return 0;
     }
+#if !DC_EMIT_NORM  // the hand norm's identity and mean tiles
+    if (!decode::read_item(
+        reader, command, DC_CB_CONSTANT, command.a8, 0, DC_CONSTANTS
+    )) {
+        return 0;
+    }
+#endif
     if (decode::qk_block(reader, block)) {
         return read_head(reader, block) && read_rotary(reader, command) ? 1 : 0;
     }
