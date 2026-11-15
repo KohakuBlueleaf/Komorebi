@@ -423,6 +423,8 @@ def card(args):
             data = inputs_of(case, args.units, args.seed)
             outputs, infos, nonces = {}, {}, {}
             for body in bodies_of([case], card=True):
+                if args.forms and BODIES[body][1] not in args.forms:
+                    continue
                 run, t_out, t_info, nonce = launch(session, body, data)
                 log(f"launch {case} {BODIES[body][1]}")
                 run.run()
@@ -460,6 +462,7 @@ def main():
     p.add_argument("--units", type=int, default=16)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--save", help="card: the outputs and inputs into this .npz file")
+    p.add_argument("--forms", nargs="+", help="card: only these forms (hand, ...)")
     args = p.parse_args()
     if not 1 <= args.units <= MAX_UNITS:
         p.error(f"--units is 1 .. {MAX_UNITS}")
