@@ -423,6 +423,28 @@ buffer "pushed by X and Y".
 Described in [Movement, rules for a program](movement.md#rules-for-a-program) and
 [Host API, `Program`](movement.md#host).
 
+### A buffer half drained by compute in one command and by a mover in another
+
+**The hazard.** The draining side has the same counter problem as the filling side.
+Compute's unpacker keeps its own count of the pages it popped and writes it whole into
+the buffer's count of pages freed; a mover's pop adds to that count. A half that unpack
+drains on a reduce's root and the mover sends from on the other ranks (a K split's field
+of sums, `km::reduce_emit`) has its count rewound at unpack's next pop after the mover's:
+the packer then sees pages free that are not, the next sum is sent early (wrong sums, a
+different count of wrong words each run), and with the half full the packer's reserve
+waits forever.
+
+**The rule.** After a command in which the mover drained the half, unpack adds the
+mover's pages to its own count: `UNPACK((get_local_cb_interface(cb).tiles_acked +=
+pages))` under the same condition as the mover's send, as the dense project's K split
+does (`projects/dense/kernels/split/compute.cpp`, on a rank other than the root).
+
+**The guard.** A class's field reduce adds the line itself (a test checks the generated
+text). The load's check of sources refuses a half drained by name in two sources, but
+not one drained inside `km::reduce_emit`; a hand kernel that does so: nothing.
+
+Described in [Movement, rules for a program](movement.md#rules-for-a-program).
+
 ### A chain's input read before it is written
 
 **The hazard.** In a chain, a record's input waits for the marks of the cores that wrote

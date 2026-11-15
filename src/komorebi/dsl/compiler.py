@@ -5805,7 +5805,8 @@ class HandlerCompiler:
                 "write\n"
                 f"    cb_push_back({buffer}, {buffer}Pages);\n"
                 "}\n"
-                f"{sums} = 0;",
+                + sent_field_acked(buffer, group.format(cpu="compute"), form)
+                + f"{sums} = 0;",
                 uses | {"km_ok"},
             ),
         ]
@@ -7992,5 +7993,18 @@ def sums_reserve(sums, room, buffer):
     return (
         f"if (km_ok && {sums} == 0) {{  // a new sum: the field's pages held\n"
         f"    {room} = {room} && compute.reserve_back({buffer}, {buffer}Pages);\n"
+        "}\n"
+    )
+
+
+def sent_field_acked(buffer, group, form):
+    """A field of sums is emptied by compute's unpack on the group's root and by mover
+    B's send elsewhere; unpack keeps its own count of the pages taken, so a core that
+    sent counts mover B's pop there too, or its next turn as root rewinds the count
+    (the hand's K split does the same). The field is one whole item of its buffer."""
+    return (
+        f"if (km_ok && !km::reduce_send({group}, {form}).root) {{  // mover B pops it\n"
+        f"    UNPACK((get_local_cb_interface({buffer}).tiles_acked += "
+        f"{buffer}Pages));\n"
         "}\n"
     )
