@@ -44,7 +44,9 @@ def programs(lines):
     for overlay, (program, number, _) in OVERLAYS.items():
         if overlay != "added":
             made[program].overlay(overlay, KERNELS / overlay, number=number)
-    made["first"].slots(count={"reader": 3})  # the first program's slots are the run's
+    # the first program's slots are the run's; every program asks for run.addon's path
+    made["first"].slots(count={"reader": 3}, bytes={})
+    made["second"].slots(bytes={})
     return made
 
 

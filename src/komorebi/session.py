@@ -8,6 +8,7 @@ import atexit
 import contextlib
 import copy
 import ctypes
+import dataclasses
 import os
 import re
 import secrets
@@ -352,6 +353,31 @@ def kernel_build(program, kernel, defines):
     if level is not None:
         build |= {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
     return build
+
+
+def own_slot_code(program):
+    """Whether `program` may give the service overlay its own slot: it has overlays of
+    its own, added handlers or slots(service="own"); else the service shares the
+    reader's slots, the same layout with no program slots (pay for use)."""
+    return (
+        bool(program.overlays)
+        or "KM_ADDED_HANDLERS" in program.defines
+        or program.overlay_slots.service == "own"
+    )
+
+
+def own_slot_path(program):
+    """The kernels' define of the own slot's code (km_overlay.hpp's overlay_own),
+    for a program that may use it (own_slot_code); a placed load always has it."""
+    return [("KM_OVERLAY_OWN", "1")] if own_slot_code(program) else []
+
+
+def own_slot_declared(program):
+    """`program`'s declared slots, the service shared when its kernels lack the
+    own slot's code (own_slot_code)."""
+    if own_slot_code(program):
+        return program.overlay_slots
+    return dataclasses.replace(program.overlay_slots, service="shared")
 
 
 def added_path(placed):
@@ -2523,6 +2549,7 @@ class _Backend:
         include = [str(abi.headers().abi.parents[2])]
         defines = [(name, str(value)) for name, value in program.defines.items()]
         defines += self._one_island()
+        defines += own_slot_path(program)
         if program.messages is not None:
             defines += program.messages.defines()
         ranks, links = _link_kernels(self.session.island, program, self.split, cores)
@@ -2809,6 +2836,7 @@ class _Backend:
             defines += self._one_island()
             defines += added_path(placed.programs)
             defines += guard_path(placed.programs)
+            defines.append(("KM_OVERLAY_OWN", "1"))  # placed: every program's parts
             first = held[0] if held else None
             if placed.switch and first is None:
                 first = placed.programs[0]  # one build for every group's kernels
@@ -2921,7 +2949,7 @@ class _Backend:
         )
         rows = session.l1_rows(program, self.trace_cap)
         built = fit_slots(
-            built, program.overlay_slots, session.l1()[1], rows, session.log
+            built, own_slot_declared(program), session.l1()[1], rows, session.log
         )
         program.overlays_built = built
         rows[2:2] = slot_rows(built.slots, built.service, built.why)

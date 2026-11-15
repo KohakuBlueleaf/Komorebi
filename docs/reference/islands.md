@@ -101,12 +101,13 @@ written for islands runs on one card unchanged.
   serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
   holds each CPU's largest text over the two groups. A program with messages, a card
   split into islands and a program placed by overlays keep the services in every
-  kernel. The session opens with a kernel buffer of 160 KiB
-  (`island_session.KERNEL_BYTES`: the largest such build, a dynamic program with a
+  kernel. The session opens at the kernel buffer its script's last run needed and an
+  eighth more (at least 8 KiB), else at 160 KiB (`island_session.KERNEL_BYTES`: the largest such build, a dynamic program with a
   message service on every link, example 23's 159,360 bytes, in steps of 16 KiB); it
   costs every core 32 KiB of L1 more than 128 KiB did (1,367,936 bytes left for
   circular buffers and L1 tensors against 1,400,704). One card keeps the runtime's
-  70,656 bytes. A program that sets its own buffer keeps it. The
+  70,656 bytes and follows its kernels. A program that sets its own buffer keeps it.
+  The
   load checks each build against the buffer: one that does not fit raises
   `KernelSizeError` with its size, the buffer and the most L1 allows, before anything
   is launched. `kernel_bytes` sets another size at the open; with less than 160 KiB,
@@ -698,6 +699,23 @@ With the link services in the link cores' kernels only, example 11's build takes
 67,680 bytes (92,192 with the services in every kernel), the dense grid's 82,512
 (122,752 before) and the dense linear layer's 98,592 (143,440 before); the link
 reader's BRISC text is the larger of the two groups' for example 11 and the grid.
+
+The link kernels built for size were measured and are not kept: their text sets an
+island's kernel buffer for every core, and smaller text cost the link rate (two cards,
+example 12 as a rank, 2026-11-16):
+
+Smaller text cost the link page CPUs' loops even with the put line's four kept at O2:
+the helpers they call stay at -Os and are not inlined into an O2 caller.
+
+| Link reader / writer built | Text (B) | Example 12's kernels | Puts both ways, 64 MiB | Gather, 2 / 272 pages |
+|---|---|---|---|---|
+| O2 (kept) | 50,724 / 42,632 | 97,152 B | 1.00 ms, 66.9 GB/s | 12.74 / 22.62 µs |
+| -Os | 36,052 / 30,252 | 70,096 B | | 13.56 / 25.34 µs |
+| -Os, the put line's four loops O2 | 38,640 / 32,832 | 75,264 B | 1.15 ms, 58.3 GB/s | 13.18 / 24.76 µs |
+
+An island session opens at the size its script's last run needed and an eighth more
+([the kernel buffer](host.md#the-kernel-buffer)), so example 12 opens at 110,464 B and
+has 53,376 B more a core than at the fixed 160 KiB.
 
 ## A card split into islands
 

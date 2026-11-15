@@ -153,6 +153,7 @@ namespace km {
         );
     }
 
+#if defined(KM_OVERLAY_OWN)
     // Whether the service overlay has its own slot and `number`'s `part` goes there.
     inline bool overlay_own(uint32_t control, uint32_t part, uint32_t number) {
         return (
@@ -160,6 +161,13 @@ namespace km {
             overlay_area(control)[kOverlayServiceSlot / 4] != 0
         );
     }
+#else
+    // A program with no slots of its own: the service shares the reader's slots, and
+    // the own slot's code is left out (session.own_slot_path).
+    inline bool overlay_own(uint32_t, uint32_t, uint32_t) {
+        return false;
+    }
+#endif
 
     // The table entry of part `part` of overlay `number`: {address, bytes}.
     inline volatile tt_l1_ptr uint32_t* overlay_entry(

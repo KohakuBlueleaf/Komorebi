@@ -242,3 +242,18 @@ def test_the_bound_refused_before_the_layout_gives_the_total():
     )
     sizes = session.kernel_sizes((0, 70656, [28688, 25640, 14416, 9336, 13272], error))
     assert (sizes.total, sizes.limit) == (92240, 70656)
+
+
+def test_the_own_slot_code_only_where_the_program_has_slots_of_its_own():
+    class Plain:
+        overlays, defines = {}, {}
+        overlay_slots = overlay.Slots()
+
+    plain = Plain()
+    assert session.own_slot_path(plain) == []
+    assert session.own_slot_declared(plain).service == "shared"
+    plain.overlays = {"mix": object()}
+    assert session.own_slot_path(plain) == [("KM_OVERLAY_OWN", "1")]
+    assert session.own_slot_declared(plain).service is None
+    plain.overlays, plain.overlay_slots = {}, overlay.Slots(service="own")
+    assert session.own_slot_path(plain) == [("KM_OVERLAY_OWN", "1")]

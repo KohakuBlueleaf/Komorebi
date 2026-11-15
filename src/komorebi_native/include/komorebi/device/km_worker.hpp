@@ -18,11 +18,16 @@ namespace km {
         );
     }
 
-    // A handler added to the live run (run.add): one look at a word of the overlay
-    // area; enter() loads and calls the overlay of its number (km_overlay.hpp).
-    inline bool entered(uint32_t control, const km_command_t& command);
+    // A handler added to the live run: enter() loads and calls its overlay; only a
+    // program that asks (KM_ADDED_HANDLERS) looks for one, else the branch is dead.
     template <typename Kernel>
     bool enter(Kernel& kernel, const km_command_t& command);
+#if defined(KM_ADDED_HANDLERS)
+    inline bool entered(uint32_t control, const km_command_t& command);
+#define KM_ENTERED(control, command) entered(control, command)
+#else
+#define KM_ENTERED(control, command) false
+#endif
 
 }  // namespace km
 
@@ -138,7 +143,7 @@ namespace km {
                     link_serve(*this, *command, 0, kStReader);
                 } else if (served(*command)) {
                     serve(*this, *command);
-                } else if (entered(args().control, *command)) {
+                } else if (KM_ENTERED(args().control, *command)) {
                     enter(*this, *command);
                 } else {
                     body(*command);
@@ -502,8 +507,9 @@ namespace km {
                     pages(command)
                         ? link_serve(*this, command, 1, kStWriter)
                         : __builtin_expect(served(command), 0) ||
-                            (entered(arguments.control, command) ? enter(*this, command)
-                                                                 : body(command))
+                            (KM_ENTERED(arguments.control, command)
+                                 ? enter(*this, command)
+                                 : body(command))
                 );
                 const bool written = flushed(kFlushWrites, kStWriter);
                 trace_.timestamp(command.sequence, kTraceDone);
@@ -796,7 +802,7 @@ namespace km {
                     break;
                 }
                 if (__builtin_expect(!served(command), 1)) {
-                    if (entered(control_, command)) {
+                    if (KM_ENTERED(control_, command)) {
                         enter(*this, command);
                     } else {
                         body(command);
@@ -977,5 +983,8 @@ namespace km {
 }  // namespace km
 #endif
 
-// serve() and enter(): the loads of the service overlay and of an added handler
+// serve(), and enter() of an added handler (KM_ADDED_HANDLERS): the overlay's loads
+#if defined(KM_ADDED_HANDLERS) || \
+    (!defined(COMPILE_FOR_TRISC) && !defined(COMPILE_FOR_NCRISC))
 #include "km_overlay.hpp"
+#endif
