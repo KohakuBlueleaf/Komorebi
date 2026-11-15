@@ -61,6 +61,10 @@ TOLERANCE = {
     # about 1e-3 on the softmax step's sums), silu after it; the gate two of them
     "mm_silu": 2**-8,
     "mm_gate": 2**-7,
+    # a per-row operand (.col()) into rsqrt and sigmoid: their constant registers
+    # loaded in the per-row path (silu's 1e-6 for the exp and reciprocal)
+    "rsqrt_col": 1e-6,
+    "sigmoid_col": 1e-6,
 }
 MM_FIDELITY = "HiFi4"  # the tile function's default (km.tile_function)
 MM_PRODUCT_TOLERANCE = 2**-8  # a @ w1 alone at HiFi4 (a band's rows past it)
@@ -77,6 +81,10 @@ STEP_TOLERANCE = {"p": 2e-3, "alpha": 2e-3, "l": 2e-3, "m": 1e-6, "m_abs": 1e-4}
 # (the hand body keeps 639 - A m: its m to within an fp32 step at 639, 6.1e-5)
 STEP_WIDTH, STEP_LAG = 3, 16.0  # key tiles a step; the reference's lag (ktt's tau)
 STEP_TILE = 3  # the state's Dst tile (the hand body's ST)
+# The fast exponent's clamp: unit 0 cycles through these t, the others take t in [-30,
+# 0]; 2^t within the stated error where 2^t >= 2^-126, else within 2^-126 (finite).
+CLAMP_ARGUMENTS = (-1, -64, -126, -127.5, -128, -150, -200, -300, -1e4)
+CLAMP_FLOOR = 2.0**-126
 ATTENTION = HERE.parents[1] / "projects" / "attention" / "kernels"
 EXP_SCALE = 0.125  # 1 / sqrt(64), exact in fp32
 EXP_A = EXP_SCALE * 1.4426950408889634  # the hand body's A = scale log2 e
@@ -85,6 +93,7 @@ EXP_TILE = {
     13: 1,
     16: 1,
     21: 1,
+    31: 3,
 }  # the row state's Dst tile: the hand body's, the emitted
 
 # BODY: (case, form); "macro": the load-macro rule, "stated": at STEP_EXP, "accurate":
@@ -121,6 +130,10 @@ BODIES = {
     28: ("mm_silu", "emitted"),
     29: ("mm_gate", "emitted"),
     30: ("mm_gate", "band"),
+    31: ("clamp", "hand"),
+    32: ("clamp", "emitted"),
+    33: ("rsqrt_col", "emitted"),
+    34: ("sigmoid_col", "emitted"),
 }
 FORMS = ("hand", "emitted", "macro", "stated", "accurate", "ruled", "band", "trace")
 # Products inside the tile function (kernels/fused.cpp), one body each; BODY 27 is
@@ -131,7 +144,7 @@ FUSED = {27: "mm_hifi2", 28: "mm_silu", 29: "mm_gate", 30: "mm_gate_band"}
 BAND = {24: "add_band", 25: "gate_band", 26: "norm_band", 30: "mm_gate_band"}
 BAND_ROWS = {"add": 4, "gate": 4, "norm": 8, "mm_gate": 4}  # the rows a band runs in
 CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax", "attn", "product")
-CASES += ("mm_silu", "mm_gate")
+CASES += ("mm_silu", "mm_gate", "clamp", "rsqrt_col", "sigmoid_col")
 # Run on the card already, over the same inputs (the tile-front experiment): built
 # and checked here, not run again.
 ALREADY_RUN = {0, 12, 27}
@@ -145,6 +158,9 @@ INPUTS = {
     "product": 2,
     "mm_silu": 2,
     "mm_gate": 3,
+    "clamp": 1,
+    "rsqrt_col": 2,
+    "sigmoid_col": 2,
 }
 # The per-core attention body (kernels/attention.cpp): one query row of tiles, steps
 # of 3 key tiles (--units steps), head and value dims of 2 tiles.
@@ -209,6 +225,20 @@ def expstep_ir(name="expstep", **exp):
     return ir
 
 
+def col_ir(name, fn):
+    """y = fn(a, s.col()) over a stream of fp32 tiles, s each row's value in all its
+    lanes (a per-row operand, the stream form's per-row path)."""
+    a, s = TensorParam("a", False, F32), TensorParam("s", False, F32)
+    y = TensorParam("y", True, F32)
+    ir = KernelIR(name, [a, s, y], [], {})
+    with trace.Tracer(ir):
+        xs, ss, ys = (trace.TensorProxy(t) for t in (a, s, y))
+        for t in trace.grid(trace.num_tiles(xs)):
+            x, rows = trace.load(xs.tiles[t]), trace.load(ss.tiles[t])
+            trace.store(ys.tiles[t], fn(x, rows.col()))
+    return ir
+
+
 def softmax_ir(name="softstep", exp=STEP_EXP):
     """The online softmax step in base 2 over a row of STEP_WIDTH score tiles: the
     new reference (lagging by up to STEP_LAG), the old state's rescale factor, P and
@@ -258,6 +288,13 @@ def units():
     out["norm_band"] = row_program(band, WIDTH, ROWS_TILE, P_TILE, rows=True)
     out["expstep"] = unit_program(expstep_ir())
     out["expstep_flash"] = unit_program(expstep_ir("expstep_flash", **STEP_EXP))
+    exp2 = stream("exp2_flash", 1, lambda x: trace.exp2(x, **STEP_EXP))
+    out["exp2_flash"] = unit_program(exp2)
+    out["rsqrt_col"] = unit_program(
+        col_ir("rsqrt_col", lambda a, s: a * trace.rsqrt(s))
+    )
+    sigmoid = col_ir("sigmoid_col", lambda a, s: trace.sigmoid(a + s))
+    out["sigmoid_col"] = unit_program(sigmoid)
     out["softstep"] = step_program(softmax_ir(), STEP_WIDTH, STEP_TILE)
     accurate = softmax_ir("softstep_accurate", {})
     out["softstep_accurate"] = step_program(accurate, STEP_WIDTH, STEP_TILE)
@@ -368,7 +405,9 @@ def aiclk_mhz():
 def p_pages(body):
     """Pages of P: the emitted norm's per-column operand tile; the hand norm's
     identity, mean and weight tiles (decode's constant tiles, and g in every row)."""
-    return {10: 2 + WIDTH, 11: 1, 24: 0, 25: 0, 26: 1}.get(body, int(body >= 12))
+    return {10: 2 + WIDTH, 11: 1, 24: 0, 25: 0, 26: 1, 32: 0, 33: 0, 34: 0}.get(
+        body, int(body >= 12)
+    )
 
 
 def setting(body):
@@ -535,7 +574,9 @@ def launch(session, body, data, stage=None, rows=32):
     unit_tiles = defines["UNIT_TILES"]
     count = len(data["a"]) // unit_tiles
     nonce = secrets.randbits(32) | 1
-    keys = ("a", "b", "p_hand" if form == "hand" else "p")
+    hand = form == "hand"
+    keys = ("a_hand" if hand and "a_hand" in data else "a", "b")
+    keys += ("p_hand" if hand else "p",)
     tensors = [session.tensor(data[k], "uint32") for k in keys]
     out_tiles = count * (unit_tiles + defines["PACK_STATE"])
     t_out = session.tensor(np.zeros((out_tiles, TILE_WORDS), np.uint32), "uint32")
@@ -568,7 +609,7 @@ def launch(session, body, data, stage=None, rows=32):
     unpack = {CB_A: "UnpackToDestFp32"}
     if defines["COPY_B"]:
         unpack[CB_B] = "UnpackToDestFp32"
-    if body == 11 or 12 <= body < 24 or body == 26:
+    if body == 11 or 12 <= body < 24 or body in (26, 31):
         unpack[CB_P] = "UnpackToDestFp32"
     if body == 20:
         unpack[CB_SQUARES] = "UnpackToDestFp32"  # the state, back into Dst
@@ -828,6 +869,36 @@ def inputs_of(case, count, seed):
             "b": w1.view(np.uint32),
             "p": w3.view(np.uint32),
         }
+    if case in ("rsqrt_col", "sigmoid_col"):
+        # a; s one value a row (in all its lanes), positive for rsqrt
+        a = (rng.standard_normal((count, TILE_WORDS)) * 3).astype(np.float32)
+        lo, hi = (0.5, 4.0) if case == "rsqrt_col" else (-3.0, 3.0)
+        rows = rng.uniform(lo, hi, (count, 32)).astype(np.float32)
+        b = np.concatenate(
+            [tiles_of(np.broadcast_to(r[:, None], (32, 32)).copy()) for r in rows]
+        )
+        return {
+            "a": a.view(np.uint32),
+            "b": b.view(np.uint32),
+            "p": one.view(np.uint32),
+            "p_hand": one.view(np.uint32),
+        }
+    if case == "clamp":
+        # BODY 32 computes 2^a; BODY 31 (the hand body) 2^(A x + v - 639) with v = 639
+        # in its state tile, x = a / A (fp32): the same arguments, up to x's rounding
+        t = rng.uniform(-30, 0, (count, TILE_WORDS))
+        lanes = np.arange(TILE_WORDS) // 32 + np.arange(TILE_WORDS) % 32
+        t[0] = np.array(CLAMP_ARGUMENTS)[lanes % len(CLAMP_ARGUMENTS)]
+        a = t.astype(np.float32)
+        x = (a / np.float32(EXP_A)).astype(np.float32)
+        bias = np.full((1, TILE_WORDS), 639.0, np.float32)
+        return {
+            "a": a.view(np.uint32),
+            "a_hand": x.view(np.uint32),
+            "b": one.view(np.uint32),
+            "p": one.view(np.uint32),
+            "p_hand": bias.view(np.uint32),
+        }
     if case == "exp":
         # Scores; m each row's max over every unit (the state tile is one page).
         s = (rng.standard_normal((count * 32, 32)) * 8).astype(np.float32)
@@ -983,6 +1054,10 @@ def reference(case, data):
             return a * float(np.float32(SCALE))
         if case == "gate":
             return a / (1 + np.exp(-a)) * b
+        if case == "rsqrt_col":
+            return a / np.sqrt(b)
+        if case == "sigmoid_col":
+            return 1 / (1 + np.exp(-(a + b)))
     if case == "product":
         return products(a, b)
     if case in ("mm_silu", "mm_gate"):
@@ -1018,9 +1093,56 @@ def errors(out, ref):
     return {"max": float(rel.max()), "mean": float(rel.mean()), "not_finite": bad}
 
 
+def clamp_reference(data, form):
+    """float64 2^t of each body's own fp32 arguments (the hand body's A x)."""
+    if form == "hand":
+        x = data["a_hand"].view(np.float32).astype(np.float64)
+        return np.exp2(float(np.float32(EXP_A)) * x)
+    return np.exp2(data["a"].view(np.float32).astype(np.float64))
+
+
+def check_clamp(data, outputs, infos, nonces):
+    """The clamp's record: per body unit 0's read-back at each argument of
+    CLAMP_ARGUMENTS (its first lane), and over every unit the largest relative error
+    where 2^t >= 2^-126, the largest absolute error below it, the non-finite count."""
+    rec = {"case": "clamp", "tolerance": STEP_EXP["error"], "floor": CLAMP_FLOOR}
+    lanes = np.arange(TILE_WORDS) // 32 + np.arange(TILE_WORDS) % 32
+    for body, info in infos.items():
+        form = BODIES[body][1]
+        got = _cycles(info, nonces[body])
+        y = outputs[body].view(np.float32).astype(np.float64)
+        ref = clamp_reference(data, form)
+        table = {}
+        for k, t in enumerate(CLAMP_ARGUMENTS):
+            w = int(np.flatnonzero(lanes % len(CLAMP_ARGUMENTS) == k)[0])
+            table[f"{t:g}"] = {"got": float(y[0, w]), "want": float(ref[0, w])}
+        got["read_back"] = table
+        high = ref >= CLAMP_FLOOR
+        with np.errstate(invalid="ignore", over="ignore"):
+            rel = np.abs(y[high] - ref[high]) / ref[high]
+            low = np.abs(y[~high] - ref[~high])
+        bad = int((~np.isfinite(y)).sum())
+        got["vs_float64"] = {
+            "max": float(np.nanmax(rel)),
+            "low_abs_max": float(np.nanmax(low)) if low.size else 0.0,
+            "not_finite": bad,
+        }
+        got["ok"] = (
+            got["nonce_ok"]
+            and got["error"] == 0
+            and bad == 0
+            and got["vs_float64"]["max"] <= STEP_EXP["error"]
+            and got["vs_float64"]["low_abs_max"] <= CLAMP_FLOOR
+        )
+        rec[form] = got
+    return rec
+
+
 def check(case, data, outputs, infos, nonces):
     """The record of one case: per body its nonce, error word, cycles of the body
     and of the whole unit, its error against float64 and the verdict."""
+    if case == "clamp":
+        return check_clamp(data, outputs, infos, nonces)
     if case == "softmax":
         return check_softmax(data, outputs, infos, nonces)
     if case == "attn":
@@ -1115,10 +1237,13 @@ def build(args):
             log(f"built {case} {form}: kernel buffer {got.total} of {got.limit} B")
     for case in args.cases:
         data = inputs_of(case, args.units, args.seed)
-        if case not in ("softmax", "attn"):
+        if case not in ("softmax", "attn", "clamp"):
             ref = reference(case, data).astype(np.float32).view(np.uint32)
         outputs, infos, nonces = {}, {}, {}
         for body in bodies_of([case]):
+            if case == "clamp":
+                ref = clamp_reference(data, BODIES[body][1])
+                ref = ref.astype(np.float32).view(np.uint32)
             if case == "softmax":
                 ref = softmax_words(data, BODIES[body][1])
             if case == "attn":
@@ -1183,7 +1308,7 @@ def card(args):
                 rec["band"] = bands
             saved.update({f"{case}_{BODIES[b][1]}": out for b, out in outputs.items()})
             saved.update({f"{case}_input_{k}": v for k, v in data.items()})
-            unit = {"softmax": "softstep"}.get(case, case)
+            unit = {"softmax": "softstep", "clamp": "exp2_flash"}.get(case, case)
             rec["estimates"] = {k: v for k, v in costs.items() if k.startswith(unit)}
             if case == "attn":
                 rec["estimates"] = attn_estimates(costs)

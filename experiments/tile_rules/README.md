@@ -46,6 +46,10 @@ the tile layer is [docs/reference/tile.md](../../docs/reference/tile.md).
 | 28 | mm_silu | emitted | `trace.silu(a @ w1)`: the product's words and the vector code in one body, HiFi4 (`kernels/fused.cpp`) |
 | 29 | mm_gate | emitted | `trace.silu(a @ w1) * (a @ w3)`: two products and the gate in one body, HiFi4 |
 | 30 | mm_gate | band | BODY 29 with `rows=True`: the vector code on the live rows, the products whole |
+| 31 | clamp | hand | BODY 12's exponent step (512 in LReg 11) on arguments far below 0 |
+| 32 | clamp | emitted | `trace.exp2(a, error=2e-3, over=(-inf, 0))` on the same arguments |
+| 33 | rsqrt_col | emitted | `a * trace.rsqrt(s.col())`: a per-row operand into rsqrt's constants |
+| 34 | sigmoid_col | emitted | `trace.sigmoid(a + s.col())` |
 
 The hand norm keeps decode's sequence with fp32 buffers where decode has bf16, and
 reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.
@@ -233,6 +237,43 @@ less 139 is 217. The 28.4 over the estimate is the gate code's own (1568 against
 into `Dst`: the emitted gate's whole unit was 1921 against its 1656.5 body (two copies and
 a pack, 264.5), and each product alone was a unit of its own (1147, bound by the reader).
 
+### The exponent's clamp and the per-row path's constants
+
+BODY 31 and 32: unit 0 cycles through the arguments t below, the other units take t in
+[-30, 0]; the hand body gets x = t / A with its bias 639, the emitted one t. Held to the
+stated 2e-3 where 2^t >= 2^-126, below that to within 2^-126 and finite. The first run
+had the clamp's `SFPSWAP` write `VD` 12 (512 in constant register 12):
+
+| t | hand | emitted, `VD` 12 | emitted, `VD` a work register |
+|---:|---:|---:|---:|
+| -1 | 0.50086 | 0.50086 | 0.50086 |
+| -64 | 5.430e-20 | 5.430e-20 | 5.430e-20 |
+| -126 | 1.1775e-38 | 1.1775e-38 | 1.1775e-38 |
+| -127.5 | 0 | NaN | 0 |
+| -128 | 0 | 1.761e38 | 0 |
+| -150 | 0 | 1.001e25 | 0 |
+| -200 | 0 | 7.898e-6 | 0 |
+| -300 | 0 | 5.507e11 | 0 |
+| -1e4 | 0 | 5.796e-17 | 0 |
+| cycles a tile (estimate) | 351.5 | 478.0 (478.1) | 511.0 (510.2) |
+
+On the ordinary arguments all three are within 1.75e-3 of float64. The copy of 512 is
+one word a vector (32 a tile); in the softmax step it is 118 words, and the step's first
+part ran 1878.5 cycles (estimate 1777.0) against 1761 before, its second part 368, its
+values as before (p 1.76e-3, l 1.03e-3, alpha 1.73e-3). The step's earlier runs and BODY
+16 and 21 were right with the clamp never running because no score was more than 127
+below its row's reference.
+
+The per-row path (a `.col()` operand) dropped the load of each constant register's
+value (the `SFPCONFIG` that copies LReg 0 was not counted as its reader), so the
+register took whatever LReg 0 held. With the loads kept, over 16 units, a in 3 N(0, 1),
+s one value a row:
+
+| Body | Cycles a tile | Estimate | Whole unit | Max rel. error vs float64 |
+|---|---:|---:|---:|---:|
+| `a * rsqrt(s.col())`, s in [0.5, 4) | 490.0 | 487.4 | 1254 | 1.2e-7 |
+| `sigmoid(a + s.col())`, s in [-3, 3) | 1454.5 | 1453.5 | 1712 | 5.8e-7 |
+
 ## The cost model against the card
 
 Each price is a one-core measurement (`../tile_probes/README.md`, section 8). The
@@ -258,6 +299,10 @@ the accurate softmax step (-12%: 26 KB of straight-line code, unexplained).
   unit, the card runs it once a stream. The rule now takes a template slot no word of
   the unit writes, and `emit` refuses a macro whose template its init does not store or
   its tile's code writes.
+- **Such a word runs nothing.** The same clamp never clamped: an argument more than 127
+  below the reference gave NaN or values up to 1.8e38 (the table above). The clamp's
+  `VD` is now a work register, and `emit` refuses any word with a `VD` of 12 or more that
+  is not one of the init's template stores.
 - **A reader told the wrong number of inputs leaves the core stuck.** The first launch
   of BODY 20 passed the reader the case's input count (1), not the body's (2): the tile
   of ones was never read and the unpacker's wait for it never returned. The mock build
