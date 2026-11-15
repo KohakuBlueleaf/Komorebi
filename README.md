@@ -63,9 +63,9 @@ call: the host submits commands and the card runs them. Three handlers of one cl
 ```python
 import numpy as np
 import komorebi as km
-from steps_class import Steps, bits  # examples/29_chain/as_class: the kernels
+from steps_class import Steps  # examples/29_chain/as_class: the kernels
 
-with km.Session(kernel_bytes=84 * 1024) as session:  # room for the chain's code
+with km.Session() as session:
     x = session.tensor(np.ones((16, 1024), np.float32), "float32")  # 16 tiles in DRAM
     y, z, s = (
         session.tensor(np.zeros((16, 1024), np.float32), "float32") for _ in "yzs"
@@ -75,9 +75,7 @@ with km.Session(kernel_bytes=84 * 1024) as session:  # room for the chain's code
     cores = (0, 8)  # a command goes to a core group; each core takes its share
 
     def scale(a, out, factor):  # a kernel call, as a function
-        return run.submit(
-            Steps.scale, cores, args=(a, out, bits(factor), 2), exclusive=True
-        )
+        return run.submit(Steps.scale, cores, args=(a, out, factor, 2), exclusive=True)
 
     # Commands queue on the card: submit as many as you like, wait once.
     run.wait([scale(x, y, 2.0), scale(y, z, 3.0), scale(z, s, 0.5)])
@@ -86,8 +84,8 @@ with km.Session(kernel_bytes=84 * 1024) as session:  # room for the chain's code
     # itself, with no host between them. Stated once, submitted as often as needed.
     layer = run.chain(
         [
-            Steps.scale(x, y, bits(2.0), 2),
-            Steps.scale(y, z, bits(3.0), 2),
+            Steps.scale(x, y, 2.0, 2),
+            Steps.scale(y, z, 3.0, 2),
             Steps.add(z, km.past(y), s, 2),
             Steps.sum(s, t, 16),
         ],

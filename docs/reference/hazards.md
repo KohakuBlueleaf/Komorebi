@@ -324,6 +324,39 @@ build is seen; `KMR_INSN_CHECK=0` turns it off.
 
 Described in [Host API, instructions the cores lack](host.md#instructions-the-cores-lack).
 
+### A wait that never completes
+
+**The hazard.** A wait in a kernel that nothing ever satisfies (a page that is never
+pushed, a marker that never comes, a NoC barrier that never clears) holds its core in
+the command. Without the guard no one gets it out: the command misses its deadline, the
+dispatcher frees it while the core stays in the wait, and the next command to that core
+does not run.
+
+**The rule.** The program's waits complete: every page, marker and acknowledgement a
+wait names is sent by some core of the same command, on every path.
+
+**The guard.** A switch, `guard` of `km.Program` (and the same keyword at a class's
+making), on by default. On, the kernels keep live words, poll each command's abort word
+in every runtime wait and time their NoC barriers: at a command's deadline the
+dispatcher reads the group (`run.inspect` does the same on request), the waits return,
+the cores leave, clear their pages and take the next command, and a core that cannot
+leave is reset. Its cost on one p150a, example 16's empty command in the kernel form: 373
+cycles on one core and 301 on 120 cores (1,012.5 against 639 and 1,149.5 against 848),
+in the runtime's form 341 and 286, a sum of 16 tiles 250 to 890, and 9,520 B of kernel
+text in the kernel form (34,848 against 25,328) and 6,400 B in the runtime's (30,432
+against 24,032); the gate class's command of 120 cores is the same within 1 µs. Off
+(`False`, kernels built with `KM_GUARD` 0): none of it. `run.inspect` raises naming the
+program, the load's log says once that its commands are not given up at a deadline and
+that a hang then costs a card reset, a `CommandTimeout` of such a run says that no core
+was asked to leave, and the reset lists (`recover=True`) reset only a core whose own
+wait limit ended its kernels. Programs that share the runtime's kernels (a list, a dict,
+a merge) must agree, else `ProgramError` names two. A program known right takes the rule
+on itself.
+
+Described in [giving up one command](runtime.md#giving-up-one-command),
+[Host API, `Program`](host.md#program) and
+[recovery](../guides/recovery.md#the-ladder).
+
 ### A wait or a loop of the program's own that polls nothing
 
 **The hazard.** A program's own `noc_async_*_barrier` calls have no timeout, and a loop
@@ -617,7 +650,15 @@ The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the 
 `ok && room`.
 
 **The guard.** A class's generated compute follows the rule at every reserve (a test
-checks the generated text). A hand kernel: nothing.
+checks the generated text: the products, the field reduce, a write stream's push of a
+copy, of a tile function's result and of a body's tile, a tile or a sum written to a
+page, a drained stream and its end). A body on compute that takes a written page gets
+its word as pack's (the page's address, 0 once pack's reserve gave up; the address on
+unpack and math): the class compiler refuses a body where that word steers a section,
+a copy, a product or a way out (`return`, `break`), and lets it guard `pack_tile`. A
+body that packs without testing the word packs into a buffer it holds no room in: the
+three threads stay in step, and the pages are the given-up command's, cleared at its
+end. A hand kernel: nothing.
 
 Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
 
@@ -771,6 +812,22 @@ or use the inline body of the library's call.
 **The guard.** Nothing.
 
 Described in [Tile functions, what a tile function may contain](tile.md#what-a-tile-function-may-contain).
+
+### A float word given a float's bits
+
+**The hazard.** A `scale: float` parameter takes the number and packs its float32 bits
+itself. A caller that still passes the bits, as an `int` word took them
+(`bits(2.0)`, 1073741824), gives the number 1073741824.0: the command runs and every
+value it scales is wrong. A float word that is past float32's range is refused; one
+that float32 rounds (0.1) is the rounded value, as a float32 tensor's would be.
+
+**The rule.** Pass a float word the number (`Steps.scale(x, y, 2.0, 2)`); keep bits
+for an `int` word whose body reads them.
+
+**The guard.** A value that is not a number, or past float32's range, is refused at
+submit, naming the parameter. An int is a number and is not refused.
+
+Described in [Classes, the command words](classes.md#making-and-calling).
 
 ## X280 threads
 

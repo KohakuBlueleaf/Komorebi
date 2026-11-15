@@ -113,25 +113,26 @@ command for the second source do not show at this size.
 ## As a class
 
 `as_class/steps_class.py` writes the same three handlers as a `km.Program` class (on
-float32 tiles: SCALE an inline body, ADD a tile function, SUM a tree's `km.reduce`), and
+float32 tiles: SCALE an inline body, ADD a tile function, SUM a tree's `km.reduce`; the
+factor a float word, `factor: float`, which the body takes as a C++ float), and
 states the chain without one `kc.Call`: each call's description (its groups, the block
 it writes, what it reads and from which call) comes from its handler's lines.
 
 ```python
 class Steps(StepHandlers):
     @km.chain
-    def steps(self, x, y, z, s, t, factor: int, width: int, tiles: int):
+    def steps(self, x, y, z, s, t, factor: float, width: int, tiles: int):
         self.scale(x, y, factor, width)
-        self.scale(y, z, THREE, width)
+        self.scale(y, z, 3.0, width)
         self.add(z, km.past(y), s, width)  # y: written two calls back
         self.sum(s, t, tiles)
 
 
-chain = run.chain(program.steps(x, y, z, s, t, bits(5), 2, 16), cores=(0, 8))
+chain = run.chain(program.steps(x, y, z, s, t, 5.0, 2, 16), cores=(0, 8))
 listed = run.chain(
     [
-        Steps.scale(x, y, bits(5), 2),
-        Steps.scale(y, z, THREE, 2),
+        Steps.scale(x, y, 5.0, 2),
+        Steps.scale(y, z, 3.0, 2),
         Steps.add(z, km.past(y), s, 2),
         Steps.sum(s, t, 16),
     ],

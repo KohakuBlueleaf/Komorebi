@@ -235,6 +235,9 @@ class Insn:
     # registers it reads and writes beside its fields (a load macro's loaded register
     # and the register its template names), LReg numbers
     uses: tuple = ()
+    # the C++ of its immediate when the body's caller gives it (a run-time scalar's
+    # half): emitted as TT_<op>, built on the core, its `imm16` field left 0
+    runtime: str = ""
 
     def reads(self):
         """The register arguments read (value names or LReg numbers), and the LRegs it
@@ -402,6 +405,9 @@ class UnitProgram:
     not_checked: list = field(default_factory=list)
     # the band: the body takes its live rows, `<name>(dst, rows)`
     band: bool = False
+    # its run-time scalars' parameters, in argument order: `<name>(dst, s_bits, ...)`,
+    # each a float32's bits
+    scalars: list = field(default_factory=list)
     # the tile products the body issues first (UnitProduct, in issue order; the
     # caller unpacks their operands in that order) and their fidelity
     products: list = field(default_factory=list)

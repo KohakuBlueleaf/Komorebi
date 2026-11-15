@@ -103,9 +103,21 @@ def test_a_product_in_a_tile_function_is_unpacked_and_issued_by_the_body():
     assert "UNPACK((llk_unpack_AB_matmul(km_half0, km_half1, km_tile0 + " in compute
     assert "copy_tile(" not in compute  # no copy into a product's Dst tile
     assert compute_options(compiled)["math_fidelity"] == "HiFi4"
+    assert compute_options(compiled)["fp32_dest_acc_en"]
+    # the A family's operands: the same product, on a 16-bit Dst
+    tensors = {"a": tensor("float16"), "b": tensor("float16")}
+    compiled = compile_class(Product, {}, {**tensors, "out": tensor("float32")})
+    compute = "\n".join(render(prune(compiled.compute["multiply"]), 0))
+    assert "mm_no_mop_init_short(kRead0.mover_a, kRead1.mover_a, false, 1, 1, 1);" in (
+        compute
+    )
+    assert not compute_options(compiled)["fp32_dest_acc_en"]
+    # one operand of each family is refused at the line, naming both
     line = line_of("results.push(product(x, y))")
-    with pytest.raises(Refused, match=rf"^Product.multiply, line {line}, .*B family"):
-        made(Product, a=tensor("float16"), b=tensor("float16"), out=tensor("float32"))
+    with pytest.raises(
+        Refused, match=rf"^Product.multiply, line {line}, .*given float16 with bfloat16"
+    ):
+        made(Product, a=tensor("float16"), b=tensor("bfloat16"), out=tensor("float32"))
 
 
 @km.tile_function
@@ -488,7 +500,7 @@ def test_a_class_built_for_a_session_leaves_the_loads_rows():
     table = lines[-1]
     for row in ("control block and overlay area", "host transfer buffer"):
         assert row in table
-    assert "slots: reader, 1 x 9,216 B (at most)" in table
+    assert "slots: service (reader), 1 x 9,216 B (at most)" in table
     with pytest.raises(ProgramError, match="its buffers take 999424 B, 891632 B"):
         Unsolved(
             log=lambda line: None,
