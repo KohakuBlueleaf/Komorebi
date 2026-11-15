@@ -212,9 +212,13 @@ def launch(session, body, data):
     accessors = t_out.accessor_args() + t_info.accessor_args()
     words = [t_out.address, t_info.address, len(data["a"])]
     run.kernel(str(KERNELS / "writer.cpp"), core, 0, accessors, [], [], args(words))
-    unpack = {CB_A: "UnpackToDestFp32", CB_P: "UnpackToDestFp32"}
+    # Unpacked to Dst: the buffers copy_tile reads. Not the hand norm's P (the matrix
+    # unit's operands: such a buffer unpacks Float32 into its source registers).
+    unpack = {CB_A: "UnpackToDestFp32"}
     if defines["COPY_B"]:
         unpack[CB_B] = "UnpackToDestFp32"
+    if body == 11:
+        unpack[CB_P] = "UnpackToDestFp32"
     options = {
         "math_fidelity": "HiFi4",
         "fp32_dest_acc_en": True,
