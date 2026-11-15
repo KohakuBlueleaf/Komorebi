@@ -21,3 +21,6 @@ rather than staying in the project.
 - [decode](decode/README.md): an LLM decode step, Qwen3-1.7B's 28 layers on the K split
   with the operations as overlays, walked by an X280 thread from one command, with an
   account of every microsecond above the DRAM read.
+- [nn](nn/README.md): kernel calls as a list in DRAM and one generic X280 thread that
+  runs it (a closed list replayed, an open list appended while it runs), the decode
+  layer through it beside the hand-written thread, and what a call costs each way.
