@@ -215,7 +215,7 @@ def main():
     check = run.check(args.scene, None, *(prepared[name] for name in run.ARGS), frame)
     results["check"] = check
     results["ok"] = bool(results["run"]["ok"] and run.check_ok(check))
-    print(json.dumps(results), flush=True)
+    print(json.dumps(power.clocked(results)), flush=True)
     if args.json:
         with open(args.json, "w") as file:
             json.dump(results, file, indent=1)

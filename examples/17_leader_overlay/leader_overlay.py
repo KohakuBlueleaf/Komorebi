@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import layout
+from komorebi import layout, power
 from komorebi.session import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
@@ -363,7 +363,7 @@ def main():
         f"{args.rounds} rounds on {len(cells)} cores, {len(bad)} wrong, "
         f"{out['us_per_round']} us a round"
     )
-    print(json.dumps(out, default=float), flush=True)
+    print(json.dumps(power.clocked(out), default=float), flush=True)
     return 0 if out["ok"] else 1
 
 

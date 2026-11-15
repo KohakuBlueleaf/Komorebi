@@ -17,7 +17,7 @@ import chain_steps as cs
 
 import komorebi as km
 from komorebi import chain as kc
-from komorebi import formats
+from komorebi import formats, power
 
 WORDS = cs.WORDS
 
@@ -206,7 +206,7 @@ def main():
         and result["refused"] is not None
     )
     result["wall_s"] = round(time.monotonic() - cs.STARTED, 1)
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 

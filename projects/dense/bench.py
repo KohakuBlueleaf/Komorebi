@@ -212,7 +212,7 @@ def main():
         except km.KomorebiError as error:
             report["failed"] = product.failed(error)
             log(f"failed: {json.dumps(report['failed'], default=str)}")
-            print(json.dumps(report, default=str), flush=True)
+            print(json.dumps(power.clocked(report), default=str), flush=True)
             if args.json:
                 Path(args.json).write_text(json.dumps(report, indent=1, default=str))
             sys.exit(1)
@@ -234,7 +234,7 @@ def main():
     report["check"] = run.check(got[:, :n_columns], rows, a_matrix, w_matrix, "uniform")
     report["ok"] = report["check"]["ok"] and run.clean(report["run"])
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

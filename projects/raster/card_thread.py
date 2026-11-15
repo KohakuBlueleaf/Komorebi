@@ -13,6 +13,7 @@ import time
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
 from projects.raster import card, card_passes, lists, passes, run
 from reference import raster
@@ -360,7 +361,7 @@ def frame(args, session=None):
                     for point in range(rows.shape[1])
                 ],
             }
-            print(json.dumps(report, default=str), flush=True)
+            print(json.dumps(power.clocked(report), default=str), flush=True)
         report["thread"] = result_dict(result)
         report["x280_mhz"] = session.pll_mhz
         report["status"] = card.check_run(running, workers, 0, [])
@@ -452,7 +453,7 @@ def main():
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     report = frame(args)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         with open(args.json, "w") as file:
             json.dump(report, file, indent=1)

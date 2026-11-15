@@ -19,7 +19,7 @@ import commands as feeder_commands  # noqa: E402
 import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import layout, state  # noqa: E402
+from komorebi import layout, power, state  # noqa: E402
 
 RUNTIME_CONSTANTS = feeder_commands.K
 KERNELS = HERE / "kernels"
@@ -472,7 +472,9 @@ def main():
                 log(f"run {index + 1} done")
     ok = all(run["ok"] for run in runs)
     wall = round(time.monotonic() - STARTED, 1)
-    print(json.dumps({"ok": ok, "runs": runs, "wall_s": wall}), flush=True)
+    print(
+        json.dumps(power.clocked({"ok": ok, "runs": runs, "wall_s": wall})), flush=True
+    )
     sys.exit(0 if ok else 1)
 
 

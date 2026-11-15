@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
+from komorebi import power  # noqa: E402
 from projects.dense import card  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -185,7 +186,7 @@ def main():
         except km.KomorebiError as error:
             report["failed"] = product.failed(error)
             log(f"failed: {json.dumps(report['failed'], default=str)}")
-            print(json.dumps(report, default=str), flush=True)
+            print(json.dumps(power.clocked(report), default=str), flush=True)
             sys.exit(1)
         log(f"{args.calls} calls in {host_s:.4f} s")
         report["microseconds_per_call_host"] = round(host_s * 1e6 / args.calls, 3)
@@ -198,7 +199,7 @@ def main():
         log("Y's sampled rows read back")
     report["check"] = check(got[:, :n_columns], rows, a_matrix, w_matrix, args.inputs)
     report["ok"] = report["check"]["ok"] and clean(report["run"])
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report))
     sys.exit(0 if report["ok"] else 1)
