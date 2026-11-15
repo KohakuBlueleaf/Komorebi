@@ -46,6 +46,7 @@ class Model:
     head_dim: int
     layers: int
     eps: float
+    rope_theta: float = 1e6
 
     def shapes(self):
         """{weight: (K, N)} of the layer's products."""
@@ -96,6 +97,7 @@ def from_config(path):
         config.get("head_dim") or config["hidden_size"] // heads,
         config["num_hidden_layers"],
         config.get("rms_norm_eps", 1e-6),
+        config.get("rope_theta", 10000.0),
     )
 
 
@@ -166,6 +168,9 @@ def layer_weights(model, seed, layer):
         bits = formats.bf16_bits(values + 1.0)
         rows = np.repeat(bits, TILE, axis=0)
         out[name] = (tile_pages(rows), formats.bf16_values(bits)[0])
+    for name in ("q_norm", "k_norm"):  # a head's norm weight, the qk tensor's (card)
+        bits, values = bf16_random(rng, (model.head_dim,), 0.5)
+        out[name] = (None, formats.bf16_values(formats.bf16_bits(values + 1.0)))
     return out
 
 
@@ -210,6 +215,62 @@ def constants():
     return np.concatenate([np.eye(TILE, dtype=np.float32), mean], axis=1)
 
 
+def rotary(model, count):
+    """The rotation's table of positions 0..count-1 as the reference computes it
+    (float32 frequencies, cos and sin cast to bf16): (cos, sin signed as rotate_half
+    takes it: -sin in the first half), each [count, head width] float32."""
+    dim = model.head_dim
+    exponents = np.arange(0, dim, 2, dtype=np.float32) / np.float32(dim)
+    inverse = np.float32(1.0) / np.power(np.float32(model.rope_theta), exponents)
+    freqs = np.arange(count, dtype=np.float32)[:, None] * inverse[None, :]
+    angles = np.concatenate([freqs, freqs], axis=1)
+    cos, sin = bf16(np.cos(angles)), bf16(np.sin(angles))
+    sin[:, : dim // 2] *= -1.0
+    return cos, sin
+
+
+def qk_weight_pages(q_norm, k_norm):
+    """A layer's two head norm weights as the qk tensor's pages: each in every row of
+    a [32, 128] tile row, q's 4 tiles then k's: [8, 2048] uint8."""
+    rows = [
+        np.repeat(np.asarray(w, np.float32)[None, :], TILE, 0) for w in (q_norm, k_norm)
+    ]
+    return np.concatenate([tile_pages(formats.bf16_bits(row)) for row in rows])
+
+
+def qk_pages(model, rows):
+    """The qk tensor (decode.h DC_QK_*) for `rows` positions: the identity, the mean,
+    the head's mean (1 / head width), every layer's head norm weights 1, then the
+    rotation's rows, 4 a page: [pages, 2048] uint8."""
+    head = np.full((TILE, TILE), 1.0 / model.head_dim, np.float32)
+    tiles = np.concatenate([constants(), head], axis=1)
+    ones = np.ones(model.head_dim, np.float32)
+    weights = np.concatenate([qk_weight_pages(ones, ones)] * D["DC_QK_LAYERS"])
+    cos, sin = rotary(model, rows)
+    table = formats.bf16_bits(np.concatenate([cos, sin], axis=1))
+    per_page = pl.TILE_BYTES // D["DC_ROPE_ROW"]
+    padded = np.zeros((-(-rows // per_page) * per_page, table.shape[1]), np.uint16)
+    padded[:rows] = table
+    pages = [tile_pages(formats.bf16_bits(tiles)), weights]
+    return np.concatenate(pages + [padded.view(np.uint8).reshape(-1, pl.TILE_BYTES)])
+
+
+def heads_norm_rotated(model, x, weight, positions):
+    """The model's norm of each head of x ([rows, heads x width]), times `weight`, then
+    the rotary embedding at `positions` (one a row), float64."""
+    width = model.head_dim
+    heads = np.asarray(x, np.float64).reshape(x.shape[0], -1, width)
+    normed = heads / np.sqrt((heads * heads).mean(axis=2, keepdims=True) + model.eps)
+    normed *= np.asarray(weight, np.float64)
+    cos, sin = (
+        table[positions][:, None, :] for table in rotary(model, positions[-1] + 1)
+    )
+    turned = np.concatenate(
+        [normed[..., width // 2 :], normed[..., : width // 2]], axis=2
+    )
+    return (normed * cos + turned * sin).reshape(x.shape)
+
+
 def start(seed, model):
     """x of the first layer: [32, hidden] uniform in [-1, 1), bf16 values."""
     rng = np.random.default_rng([seed, 1 << 20])
@@ -249,51 +310,76 @@ def cache_pages(values, rows):
 
 
 def attend_constants():
-    """attend's constant tiles side by side: mask r (columns above r at DC_MASKED, the
-    rest 0) for r in 0..31, a tile of ones, one with ones in row 0 only, identity."""
-    columns = np.arange(TILE)
+    """attend's constant tiles side by side: mask k (row i's columns past i + k - 31 at
+    DC_MASKED, the rest 0) for k in 0..62, a tile of ones, one with ones in row 0 only,
+    the identity."""
+    rows, columns = np.arange(TILE)[:, None], np.arange(TILE)[None, :]
     masks = [
-        np.where(columns[None, :] > r, D_MASKED, 0.0) * np.ones((TILE, 1))
-        for r in range(D["DC_MASKS"])
+        np.where(columns > rows + k - D["DC_MASK_ZERO"], D_MASKED, 0.0)
+        for k in range(D["DC_MASKS"])
     ]
     row = np.zeros((TILE, TILE))
     row[0] = 1.0
     return np.concatenate(masks + [np.ones((TILE, TILE)), row, np.eye(TILE)], axis=1)
 
 
-def attention(model, q, keys, values):
+def attention(model, q, keys, values, rows=None):
     """softmax(q k^T / sqrt(width)) v of every query head over its KV head's `keys` and
-    `values` ([KV heads, n, width]), float64: [32, heads x width]."""
+    `values` ([KV heads, n, width]), float64: [32, heads x width]. `rows`: the first
+    rows are the last `rows` keys' tokens, row i over keys 0..n - rows + i (the rest 0);
+    None: every row over all n."""
     width, group = model.head_dim, model.heads // model.kv_heads
     out = np.zeros((q.shape[0], model.heads * width))
+    live = q.shape[0] if rows is None else rows
+    count = keys.shape[1]
+    mask = np.zeros((live, count))
+    if rows is not None:
+        mask[np.arange(count)[None, :] > count - rows + np.arange(rows)[:, None]] = (
+            -np.inf
+        )
     for head in range(model.heads):
         kv = head // group
-        query = np.asarray(q[:, head * width : (head + 1) * width], np.float64)
-        scores = query @ np.asarray(keys[kv], np.float64).T / math.sqrt(width)
+        query = np.asarray(q[:live, head * width : (head + 1) * width], np.float64)
+        scores = query @ np.asarray(keys[kv], np.float64).T / math.sqrt(width) + mask
         weights = np.exp(scores - scores.max(axis=1, keepdims=True))
         weights /= weights.sum(axis=1, keepdims=True)
-        out[:, head * width : (head + 1) * width] = weights @ values[kv]
+        out[:live, head * width : (head + 1) * width] = weights @ values[kv]
     return out
 
 
-def layer(model, x, w, cached=None):
+def layer(model, x, w, cached=None, rows=1, rotate=True):
     """One layer, float64, each output rounded to bf16 as the card stores it: {tensor:
-    values}. `cached`: (keys, values) of positions 0..t-1; the token's k and v (row 0)
-    are position t and a attends over 0..t. None: no attention, q stands in for a."""
+    values}. `cached`: (keys, values) of positions 0..t-1; the tokens' k and v (rows 0
+    to rows - 1) are positions t on, row i attending over 0..t + i (the other rows' a
+    is 0), q and k normed by head and rotated (`rotate`). None: no attention, q for a.
+    """
     f = {name: np.asarray(value[1], np.float64) for name, value in w.items()}
     out = {"h1": bf16(norm(x, f["norm1"], model.eps))}
     for name in ("q", "k", "v"):
         out[name] = bf16(out["h1"] @ f[name])
+    if cached is not None and rotate:
+        positions = cached[0].shape[1] + np.arange(rows)
+        for name in ("q", "k"):
+            turned = heads_norm_rotated(
+                model, out[name][:rows], f[f"{name}_norm"], positions
+            )
+            out[name][:rows] = bf16(turned)
     out["a"] = out["q"]
     if cached is not None:
         width = model.head_dim
-        rows = [
+        tokens = [
             np.concatenate(
-                [cached[i], out[name][0].reshape(model.kv_heads, 1, width)], axis=1
+                [
+                    cached[i],
+                    out[name][:rows]
+                    .reshape(rows, model.kv_heads, width)
+                    .swapaxes(0, 1),
+                ],
+                axis=1,
             )
             for i, name in enumerate(("k", "v"))
         ]
-        out["a"] = bf16(attention(model, out["q"], *rows))
+        out["a"] = bf16(attention(model, out["q"], *tokens, rows=rows))
     out["x1"] = bf16(x + out["a"] @ f["o"])
     out["h"] = bf16(norm(out["x1"], f["norm2"], model.eps))
     out["up"] = bf16(out["h"] @ f["up"])
