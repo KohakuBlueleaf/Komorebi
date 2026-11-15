@@ -55,7 +55,7 @@ def test_the_records_of_a_chain():
     assert info[0] == 1 << W["kChainSizeShift"] | 1 << W["kChainWidthShift"]
     assert info[1] & W["kChainMarked"] and (info[1] >> W["kChainNeedsShift"]) & 1
     last = info[3]
-    assert last & W["kChainSends"] and (last >> W["kChainTokenShift"]) & 0xF == 9
+    assert last & W["kChainSends"] and (last >> W["kChainTokenShift"]) & 0xF == 15
     assert (last >> W["kChainSizeShift"]) & W["kChainSizeMask"] == 8
     assert records[1, W["kChainRanges"]] == 0 | 1 << 12 | 1 << 20
     assert records[3, W["kChainRanges"]] == 8 << 20

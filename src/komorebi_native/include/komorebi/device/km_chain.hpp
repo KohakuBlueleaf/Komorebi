@@ -35,8 +35,7 @@ namespace km {
     }
 
     // The command a record names: the chain command's header and sequence, its words
-    // (one ORed with the chain's a0, the per-submit word, where the info word names
-    // it).
+    // (the one the info word names ORed with the chain's a0, the per-submit word).
     inline km_command_t chain_command(
         const km_command_t& chain, const uint32_t* record
     ) {
@@ -466,9 +465,8 @@ namespace km {
         chain_now.on = true;
     }
 
-    // Reader: the chain from the command's first record (a7, its bank in a8 as a
-    // block's), `product` for each record this core is in; record r + 1 read at r's
-    // start once compute and the writer took r - 1. Then no chain runs.
+    // Reader: the chain from its first record (a7, a8's bank), `product` for each
+    // record this core is in; record r + 1 read once compute and the writer took r - 1.
     template <typename Product>
     void chain_reader(Reader& reader, const km_command_t& command, Product product) {
         const uint32_t bank = (command.a8 >> KM_BLOCK_BANK_SHIFT) - 1u;
@@ -621,9 +619,8 @@ namespace km {
         return true;
     }
 
-    // A group's root writer, its output written: the writes acked (a direct input: sent
-    // and its acks; `dram_too`: the DRAM copy's too), then a mark on each core of the
-    // next record for each of its ranges that meets this block.
+    // A group's root, its output written: its writes acked (a direct input sent; with
+    // `dram_too` the DRAM copy too), a mark to each next core a range meets this block.
     template <typename Writer, typename Shape>
     bool chain_mark(
         const Shape& shape,

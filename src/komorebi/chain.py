@@ -69,30 +69,26 @@ class Direct(NamedTuple):
 
 
 class Call(NamedTuple):
-    """A call of a chain: `handler` with its ten words `args` on cores `group` (first,
-    count), in groups of `size` cores whose root writes block g (`width` tiles from
-    g x width) of `output`. `input`: the output of the call before it reads, by its
-    share of K tiles `k` (base, count) or `ranges` (up to three); then it waits for its
-    marks. `sends`: its parts go up its group's tree. `reads`: its other inputs (Read).
-    `direct`: its input is sent into its cores' L1 (Direct). `word`: the per-submit
-    word's name and the argument it is ORed into (3 to 9, a3 to a9). `row`: its stamps'
-    row. `name`: what a refusal calls it."""
+    """A call of a chain: `handler` with its ten words on cores `group`, in groups of
+    `size` whose root writes block g (`width` tiles from g x width) of `output`. With
+    `input` (the call before's output) it waits for the marks of the blocks its share
+    `k` or its `ranges` meet."""
 
     handler: object
-    args: tuple
-    group: tuple
+    args: tuple  # a0 to a9
+    group: tuple  # (first, count)
     size: int
     width: int
     output: str = None
     input: str = None
-    k: tuple = None
-    ranges: tuple = ()
-    sends: bool = False
-    reads: tuple = ()
-    direct: Direct = None
-    word: tuple = None
-    row: int = 0
-    name: str = None
+    k: tuple = None  # (base, count): K tiles shared out over the group's ranks
+    ranges: tuple = ()  # up to three Range
+    sends: bool = False  # its parts go up its group's tree (credits)
+    reads: tuple = ()  # its other inputs (Read)
+    direct: Direct = None  # its input sent into its cores' L1
+    word: tuple = None  # (name, argument 0 to 9): the per-submit word, ORed into it
+    row: int = 0  # its stamps' row
+    name: str = None  # what a refusal calls it
 
 
 def _label(call, index):
@@ -191,8 +187,8 @@ def check_calls(calls):
                     f"{label}: reads {read.tensor}, which the call before writes, as "
                     "an earlier input; it is this call's input (marked)"
                 )
-        if call.word is not None and not 3 <= call.word[1] <= 9:
-            raise ChainRefused(f"{label}: the per-submit word goes into a3 to a9")
+        if call.word is not None and not 0 <= call.word[1] <= 9:
+            raise ChainRefused(f"{label}: the per-submit word goes into a0 to a9")
 
 
 def prove(calls):
@@ -307,6 +303,7 @@ def records(calls, address):
     """The calls' records (uint32, 16 words each) for a chain at DRAM `address`: each
     names the next one in the same bank, the last 0."""
     w = words()
+    arguments = abi.headers().positions[2]  # a0 to a9's words of a command
     out = np.zeros((len(calls), w["kChainWords"]), np.uint32)
     for index, call in enumerate(calls):
         flags = (
@@ -314,7 +311,7 @@ def records(calls, address):
             | (w["kChainSends"] if call.sends else 0)
             | (w["kChainDataMark"] if call.direct is not None else 0)
         )
-        word = call.word[1] if call.word is not None else 0
+        word = arguments[call.word[1]] if call.word is not None else 0
         needs = w["kChainNeedsRanges"] if call.ranges else w["kChainNeedsK"]
         if not 0 <= call.row <= 0xFF:
             raise ChainRefused(f"{_label(call, index)}: stamp row 0 to 255")

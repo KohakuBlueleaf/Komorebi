@@ -7,20 +7,18 @@
 #include "kmx.h"
 #include "komorebi/abi/km_chain.h"
 
-/* A call of a chain: its command (handler, cores, a0 to a9); KMX_CHAIN_* flags; the
- * word (3 to 15) the chain's a0 is ORed into, 0 none; what its cores read of the call
- * before's output: a K range (k_base, k_tiles, over the group's ranks) or up to three
- * ranges (kmx_chain_range); its group's size and the output tiles a group writes (0:
- * the program says); its stamp row. */
+/* A call of a chain; what its cores read of the call before's output: a K range over
+ * the group's ranks, or up to three ranges. */
 typedef struct {
-    const km_command_t* command;
-    uint32_t flags;
-    uint32_t word;
-    uint32_t by_ranges;
-    uint32_t k_base, k_tiles;
-    uint32_t ranges[kChainRangeCount];
-    uint32_t size, width;
-    uint32_t row;
+    const km_command_t* command;       /* handler, cores, a0 to a9 */
+    uint32_t flags;                    /* KMX_CHAIN_* */
+    uint32_t word;                     /* 3 to 15: ORed with the chain's a0; 0 none */
+    uint32_t by_ranges;                /* 1: `ranges`; 0: k_base, k_tiles */
+    uint32_t k_base, k_tiles;          /* the K range, shared out over the ranks */
+    uint32_t ranges[kChainRangeCount]; /* kmx_chain_range words */
+    uint32_t size,
+        width;    /* the group's size, a group's output tiles (0: the program) */
+    uint32_t row; /* its stamp row */
 } kmx_chain_call;
 
 enum {
@@ -39,10 +37,8 @@ static inline uint32_t kmx_chain_range(
     );
 }
 
-/* Call `call` as record `index` of region `region` (64 bytes each from offset 0), its
- * next record at `next` (0: the last); `*address` the record's address as the chain
- * command and other records name it. KMX_OK, or KMX_BAD for a bound. The caller
- * flushes the region once its records are written. */
+/* `call` as record `index` of region `region` (64 bytes each), next `next` (0: last),
+ * `*address` its address as records name it; KMX_OK or KMX_BAD. The caller flushes. */
 static inline int kmx_chain_record(
     int region,
     uint32_t index,
@@ -102,9 +98,8 @@ static inline int kmx_chain_record(
     return KMX_OK;
 }
 
-/* The chain command: `handler` of the thread's program on cores [0, cores), its a4
- * `mode` (the program's chain mode), a0 the per-submit word, a1 the program's flags,
- * the first record region `region`'s record 0. KMX_OK, or KMX_BAD for a bound. */
+/* The chain command: `handler` on cores [0, cores), a4 `mode` (the program's), a0 the
+ * per-submit word, a1 `a1`, from region `region`'s record 0. KMX_OK, or KMX_BAD. */
 static inline int kmx_chain_command(
     km_command_t* chain,
     int region,

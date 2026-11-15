@@ -22,21 +22,18 @@ enum { kChainMarked = 1, kChainSends = 2, kChainDataMark = 4 };
  * a0 3 to a9 15; the per-submit word); 0: none. */
 enum { kChainTokenShift = 4, kChainTokenMask = 0xF };
 
-/* Info bit 8: what a core reads of the record before's output (tiles of its row): its
- * share of a K range (range 0's base and width, over the group's ranks), or the range
- * words, range i base + step x group, width wide. Bits 9 to 15: the group's size (0:
- * the program says); 16 to 23 the output tiles a group writes (0: the program says);
- * 24 to 31 the record's stamp row. */
+/* Info bits 8 to 31: what a core reads of the record before's output, the group's
+ * size and a group's output tiles (0: the program says them), the stamp row. */
 enum {
-    kChainNeedsK = 0,
-    kChainNeedsRanges = 1,
+    kChainNeedsK = 0,      /* bit 8 clear: its rank's share of range 0 (a K range) */
+    kChainNeedsRanges = 1, /* bit 8 set: range i from base + step x its group */
     kChainNeedsShift = 8,
     kChainRangeCount = 3,
-    kChainSizeShift = 9,
+    kChainSizeShift = 9, /* bits 9 to 15 */
     kChainSizeMask = 0x7F,
-    kChainWidthShift = 16,
+    kChainWidthShift = 16, /* bits 16 to 23 */
     kChainWidthMask = 0xFF,
-    kChainRowShift = 24
+    kChainRowShift = 24 /* bits 24 to 31 */
 };
 
 /* The chain's words and two record slots on each core: the runtime's trace buffer's
@@ -56,14 +53,12 @@ enum {
     kChainStampBytes = 1536
 };
 
-/* The stamp words the chain's own calls take (a program takes the others): the record
- * taken, its input marked, the reader's record done and its next fetch, the writer's
- * writes acknowledged, its marks issued, its wait for a credit. */
+/* The stamp words the chain's own calls take (a program takes the others). */
 enum {
-    kChainStampTaken = 1,
-    kChainStampMarked = 4,
-    kChainStampDone = 6,
-    kChainStampLast = 7,
-    kChainStampMarks = 11,
-    kChainStampCredit = 14
+    kChainStampTaken = 1,  /* the record taken */
+    kChainStampMarked = 4, /* its input marked */
+    kChainStampDone = 6,   /* the reader's record done */
+    kChainStampLast = 7,   /* the next fetch; the writer's writes acknowledged */
+    kChainStampMarks = 11, /* its marks issued */
+    kChainStampCredit = 14 /* its wait for a credit */
 };
