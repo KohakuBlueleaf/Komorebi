@@ -55,7 +55,8 @@ enum {
     DC_MASKS = 32,       /* mask r: columns above r at DC_MASKED */
     DC_ATTEND_ONES = 32, /* the constants' tile of ones */
     DC_ATTEND_ROW = 33,  /* the tile with ones in row 0 only */
-    DC_ATTEND_CONSTANTS = 34,
+    DC_ATTEND_IDENTITY = 34,
+    DC_ATTEND_CONSTANTS = 35,
     DC_ATTEND_READ_ONLY = 0x200, /* a3: the reads, the append; no math, no merge */
     DC_ATTEND_LOCAL = 0x400,     /* a3: no merge (the root ends on its own part) */
     DC_ATTEND_EXP_TWICE = 0x800, /* a3: P's exponent taken twice (its cost, timed) */

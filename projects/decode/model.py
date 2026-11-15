@@ -250,7 +250,7 @@ def cache_pages(values, rows):
 
 def attend_constants():
     """attend's constant tiles side by side: mask r (columns above r at DC_MASKED, the
-    rest 0) for r in 0..31, a tile of ones, a tile with ones in row 0 only."""
+    rest 0) for r in 0..31, a tile of ones, one with ones in row 0 only, identity."""
     columns = np.arange(TILE)
     masks = [
         np.where(columns[None, :] > r, D_MASKED, 0.0) * np.ones((TILE, 1))
@@ -258,7 +258,7 @@ def attend_constants():
     ]
     row = np.zeros((TILE, TILE))
     row[0] = 1.0
-    return np.concatenate(masks + [np.ones((TILE, TILE)), row], axis=1)
+    return np.concatenate(masks + [np.ones((TILE, TILE)), row, np.eye(TILE)], axis=1)
 
 
 def attention(model, q, keys, values):

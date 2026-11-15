@@ -15,7 +15,7 @@ uint32_t km_overlay(km::Reader& reader, const SplitBlock& block) {
         DC_HEAD_GROUP * DC_HEAD_TILES
     ) ||
         !decode::read_item(
-            reader, command, DC_CB_ATTEND_CONSTANT, command.a8, DC_ATTEND_ONES, 2
+            reader, command, DC_CB_ATTEND_CONSTANT, command.a8, DC_ATTEND_ONES, 3
         ) ||
         (
             root &&

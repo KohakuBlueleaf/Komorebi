@@ -1,6 +1,5 @@
-// Attend, compute: each query head's scores against this core's keys, their largest
-// in each row, P = exp((s - max) / sqrt(128)), its row sums and P V: the head's state.
-// The states meet up the group's tree; the root divides the output by the sum.
+// Attend, compute: per query head, scores, row maximum, P = exp((s - max) / sqrt(128)),
+// its sums and P V; the states merge up the group's tree, the root divides by the sum.
 #include "api/compute/binary_max_min.h"
 #include "api/compute/eltwise_binary_sfpu.h"
 #include "api/compute/eltwise_unary/exp.h"
@@ -14,8 +13,10 @@
 
 namespace {
 
-    constexpr uint32_t kOnes = 0;  // DC_CB_ATTEND_CONSTANT: the ones, the row-0 tile
+    constexpr uint32_t kOnes = 0;  // DC_CB_ATTEND_CONSTANT: ones, the row-0 tile, identity
     constexpr uint32_t kRow = 1;
+    constexpr uint32_t kIdentity = 2;
+    constexpr uint32_t kConstants = 3;
     constexpr uint32_t kQueryTiles = DC_HEAD_GROUP * DC_HEAD_TILES;
     constexpr uint32_t kSum = 1;  // a head's state: maximum, sum, output tiles
     constexpr uint32_t kOutput = 2;
@@ -34,6 +35,44 @@ namespace {
         MATH((llk_math_matmul_init_impl<MATH_FIDELITY, MM_THROTTLE>(
             kTileRows, kTileRows, kTileRows, kTileRows, false, transpose, 1, 1
         )));
+    }
+
+    // The merge's products: fp32 buffers that unpack to DEST elsewhere, read here as
+    // tf32 into both sources, every fidelity phase (the factors' low bits count).
+    ATTEND_STEP void rescale_init() {
+        constexpr uint32_t f32 = static_cast<uint32_t>(DataFormat::Float32);
+        constexpr uint32_t tf32 = static_cast<uint32_t>(DataFormat::Tf32);
+        UNPACK(
+            (
+                _llk_unpack_reconfig_data_format_srca_impl_<
+                    DST_ACCUM_MODE,
+                    p_dim_stride_target::IGNORE>(
+                        f32, tf32, get_local_cb_interface(DC_CB_STATE).fifo_page_size
+                    )
+            )
+        );
+        UNPACK(
+            (
+                _llk_unpack_reconfig_data_format_srcb_impl_<
+                    DST_ACCUM_MODE,
+                    p_dim_stride_target::IGNORE>(
+                        f32, tf32, get_local_cb_interface(DC_CB_RESCALE).fifo_page_size
+                    )
+            )
+        );
+        MATH((_llk_math_reconfig_data_format_<DST_ACCUM_MODE>(tf32, tf32)));
+        UNPACK((llk_unpack_AB_matmul_init(DC_CB_RESCALE, DC_CB_STATE, 0)));
+        MATH((llk_math_matmul_init_impl<MathFidelity::HiFi4, MM_THROTTLE>(
+            kTileRows, kTileRows, kTileRows, kTileRows, false, 0, 1, 1
+        )));
+    }
+
+    // DEST `dst` += tile `left` of DC_CB_RESCALE times tile `right` of `cb`.
+    ATTEND_STEP void rescale_tile(
+        uint32_t left, uint32_t cb, uint32_t right, uint32_t dst
+    ) {
+        UNPACK((llk_unpack_AB_matmul(DC_CB_RESCALE, cb, left, right)));
+        MATH((llk_math_matmul<MathFidelity::HiFi4, MM_THROTTLE>(dst)));
     }
 
     // DEST `dst` = exp(DEST `dst` / sqrt(128)).
@@ -209,9 +248,8 @@ namespace {
         }
     }
 
-    // The state at the front and the one in arrival slot `slot`, merged into an item
-    // of `cb`: m = max(m1, m2), each sum and output tile times exp((m_i - m) /
-    // sqrt(128)).
+    // The front state and slot `slot`'s merged into `cb`: m = max(m1, m2), sum and
+    // output diag(a1) X1 + diag(a2) X2 (matrix unit), a_i = exp((m_i - m) / sqrt(128)).
     ATTEND_STEP bool merge(
         const km::Compute& compute,
         const km::Arrival& arrival,
@@ -227,9 +265,10 @@ namespace {
         }
         for (uint32_t head = 0; head < DC_HEAD_GROUP; head++) {
             const uint32_t state = head * DC_STATE_TILES;
-            tile_regs_acquire();
+            tile_regs_acquire();  // m, then each side's factor on the diagonal
             copy(DC_CB_STATE, state, 0);
             copy(kCbArrive, base + state, 1);
+            copy(DC_CB_ATTEND_CONSTANT, kIdentity, 3);
             binary_max_tile_init();
             binary_max_tile(0, 1, 2);
             sub_binary_tile_init();
@@ -237,6 +276,9 @@ namespace {
             sub_binary_tile(1, 2, 1);
             scaled_exp(0);
             scaled_exp(1);
+            mul_binary_tile_init();
+            mul_binary_tile(0, 3, 0);
+            mul_binary_tile(1, 3, 1);
             tile_regs_commit();
             tile_regs_wait();
             const bool rescale = compute.reserve_back(DC_CB_RESCALE, 2);
@@ -251,20 +293,21 @@ namespace {
             if (!rescale || !compute.wait_front(DC_CB_RESCALE, 2)) {
                 return false;
             }
-            for (uint32_t tile = kSum; tile < DC_STATE_TILES; tile++) {
+            rescale_init();
+            for (uint32_t first = kSum; first < DC_STATE_TILES; first += 4) {
+                const uint32_t last = (
+                    first + 4 < DC_STATE_TILES ? first + 4 : DC_STATE_TILES
+                );
                 tile_regs_acquire();
-                copy(DC_CB_RESCALE, 0, 0);
-                copy(DC_CB_RESCALE, 1, 1);
-                copy(DC_CB_STATE, state + tile, 2);
-                copy(kCbArrive, base + state + tile, 3);
-                mul_binary_tile_init();
-                mul_binary_tile(2, 0, 2);
-                mul_binary_tile(3, 1, 3);
-                add_binary_tile_init();
-                add_binary_tile(2, 3, 2);
+                for (uint32_t tile = first; tile < last; tile++) {
+                    rescale_tile(0, DC_CB_STATE, state + tile, tile - first);
+                    rescale_tile(1, kCbArrive, base + state + tile, tile - first);
+                }
                 tile_regs_commit();
                 tile_regs_wait();
-                pack_at(2, cb, state + tile);
+                for (uint32_t tile = first; tile < last; tile++) {
+                    pack_at(tile - first, cb, state + tile);
+                }
                 tile_regs_release();
             }
             cb_pop_front(DC_CB_RESCALE, 2);
@@ -324,9 +367,8 @@ namespace {
         return rounds;
     }
 
-    // The state, then each state received merged into it; a core other than the root
-    // leaves its last in DC_CB_OUTBOX for its writer, the root its output in Y's
-    // buffer.
+    // The state, then each received one merged in; a core other than the root leaves
+    // its last in DC_CB_OUTBOX for its writer, the root its output in Y's buffer.
     ATTEND_STEP bool attend(
         const km::Compute& compute, const SplitBlock& block, const Attend& at
     ) {
@@ -335,7 +377,7 @@ namespace {
         const uint32_t rounds = receives(at, form);
         if (
             !compute.wait_front(DC_CB_QUERY, kQueryTiles) ||
-            !compute.wait_front(DC_CB_ATTEND_CONSTANT, 2) ||
+            !compute.wait_front(DC_CB_ATTEND_CONSTANT, kConstants) ||
             (root && !compute.wait_front(DC_CB_MASK, 1))
         ) {
             return false;
@@ -380,7 +422,7 @@ namespace {
             ok = finish(compute);
         }
         cb_pop_front(DC_CB_QUERY, kQueryTiles);
-        cb_pop_front(DC_CB_ATTEND_CONSTANT, 2);
+        cb_pop_front(DC_CB_ATTEND_CONSTANT, kConstants);
         if (root) {
             cb_pop_front(DC_CB_MASK, 1);
         }

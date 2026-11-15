@@ -118,9 +118,8 @@ namespace attend {
         return true;
     }
 
-    // The head's cached key (value) tiles this core holds, in batches of DC_KEY_BATCH
-    // key tiles into `cb`, each batch pushed when it has landed; the whole buffer is
-    // reserved and pushed to its end (so every command starts at its base).
+    // This core's cached key (value) tiles into `cb`, DC_KEY_BATCH at a time, each
+    // pushed when landed; the buffer reserved whole (each command starts at its base).
     template <typename Kernel>
     inline bool read_cache(
         const Kernel& core,

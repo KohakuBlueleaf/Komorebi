@@ -70,6 +70,9 @@ def parse():
     parser.add_argument("--context", type=int, default=CONTEXT, help="the cache's rows")
     parser.add_argument("--lengths", type=int, nargs="*", default=list(LENGTHS))
     parser.add_argument("--no-check", action="store_true")
+    parser.add_argument(
+        "--loop-check", action="store_true", help="one token through every layer"
+    )
     parser.add_argument("--pause", type=float, default=1.0, help="x a case's time")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--json", default=None)
@@ -160,6 +163,30 @@ def check(decode, model, weights, caches, seed, length):
     return {name: bounded(errors) for name, errors in out.items()} | {
         "append_exact": exact
     }
+
+
+def chain(model, layers, seed, context, length):
+    """x after one token through `layers` layers by model.layer(), each over its own
+    random cache at position length - 1 (computed before the card is opened)."""
+    x, position = md.start(seed, model), length - 1
+    for layer in range(layers):
+        keys, values = md.cache(model, seed, layer, context)
+        cached = (keys[:, :position], values[:, :position])
+        x = md.layer(model, x, md.layer_weights(model, seed, layer), cached)["x"]
+        log(f"loop reference: layer {layer}")
+    return x
+
+
+def loop_check(decode, model, caches, seed, layers, length, want):
+    """One token through every layer from one LAYERS command against chain()'s x;
+    the host's copy of layer 0's cache takes its new row."""
+    position = length - 1
+    decode.write_activation("x", md.start(seed, model))
+    decode.job(1, layers, position=position)
+    out = md.errors(decode.read_activation("x"), want)
+    for index, name in enumerate(("keys", "values")):
+        caches[index][:, position] = decode.cache_rows(0, name, position)
+    return {"layers": layers, "length": length} | out
 
 
 def measure(decode, case, tokens, layers, index, length):
@@ -336,6 +363,8 @@ def main():
     index = visible_card()
     deadline = round(max(1.0, args.tokens * layers * 2e-3 + 0.5), 3)
     results, ok = [], True
+    if args.loop_check:
+        looped = chain(model, layers, args.seed, args.context, args.lengths[0])
     with km.Session(log=log) as session:
         decode = card.Decode(
             session,
@@ -365,6 +394,11 @@ def main():
         written = layers * (model.layer_bytes() + cache_bytes)
         report["write_gbs"] = round(written / write_s / 1e9, 2)
         try:
+            if args.loop_check:  # first: the caches are as written
+                report["loop"] = loop_check(
+                    decode, model, caches, args.seed, layers, args.lengths[0], looped
+                )
+                log(f"loop check: {json.dumps(report['loop'])}")
             if not args.no_check:
                 report["alone"] = []
                 for groups, position in ALONE:

@@ -47,7 +47,7 @@ def buffers(plan, most):
     head = D["DC_HEAD_TILES"]
     attend = [
         (D["DC_CB_QUERY"], D["DC_HEAD_GROUP"] * head),
-        (D["DC_CB_ATTEND_CONSTANT"], 2),
+        (D["DC_CB_ATTEND_CONSTANT"], 3),
         (D["DC_CB_MASK"], 1),
         (D["DC_CB_KEYS"], most * head),
         (D["DC_CB_VALUES"], most * head),
