@@ -485,12 +485,12 @@ def test_a_class_built_for_a_session_leaves_the_loads_rows():
         log=lines.append, session=Budget(1_000_000), source=tensor("bfloat16")
     )
     assert "  plan: TILES = 240" in alone.built.report
-    assert "  plan: TILES = 225" in loaded.built.report  # 15 tiles the runtime's
+    assert "  plan: TILES = 213" in loaded.built.report  # 27 tiles the runtime's
     table = lines[-1]
     for row in ("control block and overlay area", "host transfer buffer"):
         assert row in table
     assert "slots: reader, 1 x 9,216 B (at most)" in table
-    with pytest.raises(ProgramError, match="its buffers take 999424 B, 940784 B"):
+    with pytest.raises(ProgramError, match="its buffers take 999424 B, 891632 B"):
         Unsolved(
             log=lambda line: None,
             session=Budget(1_000_000),
