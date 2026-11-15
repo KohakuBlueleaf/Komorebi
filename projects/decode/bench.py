@@ -31,6 +31,8 @@ CHECK_RMS, CHECK_MAX = 2e-2, 5e-2
 # change of role. Checked: what the card keeps of a layer, and the cache's new row.
 CHECK_RUNS = 2
 CHECKED = ("q", "k", "v", "a", "x1", "gated", "x")
+# --staged: the checks before the chain's own, the layer as on main, then qkv -> attend
+STAGES = (("commands", {"chain": False}), ("pair", {"chain": True, "pair": True}))
 # The cache's rows a KV head and layer, and the lengths T timed (the last token
 # attends over T rows) and checked (in this order: a check appends to row T - 1).
 CONTEXT, LENGTHS = 4096, (4096, 1024, 256)
@@ -98,6 +100,21 @@ def parse():
         choices=list(card.BODIES),
         help="the operations whose vector bodies are emitted (bodies.py)",
     )
+    parser.add_argument(
+        "--no-chain",
+        action="store_true",
+        help="a command a step (before stage 6), not the layer as one command",
+    )
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="checks first a command a step, then the chain's first two records",
+    )
+    parser.add_argument(
+        "--commands",
+        action="store_true",
+        help="each case also a command a step on the chain's program (CASE/commands)",
+    )
     return parser.parse_args()
 
 
@@ -156,10 +173,11 @@ def attend_alone(decode, model, caches, seed, groups, position, rows):
     return {"groups": groups, "position": position, "rows": rows} | out
 
 
-def check(decode, model, weights, caches, seed, length, rows=1):
+def check(decode, model, weights, caches, seed, length, rows=1, names=CHECKED, **job):
     """One layer from a known x on the card against model.layer(), `rows` tokens ending
     at row length - 1 of layer 0's cache, CHECK_RUNS times: the larger errors of the
-    runs on the live rows, a tensor; whether the cache's new rows are the tokens'."""
+    runs on the live rows, a tensor of `names`; whether the cache's new rows are the
+    tokens'. `job`: decode.job's chain and pair."""
     position = length - rows
     start = md.start(seed, model)
     cached = tuple(cache[:, :position].copy() for cache in caches)
@@ -168,7 +186,7 @@ def check(decode, model, weights, caches, seed, length, rows=1):
     width = {name: model.shapes()[name][1] for name in ("q", "k", "v")}
     for _ in range(CHECK_RUNS):
         decode.write_activation("x", start)
-        decode.job(1, 1, position=position, rows=rows)
+        decode.job(1, 1, position=position, rows=rows, **job)
         got = {
             name: decode.read_activation(name)
             for name in ("qkv", "a", "x1", "gated", "x")
@@ -179,7 +197,7 @@ def check(decode, model, weights, caches, seed, length, rows=1):
         exact &= appended(
             decode, caches, position, got["k"], got["v"], model.kv_heads, rows
         )
-        for name in CHECKED:
+        for name in names:
             errors = md.errors(got[name][:rows], want[name][:rows])
             if name in out:
                 errors = {key: max(out[name][key], errors[key]) for key in errors}
@@ -222,7 +240,9 @@ def measure(decode, case, tokens, layers, index, length):
         meter.mark("job")
         started = time.perf_counter()
         position = length - tokens
-        got = decode.job(tokens, layers, timeout=60.0, position=position, **CASES[case])
+        name, _, commands = case.partition("/")
+        job = CASES[name] | ({"chain": False} if commands else {})
+        got = decode.job(tokens, layers, timeout=60.0, position=position, **job)
         seconds = time.perf_counter() - started
         meter.mark("after")
     return got | {
@@ -291,6 +311,28 @@ def attend_terms(model, cases, length, tokens, group):
         ("OURS", "attend: compute not under the read", compute - products - exps),
         ("OURS", "attend: the merge's rounds", step["full"] - step["attend_local"]),
     ]
+
+
+def chain_account(model, cases, length, tokens):
+    """The chain's account a layer (one event a layer: no step's own time): each case's
+    layer, its one command, the thread (the rest); the weights and the cache at the
+    ceiling; with CASE/commands, CASE's commands a step on the same program."""
+    rows = length - (tokens - 1) / 2
+    cache = 2 * model.kv_heads * rows * model.head_dim * 2 / (CEILING_GBS * 1e3)
+    weights = model.layer_bytes() / (CEILING_GBS * 1e3)
+    out = {}
+    for name, case in cases.items():
+        command = (
+            case["steps"]["chain"]
+            if "/" not in name
+            else sum(us for step, us in case["steps"].items() if step != "chain")
+        )
+        out[name] = {
+            "layer_us": round(case["layer"], 2),
+            "commands_us": round(command, 2),
+            "thread_us": round(case["layer"] - command, 2),
+        }
+    return {"weights_us": round(weights, 2), "cache_us": round(cache, 2), "cases": out}
 
 
 def account(model, cases, attend=()):
@@ -398,6 +440,7 @@ def main():
     layers = args.layers or model.layers
     report = {"model": model.name, "layers": layers, "tokens": args.tokens}
     report["bodies"] = args.bodies
+    report["chain"] = not args.no_chain
     report["layer_bytes"] = model.layer_bytes()
     report["plans"] = {
         f"{k}x{n}": plan.words()
@@ -410,7 +453,8 @@ def main():
     results, ok = [], True
     if args.loop_check:
         looped = chain(model, layers, args.seed, args.context, args.lengths[0])
-    with km.Session(log=log) as session:
+    kernel_bytes = None if args.no_chain else card.CHAIN_KERNEL_BYTES
+    with km.Session(log=log, kernel_bytes=kernel_bytes) as session:
         decode = card.Decode(
             session,
             model,
@@ -422,6 +466,7 @@ def main():
             patterns=patterns(args),
             context=args.context,
             bodies=args.bodies,
+            chain=not args.no_chain,
         )
         log(
             f"loaded: {len(decode.plans)} plans, deadline {deadline} s, "
@@ -455,6 +500,24 @@ def main():
                     log(f"attend alone: {json.dumps(got)}")
                     ok &= got["ok"] and got["append_exact"]
                 report["check"] = {}
+                for stage, job in STAGES if args.staged and not args.no_chain else ():
+                    if not ok:
+                        break
+                    names = CHECKED[:4] if job.get("pair") else CHECKED
+                    got = check(
+                        decode,
+                        model,
+                        first,
+                        caches,
+                        args.seed,
+                        args.lengths[0],
+                        1,
+                        names,
+                        **job,
+                    )
+                    report["check"][stage] = got
+                    ok &= got["append_exact"] and all(got[name]["ok"] for name in names)
+                    log(f"check, {stage}: {json.dumps(got)}")
                 checks = [(length, 1) for length in args.lengths]
                 for length, rows in checks + [(args.lengths[0], CHECK_ROWS)]:
                     if not ok:
@@ -465,8 +528,11 @@ def main():
                         errors["ok"] for name, errors in got.items() if name in CHECKED
                     )
                     log(f"check, T {length}, {rows} rows: {json.dumps(got)}")
+            timed = list(args.cases)
+            if args.commands and not args.no_chain:
+                timed += [f"{case}/commands" for case in args.cases]
             for length in args.lengths if ok else ():
-                for case in args.cases:
+                for case in timed:
                     log(f"case {case}, T {length}: {args.tokens} x {layers} layers")
                     result = measure(decode, case, args.tokens, layers, index, length)
                     log(f"case {case}: {json.dumps(result)}")
@@ -501,11 +567,24 @@ def main():
         result["weight_gbs"] = round(layers * model.layer_bytes() / token_ms / 1e6, 1)
     group = md.plans(model)[md.plan_of(model, "o")].s
     report["account"] = {
-        length: account(
-            model, cases, attend_terms(model, cases, length, args.tokens, group)
+        length: (
+            chain_account(model, cases, length, args.tokens)
+            if any(case["steps"].get("chain") for case in cases.values())
+            else account(
+                model, cases, attend_terms(model, cases, length, args.tokens, group)
+            )
         )
         for length, cases in layered.items()
     }
+    for length, cases in layered.items():  # CASE/commands: main's account of them
+        apart = {
+            name.partition("/")[0]: case
+            for name, case in cases.items()
+            if name.endswith("/commands")
+        }
+        if apart:
+            terms = attend_terms(model, apart, length, args.tokens, group)
+            report["account"][length]["commands"] = account(model, apart, terms)
     report["ceiling_ms_per_token"] = round(
         layers * model.layer_bytes() / (CEILING_GBS * 1e6), 3
     )

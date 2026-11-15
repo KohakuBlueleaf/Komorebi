@@ -75,6 +75,9 @@ enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
  * 16 attend's reads only, 32 no merge, 64 exponent twice; a5 the first position. */
 enum { DC_HANDLER_LAYERS = 1 };
 
+/* LAYERS' a4 128: the layer as one command (the chain); with 256 its first two only. */
+enum { DC_LAYERS_CHAIN = 128, DC_LAYERS_PAIR = 256 };
+
 /* Every command's a3 bits 16 to 21: the rows that hold a token (1 to 32; 0 is 32), the
  * first ones; LAYERS' a6 the same for each step (positions a5 + step x rows on). */
 enum { DC_ROWS_SHIFT = 16, DC_ROWS_MASK = 0x3F };
@@ -108,11 +111,13 @@ enum {
     DC_WORD_ADD,          /* a6 of each operation: its overlay and parts */
     DC_WORD_GATE,
     DC_WORD_SCALE,
-    DC_WORD_EPSILON,     /* the norm's epsilon, float bits */
-    DC_WORD_PLAN_ATTEND, /* o's plan | the cores of every KV head's group << 8 */
-    DC_WORD_ATTEND,      /* a6 of ATTEND */
-    DC_WORD_CACHE_TILES, /* the cache's key tiles a head (its rows / 32) */
-    DC_WORDS
+    DC_WORD_EPSILON,      /* the norm's epsilon, float bits */
+    DC_WORD_PLAN_ATTEND,  /* o's plan | the cores of every KV head's group << 8 */
+    DC_WORD_ATTEND,       /* a6 of ATTEND */
+    DC_WORD_CACHE_TILES,  /* the cache's key tiles a head (its rows / 32) */
+    DC_WORD_GATE_TILES,   /* the chain: gated tiles a gate_up group writes */
+    DC_WORD_ATTEND_NEEDS, /* the chain: attend's three ranges of qkv (chain.h) */
+    DC_WORDS = DC_WORD_ATTEND_NEEDS + 3
 };
 
 /* Region `tensors`: the activations' addresses. */
@@ -157,6 +162,7 @@ enum {
     DC_STEP_O,
     DC_STEP_GATE_UP,
     DC_STEP_DOWN,
+    DC_STEP_CHAIN, /* the layer as one command (LAYERS' a4 128) */
     DC_STEPS
 };
 
@@ -172,5 +178,5 @@ enum {
     DC_ST_SPAN_LOW = 48, /* overlapped: q's submit to o's event, summed (low, high) */
     DC_ST_SPAN_HIGH = 49,
     DC_STATS_WORDS = 64,
-    DC_STATS_SLOTS = 32
+    DC_STATS_SLOTS = 64 /* a job each: the checks and 2 x 6 cases at 3 lengths */
 };
