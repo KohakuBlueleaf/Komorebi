@@ -1069,7 +1069,13 @@ session, and write tensors through `session.tensor`, `session.write` or
 the size the refusal names, or runs the script again: the refusal is remembered and
 the next run opens at that size.
 
-**The guard.** The refusals: `km.KernelSizeError` (or `km.L1BudgetError` for a
+**The guard.** The load decides from a bound of the kernel config taken from the
+build before tt-metal lays it out (that check logs a fatal line): per group the most
+runtime argument words over its cores and the common ones, the semaphores by the
+highest id, the circular buffer configs by the highest index, the packed text, and one
+line of alignment; it is 16 bytes over tt-metal's size in the mock builds measured. A
+bound under the buffer whose layout is over still logs that line, then reopens. The
+refusals: `km.KernelSizeError` (or `km.L1BudgetError` for a
 smaller buffer) naming why and the size that holds the kernels; `km.KomorebiError`
 when a tensor comes back at another address. A changed array or a write through the
 buffer: nothing.

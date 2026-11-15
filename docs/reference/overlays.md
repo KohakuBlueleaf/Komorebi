@@ -140,7 +140,9 @@ when:
 | its code, data and `.bss` are larger than its slot | it would overwrite the next slot |
 
 Parts are cached under the native cache folder, keyed by their preprocessed source, the
-recipe, the persistent kernel and the linker script.
+recipe, the persistent kernel and the linker script. The preprocessed source and the
+persistent kernel carry the path of the folder their source is in, so a class's build
+folder is named by its text (a class made twice with equal text builds its parts once).
 
 The persistent kernels keep and export the state their parts share. Compute exports
 `unp_cfg_context`, `pack_sync_tile_dst_ptr`, `math_sync_tile_dst_index`,
