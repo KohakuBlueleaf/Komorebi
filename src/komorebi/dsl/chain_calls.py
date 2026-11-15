@@ -33,7 +33,9 @@ class Access:
     count: ast.expr = None
     shared: bool = False
     rect: tuple = None  # (r0, r1, c0, c1) of t.tiles[r0:r1, c0:c1]
-    leader: bool = False
+    # under a leader's if: True (rank 0 alone), "reduce" (self.leader after the
+    # reduce: each group's root) or the G of `self.rank % G == 0`
+    leader: object = False
     prefetch: bool = None
 
 
@@ -99,8 +101,9 @@ class LineReader:
             self.loop(node, leader)
             return
         if isinstance(node, ast.If):
-            if self.is_leader(node.test):
-                self.body(node.body, True)
+            root = self.leader_of(node.test)
+            if root is not None:
+                self.body(node.body, root)
                 if self.touches(node.orelse):
                     self.refuse(node, "a read or write in the else of a leader's if")
                 return
@@ -369,16 +372,31 @@ class LineReader:
             and isinstance(node.func.value, ast.Name)
         )
 
-    def is_leader(self, test):
-        if not (isinstance(test, ast.Compare) and len(test.ops) == 1):
-            return False
+    def leader_of(self, test):
+        """Whose if it is: rank 0's (True), each group's root's ("reduce" for
+        self.leader after the reduce, else the G of `self.rank % G == 0`), or None."""
+        if not (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq)
+        ):
+            return None
         sides = [test.left, test.comparators[0]]
         names = [getattr(side, "attr", None) for side in sides]
         zero = [isinstance(side, ast.Constant) and side.value == 0 for side in sides]
-        return isinstance(test.ops[0], ast.Eq) and (
-            names in (["rank", "leader"], ["leader", "rank"])
-            or (names[0] == "rank" and zero[1])
-        )
+        if names in (["rank", "leader"], ["leader", "rank"]):
+            return True if self.lines.reduce is None else "reduce"
+        if names[0] == "rank" and zero[1]:
+            return True
+        left = sides[0]
+        if (
+            zero[1]
+            and isinstance(left, ast.BinOp)
+            and isinstance(left.op, ast.Mod)
+            and getattr(left.left, "attr", None) == spelling("rank")
+        ):
+            return left.right
+        return None
 
     def touches(self, statements):
         return any(self.touches_expression(node) for node in statements)
@@ -686,10 +704,44 @@ def unranged_read(described, access, tensor, method, lines, given, program):
     return False
 
 
+def roots_of(method, lines, access, given, program, group, size):
+    """Whether a line under a leader's if is each group's root's: self.leader after
+    the reduce, or `self.rank % G == 0` with G the call's group size."""
+    if access.leader == "reduce":
+        return True
+    if isinstance(access.leader, ast.expr):
+        evaluator = Evaluator(method, lines, given, program, 0, group[1])
+        if evaluator.value(access.leader) != size:
+            raise Undescribed(
+                f"line {access.line}: self.rank % G == 0 with G not the call's group "
+                f"of {size}"
+            )
+        return True
+    return False
+
+
+def k_share(found, size):
+    """(base, K) when each group's ranks read the same K tiles shared out as
+    km::partition shares them, else None."""
+    shares = set()
+    for at in range(0, len(found), size):
+        spans = found[at : at + size]
+        base, total = spans[0][0], sum(count for _, count in spans)
+        for rank, (page, count) in enumerate(spans):
+            start, length = kc.partition(total, rank, size)
+            if count != length or (length and page != base + start):
+                return None
+        shares.add((base, total))
+    return shares.pop() if len(shares) == 1 else None
+
+
 def output_width(method, lines, writes, given, program, group, size):
     """The tiles each group's root writes: block g of the output, g x width on."""
     width = None
     for access in writes:
+        roots = access.leader and roots_of(
+            method, lines, access, given, program, group, size
+        )
         if size > 1 and not access.leader:
             raise Undescribed(
                 f"line {access.line}: every rank of a group of {size} writes "
@@ -703,7 +755,7 @@ def output_width(method, lines, writes, given, program, group, size):
                 continue
             index = rank // size
             width = count if width is None else width
-            if access.leader and group[1] // size > 1:
+            if access.leader and not roots and group[1] // size > 1:
                 raise Undescribed(
                     f"line {access.line}: the leader alone writes {access.tensor}, "
                     "and the call has several groups"
@@ -714,7 +766,7 @@ def output_width(method, lines, writes, given, program, group, size):
                     f"{page} to {page + count - 1}; a chain's call writes block g of "
                     f"its output, tiles g x {width} to g x {width} + {width - 1}"
                 )
-            if access.leader:
+            if access.leader and not roots:
                 break
     return width or 0
 
@@ -722,7 +774,12 @@ def output_width(method, lines, writes, given, program, group, size):
 def read_shape(method, lines, access, given, program, group, size):
     """(K range, None) of a read shared over a group's ranks, or (None, ranges)."""
     found = spans(method, lines, access, given, program, group)
-    if access.leader:
+    roots = access.leader and roots_of(
+        method, lines, access, given, program, group, size
+    )
+    if roots:
+        found = [found[g * size] for g in range(group[1] // size) for _ in range(size)]
+    elif access.leader:
         if group[1] // size > 1:
             raise Undescribed(
                 f"line {access.line}: the leader alone reads {access.tensor}, and the "
@@ -741,17 +798,20 @@ def read_shape(method, lines, access, given, program, group, size):
                 "with the rank"
             )
         return found[0], None
-    roots = [found[g * size] for g in range(group[1] // size)]
+    firsts = [found[g * size] for g in range(group[1] // size)]
     for rank, span in enumerate(found):
-        if span != roots[rank // size]:
+        if span != firsts[rank // size]:
+            share = None if roots else k_share(found, size)
+            if share is not None:
+                return share, None
             raise Undescribed(
                 f"line {access.line}: rank {rank % size} of group {rank // size} reads "
                 f"{access.tensor} pages other than its root's; a chain's range is a "
                 "group's"
             )
-    base, width = roots[0]
-    step = roots[1][0] - base if len(roots) > 1 else 0
-    for index, (page, count) in enumerate(roots):
+    base, width = firsts[0]
+    step = firsts[1][0] - base if len(firsts) > 1 else 0
+    for index, (page, count) in enumerate(firsts):
         if (page, count) != (base + step * index, width):
             raise Undescribed(
                 f"line {access.line}: group {index} reads {access.tensor} pages "
@@ -759,7 +819,7 @@ def read_shape(method, lines, access, given, program, group, size):
             )
     if step < 0:
         raise Undescribed(f"line {access.line}: a range that steps back")
-    return None, [kc.Range(base, step, width)]
+    return None, [kc.Range(base, step, width, bool(roots) and size > 1)]
 
 
 def compiler_program():

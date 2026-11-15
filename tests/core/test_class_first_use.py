@@ -72,7 +72,9 @@ def test_a_reserve_sizes_the_load_s_buffers_for_its_set():
     larger = {b.index_a: b.pages for b in sized.first_use.buffers.values()}
     assert pages == {16: (16, 16), 0: (32, 32), 2: (4, 4)}  # size 8; other's
     assert larger == {16: (32, 32), 0: (64, 64), 2: (4, 4)}
-    assert plain.built.folder != sized.built.folder  # the reserve is in the key
+    assert plain.built.make != sized.built.make  # the reserve is in the make's key
+    one = first_use.folder_of(plain, Gate.gate, {"size": 4})
+    assert one != first_use.folder_of(sized, Gate.gate, {"size": 4})  # and the set's
 
 
 def test_a_set_not_built_is_compiled_added_and_found():
@@ -106,6 +108,24 @@ def test_a_set_not_built_is_compiled_added_and_found():
     assert int(other._built_for(Gate.gate, (a, out, 3, 4))) == 20
     assert later.first_use.made[("gate", (("size", 4),))][3] is True  # found built
     assert other.adds[0][1] == parts
+
+
+def test_a_folder_whose_files_changed_is_compiled_again():
+    sets = {"gate": [{"size": 8}, km.ANY(size=16)]}
+    program = made(handlers=sets)
+    folder = fresh(program, 4)
+    first_use.compiled(program, Gate.gate, {"size": 4})
+    stamp = ("gate", (("size", 4),))
+    assert program.first_use.made[stamp][3] is False  # compiled
+    first_use.compiled(made(handlers=sets), Gate.gate, {"size": 4})
+    (folder / "gate.h").write_text("// stale\n")
+    later = made(handlers=sets)
+    first_use.compiled(later, Gate.gate, {"size": 4})
+    assert later.first_use.made[stamp][3] is False  # its files were not its text
+    assert "stale" not in (folder / "gate.h").read_text()
+    found = made(handlers=sets)
+    first_use.compiled(found, Gate.gate, {"size": 4})
+    assert found.first_use.made[stamp][3] is True
 
 
 def test_the_folder_key_holds_the_constants():

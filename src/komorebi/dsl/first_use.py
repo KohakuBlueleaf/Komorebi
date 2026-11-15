@@ -25,10 +25,10 @@ KEPT = "first_use.json"
 
 @dataclass
 class Kept:
-    """What a made program keeps for its handlers' first uses: the opted handlers'
-    km.ANY, the make's inputs (plan, tensors, room, constants, listed sets), the load's
-    buffers {index: Buffer} and fields {name: Field}, its build's key, the sets compiled
-    so far {(handler, set): (folder, variant, seconds, cached)}, the indices it left."""
+    """What a made program keeps for its first uses: the opted handlers' km.ANY, the
+    make's inputs (plan, tensors, room, constants, listed sets), the load's buffers
+    {index: Buffer} and fields {name: Field}, its folder and make key, the sets built
+    {(handler, set): (folder, variant, seconds, cached)}, the indices it left."""
 
     opted: dict
     plan: dict
@@ -146,7 +146,7 @@ def kept(program, compiled, found, made_with, built, session, l1, trace):
         {name: [dict(one) for one in listed] for name, listed in sets.items()},
         {buffer.index_a: buffer for buffer in compiled.buffers},
         dict(compiled.fields),
-        built.folder.name,
+        f"{built.folder.name} {built.make}",
         {},
         frozenset(reserved),
     )
@@ -314,6 +314,14 @@ def found_built(cls, method, wanted, folder):
     data = json.loads(path.read_text())
     if not (folder / data["name"] / "movement.cpp").is_file():
         return None
+    made = importlib.import_module("komorebi.dsl.program")  # it imports this
+    try:  # the folder is named by its inputs: its files are compared, not trusted
+        files = {name: (folder / name).read_text() for name in data["files"]}
+        digest = data["digest"]
+    except (KeyError, OSError):
+        return None
+    if made.text_key(files) != digest:
+        return None
     return variant_of(cls, method, wanted, data)
 
 
@@ -352,8 +360,10 @@ def compile_set(program, method, wanted, key):
         )
     load_checked(kept_, result, variant, where)
     result.overlays[variant.name] = len(result.overlays) + 1
-    built = made.write(cls, result, kept_.room, key)
+    built = made.write(cls, result, kept_.room, key, key=key)
     data = {
+        "digest": built.digest,
+        "files": sorted(built.files),
         "name": variant.name,
         "words": variant.words,
         "widths": variant.widths,
