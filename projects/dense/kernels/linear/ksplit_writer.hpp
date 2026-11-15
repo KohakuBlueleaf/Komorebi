@@ -32,6 +32,9 @@ void kernel_main() {
         if (at.any) {
             const X x_matrix(command.a0);
             const W w_matrix(command.a1);
+            if (plan(kKsXRole) != 0 && !hand_x(writer, command, plan, at, x_matrix)) {
+                return false;
+            }
             if (!move_k_chunks(writer, command, plan, at, x_matrix, w_matrix)) {
                 return false;
             }
@@ -40,6 +43,12 @@ void kernel_main() {
             const km::Group group = k_group(command, writer.me(), plan(kKsS), index);
             const km::Arrival arrival = {kCbKArrive, plan(kKsArrive), block_tiles};
             if (group.rank != 0) {
+                LINEAR_ACCOUNT_DO({  // the part to send in hand (emit waits again)
+                    if (!writer.wait_front(kCbKSum, block_tiles, km::kBehindPort)) {
+                        return false;
+                    }
+                    stamps[kAcKHeld] = km::wall();
+                });
                 if (!km::reduce_emit(
                     writer,
                     command,

@@ -197,6 +197,9 @@ class Grid:
     wa: int = 2
     ww: int = 2
     layout: str = "2d"
+    # the linear kernels' reads of W and of A spread over a column's or a row's ranks
+    w_spread: bool = False
+    x_spread: bool = False
 
     @property
     def nk(self):
@@ -410,10 +413,10 @@ PATTERNS = {"AB": S["kSplitAB"], "AAAB": S["kSplitAAAB"]}  # the chunks' movers
 
 @dataclass(frozen=True)
 class Split:
-    """[mt, kt] @ [kt, nt] with K split: groups of s cores, an oh x ow output block a
-    group, each core 1/s of K in chunks of kc (pattern: their movers; depth: mover A's
-    half), its part summed into the group's root by owner or by tree. Subblock sh x sw;
-    arrive the arrival buffer's pages (0: enough for either form)."""
+    """[mt, kt] @ [kt, nt] with K split: groups of s cores, an oh x ow block a group,
+    each core 1/s of K in chunks of kc (pattern, depth: mover A's half), parts summed by
+    owner or tree. Subblock sh x sw; arrive: arrival pages (0: either form's). cast: the
+    whole-K plan (s 1), X multicast once a panel."""
 
     mt: int
     kt: int
@@ -427,6 +430,7 @@ class Split:
     arrive: int = 0
     pattern: str = "AB"
     depth: int = 1
+    cast: bool = False
 
     def nbw(self):
         return cdiv(self.nt, self.ow)

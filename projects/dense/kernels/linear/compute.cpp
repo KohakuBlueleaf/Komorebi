@@ -269,11 +269,7 @@ void kernel_main() {
         }
 #if defined(LINEAR_ACCOUNT) && !defined(TRISC_MATH)  // the math thread: no buffers
         account[kAcComputeEnd - kAcInputWait] = km::wall();
-        volatile uint32_t* stamps = (
-            reinterpret_cast<volatile uint32_t*>(
-                get_local_cb_interface(kCbStamp).fifo_wr_ptr << 4
-            )
-        );
+        volatile uint32_t* stamps = stamp_row();
         UNPACK((stamps[kAcInputWait] = account[0]));
         PACK((stamps[kAcMath] = account[kAcMath - kAcInputWait]));
         PACK((stamps[kAcProducts] = account[kAcProducts - kAcInputWait]));
