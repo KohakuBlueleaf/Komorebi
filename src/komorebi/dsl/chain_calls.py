@@ -738,8 +738,9 @@ def k_share(found, size):
 
 
 def output_width(method, lines, writes, given, program, group, size):
-    """The tiles each group's root writes: block g of the output, g x width on."""
-    width = None
+    """The tiles each group's root writes: block g of the output, g x width on (in
+    one write or in several pieces that together make the block)."""
+    pieces = {}  # group -> [(page, count, line)] of its root's writes
     for access in writes:
         roots = access.leader and roots_of(
             method, lines, access, given, program, group, size
@@ -756,20 +757,33 @@ def output_width(method, lines, writes, given, program, group, size):
             if rank % size:
                 continue
             index = rank // size
-            width = count if width is None else width
             if access.leader and not roots and group[1] // size > 1:
                 raise Undescribed(
                     f"line {access.line}: the leader alone writes {access.tensor}, "
                     "and the call has several groups"
                 )
-            if count != width or page != index * width:
-                raise Undescribed(
-                    f"line {access.line}: group {index} writes {access.tensor} pages "
-                    f"{page} to {page + count - 1}; a chain's call writes block g of "
-                    f"its output, tiles g x {width} to g x {width} + {width - 1}"
-                )
+            pieces.setdefault(index, []).append((page, count, access))
             if access.leader and not roots:
                 break
+    width = None
+    for index, found in sorted(pieces.items()):
+        found.sort(key=lambda piece: piece[0])
+        page, access = found[0][0], found[0][2]
+        count = sum(piece[1] for piece in found)
+        apart = [
+            later
+            for (at, more, _), (after, _, later) in zip(found, found[1:])
+            if after != at + more
+        ]
+        width = count if width is None else width
+        if apart or count != width or page != index * width:
+            raise Undescribed(
+                f"line {(apart or [access])[0].line}: group {index} writes "
+                f"{access.tensor} pages {page} to {found[-1][0] + found[-1][1] - 1}"
+                f"{' with a gap or an overlap' if apart else ''}; a chain's call "
+                f"writes block g of its output, tiles g x {width} to g x {width} + "
+                f"{width - 1}"
+            )
     return width or 0
 
 
@@ -922,6 +936,16 @@ def direct_checked(described, calls, names):
                 f"{tensor_name(before.output, names)} has tiles of {bytes_} bytes, its "
                 f"landing area tiles of {calls[index].direct.tile_bytes}"
             )
+        held = getattr(described[index].program, "direct_in", None)
+        for earlier in range(index if held else 0):
+            handler = described[earlier].handler
+            if getattr(handler, "method", handler).name == held[0]:
+                raise kc.ChainRefused(
+                    f"call {index} ({calls[index].name}): its direct input lands in "
+                    f"place, in the halves of {held[0]}'s stream, which call {earlier} "
+                    f"({calls[earlier].name}) may still be reading when the roots send "
+                    "(drop km.direct, or call it once before in another chain)"
+                )
         key = id(before.output)
         for later in range(index + 1, len(described)):
             if key in described[later].reads or key in described[later].body_reads:

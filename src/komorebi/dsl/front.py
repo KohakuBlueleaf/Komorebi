@@ -402,13 +402,14 @@ class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
 
-    def __init__(self, function, overlay=None, stamps=None, direct=()):
+    def __init__(self, function, overlay=None, stamps=None, direct=(), in_place=False):
         self.function = function
         # its code is an overlay (loaded into a slot, called); False: resident, kept
         # so in a merged program too; None: resident, which a merged build may move
         self.overlay = overlay
         self.stamps = stamps  # the tensor parameter its load and call cycles go to
         self.direct = tuple(direct)  # its inputs a chain's call may send direct
+        self.in_place = in_place  # a direct input lands in its stream's own halves
         self.name = function.__name__
         self.number = None
         self.words = None  # [(parameter, kind)] in word order, set by the compiler
@@ -636,16 +637,18 @@ def word_of(handler, parameter, kind, value):
     return value
 
 
-def handler(function=None, *, overlay=None, stamps=None, direct=()):
+def handler(function=None, *, overlay=None, stamps=None, direct=(), in_place=False):
     """Makes a method of a class deriving km.Program a handler; `overlay=True`: built
     apart as an overlay, loaded into a slot when a command needs it (False: resident,
     also when merged); `stamps="t"`: each mover's cycles to tensor t; `direct`: the
-    tensor parameters a chain's call may send straight into its cores' L1."""
+    inputs a chain's call may send into its cores' L1 (`in_place`: its stream's)."""
     if isinstance(direct, str):
         direct = (direct,)
     if function is None:
-        return lambda function: HandlerMethod(function, overlay, stamps, direct)
-    return HandlerMethod(function, overlay, stamps, direct)
+        return lambda function: HandlerMethod(
+            function, overlay, stamps, direct, in_place
+        )
+    return HandlerMethod(function, overlay, stamps, direct, in_place)
 
 
 class HandlerCall:

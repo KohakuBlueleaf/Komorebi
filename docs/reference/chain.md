@@ -170,7 +170,14 @@ block that meets the share at that part's own offset in the area, waits for its 
 writes' acknowledgements (its transaction id), and only then marks the core. The core
 waits for one mark from each block its share meets, the same count as for a DRAM
 read. So no core reads its area before every part has landed, whatever order the
-roots run in. A tensor sent direct has no DRAM copy: a host read of it
+roots run in. A root sends each piece of its block as soon as it is written (a block
+written in several pieces, each after its own product, sends the first pieces while it
+computes the last), and waits for the acknowledgements once, before its marks. Where
+the reading handler declares the input `in_place`, the parts land in the halves of the
+stream that reads it rather than a landing area: each block at the place its half's
+ring takes it, one write a block. The stream's reads in that record issue nothing (its
+blocks are pushed once the marks are in), so the reader copies nothing; a ring not at
+the place a block landed is given up with 0xC5. A tensor sent direct has no DRAM copy: a host read of it
 (`session.read`, `tensor.read`) after the chain raises, naming the call that sent it,
 until a write or a later chain writes it. A later call of the same chain that reads it
 is refused.
@@ -184,11 +191,19 @@ is refused.
 | an outside tensor that a call of the chain writes | the call, the tensor, the call that writes it |
 | an earlier input that the call before writes (it is this call's input) | the call, the tensor |
 | a direct input not read by a share of K, or past its landing area | the call, the core, the tiles |
+| an in-place direct input whose handler is called earlier in the chain (its stream's halves may still be read when the roots send) | both calls |
+| a root that writes its block with a gap or an overlap | the line, the group, the pages |
 | a group size that does not divide the call's cores, over 127, or a width over 255 | the call |
 | a call of a handler of another program than the first call's | the call, both program fields |
 | a handler number over 255, a stamp row over 63 | the call |
 | more than one per-submit word, more than 256 calls | the chain |
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
+
+A product of more than one tile row is not stated as a chain: a record's output is one
+block of consecutive pages a root, so a root writing rows by columns
+(`hidden.tiles[0:4, c : c + 8]`, four runs of pages) is refused ("a rectangle of
+several rows, not whole ones, is not one range of tiles"). A prefill or a batch of rows
+runs as commands, or as a chain a tile row.
 
 On the card a record with a bad address, a next record not 64-byte aligned or a chain
 of more than 256 records is given up by the reader with the chain's own code (0xC2 in

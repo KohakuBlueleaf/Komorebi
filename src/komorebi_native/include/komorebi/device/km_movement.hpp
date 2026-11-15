@@ -81,6 +81,19 @@ namespace km {
         return pair.half(pattern.owner(block));
     }
 
+    // The blocks before block `block` of a stream that half `owner` holds under
+    // `pattern` (a half's ring takes its blocks in order).
+    constexpr uint32_t blocks_before(
+        const Pattern& pattern, uint32_t owner, uint32_t block
+    ) {
+        const uint32_t all = (1u << pattern.length) - 1u;
+        const uint32_t mine = owner != 0 ? pattern.owners : ~pattern.owners & all;
+        const uint32_t part = mine & ((1u << (block % pattern.length)) - 1u);
+        return (
+            block / pattern.length * __builtin_popcount(mine) + __builtin_popcount(part)
+        );
+    }
+
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
@@ -160,6 +173,38 @@ namespace km {
 
     template <typename T>
     using StreamTensor = typename StreamTensorOf<T>::Type;
+
+    // A read stream's tensor: `placed`, its blocks already where the halves' rings
+    // take them (km_chain.hpp InPlaceLanding), no read issued; else read `tensor`.
+    template <typename Accessor>
+    struct InPlace {
+        Accessor tensor;
+        bool placed;
+
+        uint64_t get_noc_addr(
+            uint32_t id, uint32_t offset = 0, uint8_t noc = noc_index
+        ) const {
+            return tensor_accessor::detail::transfer_noc_addr(tensor, id, offset, noc);
+        }
+
+        uint32_t get_aligned_page_size() const {
+            return tensor.get_aligned_page_size();
+        }
+    };
+
+    template <typename T>
+    constexpr bool kInPlace = false;
+    template <typename Accessor>
+    constexpr bool kInPlace<InPlace<Accessor>> = true;
+
+    template <typename T>
+    inline auto in_place(const T& tensor, bool placed) {
+        if constexpr (kIsTensor<T>) {
+            static_assert(T::kLocal, "an in-place input reads one island's tensor");
+        }
+        using Accessor = std::decay_t<decltype(accessor_of(tensor))>;
+        return InPlace<Accessor>{accessor_of(tensor), placed};
+    }
 
     template <typename Kept, typename T>
     inline const Kept& kept_tensor(const T& tensor) {
@@ -378,6 +423,21 @@ namespace km {
         const uint32_t columns = last ? walk.last_columns : walk.columns;
         const bool read = stream.direction == kMoveRead;
         const uint32_t base = read ? get_write_ptr(buffer) : get_read_ptr(buffer);
+        if constexpr (kInPlace<Accessor>) {  // placed: the block where the ring is
+            if (stream.tensor.placed) {
+                const LocalCBInterface& ring = get_local_cb_interface(buffer);
+                const uint32_t at = (
+                    ring.fifo_limit - ring.fifo_size +
+                    blocks_before(stream.pattern, kMover, cursor.block) *
+                        walk.tiles_per_block * page_bytes
+                );
+                if (base != at || stream.repetitions != 1) {
+                    core.gave_up(kStMover, kGaveBadItem, kWhereData, 0xC5u, 0);
+                    return false;
+                }
+                return true;
+            }
+        }
         if constexpr (kMayCross<Accessor>) {
             const uint32_t slot = core.running_slot();
             const uint32_t sequence = core.running_sequence();

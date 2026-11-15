@@ -2024,12 +2024,24 @@ L1 room before the class's buffers are sized, and a merged class (`km.merge`,
 `class Layer(A, B)`) gets the area too. A class without a declaration generates the same
 text as before.
 
-In a record marked direct, the call before's roots keep their block in their write
-buffer rather than writing it to DRAM. Each root sends the block's part to every
-reading core whose share meets it, and marks that core after its own writes are
-acknowledged. The reading core's stream of that parameter reads its area
-(`km::direct_or`, a local read into its stream buffer) rather than DRAM. In any other
-record, the same kernels read and write DRAM. One direct input is allowed a chain.
+In a record marked direct, the call before's roots do not write their block to DRAM.
+Each root sends each write of its block, as it is written, to every reading core whose
+share meets it, and marks that core after its own writes are acknowledged. A root may
+write its block in pieces (`out.pages(first, 4)` after one product, `out.pages(first +
+4, 4)` after the next): its first pieces are sent while it computes the last. The
+reading core's stream of that parameter reads its area (`km::direct_or`, a local read
+into its stream buffer) rather than DRAM. In any other record, the same kernels read
+and write DRAM. One direct input is allowed a chain.
+
+`@km.handler(direct=("b",), in_place=True)` lands the input in the halves of the
+stream that reads it, with no landing area and no copy: the stream gets its own pair
+(`kDirectIn`), each half the share's blocks it holds, so the rings are back at their
+start at each record's end. The roots write each block where its half takes it, and in
+a direct record the stream's movers push the blocks without reading. It is refused at
+the make, by name, unless the parameter is read by one stream of its pages in order,
+with tiles and repetitions (1) that are constants of the class, in whole blocks, and
+it is the class's only direct input; `run.chain` refuses an earlier call of the same
+handler in the chain.
 
 Example 31's SwiGLU sends the hidden from up's 12 roots to down's 4 cores in this way
 (`examples/31_swiglu/swiglu_direct.py`, README "## the hidden sent direct").
@@ -2076,6 +2088,8 @@ island 0's program and `cores` in flat ranks.
 | `km.direct` of a parameter the handler does not declare, of a tensor other than the call before's output, of one not read by a share of K | `run.chain` | the call, the parameter, the declaration |
 | two direct inputs in one chain; a direct input from an overlay handler's call; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
 | a direct input declared on an overlay handler; declared inputs of different tile bytes; a landing area larger than the L1 left for buffers | the make | the handler, the parameter, the bytes |
+| `in_place=True` on a parameter not read by one stream of its pages in order, with tiles that are not a constant, repetitions over 1, a ragged last block, or beside another direct input | the make | the handler, the parameter, the stream |
+| a call of an in-place handler earlier in the chain than its direct call | `run.chain` | both calls |
 | a host read (`session.read`, `tensor.read`) of a tensor a submitted chain sent direct, before a write or a chain writes it | the read | the tensor and the call that sent it |
 | `prefetch=True` on a read of a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
