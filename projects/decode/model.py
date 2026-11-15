@@ -16,6 +16,7 @@ HERE = Path(__file__).resolve().parent
 DECODE_H = HERE / "decode.h"
 SPLIT_OP = pl.HERE / "kernels" / "split" / "split_op.hpp"
 D = abi.constants(DECODE_H, known=abi.headers().constants)
+D_MASKED = -1e30  # decode.h DC_MASKED
 OP = abi.constants(SPLIT_OP, known=abi.headers().constants)
 TILE = 32
 CORES = 120
@@ -230,14 +231,70 @@ def silu(x):
     return x / (1.0 + np.exp(-x))
 
 
-def layer(model, x, w):
-    """One layer without attention (its output stands in as q), float64, each output
-    rounded to bf16 as the card stores it: {tensor: values}."""
+def cache(model, seed, layer, rows):
+    """A layer's random cache of `rows` positions: (keys, values), each [KV heads,
+    rows, head width] bf16 values, uniform with variance 1 (as k and v come out)."""
+    rng = np.random.default_rng([seed, layer, 1 << 21])
+    shape = (model.kv_heads, rows, model.head_dim)
+    return tuple(bf16_random(rng, shape, math.sqrt(3.0))[1] for _ in range(2))
+
+
+def cache_pages(values, rows):
+    """A cache's [KV heads, n, width] values (n <= rows) as the pages of its tensor:
+    [KV heads x rows, width] bf16 tiles, head after head, rows past n zero."""
+    heads, count, width = values.shape
+    full = np.zeros((heads, rows, width), np.float32)
+    full[:, :count] = values
+    return tile_pages(formats.bf16_bits(full.reshape(heads * rows, width)))
+
+
+def attend_constants():
+    """attend's constant tiles side by side: mask r (columns above r at DC_MASKED, the
+    rest 0) for r in 0..31, a tile of ones, a tile with ones in row 0 only."""
+    columns = np.arange(TILE)
+    masks = [
+        np.where(columns[None, :] > r, D_MASKED, 0.0) * np.ones((TILE, 1))
+        for r in range(D["DC_MASKS"])
+    ]
+    row = np.zeros((TILE, TILE))
+    row[0] = 1.0
+    return np.concatenate(masks + [np.ones((TILE, TILE)), row], axis=1)
+
+
+def attention(model, q, keys, values):
+    """softmax(q k^T / sqrt(width)) v of every query head over its KV head's `keys` and
+    `values` ([KV heads, n, width]), float64: [32, heads x width]."""
+    width, group = model.head_dim, model.heads // model.kv_heads
+    out = np.zeros((q.shape[0], model.heads * width))
+    for head in range(model.heads):
+        kv = head // group
+        query = np.asarray(q[:, head * width : (head + 1) * width], np.float64)
+        scores = query @ np.asarray(keys[kv], np.float64).T / math.sqrt(width)
+        weights = np.exp(scores - scores.max(axis=1, keepdims=True))
+        weights /= weights.sum(axis=1, keepdims=True)
+        out[:, head * width : (head + 1) * width] = weights @ values[kv]
+    return out
+
+
+def layer(model, x, w, cached=None):
+    """One layer, float64, each output rounded to bf16 as the card stores it: {tensor:
+    values}. `cached`: (keys, values) of positions 0..t-1; the token's k and v (row 0)
+    are position t and a attends over 0..t. None: no attention, q stands in for a."""
     f = {name: np.asarray(value[1], np.float64) for name, value in w.items()}
     out = {"h1": bf16(norm(x, f["norm1"], model.eps))}
     for name in ("q", "k", "v"):
         out[name] = bf16(out["h1"] @ f[name])
-    out["x1"] = bf16(x + out["q"] @ f["o"])
+    out["a"] = out["q"]
+    if cached is not None:
+        width = model.head_dim
+        rows = [
+            np.concatenate(
+                [cached[i], out[name][0].reshape(model.kv_heads, 1, width)], axis=1
+            )
+            for i, name in enumerate(("k", "v"))
+        ]
+        out["a"] = bf16(attention(model, out["q"], *rows))
+    out["x1"] = bf16(x + out["a"] @ f["o"])
     out["h"] = bf16(norm(out["x1"], f["norm2"], model.eps))
     out["up"] = bf16(out["h"] @ f["up"])
     out["gated"] = bf16(silu(out["h"] @ f["gate"]) * out["up"])

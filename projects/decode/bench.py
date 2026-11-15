@@ -23,19 +23,31 @@ from projects.decode import model as md  # noqa: E402
 from projects.dense import bench as dense_bench  # noqa: E402
 
 CEILING_GBS = 495.6  # the card's DRAM read, 120 cores on both movers (dense ceilings)
+MATMUL_PER_CORE = 4.70e9 / 120  # tile products a second a core (the card's measured)
+D_HEAD = 4  # decode.h DC_HEAD_TILES: a score tile is 4 products, a head's P V 4 a key
 # a loose bound on a layer of bf16 steps (bf16 alone: 6e-3 a product, 1e-2 the gate)
 CHECK_RMS, CHECK_MAX = 2e-2, 5e-2
-# The layer twice from one x: fused and waited, then q, k, v apart and overlapped (the
-# second after every core's change of role). Checked: what the card keeps of a layer.
+# The layer twice from one x at each cache length, the second after every core's
+# change of role. Checked: what the card keeps of a layer, and the cache's new row.
 CHECK_RUNS = 2
-CHECKED = ("q", "k", "v", "x1", "gated", "x")
+CHECKED = ("q", "k", "v", "a", "x1", "gated", "x")
+# The cache's rows a KV head and layer, and the lengths T timed (the last token
+# attends over T rows) and checked (in this order: a check appends to row T - 1).
+CONTEXT, LENGTHS = 4096, (4096, 1024, 256)
+# attend alone from the host first, (KV heads' groups, the token's position): one
+# group, then all; positions inside a tile (the mask) and at a tile's last row.
+ALONE = ((1, 1000), (1, 5), (8, 4095), (8, 2500))
 CASES = {
     "full": {},
     "bare": {"bare": True},
     "parts": {"parts": True},
+    "attend_read": {"attend": "read"},
+    "attend_local": {"attend": "local"},
+    "attend_exp_twice": {"attend": "exp_twice"},
     "overlap": {"overlap": True},
     "parts_apart": {"parts": True, "apart": True},
 }
+TIMED = ("full", "bare", "parts", "attend_read", "attend_local", "attend_exp_twice")
 PRODUCT_STEPS = ("qkv", "o", "gate_up", "down")
 SPANNED = ("q", "k", "v", "o")  # overlapped: one span
 TRACED = 512  # commands a core stamps with --trace (16 bytes of L1 each)
@@ -54,7 +66,9 @@ def parse():
     parser.add_argument("--config", default=None, help="a config.json instead")
     parser.add_argument("--layers", type=int, default=None, help="default: the model's")
     parser.add_argument("--tokens", type=int, default=10)
-    parser.add_argument("--cases", nargs="*", default=list(CASES), choices=list(CASES))
+    parser.add_argument("--cases", nargs="*", default=list(TIMED), choices=list(CASES))
+    parser.add_argument("--context", type=int, default=CONTEXT, help="the cache's rows")
+    parser.add_argument("--lengths", type=int, nargs="*", default=list(LENGTHS))
     parser.add_argument("--no-check", action="store_true")
     parser.add_argument("--pause", type=float, default=1.0, help="x a case's time")
     parser.add_argument("--seed", type=int, default=1)
@@ -74,47 +88,94 @@ def patterns(args):
     return None if args.pattern is None else dict.fromkeys(md.PRODUCTS, args.pattern)
 
 
-def check(decode, model, weights, seed):
-    """One layer from a known x on the card against model.layer(), CHECK_RUNS times:
-    the larger errors of the runs, a tensor."""
+def bounded(errors):
+    """errors with "ok": inside the check's bound."""
+    return errors | {
+        "ok": errors["rms_rel"] <= CHECK_RMS and errors["max_rel"] <= CHECK_MAX
+    }
+
+
+def appended(decode, caches, position, k, v, heads):
+    """Whether the cache's row `position` of the first `heads` KV heads holds the
+    token's k and v (row 0) bit for bit; the host's copy of layer 0's cache takes it."""
+    exact = True
+    for index, (name, token) in enumerate((("keys", k), ("values", v))):
+        rows = decode.cache_rows(0, name, position)[:heads]
+        want = np.asarray(token[0], np.float32).reshape(-1, rows.shape[1])[:heads]
+        exact &= bool(np.array_equal(rows, want))
+        caches[index][:heads, position] = rows
+    return exact
+
+
+def attend_alone(decode, model, caches, seed, groups, position):
+    """ATTEND from the host on `groups` KV heads' groups at `position`, from a random
+    qkv, against md.attention() over layer 0's cache: errors of a, the append."""
+    rng = np.random.default_rng([seed, groups, position])
+    shape = (md.TILE, model.products()["qkv"][1])
+    qkv = md.bf16_random(rng, shape, np.sqrt(3.0))[1]
+    decode.write_activation("qkv", qkv)
+    decode.attend(groups, position)
+    width = model.heads * model.head_dim
+    q, k, v = np.split(qkv, [width, width + model.kv_heads * model.head_dim], axis=1)
+    rows = [
+        np.concatenate(
+            [cache[:, :position], token[0].reshape(model.kv_heads, 1, -1)], axis=1
+        )
+        for cache, token in zip(caches, (k, v))
+    ]
+    columns = groups * width // model.kv_heads
+    want = md.bf16(md.attention(model, q, *rows))[:, :columns]
+    got = decode.read_activation("a")[:, :columns]
+    out = bounded(md.errors(got, want))
+    out["append_exact"] = appended(decode, caches, position, k, v, groups)
+    return {"groups": groups, "position": position} | out
+
+
+def check(decode, model, weights, caches, seed, length):
+    """One layer from a known x on the card against model.layer() with attention over
+    layer 0's cache at position length - 1, CHECK_RUNS times: the larger errors of the
+    runs, a tensor; whether the cache's new row is the token's k and v."""
+    position = length - 1
     start = md.start(seed, model)
-    want = md.layer(model, start, weights)
-    out = {}
+    cached = tuple(cache[:, :position].copy() for cache in caches)
+    want = md.layer(model, start, weights, cached)
+    out, exact = {}, True
     width = {name: model.shapes()[name][1] for name in ("q", "k", "v")}
-    for run in range(CHECK_RUNS):
+    for _ in range(CHECK_RUNS):
         decode.write_activation("x", start)
-        decode.job(1, 1, overlap=run == 1)
+        decode.job(1, 1, position=position)
         got = {
-            name: decode.read_activation(name) for name in ("qkv", "x1", "gated", "x")
+            name: decode.read_activation(name)
+            for name in ("qkv", "a", "x1", "gated", "x")
         }
-        got["q"] = got["qkv"][:, : width["q"]]
-        if run == 1:  # apart: k and v in their own tensors
-            got |= {name: decode.read_activation(name) for name in ("k", "v")}
-        else:
-            got["k"], got["v"] = np.split(
-                got["qkv"][:, width["q"] :], [width["k"]], axis=1
-            )
+        got["q"], got["k"], got["v"] = np.split(
+            got["qkv"], [width["q"], width["q"] + width["k"]], axis=1
+        )
+        exact &= appended(decode, caches, position, got["k"], got["v"], model.kv_heads)
         for name in CHECKED:
             errors = md.errors(got[name], want[name])
             if name in out:
                 errors = {key: max(out[name][key], errors[key]) for key in errors}
             out[name] = errors
-    for errors in out.values():
-        errors["ok"] = errors["rms_rel"] <= CHECK_RMS and errors["max_rel"] <= CHECK_MAX
-    return out
+    return {name: bounded(errors) for name, errors in out.items()} | {
+        "append_exact": exact
+    }
 
 
-def measure(decode, case, tokens, layers, index):
-    """One job of `tokens` x `layers` under the power and clock samplers."""
+def measure(decode, case, tokens, layers, index, length):
+    """One job of `tokens` x `layers` under the power and clock samplers, the last
+    token at the cache's row length - 1."""
     meter = power.PowerSampler(index)
     with meter, dense_bench.Clock(index) as clock:
         meter.mark("job")
         started = time.perf_counter()
-        got = decode.job(tokens, layers, timeout=60.0, **CASES[case])
+        position = length - tokens
+        got = decode.job(tokens, layers, timeout=60.0, position=position, **CASES[case])
         seconds = time.perf_counter() - started
         meter.mark("after")
     return got | {
         "case": case,
+        "length": length,
         "tokens": tokens,
         "layers": layers,
         "host_seconds": round(seconds, 4),
@@ -134,11 +195,57 @@ def per_layer(result, slot):
     }
 
 
-def account(model, cases):
+def busiest(length, group):
+    """Key tiles of the busiest core of a KV head's group, the last token at row
+    length - 1: the full tiles' largest share, or the root's (the smallest) and its
+    own tile."""
+    full = (length - 1) // md.TILE
+    return max(-(-full // group), full // group + 1)
+
+
+def attend_terms(model, cases, length, tokens, group):
+    """attend's terms a layer: the cache's K and V at the ceiling (the mean rows the
+    tokens attend over), the busiest core's tile products at the card's rate and its
+    exponents at their measured time (exp_twice less full) = HARDWARE; the read below
+    the ceiling (attend_read), compute not under the read (attend_local), the merge."""
+    needed = {"full", "attend_read", "attend_local", "attend_exp_twice"}
+    if not needed <= cases.keys():
+        return []
+    step = {name: cases[name]["steps"]["attend"] for name in needed}
+    rows = length - (tokens - 1) / 2
+    cache_bytes = 2 * model.kv_heads * rows * model.head_dim * 2
+    keys = busiest(length, group)
+    products = (2 * keys * (2 * D_HEAD + 1) + 2) / MATMUL_PER_CORE * 1e6
+    exps = step["attend_exp_twice"] - step["full"]
+    read = cache_bytes / (CEILING_GBS * 1e3)
+    compute = step["attend_local"] - step["attend_read"]
+    return [
+        (
+            "HARDWARE",
+            f"attend: the cache's K and V at the ceiling ({rows:.1f} rows)",
+            read,
+        ),
+        (
+            "HARDWARE",
+            f"attend: {2 * keys * (2 * D_HEAD + 1) + 2} tile products, busiest core",
+            products,
+        ),
+        ("HARDWARE", f"attend: {2 * keys} exponent tiles, measured", exps),
+        (
+            "OURS",
+            "attend: the read below the ceiling (q a core, the append, the command)",
+            step["attend_read"] - read,
+        ),
+        ("OURS", "attend: compute not under the read", compute - products - exps),
+        ("OURS", "attend: the merge's rounds", step["full"] - step["attend_local"]),
+    ]
+
+
+def account(model, cases, attend=()):
     """{case: terms a layer} of `full` and `overlap`: each weight at the ceiling, its
     read below it (parts), its boundary (bare less parts), its operation (full less
-    bare; qkv's and gate_up's hold the norm), the thread; overlapped, q to o as one
-    span. Needs full, bare, parts."""
+    bare; qkv's and gate_up's hold the norm), attend's terms, the thread; overlapped,
+    q to o as one span. Needs full, bare, parts."""
     if not {"full", "bare", "parts"} <= cases.keys():
         return {}
     full, bare, parts = (cases[name]["steps"] for name in ("full", "bare", "parts"))
@@ -192,6 +299,8 @@ def account(model, cases):
         for step in PRODUCT_STEPS:
             if step not in spanned and not (spanned and step == "qkv"):
                 terms += product(step, steps[step])
+        if name == "full":
+            terms += list(attend)
         commands = case["span"] + sum(
             value for step, value in steps.items() if step not in spanned
         )
@@ -237,28 +346,51 @@ def main():
             trace=TRACED if args.trace else 0,
             chunk=args.chunk,
             patterns=patterns(args),
+            context=args.context,
         )
-        log(f"loaded: {len(decode.plans)} plans, deadline {deadline} s")
-        write_s, first = 0.0, None
+        log(
+            f"loaded: {len(decode.plans)} plans, deadline {deadline} s, "
+            f"{decode.keys_most} key tiles a core at most"
+        )
+        write_s, first, caches = 0.0, None, None
         for layer in range(layers):
             weights = md.layer_weights(model, args.seed, layer)
             write_s += decode.write_layer(layer, weights)
-            first = weights if layer == 0 else first
-            log(f"layer {layer} written ({write_s:.2f} s of writes)")
-        report["write_gbs"] = round(layers * model.layer_bytes() / write_s / 1e9, 2)
+            cache = md.cache(model, args.seed, layer, args.context)
+            write_s += decode.write_cache(layer, *cache)
+            if layer == 0:
+                first, caches = weights, cache
+            log(f"layer {layer} and its cache written ({write_s:.2f} s of writes)")
+        cache_bytes = 2 * decode.weights[0]["keys"].pages * md.TILE * md.TILE * 2
+        written = layers * (model.layer_bytes() + cache_bytes)
+        report["write_gbs"] = round(written / write_s / 1e9, 2)
         try:
             if not args.no_check:
-                report["check"] = check(decode, model, first, args.seed)
-                ok &= all(errors["ok"] for errors in report["check"].values())
-                log(f"check: {json.dumps(report['check'])}")
-            for case in args.cases:
-                log(f"case {case}: {args.tokens} tokens of {layers} layers")
-                result = measure(decode, case, args.tokens, layers, index)
-                log(f"case {case}: {json.dumps(result)}")
-                results.append(result)
-                end = time.monotonic() + args.pause * result["host_seconds"]
-                while (left := end - time.monotonic()) > 0:
-                    time.sleep(min(left, 10.0))
+                report["alone"] = []
+                for groups, position in ALONE:
+                    got = attend_alone(
+                        decode, model, caches, args.seed, groups, position
+                    )
+                    report["alone"].append(got)
+                    log(f"attend alone: {json.dumps(got)}")
+                    ok &= got["ok"] and got["append_exact"]
+                report["check"] = {}
+                for length in args.lengths if ok else ():
+                    got = check(decode, model, first, caches, args.seed, length)
+                    report["check"][length] = got
+                    ok &= got["append_exact"] and all(
+                        errors["ok"] for name, errors in got.items() if name in CHECKED
+                    )
+                    log(f"check, T {length}: {json.dumps(got)}")
+            for length in args.lengths if ok else ():
+                for case in args.cases:
+                    log(f"case {case}, T {length}: {args.tokens} x {layers} layers")
+                    result = measure(decode, case, args.tokens, layers, index, length)
+                    log(f"case {case}: {json.dumps(result)}")
+                    results.append(result)
+                    end = time.monotonic() + args.pause * result["host_seconds"]
+                    while (left := end - time.monotonic()) > 0:
+                        time.sleep(min(left, 10.0))
         except km.KomorebiError as error:
             report["failed"] = f"{type(error).__name__}: {error}"
             log(f"failed: {report['failed']}")
@@ -275,12 +407,20 @@ def main():
     for result in results:
         slot = card.decode_slot(stats[result["stats_slot"]])
         result["thread"] = slot
-        layered[result["case"]] = per_layer(result, slot)
+        layered.setdefault(result["length"], {})[result["case"]] = per_layer(
+            result, slot
+        )
         token_ms = slot["microseconds"] / result["tokens"] / 1e3
         result["ms_per_token"] = round(token_ms, 3)
         result["tokens_per_second"] = round(1e3 / token_ms, 1)
         result["weight_gbs"] = round(layers * model.layer_bytes() / token_ms / 1e6, 1)
-    report["account"] = account(model, layered)
+    group = md.plans(model)[md.plan_of(model, "o")].s
+    report["account"] = {
+        length: account(
+            model, cases, attend_terms(model, cases, length, args.tokens, group)
+        )
+        for length, cases in layered.items()
+    }
     report["ceiling_ms_per_token"] = round(
         layers * model.layer_bytes() / (CEILING_GBS * 1e6), 3
     )
