@@ -8,23 +8,20 @@ import json
 import sys
 
 import numpy as np
-from linear_class import (
-    GRID,
-    K_TILES,
-    KC,
-    KERNEL_BYTES,
-    N_TILES,
-    OH,
-    OW,
-    PART,
-    SPLIT,
-    SPLIT_CORES,
-    STREAM_BLOCK,
-    WIDTH,
-    log,
-)
+from linear_class import K_TILES, KERNEL_BYTES, N_TILES, OH, log
 
 import komorebi as km
+
+# The plans as the class's first version ran them (README.md's rows): the K split in
+# groups of 3 cores of 4 columns, W filled whole; the grid on 8 x 8 of 16 columns.
+SPLIT = 3
+WIDTH = 4
+PART = -(-K_TILES // SPLIT)
+SPLIT_CORES = N_TILES // WIDTH * SPLIT  # 96
+STREAM_BLOCK = 8
+GRID = 8
+KC = 4
+OW = N_TILES // GRID  # 16
 
 
 class Parts(km.Program):

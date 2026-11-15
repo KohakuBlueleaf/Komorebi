@@ -1,7 +1,7 @@
 """Y = X W as a class in the dense project's two plans, picked by the shape as its plan
 picker does (the K split for one row tile of X, the grid plan for more), and a SwiGLU
 gate after it; against the host's product (build/linear/ beside this file). README.md.
-Example: python linear_class.py --rows 1 --check exact random swiglu"""
+Example: python linear_class.py --rows 1 32 --check exact swiglu"""
 
 import argparse
 import json
@@ -15,22 +15,23 @@ import komorebi as km
 STARTED = time.monotonic()
 K_TILES = 128  # K = 4096
 N_TILES = 128  # N = 4096
-# The K split: groups of SPLIT cores, each group a block of WIDTH columns of Y, each
-# core of it a third of K (the field: its K rows of the block's columns).
-SPLIT = 3
-WIDTH = 4
-PART = -(-K_TILES // SPLIT)  # the field's K rows: the longest part
-SPLIT_CORES = N_TILES // WIDTH * SPLIT  # 96
-# The grid plan: GRID x GRID cores, core (x, y) Y's block (y, x) of OH x OW tiles, its
-# K chunks of KC tiles cast: X's along the row, W's down the column.
-GRID = 8
+# The K split (the dense project's 14,1,16): groups of SPLIT cores, a group WIDTH
+# columns of Y, a core 1/SPLIT of K; X and W stream in step, CHUNK K tiles a block.
+SPLIT = 14
+WIDTH = 16
+SPLIT_CORES = N_TILES // WIDTH * SPLIT  # 112
+CHUNK = 2
+W_BLOCK = CHUNK * WIDTH  # W's tiles a block: CHUNK rows of the group's columns
+# The grid on COLUMNS x ROWS cores: core (x, y) Y's block (y, x) of OH x OW tiles, the
+# last column 7 wide; K chunks of KC tiles cast, X's along a row, W's down a column.
+COLUMNS = 12
+ROWS = 8
 OH = 4  # the block's rows at M = 1024; the class's symbol, the plan gives the shape's
-KC = 4
-OW = N_TILES // GRID  # 16
-STREAM_BLOCK = 8  # X's tiles a block in the K split
+KC = 2  # K tiles a chunk: at 4 the casts' slots and the K split's are over a core's L1
+OW = -(-N_TILES // COLUMNS)  # 11
 # The kernel buffer: the five kernels' text is over the default 70,656 B (the dense
-# project's linear kernels take the same 88 KiB).
-KERNEL_BYTES = 88 * 1024
+# project's linear kernels take 88 KiB; this class's 90,192 B, 89 KiB).
+KERNEL_BYTES = 89 * 1024
 GATE_BLOCK = 2  # the gate's tiles a block
 
 
@@ -47,11 +48,11 @@ def silu_gate(a, b):
 
 class Linear(km.Program):
     """split: Y = X W for one row tile of X, in groups of SPLIT cores (the K split);
-    grid: Y = X W on a GRID x GRID rectangle (the grid plan), OH row tiles a core;
+    grid: Y = X W on a COLUMNS x ROWS rectangle (the grid plan), OH row tiles a core;
     gate: out = silu(a) x b over each core's `tiles` pages."""
 
     OH = km.symbol()  # the plan's
-    weight: km.L1[km.bf16, PART, WIDTH, 32, 32]
+    sums: km.L1[km.fp32, 1, WIDTH, 32, 32]
     part: km.L1[km.fp32, OH, OW, 32, 32]
 
     @km.tile_function(fidelity="HiFi2")
@@ -64,11 +65,12 @@ class Linear(km.Program):
         first = self.rank // SPLIT * WIDTH  # the group's columns of Y
         k0 = share * K_TILES // SPLIT
         k1 = (share + 1) * K_TILES // SPLIT
-        self.weight.fill(km.Stream(w.tiles[k0:k1, first : first + WIDTH]))
-        acc = km.tile.zeros(km.fp32, WIDTH)
-        for block in km.Stream(x.tiles[0:1, k0:k1], block=STREAM_BLOCK):
-            acc += self.project(block, self.weight)
-        whole = km.reduce(acc, form="tree", group=SPLIT)
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, k0:k1], block=CHUNK),
+            km.Stream(w.tiles[k0:k1, first : first + WIDTH], block=W_BLOCK),
+        ):
+            self.sums += self.project(xb, wb)
+        whole = km.reduce(self.sums, form="tree", group=SPLIT)
         if self.rank == self.leader:
             y.tiles[0:1, first : first + WIDTH].write(whole)
 
@@ -85,11 +87,13 @@ class Linear(km.Program):
             else:
                 xs = along.arrive()
             if down.sender():
-                ws = down.cast(w.tiles[k0 : k0 + KC, left : left + OW].read())
+                ws = down.cast(
+                    w.tiles[k0 : k0 + KC, left : min(left + OW, N_TILES)].read()
+                )
             else:
                 ws = down.arrive()
             self.part += self.project(xs, ws)
-        y.tiles[top : top + OH, left : left + OW].write(self.part)
+        y.tiles[top : top + OH, left : min(left + OW, N_TILES)].write(self.part)
 
     @km.handler
     def gate(self, a: km.Tensor, b: km.Tensor, out: km.Tensor, tiles: int):
@@ -114,13 +118,16 @@ def plan_of(rows):
     its group or None for the rectangle's)."""
     if rows == 1:
         return Linear.split, (0, SPLIT_CORES)
-    if rows % GRID:
-        raise SystemExit(f"the grid plan takes row tiles in multiples of {GRID}")
+    if rows % ROWS:
+        raise SystemExit(f"the grid plan takes row tiles in multiples of {ROWS}")
     return Linear.grid, None
 
 
 def made(session, rows):
-    """The class made with tensors of the shape: X [M, K], W [K, N], Y [M, N]."""
+    """The class made with tensors of the largest shape of `rows` (X [M, K], W [K, N],
+    Y [M, N]); the grid's OH x OW block of 1024 rows when none is larger, so one row
+    tile and 32 load the same program."""
+    rows = max(*rows, ROWS * OH)
     m, k, n = rows * 32, K_TILES * 32, N_TILES * 32
     tensors = {
         name: session.empty(shape, "bfloat16", "tile")
@@ -133,11 +140,11 @@ def made(session, rows):
             ("out", (m, n)),
         )
     }
-    oh = max(1, rows // GRID)
+    oh = rows // ROWS
     program = Linear(
         log=log,
         plan={"OH": oh},
-        rect=(0, 0, GRID, GRID),
+        rect=(0, 0, COLUMNS, ROWS),
         l1=session.l1()[1],
         **tensors,
     )
@@ -235,41 +242,50 @@ def rms(got, want):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--rows", type=int, default=1, help="X's row tiles (M / 32)")
+    parser.add_argument(
+        "--rows", type=int, nargs="+", default=[1], help="X's row tiles (M / 32)"
+    )
     parser.add_argument("--check", nargs="+", default=["exact", "random", "swiglu"])
     parser.add_argument("--repeat", type=int, default=3, help="timed commands")
     parser.add_argument("--gate-cores", type=int, default=64)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
-    report = {"m_k_n": [args.rows * 32, K_TILES * 32, N_TILES * 32]}
-    ok = True
+    reports, finishes, ok = [], [], True
     with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
-        log(f"device open, grid {session.grid}; M = {args.rows * 32}")
+        log(f"device open, grid {session.grid}; row tiles {args.rows}")
         program = made(session, args.rows)
-        handler, group = plan_of(args.rows)
-        run = session.load(program)  # one load: one build key, the mock's
-        finishes = {}
+        run = session.load(program)  # one load for every shape: the mock's build key
         try:
-            group = group or program.rectangle["group"]
-            report |= {"plan": handler.name, "group": list(group)}
-            report["kernel_text"] = program.sizes.text
-            plan = (handler, group)
-            if "exact" in args.check:
-                finishes["exact"] = check_exact(session, run, plan, args)
-            for name in ("random", "swiglu"):
-                if name in args.check:
-                    finishes[name] = check_random(
-                        session, run, plan, args, name == "swiglu"
+            for rows in args.rows:
+                shape = argparse.Namespace(**{**vars(args), "rows": rows})
+                handler, group = plan_of(rows)
+                if handler is Linear.grid and rows != max(*args.rows, ROWS * OH):
+                    raise SystemExit("the grid plan runs the largest shape of --rows")
+                group = group or program.rectangle["group"]
+                report = {"m_k_n": [rows * 32, K_TILES * 32, N_TILES * 32]}
+                report |= {"plan": handler.name, "group": list(group)}
+                report["kernel_text"] = program.sizes.text
+                plan = (handler, group)
+                if "exact" in args.check:
+                    finishes.append(
+                        (report, "exact", check_exact(session, run, plan, shape))
                     )
+                for name in ("random", "swiglu"):
+                    if name in args.check:
+                        check = check_random(
+                            session, run, plan, shape, name == "swiglu"
+                        )
+                        finishes.append((report, name, check))
+                reports.append(report)
         finally:
             run.stop()
-        for name, finish in finishes.items():
+        for report, name, finish in finishes:
             report[name] = finish()
-            log(f"{name}: {report[name]}")
+            log(f"{report['m_k_n'][0]} x {name}: {report[name]}")
             ok &= report[name]["exact"] if name == "exact" else True
             ok &= report[name].get("relative_rms", 0) < 1e-2
-    report["ok"] = bool(ok)
-    print(json.dumps(report, default=float), flush=True)
+    for report in reports:
+        print(json.dumps(report, default=float), flush=True)
     sys.exit(0 if ok else 1)
 
 
