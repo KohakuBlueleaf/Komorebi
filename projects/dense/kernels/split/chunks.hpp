@@ -57,6 +57,58 @@ struct ChainInput {
     }
 };
 
+// The input's first block of this mover, read once its mark is seen while a W block is
+// in flight (a K range of one row; none for a tensor that may cross islands).
+template <typename Input>
+struct ChainEarly {
+    const Input& input;
+    uint32_t first_page;
+    uint32_t chunk_tiles;
+    uint32_t chunks;
+    uint32_t last_length;
+    uint32_t pages;  // the half's item
+    km::Pattern pattern;
+    bool on;
+    uint32_t block;
+    bool issued;
+
+    void issue() {
+        const uint32_t half = kChunksA.half(km::kMover);
+        while (
+            block < chunks &&
+            (pattern.owners >> (block % pattern.length) & 1u) != km::kMover
+        ) {
+            block++;
+        }
+        if (!on || block >= chunks || !cb_pages_reservable_at_back(half, pages)) {
+            return;
+        }
+        cb_reserve_back(half, pages);
+        const uint32_t address = get_write_ptr(half);
+        const uint32_t page_bytes = get_local_cb_interface(half).fifo_page_size;
+        const uint32_t columns = block + 1 == chunks ? last_length : chunk_tiles;
+        for (uint32_t column = 0; column < columns; column++) {
+            noc_async_read_page(
+                first_page + block * chunk_tiles + column,
+                input,
+                address + column * page_bytes
+            );
+        }
+        issued = true;
+    }
+
+    void land() {
+        if (issued) {
+            cb_push_back(kChunksA.half(km::kMover), pages);
+        }
+    }
+
+    // The input's blocks this mover is past: the next stream starts there.
+    uint32_t skip() const {
+        return issued ? block + 1 : 0;
+    }
+};
+
 // `pattern` from chunk `first` on: chunk first + b is its block b.
 inline km::Pattern pattern_from(const km::Pattern& pattern, uint32_t first) {
     const uint32_t shift = first % pattern.length;
@@ -167,25 +219,6 @@ bool move_chunks(
         last_length
     };
 #if defined(SPLIT_CHAIN)
-    // a chain's record: W's blocks while its input is not yet marked (then the next
-    // record's), then A's chunks with the rest of W (two streams; chain.hpp)
-    const uint32_t ahead = chain_ahead_taken();
-    uint32_t words[kChainWords];
-    const bool next = chain_next(core, words);
-    const km_command_t after = chain_command(command, words);
-    uint32_t skip = 0, after_skip = 0;
-    if (!chain_weight_first(
-        core,
-        chunk_w_stream(core, command, w_matrix, ahead, true),
-        chunk_w_stream(core, after, AccessorW(after.a1), 0, next),
-        ahead != 0,
-        skip,
-        after_skip
-    )) {
-        return false;
-    }
-    chain_ahead_keep(next ? after_skip : 0);
-    SPLIT_STAMP(kChainStampWeight);  // no block before the mark: W's first is now
     // a sent input (a chain's record only: a plain command keeps the last's words): one
     // row of the K range in this core's L1 (a tensor that may cross islands is not)
     const bool sent = (
@@ -209,7 +242,45 @@ bool move_chunks(
             };
         }
     }();
-    const km::Stream a_chunks(km::kMoveRead, input, a_walk, 1, kChunksA, pattern);
+    // a chain's record: W's blocks while its input is not yet marked (then the next
+    // record's), then A's chunks with the rest of W (two streams; chain.hpp)
+    const uint32_t ahead = chain_ahead_taken();
+    uint32_t words[kChainWords];
+    const bool next = chain_next(core, words);
+    const km_command_t after = chain_command(command, words);
+    uint32_t skip = 0, after_skip = 0;
+    ChainEarly<std::decay_t<decltype(km::accessor_of(input))>> early = {
+        km::accessor_of(input),
+        a_walk.first_page,
+        chunk_tiles,
+        chunks,
+        last_length,
+        block_height * chunk_tiles,
+        pattern,
+        rows == 1 && !km::kMayCross<AccessorA>,
+        0,
+        false
+    };
+    if (!chain_weight_first(
+        core,
+        chunk_w_stream(core, command, w_matrix, ahead, true),
+        chunk_w_stream(core, after, AccessorW(after.a1), 0, next),
+        early,
+        ahead != 0,
+        skip,
+        after_skip
+    )) {
+        return false;
+    }
+    const uint32_t a_skip = early.skip();
+    chain_ahead_keep(next ? after_skip : 0);
+    SPLIT_STAMP(kChainStampWeight);  // no block before the mark: W's first is now
+    km::Walk a_rest = a_walk;  // past the input's blocks issued beside the last W block
+    a_rest.first_page += a_skip * chunk_tiles;
+    a_rest.blocks = a_skip < chunks ? chunks - a_skip : 0;
+    const km::Stream a_chunks(
+        km::kMoveRead, input, a_rest, 1, kChunksA, pattern_from(pattern, a_skip)
+    );
     const bool moved = (
         km::move(
             core, a_chunks, chunk_w_stream(core, command, w_matrix, ahead + skip, true)

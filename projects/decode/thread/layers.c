@@ -39,6 +39,7 @@ typedef struct {
     uint32_t ahead_off; /* no record's W read in the record before */
     uint32_t data;      /* the records whose input is sent, a bit a step (decode.h) */
     uint32_t data_dram; /* their DRAM copy acknowledged before the marks too */
+    uint32_t mark_late; /* the mark looked at only between W blocks */
 } job_t;
 
 /* Overlapped, q, k, v and o alternate the sum's two sets: k and o the second. */
@@ -375,7 +376,8 @@ static int chain_run(job_t* job, uint32_t a0) {
     }
     chain.a0 = a0;
     chain.a1 = (
-        (job->ahead_off ? kChainAheadOff : 0u) | (job->data_dram ? kChainDataDram : 0u)
+        (job->ahead_off ? kChainAheadOff : 0u) |
+        (job->data_dram ? kChainDataDram : 0u) | (job->mark_late ? kChainMarkLate : 0u)
     );
     chain.a4 = kChainMode;
     uint32_t handle = 0u;
@@ -461,6 +463,7 @@ static uint32_t layers(const km_command_t* command) {
     job.ahead_off = (command->a4 & DC_LAYERS_AHEAD_OFF) != 0u;
     job.data = (command->a4 >> DC_LAYERS_DATA_SHIFT) & DC_LAYERS_DATA_MASK;
     job.data_dram = (command->a4 & DC_LAYERS_DATA_DRAM) != 0u;
+    job.mark_late = (command->a4 & DC_LAYERS_MARK_LATE) != 0u;
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |

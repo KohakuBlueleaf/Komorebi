@@ -3,8 +3,8 @@
 #pragma once
 
 /* SPLIT's a4 kChainMode: the first record at a7, its DRAM bank in a8 as a block's; a1
- * kChainAheadOff: no W read a record early; kChainDataDram: sent inputs' DRAM acked. */
-enum { kChainMode = 3, kChainAheadOff = 1, kChainDataDram = 2 };
+ * bits: no W read early; sent inputs' DRAM acked; the mark only between W blocks. */
+enum { kChainMode = 3, kChainAheadOff = 1, kChainDataDram = 2, kChainMarkLate = 4 };
 
 /* A record: 16 words, 64 bytes, 64-byte aligned. */
 enum {
@@ -86,5 +86,8 @@ enum {
     kChainStampMarks = 11,
     kChainStampOpLoaded = 12,
     kChainStampOpCalled = 13,
-    kChainStampFirstProduct = 13 /* compute's: its first chunk's product done */
+    kChainStampFirstProduct = 13, /* compute's: its first chunk's product done */
+    kChainStampTakes = 14, /* compute's rounds summed: taking, then adding (15) */
+    kChainStampAdds = 15,
+    kChainStampCredit = 14 /* the writer's wait for its credit */
 };
