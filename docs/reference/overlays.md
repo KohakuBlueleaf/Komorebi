@@ -534,8 +534,9 @@ and compute's offsets in the row, so its `arg()` reads the row its load command 
 in; the record's words 12 to 14 hold the row table's address, a row's bytes and that L1
 address (0, 0, 0 for a class without args). Its own overlays take the lowest free
 numbers below every program field's (a shift added to the numbers its parts name,
-`KM_OVERLAY_SHIFT`); their parts go into the room and the host writes their entries
-into every core's table, as the entry command would, without one.
+`KM_OVERLAY_SHIFT`); their parts go into the room and each group's cores write their
+entries by the entry command (built for it by `KM_ADDED_ENTRY` when such a class is
+named ahead).
 
 ### Several programs with overlays
 

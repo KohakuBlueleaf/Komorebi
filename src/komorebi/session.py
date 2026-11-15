@@ -2928,6 +2928,8 @@ class _Backend:
                 ]
                 if getattr(self, "switch_args", False):  # the row read: pay for use
                     defines.append(("KM_ADDED_ARGS", "1"))
+                if getattr(self, "added_entry", False):  # own overlays named ahead
+                    defines.append(("KM_ADDED_ENTRY", "1"))
             defines += island
             defines += self._one_island()
             defines += added_path(placed.programs)

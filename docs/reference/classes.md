@@ -424,13 +424,15 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    declared number plus the lowest shift that leaves every number free (the run's
    overlays, added code, earlier added classes' own) and below every program field's
    overlay; a later field whose number they took is refused by name. Their parts are
-   built as the class's (its formats, its args' defines), go into the room the load
-   reserved, and the host writes their table entries (each part's address and bytes)
-   into every core's overlay area: no command, and nothing in the kernels, which count
-   every number in a run loaded as a dict. A class named ahead has its own overlays'
-   parts built at the load and the slots sized by them (two where the class's part
-   loads its own overlay while it runs); without ahead, a kernel with one slot is
-   refused by name.
+   built as the class's (its formats, its args' defines) and go into the room the load
+   reserved; each group's cores write their table entries (each part's address and
+   bytes) by the entry command of the service overlay. A class named ahead has its own
+   overlays' parts built at the load, the slots sized by them (a slot more in a kernel
+   where its part loads its own overlay while it runs) and the entry command's code
+   built into the service overlay (`KM_ADDED_ENTRY`, 448 B of its reader part); a
+   load naming no such class pays nothing, and a class with its own overlays added
+   to it is refused by name (unless the program names slot bytes, which builds the
+   entry command too). Without ahead, a kernel with one slot is refused by name.
 
 Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
 `opt` levels or NoCs, a dynamic handler, buffers

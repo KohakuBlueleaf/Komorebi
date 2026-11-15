@@ -353,8 +353,13 @@ def test_an_added_class_s_own_overlays_take_free_numbers_below_every_field():
     other = Overlaid(l1=1 << 20, log=quiet, a=grid(2, 1), out=grid(2, 1),
                      form="runtime")  # fmt: skip
     loaded = twice(form="runtime", beside=other).ahead(other)
-    assert added_program.refused(run_of(loaded), other) == ""
+    assert "need the entry command's code" in added_program.refused(
+        run_of(loaded), other
+    )
+    ready = run_of(loaded, backend=backend(added_entry=True))
+    assert added_program.refused(ready, other) == ""
     placed = programs.plan({loaded: (0, 60)}, 120)
+    assert added_program.ahead_own_kernels(placed) == {"reader", "writer", "compute"}
     assert added_program.ahead_programs(placed) == [other]
     assert (other.program_field, other.overlay_shift) == (1, 0)
     assert [each.number for each in added_program.own_overlays(other)] == [1, 2]

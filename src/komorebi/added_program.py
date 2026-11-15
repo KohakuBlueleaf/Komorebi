@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from komorebi import added, formats, native, overlay, programs
+from komorebi import abi, added, formats, native, overlay, programs
 from komorebi.errors import ProgramError
 from komorebi.program import Program, check_families
 
@@ -154,6 +154,8 @@ def pad_reserve(backend, placed, reserve):
     backend.switch_pad = max(set(range(programs.SWITCH_BUFFERS)) - used)
     backend.switch_loaded = len(placed.programs)
     backend.added_own = set()  # the overlay numbers added classes' own overlays took
+    # the entry command's code in the service overlay, for a class ahead with its own
+    backend.added_entry = bool(ahead_own_kernels(placed))
     # the load command's row read is built only for a class named ahead with args
     backend.switch_args = any(other.args is not None for other in ahead)
     for other in ahead:
@@ -450,6 +452,14 @@ def refused(run, program):
             "the load command's row read, built only when a class with them is named "
             "with Program.ahead(...) before the load"
         )
+    room = getattr(run.backend, "room", None)
+    entered = getattr(run.backend, "added_entry", False) or (room and room.entered)
+    if program.overlays and not entered:
+        return (
+            f"{program.name}: overlays of its own need the entry command's code, built "
+            "only when a class with them is named with Program.ahead(...) before the "
+            "load (or the program names slot bytes)"
+        )
     if program.messages is not None:
         return (
             f"{program.name}: a dynamic handler (its queues and tables are set at the "
@@ -561,7 +571,7 @@ def add(run, program):
         f"area; {time.perf_counter() - started:.2f} s"
         + (
             f"; own overlays {sorted(number for number, _, _ in own)}, their entries "
-            f"written to every core in {entries_s * 1e3:.1f} ms"
+            f"sent to every core in {entries_s * 1e3:.1f} ms"
             if own
             else ""
         )
@@ -616,34 +626,30 @@ def _own_parts(run, program, group):
 
 
 def _own_entries(run, own):
-    """Places an added class's own overlays' parts into the room and writes their
-    table entries (each part's bank address and bytes) into every core's overlay area
-    from the host: no command, no code in the kernels (a switch run's table counts
-    every number); returns the seconds the writes took."""
+    """Places an added class's own overlays' parts into the room and sends each group
+    the entry command of each (the service overlay writes the table entry, each part's
+    bank address and bytes, in every core's overlay area); returns its seconds."""
     if not own:
         return 0.0
     backend, started = run.backend, time.perf_counter()
-    c = overlay.constants()
-    module, grid_x = backend.session._module, backend.port.grid_x
+    entry = abi.headers()["KM_HANDLER_ENTRY"]
     for number, name, images in own:
         made = SimpleNamespace(name=name, number=number)
         placed = added._place(run, made, [images])[0]
-        words = []
-        for part in overlay.PARTS:
-            words += list(placed.get(part, (0, 0)))
-        address = (
-            backend.control_addr
-            + c["kOverlayArea"]
-            + c["kOverlayTable"]
-            + 8 * len(overlay.PARTS) * number
-        )
-        for core in backend._cores():
-            module.write_l1(
-                backend.device, core % grid_x, core // grid_x, address, words
-            )
-        whole = SimpleNamespace(first=0, count=run.cores)
-        added._mirror(run, whole, number, added.entry_words(number, False, placed))
-        backend.added_own.add(number)
+        words = added.entry_words(number, False, placed)
+        handles = [
+            run._queue_command(entry, (each.first, each.count), words)
+            for each in backend.room.groups
+        ]
+        for handle in handles:
+            event = run.wait(handle, 30.0)
+            if event.kind != "done":
+                raise added.AddError(
+                    f"{name}: the entry command of its own overlay {number} ended "
+                    f"{event.kind}: {event}"
+                )
         for each in backend.room.groups:
+            added._mirror(run, each, number, words)
             each.numbers.add(number)
+        backend.added_own.add(number)
     return time.perf_counter() - started
