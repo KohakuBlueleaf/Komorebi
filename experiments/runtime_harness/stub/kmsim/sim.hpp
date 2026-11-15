@@ -61,6 +61,7 @@ namespace kmsim {
 
     // NoC: a 64-bit address names a core by x, y or the DRAM, and a 32-bit address.
     uint64_t noc_core(uint32_t x, uint32_t y, uint32_t addr);
+    uint64_t noc_self(uint32_t addr);  // the calling core's own L1
     uint64_t noc_dram(uint32_t addr);
     void noc_read(uint64_t src, uint32_t dst, uint32_t bytes);
     void noc_write(uint32_t src, uint64_t dst, uint32_t bytes);

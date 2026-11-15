@@ -247,6 +247,10 @@ namespace kmsim {
         );
     }
 
+    uint64_t noc_self(uint32_t addr) {
+        return noc_core(g->me().x, g->me().y, addr);
+    }
+
     uint64_t noc_dram(uint32_t addr) {
         return static_cast<uint64_t>(0xFFFFFu) << 32 | addr;
     }

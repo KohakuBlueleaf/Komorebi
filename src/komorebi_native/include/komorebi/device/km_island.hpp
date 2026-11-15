@@ -107,6 +107,15 @@ namespace km {
 #endif
         }
 
+        // The island's cores for a multicast release (KM_ISLAND_GO); 0: none.
+        uint32_t go() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
+            return area_[KM_ISLAND_GO / 4];
+#endif
+        }
+
         // The tensor table's L1 address on this island's cores; 0: none (one island).
         uint32_t tensors() const {
 #if defined(KM_ONE_ISLAND)

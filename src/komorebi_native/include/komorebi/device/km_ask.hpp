@@ -2519,6 +2519,7 @@ namespace km {
         uint32_t leader;
         uint32_t size;
         uint32_t index;
+        uint32_t goes;  // the releases so far in this call
     };
 
     inline Team team_of(const Islands& view, const km_command_t& command, uint32_t me) {
@@ -2526,7 +2527,7 @@ namespace km {
         const uint32_t e0 = view.entry_first(here), e1 = e0 + view.entry_count(here);
         const uint32_t f0 = first(command), f1 = f0 + count(command);
         const uint32_t lo = f0 > e0 ? f0 : e0, hi = f1 < e1 ? f1 : e1;
-        return {lo, hi > lo ? hi - lo : 0, me - lo};
+        return {lo, hi > lo ? hi - lo : 0, me - lo, 0};
     }
 
     // The leader of `command`'s ranks on island `island`: its index there.
@@ -2583,12 +2584,95 @@ namespace km {
         return team_met(core, command, t.size - 1);
     }
 
-    // The leader lets the team go: one meeting on each other rank, which waits for it;
-    // the atomics flushed once, after all. False: gave up.
+    // Word KM_PORT_GO of this core's KM_PORT_LEFT slot (L1, the control block).
     template <typename Kernel>
-    inline bool team_go(
-        const Kernel& core, const km_command_t& command, const Team& t
+    inline uint32_t team_go_word(const Kernel& core) {
+        return (
+            core.args().control + KM_CONTROL_PORT + KM_PORT_LEFT * KM_PORT_STRIDE +
+            4 * KM_PORT_GO
+        );
+    }
+
+    // The leader's release of a whole island: `marker` into every other core's go word,
+    // a multicast a rectangle of `layout` (KM_ISLAND_GO), the writes waited for.
+    template <typename Kernel>
+    __attribute__((noinline)) bool team_cast(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t layout,
+        uint32_t marker
     ) {
+        const uint32_t go = team_go_word(core);
+        const uint32_t columns = layout & 0xFFu;
+        const uint32_t rows = layout >> KM_ISLAND_GO_ROWS & 0xFFu;
+        const uint32_t split = layout >> KM_ISLAND_GO_SPLIT & 0xFFu;
+        const uint32_t end = split != 0 ? split : columns;  // panel 0's columns
+        const uint32_t base = islands_at(core.args().control).base();
+        const volatile tt_l1_ptr uint32_t* table = core.control(KM_CONTROL_CORES);
+        // columns x0 .. x1, rows y0 .. y1: the leader's row after it, panel 0's other
+        // rows, panel 1; none holds the leader (core base, column 0 of row 0)
+        const uint32_t rects[3][4] = {
+            {1, end - 1, 0, 0},
+            {0, end - 1, 1, rows - 1},
+            {end, columns - 1, 0, rows - 1}
+        };
+        *l1(go) = marker;
+        for (uint32_t r = 0; r < 3; r++) {
+            const uint32_t x0 = rects[r][0], x1 = rects[r][1];
+            const uint32_t y0 = rects[r][2], y1 = rects[r][3];
+            if (x0 > x1 || y0 > y1 || x1 >= columns || y1 >= rows) {
+                continue;  // empty
+            }
+            const uint32_t low = table[base + y0 * columns + x0];
+            const uint32_t high = table[base + y1 * columns + x1];
+            const uint32_t from = noc_index == 0 ? low
+                                                 : high;  // NoC1: from the far end
+            const uint32_t to = noc_index == 0 ? high : low;
+            noc_async_write_multicast(
+                go,
+                get_noc_multicast_addr(
+                    from & 0xFFFFu, from >> 16, to & 0xFFFFu, to >> 16, go
+                ),
+                4,
+                (x1 - x0 + 1) * (y1 - y0 + 1)
+            );
+        }
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            core.args().wait_limit
+        );
+        return code == kGaveNone || coll_gave_up(core, command, code);
+    }
+
+    // The leader lets the team go: a whole island led from its first core, a marker
+    // multicast a rectangle (KM_ISLAND_GO) each rank waits for; else an atomic a rank.
+    template <typename Kernel>
+    inline bool team_go(const Kernel& core, const km_command_t& command, Team& t) {
+        const Islands view = islands_at(core.args().control);
+        const uint32_t layout = view.go();
+        t.goes++;
+        if (
+            (layout & KM_ISLAND_GO_ON) != 0 && t.size > 1 && t.size == view.ranks() &&
+            core.core_of(t.leader) == view.base() && t.goes < 8
+        ) {
+            const uint32_t marker = command.sequence << 3 | t.goes;
+            if (t.index == 0) {
+                return team_cast(core, command, layout, marker);
+            }
+            const volatile tt_l1_ptr uint32_t* word = l1(team_go_word(core));
+            const uint32_t code = core.poll_at(
+                kWhereAsk,
+                [&] {
+                    invalidate_l1_cache();
+                    return *word == marker;
+                },
+                core.args().wait_limit
+            );
+            return code == kGaveNone || coll_gave_up(core, command, code);
+        }
         if (t.index != 0) {
             return team_met(core, command, 1);
         }
@@ -2853,7 +2937,7 @@ namespace km {
             return true;
         }
         coll_begin();
-        const Team t = team_of(view, command, core.me());
+        Team t = team_of(view, command, core.me());
         Gather posted = {};
         if (!team_meet(core, command, t)) {
             return false;
@@ -2899,7 +2983,7 @@ namespace km {
             return true;
         }
         coll_begin();
-        const Team t = team_of(view, command, core.me());
+        Team t = team_of(view, command, core.me());
         const bool lead = t.index == 0;
         const Partition mine = partition(pages, i, n);
         const uint32_t after = mine.start + mine.len;  // the shares after this one's
