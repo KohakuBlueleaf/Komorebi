@@ -462,7 +462,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
                 (
                     handler == KM_HANDLER_PUSH || handler == KM_HANDLER_PULL ||
                     handler == KM_HANDLER_PAGES || handler == KM_HANDLER_GATHER ||
-                    handler == KM_HANDLER_REDUCE
+                    handler == KM_HANDLER_REDUCE || handler == KM_HANDLER_ENTRY
                 )
             ) &&
             !thread_transfer
@@ -490,6 +490,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     } else if (
         dispatcher->programs && handler != KM_HANDLER_NOP &&
         handler != KM_HANDLER_EXIT && handler != KM_HANDLER_COPY &&
+        handler != KM_HANDLER_ENTRY &&
         (
             handler == KM_HANDLER_LOAD
                 ? (header >> 24) >= KMD_PROGRAMS_MAX || queued

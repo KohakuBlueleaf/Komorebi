@@ -18,6 +18,12 @@ namespace km {
         );
     }
 
+    // A handler added to the live run (run.add): one look at a word of the overlay
+    // area; enter() loads and calls the overlay of its number (km_overlay.hpp).
+    inline bool entered(uint32_t control, const km_command_t& command);
+    template <typename Kernel>
+    bool enter(Kernel& kernel, const km_command_t& command);
+
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
@@ -132,6 +138,8 @@ namespace km {
                     link_serve(*this, *command, 0, kStReader);
                 } else if (served(*command)) {
                     serve(*this, *command);
+                } else if (entered(args().control, *command)) {
+                    enter(*this, *command);
                 } else {
                     body(*command);
                 }
@@ -493,7 +501,9 @@ namespace km {
                 const bool report = (
                     pages(command)
                         ? link_serve(*this, command, 1, kStWriter)
-                        : __builtin_expect(served(command), 0) || body(command)
+                        : __builtin_expect(served(command), 0) ||
+                            (entered(arguments.control, command) ? enter(*this, command)
+                                                                 : body(command))
                 );
                 const bool written = flushed(kFlushWrites, kStWriter);
                 trace_.timestamp(command.sequence, kTraceDone);
@@ -776,7 +786,11 @@ namespace km {
                     break;
                 }
                 if (__builtin_expect(!served(command), 1)) {
-                    body(command);
+                    if (entered(control_, command)) {
+                        enter(*this, command);
+                    } else {
+                        body(command);
+                    }
                 }
                 // Math and pack tell unpack they left the body; unpack marks it.
                 MATH((
@@ -948,6 +962,5 @@ namespace km {
 }  // namespace km
 #endif
 
-#if !defined(COMPILE_FOR_TRISC) && !defined(COMPILE_FOR_NCRISC)
-#include "km_overlay.hpp"  // serve(): the reader's load of the service overlay
-#endif
+// serve() and enter(): the loads of the service overlay and of an added handler
+#include "km_overlay.hpp"
