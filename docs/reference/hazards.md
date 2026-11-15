@@ -478,11 +478,35 @@ chain or on a stream) when a read must wait anyway.
 
 **The guard.** Refused when the chain is made: a read stated `prefetch=True` of a tensor
 a call of the chain writes, naming the call, the line and the tensor; a handler whose
-inline body takes a tensor (what it reads is its own C++), and a `kc.Call` among the
-class's calls (its tensors are names the build cannot compare). The automatic prefetch
-is on by default and costs nothing; off, every read waits for the input's marks.
+inline body takes a tensor and states neither `reads=` nor `writes=` (what it reads is
+its own C++), and a `kc.Call` among the class's calls (its tensors are names the build
+cannot compare). The automatic prefetch is on by default and costs nothing; off, every
+read waits for the input's marks.
 
 Described in [Programs written as classes, chains](classes.md#chains).
+
+### A body's reads and writes stated wrong
+
+**The hazard.** An inline body's `reads=[t]` and `writes=[t]` are the programmer's
+statement of what its C++ reads and writes in DRAM; a chain describes the call from
+them. A body that writes a tensor stated only in `reads=`, or reads or writes one it
+does not state, leaves the chain with a wrong description: a call after it can read the
+pages before they are written, or an outside input can change while the chain runs.
+You see stale or mixed words, and no error.
+
+**The rule.** State every tensor whose pages the body's C++ touches: `reads=` for what
+it only reads, `writes=` for what it writes (both when it does both). A tensor in
+`reads=` is never written by any call of the chain; one in `writes=` is read by no
+other call of the chain (read it in a later chain or command).
+
+**The guard.** At the build, `reads=` and `writes=` must name tensor parameters the
+body takes (refused at the line). At `run.chain`: a taken tensor stated in neither, a
+`reads=` tensor that a call of the chain writes, and a read by another call of a tensor
+a body writes are refused, naming the call, the line and the tensor. That the C++ does
+what is stated: nothing (the build does not read it).
+
+Described in [Programs written as classes, a body's reads and writes
+stated](classes.md#a-bodys-reads-and-writes-stated).
 
 ### A slice of a constant set's words
 
@@ -596,6 +620,25 @@ The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the 
 checks the generated text). A hand kernel: nothing.
 
 Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
+
+### A merged state read before pack wrote it
+
+**The hazard.** `km.reduce(self.state, ..., combine=MERGE)` runs the MERGE body once for
+each arrival, and each run reads the state the run before wrote in place. The state is
+written by pack and read by unpack, which share no variable and run apart: unpack can
+read the state of a merge pack has not yet packed, and the root's body after the merge
+can read it before the last merge. You see a state that misses an arrival, and no error.
+
+**The rule.** The MERGE body hands a token from its pack to its unpack after it writes
+the state (an own field `km.own(push="pack")`: pack pushes a page after its packs,
+unpack waits for it and frees it before it reads the state), as the attention pass's
+bodies do; the body after the merge waits for the last one.
+
+**The guard.** Nothing: the build runs the body as written. A sender's push of the
+state for mover B comes after the body's packs on pack itself.
+
+Described in [Programs written as classes, a state merged, not
+added](classes.md#a-state-merged-not-added).
 
 ### A vector word with a destination register of 12 or more
 

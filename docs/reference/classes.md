@@ -390,6 +390,7 @@ A handler of **another** class added to a live run is not built. It would need:
 | `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B | `km::reduce`, the arrivals added in rank order |
 | `whole = km.reduce(acc, form="tree", group=S)`, `acc` n tiles | the same in `km::digit_group(command, me, 1, S)`: S consecutive ranks a group, n tiles a slot | each of the n tiles added through DST tile n (n + 1 tiles of DST) |
 | `whole = km.reduce(self.part, form="tree", group=S)`, `self.part` a float32 field of sums | `km::reduce_arrive` on mover A into slots of the field's tiles; `km::reduce_emit` of the field's pages on mover B (a sender) | each arrival copied into DST and packed onto the field with the packer's L1 accumulation; the field handed on (Products) |
+| `km.reduce(self.state, form="tree", group=S, combine=MERGE)`, `self.state` an own float32 field written in place | the same, of the state's pages | the MERGE body on each arrival, which writes the state in place; a sender's state pushed for mover B; the root's stays in place (A state merged, not added) |
 | `t.tiles[r0:r1, c0:c1]`, where a page range is taken | the first page `r0 x T + c0` (T the tensor's tile columns); one row, or all T columns, is a page range; more rows a `km::Walk` of whole rows, `T` apart; r and c any ints of the handler (words at run time) | |
 | `t.tiles[r0:r1:s, c0:c1]` | its rows s rows of t apart, `(r1 - r0 + s - 1) / s` of them: a `km::Walk` of whole rows `s x T` apart (s an int or a word) | |
 | `n = min(a, b)`, `max(a, b)`, a and b ints | `(a < b ? a : b)`, `(a > b ? a : b)` | the same |
@@ -521,6 +522,7 @@ What a body takes, by where it runs:
 | an own field (`km.own()`) | `name`, its buffer, no wait, no free | the same | the same |
 | a tensor parameter | | | `name`, a `km::Tensor` of its command word (its accessor, `.word`) for `km::read_pages`, `km::write_pages` and the dataflow calls |
 | a tile written to a page (`pages.write(t)` below) | | | mover B: its buffer, waited for once |
+| a reduce's sum of a field (`whole = km.reduce(self.sums, ...)`), under `if self.rank == self.leader:` | `whole_buffer` and `whole_index` (0): the group's sum, fp32 tiles of the field, waited for before the body and freed after it, once | | |
 
 The build's report names each value handed between compute CPUs, and each kept field:
 
@@ -568,6 +570,79 @@ refused. The pack and unpack CPUs share no variable, so state written in place n
 token from the writer to the reader (`step` above), as the attention pass's has. A
 body that copies from buffers of two formats sets the unpacker's format before each
 copy (`reconfig_data_format_srca(total)`): `copy_init` keeps the one it finds.
+
+### A body on a reduce's sum
+
+The hand's K split runs an operation on the group's sum at its root, where it would
+otherwise pack it for the write (the decode layer's residual add, its scale by 1 /
+rms). A body under the leader's `if` takes the reduce's result as that operation:
+
+```python
+whole = km.reduce(self.sums, form="tree", group=self.SPLIT)
+if self.rank == self.leader:
+    residual = km.Stream(r.tiles[0:1, first : first + self.WIDTH], block=self.WIDTH)
+    out = km.Stream(
+        y.tiles[0:1, first : first + self.WIDTH], write=True, block=self.WIDTH
+    )
+    km.cxx(ADD, takes=[whole, residual, out])
+```
+
+`whole_buffer` is the field's buffer and `whole_index` its first tile (0): the group's
+sum in fp32, `kField<Name>Pages` tiles. Compute waits for it before the body and frees
+it after; the body unpacks it, adds what it takes and packs into `out`
+([test_class_body_takes_sum.py](../../tests/core/test_class_body_takes_sum.py)). A body
+that takes the sum outside the leader's `if`, on one compute CPU or a mover, or after
+the sum was written or taken, is refused at its line.
+
+### A state merged, not added
+
+Attention's partial results (each row's maximum, its sum, its output rows) go up a
+group's tree merged, not summed: at each round the arrival and the core's own state make
+a new state. `km.reduce(self.state, form="tree", group=S, combine=MERGE)` does that for
+an own float32 field written in place (`km.own(push=None)`):
+
+```python
+state: km.L1[km.fp32, 3, 32, 32] = km.own(push=None)
+
+...
+km.cxx(PARTIAL, takes=[self.state])  # this core's state
+km.reduce(self.state, form="tree", group=4, combine=MERGE)
+if self.rank == self.leader:
+    km.cxx(FINISH, takes=[self.state])  # the group's merged state
+```
+
+Mover A takes each round's arrival into slots of the state's tiles. MERGE, a body of
+compute's three, runs once for each arrival slot with `arrival_buffer`,
+`arrival_index` (the slot's first tile) and the field by its name bound; it writes the
+merged state in place. On a sender compute then pushes the state and mover B sends it to
+its receiver; at the root the merged state stays in place for the bodies after. The
+line gives no value. A merge of a field that is not own and written in place, of a
+field other than float32 (the arrival's slots are float32), one assigned to a name, one
+by owner without `group=`, and `combine=` on a tile in DST are refused at the line
+([test_class_merge_reduce.py](../../tests/core/test_class_merge_reduce.py)).
+
+### A body's reads and writes stated
+
+A body that takes a tensor reads or writes its pages with its own C++, which the
+build does not read. For a command that is enough; a chain must know what each call
+reads and writes, so the body states it: `reads=[t]` and `writes=[t]` name tensors the
+body takes.
+
+```python
+km.cxx(ROTARY, takes=[qk, position], reads=[qk], on="mover_a")
+km.cxx(APPEND, takes=[keys, position], writes=[keys], on="mover_b")
+```
+
+In a chain, a tensor in `reads=` is an outside input of the call: no record waits for
+it, and a chain in which any call writes it is refused. A tensor in `writes=` is written
+by the call: it is in the chain's written set (no read of it goes early), and another
+call of the chain that reads it is refused, since which pages the body wrote is not
+described. A body that takes a tensor and states neither is refused by `run.chain`, and
+still runs as a command. At the build, `reads=` or `writes=` that is not a list of
+tensor parameters the body takes is refused at its line. A line that writes rows inside
+a tile tensor's tiles, such as `keys.rows(position, rows).write(k)` for the cache's row,
+is not built: it could be added as a write line of its own, which a chain would then
+describe.
 
 ### A page from several CPUs' words
 
@@ -1601,13 +1676,26 @@ session gives more with `kernel_bytes`
 c0:c1]`), their zip, `.write` of a page range, `.drain` and `.fill`, the assignments
 before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write. A
 first page is a number of the call's words, the class's constants, `self.rank`, `size`
-and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the one tensor
+and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the first tensor
 written; each group's root writes block g, `width` tiles from g x width), the group size
 (the reduce's group, else 1), and each read as a share of K tiles or as ranges of
 `base + step x g`. The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
 input that `run.chain` proves (as a written chain's,
 [the earlier input](chain.md#the-earlier-input-and-the-direct-input)).
+
+**Several outputs.** A handler that writes more than one tensor, each as block g of its
+group (the decode layer's x and its rows' squares, a tile a group), is a call with
+several outputs: the first written in the handler's lines is the record's output, and
+each other is an output of its own width (`kc.Call(..., outputs=(("sq", 1),))`). The
+root writes every output's block before its mark, so a mark tells of block g of each.
+The next call reads any of them: its input's marks prove what they cover, and when its
+reads of another output need blocks they do not cover (every core reads all the
+squares, its input only its own block), the record waits for every block of the call
+before (one range of the whole output). A call further on reads another output marked
+`km.past`, proven by that output's width. Two outputs given one tensor, and a direct
+input from a call of several outputs, are refused
+([test_class_chain_outputs.py](../../tests/core/test_class_chain_outputs.py)).
 
 **prefetch.** A read of a tensor that no call of the chain writes goes before the
 record's input is marked: the kernels' wait before each read line takes the record's
@@ -1633,7 +1721,8 @@ island 0's program and `cores` in flat ranks.
 
 | Refused | When | Text names |
 |---|---|---|
-| a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor | `run.chain` | the handler, the line and why; it still runs as a command |
+| a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor and states neither `reads=` nor `writes=` | `run.chain` | the handler, the line and why; it still runs as a command |
+| a body's `reads=` of a tensor a call of the chain writes; a read of a tensor another call's body writes (`writes=`) | `run.chain` | the call, the line, the tensor, the other call |
 | a call of a program made without the walk | `run.chain` | the handler; `chain=True` or a `km.chain` method |
 | a `kc.Call` among a class's calls | `run.chain` | the call |
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
