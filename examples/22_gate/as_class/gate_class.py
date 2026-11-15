@@ -182,7 +182,9 @@ def run_class(session, args, cores, dtype, timed):
     name = f"{'GateTimed' if timed else 'Gate'} {dtype}"
     hand.log(f"{name}: tensors written")
     made = GateTimed if timed else Gate
-    program = made(a=a, b=b, out=out, stamps=stamps, log=hand.log)
+    program = made(
+        a=a, b=b, out=out, stamps=stamps, log=hand.log, guard=not args.no_guard
+    )
     run = session.load(program)
     try:
         words = (a, b, out, *([stamps] if timed else []), args.tiles, args.pattern)
@@ -346,6 +348,11 @@ def main():
     parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
     parser.add_argument("--tiles", type=int, default=64, help="tiles a core takes")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--no-guard",
+        action="store_true",
+        help="the class made with guard=False (no give-up at a deadline, no inspect)",
+    )
     parser.add_argument(
         "--formats",
         nargs="*",

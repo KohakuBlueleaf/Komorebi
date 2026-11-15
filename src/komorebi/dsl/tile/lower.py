@@ -44,8 +44,8 @@ BANDS = 4  # bands of 4 rows a face (rule band: a body runs the bands of live ro
 TILE = 64  # Dst address units of a tile in either Dst: 4 faces of 16 rows
 # SFPLOAD / SFPSTORE's instr_mod0 by Dst: its own format (fp32), FP16A (a 16-bit Dst)
 DEST_MODES = {"fp32": 0, "fp16a": 1}
-# Operand tiles a whole-tile stream body reads (Dst tiles 0 ..).
-OPERANDS = 3
+# Operand tiles a whole-tile stream body reads: Dst tiles 0 .. 3 (half the fp32 Dst).
+OPERANDS = 4
 # The readers of a MAD-class result that the unit does not hold back (rule
 # mad-reader: the ISA's SFPMAD page; SFPGT, SFPLE from tt-metal's ckernel_sfpu_recip.h).
 NOT_HELD = ("SFPIADD", "SFPSHFT", "SFPAND", "SFPOR", "SFPSWAP", "SFPGT", "SFPLE")
@@ -87,6 +87,7 @@ class Body:
         # `held`, which the layout pass places in the highest work registers)
         self.whole, self.whole_cache, self.held = set(), {}, set()
         self.mode = 0  # SFPLOAD / SFPSTORE's format: Dst's own (FP16A on a 16-bit Dst)
+        self.scalars = {}  # {run-time scalar index: its value, held across the rows}
 
     def fresh(self):
         self.count += 1
@@ -150,6 +151,13 @@ class Body:
         self.op("SFPLOADI", note, lreg_ind=out, instr_mod0=2, imm16=bits & 0xFFFF)
         self.op("SFPLOADI", note, lreg_ind=out, instr_mod0=8, imm16=bits >> 16)
         return out
+
+    def scalar(self, index):
+        """Run-time scalar `index`'s value: loaded once before the rows by its two
+        run-time SFPLOADI (`scalar_loads`) and held."""
+        if index not in self.scalars:
+            self.scalars[index] = self.fresh()
+        return self.scalars[index]
 
     def register_const(self, value, bits=None):
         """A programmable constant register holding fp32 `value` (or the integer
@@ -342,7 +350,27 @@ def maximum(b, x, y):
     return big
 
 
-FUNCTIONS = {"exp": exp, "sigmoid": sigmoid, "rsqrt": rsqrt}
+def sqrt(b, x):
+    """The square root of x >= 0: x rsqrt(x) (0 at 0: rsqrt's guess from 0's bits is
+    finite)."""
+    return b.mul(x, rsqrt(b, x), "x rsqrt(x)")
+
+
+def minimum(b, x, y):
+    """The smaller of x and y in every lane: the other result of maximum's swap."""
+    big = b.op("SFPMOV", "min: first", lreg_c=x)
+    small = b.op("SFPMOV", "min: second", lreg_c=y)
+    b.op("SFPSWAP", "max, min", lreg_src_c=big, lreg_dest=small, instr_mod1=1)
+    return small
+
+
+FUNCTIONS = {
+    "exp": exp,
+    "sigmoid": sigmoid,
+    "rsqrt": rsqrt,
+    "recip": recip,
+    "sqrt": sqrt,
+}
 # Lane tests of a condition: (instruction, mod1, the operands swapped)
 CONDITIONS = {"gt": ("SFPGT", 1, False), "lt": ("SFPGT", 1, True)}
 ZERO_TESTS = {"eq": 6, "ne": 2}  # SFPSETCC on the integer view: -0.0 is not 0
@@ -371,8 +399,16 @@ def _value(b, node, done, source=None):
     elif k == "max":
         x, y = (_value(b, a, done, source) for a in node.args)
         out = maximum(b, x, y)
+    elif k == "min":
+        x, y = (_value(b, a, done, source) for a in node.args)
+        out = minimum(b, x, y)
+    elif k == "abs":
+        x = _value(b, node.args[0], done, source)
+        out = b.op("SFPABS", "|x|", lreg_c=x, instr_mod1=1)  # 1: the float form
     elif k == "mad":
         out = b.mad(*(_value(b, a, done, source) for a in node.args))
+    elif k == "scalar":
+        out = b.scalar(node.value)
     elif k == "flash_exp2":
         out = flash_exp2(b, _value(b, node.args[0], done, source))
     elif k == "select":
@@ -661,10 +697,11 @@ def negated_zero(code):
     return done
 
 
-def resident_constants(code, prog):
+def resident_constants(code, prog, loads=(), pinned=()):
     """Layout: constants the row still loads move into work registers that stay set
     across the rows, most words saved first, while the row's values still fit; equal
-    constants share one. Returns (what it did, the loads, the pinned values)."""
+    constants share one; `loads` and `pinned` are held already (run-time scalars).
+    Returns (what it did, the loads, the pinned values)."""
     found = {}
     for insn in code:
         if insn.op == "SFPLOADI" and isinstance(insn.args["lreg_ind"], str):
@@ -676,7 +713,7 @@ def resident_constants(code, prog):
         if writers == words and bits is not None and value.startswith("v"):
             by_bits.setdefault(bits, []).append(value)
     saved = {b: sum(len(found[v]) for v in vs) for b, vs in by_bits.items()}
-    done, loads, pinned = [], [], []
+    done, loads, pinned = [], list(loads), list(pinned)
     for bits in sorted(saved, key=lambda b: -saved[b]):
         trial = copy.deepcopy(code)
         first, *others = by_bits[bits]
@@ -693,6 +730,36 @@ def resident_constants(code, prog):
         pinned.append(first)
         done.append(f"{words[0].note} held across rows ({saved[bits]} words a row)")
     return done, loads, pinned
+
+
+def scalar_loads(ir, chain, body):
+    """The run-time scalars' loads (each a float handler word, `<name>_bits` of the
+    body's call): two SFPLOADI a scalar whose immediates the core builds from the
+    argument, before the rows; refused for a reciprocal or an integer size."""
+    loads, names = [], []
+    for index, scalar in enumerate(chain.values):
+        value = scalar.value
+        if getattr(value, "kind", None) != "float":
+            fail(f"{ir.name}: a run-time scalar of the unit program is a float word")
+        if scalar.recip:
+            fail(
+                f"{ir.name}: a division by the run-time scalar {value.name}: the unit "
+                f"program multiplies; pass its reciprocal word and multiply by it"
+            )
+        name = f"{value.name}_bits"
+        names.append(name)
+        held = body.scalars.get(index)
+        if held is None:
+            continue
+        for mod, text in ((2, f"{name} & 0xFFFFu"), (8, f"{name} >> 16")):
+            insn = Insn(
+                "SFPLOADI",
+                {"lreg_ind": held, "instr_mod0": mod, "imm16": 0},
+                f"{value.name}, the call's word",
+            )
+            insn.runtime = text
+            loads.append(insn)
+    return loads, names
 
 
 def _share(code, values, name):
@@ -1033,13 +1100,20 @@ def _checks(unit, row, plan=None):
             "ok: STALLWAIT(SFPU on MATH) first" if stalled else "repaired: STALLWAIT",
         )
     )
+    built = 0
     for insn in insns(math_init + math_tile):
         encode(insn.op, insn.args)
+        built += bool(insn.runtime)
     unit.checks.append(
         Check(
             "immediates",
             "every immediate and register field inside its width",
-            "ok: every word encoded (all immediates are compile-time)",
+            (
+                f"ok: every word encoded; {built} immediate(s) of run-time scalars "
+                "built on the core (TT_SFPLOADI of a 16-bit half)"
+                if built
+                else "ok: every word encoded (all immediates are compile-time)"
+            ),
         )
     )
 
@@ -1302,6 +1376,8 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
     root = ir.stores[0].value
     if root.kind == "matmul":
         return _product_alone(ir, root, fidelity, band)
+    if chain.prev is not None:  # more blocks than the chain's slots: run as stages
+        fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     leaves = [
         (k, leaf.source)
         for k, leaf in enumerate(chain.operands)
@@ -1312,8 +1388,6 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
             f"{ir.name}: {len(leaves)} products: Dst holds {OPERANDS} operand tiles "
             "of a body (a product's result stays in Dst for the vector code)"
         )
-    if chain.values or chain.prev is not None:
-        fail(f"{ir.name}: the unit program takes no runtime scalars")
     if len(chain.operands) > OPERANDS:
         fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     dtypes = {t.dtype for t in ir.tensors}
@@ -1384,13 +1458,16 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         moved = interleave(body.code, 0, len(body.code))
         done = [f"{moved} instructions moved in the even and odd chains"]
         unit.passes.append(Pass("schedule", "interleave", done))
+    scalars, unit.scalars = scalar_loads(ir, chain, body)
     unit.passes.append(Pass("algebra", "negated_zero", negated_zero(body.code)))
     done = constant_registers(body.code, body.prog, len(CONSTANT_REGISTERS))
     unit.passes.append(Pass("layout", "constant_registers", done))
     saved = {"head": [], "tail": []}
     unit.passes.append(Pass("schedule", "hoist", hoist(body.code, setup, saved)))
     allocate(saved["head"] + saved["tail"], body.prog)
-    done, held, pinned = resident_constants(body.code, body.prog)
+    done, held, pinned = resident_constants(
+        body.code, body.prog, scalars, [x.args["lreg_ind"] for x in scalars]
+    )
     unit.passes.append(Pass("layout", "resident_constants", done))
     whole = held + body.code
     unit.passes.append(Pass("layout", "allocate", allocate(whole, body.prog, pinned)))
@@ -1416,6 +1493,10 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
     elif load_macro and not per_row:
         try:
             plan = macro.fit(body.code)
+            if ROWS % plan.rows:
+                raise macro.Refused(
+                    f"{plan.rows} rows a macro turn do not divide a face"
+                )
             if band and (ROWS // plan.rows) % BANDS:
                 raise macro.Refused(
                     f"a macro turn of {plan.rows} row steps; a band is 2"
@@ -1450,8 +1531,6 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         drained = []
     else:
         row = macro.rows(plan, MACRO_ADDR_MOD)
-        if ROWS % plan.rows:
-            raise UnitError(f"{plan.rows} rows a macro turn do not divide a face")
         face = Loop("row", ROWS // plan.rows, row, unroll=True)
         unit.init["math"] += [
             Call(

@@ -40,6 +40,8 @@ def _lines(items, depth):
             out.append(f"{pad}for (uint32_t {var} = 0; {var} < {count}; ++{var}) {{")
             out += _lines(item.body, depth + 1)
             out.append(f"{pad}}}")
+        elif isinstance(item, Insn) and item.runtime:
+            out.append(f"{pad}{_runtime(item)};")
         elif isinstance(item, Insn):
             encode(item.op, item.args)
             args = ", ".join(str(item.args[n]) for n, _ in OPS[item.op].args)
@@ -54,6 +56,17 @@ def _lines(items, depth):
         elif not isinstance(item, Sync):
             raise UnitError(f"no C++ for {item!r}")
     return out
+
+
+def _runtime(item):
+    """TT_<op> of an instruction whose immediate the caller gives (`item.runtime`, its
+    C++): the word built on the core; its other fields checked as TTI_'s are."""
+    encode(item.op, item.args)
+    args = [
+        item.runtime if n == "imm16" else str(item.args[n])
+        for n, _ in OPS[item.op].args
+    ]
+    return f"TT_{item.op}({', '.join(args)})"
 
 
 def _math_part(items):
@@ -133,6 +146,7 @@ def emit(unit):
     signature = "const uint32_t dst"
     if unit.band:
         signature += ", const uint32_t rows"
+    signature += "".join(f", const uint32_t {s}" for s in unit.scalars)
     lines = [
         f"// {name}: emitted by komorebi.dsl.tile from its unit program ({unit.dest} "
         "Dst); math CPU only.",
@@ -143,6 +157,7 @@ def emit(unit):
             if unit.band
             else []
         ),
+        *[f"// {s}: a run-time scalar, a float32's bits." for s in unit.scalars],
         *[
             f"// Product into Dst tile dst + {p.dst}: {p.a} @ {p.w} at "
             f"{unit.fidelity}; the caller unpacks llk_unpack_AB_matmul({p.a}, "

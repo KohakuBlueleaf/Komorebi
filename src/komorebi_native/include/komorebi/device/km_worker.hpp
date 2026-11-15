@@ -352,7 +352,7 @@ namespace km {
             // a link core is in no group of ranks: its name is its link name
             const bool serves = link_core(view, arguments.me);
             const uint32_t rank = serves ? link : view.offset() + arguments.me;
-            control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
+            KM_GUARDED((control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext));
             // a link core relays between commands (km_relay.hpp)
             const bool relays = link_core(view, arguments.me);
             for (;;) {
@@ -397,7 +397,7 @@ namespace km {
                 }
             }
             const uint32_t taken = wall();
-            control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = 0;
+            KM_GUARDED((control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = 0));
             add_sat(state() + kStPasses, passes);
             add_sat(
                 state() + kStNextCycles,
@@ -708,9 +708,13 @@ namespace km {
             PACK(({
                 if (cb < kClearBuffers && !((produces_ >> cb) & 1)) {
                     produces_ |= 1u << cb;
-                    l1(
-                        control_ + KM_CONTROL_LIVE
-                    )[kLvProduces + kProducerPack] = (produces_);
+                    KM_GUARDED(
+                        (
+                            l1(
+                                control_ + KM_CONTROL_LIVE
+                            )[kLvProduces + kProducerPack] = (produces_)
+                        )
+                    );
                 }
                 volatile tt_reg_ptr uint32_t* acked = get_cb_tiles_acked_ptr(cb);
                 const bool fits = (
@@ -773,8 +777,10 @@ namespace km {
                     wrong < 255
                 );
                 slot_ = slot(command);
-                l1(control_ + KM_CONTROL_LIVE)[kLvSlot + role_] = slot_;
-                l1(control_ + KM_CONTROL_LIVE)[kLvSequence + role_] = sequence;
+                KM_GUARDED(({
+                    l1(control_ + KM_CONTROL_LIVE)[kLvSlot + role_] = slot_;
+                    l1(control_ + KM_CONTROL_LIVE)[kLvSequence + role_] = sequence;
+                }));
                 MATH((
                     ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, sequence)
                 ));
@@ -843,9 +849,10 @@ namespace km {
         uint32_t heard(uint32_t thread, uint32_t where) const {
             volatile tt_l1_ptr uint32_t*
                 live = (l1(control_ + KM_CONTROL_LIVE) + kLvWhere + role_);
-            *live = where;
+            KM_GUARDED((*live = where));
             const uint32_t word = ckernel::mailbox_read(thread);
-            *live = 0;
+            KM_GUARDED((*live = 0));
+            static_cast<void>(live + where);
             return word;
         }
 
@@ -853,6 +860,9 @@ namespace km {
         // unpack pops the pages left in its input buffers.
         bool finish() {
             index_++;
+#if !KM_GUARD
+            return true;  // no end bookkeeping, no give-up check
+#else
             bool ok = true;
             PACK((end_command(
                 control_, role_, index_, produces_, kProducerPack, [](uint32_t cb) {
@@ -893,6 +903,7 @@ namespace km {
                 }
             }));
             return ok;
+#endif
         }
 
         // The next token (timed like the reader's wait for a command): unpack polls

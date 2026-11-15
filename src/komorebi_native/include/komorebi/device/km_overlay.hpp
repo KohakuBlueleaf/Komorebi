@@ -66,6 +66,10 @@ namespace km {
     // The dynamic handlers added to the live run, a bit a number: a message of handler
     // n runs overlay n's compute part (message_number(), km_messages.hpp).
     constexpr uint32_t kOverlayMessages = kOverlayHandlers + 8;
+    // The service overlay's own slot (host): its bytes, 0 for none (it shares the
+    // reader's slots). Its record is one more than the reader's, kOverlayOwnSlot.
+    constexpr uint32_t kOverlayServiceSlot = kOverlayMessages + 4;
+    constexpr uint32_t kOverlayOwnSlot = kOverlaySlotsMax + 1;
     // The clock at the last use of each overlay (a word per number): the slot a load
     // replaces holds the least recently used one.
     constexpr uint32_t kOverlayUsed = 512;
@@ -82,6 +86,8 @@ namespace km {
     constexpr uint32_t kSwitchGo = 2;       // the load's sequence: buffers set up
     constexpr uint32_t kSwitchArrived = 4;  // per follower: the load's sequence
     constexpr uint32_t kSwitchNone = 0xFFFFFFFFu;
+    // The service overlay's own slot's record, in the switch line after its words.
+    constexpr uint32_t kOverlayServiceRecord = kOverlaySwitch + 32;
     // The program's record, read by the reader from DRAM: its buffer mask and field,
     // its table entries, then (address, bytes, pages, page bytes) per buffer index.
     constexpr uint32_t kOverlayRecord = kOverlaySwitch + 64;
@@ -92,9 +98,11 @@ namespace km {
     constexpr uint32_t kRecordBytes = 4 * (kRecordBuffers + 4 * 32);
     constexpr uint32_t kOverlayAreaBytes = kOverlayRecord + kRecordBytes;
     static_assert(
-        kOverlayEpoch < kOverlayMet && kOverlayMessages + 4 <= kOverlayUsed &&
+        kOverlayEpoch < kOverlayMet && kOverlayServiceSlot + 4 <= kOverlayUsed &&
             kOverlayTable % 64 == 0 && KM_CONTROL_BYTES % 64 == 0 &&
-            kOverlayRecord % 64 == 0 && kRecordBytes % 64 == 0,
+            kOverlayRecord % 64 == 0 && kRecordBytes % 64 == 0 &&
+            4 * (kSwitchArrived + kOverlayFollowers) <= 32 &&
+            kOverlayServiceRecord + 16 <= kOverlayRecord,
         "the overlay area's lines do not overlap and end before its table"
     );
 
@@ -122,6 +130,29 @@ namespace km {
                 control + kOverlayArea + kOverlayRecords +
                 16 * (kOverlaySlotsMax * part + slot)
             )
+        );
+    }
+
+    inline volatile tt_l1_ptr uint32_t* overlay_own_record(uint32_t control) {
+        return l1(control + kOverlayArea + kOverlayServiceRecord);
+    }
+
+    // The record of the reader's slot `slot`, kOverlayOwnSlot the service's own.
+    inline volatile tt_l1_ptr uint32_t* overlay_slot_record(
+        uint32_t control, uint32_t part, uint32_t slot
+    ) {
+        return (
+            slot == kOverlayOwnSlot
+                ? overlay_own_record(control)
+                : overlay_record(control, part, slot)
+        );
+    }
+
+    // Whether the service overlay has its own slot and `number`'s `part` goes there.
+    inline bool overlay_own(uint32_t control, uint32_t part, uint32_t number) {
+        return (
+            number == kOverlayService && part == kOverlayPartReader &&
+            overlay_area(control)[kOverlayServiceSlot / 4] != 0
         );
     }
 
@@ -179,9 +210,11 @@ namespace km {
         return kOverlaySlotsMax;
     }
 
-    // The slot a load of `part` replaces: an empty one, else the least recently used
-    // one with no call running in it; kOverlaySlotsMax when every slot is running.
-    inline uint32_t overlay_free_slot(uint32_t control, uint32_t part) {
+    // The slot a load of `number`'s `part` takes: an empty one, else the least recently
+    // used one not running; kOverlaySlotsMax: none.
+    inline uint32_t overlay_free_slot(
+        uint32_t control, uint32_t part, uint32_t number
+    ) {
         const uint32_t slots = overlay_area(control)[kOverlaySlots + part];
         uint32_t found = kOverlaySlotsMax, oldest = 0;
         for (uint32_t slot = 0; slot < slots && slot < kOverlaySlotsMax; slot++) {
@@ -202,11 +235,20 @@ namespace km {
         return found;
     }
 
+    // The slot's address (the host's, in its record) and its bytes.
     inline uint32_t overlay_slot_address(
         uint32_t control, uint32_t part, uint32_t slot
     ) {
+        return overlay_record(control, part, slot)[kOverlayAddress];
+    }
+
+    inline uint32_t overlay_slot_bytes(uint32_t control, uint32_t part, uint32_t slot) {
         volatile tt_l1_ptr uint32_t* area = overlay_area(control);
-        return area[kOverlayBase + part] + slot * area[kOverlaySlotBytes + part];
+        return (
+            slot == kOverlayOwnSlot
+                ? area[kOverlayServiceSlot / 4]
+                : area[kOverlaySlotBytes + part]
+        );
     }
 
     // Marks the last use of overlay `number` with the clock (the reader only).
@@ -235,6 +277,20 @@ namespace km {
             }
         }
         return nullptr;
+    }
+
+    // The service overlay's own slot's record when it holds `number` with this core's
+    // check at the current epoch, or none (overlay_checked_record of that slot).
+    inline volatile tt_l1_ptr uint32_t* overlay_own_checked(
+        uint32_t control, uint32_t number
+    ) {
+        const uint32_t checked = *overlay_epoch(control) | kOverlayCheckedMark;
+        volatile tt_l1_ptr uint32_t* record = overlay_own_record(control);
+        return (
+            record[kOverlayHeld] == number && record[kOverlayChecked] == checked
+                ? record
+                : nullptr
+        );
     }
 
     // This core's check of its slot `slot` of `part` at `epoch` (read before the
@@ -527,7 +583,14 @@ namespace km {
             invalidate_l1_cache();
             return (
                 overlay_has_part(control, number_, kOverlayPartHere) &&
-                overlay_held_slot(control, kOverlayPartHere, number_) < kOverlaySlotsMax
+                (
+                    overlay_held_slot(control, kOverlayPartHere, number_) <
+                        kOverlaySlotsMax ||
+                    (
+                        overlay_own(control, kOverlayPartHere, number_) &&
+                        overlay_own_record(control)[kOverlayHeld] == number_
+                    )
+                )
             );
         }
 
@@ -587,8 +650,12 @@ namespace km {
         }
 
         bool place(uint32_t control, uint32_t slot) {
-            slot_ = overlay_slot_address(control, kOverlayPartHere, slot);
-            record_ = overlay_record(control, kOverlayPartHere, slot);
+            record_ = (
+                kOverlayPartHere == kOverlayPartReader
+                    ? overlay_slot_record(control, kOverlayPartHere, slot)
+                    : overlay_record(control, kOverlayPartHere, slot)
+            );
+            slot_ = record_[kOverlayAddress];
             return true;
         }
 
@@ -597,6 +664,9 @@ namespace km {
             volatile tt_l1_ptr uint32_t* record = (
                 overlay_checked_record(control, kOverlayPartHere, number_)
             );
+            if (record == nullptr && overlay_own(control, kOverlayPartHere, number_)) {
+                record = overlay_own_checked(control, number_);  // after a miss only
+            }
             if (record == nullptr) {
                 return false;
             }
@@ -611,17 +681,17 @@ namespace km {
         bool start_read(uint32_t control, uint32_t part, uint32_t slot) const {
             volatile tt_l1_ptr uint32_t* entry = overlay_entry(control, number_, part);
             const uint32_t bytes = entry[1];
-            if (bytes > overlay_area(control)[kOverlaySlotBytes + part]) {
+            if (bytes > overlay_slot_bytes(control, part, slot)) {
                 return give_up(kGaveOverlay, kWhereOverlayFind);
             }
-            overlay_record(control, part, slot)[kOverlayHeld] = 0;
+            overlay_slot_record(control, part, slot)[kOverlayHeld] = 0;
             volatile tt_l1_ptr uint32_t* epoch = overlay_epoch(control);
             *epoch = (*epoch + 1) & kOverlayEpochMask;  // after the record changed
             noc_async_read(
                 get_noc_addr_from_bank_id<true>(
                     kernel_.args().me % kOverlayBanks, entry[0]
                 ),
-                overlay_slot_address(control, part, slot),
+                overlay_slot_record(control, part, slot)[kOverlayAddress],
                 bytes
             );
             return true;
@@ -630,11 +700,23 @@ namespace km {
         // Starts the read of `part` unless a slot holds it: slot | loaded << 8, or
         // kOverlaySlotsMax (gave up).
         uint32_t fetch(uint32_t control, uint32_t part) const {
-            const uint32_t held = overlay_held_slot(control, part, number_);
+            const bool own = overlay_own(control, part, number_);  // its own slot
+            volatile tt_l1_ptr uint32_t* mine = overlay_own_record(control);
+            const uint32_t held = (
+                own
+                    ? (
+                        mine[kOverlayHeld] == number_ ? kOverlayOwnSlot : kOverlaySlotsMax
+                    )
+                    : overlay_held_slot(control, part, number_)
+            );
             if (held != kOverlaySlotsMax) {
                 return held;
             }
-            const uint32_t slot = overlay_free_slot(control, part);
+            const uint32_t slot = (
+                own
+                    ? (mine[kOverlayCalling] == 0 ? kOverlayOwnSlot : kOverlaySlotsMax)
+                    : overlay_free_slot(control, part, number_)
+            );
             if (slot == kOverlaySlotsMax) {
                 give_up(kGaveOverlay, kWhereOverlayFind);
                 return kOverlaySlotsMax;
@@ -739,7 +821,7 @@ namespace km {
                         : ((members >> (part - kOverlayPartWriter)) & 1u) != 0
                 );
                 if (wanted) {
-                    overlay_record(
+                    overlay_slot_record(
                         control, part, slots[part] & 0xFFu
                     )[kOverlayHeld] = (number_);
                 }

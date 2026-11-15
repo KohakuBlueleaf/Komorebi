@@ -22,6 +22,7 @@ class Tensor:
         self.shard_grid = shard_grid
         self.transposed_tiles = False
         self.freed = False
+        self.kept = None  # what is written, kept by a session before its first load
 
     def __repr__(self):
         where = "DRAM" if self.shard_grid is None else f"L1 of {self.shard_grid}"
@@ -71,6 +72,8 @@ class Tensor:
         if shape != self.shape:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
         self.buffer.write(raw)
+        if self.kept is not None:
+            self.kept.append(("data", data, None))
 
     def read(self):
         """The whole buffer as a numpy array (bfloat16 as float32), once the cores of

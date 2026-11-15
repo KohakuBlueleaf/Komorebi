@@ -40,6 +40,13 @@ A step is tried only when the one before it was not enough.
    run with `KMD_ERROR_DEADLINE`.
 4. **The card reset.** What none of these reaches, below.
 
+A program made with `guard=False` skips steps 2 and 3: its kernels do not read the abort
+word and keep no live words, so the dispatcher, finding no core in the command, frees it
+at the deadline with the cores still held, `run.inspect` raises, and a hang is a card
+reset (the load's log says this once; `CommandTimeout` then adds that no core was asked
+to leave). [The guard](../reference/hazards.md#a-wait-that-never-completes) is the
+trade: its cost against these steps.
+
 ## Steps
 
 1. **Look while it hangs.** Submit the command, leave it time to hang (a quarter of the
