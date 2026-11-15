@@ -9,7 +9,6 @@
 #define PROGRESS_END 0xC0000000u        /* the last progress marker: the job's status */
 #define KM_SPLIT_FULL 0u
 #define KM_SPLIT_PARTS 1u
-#define KM_SPLIT_OP 2u
 #define KM_SPLIT_SECOND_SET 0x100u /* a3: the sum's upper ports and slots */
 
 typedef struct {
@@ -19,7 +18,7 @@ typedef struct {
     uint64_t step_ticks[DC_STEPS];
     uint32_t step_most[DC_STEPS], step_least[DC_STEPS];
     uint32_t done;
-    uint32_t bare;    /* products only: no operation, no norm */
+    uint32_t bare;    /* products only: no operation (nor the norm in them) */
     uint32_t parts;   /* and each product's parts only: no sum, nothing written */
     uint32_t apart;   /* q, k and v as three products, not qkv */
     uint32_t overlap; /* and q, k, v, o each submitted before the one ahead is done */
@@ -31,7 +30,7 @@ static int overlapped(const job_t* job, uint32_t step) {
     return job->overlap && step >= DC_STEP_Q && step <= DC_STEP_O;
 }
 
-/* Whether the job runs step `step`: qkv or q, k and v; the norms unless bare. */
+/* Whether the job runs step `step`: qkv or q, k and v. */
 static int runs(const job_t* job, uint32_t step) {
     if (step == DC_STEP_QKV) {
         return !job->apart;
@@ -39,10 +38,11 @@ static int runs(const job_t* job, uint32_t step) {
     if (step >= DC_STEP_Q && step <= DC_STEP_V) {
         return job->apart;
     }
-    return !job->bare || (step != DC_STEP_NORM1 && step != DC_STEP_NORM2);
+    return 1;
 }
 
-/* A SPLIT command on the product's cores: A, W, Y, the plan and the operation. */
+/* A SPLIT command on the product's cores: A, W, Y, the plan, the operation and its
+ * words (decode.h: add's, or scale's and gate's). */
 static void product(
     const job_t* job,
     uint32_t step,
@@ -52,7 +52,7 @@ static void product(
     uint32_t y,
     uint32_t plan,
     uint32_t operation,
-    uint32_t other
+    const uint32_t* other
 ) {
     const uint32_t* words = job->words;
     kmx_command(command, 0u, words[DC_WORD_SPLIT], 0u, words[plan] >> 8);
@@ -69,21 +69,9 @@ static void product(
     command->a4 = job->parts ? KM_SPLIT_PARTS : KM_SPLIT_FULL;
     command->a5 = words[plan] & 0xFFu;
     command->a6 = operation == 0u || job->bare ? 0u : words[operation];
-    command->a7 = other;
-}
-
-/* A norm command on DC_NORM_CORES cores: x into h with the layer's weight `weight`. */
-static void norm(const job_t* job, km_command_t* command, uint32_t weight) {
-    const uint32_t* words = job->words;
-    const uint32_t* tensors = job->tensors;
-    kmx_command(command, 0u, words[DC_WORD_SPLIT], 0u, DC_NORM_CORES);
-    command->a1 = words[DC_WORD_EPSILON];
-    command->a2 = tensors[DC_TENSOR_H];
-    command->a4 = KM_SPLIT_OP;
-    command->a6 = words[DC_WORD_NORM];
-    command->a7 = tensors[DC_TENSOR_X];
-    command->a8 = job->layer[weight];
-    command->a9 = tensors[DC_TENSOR_CONSTANTS];
+    command->a7 = other[0];
+    command->a8 = other[1];
+    command->a9 = other[2];
 }
 
 /* The layer's weight word of product `step`. */
@@ -110,14 +98,11 @@ static uint32_t weight_of(uint32_t step) {
 static void step_command(const job_t* job, uint32_t step, km_command_t* command) {
     const uint32_t* t = job->tensors;
     const uint32_t* w = job->layer;
-    uint32_t a = t[DC_TENSOR_H], y = 0u, plan = DC_WORD_PLAN_Q, operation = 0u;
+    const uint32_t epsilon = job->words[DC_WORD_EPSILON];
+    uint32_t a = t[DC_TENSOR_X], y = 0u, plan = DC_WORD_PLAN_Q;
+    uint32_t operation = DC_WORD_SCALE; /* x's norm1, after the product */
+    uint32_t other[3] = {t[DC_TENSOR_SQUARES1], t[DC_TENSOR_CONSTANTS], epsilon};
     switch (step) {
-        case DC_STEP_NORM1:
-            norm(job, command, DC_W_NORM1);
-            return;
-        case DC_STEP_NORM2:
-            norm(job, command, DC_W_NORM2);
-            return;
         case DC_STEP_QKV:
             y = t[DC_TENSOR_QKV];
             plan = DC_WORD_PLAN_QKV;
@@ -132,22 +117,28 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
             break;
         case DC_STEP_O: /* attention left out: q (qkv's first columns) stands in */
             a = t[DC_TENSOR_QKV];
-            y = t[DC_TENSOR_X];
-            operation = DC_WORD_ADD;
+            y = t[DC_TENSOR_X1];
+            operation = DC_WORD_ADD; /* x1 = x + o, and x1's squares */
+            other[0] = t[DC_TENSOR_X];
+            other[2] = t[DC_TENSOR_SQUARES2];
             break;
         case DC_STEP_GATE_UP: /* bare: the whole sum, into a tensor as wide */
+            a = t[DC_TENSOR_X1];
             y = job->bare ? t[DC_TENSOR_SUMS] : t[DC_TENSOR_GATED];
             plan = DC_WORD_PLAN_GATE_UP;
-            operation = DC_WORD_GATE;
+            operation = DC_WORD_GATE; /* x1's norm2, then the gate */
+            other[0] = t[DC_TENSOR_SQUARES2];
             break;
         default: /* DC_STEP_DOWN */
             a = t[DC_TENSOR_GATED];
             y = t[DC_TENSOR_X];
             plan = DC_WORD_PLAN_DOWN;
-            operation = DC_WORD_ADD;
+            operation = DC_WORD_ADD; /* x = x1 + down, and x's squares */
+            other[0] = t[DC_TENSOR_X1];
+            other[2] = t[DC_TENSOR_SQUARES1];
             break;
     }
-    product(job, step, command, a, w[weight_of(step)], y, plan, operation, y);
+    product(job, step, command, a, w[weight_of(step)], y, plan, operation, other);
 }
 
 /* Submits step `step` (retrying a full ring): KMX_OK once queued, its handle. */

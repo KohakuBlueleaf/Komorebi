@@ -11,7 +11,8 @@ The shapes are Qwen3-1.7B's (`model.py`, from its `config.json`): hidden 2048, M
 16 query heads and 8 KV heads of 128, 28 layers, RMS norm with eps 1e-6. The weights are
 random (bf16, variance 1 / K; the two output projections also / sqrt(2 x layers) so the
 residual keeps its scale; the norm weights in [0.5, 1.5)). A layer, in order, as the
-card runs it since stage 2 (one product for q, k and v, one for gate and up):
+card runs it since stage 2 (one product for q, k and v, one for gate and up; the norms
+inside the products since stage 2 (4)):
 
 | Step | What | Weight (K x N) |
 |---|---|---|
@@ -40,11 +41,11 @@ DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) 
   ports): qkv 16 groups of 7 (112 cores), o and down 8 of 15 (120), gate_up 48 of 2
   (96); for q, k, v apart, q as o, k and v 4 groups of 16 (64 cores).
 - What a layer does besides the products is an overlay (`kernels/`), called once at the
-  hook after the sum (`split_op.hpp`): `add` (the residual: the sum plus a block of x),
-  `gate` (a gate_up block is 4 tiles of the gate and 4 of up: silu of the first times
-  the second, written by its own writer part) and `norm` (on 16 cores in the split's
-  operation-only mode: each core reads the whole row for the sums of squares and writes
-  its 4 tiles of h).
+  hook after the sum (`split_op.hpp`): `add` (the residual: the sum plus a block of x,
+  and the block's sums of squares for the next norm), `scale` (the norm after qkv's
+  product: the sum times each row's 1 / rms) and `gate` (the same scale, then: a
+  gate_up block is 4 tiles of the gate and 4 of up, silu of the first times the second,
+  written by its own writer part). Stage 1 ran each norm as its own command.
 - An X280 thread (`thread/layers.c`) walks the layers: one host command (`layers`) runs
   T tokens of L layers, each layer's six commands in order, and records each command's
   time from its event. Every command is waited for before the next, except with q, k
@@ -70,7 +71,7 @@ the card stores it), twice from the same x, fused and waited, then apart and ove
 with the thread's times and the account. The bound is loose (rms error / rms <= 2e-2,
 largest error / largest value <= 5e-2 a tensor); bf16 alone gives 5e-3 a product and
 1e-2 for the gate. The cases: `full`, the layer; `bare`, the products only (no
-operation, no norm); `parts`, the products' parts only (each core reads and multiplies
+operation, so no norm); `parts`, the products' parts only (each core reads and multiplies
 its share, nothing is summed or written: the split's mode 1); `overlap`, the layer
 with q, k and v apart and q, k, v and o two in flight; `parts_apart`, the parts with q, k
 and v apart.
@@ -282,6 +283,61 @@ within a run's noise. Of the 47.4 us still below the ceiling, 25.3 is A's re-rea
 of the 1 x 8 blocks, which every plan shares. The rest is each product's fixed start and
 end (about 5 us; o's parts end 3.7 us before its completion) and gate_up's and down's
 remaining rate.
+
+### The norms inside the products
+
+A norm command ran on 16 cores. Its stamps (`bench.py --cases full --trace`, medians over
+28 layers):
+
+- the cores start within 0.14 us of each other;
+- the first core's writer ends at 10.5 us and the last at 12.6;
+- the command completes at 13.1, and the thread's step takes 14.1;
+- the command before it completes 3.0 us before it starts (that gap is in the thread's
+  term).
+
+So a norm is about 12.6 us in its kernels: each of the 16 cores reads x's whole row (64
+tiles, 128 KB, 2 MB in all, at one core's read rate) for the sums of squares, then
+computes and writes its 4 tiles of h. Its own start and end add about 1.5 us, and the
+thread about 3 us more.
+
+Folded, the norm needs nothing to move the row:
+
+- The norm's weight goes into the rows of the W after it, on the host: qkv (and q, k, v)
+  take diag(w1) W, and gate_up takes diag(w2) W, in bf16 (`model.fused`; against the
+  reference's rounding of h, an error of 3e-3 rms on q).
+- Each root of o and down holds an 8-tile block of the new residual. Its `add` also
+  computes that block's sums of squares, the diagonal of the sum of y y^T over the
+  block's tiles, and writes them as one tile into a row of 8 (`kernels/add/`).
+- The next product's root reads the 8 tiles, adds them, takes the mean, adds epsilon,
+  takes the rsqrt, and multiplies its sum by the result (`ops.hpp` `rms_scale`;
+  `kernels/scale/` after qkv, and inside `gate` after gate_up).
+- o now writes x1, no longer x in place: in the overlap, v still reads x.
+- A host write of x comes with its squares.
+
+The check compares x1 where it compared h, and h no longer exists. Both runs are exact:
+rms 6.4e-3 (q, k, v), 3.3e-3 (x1), 1.03e-2 (gated), 4.2e-3 (x)
+(`results/qwen3-1.7b-x10-norms.json`).
+
+| Term | Kind | before | norms folded |
+|---|---|---:|---:|
+| the weights read at 495.6 GB/s | HARDWARE | 203.1 | 203.1 |
+| the read below the ceiling: qkv, o, gate_up, down | OURS | 47.4 | 47.3 |
+| the boundaries: qkv, o, gate_up, down | OURS | 30.1 | 30.2 |
+| qkv's operation: none, then the scale | OURS | -0.2 | 3.4 |
+| o's add (now with its squares) | OURS | 1.2 | 1.5 |
+| gate_up's operation: the gate, then the scale and the gate | OURS | 4.7 | 9.3 |
+| down's add (now with its squares) | OURS | 1.1 | 1.4 |
+| norm1, norm2 (a command each) | OURS | 28.0 | 0 |
+| the thread between commands (6 commands a layer, then 4) | OURS | 12.2 | 8.4 |
+| total | | 327.5 | 304.6 |
+| unaccounted | | 0.0 | 0.0 |
+
+The layer now takes 304.6 us: **8.53 ms a token, 117.2 tokens a second, 330 GB/s** of
+weights (overlapped: 313.6). The 28.0 us of norm commands and 3.8 us of the thread
+become 3.4 + 4.5 us at two roots, and the squares cost 0.7. The scale runs after the
+sum, in series at each root: its 8 tiles are read only once the root's own read is
+done, then it computes 1 / rms on one tile. That is most of the scale's time, and it is
+left in the operations' term.
 
 ## What the framework lacked
 

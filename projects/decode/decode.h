@@ -3,28 +3,28 @@
 
 #include <stdint.h>
 
-/* The operations, overlays of the K-split program, called after a product's sum at
- * the root of each group (add, gate) or as a command of their own (norm). */
-enum { DC_OVERLAY_ADD = 1, DC_OVERLAY_GATE = 2, DC_OVERLAY_NORM = 3 };
+/* The operations, called after a product's sum at each group's root: add (a7 the
+ * residual, a9 its rows' squares out), gate and scale (a7 squares in, a9 epsilon). */
+enum { DC_OVERLAY_ADD = 1, DC_OVERLAY_GATE = 2, DC_OVERLAY_SCALE = 3 };
 
 /* Buffers of the operations, beside the K split's (indices 0, 1, 2, 5, 6, 16, 24). */
 enum {
-    DC_CB_BLOCK = 3,    /* add: the block of the other operand, oh x ow tiles */
-    DC_CB_ROW = 4,      /* norm: x's whole row, DC_ROW_TILES tiles */
-    DC_CB_WEIGHT = 7,   /* norm: the core's tiles of the norm's weight */
-    DC_CB_CONSTANT = 8, /* norm: the identity tile and the mean tile */
-    DC_CB_SQUARES = 9,  /* norm: the row's sums of squares on the diagonal */
-    DC_CB_SCALE = 10,   /* norm: each row's 1 / rms in every column */
-    DC_CB_NORMED = 17,  /* norm: the core's tiles of the output */
-    DC_CB_UP = 11 /* gate: up's half of the sum in bf16, as the reference rounds it */
+    DC_CB_BLOCK = 3,    /* add: the residual's block, oh x ow tiles */
+    DC_CB_Y = 4,        /* add: Y again in bf16, for its rows' squares */
+    DC_CB_PARTS = 7,    /* scale: the row's sums of squares, a tile a group */
+    DC_CB_CONSTANT = 8, /* add, scale: the identity tile and the mean tile */
+    DC_CB_SQUARES = 9,  /* scale: the row's sums of squares on the diagonal */
+    DC_CB_SCALE = 10,   /* scale: each row's 1 / rms in every column */
+    DC_CB_UP = 11,  /* gate: up's half of the sum in bf16, as the reference rounds it */
+    DC_CB_PART = 12 /* add: this block's sums of squares on the diagonal */
 };
 
-/* The norm's shape: the row's tiles (the model's width) and the cores of a command,
- * each DC_ROW_TILES / DC_NORM_CORES of the output. */
-enum { DC_ROW_TILES = 64, DC_NORM_CORES = 16, DC_NORM_SHARE = 4 };
+/* The row's tiles (the model's width); DC_PARTS the tiles of a row's sums of squares
+ * (o's and down's groups: each root adds its block's). */
+enum { DC_ROW_TILES = 64, DC_PARTS = 8 };
 
-/* A norm command (SPLIT mode 2): a1 epsilon's float bits, a2 the output, a7 x, a8 the
- * weight (its row in every row of a tile row), a9 the constants (identity, mean). */
+/* Every operation's a8: the identity and the mean tile. The norm's weight is in the
+ * next W's rows; that product's root (scale, gate) multiplies the sum by 1 / rms. */
 enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
 
 /* LAYERS' a4 bits: 1 products only, 2 (with 1) parts only, 4 q, k, v apart, 8 (with 4)
@@ -42,7 +42,7 @@ enum {
     DC_WORD_PLAN_DOWN,    /* 6144 x 2048 */
     DC_WORD_ADD,          /* a6 of each operation: its overlay and parts */
     DC_WORD_GATE,
-    DC_WORD_NORM,
+    DC_WORD_SCALE,
     DC_WORD_EPSILON, /* the norm's epsilon, float bits */
     DC_WORDS
 };
@@ -50,13 +50,15 @@ enum {
 /* Region `tensors`: the activations' addresses. */
 enum {
     DC_TENSOR_X,   /* the residual stream, [32, D] */
-    DC_TENSOR_H,   /* the norm's output */
+    DC_TENSOR_X1,  /* the residual after attention (o's add) */
     DC_TENSOR_QKV, /* q, k, v side by side: [32, 4096]; apart, q only */
     DC_TENSOR_K,   /* apart: k and v */
     DC_TENSOR_V,
     DC_TENSOR_GATED, /* silu(h Wg) * (h Wu) */
     DC_TENSOR_SUMS,  /* bare: gate_up's sum, [32, 12288] */
     DC_TENSOR_CONSTANTS,
+    DC_TENSOR_SQUARES1, /* x's sums of squares: [32, DC_PARTS x 32] */
+    DC_TENSOR_SQUARES2, /* x1's */
     DC_TENSORS = 16
 };
 
@@ -69,20 +71,16 @@ enum {
     DC_W_O,
     DC_W_GATE_UP,
     DC_W_DOWN,
-    DC_W_NORM1,
-    DC_W_NORM2,
     DC_LAYER_WORDS = 16
 };
 
 /* A layer's commands, in order: their kinds, for the stats. */
 enum {
-    DC_STEP_NORM1,
     DC_STEP_QKV,
     DC_STEP_Q,
     DC_STEP_K,
     DC_STEP_V,
     DC_STEP_O,
-    DC_STEP_NORM2,
     DC_STEP_GATE_UP,
     DC_STEP_DOWN,
     DC_STEPS

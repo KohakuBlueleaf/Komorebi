@@ -170,10 +170,13 @@ def layer_weights(model, seed, layer):
 
 def fused(weights):
     """The card's weights of a layer from layer_weights(): {name: pages} of qkv, o,
-    gate_up (the gate's GATE_TILES tiles, then up's, a block), down, the norms, APART.
-    """
+    gate_up (the gate's GATE_TILES tiles, then up's, a block), down and APART; each W
+    after a norm takes the norm's weight in its rows (W' = diag(weight) W, in bf16)."""
     values = {name: value for name, (_, value) in weights.items()}
-    qkv = np.concatenate([values[name] for name in ("q", "k", "v")], axis=1)
+    for name in ("q", "k", "v", "gate", "up"):
+        norm_weight = values["norm1" if name in APART else "norm2"]
+        values[name] = np.asarray(norm_weight, np.float32)[:, None] * values[name]
+    qkv = np.concatenate([values[name] for name in APART], axis=1)
     k, n = values["gate"].shape
     turn = GATE_TILES * TILE
     pair = np.stack(
@@ -183,10 +186,20 @@ def fused(weights):
         ],
         axis=2,
     )
-    out = {"qkv": qkv, "gate_up": pair.reshape(k, 2 * n)}
+    out = {"qkv": qkv, "gate_up": pair.reshape(k, 2 * n)} | {
+        name: values[name] for name in APART
+    }
     pages = {name: tile_pages(formats.bf16_bits(value)) for name, value in out.items()}
-    kept = ("o", "down", "norm1", "norm2") + APART
-    return pages | {name: weights[name][0] for name in kept}
+    return pages | {name: weights[name][0] for name in ("o", "down")}
+
+
+def squares(x):
+    """x's rows' sums of squares as the card keeps them: DC_PARTS tiles side by side,
+    the first with each row's sum on its diagonal, the others zero."""
+    out = np.zeros((TILE, D["DC_PARTS"] * TILE), np.float32)
+    rows = np.asarray(x, np.float64)
+    out[:, :TILE] = np.diag((rows * rows).sum(axis=1))
+    return out
 
 
 def constants():

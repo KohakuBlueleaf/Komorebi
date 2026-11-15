@@ -28,7 +28,7 @@ CHECK_RMS, CHECK_MAX = 2e-2, 5e-2
 # The layer twice from one x: fused and waited, then q, k, v apart and overlapped (the
 # second after every core's change of role). Checked: what the card keeps of a layer.
 CHECK_RUNS = 2
-CHECKED = ("q", "k", "v", "h", "gated", "x")
+CHECKED = ("q", "k", "v", "x1", "gated", "x")
 CASES = {
     "full": {},
     "bare": {"bare": True},
@@ -85,7 +85,7 @@ def check(decode, model, weights, seed):
         decode.write_activation("x", start)
         decode.job(1, 1, overlap=run == 1)
         got = {
-            name: decode.read_activation(name) for name in ("qkv", "h", "gated", "x")
+            name: decode.read_activation(name) for name in ("qkv", "x1", "gated", "x")
         }
         got["q"] = got["qkv"][:, : width["q"]]
         if run == 1:  # apart: k and v in their own tensors
@@ -137,8 +137,8 @@ def per_layer(result, slot):
 def account(model, cases):
     """{case: terms a layer} of `full` and `overlap`: each weight at the ceiling, its
     read below it (parts), its boundary (bare less parts), its operation (full less
-    bare), the norms, the thread; overlapped, q to o as one span. Needs full, bare,
-    parts."""
+    bare; qkv's and gate_up's hold the norm), the thread; overlapped, q to o as one
+    span. Needs full, bare, parts."""
     if not {"full", "bare", "parts"} <= cases.keys():
         return {}
     full, bare, parts = (cases[name]["steps"] for name in ("full", "bare", "parts"))
@@ -160,10 +160,7 @@ def account(model, cases):
             ),
             ("OURS", f"{step}: the boundary", bare[step] - parts[step]),
         ]
-        operation = (
-            "its operation" if step in ("o", "gate_up", "down") else "full less bare"
-        )
-        return terms + [("OURS", f"{step}: {operation}", own - bare[step])]
+        return terms + [("OURS", f"{step}: its operation", own - bare[step])]
 
     out = {}
     for name in ("full", "overlap"):
@@ -188,16 +185,13 @@ def account(model, cases):
                 ("OURS", "o: its operation", full["o"] - bare["o"]),
                 (
                     "OURS",
-                    "q, k, v, o: the boundary left, overlapped",
+                    "q, k, v, o: the boundary left and q, k, v's scale, overlapped",
                     case["span"] - own,
                 ),
             ]
         for step in PRODUCT_STEPS:
             if step not in spanned and not (spanned and step == "qkv"):
                 terms += product(step, steps[step])
-        terms += [
-            ("OURS", f"{step}: the command", steps[step]) for step in ("norm1", "norm2")
-        ]
         commands = case["span"] + sum(
             value for step, value in steps.items() if step not in spanned
         )

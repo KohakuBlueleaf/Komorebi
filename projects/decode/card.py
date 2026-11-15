@@ -17,10 +17,10 @@ KERNELS = md.HERE / "kernels"
 CLUSTER = 1
 TICKS_PER_MICROSECOND = 50  # kmx_time() and the dispatcher count the 50 MHz timer
 EXCLUSIVE = km.abi.headers().constants["KM_FLAG_EXCLUSIVE"]
-ACTIVATIONS = ("x", "h", "qkv", "k", "v", "gated", "sums")
+ACTIVATIONS = ("x", "x1", "qkv", "k", "v", "gated", "sums", "squares1", "squares2")
 PARTS = {"reader": OP["kOpReader"], "compute": OP["kOpCompute"]}
-GATE_PARTS = {"compute": OP["kOpCompute"], "writer": OP["kOpWriter"]}
-NORM_PARTS = PARTS | {"writer": OP["kOpWriter"]}
+ADD_PARTS = PARTS | {"writer": OP["kOpWriter"]}
+GATE_PARTS = ADD_PARTS
 
 
 def operation_word(number, parts):
@@ -34,13 +34,13 @@ def buffers(plan):
     block = plan.oh * plan.ow
     own = [
         (D["DC_CB_BLOCK"], block),
-        (D["DC_CB_ROW"], D["DC_ROW_TILES"]),
-        (D["DC_CB_WEIGHT"], D["DC_NORM_SHARE"]),
+        (D["DC_CB_Y"], block),
+        (D["DC_CB_PARTS"], D["DC_PARTS"]),
         (D["DC_CB_CONSTANT"], D["DC_CONSTANTS"]),
         (D["DC_CB_SQUARES"], 1),
         (D["DC_CB_SCALE"], 1),
-        (D["DC_CB_NORMED"], D["DC_NORM_SHARE"]),
         (D["DC_CB_UP"], block),
+        (D["DC_CB_PART"], 1),
     ]
     return [km.Buffer(*buffer) for buffer in plan.buffers()] + [
         km.Buffer(index, "bfloat16", tile, pages) for index, pages in own
@@ -67,9 +67,13 @@ class Decode:
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.plans = md.plans(model, chunk=chunk, patterns=patterns)
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
+        for name in ("o", "down"):  # their roots write a row's squares, a tile a group
+            if self.plans[md.plan_of(model, name)].groups() != D["DC_PARTS"]:
+                raise ValueError(f"{name}: not {D['DC_PARTS']} groups")
         hidden = model.hidden
         products = model.products()
-        widths = {"x": hidden, "h": hidden, "gated": model.mlp}
+        widths = {"x": hidden, "x1": hidden, "gated": model.mlp}
+        widths |= dict.fromkeys(("squares1", "squares2"), D["DC_PARTS"] * md.TILE)
         widths |= {"qkv": products["qkv"][1], "sums": products["gate_up"][1]}
         widths |= {name: model.shapes()[name][1] for name in ("k", "v")}
         self.tensors = {
@@ -82,10 +86,6 @@ class Decode:
             {
                 name: session.empty(shape, "bfloat16", "tile")
                 for name, shape in shapes.items()
-            }
-            | {
-                name: session.empty((md.TILE, hidden), "bfloat16", "tile")
-                for name in ("norm1", "norm2")
             }
             for _ in range(layers)
         ]
@@ -116,21 +116,18 @@ class Decode:
             },
             handlers=pl.SPLIT_H,
         )
-        reader = KERNELS / "block_reader.cpp"
-        program.overlay(
-            "add",
-            {"reader": reader, "compute": KERNELS / "add" / "compute.cpp"},
-            number=D["DC_OVERLAY_ADD"],
-        )
+        squares = KERNELS / "scale" / "reader.cpp"
+        program.overlay("add", KERNELS / "add", number=D["DC_OVERLAY_ADD"])
         program.overlay(
             "gate",
             {
+                "reader": squares,
                 "compute": KERNELS / "gate" / "compute.cpp",
                 "writer": KERNELS / "gate" / "writer.cpp",
             },
             number=D["DC_OVERLAY_GATE"],
         )
-        program.overlay("norm", KERNELS / "norm", number=D["DC_OVERLAY_NORM"])
+        program.overlay("scale", KERNELS / "scale", number=D["DC_OVERLAY_SCALE"])
         weights = np.zeros((self.layers, D["DC_LAYER_WORDS"]), np.uint32)
         for layer, tensors in enumerate(self.weights):
             for name, tensor in tensors.items():
@@ -166,9 +163,9 @@ class Decode:
             pl.REDUCE_FORMS["tree"],
             EXCLUSIVE,
             *(self.plan_word(name) for name in ("qkv", "q", "k", "gate_up", "down")),
-            operation_word(D["DC_OVERLAY_ADD"], PARTS),
+            operation_word(D["DC_OVERLAY_ADD"], ADD_PARTS),
             operation_word(D["DC_OVERLAY_GATE"], GATE_PARTS),
-            operation_word(D["DC_OVERLAY_NORM"], NORM_PARTS),
+            operation_word(D["DC_OVERLAY_SCALE"], PARTS),
             int(epsilon),
         ]
 
@@ -187,9 +184,12 @@ class Decode:
         return time.perf_counter() - started
 
     def write_activation(self, name, values):
-        """A [32, width] activation (float values, rounded to bf16) into its tensor."""
+        """A [32, width] activation (float values, rounded to bf16) into its tensor; x
+        with its rows' sums of squares, as down's add leaves them."""
         bits = formats.bf16_bits(np.asarray(values, np.float32))
         self.session.write(self.tensors[name], md.tile_pages(bits))
+        if name == "x":
+            self.write_activation("squares1", md.squares(values))
 
     def read_activation(self, name):
         """A [32, width] activation as float32, after its command's event."""
@@ -227,7 +227,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
-STEPS = ("norm1", "qkv", "q", "k", "v", "o", "norm2", "gate_up", "down")  # DC_STEP_*
+STEPS = ("qkv", "q", "k", "v", "o", "gate_up", "down")  # DC_STEP_*
 
 
 def decode_slot(words):
