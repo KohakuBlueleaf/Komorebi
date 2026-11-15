@@ -160,7 +160,9 @@ What each takes:
 | `km.merge` of classes in the kernel form, or a class merging classes (`class Layer(Gate, Linear)`) | yes | "several programs in one run are each in the runtime's form" | "several programs in one run are each in the runtime's form" |
 | `km.merge` of programs in the runtime's form: hand programs, classes made with `form="runtime"`, or both | yes | yes | yes |
 | `km.merge` of a class in the kernel form with a program in the runtime's form | "a class in the kernel form merged with programs in the runtime's form" | the same | the same |
-| `km.merge` of a class made with sets or `km.ANY` | "made with sets of its handlers' constant parameters" | the same | the same |
+| `km.merge` of classes in the kernel form made with listed sets (`handlers=`) | yes | "several programs in one run are each in the runtime's form" | the same |
+| `km.merge` of a class made with `km.ANY` | "made with km.ANY, whose sets are compiled on first use" | the same | the same |
+| `km.merge` of a class in the runtime's form made with sets | "made with sets of its handlers' constant parameters" | the same | the same |
 | a class merging classes made with `form=` or `beside=` | "form= at the make of a class merging" | the same | the same |
 | `run.addon` of an overlay | yes | yes | yes; built against the runtime's kernels, which have no compile arguments: `compile_args=` gives a program's |
 | `run.addon(..., handler=True)` (every program names slot bytes: `Program.slots(bytes=)`) | yes | yes | yes |
@@ -318,9 +320,11 @@ of its own (`Program.overlay`: their numbers are the ones a merged program's sou
 placed as overlays take). Sources whose buffers are of both exponent families are
 refused as one program is (one family a kernel).
 
-Lifting the refusal of a class with sets would need the merge to number each built set
-as a handler of the merged program and, for `km.ANY`, a first use that compiles the set
-against the source's unit and adds it under the merged program's numbers.
+Classes in the kernel form merge with their listed sets ([Classes merged into
+one](classes.md#classes-merged-into-one)). Lifting the refusal in the runtime's form
+would need the source's unit to keep each set's handler under the merged numbers;
+`km.ANY` would need a first use that compiles the set against the source's unit and
+adds it under the merged program's numbers.
 
 ## `Session`
 

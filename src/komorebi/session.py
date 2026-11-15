@@ -2858,6 +2858,7 @@ class _Backend:
             [added.group(0, len(self.control_rows), recipes, built)],
             [program],
         )
+        added.build_ahead(session, self.room, [program])  # Program.ahead's parts
         area = overlay.area_words(
             built, placed, image.address, image.aligned_page_bytes, slot_base
         )
@@ -3060,6 +3061,7 @@ class _Backend:
             ],
             placed.programs,
         )
+        added.build_ahead(session, self.room, placed.programs)  # Program.ahead's parts
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}

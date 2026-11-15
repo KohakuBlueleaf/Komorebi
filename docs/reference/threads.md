@@ -536,6 +536,15 @@ cluster, the same fields on each:
 | `includes`, `defines` | extra include directories and `-D` definitions |
 | `prefetch` | `"documented"` (default) or `"keep"` |
 
+A program written as a class declares its thread in its body, with `km.region(bytes)`
+for each region and `km.x280_thread(*sources, cluster=1, ...)` (the fields above but
+`regions`, `words`, `shared` and `handlers`), and gives `thread_words=` at the make.
+The thread is then made and built at the make, with the class's generated header
+`<name>_thread.h`: a function per handler that fills its command, the regions' ids,
+the class's constants, and the words the load gives the thread after its own (each
+tensor of the make, its address). `program.thread(...)` on a made class does the same
+for a thread declared after the make ([classes, X280 threads](classes.md#x280-threads)).
+
 `Program.region(name, value)` declares a shared region (a size in bytes or an array of
 initial contents). Every thread naming it must be on one bank, and every shared region
 must be named by a thread; `session.load` rejects the program otherwise.

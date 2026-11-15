@@ -11,7 +11,7 @@ tags:
 A **hazard** is something that goes wrong on the card or in the framework, that a page of
 this documentation has seen or states, and that a program never meets when it follows a
 rule. It is a category of its own. The README's
-[sizes a program works within](../../README.md#sizes-a-program-works-within) are fixed
+[sizes a program works within](../../README.md#limits) are fixed
 sizes of the runtime and limits of the card, which a program is written to fit; a hazard
 is not a size but something a program does, or does in a certain order. What each page
 lists under "Not in this version" is what is not built; a hazard is built, and works
@@ -423,6 +423,28 @@ buffer "pushed by X and Y".
 Described in [Movement, rules for a program](movement.md#rules-for-a-program) and
 [Host API, `Program`](movement.md#host).
 
+### A buffer half drained by compute in one command and by a mover in another
+
+**The hazard.** The draining side has the same counter problem as the filling side.
+Compute's unpacker keeps its own count of the pages it popped and writes it whole into
+the buffer's count of pages freed; a mover's pop adds to that count. A half that unpack
+drains on a reduce's root and the mover sends from on the other ranks (a K split's field
+of sums, `km::reduce_emit`) has its count rewound at unpack's next pop after the mover's:
+the packer then sees pages free that are not, the next sum is sent early (wrong sums, a
+different count of wrong words each run), and with the half full the packer's reserve
+waits forever.
+
+**The rule.** After a command in which the mover drained the half, unpack adds the
+mover's pages to its own count: `UNPACK((get_local_cb_interface(cb).tiles_acked +=
+pages))` under the same condition as the mover's send, as the dense project's K split
+does (`projects/dense/kernels/split/compute.cpp`, on a rank other than the root).
+
+**The guard.** A class's field reduce adds the line itself (a test checks the generated
+text). The load's check of sources refuses a half drained by name in two sources, but
+not one drained inside `km::reduce_emit`; a hand kernel that does so: nothing.
+
+Described in [Movement, rules for a program](movement.md#rules-for-a-program).
+
 ### A chain's input read before it is written
 
 **The hazard.** In a chain, a record's input waits for the marks of the cores that wrote
@@ -456,11 +478,35 @@ chain or on a stream) when a read must wait anyway.
 
 **The guard.** Refused when the chain is made: a read stated `prefetch=True` of a tensor
 a call of the chain writes, naming the call, the line and the tensor; a handler whose
-inline body takes a tensor (what it reads is its own C++), and a `kc.Call` among the
-class's calls (its tensors are names the build cannot compare). The automatic prefetch
-is on by default and costs nothing; off, every read waits for the input's marks.
+inline body takes a tensor and states neither `reads=` nor `writes=` (what it reads is
+its own C++), and a `kc.Call` among the class's calls (its tensors are names the build
+cannot compare). The automatic prefetch is on by default and costs nothing; off, every
+read waits for the input's marks.
 
 Described in [Programs written as classes, chains](classes.md#chains).
+
+### A body's reads and writes stated wrong
+
+**The hazard.** An inline body's `reads=[t]` and `writes=[t]` are the programmer's
+statement of what its C++ reads and writes in DRAM; a chain describes the call from
+them. A body that writes a tensor stated only in `reads=`, or reads or writes one it
+does not state, leaves the chain with a wrong description: a call after it can read the
+pages before they are written, or an outside input can change while the chain runs.
+You see stale or mixed words, and no error.
+
+**The rule.** State every tensor whose pages the body's C++ touches: `reads=` for what
+it only reads, `writes=` for what it writes (both when it does both). A tensor in
+`reads=` is never written by any call of the chain; one in `writes=` is read by no
+other call of the chain (read it in a later chain or command).
+
+**The guard.** At the build, `reads=` and `writes=` must name tensor parameters the
+body takes (refused at the line). At `run.chain`: a taken tensor stated in neither, a
+`reads=` tensor that a call of the chain writes, and a read by another call of a tensor
+a body writes are refused, naming the call, the line and the tensor. That the C++ does
+what is stated: nothing (the build does not read it).
+
+Described in [Programs written as classes, a body's reads and writes
+stated](classes.md#a-bodys-reads-and-writes-stated).
 
 ### A slice of a constant set's words
 
@@ -549,6 +595,50 @@ CPU and not a unit left running.
 
 Described in [how reset works, a core stuck inside a compute unit](../concepts/reset.md) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
+
+### A value one compute thread decides, steering a branch all three take
+
+**The hazard.** `Compute::reserve_back` is decided by pack alone: on unpack and math it
+returns true at once. A kernel that keeps its result in the flag its loops and branches
+test (`ok = compute.reserve_back(...)`, then `if (ok)` around a section) lets pack leave
+the body at a give-up while unpack and math go on issuing sections that only pack's
+`tile_regs_release` frees. They stall inside the compute unit, where no wait reads the
+abort word: the dispatcher cannot give the command up, its core reset does not clear
+the unit, and the run ends with `km.GridTimeout` and a card reset (2026-11-16, a class's
+products, before its compiler kept the reserve pack's own).
+
+**The rule.** A value only one compute thread knows guards only that thread's calls.
+Pack's reserve is held in a flag of its own (`room`) that guards `pack_reconfig_l1_acc`,
+`pack_tile` and `cb_push_back` and nothing else; `tile_regs_acquire`, `commit`, `wait`
+and `release`, the unpack and math calls and every loop head stay on all three threads,
+steered only by what all three see alike (`wait_front`, which unpack tells the others).
+The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the pattern:
+`const bool room = compute.reserve_back(...)`, `room &&` on its packs, the push under
+`ok && room`.
+
+**The guard.** A class's generated compute follows the rule at every reserve (a test
+checks the generated text). A hand kernel: nothing.
+
+Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
+
+### A merged state read before pack wrote it
+
+**The hazard.** `km.reduce(self.state, ..., combine=MERGE)` runs the MERGE body once for
+each arrival, and each run reads the state the run before wrote in place. The state is
+written by pack and read by unpack, which share no variable and run apart: unpack can
+read the state of a merge pack has not yet packed, and the root's body after the merge
+can read it before the last merge. You see a state that misses an arrival, and no error.
+
+**The rule.** The MERGE body hands a token from its pack to its unpack after it writes
+the state (an own field `km.own(push="pack")`: pack pushes a page after its packs,
+unpack waits for it and frees it before it reads the state), as the attention pass's
+bodies do; the body after the merge waits for the last one.
+
+**The guard.** Nothing: the build runs the body as written. A sender's push of the
+state for mover B comes after the body's packs on pack itself.
+
+Described in [Programs written as classes, a state merged, not
+added](classes.md#a-state-merged-not-added).
 
 ### A vector word with a destination register of 12 or more
 
@@ -775,6 +865,21 @@ into a `memset` call, does not link.
 Described in [X280 threads reference, the image](threads.md#the-image) and
 [writing one](../threads.md#writing-one).
 
+### A class's command from a thread on a tensor other than the make's
+
+**The hazard.** A handler's function in a class's thread header writes the address of
+the tensor the class was made with into each tensor parameter's word. A thread that
+means the command for another tensor gets the make's tensor: it reads or writes the
+wrong pages, and nothing fails.
+
+**The rule.** For another tensor, set the word after the function
+(`command->a<n>`, `n` the place `<NAME>_<HANDLER>_<PARAMETER>` gives), or make the
+class with that tensor.
+
+**The guard.** Nothing.
+
+Described in [classes, X280 threads](classes.md#x280-threads).
+
 ### An X280 clock above the default under matrix load
 
 **The hazard.** At 1,750 MHz the card lowers its core voltage when the Tensix grid is
@@ -789,7 +894,7 @@ and safe use is the caller's claim. What the default gives up: a host-fed comman
 depth 16 costs 1.228 µs at 1,000 MHz and 0.726 at 1,750.
 
 Described in [Host API, `Session`](host.md#session) and the README's
-[sizes](../../README.md#sizes-a-program-works-within).
+[sizes](../../README.md#limits).
 
 ## Islands and links
 

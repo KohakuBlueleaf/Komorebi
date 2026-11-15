@@ -531,11 +531,19 @@ def built_key(recipe, overlay, kernel):
                 defines,
                 compile_args,
                 SCRIPT + recipe.provided(),
+                checks_key(),
             )
         ).encode()
     )
     digest.update(recipe.elf.read_bytes())
     return digest.hexdigest()[:32]
+
+
+def checks_key():
+    """The code that builds and checks a part (the builder, the part checks, the
+    instruction check): a part kept in the cache is built and checked again once it
+    changes, as it is not checked again when found."""
+    return _env.code_key("overlay.py", "insn_check.py")
 
 
 def keep(index, linked, preprocessed, elf):

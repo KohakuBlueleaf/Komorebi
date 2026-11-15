@@ -65,13 +65,15 @@ namespace km {
 
 }  // namespace km
 
-// The function the entry calls (KM_OVERLAY_FUNCTION): the program's km_program; for a
-// load of the program, a compute part's hardware start-up on the program's formats.
+// The function the entry calls (KM_OVERLAY_FUNCTION): the program's km_program; at a
+// load, its own km_program_start (KM_PROGRAM_START), else compute's default start-up.
 static uint32_t km_program_part(
     KM_OVERLAY_KERNEL& kernel, const km_command_t& command
 ) {
     if (km::handler(command) == KM_HANDLER_LOAD) {
-#if defined(COMPILE_FOR_TRISC) && defined(KM_PROGRAM_SETUP_IN)
+#if defined(KM_PROGRAM_START)
+        km_program_start(kernel);
+#elif defined(COMPILE_FOR_TRISC) && defined(KM_PROGRAM_SETUP_IN)
         compute_kernel_hw_startup(KM_PROGRAM_SETUP_IN, KM_PROGRAM_SETUP_OUT);
 #endif
         return 1;

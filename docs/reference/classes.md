@@ -273,9 +273,12 @@ are added to the run by `run.addon(..., handler=True)`
 ([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
 with the added number. Later submits of the set find it added. The files go into
 `build/<class>-use<key>/`: the key holds the load's build key, the handler, the set's
-values and the class's source files. A later process that makes the same program finds
+values, the class's source files and a hash of the package's Python source (the class
+compiler that wrote them: a changed compiler compiles the set again). A later process that makes the same program finds
 them there and reads the set's words from `first_use.json`, so nothing is compiled.
 Its parts are then found in the parts' cache, so nothing is built either.
+`program.ahead(Gate.gate, size=4)` compiles a set before the run and has the load
+build its parts ([overlays](overlays.md#code-added-to-a-live-run), built ahead).
 
 What the opt-in costs and requires, checked at the make:
 
@@ -390,6 +393,7 @@ A handler of **another** class added to a live run is not built. It would need:
 | `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B | `km::reduce`, the arrivals added in rank order |
 | `whole = km.reduce(acc, form="tree", group=S)`, `acc` n tiles | the same in `km::digit_group(command, me, 1, S)`: S consecutive ranks a group, n tiles a slot | each of the n tiles added through DST tile n (n + 1 tiles of DST) |
 | `whole = km.reduce(self.part, form="tree", group=S)`, `self.part` a float32 field of sums | `km::reduce_arrive` on mover A into slots of the field's tiles; `km::reduce_emit` of the field's pages on mover B (a sender) | each arrival copied into DST and packed onto the field with the packer's L1 accumulation; the field handed on (Products) |
+| `km.reduce(self.state, form="tree", group=S, combine=MERGE)`, `self.state` an own float32 field written in place | the same, of the state's pages | the MERGE body on each arrival, which writes the state in place; a sender's state pushed for mover B; the root's stays in place (A state merged, not added) |
 | `t.tiles[r0:r1, c0:c1]`, where a page range is taken | the first page `r0 x T + c0` (T the tensor's tile columns); one row, or all T columns, is a page range; more rows a `km::Walk` of whole rows, `T` apart; r and c any ints of the handler (words at run time) | |
 | `t.tiles[r0:r1:s, c0:c1]` | its rows s rows of t apart, `(r1 - r0 + s - 1) / s` of them: a `km::Walk` of whole rows `s x T` apart (s an int or a word) | |
 | `n = min(a, b)`, `max(a, b)`, a and b ints | `(a < b ? a : b)`, `(a > b ? a : b)` | the same |
@@ -521,6 +525,7 @@ What a body takes, by where it runs:
 | an own field (`km.own()`) | `name`, its buffer, no wait, no free | the same | the same |
 | a tensor parameter | | | `name`, a `km::Tensor` of its command word (its accessor, `.word`) for `km::read_pages`, `km::write_pages` and the dataflow calls |
 | a tile written to a page (`pages.write(t)` below) | | | mover B: its buffer, waited for once |
+| a reduce's sum of a field (`whole = km.reduce(self.sums, ...)`), under `if self.rank == self.leader:` | `whole_buffer` and `whole_index` (0): the group's sum, fp32 tiles of the field, waited for before the body and freed after it, once | | |
 
 The build's report names each value handed between compute CPUs, and each kept field:
 
@@ -568,6 +573,79 @@ refused. The pack and unpack CPUs share no variable, so state written in place n
 token from the writer to the reader (`step` above), as the attention pass's has. A
 body that copies from buffers of two formats sets the unpacker's format before each
 copy (`reconfig_data_format_srca(total)`): `copy_init` keeps the one it finds.
+
+### A body on a reduce's sum
+
+The hand's K split runs an operation on the group's sum at its root, where it would
+otherwise pack it for the write (the decode layer's residual add, its scale by 1 /
+rms). A body under the leader's `if` takes the reduce's result as that operation:
+
+```python
+whole = km.reduce(self.sums, form="tree", group=self.SPLIT)
+if self.rank == self.leader:
+    residual = km.Stream(r.tiles[0:1, first : first + self.WIDTH], block=self.WIDTH)
+    out = km.Stream(
+        y.tiles[0:1, first : first + self.WIDTH], write=True, block=self.WIDTH
+    )
+    km.cxx(ADD, takes=[whole, residual, out])
+```
+
+`whole_buffer` is the field's buffer and `whole_index` its first tile (0): the group's
+sum in fp32, `kField<Name>Pages` tiles. Compute waits for it before the body and frees
+it after; the body unpacks it, adds what it takes and packs into `out`
+([test_class_body_takes_sum.py](../../tests/core/test_class_body_takes_sum.py)). A body
+that takes the sum outside the leader's `if`, on one compute CPU or a mover, or after
+the sum was written or taken, is refused at its line.
+
+### A state merged, not added
+
+Attention's partial results (each row's maximum, its sum, its output rows) go up a
+group's tree merged, not summed: at each round the arrival and the core's own state make
+a new state. `km.reduce(self.state, form="tree", group=S, combine=MERGE)` does that for
+an own float32 field written in place (`km.own(push=None)`):
+
+```python
+state: km.L1[km.fp32, 3, 32, 32] = km.own(push=None)
+
+...
+km.cxx(PARTIAL, takes=[self.state])  # this core's state
+km.reduce(self.state, form="tree", group=4, combine=MERGE)
+if self.rank == self.leader:
+    km.cxx(FINISH, takes=[self.state])  # the group's merged state
+```
+
+Mover A takes each round's arrival into slots of the state's tiles. MERGE, a body of
+compute's three, runs once for each arrival slot with `arrival_buffer`,
+`arrival_index` (the slot's first tile) and the field by its name bound; it writes the
+merged state in place. On a sender compute then pushes the state and mover B sends it to
+its receiver; at the root the merged state stays in place for the bodies after. The
+line gives no value. A merge of a field that is not own and written in place, of a
+field other than float32 (the arrival's slots are float32), one assigned to a name, one
+by owner without `group=`, and `combine=` on a tile in DST are refused at the line
+([test_class_merge_reduce.py](../../tests/core/test_class_merge_reduce.py)).
+
+### A body's reads and writes stated
+
+A body that takes a tensor reads or writes its pages with its own C++, which the
+build does not read. For a command that is enough; a chain must know what each call
+reads and writes, so the body states it: `reads=[t]` and `writes=[t]` name tensors the
+body takes.
+
+```python
+km.cxx(ROTARY, takes=[qk, position], reads=[qk], on="mover_a")
+km.cxx(APPEND, takes=[keys, position], writes=[keys], on="mover_b")
+```
+
+In a chain, a tensor in `reads=` is an outside input of the call: no record waits for
+it, and a chain in which any call writes it is refused. A tensor in `writes=` is written
+by the call: it is in the chain's written set (no read of it goes early), and another
+call of the chain that reads it is refused, since which pages the body wrote is not
+described. A body that takes a tensor and states neither is refused by `run.chain`, and
+still runs as a command. At the build, `reads=` or `writes=` that is not a list of
+tensor parameters the body takes is refused at its line. A line that writes rows inside
+a tile tensor's tiles, such as `keys.rows(position, rows).write(k)` for the cache's row,
+is not built: it could be added as a write line of its own, which a chain would then
+describe.
 
 ### A page from several CPUs' words
 
@@ -1386,14 +1464,39 @@ handler keeps its own copy of `km::move_filled` and `km::move_drained`), so all 
 stay resident and the load is refused with the bytes.
 
 Not merged, each refused with its reason: a dynamic handler (its message loop is its
-program's own kernels); a handler with constant parameters (built once a set in its own
-program), and `handlers=` on a merged class; classes whose compute options or start-ups
+program's own kernels); a made program with `km.ANY` among its sets (its sets are
+compiled on first use against its own program's load: list them to merge them);
+`handlers=` on a merged class (`class Layer(A, B)`: its handlers take their defaults;
+merge made programs to give sets); two classes whose handlers of one name both have
+constant parameters (a set is picked by the handler's name); classes whose compute options or start-ups
 differ; a define or the rectangle given two values; a merged program as a source; a
 class in the kernel form with a hand program, and `form=` or `beside=` at the make of a
 class merging classes (it is built in the kernel form). Classes made with
 `form="runtime"` merge with each other and with hand programs, in the runtime's form
-([Programs merged into one](host.md#programs-merged-into-one)). A chain over handlers
-of several classes is not built: a class has no chain on this version.
+([Programs merged into one](host.md#programs-merged-into-one)).
+
+A handler with constant parameters merges as its program built it: `km.merge` of a
+program made with `handlers={"gate": [{"size": 4}, {"size": 8}]}` gives the merged
+program `gate_size4` and `gate_size8`, at the numbers the class's own build gives them
+(the first class keeps its numbers, the next ones follow), or `gate` at its defaults
+when no set is listed. A call names the class's handler with the constants
+(`Gate.gate`, `size=4` at its place) and the merged program's handler of that set
+takes it; a set not listed is refused as in one class. The gate class merged with
+GateBlocks made with blocks 8 and 4 listed ran on the card, 120 cores, 16 tiles a core:
+`Gate.gate` 43.74 us, block 4 43.32 us, block 8 42.0 us, each 0 wrong.
+
+A chain runs over a merged class's handlers as over one class's
+([Chains](#chains)). `class Layer(Scale, Rest)` gets the chain's walk from a `km.chain`
+method of its own or of a class it merges, or from `chain=True` at its make;
+`km.merge(a, b)` of made programs gets it when a source was made with it. A chain's call
+names a handler through the merged class (`Layer.scale`, `program.steps(...)`) or
+through the class that declares it (`Scale.scale`), which the merged program's own copy
+then stands for. Each handler's chain waits are read from its own class's file. Example
+29's steps split over two classes and merged both ways ran on the card with the
+unmerged class's words (list and method, factors 5 and 7, 0 wrong) and its time a chain
+(21.48 / 20.94 us merged as a class, 21.18 / 21.02 by km.merge, 21.44 / 20.86 unmerged).
+A merged program in the runtime's form has no walk (a class's walk is in its own
+kernels).
 
 ## Dynamic handlers and messages
 
@@ -1497,22 +1600,93 @@ is a command word).
 
 ## X280 threads
 
-Each build also writes `<name>_thread.h`, a C header for a thread's commands: each
-handler's number, the place of each of its words (a0 is 0) and their count, and
-whether its command asks for the leader's result. A thread that includes it (the
-build folder, `program.built.folder`, in its `includes`) submits the class's commands
-with `kmx_submit` and waits with `kmx_wait`. From
+A thread stays C, built for the X280 and calling `kmx_*`. Each build writes
+`<name>_thread.h`, a C header for a thread's commands, from the same build as the
+kernels, so the C and the class cannot drift apart. It holds:
+
+- each built handler's number (a constant set's under its set's name, a merged
+  program's at the merged number), the place of each of its words (a0 is 0), their
+  count, and whether its command asks for the leader's result, as before;
+- the program field (`kProgram<Name>` in a run of several programs, else 0) and the
+  class's constants at this make (`WORKCLUSTER_MAX_ROUNDS`);
+- the load's words: each tensor of the make, its address, as a word the load gives the
+  thread after the thread's own (`<NAME>_WORD_STATE`), its pages, and
+  `<name>_state_dram(first)`, the `kmx_dram` that `kmx_fetch` and `kmx_store` take;
+- the thread's regions: each one's id for `kmx_region` and its bytes, and a region's
+  bank address and bank, a region parameter's two words;
+- a function for each built handler that fills its whole command (`kmx_command`, the
+  flags, the group, each word) from typed arguments: the make's tensors and the
+  thread's regions come from the load, so they are not arguments.
+
+The class states its thread in its body: its regions with `km.region(bytes)` (an int
+or of the class's constants; ids in body order), and its C with
+`km.x280_thread(*sources, cluster=1, deadline=, includes=, defines=, prefetch=,
+host_fallback=)`, sources and includes relative to the class's file.
+`thread_words=[...]` at the make gives the thread's own words. From
 [07 work cluster](../../examples/07_work_cluster/as_class/README.md):
 
-```c
-/* SUM, line 35. */
-#define WORKCLUSTER_HANDLER_SUM 2u
-#define WORKCLUSTER_SUM_STATE 0u
-#define WORKCLUSTER_SUM_CORES 1u
-#define WORKCLUSTER_SUM_FIRST 2u
-#define WORKCLUSTER_SUM_WORDS 3u
-#define WORKCLUSTER_SUM_RESULT 1u /* KM_FLAG_RESULT */
+```python
+class WorkCluster(km.Program):
+    MAX_ROUNDS = km.constant(1000)
+    groups = km.region(4 * MAX_ROUNDS)
+    thread = km.x280_thread(
+        "thread/driver.c", "../decide.c", cluster=1, includes=[".."], deadline=10.0
+    )
+
+    @km.handler
+    def step(self, state: km.Tensor, round: int, first: int): ...
+
+
+program = WorkCluster(state=state, MAX_ROUNDS=rounds, thread_words=words)
 ```
+
+```c
+/* STEP, line 35: state the make's tensor, round, first. */
+static inline void workcluster_step(
+    km_command_t* km_command,
+    uint32_t km_flags,
+    uint32_t km_first,
+    uint32_t km_count,
+    uint32_t round,
+    uint32_t first
+) {
+    kmx_command(km_command, WORKCLUSTER_PROGRAM, WORKCLUSTER_HANDLER_STEP, km_first, km_count);
+    km_command->hdr |= km_flags << 8;
+    km_command->a0 = workcluster_word(WORKCLUSTER_WORD_STATE);
+    km_command->a1 = round;
+    km_command->a2 = first;
+}
+```
+
+The thread is made and its C built at the make, before any card job: the header the
+thread was built with is in a folder of its own (`build/<name>-<key>/thread-<hash>/`),
+put first among its includes. The make refuses a region parameter that names no
+region of the class. It also refuses C that names a handler, a tensor or a region
+the program lacks. The message gives the class's line, the C's errors with their
+lines, and what the program has:
+
+```
+Missing, line 97: the thread's C does not build with missing_thread.h:
+  .../missing.c:10:5: error: implicit declaration of function 'missing_nothing'; ...
+  missing_nothing: the program has no handler nothing (['total'])
+```
+
+`program.thread(...)` after the make, as a hand program's (`Program.thread`), keeps
+working: the thread gets the same header, its words come first and the load's follow,
+and it is built at that call. A class declares one thread, and `program.thread` is
+refused on a class that declares one. On a made program, `program.thread` (the
+declaration's name) is the `komorebi.thread.Thread`, and `program.threads` holds it as
+a hand program's. `km.thread` is the module `komorebi.thread`, so the class's spelling
+is `km.x280_thread`.
+
+What stays out: nothing makes the thread anything but C, and no Python runs on the
+X280. A set added on its first use (`km.ANY`) has no number at the build: the host
+submits it, never the thread, and the header says so. Chain records and `kmx_load`'s
+programs are not in the header. A merged program takes its thread after the merge
+(`program.thread`); a class that declares one is refused in a merge. A region's size
+is not checked against the pages a handler reads of it. In a run of several programs
+the load builds the thread again with the programs' defines (`kProgram<Name>`); the
+image is built at that load.
 
 ### A thread's region as a parameter
 
@@ -1601,13 +1775,26 @@ session gives more with `kernel_bytes`
 c0:c1]`), their zip, `.write` of a page range, `.drain` and `.fill`, the assignments
 before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write. A
 first page is a number of the call's words, the class's constants, `self.rank`, `size`
-and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the one tensor
+and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the first tensor
 written; each group's root writes block g, `width` tiles from g x width), the group size
 (the reduce's group, else 1), and each read as a share of K tiles or as ranges of
 `base + step x g`. The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
 input that `run.chain` proves (as a written chain's,
 [the earlier input](chain.md#the-earlier-input-and-the-direct-input)).
+
+**Several outputs.** A handler that writes more than one tensor, each as block g of its
+group (the decode layer's x and its rows' squares, a tile a group), is a call with
+several outputs: the first written in the handler's lines is the record's output, and
+each other is an output of its own width (`kc.Call(..., outputs=(("sq", 1),))`). The
+root writes every output's block before its mark, so a mark tells of block g of each.
+The next call reads any of them: its input's marks prove what they cover, and when its
+reads of another output need blocks they do not cover (every core reads all the
+squares, its input only its own block), the record waits for every block of the call
+before (one range of the whole output). A call further on reads another output marked
+`km.past`, proven by that output's width. Two outputs given one tensor, and a direct
+input from a call of several outputs, are refused
+([test_class_chain_outputs.py](../../tests/core/test_class_chain_outputs.py)).
 
 **prefetch.** A read of a tensor that no call of the chain writes goes before the
 record's input is marked: the kernels' wait before each read line takes the record's
@@ -1633,7 +1820,8 @@ island 0's program and `cores` in flat ranks.
 
 | Refused | When | Text names |
 |---|---|---|
-| a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor | `run.chain` | the handler, the line and why; it still runs as a command |
+| a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor and states neither `reads=` nor `writes=` | `run.chain` | the handler, the line and why; it still runs as a command |
+| a body's `reads=` of a tensor a call of the chain writes; a read of a tensor another call's body writes (`writes=`) | `run.chain` | the call, the line, the tensor, the other call |
 | a call of a program made without the walk | `run.chain` | the handler; `chain=True` or a `km.chain` method |
 | a `kc.Call` among a class's calls | `run.chain` | the call |
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
@@ -1694,23 +1882,38 @@ leaves their indices and takes their `unpack_to_dest_mode` at those indices, so 
 has one set of compute options. The fidelity is the programs' to agree on: a class
 whose tile functions have no product gives `compute={"math_fidelity": ...}`.
 
-Refused when the class is made in this form (`ProgramError`, naming the handler's
-line), each with what lifting it would need (none of it is built):
+**A start-up of the class's own** (a body at a kernel's start, `km.cxx(...,
+at="start")`, and `startup=`) runs at the load of the program: every part of a program
+is called with the load command (`KM_HANDLER_LOAD`) when a group takes it, and the
+class's parts run there what the kernel form runs before the commands, compute's
+start-up (the class's `km.Startup`, else the one on the program's first buffers) and
+then the bodies (`km_program_start` in the generated sources). In a dict's run it runs
+when the group takes the program, again at each `run.load` of it. A class alone (or
+alone in a list) is run as a dict over every core, so its run loads it before the first
+command (buffer indices below 32, as any dict's). With `startup=`, each command's two
+format calls are left out: the class's start-up set the formats, on cores that hold
+the program alone. The names a start body declares are not seen by the handlers here
+(the body is the load's function): a value a handler needs goes in an own field. On
+the card (card 0, 960 tiles, x + 0.5 from a 0.5 tile built into an own field at
+compute's start): the kernel form 18.12 us, the class with `startup=` alone in the
+runtime's form 18.94 us, every word equal to the kernel form's; a dict of the class
+(cores 0-59) and the one with `startup=` (60-119) 12.2 and 11.88 us, 0 wrong.
 
-- **A body at a kernel's start** (`km.cxx(..., at="start")`): the runtime owns the
-  kernels' start. The place exists in a dict's run: every part of a program is called
-  with the load command (`KM_HANDLER_LOAD`) when a group takes the program, where
-  compute runs the start-up today, so the body would run there. A list's run sends no
-  load, so it would need one sent to every core at the run's start.
-- **A body at a kernel's end** (`at="end"`): no part is called when the run stops; it
-  would need the runtime's loop to call each program's parts once at the stop.
-- **`startup=`** (a start-up of the class's own, `km.Startup`): the start-up is the
-  runtime's, on the first buffer below 16 and the first from 16. The same load call
-  has the place: the start-up there would take the class's buffers and order, and
-  each command's two format calls the same buffers.
-- **A dynamic handler**: the runtime's form has no message loop of a program's own;
-  it would need the runtime's message kernels to serve a program field, and two
-  programs' dynamic handlers in one run are not built either
+Refused, `ProgramError`:
+
+- **A start-up of the class's own in a list of several programs**, at the load: every
+  core holds every program and none is loaded, and one program's start-up would set
+  the hardware up under the others' commands; a dict gives each program its cores.
+  Sending a load of its own to every core at the run's start is not built for it.
+- **km.merge of such a class**: a merged program has one load, the sources' start-ups
+  are not merged.
+- **A body at a kernel's end** (`at="end"`), when the class is made in this form,
+  naming its line: no part is called when the run stops. It would need the runtime's
+  three kernels to load and call the held program's part once after the stop, with a
+  give-up path of its own; not built.
+- **A dynamic handler**, naming its line: the runtime's form has no message loop of a
+  program's own; it would need the runtime's message kernels to serve a program field,
+  and two programs' dynamic handlers in one run are not built either
   ([overlays](overlays.md#not-in-this-version)).
 
 An overlay handler is not refused: it is one of the program's own overlays (above).
@@ -1842,7 +2045,10 @@ of more than one row whose columns are words; a field
 filled from a broadcast; a product's operands other than a stream's tile and a field,
 two streams' blocks, or two broadcasts' blocks into a float32 field; a field of sums of
 more than one row from two streams; a product and a tile function in one body; the fidelity derived from a tile function's tolerance (it is
-given as `fidelity=`); a word field with a rectangle (`self.x`, a broadcast).
+given as `fidelity=`); a word field with a rectangle (`self.x`, a broadcast). Of a
+class's X280 thread: a thread in a merged class's body, shared regions, a region's
+size checked against the pages a handler reads of it, chain records in its header
+(see [X280 threads](#x280-threads)).
 
 A body's own buffer (a field only bodies fill, as a hand kernel's scratch or a page it
 builds for the movers): not needed by the lines above, not built. A page assembled
@@ -1854,7 +2060,7 @@ the pack CPU's words. Items of a tensor on two islands (refused when the kernel 
 built: no call moves part of another island's page). A range loop whose count is one
 mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
-A class in the runtime's form with a dynamic handler, a body at a kernel's start or
-end, or a start-up of its own (`startup=`): refused ([The runtime's
-form](#the-runtimes-form)); the runtime's form has a message loop of no program, and
-the runtime owns the kernels' start, end and start-up.
+A class in the runtime's form with a dynamic handler or a body at a kernel's end:
+refused ([The runtime's form](#the-runtimes-form)); the runtime's form has a message
+loop of no program, and no program's part is called when the run stops. A body at a
+kernel's start or `startup=` in a list of several programs: refused (no load there).
