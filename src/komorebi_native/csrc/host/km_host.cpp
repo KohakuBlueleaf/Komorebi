@@ -454,12 +454,12 @@ namespace {
     ) {
         auto* dev = chip(mesh);
         const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
-        std::vector<std::vector<uint8_t>*> data;
+        std::vector<std::unique_ptr<std::vector<uint8_t>>> data;  // until the capsules
         for (const auto& span : spans) {
             if (span[0] >= dram_banks(mesh) || span[2] > UINT32_MAX) {
                 throw std::runtime_error("a DRAM span outside the banks or over 4 GB");
             }
-            data.push_back(new std::vector<uint8_t>(span[2]));
+            data.push_back(std::make_unique<std::vector<uint8_t>>(span[2]));
         }
         {
             nb::gil_scoped_release release;
@@ -476,10 +476,12 @@ namespace {
             }
         }
         std::vector<Bytes> out;
-        for (auto* owned : data) {
+        for (auto& held : data) {
+            auto* owned = held.get();
             nb::capsule owner(owned, [](void* memory) noexcept {
                 delete static_cast<std::vector<uint8_t>*>(memory);
             });
+            held.release();  // the capsule owns it now
             const size_t shape[1] = {owned->size()};
             out.emplace_back(owned->data(), 1, shape, owner);
         }
