@@ -14,12 +14,16 @@ enum {
     kChainNext = 15,     /* the next record's address in the same bank; 0: the last */
     kChainWords = 16,
     kChainRecordBytes = 64,
-    kChainRecordsMax = 16
+    kChainRecordsMax = 256
 };
 
 /* The info word: its input is marked by the record before's roots once written; its
  * parts go up its group's tree (its receivers send credits). */
 enum { kChainMarked = 1, kChainSends = 2 };
+
+/* The info word's bits 4 to 7: the command's word the core ORs the chain command's a0
+ * into (km_abi.h: a0 3 to a9 15; a token as one command); 0: none. */
+enum { kChainTokenShift = 4, kChainTokenMask = 0xF };
 
 /* What a record's core reads of the record before's output (tiles of its row): its K
  * range under its plan; or the range words, range i base + step x group, width wide. */

@@ -27,7 +27,8 @@ inline uint32_t chain_tag(uint32_t sequence, uint32_t record) {
     return sequence * kChainRecordsMax + record;
 }
 
-// The command a record names: the chain command's header and sequence, its words.
+// The command a record names: the chain command's header and sequence, its words
+// (one ORed with the chain's a0 where the info word names it).
 inline km_command_t chain_command(const km_command_t& chain, const uint32_t* record) {
     km_command_t command = chain;
     command.group = record[kChainGroup];
@@ -41,6 +42,8 @@ inline km_command_t chain_command(const km_command_t& chain, const uint32_t* rec
     command.a7 = record[kChainArguments + 7];
     command.a8 = record[kChainArguments + 8];
     command.a9 = record[kChainArguments + 9];
+    const uint32_t token = (record[kChainInfo] >> kChainTokenShift) & kChainTokenMask;
+    reinterpret_cast<uint32_t*>(&command)[token] |= token != 0 ? chain.a0 : 0u;
     return command;
 }
 
