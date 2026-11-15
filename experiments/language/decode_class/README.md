@@ -1,9 +1,11 @@
 # The decode layer, as a class
 
-**Warning.** `layer_class.py` runs only qkv and o by default. gate_up and down, run
-after another product, gave wrong sums that changed from run to run, and a run of the
-four in a mixed order hung the card (2026-11-16); this is under investigation, and
-`--known-wrong` is needed to run them.
+**Fixed.** Until 2026-11-16 `layer_class.py` ran only qkv and o unless given
+`--known-wrong`: gate_up and down, run after another product, gave wrong sums that
+changed from run to run, and a run of the four in a mixed order hung the card. The class
+compiler's field reduce did not count mover B's send in unpack's own count of the
+field's pages, and its products let pack's reserve steer the sections of all three
+compute threads. Both are fixed, the same mixed order is right, and the flag is gone.
 
 Question: can the decode project's layer
 ([projects/decode](../../../projects/decode/README.md)) be written as a class
@@ -71,16 +73,26 @@ waited for, the dispatcher's median:
 | gate_up (48 x 2, AAAB) | 18,504 and 18,156 of 393,216 | 4.25e-3 / 0.134 | 126.76, 126.82 | 133.29, 133.36 |
 | down (8 x 15, AB) | 57,160 and 57,078 of 65,536 | 4.25e-3 / 0.538 | 71.01, 70.73 | 67.48, 67.52 |
 
-(Two runs: two values in a cell.) The class's gate_up and down are wrong in this order
-(qkv, o, gate_up, down, each 21 times), and the count changes from run to run. Run alone
-(down, then gate_up; each over part of K too: down at K 120, 150, 165, 180 and 192 tiles,
-gate_up at 6, 14, 16, 18 and 64, twice each) every one is right, 4.23e-3 to 4.29e-3
-against float64. A run of the four in a mixed order (gate_up first) hung: a command did
-not end and the grid did not return. So one handler leaves something that a handler of
-another group size or pattern after it meets; what, is not found.
+(Two runs: two values in a cell; the table is from before the fix.) The class's gate_up
+and down were wrong in this order (qkv, o, gate_up, down, each 21 times), and the count
+changed from run to run. Run alone (down, then gate_up; each over part of K too: down at
+K 120, 150, 165, 180 and 192 tiles, gate_up at 6, 14, 16, 18 and 64, twice each) every
+one was right, 4.23e-3 to 4.29e-3 against float64. A run of the four in a mixed order
+(gate_up first) hung: a command did not end and the grid did not return.
 
-The class's text is 79,840 B (mover A 18,704, mover B 16,060, unpack 13,308, math
-15,248, pack 15,836), the hand's program 62,224 B with its four operations as overlays.
+The cause: a field of sums is emptied by unpack on the group's root and by mover B's
+send on the other ranks, and unpack writes its own count of the pages it took whole into
+the field's count. A core that had sent rewound the count at its next turn as root, so
+a handler of another group size after it sent early (wrong sums) or, with the field
+full, waited forever. Pack's give-up there then left unpack and math inside the compute
+unit, which is why the hang needed a card reset. With both fixed, the same mixed order of
+17 commands (gate_up, down, qkv, gate_up, o, gate_up, down, qkv, down, o, down, o, o,
+gate_up, qkv, qkv, down) is right on card 0: each 4.25e-3 to 4.29e-3 against float64,
+the kernels ending with no error. The table's word-for-word comparison with the hand is
+not run again here.
+
+The class's text is 80,160 B (mover A 18,704, mover B 16,060, unpack 14,000, math
+15,352, pack 15,348), the hand's program 62,224 B with its four operations as overlays.
 
 Found on the way: the class's reduces share one arrival buffer (`kArrival0`), and the
 build sized it by the first handler's reduce (its slots) and the last one's (its slot's
@@ -91,9 +103,9 @@ made the slots overlap. It is now sized for the largest reduce
 of 8 tiles for all four products: that is not what made gate_up and down wrong.
 
 ```bash
-python layer_class.py                   # qkv and o: the hand's, then the class's
+python layer_class.py                   # the four: the hand's, then the class's
 python layer_class.py --skip-hand       # the class alone
-python layer_class.py --products qkv o gate_up down --known-wrong  # see the warning
+python layer_class.py --products qkv o  # some of them
 ```
 
 ## The lines the layer still needs

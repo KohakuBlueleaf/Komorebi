@@ -423,6 +423,28 @@ buffer "pushed by X and Y".
 Described in [Movement, rules for a program](movement.md#rules-for-a-program) and
 [Host API, `Program`](movement.md#host).
 
+### A buffer half drained by compute in one command and by a mover in another
+
+**The hazard.** The draining side has the same counter problem as the filling side.
+Compute's unpacker keeps its own count of the pages it popped and writes it whole into
+the buffer's count of pages freed; a mover's pop adds to that count. A half that unpack
+drains on a reduce's root and the mover sends from on the other ranks (a K split's field
+of sums, `km::reduce_emit`) has its count rewound at unpack's next pop after the mover's:
+the packer then sees pages free that are not, the next sum is sent early (wrong sums, a
+different count of wrong words each run), and with the half full the packer's reserve
+waits forever.
+
+**The rule.** After a command in which the mover drained the half, unpack adds the
+mover's pages to its own count: `UNPACK((get_local_cb_interface(cb).tiles_acked +=
+pages))` under the same condition as the mover's send, as the dense project's K split
+does (`projects/dense/kernels/split/compute.cpp`, on a rank other than the root).
+
+**The guard.** A class's field reduce adds the line itself (a test checks the generated
+text). The load's check of sources refuses a half drained by name in two sources, but
+not one drained inside `km::reduce_emit`; a hand kernel that does so: nothing.
+
+Described in [Movement, rules for a program](movement.md#rules-for-a-program).
+
 ### A chain's input read before it is written
 
 **The hazard.** In a chain, a record's input waits for the marks of the cores that wrote
@@ -549,6 +571,31 @@ CPU and not a unit left running.
 
 Described in [how reset works, a core stuck inside a compute unit](../concepts/reset.md) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
+
+### A value one compute thread decides, steering a branch all three take
+
+**The hazard.** `Compute::reserve_back` is decided by pack alone: on unpack and math it
+returns true at once. A kernel that keeps its result in the flag its loops and branches
+test (`ok = compute.reserve_back(...)`, then `if (ok)` around a section) lets pack leave
+the body at a give-up while unpack and math go on issuing sections that only pack's
+`tile_regs_release` frees. They stall inside the compute unit, where no wait reads the
+abort word: the dispatcher cannot give the command up, its core reset does not clear
+the unit, and the run ends with `km.GridTimeout` and a card reset (2026-11-16, a class's
+products, before its compiler kept the reserve pack's own).
+
+**The rule.** A value only one compute thread knows guards only that thread's calls.
+Pack's reserve is held in a flag of its own (`room`) that guards `pack_reconfig_l1_acc`,
+`pack_tile` and `cb_push_back` and nothing else; `tile_regs_acquire`, `commit`, `wait`
+and `release`, the unpack and math calls and every loop head stay on all three threads,
+steered only by what all three see alike (`wait_front`, which unpack tells the others).
+The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the pattern:
+`const bool room = compute.reserve_back(...)`, `room &&` on its packs, the push under
+`ok && room`.
+
+**The guard.** A class's generated compute follows the rule at every reserve (a test
+checks the generated text). A hand kernel: nothing.
+
+Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
 
 ### A vector word with a destination register of 12 or more
 
