@@ -1,9 +1,7 @@
-"""Every other compute path the class compiler generates keeps pack in step at a give-up
-of its reserve: a write stream's push of a copy, of a tile function's result and of a
-body's tile; a body fed a write stream's page; a tile written to a page; a reduce's sum
-written; a drained stream and its end. Each pack line is under a pack-only guard and no
-section is. A body that takes a written page may guard only the packs with its word
-(no card)."""
+"""Every other compute path the class compiler generates guards only its packs with
+pack's reserve: a push of a copy, a tile function's result, a tile expression or a
+body's tile; a fed body; a tile or a sum written; a drained stream and its end. A
+body's written-page word guards only the packs (no card)."""
 
 import importlib
 import sys
