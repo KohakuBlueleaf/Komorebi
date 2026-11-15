@@ -37,6 +37,7 @@ from komorebi import (
     layout,
     native,
     overlay,
+    prebuild,
     programs,
     remembered,
 )
@@ -423,6 +424,8 @@ def chip_holder(card, path=None):
     """The PID of another live process that holds `card`'s chip lock, else None. Read
     from UMD's lock file (a pthread mutex, a 64-bit word, the owner's TID and PID)
     without taking it; UMD keeps the lock from a process's first open to its exit."""
+    if prebuild.active():  # a mock: no chip to hold
+        return None
     # the file's mtime cannot date the PID: UMD writes the lock through a mapping,
     # which leaves the mtime unchanged
     path = Path(path or CHIP_LOCK.format(card=card))
@@ -559,6 +562,14 @@ def slot_rows(slots, service=0, why=""):
     ]
 
 
+def built_files(recipes, started):
+    """(found, compiled) of the ELFs of a launch's `recipes()`: compiled when written
+    from `started` (time.time()) on, else found in the build cache."""
+    elves = {Path(row[1]) for _, builds in recipes for row in builds}
+    compiled = sum(elf.is_file() and elf.stat().st_mtime >= started for elf in elves)
+    return len(elves) - compiled, compiled
+
+
 def fit_slots(built, declared, free, rows, log):
     """`built` with the undeclared slot counts lowered until `rows` (the L1 table's
     rows besides the slots) and the slots fit `free` bytes, where they can."""
@@ -688,6 +699,9 @@ class Session:
             raise ValueError("kernel_bytes is set when the session opens the device")
         self._memory = None  # the remembered kernel buffer (komorebi.remembered)
         self._last_total = 0  # the kernels' total of the last load built
+        self._mock_channel = False  # a prebuild: the card would map the channel
+        self._transfer_built = False  # a prebuild: the transfer kernel built
+        self._built_before = []  # (found, compiled) built before the next load
         if kernel_bytes is None and device is None:
             self._memory = remembered.Memory(self.log, expect)
             if self._memory.size and self._memory.size <= KERNEL_BUFFER_MAX:
@@ -773,6 +787,9 @@ class Session:
     def _open_channel(self, said):
         """Maps the region of the card's channel, or logs why reads go the device API's
         way; ChannelError (the device closed) if the open logged the warning."""
+        if prebuild.active():  # the card's would be mapped: its loads are built so
+            self._mock_channel = True
+            return
         warning = channel_module.warning_in(said)
         if warning is not None:
             self.close()
@@ -987,6 +1004,13 @@ class Session:
     def _read_device(self, tensors, first, pages):
         """read() through the device API: DRAM tensors by banks, an L1 tensor whole
         (which waits for launched cores: not while a run is loaded)."""
+        if prebuild.active():  # a mock run computed nothing: zeros
+            return [
+                np.zeros(
+                    (dram.page_range(first, pages, t.pages)[1], t.page_bytes), "u1"
+                )
+                for t in tensors
+            ]
         in_l1 = [tensor for tensor in tensors if not tensor.in_dram]
         if in_l1 and self.run is not None and not self.run.stopped:
             raise ChannelError(
@@ -1038,6 +1062,8 @@ class Session:
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way([tensor], start, count)
         if way is None:
+            if self._mock_channel and (count != tensor.pages or self.run is not None):
+                return  # the card's channel would take it; a mock run reads nothing
             if count != tensor.pages or (self.run is not None and not self.run.stopped):
                 raise ChannelError(
                     "a page range, or a write while a run is loaded, goes through the "
@@ -1057,6 +1083,8 @@ class Session:
         An L1 tensor's pages are moved by the cores that hold them."""
         self._map_channel()
         if self.channel is None:
+            if self._mock_channel:  # the card would launch the transfer kernel
+                self._built_before += self._transfer_kernel_built()
             return None
         if max(tensor.aligned_page_bytes for tensor in tensors) > self._region.data:
             return None
@@ -1217,16 +1245,15 @@ class Session:
             grid = l1.shard_grid
             places, cores = channel_module.l1_cores(transfer.first, count, grid[0])
         report = self.empty((grid[0] * grid[1], 16), "uint32", shard_grid=grid)
-        launch = self._module.Launch(self.device)
         args = [
             (x, y, [report.address, int(push), rank, count, *transfer.args()])
             for rank, (x, y) in enumerate(places)
         ]
-        include = abi.headers().abi.parents[2]
-        source = include.parent / "kernels" / "host_transfer.cpp"
-        launch.kernel(str(source), cores, 0, [], [], [str(include)], args, noc=0)
-        launch.cb(cores, 0, "uint32", 16, 2 * transfer.chunk + 64)
+        launch = self._transfer_launch(cores, args, transfer.chunk)
+        started = time.time()
         launch.run()
+        if built_files(launch.recipes(), started)[1]:
+            self.log("built: the host transfer kernel compiled (not found built)")
         try:
             arrived = self._words_arrived(words, want, timeout)
         finally:
@@ -1242,6 +1269,51 @@ class Session:
                 f"{status.tolist()} (0 done, 1 refused, 2 reads and 3 writes not done "
                 "in time, 4 PCIe routing left, -1 not finished)"
             )
+
+    def _transfer_launch(self, cores, args, chunk):
+        """The transfer kernel's launch on `cores` with `args`, chunks of `chunk`."""
+        launch = self._module.Launch(self.device)
+        include = abi.headers().abi.parents[2]
+        source = include.parent / "kernels" / "host_transfer.cpp"
+        launch.kernel(str(source), cores, 0, [], [], [str(include)], args, noc=0)
+        launch.cb(cores, 0, "uint32", 16, 2 * chunk + 64)
+        return launch
+
+    def _transfer_kernel_built(self):
+        """A prebuild: the transfer kernel built as _launch_transfer launches it, once a
+        session; [(found, compiled)] for the next load's line."""
+        if self._transfer_built:
+            return []
+        self._transfer_built = True
+        self._module = self._module or native.load_module(self.tree)
+        launch = self._transfer_launch([(0, 0, 0, 0)], [(0, 0, [0] * 16)], 4096)
+        started = time.time()
+        launch.build()
+        return [built_files(launch.recipes(), started)]
+
+    def _log_built(self, descriptor, started, program):
+        """The load's line: its kernels and overlay parts found built and compiled
+        (with a transfer kernel built before it), each compiled kernel's defines of
+        `program` and the runtime's (KM_*)."""
+        found, compiled = built_files(descriptor.recipes(), started)
+        for before_found, before_compiled in self._built_before:
+            found, compiled = found + before_found, compiled + before_compiled
+        self._built_before = []
+        parts = overlay.PARTS_BUILT
+        found, compiled = found + parts["found"], compiled + parts["compiled"]
+        parts.update(found=0, compiled=0)
+        self.log(f"built: {found} found, {compiled} compiled (kernels and parts)")
+        for source, builds in descriptor.recipes():
+            for row in builds:
+                elf = Path(row[1])
+                if elf.is_file() and elf.stat().st_mtime >= started:
+                    defines = " ".join(
+                        str(define)[2:]
+                        for define in row[8:]
+                        if str(define).startswith("-DKM_")
+                        or str(define)[2:].split("=")[0] in program.defines
+                    )
+                    self.log(f"compiled: {Path(source).name} {row[0]} ({defines})")
 
     def read_bf16(self, *tensors):
         """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
@@ -1269,6 +1341,8 @@ class Session:
     def _open_dispatch(self, module):
         """The runtime's dispatch at the session's clock. A runtime that does not offer
         the default clock gets 1000, logged once; an asked-for clock is an error."""
+        if prebuild.active():  # a mock has no X280
+            return prebuild.Dispatch(self.device)
         try:
             return module.Dispatch(self.device, self.pll_mhz)
         except RuntimeError as error:
@@ -1454,7 +1528,7 @@ class Session:
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
             sources = programs.runtime_kernels()
-        mhz = aiclk_mhz(self.card)
+        mhz = prebuild.MHZ if prebuild.active() else aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
         regions = _bank_regions(self, owner, works)
@@ -1520,7 +1594,7 @@ class Session:
                 program, sources, tag, depth, wait, idle, trace, port_lines, placed,
                 ranks,
             )  # fmt: skip
-            started = time.perf_counter()
+            started, built_at = time.perf_counter(), time.time()
             try:
                 elves, *build = descriptor.build()
             except Exception as error:
@@ -1537,6 +1611,7 @@ class Session:
                 f"(text: {text})"
             )
             if build[-1]:
+                self._log_built(descriptor, built_at, program)
                 refused = self._resize(program.sizes.total or KERNEL_BUFFER_MAX)
                 raise KernelSizeError(
                     program.name, program.sizes, KERNEL_BUFFER_MAX, refused
@@ -1555,6 +1630,11 @@ class Session:
                 backend.load_programs(placed, descriptor)
             else:
                 backend.load_overlays(program, descriptor)
+            self._log_built(descriptor, built_at, program)
+            if prebuild.active():  # built: a mock run stands in for the launch
+                self._starting = None
+                self.run = prebuild.Run(counted=self.island is None)
+                return self.run
             if backend.apart_links:  # after every other write: a transfer's buffer
                 link.clear(self)  # starts at the link cores' buffers' base too
             self.log("launch")
@@ -1714,7 +1794,7 @@ class Session:
         module = self._module = native.load_module(self.tree)
         depth = depth or program.depth
         sources = program.sources()
-        mhz = aiclk_mhz(self.card)
+        mhz = prebuild.MHZ if prebuild.active() else aiclk_mhz(self.card)
         dispatches = _Dispatches([self._open_dispatch(module)])
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
         _hook_exit()
@@ -1723,7 +1803,11 @@ class Session:
         backends, launched = [], False
         try:
             for cluster in range(1, len(rows)):
-                dispatches.append(module.Dispatch(dispatches[0], cluster))
+                dispatches.append(
+                    prebuild.Dispatch(self.device)
+                    if prebuild.active()
+                    else module.Dispatch(dispatches[0], cluster)
+                )
             states, tags = [], []
             for island, (dispatch, (first_row, count)) in enumerate(
                 zip(dispatches, rows)
@@ -1770,6 +1854,7 @@ class Session:
             descriptor = first.describe(
                 program, sources, tags[0], depth, wait, idle, trace
             )
+            built_at = time.time()
             try:
                 elves, *build = descriptor.build()
             except Exception as error:
@@ -1786,6 +1871,11 @@ class Session:
                     native.cache_directory() / "insn-check",
                 )
             first.load_overlays(program, descriptor)
+            self._log_built(descriptor, built_at, program)
+            if prebuild.active():  # built: a mock run stands in for the launch
+                self._starting = None
+                self.run = prebuild.Run()
+                return self.run
             for island, dispatch in enumerate(dispatches):
                 backend = first if island == 0 else copy.copy(first)
                 backend.port, backend.state_tensor = dispatch, states[island]
@@ -2477,8 +2567,9 @@ class _Backend:
         table[0] = port.core_table()
         cores_tensor = _words(self.session, table)
         self.io = [self.control, cores_tensor]
-        if self.session.channel is not None or program.threads:
-            # also the threads' copies
+        session = self.session
+        if session.channel is not None or program.threads or session._mock_channel:
+            # also the threads' copies; a prebuild's as the card's
             chunk = self._transfer_chunk(program, placed, cores)
             self.transfer = self._transfer_buffer(cores, grid, chunk)
         if self.trace_cap:
