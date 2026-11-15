@@ -398,7 +398,10 @@ What happens:
    served by the service overlay. Each core writes the overlay's table entry (each
    part's DRAM address and bytes) into its own overlay area and raises the table's
    count. For a handler it also sets the number's bit in a mask of the area
-   (`kOverlayHandlers`); for a dynamic handler, a bit in `kOverlayMessages`.
+   (`kOverlayHandlers`); for a dynamic handler, a bit in `kOverlayMessages`. The
+   host's copy of the areas gets the same entry. A run that keeps reset lists
+   (`load(recover=True)`) hands them to the dispatcher again, so a core it resets
+   comes back with the added entries.
 
 **A handler added to the live run.** The kernels of a load whose program names slot
 bytes (`Program.slots(bytes=...)`, which defines `KM_ADDED_HANDLERS`) look at the
@@ -450,13 +453,14 @@ the card:
 
 | | |
 |---|---|
-| a first add (the parts compiled): mix, one reader part / scale, five parts | 0.84 s / 5.10 s (the build off the card, the same commands) |
-| a cached add: mix / scale | 8.8 to 14.4 ms / 42.3 ms |
-| the parts' write into the room / the entry commands | 0.2 to 0.4 ms / 0.1 to 0.2 ms |
-| a command of RUN naming mix: first (every core loads) / later (held) | 3.78 µs / 2.76 µs (2.24 µs naming none) |
-| mix's `load()` on a core: loading / held | 1,278 / 112 cycles |
-| a command of SCALE, the added handler: first / later | 38.32 µs / 35.96 µs |
-| the same from the X280 thread: first / later | 36.76 µs / 35.90 µs |
+| a first add (the parts compiled): mix, one reader part / scale, five parts | 0.85 s / 5.09 s (the build off the card, the same commands) |
+| a cached add: mix / scale | 8.6 to 9.0 ms / 42.8 ms |
+| the parts' write into the room | 0.3 to 0.4 ms |
+| the entry commands, with the reset lists kept again / without | 3.0 to 3.1 ms / 0.1 to 0.2 ms |
+| a command of RUN naming mix: first (every core loads) / later (held) | 3.78 µs / 2.76 µs (2.22 µs naming none) |
+| mix's `load()` on a core: loading / held | 1,286 / 115 cycles |
+| a command of SCALE, the added handler: first / later | 38.32 µs / 35.98 µs |
+| the same from the X280 thread: first / later | 36.74 µs / 35.96 µs |
 
 ### Several programs with overlays
 

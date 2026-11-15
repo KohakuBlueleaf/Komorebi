@@ -35,6 +35,9 @@ def parse():
     parser.add_argument("--rounds", type=int, default=8, help="commands per phase")
     parser.add_argument("--tiles", type=int, default=2, help="SCALE's tiles a core")
     parser.add_argument("--steps", type=int, default=64, help="mix's loop steps")
+    parser.add_argument(
+        "--reset-core", type=int, default=7, help="reset after the adds (-1: none)"
+    )
     parser.add_argument("--json", help="also write the JSON line here")
     return parser.parse_args()
 
@@ -194,6 +197,10 @@ def main():
                 phases.scale_command("scale", scale, seed)
             # --8<-- [end:add]
             again = run.addon("mix again", KERNELS / "mix")  # the same code: cached
+            reset = None
+            if args.reset_core >= 0:  # its reset list writes the area with the adds
+                reset = run.reset_core(args.reset_core)
+                log(f"core {args.reset_core} reset by the {reset['by']}")
             for seed in range(args.rounds):
                 phases.run_command("run with mix again", again, seed)
                 phases.run_command("run after", 0, seed)
@@ -206,10 +213,10 @@ def main():
             added = {name: dataclasses.asdict(each) for name, each in run.added.items()}
         finally:
             run.stop()
-    report(args, cores, phases, added, mhz)
+    report(args, cores, phases, added, mhz, reset)
 
 
-def report(args, cores, phases, added, mhz):
+def report(args, cores, phases, added, mhz, reset=None):
     """Prints each command's first and later times, the adds' times and the JSON
     line (also to --json); exits 1 when a word was wrong."""
     first = {what: values[0] for what, values in phases.times.items()}
@@ -240,6 +247,7 @@ def report(args, cores, phases, added, mhz):
         "exact": phases.wrong == 0,
         "aiclk_mhz": mhz,
         "added": added,
+        "reset": reset,
         "first_us": first,
         "later_us": later,
         "mix_cycles": cycles,

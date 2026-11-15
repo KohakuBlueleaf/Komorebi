@@ -12,7 +12,8 @@ goes on, `run.addon` adds:
 - `mix again`, the same source as `mix`: its parts come from the cache of built parts.
 
 Commands run on every core before, between and after the adds, from the host and from
-an X280 thread (`thread/relay.c` submits the command it is given to the cores). Every
+an X280 thread, and after core 7 is reset by the dispatcher from its reset list (which
+writes the overlay area as the host holds it, the added entries included) (`thread/relay.c` submits the command it is given to the cores). Every
 word is checked against numpy: `RUN`'s result line on each core (the mix loop on the
 core's seed, or the seed when it names no overlay) and `SCALE`'s output tiles (each
 input tile times the command's scalar, bfloat16).
@@ -33,31 +34,34 @@ input tile times the command's scalar, bfloat16).
 ## Measured
 
 Card 0, 2026-11-16, AICLK 1,350 MHz before and after, 120 cores, 8 commands a phase
-(`python add_overlay.py`). All 56 commands were exact against numpy
+(`python add_overlay.py`). All 56 commands were exact against numpy, core 7's after its
+reset among them
 ([results/add_overlay.json](results/add_overlay.json)). Command times run from the
 dispatcher's submit to the completion: for the thread's commands, the thread's own
 clock around its submit and wait.
 
 | Phase | First command | Later (median) |
 |---|---|---|
-| `RUN` naming no overlay, before the adds | 2.88 µs | 2.24 µs |
+| `RUN` naming no overlay, before the adds | 2.82 µs | 2.22 µs |
 | `RUN` naming mix (every core loads it, then holds it) | 3.78 µs | 2.76 µs |
-| `SCALE`, the added handler (every core loads five parts) | 38.32 µs | 35.96 µs |
-| `RUN` naming mix again (another number, the same bytes) | 3.78 µs | 2.78 µs |
-| `RUN` naming no overlay, after | 2.24 µs | 2.24 µs |
-| `RUN` naming mix, from the thread | 3.52 µs | 2.72 µs |
-| `SCALE`, from the thread | 36.76 µs | 35.90 µs |
+| `SCALE`, the added handler (every core loads five parts) | 38.32 µs | 35.98 µs |
+| `RUN` naming mix again (another number, the same bytes) | 3.82 µs | 2.76 µs |
+| `RUN` naming no overlay, after | 2.26 µs | 2.24 µs |
+| `RUN` naming mix, from the thread | 3.82 µs | 2.70 µs |
+| `SCALE`, from the thread | 36.74 µs | 35.96 µs |
 
-Mix's `load()` took 1,278 cycles on a core that loads it and 112 on one that holds it.
-Its call took 563 and 542 cycles.
+Mix's `load()` took 1,286 cycles on a core that loads it and 115 on one that holds it.
+Its call took 562 and 542 cycles. The reset of core 7 took 2.5 ms. The entry
+commands of each add include the reset lists handed to the dispatcher again (about
+3 ms; 0.1 to 0.2 ms without them, in a run before the lists carried the area).
 
-| Add | Build | Write of the parts | Entry commands |
+| Add | Build | Write of the parts | Entry commands and reset lists |
 |---|---|---|---|
-| mix (128 B reader part), first in a fresh cache | 0.84 s | | |
-| scale (1,088, 1,408, 1,728, 1,088, 1,728 B), first in a fresh cache | 5.10 s | | |
-| mix, cached | 14.4 ms | 0.4 ms | 0.2 ms |
-| scale, cached | 42.3 ms | 0.4 ms | 0.1 ms |
-| mix again, cached | 8.8 ms | 0.2 ms | 0.1 ms |
+| mix (128 B reader part), first in a fresh cache | 0.85 s | | |
+| scale (1,088, 1,408, 1,728, 1,088, 1,728 B), first in a fresh cache | 5.09 s | | |
+| mix, cached | 9.0 ms | 0.3 ms | 3.1 ms |
+| scale, cached | 42.8 ms | 0.4 ms | 3.1 ms |
+| mix again, cached | 8.6 ms | 0.3 ms | 3.0 ms |
 
 The first adds (the parts compiled and checked) were timed off the card, with the same
 compiler commands as the job. On the card every add found its parts in the cache that
