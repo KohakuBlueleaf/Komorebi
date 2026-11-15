@@ -451,7 +451,7 @@ class Trace:
     """The per-command trace: wall-clock words per core and sequence number.
 
     `rows` is [cores, cap, kTraceWords]; `seqs` and `groups` map a handle to its
-    sequence number and group; `mhz`: the Tensix clock.
+    sequence number and (first row, count); `mhz`: the Tensix clock.
     """
 
     def __init__(self, rows, seqs, groups, mhz, abi_headers=None):
