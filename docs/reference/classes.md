@@ -71,6 +71,13 @@ run.submit(
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
 
+The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
+service's reader part built for every example and project that builds without a card
+is 8,640 B (with the islands defines too), and 8,840 B in the build that checks the
+core-table indices (`KM_CHECK_NOC_SOURCES`); rounded up to 9 KiB. The load refuses a
+larger service part, naming the constant. The build's table shows the reserve, the
+load's the real slot (8,640 B), so a class has the 576 B between them to spare.
+
 The build writes `build/<name>/` beside the class's source: `<name>.h` (the handler
 numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
 handler's parts in `<handler>/`, and `program.txt`, the report it also prints: each
