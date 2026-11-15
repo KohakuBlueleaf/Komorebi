@@ -650,6 +650,7 @@ class HandlerCompiler:
         self.loop_states = []
         self.blocks = []  # the statement lists around the statement, innermost last
         self.body_moves = []  # the movers' lines of an inline body's write stream
+        self.held = {}  # a statement list -> its read streams bodies take (held_stream)
         self.tables = 0  # the handler's tables of entries (entries_table)
         self.assigned = self.assigned_names()
         self.ended = {}  # a name first assigned in an if or a loop -> (kind, line)
@@ -1323,6 +1324,7 @@ class HandlerCompiler:
                 movement.append(Group(comment, m))
             if c:
                 compute.append(Group(comment, c))
+        compute += self.held_ends(body)
         self.blocks.pop()
         return movement, compute
 
@@ -1384,6 +1386,8 @@ class HandlerCompiler:
             return self.partition(node, name, value)
         if call == "zeros":
             return self.zeros(node, name, value)
+        if call == "stream" and not self.write_keyword(value):
+            return self.held_stream(node, name, value)
         if call == "stream":
             return self.write_stream(node, name, value)
         if call == "reduce":
@@ -5544,6 +5548,8 @@ class HandlerCompiler:
             return self.take_entry(node, item.id, value, bound)
         if value.kind == "arrived":
             return self.take_arrived(node, item.id, value, where, bound, before, after)
+        if value.kind == "held":
+            return self.take_held(node, item.id, value, where, bound)
         if value.kind == "streamed" and where == "compute":  # its buffer and place
             buffer, index = spelling("tile_buffer"), spelling("tile_index")
             bound.append(f"const uint32_t {item.id}{buffer} = {value.cxx};")
@@ -5813,6 +5819,115 @@ class HandlerCompiler:
                 "feed it in a loop of compute's lines alone",
             )
         return list(moves)
+
+    def write_keyword(self, call):
+        """True when a stream's call has write= (a write stream's, or refused there)."""
+        return any(k.arg == spelling("write_stream") for k in call.keywords)
+
+    def held_stream(self, node, name, call):
+        """`q = km.Stream(t.tiles[...], block=b)` outside a for line: a read stream of
+        one block that bodies take whole. The movers move it at this line; compute
+        waits for its block here and frees it at the end of the lines it stands in
+        (held_ends), so the loops between may hold movers' lines too."""
+        pages, block, pattern, letters, repeat = self.stream_options(node, call, False)
+        if self.row_width != 1 or repeat != "1" or pages.items is not None:
+            self.refuse(
+                node,
+                "a stream bodies take is one block of pages, read once",
+                f"drop {spelling('row')}=, {spelling('repeat')}= and items, or "
+                f"write `for tile in km.{spelling('stream')}(...)`",
+            )
+        most = held_most(pages)
+        if most is None or most > block:
+            known = "unknown to the build" if most is None else most
+            self.refuse(
+                node,
+                f"a stream bodies take is one block, and its pages are at most "
+                f"{known}, its block {block}",
+                f"give {spelling('block')}= its most pages (a side r:min(r + n, e), or "
+                "rows r:min(r + n * s, e):s), or iterate it in a for line",
+            )
+        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        index = self.reads
+        self.reads += 1
+        buffer = self.pair(
+            "read",
+            index,
+            dtype,
+            page_bytes,
+            block,
+            READ_ITEMS,
+            f"line {node.lineno}: {self.text(node)}",
+        )
+        pattern_text = self.pattern_cxx(buffer, pattern, letters)
+        if dtype == "float32":
+            self.compiled.unpack_fp32.add(buffer.name)
+        self.moved(node, pages.tensor, "read stream")
+        variable, half = f"km_read{index}", f"km_held_{name}"
+        stream_uses = range_uses(pages, self) | pattern_uses(pattern)
+        movement = [
+            Glue(
+                self.stream_cxx("read", variable, pages, buffer, pattern_text, "1"),
+                {variable},
+                stream_uses,
+            ),
+            Line(
+                f"if (!movement.move({variable})) {{\n    return false;\n}}",
+                {variable},
+            ),
+        ]
+        self.wait(node, "mover A", WAIT_DATA)
+        self.wait(node, "mover B", WAIT_DATA)
+        self.wait(node, "compute", WAIT_INPUT)
+        self.compute_waits = True
+        compute = []
+        if pattern is not None:
+            compute.append(
+                Line(f"if (!{pattern}.valid()) {{\n    return;\n}}", {pattern})
+            )
+        compute.append(
+            Line(
+                f"const uint32_t {half} = km::block_half({buffer.name}, "
+                f"{pattern_text}, 0);\n"
+                f"km_ok = km_ok && compute.wait_front({half}, {buffer.name}Block);",
+                {"km_ok"} | pattern_uses(pattern),
+            )
+        )
+        self.scope[name] = Value("held", half, buffer=buffer)
+        self.held.setdefault(self.blocks[-1], []).append((name, node))
+        return movement, compute
+
+    def held_ends(self, body):
+        """compute's frees of the held streams made in `body` (held_stream), at its
+        end; their names end with it."""
+        nodes = []
+        for name, node in self.held.pop(id(body), []):
+            value = self.scope.pop(name)
+            self.ended[name] = ("lines around its stream", node.lineno)
+            buffer = value.buffer.name
+            nodes.append(
+                Line(
+                    f"if (km_ok) {{\n    cb_pop_front({value.cxx}, {buffer}Block);\n}}",
+                    {"km_ok"},
+                )
+            )
+        if not nodes:
+            return []
+        return [Group("the end of the held streams' lines: their blocks freed", nodes)]
+
+    def take_held(self, node, name, value, where, bound):
+        """A held stream's block for a body on compute's three: `name_buffer` its
+        buffer, `name` its first page there (0)."""
+        if where != "compute":
+            self.refuse(
+                node,
+                f"{name} is a block of compute's three CPUs: each waits for it and "
+                "frees it",
+                "take it in a body on compute's three (no on=)",
+            )
+        bound.append(f"const uint32_t {name}{spelling('tile_buffer')} = {value.cxx};")
+        bound.append(f"const uint32_t {name} = 0;")
+        return set()
 
     def take_page(self, node, name, value, bound, before, after):
         """A write stream's page for a body on mover B, after pack's body filled it
@@ -6270,6 +6385,17 @@ def matrix_product(function):
     for node in ast.walk(tree):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
             return node.lineno
+    return None
+
+
+def held_most(pages):
+    """The most pages of a range where the build knows it: a count known, or a
+    rectangle's sides' most (Value.bounds), else None."""
+    if pages.count.isdigit():
+        return int(pages.count)
+    bounds = getattr(pages, "bounds", None)
+    if bounds and all(isinstance(side, int) for side in bounds):
+        return bounds[0] * bounds[1]
     return None
 
 

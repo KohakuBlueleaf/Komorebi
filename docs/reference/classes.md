@@ -125,6 +125,7 @@ and a name of the handler's with that prefix is refused.
 | `part = b.partition(pages)` | `km::partition` by the core's column of the rectangle (a row's broadcast) or its row (a column's) | the same |
 | `total = km.tile.zeros(km.fp32)` | | DST held, tile 0 filled with zeros |
 | `for tile in km.Stream(pages, block=8, pattern="AB", repeat=n):` | one read stream in a buffer pair, moved with the write streams the loop pushes to (`movement.move`) | each block from the half its mover filled, each tile of it |
+| `q = km.Stream(pages, block=b)` (read, outside a for line) | the read stream moved at its line | its one block waited for at the line, taken whole by bodies, freed at the end of the lines it stands in (A read stream bodies take) |
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
 | `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items`, an address generator over t's accessor); the pair's pages are B bytes; t on one island | each item a page of the pair (a body takes it: Inline bodies) |
 | `first, count = t.pages(i, 1).read()[0:2]` | mover A: page i read into a page it pushes to compute; mover B: page i read into its word page; both take words 0 and 1 | unpack waits for mover A's page, takes the words, hands them to math and pack by mailbox, frees it |
@@ -262,6 +263,7 @@ What a body takes, by where it runs:
 | a body's word (`w = km.cxx(..., gives=int)`) | a word of compute's three | a word of that CPU, or of compute's three | a word of that mover |
 | a stream's tile or item (the loop's name) | `name_buffer` and `name_index`, its buffer and place | `name`, its L1 address: unpack's own; math and pack are handed it by mailbox before the body and hand a release back after it, and unpack frees the block only then | after the loop: `name_tiles` and `name_cycles`, what this mover moved in the loop's move (`km::Moved`: its tiles, the cycles of its passes that moved a block) |
 | a write stream | `name` and `name_buffer` as on pack (a body that unpacks and packs itself: the reserve and push are the line's; `name` is 0 only on pack, when it gave up) | on pack: `name`, the L1 address of the page it fills (0 when compute gave up), and `name_buffer`, the half's buffer for `pack_tile`; in a stream loop the loop's page, reserved with the block and pushed after it (block= the loop's); outside one, one block reserved, pushed after the body and moved by the movers at that line; made outside the loops around the body, one block each time the body runs (A write stream bodies fill) | mover B, outside a loop, after pack's body: `name`, the L1 address of the page pack pushed, waited for; the movers write it after this body, not at pack's line (A page from several CPUs' words) |
+| a read stream made outside a for line (`q = km.Stream(...)`) | `name_buffer` its block's buffer, `name` its first page there (0); no wait or free of the body's own | | |
 | a field filled above in the handler | its buffer, freed after the body | its L1 address (unpack's own, handed to math or pack), freed after the body | mover B: its L1 address, freed after the body |
 | a field another handler fills (kept) | its buffer, waited for, never freed (the filler frees its last fill before the next) | its L1 address, waited for once, handed to math or pack | mover B: its L1 address |
 | an own field (`km.own()`) | `name`, its buffer, no wait, no free | the same | the same |
@@ -365,6 +367,38 @@ out = km.Stream(o.pages(first, rows * DV), write=True, block=DV)
 for row in range(rows):
     km.cxx("finalize(compute, row, out, out_buffer);", takes=[out, row])
 ```
+
+### A read stream bodies take
+
+A read stream made outside a for line, `q = km.Stream(pages, block=b)`, is one block
+that bodies take whole, held across the lines after it: the movers move it at its
+line (mover A reads it before the lines after it), compute waits for its block at the
+line, and frees it at the end of the lines the stream stands in, after the last body.
+The loops in between may hold movers' lines too (a broadcast's casts), as the
+attention pass's job holds its Q rows across its K / V blocks
+([attention_class](../../experiments/language/attention_class/README.md)):
+
+```python
+for job in jobs[first_job:end]:
+    r0 = job.q // DT
+    qs = km.Stream(
+        q.tiles[
+            r0 : min(r0 + R * job.stride, r0 + job.rows * job.stride) : job.stride, 0:DT
+        ],
+        block=R * DT,
+    )
+    for b in range((job.keys + KB - 1) // KB):
+        ...  # the cast or the arrival of kv
+        km.cxx("...matmul_block_no_mop(qs_buffer, kv_buffer, ...)...", takes=[qs, kv])
+    # qs's block is freed here, at the end of the job's lines
+```
+
+A body takes it on compute's three CPUs: `name_buffer` is the half its mover filled,
+`name` its first page there (0). Refused at the line: a stream whose most pages the
+build does not know (a side `r:min(r + n, e)`, rows `r:min(r + n * s, e):s`, or a
+known count says it), or more than its block; `row=`, `repeat=` and items; a body on
+one compute CPU or a mover that takes it; a line after the lines it stands in that
+takes it.
 
 ## Tables of entries
 

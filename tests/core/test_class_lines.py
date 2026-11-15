@@ -563,3 +563,91 @@ def test_broadcast_place_and_count_refusals(cls, text, why):
     tensors = {"k": grid("bfloat16", 8, 2), "v": grid("bfloat16", 8, 2)}
     with pytest.raises(Refused, match=rf"^{cls.__name__}.copy, line {line}, .*{why}"):
         compile_class(cls, {}, tensors)
+
+
+class Held(km.Program):
+    @km.handler
+    def copy(self, q: km.Tensor, k: km.Tensor, v: km.Tensor, rows: int, jobs: int):
+        down = km.Broadcast(self, along="column")
+        for job in range(jobs):
+            r0 = job * 4
+            qs = km.Stream(q.tiles[r0 : min(r0 + 4, r0 + rows), 0:2], block=8)
+            for chunk in range(2):
+                if down.sender():
+                    kv = down.cast(k.tiles[chunk : chunk + 1, 0:2])
+                else:
+                    kv = down.arrive()
+                km.cxx("score(qs_buffer, qs, kv_buffer, kv);", takes=[qs, kv])
+            km.cxx("finish(qs_buffer);", takes=[qs])
+
+
+def test_a_read_stream_bodies_take_is_held_across_the_loops_inside():
+    tensors = {"q": grid("bfloat16", 16, 2), "k": grid("bfloat16", 8, 2),
+               "v": grid("bfloat16", 8, 2)}  # fmt: skip
+    movement, compute = texts(Held, "copy", **tensors)
+    # the movers move it at its line, before the casts of the loop after it
+    assert movement.index("if (!movement.move(km_read0)) {") < movement.index(
+        "down.cast("
+    )
+    # compute waits for its one block at the line, the bodies take it whole, and
+    # it is freed at the end of the lines it stands in (the job loop's turn)
+    wait = "km_ok = km_ok && compute.wait_front(km_held_qs, kRead0Block);"
+    free = "cb_pop_front(km_held_qs, kRead0Block);"
+    assert "const uint32_t km_held_qs = km::block_half(kRead0, kRead0Pattern, 0);" in (
+        compute
+    )
+    assert compute.count("const uint32_t qs_buffer = km_held_qs;") == 2
+    assert "const uint32_t qs = 0;" in compute
+    assert compute.index(wait) < compute.index("score(") < compute.index("finish(")
+    assert compute.index("finish(") < compute.index(free)
+    assert compute.count(free) == 1
+
+
+class HeldLarge(km.Program):
+    @km.handler
+    def copy(self, q: km.Tensor, k: km.Tensor, v: km.Tensor, rows: int, jobs: int):
+        qs = km.Stream(q.tiles[0:rows, 0:2], block=8)  # unbounded
+        km.cxx("use(qs);", takes=[qs])
+
+
+class HeldBlocks(km.Program):
+    @km.handler
+    def copy(self, q: km.Tensor, k: km.Tensor, v: km.Tensor, rows: int, jobs: int):
+        qs = km.Stream(q.tiles[0:8, 0:2], block=8)  # two blocks
+        km.cxx("use(qs);", takes=[qs])
+
+
+class HeldMover(km.Program):
+    @km.handler
+    def copy(self, q: km.Tensor, k: km.Tensor, v: km.Tensor, rows: int, jobs: int):
+        qs = km.Stream(q.tiles[0:4, 0:2], block=8)
+        km.cxx("use(qs);", takes=[qs], on="mover_a")  # on a mover
+
+
+class HeldAfter(km.Program):
+    @km.handler
+    def copy(self, q: km.Tensor, k: km.Tensor, v: km.Tensor, rows: int, jobs: int):
+        for job in range(jobs):
+            qs = km.Stream(q.tiles[job : job + 1, 0:2], block=2)
+            km.cxx("use(qs);", takes=[qs])
+        km.cxx("use(qs);", takes=[qs])  # after its lines
+
+
+@pytest.mark.parametrize(
+    "cls, text, why",
+    [
+        (HeldLarge, "# unbounded", "its pages are at most unknown to the build"),
+        (HeldBlocks, "# two blocks", "its pages are at most 16, its block 8"),
+        (HeldMover, "# on a mover", "a block of compute's three CPUs"),
+        (
+            HeldAfter,
+            "# after its lines",
+            "qs is first assigned inside the lines around",
+        ),
+    ],
+)
+def test_held_stream_refusals(cls, text, why):
+    line = line_of(text)
+    tensors = {k: grid("bfloat16", 16, 2) for k in "qkv"}
+    with pytest.raises(Refused, match=rf"^{cls.__name__}.copy, line {line}, .*{why}"):
+        compile_class(cls, {}, tensors)
