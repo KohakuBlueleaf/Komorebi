@@ -4,6 +4,7 @@ body, the host checks run on made-up results; `rules.py card --cases ..`: values
 against float64 and cycles of each body."""
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -202,9 +203,31 @@ def units():
     return out
 
 
+def sources_hash():
+    """The hash of the sources the headers come from (the tile package, this file)."""
+    tile = Path(km.__file__).resolve().parent / "dsl" / "tile"
+    digest = hashlib.sha256()
+    for path in sorted(tile.glob("*.py")) + [Path(__file__).resolve()]:
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def generated_costs():
+    """The costs `build` wrote beside the headers; a card job compiles nothing (the
+    watcher kills a silent start). Refuses headers built from other sources."""
+    try:
+        saved = json.loads((GENERATED / "costs.json").read_text())
+    except (OSError, ValueError):
+        sys.exit("no generated headers: run `rules.py build` first, outside the job")
+    if saved["sources"] != sources_hash():
+        sys.exit("the generated headers are stale: run `rules.py build` again")
+    log(f"estimates {json.dumps(saved['costs'])} (from build)")
+    return saved["costs"]
+
+
 def generate():
-    """Writes every emitted header into kernels/generated; returns the units' costs
-    and the load-macro rule's verdict on the bodies it refuses."""
+    """Writes every emitted header into kernels/generated (and their costs, for the
+    card job); returns the units' costs; logs the load-macro rule's refusals."""
     GENERATED.mkdir(exist_ok=True)
     costs = {}
     for name, unit in units().items():
@@ -220,6 +243,8 @@ def generate():
         refused[name] = next(p.done for p in unit.passes if p.name == "load_macro")
     log(f"estimates {json.dumps(costs)}")
     log(f"load-macro refusals {json.dumps(refused)}")
+    saved = {"sources": sources_hash(), "costs": costs}
+    (GENERATED / "costs.json").write_text(json.dumps(saved))
     return costs
 
 
@@ -668,7 +693,7 @@ def build(args):
 
 def card(args):
     """One core: each body of `args.cases` over the same inputs; values, cycles."""
-    costs = generate()
+    costs = generated_costs()
     with open("/proc/loadavg") as f:
         load = f.read().split()[:3]
     started = time.time()
