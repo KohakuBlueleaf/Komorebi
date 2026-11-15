@@ -300,18 +300,19 @@ its commands. Here is what was found and what remains:
 
 - **The cause.** A record's root walks every group of the next record and each of its
   three ranges, to find the groups its block meets (`chain_mark`). That costs about 226
-  ns a group. On two islands the next record's groups are all 236 ranks' groups, and a
+  cycles a group (167 ns at 1.35 GHz). On two islands the next record's groups are all 236 ranks' groups, and a
   root walked the other island's 118 too, none of which it may mark.
 - **Fixed.** On an island of several, a root now walks only the groups with a rank on
   its own island. A card of its own (`KM_ONE_ISLAND`) builds the same code as before.
-- **A known cost.** The walk over the island's own groups remains: about 226 ns a group
-  of the next record, each step (about 12 us a record after the first on 118 groups).
+- **A known cost.** The walk over the island's own groups remains: about 226 cycles a
+  group of the next record, each step (about 12 us a record after the first on 118 groups).
   It could be cut by computing the marked groups from the ranges.
 
 Each record after the first waits for the walk: its writer takes it only once the walk
 of the record before is done, and a core's mark lands when the walk reaches its group.
 Measured with the chain's stamps (`KM_CHAIN_STAMPS`, the last of 50 runs, the median
-core, nanoseconds from the kernel's chain start) on the first three calls of example 29
+core, AICLK cycles at 1.35 GHz from the kernel's chain start; `km::wall()` counts
+cycles, not ns) on the first three calls of example 29
 (SCALE, SCALE, ADD, a group a rank):
 
 | | 236 ranks, before | 236 ranks, after | island 0's 118 ranks alone (after) |
