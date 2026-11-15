@@ -170,6 +170,36 @@ namespace km {
         }
     }
 
+    // Items of `page_size` bytes packed in a tensor's pages, `per` a page: item i is at
+    // page i / per, byte (i % per) * page_size. A stream of it moves items as pages.
+    template <typename Accessor>
+    struct Items {
+        Accessor accessor;
+        uint32_t page_size;
+        uint32_t per;
+
+        uint64_t get_noc_addr(
+            uint32_t id, uint32_t offset = 0, uint8_t noc = noc_index
+        ) const {
+            return (
+                tensor_accessor::detail::transfer_noc_addr(
+                    accessor, id / per, (id % per) * page_size + offset, noc
+                )
+            );
+        }
+    };
+
+    // The items of a tensor whose island holds every page (an items stream does not
+    // cross islands).
+    template <typename T>
+    inline auto items(const T& tensor, uint32_t size, uint32_t per) {
+        if constexpr (kIsTensor<T>) {
+            static_assert(T::kLocal, "an items stream reads one island's tensor");
+        }
+        using Accessor = std::decay_t<decltype(accessor_of(tensor))>;
+        return Items<Accessor>{accessor_of(tensor), size, per};
+    }
+
     // One stream: direction, tensor (a km::Tensor or a local accessor), blocks,
     // repetitions, pair, pattern.
     template <typename Accessor>

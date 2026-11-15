@@ -154,11 +154,12 @@ class Program:
     # the program field of its commands: its place in the last load (0: the first)
     program_field: int = field(default=0, init=False, compare=False)
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, compute=None, **kwargs):
         """A class deriving Program with handler methods is a program written as a
-        class: made, it is compiled into an ordinary program (komorebi.dsl)."""
+        class: made, it is compiled into an ordinary program (komorebi.dsl);
+        `compute` its compute kernel's options by the host API's names."""
         super().__init_subclass__(**kwargs)
-        importlib.import_module("komorebi.dsl.program").prepare(cls)
+        importlib.import_module("komorebi.dsl.program").prepare(cls, compute)
 
     def __post_init__(self):
         if isinstance(self.handlers, str | Path):

@@ -54,12 +54,19 @@ class Built:
         return named
 
 
-def prepare(cls):
+def prepare(cls, compute=None):
     """Makes `cls`, a class deriving Program, a program written as a class if it has
-    handler methods: its handlers numbered, its constructor the compiler."""
+    handler methods: its handlers numbered, its constructor the compiler; `compute`
+    the class's compute options (checked when it is compiled)."""
     methods = compiler.handler_methods(cls)
     if not methods:
+        if compute is not None:
+            raise ProgramError(
+                f"{cls.__name__}: {spelling('compute_options')}= is a class's with "
+                "handlers (an ordinary program takes Program(compute=...))"
+            )
         return
+    cls.compute_given = dict(compute or {})
     user_max = abi.headers()["KM_HANDLER_USER_MAX"]
     if len(methods) > user_max:
         raise ProgramError(f"{cls.__name__}: {len(methods)} handlers, {user_max} most")
@@ -333,7 +340,8 @@ def rectangle_args(compiled, rect, nocs):
 
 def compute_options(compiled):
     """The compute kernel's options: fp32 in DST; float32 buffers unpacked to it;
-    DST in full-sync mode for a row-form tile function."""
+    DST in full-sync mode for a row-form tile function; then the class's own
+    (compute=), over these."""
     options = {
         "math_fidelity": compiled.fidelity or "HiFi4",
         "fp32_dest_acc_en": True,
@@ -346,6 +354,7 @@ def compute_options(compiled):
         for index in (buffer.index_a, buffer.index_b):
             if index is not None:
                 options["unpack_to_dest_mode"][index] = "UnpackToDestFp32"
+    options.update(compiled.compute_options)
     return options
 
 
@@ -797,13 +806,19 @@ def compute_source(compiled):
         *compute_includes(compiled),
     ]
     lines += [f'#include "{header_name(compiled)}"', "", "void kernel_main() {"]
+    # The unit starts with buffers the class declares: its first read (or another
+    # buffer compute takes) and its first write (or that one); none: 0 and 16.
     reads = [b for b in compiled.buffers if b.role == "read"]
     writes = [b for b in compiled.buffers if b.role in ("write", "out")]
-    others = [b for b in compiled.buffers if b.role == "broadcast"]
+    others = [b for b in compiled.buffers if b.role == "broadcast"] + [
+        b
+        for b in compiled.buffers
+        if b.role not in ("read", "write", "out", "broadcast", "arrival")
+    ]
     first_in = (
         f"{reads[0].name}.mover_a" if reads else others[0].name if others else "0"
     )
-    first_out = "16"
+    first_out = "16" if first_in == "0" else first_in
     if writes:
         first_out = writes[0].name
         if writes[0].index_b is not None:
@@ -848,6 +863,8 @@ def summary(compiled, folder, files, l1):
                 f"  field {name}: filled by {', '.join(fillers)}, read by "
                 f"{', '.join(readers)} (it stays in L1 between commands)"
             )
+    for handover in compiled.handovers:
+        report.append(f"  hand-over: {handover}")
     room = "" if l1 is None else f" of {l1} B left for buffers"
     report.append(f"  L1: the buffers take {total} B{room}")
     if l1 is not None and total > l1:

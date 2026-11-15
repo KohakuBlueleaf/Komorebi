@@ -84,13 +84,21 @@ NAMES = {
     "push": Name("push", "out.push(tile): a tile into a write stream", None),
     "fill": Name("fill", "self.field.fill(km.Stream(pages)): pages into a field", None),
     "pages": Name("pages", "tensor.pages(first, count): a range of pages", "page"),
+    "items": Name(
+        "items",
+        "tensor.items(first, count, size=B): items of B bytes packed in its pages, "
+        "for a stream",
+        None,
+    ),
+    "item_size": Name("size", "items(..., size=B): the bytes an item", None),
     "tiles": Name(
         "tiles", "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major", None
     ),
     "read": Name(
         "read",
         "pages.read(): the pages, read (a cast's block); word = pages.read() of one "
-        "page: its first word, on mover B",
+        "page: its first word, on mover B; a, b = pages.read()[0:2] of one page: its "
+        "words 0 and 1, on both movers and compute",
         "read",
     ),
     "write": Name(
@@ -122,7 +130,23 @@ NAMES = {
     "tile_value": Name(
         "Tile", "gives=km.Tile: the tile a body leaves in DST 0", "tile"
     ),
-    "on": Name("on", "the CPU of an inline body", None),
+    "on": Name(
+        "on",
+        'the CPU of an inline body: "mover_a", "mover_b", "unpack", "math", "pack"; '
+        "compute's three when not given",
+        None,
+    ),
+    "include": Name(
+        "include",
+        "km.cxx(..., include=[...]): #include lines for the body's CPU alone",
+        None,
+    ),
+    "compute_options": Name(
+        "compute",
+        "class P(km.Program, compute={...}): the compute kernel's options, by the "
+        "host API's names",
+        None,
+    ),
     "tile_function": Name(
         "tile_function",
         "@km.tile_function: a function of tiles, traced and emitted for compute by "
