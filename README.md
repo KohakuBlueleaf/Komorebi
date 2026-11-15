@@ -121,108 +121,88 @@ share of the work.
 ### As a Python class
 
 On `main`, after 0.2.0 (experimental). A method marked as a handler is compiled, when
-the class is made, into the C++ kernels of the next section: its streams and
-broadcasts become the data-movement code and the buffers, its parameters the
-command's words. An inline C++ body runs on the compute units with the streams and
-fields it takes.
+the class is made, into the C++ kernels of the next section: its streams become the
+data-movement code and the buffers, its parameters the command's words. The
+arithmetic is tile functions, which the tile compiler turns into the matrix and vector
+units' instructions.
 
-Multi-head attention on two cards, the heads sharded over them. The class names
-tensors, never cards: the host places each tensor by a hint, and each card's cores
-work on the heads their card holds.
+A SwiGLU layer, `y = (silu(x W1) * (x W3)) W2`: two handlers and the chain that runs
+them as one command.
 
 ```python
 import komorebi as km
 
 
-class Job(km.Entry):
-    """A row of a core's job table: the first pages of its queries, keys, values and
-    output, and how many rows of each."""
-
-    q: int
-    k: int
-    v: int
-    o: int
-    rows: int
-    keys: int
+@km.tile_function
+def gate(h, g):  # the vector unit
+    return km.silu(h) * g
 
 
-class Attention(
-    km.Program, compute={"math_fidelity": "HiFi2", "fp32_dest_acc_en": True}
-):
-    DT = km.constant(2)  # tiles a row of Q and of K: a head of 64
-    DV = km.constant(2)  # tiles a row of V
-    R = km.constant(13)  # query rows a job
-    KB = km.constant(12)  # key rows a block; Attention(..., KB=8) is another build
+class SwiGLU(km.Program):
+    """x is [32, D], W1 and W3 are [D, H], W2 is [H, D]; every size in tiles of 32."""
 
-    state: km.L1[km.fp32, 2 * R, 32, 32] = km.own(push=None)  # each row's max and sum
-    acc: km.L1[km.fp32, R * (DV + 1), 32, 32] = km.own(push=None)  # O as it builds
+    D = km.constant(32)  # x's and y's width: 1,024
+    H = km.constant(96)  # the hidden width: 3,072
+    WIDTH = km.constant(8)  # the columns one core makes
+    CHUNK = km.constant(2)  # K tiles a block
+    W_BLOCK = CHUNK * WIDTH
+
+    h: km.L1[km.fp32, 1, WIDTH, 32, 32]  # x W1, this core's columns: a field in L1
+    g: km.L1[km.fp32, 1, WIDTH, 32, 32]  # x W3
+    out: km.L1[km.fp32, 1, WIDTH, 32, 32]  # hidden W2
+
+    @km.tile_function(fidelity="HiFi2")
+    def project(x, w):  # the matrix unit
+        return x @ w
 
     @km.handler
-    def attend(
-        self, q: km.Tensor, k: km.Tensor, v: km.Tensor, o: km.Tensor, tables: km.Tensor
-    ):
-        # A column of cores works on one head. Its first core reads each block of K
-        # and V from DRAM once and casts it down the column; the others take it from
-        # the NoC, so K and V are read once a column, not once a core.
-        down = km.Broadcast(self, along="column", length=10, mover="A", window=2)
-        jobs = tables.pages(self.rank, 1).entries(Job, first=8, size=8, count=0)
-        for job in jobs:
-            q0, o0 = job.q // self.DT, job.o // self.DV
-            k0, v0 = job.k // self.DT, job.v // self.DV
-            queries = km.Stream(
-                q.tiles[q0 : q0 + job.rows, 0 : self.DT], block=self.R * self.DT
-            )
-            for b in range((job.keys + self.KB - 1) // self.KB):
-                kr, vr = k0 + b * self.KB, v0 + b * self.KB
-                if down.sender():
-                    kv = down.cast(
-                        k.tiles[kr : min(kr + self.KB, k0 + job.keys), 0 : self.DT].T,
-                        v.tiles[vr : min(vr + self.KB, v0 + job.keys), 0 : self.DV],
-                    )
-                else:
-                    kv = down.arrive()
-                # softmax(Q K^T) V over this block of keys, kept as a running max, sum
-                # and O: inline C++ on the matrix and vector units
-                km.cxx(
-                    "Flash<kv_buffer, state, acc>::block(job_rows, job_keys, b);",
-                    takes=[queries, kv, job, b, self.state, self.acc],
-                    include=["flash.hpp"],
-                )
-            out = km.Stream(
-                o.tiles[o0 : o0 + job.rows, 0 : self.DV], write=True, block=self.DV
-            )
-            for row in range(job.rows):
-                km.cxx(
-                    "Flash<out_buffer, state, acc>::finalize(row);",
-                    takes=[out, row, self.state, self.acc],
-                )
+    def up(self, x: km.Tensor, w1: km.Tensor, w3: km.Tensor, hidden: km.Tensor):
+        first = self.rank * self.WIDTH  # this core's columns of the hidden
+        for xb, w1b, w3b in zip(
+            km.Stream(x.tiles[0:1, 0 : self.D], block=self.CHUNK),
+            km.Stream(
+                w1.tiles[0 : self.D, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+            km.Stream(
+                w3.tiles[0 : self.D, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+        ):
+            self.h += self.project(xb, w1b)
+            self.g += self.project(xb, w3b)
+        hidden.tiles[0:1, first : first + self.WIDTH].write(gate(self.h, self.g))
+
+    @km.handler
+    def down(self, hidden: km.Tensor, w2: km.Tensor, y: km.Tensor):
+        first = self.rank * self.WIDTH  # this core's columns of y
+        for hb, wb in zip(
+            km.Stream(hidden.tiles[0:1, 0 : self.H], block=self.CHUNK),
+            km.Stream(
+                w2.tiles[0 : self.H, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+        ):
+            self.out += self.project(hb, wb)
+        y.tiles[0:1, first : first + self.WIDTH].write(self.out)
+
+    @km.chain
+    def forward(self, x, w1, w3, w2, hidden, y):
+        self.up(x, w1, w3, hidden, cores=(0, 12))  # 96 columns of the hidden, 8 a core
+        self.down(hidden, w2, y, cores=(0, 4))  # 32 columns of y
 
 
-with km.Session(cards=[0, 1]) as session:  # two cards as one run: 236 flat ranks
-    # split=0: a tensor's rows are dealt over the ranks, so half the heads are in each
-    # card's DRAM and every core's jobs name pages its own card holds
-    q = session.tensor(q_rows, "bfloat16", "tile", split=0)
-    k = session.tensor(k_rows, "bfloat16", "tile", like=q)
-    v = session.tensor(v_rows, "bfloat16", "tile", like=q)
-    o = session.empty(q_rows.shape, "bfloat16", "tile", like=q)
-    tables = session.tensor(job_tables, "uint32", split=0)  # a page of jobs a rank
-    program = Attention(q=q, k=k, v=v, o=o, tables=tables)  # compiled here
-    run = session.load(program)  # a copy of the kernels on each card
-    words = (q, k, v, o, tables)
-    run.wait(run.submit(Attention.attend, (0, session.ranks), args=words))
-    result = o.read()
+program = SwiGLU(x=x, w1=w1, w3=w3, w2=w2, hidden=hidden, y=y)  # compiled here
+run = session.load(program)
+layer = run.chain(program.forward(x, w1, w3, w2, hidden, y))  # stated once
+run.wait(run.submit(layer))  # the whole layer is one command
 ```
 
-Reduced from [attention_class](experiments/language/attention_class/README.md), which
-has the whole class (the causal mask, the constant tiles, `flash.hpp`), and from
-[01_mapcollect on two islands](examples/01_mapcollect/as_class/README.md). What a
-handler's lines may be is in [classes](docs/reference/classes.md), what a tile
-function may contain in [tile functions](docs/reference/tile.md), how tensors are
-placed over cards in [islands](docs/reference/islands.md). Smaller classes to start
-from: [22_gate](examples/22_gate/as_class/README.md) (a tile function for the
-arithmetic) and [dense_class](experiments/language/dense_class/README.md) (a linear
-layer: a field of sums, the matrix unit, a reduce over a group). Nine of the examples
-have a class beside the hand program (`as_class/` in each).
+What a handler's lines may be is in [classes](docs/reference/classes.md), what a tile
+function may contain in [tile functions](docs/reference/tile.md), a chain in
+[the chain](docs/reference/chain.md). More classes: a group of cores each taking a
+part of K and adding up a tree ([dense_class](experiments/language/dense_class/README.md)),
+attention with a broadcast of K and V down a column and inline C++ for the arithmetic
+([attention_class](experiments/language/attention_class/README.md)), the same class on
+two cards ([01_mapcollect](examples/01_mapcollect/as_class/README.md)). Nine of the
+examples have a class beside the hand program (`as_class/` in each).
 
 ### As C++ kernels
 
