@@ -30,13 +30,14 @@ run = session.load(program)  # builds, checks and places every part
 | Call | What it does |
 |---|---|
 | `Program.overlay(name, parts, number=None, defines=None)` | declares an overlay. `parts` is a folder holding any of `reader.cpp`, `writer.cpp`, `compute.cpp`, or a dict `{kernel: source}`. `number` (1 to 62; 63 is the runtime's service overlay) defaults to the constant `kOverlay<Name>` of the handlers header (`scale_tiles` is `kOverlayScaleTiles`), the way a handler's number does. `defines` go to this overlay's parts only. Returns the program |
-| `Program.slots(count=None, bytes=None)` | the slots of each kernel that has parts: `count` 1 to 4, `bytes` a multiple of 64, each an int or `{"reader"\|"writer"\|"compute": value}`. By default, one slot for each overlay with a part there (at most 4), each as large as the largest part. Returns the program |
-| `run.program.overlays_built` | after `load`: `images` `{(number, part): bytes}` and `slots` `{part: (count, bytes)}` |
+| `Program.slots(count=None, bytes=None)` | the slots of each kernel that has parts: `count` 1 to 4 (the reader at most 3 beside the service overlay's own slot, logged), `bytes` a multiple of 64, each an int or `{"reader"\|"writer"\|"compute": value}`. By default, one slot for each overlay with a part there (at most 4), each as large as the program's largest part there; a count not given is lowered toward 1, the largest slots first, while the L1 budget table does not fit (a log line each). Returns the program |
+| `run.program.overlays_built` | after `load`: `images` `{(number, part): bytes}`, `slots` `{part: (count, bytes)}` (the program's) and `service` (the bytes of the service overlay's own slot) |
 | `km.OverlayError` | the builder refused a part (below); nothing was loaded |
 | `km.L1BudgetError` | the buffers, control blocks and slots do not fit a core's L1; `.table` is the L1 budget table of a core |
 
 At load, the session prints the L1 budget table of a core: the circular buffers, the control
-block with the overlay area, and each kernel's slots. It also prints the bytes of every part.
+block with the overlay area, the service overlay's own slot and each kernel's slots. It
+also prints the bytes of every part.
 
 ## Device
 
@@ -102,6 +103,9 @@ compute core, as a compute kernel is.
   look at its slots' records: about 70 cycles (below).
 - **Which slot is replaced.** A load replaces an empty slot, or else the least recently used
   slot with no call running in it. When every slot is running a call, the load gives up.
+  The reader's slot 0 is the service overlay's own: only the service loads there, and
+  it loads nowhere else. A slot's address is in its record, so slots of one kernel may
+  differ in size; a held overlay's path reads the record it already read before.
 - **Each core reads its own copy.** Core `i` reads its parts from DRAM bank `i % 8`. Every
   part is stored once in each bank.
 - **Every wait is bounded and polls the stop.** A load that gives up goes through the command's
@@ -148,7 +152,7 @@ math core resets it again after each call.
 
 | Where | What |
 |---|---|
-| beside each core's control block, 3,328 bytes | the overlay area: header (table size, each part's first slot, slots and slot bytes), a record per (part, slot) (overlay held, the part's check at an epoch, calls running, the slot's address), the clock and the epoch, the reader's meet lines with each follower, the last use of each overlay, and the table (DRAM address and bytes of every part of every overlay) |
+| beside each core's control block, 3,328 bytes | the overlay area: header (table size, each part's first slot, slots and slot bytes, the service overlay's own slot), a record per (part, slot) (overlay held, the part's check at an epoch, calls running, the slot's address), the clock and the epoch, the reader's meet lines with each follower, the last use of each overlay, and the table (DRAM address and bytes of every part of every overlay) |
 | the run's first circular buffer, at the bottom of the L1 left after the kernel buffer (0x1B480 with the default one), so below 1 MB, with the other circular buffers above it | the slots, by part: reader, writer, unpack, math, pack. A taken branch to code at or above 1 MB of L1 costs about 4 cycles more: slots that would end there raise `km.SlowCodeError` unless the session was opened with `slow_code=True` |
 | one interleaved DRAM tensor | every part, a copy in each of the 8 banks |
 
@@ -320,8 +324,10 @@ overlay**, number 63 (`km::kOverlayService`, source
 `src/komorebi_native/kernels/service_reader.cpp`), which every run builds and places
 beside the program's own overlays: a program declares nothing. A core's reader loads it
 on the first such command (`km::serve`) and holds it while no other reader overlay
-needs its slot. The run's reader slots number one more by default, and are at least
-the service part's size (7,424 bytes); the L1 budget table shows them. In the reader
+needs its slot. That slot is its own: the reader's slot 0, as large as the service part
+(9,088 bytes on one card, 41,408 on an island of two cards), so a program's slots are
+sized to the program's parts alone; the L1 budget table shows it as its own row
+(`slots: service (reader)`). In the reader
 kernel only the load stays, about 3.7 KB less text in the ray tracer than with the
 code compiled in. Handlers 241 to 248 are the runtime's for this: the writer and the
 compute kernel skip them with one range check, so a later handler of the runtime in
@@ -381,7 +387,9 @@ What happens:
    of the kernels gets its parts built against those kernels: the same compiler
    command, the persistent kernel's ELF, its symbols and link script. Each part also
    goes through the instruction check and the part checks ([the builder](#the-builder)),
-   and must fit the kernel's slot.
+   and must fit the kernel's slot: the program's slots, never the service overlay's
+   own. A load whose program has no reader part and named no reader bytes has no
+   reader slot but the service's, so an added reader part is refused there.
 2. **The cache of built parts.** A part is kept under a key of what decides its bytes:
    its source file, its defines, the recipe of the kernel it is built against (compiler,
    levels, flags, includes, defines), the persistent kernel's ELF and the link script.
