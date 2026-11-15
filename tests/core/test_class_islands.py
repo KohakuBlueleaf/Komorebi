@@ -64,3 +64,16 @@ def test_a_reduce_group_across_two_islands_is_refused_by_name():
         "14 ranks at flat ranks 116..129 spans islands 0 and 1; start the command so "
         "that island 1's first rank 119 begins a group"
     )
+
+
+def test_a_tensor_made_while_an_island_run_lives_is_refused_by_name():
+    made = islands_of((12, 10), (12, 10))
+    made._tables, made.run = [object()], SimpleNamespace(stopped=False)
+    with pytest.raises(KomorebiError) as refused:
+        made._refuse_live("a tensor")
+    assert str(refused.value) == (
+        "a tensor made after the load: on islands a tensor's table row is written at "
+        "the load; make it before session.load"
+    )
+    made.run.stopped = True
+    made._refuse_live("a tensor")  # the run stopped: the next load writes it

@@ -1250,13 +1250,7 @@ class IslandSession:
                     "(free one first)"
                 )
             word = free[0]
-            live = self.run is not None and not self.run.stopped
-            if live and self._tables and word >= self._table_size:
-                raise KomorebiError(
-                    f"the run's tensor table holds {self._table_size} entries, all "
-                    "taken: a tensor made while a run lives takes a free one (free "
-                    "one first, or make it before the load)"
-                )
+            self._refuse_live("a tensor")
         parts = []
         try:
             for island, session in enumerate(self.sessions):
@@ -1304,9 +1298,9 @@ class IslandSession:
             )
         if len(self.sessions) == 1 or self.card_dram:  # every page here: no entry
             return BankRange(island, bank, address, size, address)
+        self._refuse_live("a bank range")
         free = [i for i, held in enumerate(self._entries) if held is None]
-        live = self.run is not None and not self.run.stopped
-        if not free or (live and self._tables and free[0] >= self._table_size):
+        if not free:
             raise KomorebiError(
                 "the tensor table has no free entry for a bank range (free a tensor "
                 "first, or make it before the load)"
@@ -1370,6 +1364,15 @@ class IslandSession:
             except RuntimeError:
                 high = middle - 1
         return low
+
+    def _refuse_live(self, what):
+        """Refuses `what` made while a run lives: its table row would be written into
+        the run's cores, which the run's dispatcher refuses."""
+        if self._tables and self.run is not None and not self.run.stopped:
+            raise KomorebiError(
+                f"{what} made after the load: on islands a tensor's table row is "
+                "written at the load; make it before session.load"
+            )
 
     def _release_entry(self, tensor):
         """A freed tensor's entry of the tensor table is free again."""

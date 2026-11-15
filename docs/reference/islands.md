@@ -118,7 +118,7 @@ written for islands runs on one card unchanged.
   lines' words, the headers it builds for a piece of a put into the rings, and its
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, as many entries as the tensors held
-  at the load, in steps of 4; a tensor made while a run lives takes a free entry) and
+  at the load, in steps of 4; a tensor made while a run lives is refused) and
   a dynamic run's message region. When the link cores run the link kernels, the link
   area and the relay (48,192 bytes) are theirs alone: at the base of their circular
   buffers, zeroed by the host at the load (`write_l1`, just before the launch), the
@@ -339,7 +339,7 @@ DRAM takes now.
 a kernel hands to Komorebi's page calls. On one card it is the bank address, as without
 islands. Over islands it is the index of the tensor's entry in the tensor table
 (`KM_TENSORS_MAX`, 32, entries), which the session writes into every core of every
-island at the load and again when a tensor is made while a run is loaded; the word
+island at the load (a tensor made while a run is loaded is refused by name); the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,

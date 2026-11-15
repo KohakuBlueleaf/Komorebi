@@ -171,6 +171,9 @@ def run(script, args=(), cards=(0,), cluster=None):
                 f"kmr {COMMAND}: again, at the size the next run opens at", flush=True
             )
             code = subprocess.run(command, env=env, check=False).returncode
+        from komorebi import remembered  # noqa: PLC0415 (remembered imports us)
+
+        remembered.seed(Path(env[MEMORY]))
     return code
 
 
