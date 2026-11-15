@@ -34,7 +34,7 @@ nothing.
 | Field | Meaning |
 |---|---|
 | `kernels` | a directory with `reader.cpp`, `compute.cpp` and `writer.cpp` (or `movement.cpp` and `compute.cpp`, [movement](movement.md)), or a dict of the paths. Each source defines `kernel_main` (the kernel form) or `km_program` (the runtime's form, [below](#several-programs-in-one-run)) |
-| `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a data type name (`"bfloat16"`, `"float32"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, `"bfloat8_b"`, `"bfloat4_b"`) |
+| `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a data type name (`"bfloat16"`, `"float32"`, `"float16"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, the block formats `"bfp8_b"`, `"bfp4_b"`, `"bfp2_b"` (`"bfloat8_b"`, `"bfloat4_b"`) and `"bfp8"`, `"bfp4"`, `"bfp2"`); a program's buffers are of one exponent family, and an A-family buffer needs `fp32_dest_acc_en` off ([tile formats](formats.md)) |
 | `args` | `args(core) -> (reader, writer, compute)`: the program's own runtime arguments of each core, after the runtime's start-up arguments |
 | `compile_args` | `{"reader": [...], "writer": [...], "compute": [...]}` |
 | `compute` | compute kernel options, the fields of tt-metal's `ComputeConfigDescriptor` (v0.81.1): `math_fidelity` (`"LoFi"`, `"HiFi2"`, `"HiFi3"`, `"HiFi4"`), `unpack_to_dest_mode` (`"UnpackToDestFp32"` or `"Default"` for every circular buffer, or `{cb: name}` with the others `Default`), and the flags `fp32_dest_acc_en`, `math_approx_mode`, `dst_full_sync_en`, `bfp8_pack_precise`, `enable_trisc2_rvv`; any other name raises `ProgramError` |
@@ -345,7 +345,7 @@ A program's inputs and outputs are tensors the session puts on the card:
 
 | Call | Returns |
 |---|---|
-| `session.tensor(data, dtype, layout="row", shard_grid=None)` | a `Tensor` holding `data` (anything `np.asarray` takes) as `dtype` (`"bfloat16"`, `"float32"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`), written before it returns. `layout="row"`: a page a row (the last dimension), interleaved over the DRAM banks; `"tile"`: a page a 32 x 32 tile of four 16 x 16 faces, the last two dimensions zero-padded to multiples of 32. `shard_grid=(x, y)`: rows `[cores, words]`, one in the L1 of each core of the grid at one address |
+| `session.tensor(data, dtype, layout="row", shard_grid=None, transposed_tiles=False)` | a `Tensor` holding `data` (anything `np.asarray` takes) as `dtype` (`"bfloat16"`, `"float32"`, `"float16"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, or a block format of [tile formats](formats.md) in `"tile"`), written before it returns. `transposed_tiles=True`: each tile stored transposed, the weight of a turned product ([placement](formats.md#placement)). `layout="row"`: a page a row (the last dimension), interleaved over the DRAM banks; `"tile"`: a page a 32 x 32 tile of four 16 x 16 faces, the last two dimensions zero-padded to multiples of 32. `shard_grid=(x, y)`: rows `[cores, words]`, one in the L1 of each core of the grid at one address |
 | `session.empty(shape, dtype, layout="row", shard_grid=None)` | the same, not written |
 | `session.grid` | the Tensix grid `(x, y)` of the open device |
 
@@ -368,16 +368,17 @@ capsule named `komorebi.mesh_device` holding a `std::shared_ptr<MeshDevice>`.
 
 A `Tensor` has `address` (its address in every bank, or in every core's L1),
 `shape` (on the card, padded), `dtype`, `layout`, `page_bytes`, `aligned_page_bytes`,
-`pages`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
+`pages`, `transposed_tiles`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
 for `Program(compile_args=...)`); `tensor_args()` (those: what a
 kernel's `km::Tensor` reads, for the page calls of
 [Islands](islands.md#a-kernels-page-reads-and-writes)); `write(data)`; `read()` (the whole tensor as a numpy
 array, bfloat16 as float32) and `read_bytes()`; `free()`. Its `write` and `read` wait
 for the cores of a launched program to return, which the persistent grid does only at
 the stop: before `load` and after `run.stop()` they are the plain way. bfloat16 values
-are rounded to nearest, ties to even; `komorebi.formats` has the conversions
-(`bf16_bits`, `bf16_values`, `tilize`, `untilize`, `to_bytes`, `from_bytes`) on their
-own.
+are rounded to nearest, ties to even, and the block formats encoded as tt-metal's host
+encode does, which is not the card's packer ([tile formats](formats.md)); `komorebi.formats`
+has the conversions (`bf16_bits`, `bf16_values`, `tilize`, `untilize`, `to_bytes`,
+`from_bytes`, `bfp_encode`, `bfp_decode`, `transposed_tiles`) on their own.
 
 Reading tensors while a run is loaded. `session.read(*tensors)` returns the raw pages
 of tensors in DRAM or L1 (`[pages, page_bytes]` uint8 each; an L1 tensor's page is

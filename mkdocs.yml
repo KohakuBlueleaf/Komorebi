@@ -116,6 +116,7 @@ nav:
       - reference/islands.md
       - reference/chain.md
       - reference/tile.md
+      - reference/formats.md
       - reference/classes.md
       - reference/hazards.md
   - Examples:
