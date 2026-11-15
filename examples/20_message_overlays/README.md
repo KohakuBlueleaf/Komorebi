@@ -59,6 +59,7 @@ python message_overlays.py --threads 10000 --steps 43 --repeat 10 --loads
 python message_overlays.py --threads 10000 --steps 43 --slots 2 --loads
 python message_overlays.py --count 3 --threads 138 --steps 300 --slots 1 --loads
 python message_overlays.py --count 6 --deadline 1 --stray
+python message_overlays.py --threads 10000 --steps 43 --repeat 3 --loads --addon
 ```
 
 ## Measured
@@ -94,5 +95,12 @@ python ../14_message_handlers/message_handlers.py --count 3 --threads 138 --step
   0.8 µs a core on the grid.
 - A packet's handlers that the core holds go first. Without that order, the same runs
   loaded 20,249 times (two slots, grid) and 5,137 times (one slot, one core, 28.70 ms).
+- `--addon` (card 0, 2026-11-16): report is not loaded. The program's handlers are
+  lookup and value, and `run.addon("report", ..., message=True, number=3)` adds report
+  to the live run before `RUN` as dynamic handler 3, overlay 3
+  ([code added to a live run](../../docs/reference/overlays.md#code-added-to-a-live-run)).
+  Three runs were exact, with 10,000 reports each, in 11.11 ms and 354 loads. Without
+  `--addon`, in the same hour and on the same build: 11.05 ms (10.97 to 11.17), 354
+  loads.
 - `--stray`: core 0 gives up with `where` `handler`, `seen` 0x90001 (handler 9, mark 1),
   and the dispatcher ends the run at its deadline.

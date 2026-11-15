@@ -62,6 +62,15 @@
 /* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
+/* host, served by the service overlay: each core of the group writes the table entry
+ * of an overlay added to the live run (run.add) in its own overlay area */
+#define KM_HANDLER_ENTRY 246u
+#define KM_ENTRY_NUMBER 0u /* the overlay's number | KM_ENTRY_HANDLER */
+/* the handler of that number is the overlay's parts */
+#define KM_ENTRY_HANDLER 0x100u
+#define KM_ENTRY_MESSAGE 0x200u /* the dynamic handler of that number is its part */
+#define KM_ENTRY_ADDRESS 1u     /* a1 to a5: each part's DRAM address in every bank */
+#define KM_ENTRY_BYTES 6u       /* a6 to a8: each part's bytes / 64, two parts a word */
 /* host, served by the service overlay: every rank of the group calls km::all_gather
  * or km::all_reduce (km_ask.hpp) on pages of a copy tensor, with these words */
 #define KM_HANDLER_GATHER 243u

@@ -171,6 +171,8 @@ class Program:
     overlays_built: object = field(default=None, init=False, compare=False)
     # the program field of its commands: its place in the last load (0: the first)
     program_field: int = field(default=0, init=False, compare=False)
+    # in a run of programs, what the run adds to its own overlays' numbers
+    overlay_shift: int = field(default=0, init=False, compare=False)
 
     def __init_subclass__(cls, compute=None, defines=None, startup=None, **kwargs):
         """A class deriving Program with handler methods is a program written as a
@@ -331,10 +333,15 @@ class Program:
         return self
 
     def slots(self, count=None, bytes=None):
-        """Declares the slots of the kernels that have overlay parts: `count` (1 to 4)
-        and `bytes` per slot, each an int or a {"reader"|"writer"|"compute": value};
-        by default a slot per overlay with a part there, sized by the largest part."""
+        """Declares the slots of the kernels: `count` (1 to 4) and `bytes` per slot,
+        each an int or a {"reader"|"writer"|"compute": value}; by default a slot per
+        overlay with a part there, sized by its largest part. Named `bytes` also give
+        the kernels the path of an added handler (run.addon): KM_ADDED_HANDLERS."""
         self.overlay_slots = Slots(count, bytes)
+        if bytes is None:
+            self.defines.pop("KM_ADDED_HANDLERS", None)
+        else:
+            self.defines["KM_ADDED_HANDLERS"] = "1"
         return self
 
     def movement(self):
