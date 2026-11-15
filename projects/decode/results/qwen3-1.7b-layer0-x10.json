@@ -1,0 +1,448 @@
+{
+ "model": "Qwen/Qwen3-1.7B",
+ "layers": 1,
+ "tokens": 10,
+ "layer_bytes": 100671488,
+ "plans": {
+  "64x64": [
+   1,
+   64,
+   64,
+   15,
+   1,
+   8,
+   2,
+   1,
+   4,
+   8,
+   40
+  ],
+  "64x32": [
+   1,
+   64,
+   32,
+   30,
+   1,
+   8,
+   2,
+   1,
+   4,
+   4,
+   40
+  ],
+  "64x192": [
+   1,
+   64,
+   192,
+   5,
+   1,
+   8,
+   2,
+   1,
+   4,
+   24,
+   40
+  ],
+  "192x64": [
+   1,
+   192,
+   64,
+   15,
+   1,
+   8,
+   2,
+   1,
+   4,
+   8,
+   40
+  ]
+ },
+ "write_gbs": 6.3,
+ "check": {
+  "q": {
+   "max_rel": 0.006802721088435374,
+   "rms_rel": 0.005552705608468374,
+   "ok": true
+  },
+  "k": {
+   "max_rel": 0.007352941176470588,
+   "rms_rel": 0.005549100695617406,
+   "ok": true
+  },
+  "v": {
+   "max_rel": 0.0072992700729927005,
+   "rms_rel": 0.005569300999885479,
+   "ok": true
+  },
+  "h": {
+   "max_rel": 0.009216589861751152,
+   "rms_rel": 0.004771455626316324,
+   "ok": true
+  },
+  "up": {
+   "max_rel": 0.00684931506849315,
+   "rms_rel": 0.005991249336223984,
+   "ok": true
+  },
+  "gated": {
+   "max_rel": 0.014285714285714285,
+   "rms_rel": 0.010572571777991301,
+   "ok": true
+  },
+  "x": {
+   "max_rel": 0.00980392156862745,
+   "rms_rel": 0.004162697508756462,
+   "ok": true
+  }
+ },
+ "ceiling_ms_per_token": 0.203,
+ "cases": [
+  {
+   "thread_ticks": 192198,
+   "stats_slot": 2,
+   "case": "full",
+   "tokens": 10,
+   "layers": 1,
+   "host_seconds": 0.0042,
+   "mean_w": null,
+   "aiclk_mhz": null,
+   "thread": {
+    "status": 0,
+    "done": 90,
+    "microseconds": 3843.96,
+    "steps": {
+     "norm1": {
+      "sum_us": 139.34,
+      "most_us": 14.06,
+      "least_us": 13.82
+     },
+     "q": {
+      "sum_us": 321.98,
+      "most_us": 32.82,
+      "least_us": 31.78
+     },
+     "k": {
+      "sum_us": 247.92,
+      "most_us": 25.16,
+      "least_us": 24.32
+     },
+     "v": {
+      "sum_us": 246.9,
+      "most_us": 25.16,
+      "least_us": 24.26
+     },
+     "o": {
+      "sum_us": 333.44,
+      "most_us": 33.92,
+      "least_us": 33.02
+     },
+     "norm2": {
+      "sum_us": 139.04,
+      "most_us": 14.06,
+      "least_us": 13.82
+     },
+     "up": {
+      "sum_us": 703.1,
+      "most_us": 71.62,
+      "least_us": 69.52
+     },
+     "gate": {
+      "sum_us": 818.3,
+      "most_us": 83.4,
+      "least_us": 80.2
+     },
+     "down": {
+      "sum_us": 723.1,
+      "most_us": 73.52,
+      "least_us": 71.04
+     }
+    }
+   },
+   "account": {
+    "layer_us": 384.4,
+    "ceiling_us": 203.13,
+    "steps_us": {
+     "norm1": 13.93,
+     "q": 32.2,
+     "k": 24.79,
+     "v": 24.69,
+     "o": 33.34,
+     "norm2": 13.9,
+     "up": 70.31,
+     "gate": 81.83,
+     "down": 72.31
+    },
+    "terms": [
+     {
+      "term": "q: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 16.93
+     },
+     {
+      "term": "q: the product above the ceiling",
+      "kind": "OURS",
+      "us": 15.27
+     },
+     {
+      "term": "k: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 8.46
+     },
+     {
+      "term": "k: the product above the ceiling",
+      "kind": "OURS",
+      "us": 16.33
+     },
+     {
+      "term": "v: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 8.46
+     },
+     {
+      "term": "v: the product above the ceiling",
+      "kind": "OURS",
+      "us": 16.23
+     },
+     {
+      "term": "o: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 16.93
+     },
+     {
+      "term": "o: its operation",
+      "kind": "OURS",
+      "us": 1.03
+     },
+     {
+      "term": "o: the product above the ceiling",
+      "kind": "OURS",
+      "us": 15.39
+     },
+     {
+      "term": "up: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 50.78
+     },
+     {
+      "term": "up: the product above the ceiling",
+      "kind": "OURS",
+      "us": 19.53
+     },
+     {
+      "term": "gate: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 50.78
+     },
+     {
+      "term": "gate: its operation",
+      "kind": "OURS",
+      "us": 11.73
+     },
+     {
+      "term": "gate: the product above the ceiling",
+      "kind": "OURS",
+      "us": 19.32
+     },
+     {
+      "term": "down: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 50.78
+     },
+     {
+      "term": "down: its operation",
+      "kind": "OURS",
+      "us": 1.29
+     },
+     {
+      "term": "down: the product above the ceiling",
+      "kind": "OURS",
+      "us": 20.24
+     },
+     {
+      "term": "norm1: the command",
+      "kind": "OURS",
+      "us": 13.93
+     },
+     {
+      "term": "norm2: the command",
+      "kind": "OURS",
+      "us": 13.9
+     },
+     {
+      "term": "the thread between commands (submit, wait)",
+      "kind": "OURS",
+      "us": 17.08
+     }
+    ],
+    "unaccounted_us": 0.01
+   },
+   "ms_per_token": 0.384,
+   "tokens_per_second": 2601.5,
+   "weight_gbs": 261.9
+  },
+  {
+   "thread_ticks": 169042,
+   "stats_slot": 3,
+   "case": "bare",
+   "tokens": 10,
+   "layers": 1,
+   "host_seconds": 0.0038,
+   "mean_w": null,
+   "aiclk_mhz": null,
+   "thread": {
+    "status": 0,
+    "done": 70,
+    "microseconds": 3380.84,
+    "steps": {
+     "norm1": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 320.66,
+      "most_us": 33.2,
+      "least_us": 31.6
+     },
+     "k": {
+      "sum_us": 245.68,
+      "most_us": 24.88,
+      "least_us": 24.12
+     },
+     "v": {
+      "sum_us": 246.6,
+      "most_us": 25.02,
+      "least_us": 24.28
+     },
+     "o": {
+      "sum_us": 323.14,
+      "most_us": 32.84,
+      "least_us": 31.74
+     },
+     "norm2": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "up": {
+      "sum_us": 701.46,
+      "most_us": 71.22,
+      "least_us": 68.8
+     },
+     "gate": {
+      "sum_us": 700.98,
+      "most_us": 71.2,
+      "least_us": 68.62
+     },
+     "down": {
+      "sum_us": 710.16,
+      "most_us": 72.04,
+      "least_us": 70.34
+     }
+    }
+   },
+   "account": {
+    "layer_us": 338.08,
+    "ceiling_us": 203.13,
+    "steps_us": {
+     "norm1": 0.0,
+     "q": 32.07,
+     "k": 24.57,
+     "v": 24.66,
+     "o": 32.31,
+     "norm2": 0.0,
+     "up": 70.15,
+     "gate": 70.1,
+     "down": 71.02
+    },
+    "terms": [
+     {
+      "term": "q: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 16.93
+     },
+     {
+      "term": "q: the product above the ceiling",
+      "kind": "OURS",
+      "us": 15.14
+     },
+     {
+      "term": "k: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 8.46
+     },
+     {
+      "term": "k: the product above the ceiling",
+      "kind": "OURS",
+      "us": 16.1
+     },
+     {
+      "term": "v: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 8.46
+     },
+     {
+      "term": "v: the product above the ceiling",
+      "kind": "OURS",
+      "us": 16.2
+     },
+     {
+      "term": "o: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 16.93
+     },
+     {
+      "term": "o: the product above the ceiling",
+      "kind": "OURS",
+      "us": 15.39
+     },
+     {
+      "term": "up: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 50.78
+     },
+     {
+      "term": "up: the product above the ceiling",
+      "kind": "OURS",
+      "us": 19.37
+     },
+     {
+      "term": "gate: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 50.78
+     },
+     {
+      "term": "gate: the product above the ceiling",
+      "kind": "OURS",
+      "us": 19.32
+     },
+     {
+      "term": "down: W at the ceiling",
+      "kind": "HARDWARE",
+      "us": 50.78
+     },
+     {
+      "term": "down: the product above the ceiling",
+      "kind": "OURS",
+      "us": 20.24
+     },
+     {
+      "term": "the thread between commands (submit, wait)",
+      "kind": "OURS",
+      "us": 13.22
+     }
+    ],
+    "unaccounted_us": -0.02
+   },
+   "ms_per_token": 0.338,
+   "tokens_per_second": 2957.8,
+   "weight_gbs": 297.8
+  }
+ ],
+ "load_avg": [
+  "1.44",
+  "1.72",
+  "1.35"
+ ],
+ "ok": true
+}
