@@ -128,14 +128,16 @@ def make(
     broadcast_wait=False,
     guard=True,
     chain=False,
+    chain_stamps=False,
     form="kernel",
     beside=(),
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
     by name; `session` (`trace` the load's) or `l1`; `rect`, `nocs` a broadcast's;
-    `defines`; `handlers` constant parameters' sets; `broadcast_wait`, `guard` a
-    Program's; `chain` the walk (a km.chain's); `form`; `beside` programs beside it."""
+    `defines`; `handlers` constants' sets; `broadcast_wait`, `guard` a Program's;
+    `chain` the walk; `chain_stamps` its stamps; `form`; `beside` programs beside it.
+    """
     cls = type(self)
     thread_words = class_thread.words_given(tensors)
     if form not in FORMS:
@@ -162,6 +164,7 @@ def make(
             cls, compiled, found, plan, tensors, room, values, sets, reserved
         )
     walked = chain_made(self, cls, compiled, chain, tensors)
+    defines = stamps_made(self, cls, compiled, walked, chain_stamps, defines)
     # what km.merge builds this program's handlers again with (komorebi.dsl.merged)
     self.make_given = {
         "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
@@ -193,6 +196,8 @@ def make(
         )
     if walked:
         keyed[spelling("chain")] = True
+    if compiled.chain_stamps:
+        keyed["chain_stamps"] = True
     if found:
         keyed[spelling("first_use")] = first_use.keyed(found)
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}
@@ -2289,7 +2294,63 @@ DIRECT_END = """#else  // mover B
 
 def chain_helpers(compiled):
     """The walk's helpers in the movement source; with a direct input's landing area,
-    the root's kept block, its send before the marks and the reader's area."""
+    the root's kept block, its send before the marks and the reader's area; with the
+    stamps, the record's body end stamped."""
+    text = direct_helpers(compiled)
+    if getattr(compiled, "chain_stamps", False):
+        head = (
+            "    ) {\n        if (!km::chain_now.on) {\n"  # km_chain_end's first lines
+        )
+        at = text.index(head, text.index("bool km_chain_end("))
+        text = (
+            text[: at + len("    ) {\n")]
+            + f"        km::chain_stamp({STAMP_BODY});  // the record's body done\n"
+            + text[at + len("    ) {\n") :]
+        )
+    return text
+
+
+# The stamp words a class's chain takes besides the chain's own (km_chain.h): the
+# overlay loaded (a mover's), the record's body done (both movers, before the marks).
+STAMP_LOADED, STAMP_BODY = 2, 3
+STAMPS_PAGE = 2048  # a core's page of the stamps' tensor (kChainStampBytes fit)
+
+
+def stamps_made(program, cls, compiled, walked, chain_stamps, defines):
+    """The make's defines with KM_CHAIN_STAMPS for chain_stamps=True (refused without
+    the walk); on `compiled` and `program` whether the stamps are built."""
+    compiled.chain_stamps = bool(chain_stamps)
+    program.chain_stamps = compiled.chain_stamps
+    if not chain_stamps:
+        return defines
+    if not walked:
+        raise ProgramError(
+            f"{cls.__name__}: chain_stamps=True stamps the chain's walk; make it with "
+            f"{spelling('chain')}=True or give the class a km.{spelling('chain')} "
+            "method"
+        )
+    return {**defines, "KM_CHAIN_STAMPS": "1"}
+
+
+def stamps_readout(compiled):
+    """The movers' lines for the stamps' read-out (a chain command with no records,
+    a7 0): mover B writes this core's stamps to page `me` of the tensor at a0."""
+    if not getattr(compiled, "chain_stamps", False):
+        return []
+    return [
+        f"{INDENT * 2}if (command.a7 == 0) {{  // the stamps' read-out",
+        "#if defined(COMPILE_FOR_BRISC)",
+        f"{INDENT * 3}return true;",
+        "#else",
+        f"{INDENT * 3}return km::chain_stamps_out(movement, command.a0, "
+        f"{STAMPS_PAGE}u);",
+        "#endif",
+        f"{INDENT * 2}}}",
+    ]
+
+
+def direct_helpers(compiled):
+    """The walk's helpers with a direct input's landing area (CHAIN_HELPERS without)."""
     if getattr(compiled, "direct_area", None) is None:
         return CHAIN_HELPERS
     start = CHAIN_HELPERS.index("#else  // mover B")
@@ -2396,6 +2457,11 @@ def chain_overlay_case(compiled, name, reads):
             "if (!km_part.load()) {",
             f"{INDENT}return false;",
             "}",
+            *(
+                [f"km::chain_stamp({STAMP_LOADED});  // the overlay loaded"]
+                if getattr(compiled, "chain_stamps", False)
+                else []
+            ),
             *wait,
             "if (km_part.call(command) == 0) {",
             f"{INDENT}return false;",
@@ -2444,6 +2510,7 @@ def chain_movement_source(compiled):
         f"{INDENT * 2}if (km::handler(command) != {chain}) {{",
         f"{INDENT * 3}return km_case(command);",
         f"{INDENT * 2}}}",
+        *stamps_readout(compiled),
         "#if defined(COMPILE_FOR_BRISC)  // mover A",
         f"{INDENT * 2}km::chain_reader(movement, command, km_case);",
         f"{INDENT * 2}return true;",
@@ -2481,6 +2548,11 @@ def chain_compute_source(compiled):
         + head
         + "\n"
         + f"{INDENT * 2}if (km::handler(command) == {chain}) {{\n"
+        + (
+            f"{INDENT * 3}if (command.a7 != 0)  // 0: the stamps' read-out\n"
+            if getattr(compiled, "chain_stamps", False)
+            else ""
+        )
         + f"{INDENT * 3}km::chain_compute(compute, command, km_case);\n"
         + f"{INDENT * 2}}} else {{\n"
         + f"{INDENT * 3}km_case(command);\n"

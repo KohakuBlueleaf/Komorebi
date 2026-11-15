@@ -1025,6 +1025,7 @@ def placed(described, index, one, names, written, prefetch):
         tuple(reads),
         direct_area(one) if direct else None,
         name=one.name,
+        row=stamp_row(one, index),
         outputs=tuple((tensor_name(t, names), width) for t, width in one.outputs),
     )
 
@@ -1077,6 +1078,15 @@ def covered(before, one, k, ranges, others):
                 if set(kc.blocks_met(first, count, widths[key], groups)) - known:
                     return False
     return True
+
+
+def stamp_row(one, index):
+    """A record's stamp row: its index in the chain (0 to 7, the rows km_chain.h
+    keeps; a later record's stamps go to no row) when its program has the stamps."""
+    if not getattr(one.program, "chain_stamps", False):
+        return 0
+    words = kc.words()
+    return index if index < words["kChainStampRecords"] else words["kChainRowMask"]
 
 
 def direct_share(one, k, ranges):

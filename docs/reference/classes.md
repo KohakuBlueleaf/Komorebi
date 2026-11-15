@@ -1978,6 +1978,27 @@ record, the same kernels read and write DRAM. One direct input is allowed a chai
 Example 31's SwiGLU sends the hidden from up's 12 roots to down's 4 cores in this way
 (`examples/31_swiglu/swiglu_direct.py`, README "## the hidden sent direct").
 
+**The chain's stamps.** `chain_stamps=True` at the make (off by default, in the build
+key; refused without the walk) builds the class's kernels with `KM_CHAIN_STAMPS`. In
+each record, the movers and compute add the chain's own stamps (the record taken, its
+input marked, the writes acknowledged, the marks issued: km_chain.h) and the class's
+two: the overlay loaded (word 2) and the record's body done (word 3). Each record of a
+chain takes its index as its stamp row (rows 0 to 7; later records stamp nothing).
+`komorebi.dsl.chain_stamps` reads and zeroes them:
+
+```python
+from komorebi.dsl import chain_stamps
+
+tensor = chain_stamps.tensor_for(session, 120)
+rows = chain_stamps.read(session, run, program, tensor, (0, 16))
+for record, terms in enumerate(chain_stamps.terms(rows, mhz, 2)):
+    print(record, terms["input wait"], terms["body"], terms["hand-over"])
+```
+
+Each term is the (median, largest) over the cores that ran the record, in us: the input
+wait, the overlay load, the body, the hand-over (the writes acknowledged, or a direct
+input's sends) and the marks.
+
 **A `km.chain` method** holds calls of the class's handlers in order (`self.scale(...)`),
 assignments, and `for _ in range(N)` of a constant N, unrolled. It is read when the class
 is made, and called on a program (`program.steps(...)`) it gives the list of calls, which
