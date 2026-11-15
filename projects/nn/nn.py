@@ -87,9 +87,10 @@ class Entries:
         self.items.append((len(self.rows), 1))
         self.rows.append(entry(call, NN["NN_KIND_COMMAND"]))
 
-    def chain(self, calls, mode, flags=0):
+    def chain(self, calls, mode, flags=0, token=0, ahead=False):
         """`calls` as one chain command: the kernel's chain mode `mode` (its a4) on
-        the cores of every call, the first call's handler and program; `flags`."""
+        the cores of every call, the first call's handler and program; `flags`; a0
+        `token` (chain.h's token word), a1 kChainAheadOff unless `ahead`."""
         if not calls:
             raise ValueError("a chain of no calls")
         head = calls[0]
@@ -98,6 +99,8 @@ class Entries:
         words[NN["NN_ENTRY_HEADER"]] = head.handler | flags << 8 | head.program << 24
         words[NN["NN_ENTRY_CHAIN_MODE"]] = mode
         words[NN["NN_ENTRY_CHAIN_GROUP"]] = count << 16
+        words[NN["NN_ENTRY_CHAIN_TOKEN"]] = token
+        words[NN["NN_ENTRY_CHAIN_AHEAD"]] = 0 if ahead else card.CHAIN["kChainAheadOff"]
         self.items.append((len(self.rows), len(calls)))
         self.rows.append(words)
         self.rows += [entry(call, NN["NN_KIND_NONE"]) for call in calls[1:]]
@@ -332,15 +335,19 @@ def nop_call(decode, cores):
     return Call(words[D["DC_WORD_SPLIT"]], cores, args, EXCLUSIVE)
 
 
-def layer_calls(decode, layer, position, rows=1):
+def layer_calls(decode, layer, position, rows=1, token=False):
     """Layer `layer`'s five calls (STEPS) for `rows` tokens from `position`, each with
-    its chain record (the fused layer, in full; layers.c's step_command, run_chain)."""
+    its chain record (the fused layer; layers.c's step_command, chain_write); `token`:
+    qkv's and attend's a9 take the position from the chain's a0 (theirs 0)."""
     words = decode.words()
     t = {name: tensor.address for name, tensor in decode.tensors.items()}
     w = {name: tensor.address for name, tensor in decode.weights[layer].items()}
     reduce = words[D["DC_WORD_REDUCE"]] | rows << D["DC_ROWS_SHIFT"]
     epsilon = words[D["DC_WORD_EPSILON"]]
     marked, sends = card.CHAIN["kChainMarked"], card.CHAIN["kChainSends"]
+    from_a0 = card.CHAIN["kChainTokenMask"] << card.CHAIN["kChainTokenShift"]
+    if token:
+        position = 0
 
     def product(a, weight, y, plan, operation, other, a3=0, info=marked | sends):
         plan = words[D[plan]]
@@ -365,7 +372,7 @@ def layer_calls(decode, layer, position, rows=1):
         "DC_WORD_SCALE",
         (t["squares1"], t["qk"], position | layer << 16),
         D["DC_QK"],
-        sends,
+        sends | (from_a0 if token else 0),
     )
     plan = words[D["DC_WORD_PLAN_ATTEND"]]
     attend = Call(
@@ -387,7 +394,10 @@ def layer_calls(decode, layer, position, rows=1):
         0,
         D["DC_OVERLAY_ATTEND"],
         (
-            marked | sends | card.CHAIN["kChainNeedsRanges"] << 8,
+            marked
+            | sends
+            | card.CHAIN["kChainNeedsRanges"] << 8
+            | (from_a0 if token else 0),
             *words[D["DC_WORD_ATTEND_NEEDS"] : D["DC_WORD_ATTEND_NEEDS"] + 3],
         ),
     )
@@ -416,18 +426,51 @@ def layer_calls(decode, layer, position, rows=1):
         "DC_WORD_ADD",
         (t["x1"], t["constants"], t["squares1"]),
     )
-    return [qkv, attend, o, gate_up, down]
+    calls = [qkv, attend, o, gate_up, down]
+    return [  # each record's stamp row: its step's
+        call._replace(record=(call.record[0] | row << 24, *call.record[1:]))
+        for row, call in enumerate(calls)
+    ]
 
 
-def decode_entries(decode, tokens, layers, position, chain, first=0, rows=1):
+def token_calls(decode, layers, rows=1):
+    """A token's calls through layers 0 .. layers - 1 as one chain's records (layers.c's
+    token form): each qkv after the first marked, the last record's stamp row its own;
+    the position is the chain's a0."""
+    calls = [
+        call
+        for layer in range(layers)
+        for call in layer_calls(decode, layer, 0, rows, True)
+    ]
+    marked = card.CHAIN["kChainMarked"]
+    for at in range(len(STEPS), len(calls), len(STEPS)):
+        info, *ranges = calls[at].record
+        calls[at] = calls[at]._replace(record=(info | marked, *ranges))
+    if layers > 1:
+        info, *ranges = calls[-1].record
+        info = info & 0xFFFFFF | D["DC_CHAIN_LAST_ROW"] << 24
+        calls[-1] = calls[-1]._replace(record=(info, *ranges))
+    return calls
+
+
+def decode_entries(
+    decode, tokens, layers, position, chain, first=0, rows=1, token=False, ahead=False
+):
     """`tokens` steps of `rows` tokens through layers 0 .. layers - 1 from `position`
-    as one closed list: a command a call, or with `chain` a layer as one chain."""
+    as one closed list: a command a call; with `chain` a layer as one chain, with
+    `token` a token as one (`ahead`: a record's W read in the record before)."""
     entries = Entries(first)
-    for token in range(tokens):
+    mode = card.CHAIN["kChainMode"]
+    for step in range(tokens):
+        at = position + step * rows
+        if token:
+            calls = token_calls(decode, layers, rows)
+            entries.chain(calls, mode, EXCLUSIVE, at, ahead)
+            continue
         for layer in range(layers):
-            calls = layer_calls(decode, layer, position + token * rows, rows)
+            calls = layer_calls(decode, layer, at, rows)
             if chain:
-                entries.chain(calls, card.CHAIN["kChainMode"], EXCLUSIVE)
+                entries.chain(calls, mode, EXCLUSIVE, ahead=ahead)
             else:
                 for call in calls:
                     entries.command(call)

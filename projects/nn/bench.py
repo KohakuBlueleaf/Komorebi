@@ -27,6 +27,11 @@ CHECKED = ("qkv", "a", "x1", "gated", "x")  # what a layer leaves, compared bit 
 COST_ENTRIES = 200  # the cost lists' length
 COST_TIMES = 5  # a closed cost list's replays
 COST_CORES = (1, 120)  # the cheapest call on one core and on every core
+# The decode's ways: the list a command a call, a layer and a token as a chain (W read
+# a record early: _ahead), the host's calls; the decode's own thread a token a command.
+WAYS = ("commands", "chain", "token", "token_ahead", "hand_token", "hand_ahead", "host")
+AHEAD = ("token_ahead", "hand_ahead")
+AHEAD_SHORTEST = 1024  # the record after's early W read hangs at T 256 (decode README)
 STARTED = time.monotonic()
 
 
@@ -60,19 +65,20 @@ def appended(decode, position):
 
 
 def check(decode, executor, model, seed, length):
-    """One token through layer 0 at row length - 1, from one x, six ways: the decode's
-    thread a command a step and as a chain, the list closed (both), open, the host's
-    calls. Every tensor and the cache's new row against the first, bit for bit."""
+    """One token through layer 0 at row length - 1, from one x, eight ways: the
+    decode's thread a command a step, a layer and a token as a chain, the list closed
+    (the three), open, the host's calls. Every tensor and the new cache row against the
+    first, bit for bit."""
     position = length - 1
     start = md.start(seed, model)
     calls = nn.layer_calls(decode, 0, position)
     ways = {}
 
-    def hand(chain):
-        decode.job(1, 1, position=position, chain=chain)
+    def hand(chain, token=False):
+        decode.job(1, 1, position=position, chain=chain, token=token)
 
-    def closed(chain):
-        entries = nn.decode_entries(decode, 1, 1, position, chain)
+    def closed(chain, token=False):
+        entries = nn.decode_entries(decode, 1, 1, position, chain, token=token)
         executor.write(entries)
         executor.closed(entries)
 
@@ -85,8 +91,10 @@ def check(decode, executor, model, seed, length):
     runs = {
         "hand_commands": lambda: hand(False),
         "hand_chain": lambda: hand(True),
+        "hand_token": lambda: hand(True, True),
         "list_commands": lambda: closed(False),
         "list_chain": lambda: closed(True),
+        "list_token": lambda: closed(True, True),
         "open_commands": opened,
         "host_commands": lambda: nn.drive(decode.run, calls),
     }
@@ -189,7 +197,8 @@ def costs(decode, executor):
 
 def measure(decode, executor, index, way, tokens, layers, length):
     """One way of `tokens` x `layers` layers, the last token at row length - 1, under
-    the power and clock samplers: the host's seconds and the thread's slot."""
+    the power and clock samplers: the host's seconds and the thread's slot (the
+    decode's own thread's ticks for the hand's ways)."""
     position = length - tokens
     meter = power.PowerSampler(index)
     with meter, dense_bench.Clock(index) as clock:
@@ -204,9 +213,22 @@ def measure(decode, executor, index, way, tokens, layers, length):
             started = time.perf_counter()
             host = nn.drive(decode.run, calls)
             seconds, slot = time.perf_counter() - started, None
+        elif way.startswith("hand"):
+            started = time.perf_counter()
+            done = decode.job(
+                tokens, layers, position=position, token=True, ahead=way in AHEAD
+            )
+            seconds, slot, host = time.perf_counter() - started, None, None
+            hand_us = done["thread_ticks"] / nn.TICKS_PER_MICROSECOND
         else:
             entries = nn.decode_entries(
-                decode, tokens, layers, position, way == "chain"
+                decode,
+                tokens,
+                layers,
+                position,
+                way == "chain",
+                token=way.startswith("token"),
+                ahead=way in AHEAD,
             )
             executor.write(entries)
             started = time.perf_counter()
@@ -223,6 +245,8 @@ def measure(decode, executor, index, way, tokens, layers, length):
         "mean_w": meter.result.phases["job"].mean_w,
         "aiclk_mhz": clock.summary(),
     }
+    if way.startswith("hand"):
+        out["layer_us"] = round(hand_us / (tokens * layers), 2)
     if host is not None:
         host = np.array(host, np.float64)
         steps = host[:, 2].reshape(-1, len(nn.STEPS)) / nn.TICKS_PER_MICROSECOND
@@ -287,7 +311,9 @@ def main():
                 report["costs"] = costs(decode, executor)
                 log(f"costs: {json.dumps(report['costs'])}")
             for length in args.lengths if args.decode and ok else ():
-                for way in ("commands", "chain", "host"):
+                for way in WAYS:
+                    if way in AHEAD and length < AHEAD_SHORTEST:
+                        continue
                     log(f"{way}, T {length}: {args.tokens} x {layers} layers")
                     result = measure(
                         decode, executor, index, way, args.tokens, layers, length

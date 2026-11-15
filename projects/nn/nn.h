@@ -17,6 +17,8 @@ enum {
     NN_ENTRY_OVERLAY = 21,     /* the operation overlay it calls (the host's; 0 none) */
     NN_ENTRY_SEQUENCE = 22, /* an open list's number (DRAIN's a3); a closed list's 0 */
     NN_ENTRY_CHECK = 23,    /* NN_CHECK of the entry's words but this and the next */
+    NN_ENTRY_CHAIN_TOKEN = 24, /* a chain: its a0, ORed where a record's info names */
+    NN_ENTRY_CHAIN_AHEAD = 25, /* a chain: its a1 (kChainAheadOff or 0, chain.h) */
     NN_ENTRY_WORDS = 32,
     NN_ENTRY_BYTES = 128
 };
@@ -58,5 +60,5 @@ enum {
     NN_TERMS = 7,
     NN_ST_ENTRY_TICKS = 32,
     NN_SLOT_WORDS = NN_ST_ENTRY_TICKS + NN_ENTRIES_MAX,
-    NN_SLOTS = 32
+    NN_SLOTS = 128
 };

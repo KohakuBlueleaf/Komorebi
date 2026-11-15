@@ -1,0 +1,141 @@
+{
+ "model": "Qwen/Qwen3-1.7B",
+ "position": 4095,
+ "calls": 8,
+ "results": {
+  "a": {
+   "cpu_us": 7535.4,
+   "eager": {
+    "errors": {
+     "max_rel": 0.0059174368199606505,
+     "rms_rel": 0.0024592600558377997
+    },
+    "ok": true,
+    "mirror": true,
+    "account": {
+     "wall_us": 6309.3,
+     "terms_us": {
+      "in_write": 356.1,
+      "dispatch": 1713.4,
+      "planner": 22.8,
+      "allocate": 117.0,
+      "build": 60.3,
+      "store": 22.4,
+      "fence": 0.3,
+      "link": 15.0,
+      "open": 405.1,
+      "sync": 433.3,
+      "fallback_read": 1336.2,
+      "host": 411.2,
+      "fallback_write": 938.4
+     },
+     "python_us": 477.7,
+     "card_commands_us": 206.8,
+     "thread_us": 359.6,
+     "thread_idle_us": 136.8,
+     "lists_a_call": 3.0,
+     "fallbacks_a_call": {
+      "aten.add.Tensor": 2.0,
+      "aten.mean.dim": 1.0,
+      "aten.mul.Tensor": 3.0,
+      "aten.pow.Tensor_Scalar": 1.0,
+      "aten.rsqrt.default": 1.0,
+      "aten.silu.default": 1.0
+     },
+     "first_call_us": 8420.3
+    }
+   },
+   "joint": {
+    "errors": {
+     "max_rel": 0.007538293841614217,
+     "rms_rel": 0.003180074321286696
+    },
+    "ok": true,
+    "account": {
+     "wall_us": 1547.1,
+     "terms_us": {
+      "in_write": 566.3,
+      "run": 420.0,
+      "out_read": 310.3
+     },
+     "python_us": 250.4,
+     "card_commands_us": 203.8,
+     "thread_us": 206.6,
+     "thread_idle_us": 0.0,
+     "lists_a_call": 1.0,
+     "fallbacks_a_call": {},
+     "first_call_us": 922303.1
+    }
+   }
+  },
+  "b": {
+   "cpu_us": 11408.2,
+   "eager": {
+    "errors": {
+     "max_rel": 0.015254998380363068,
+     "rms_rel": 0.006252318658902373
+    },
+    "ok": true,
+    "mirror": true,
+    "account": {
+     "wall_us": 12830.0,
+     "terms_us": {
+      "in_write": 367.3,
+      "dispatch": 3682.5,
+      "planner": 59.0,
+      "allocate": 245.3,
+      "build": 166.7,
+      "store": 57.8,
+      "fence": 0.9,
+      "link": 38.1,
+      "open": 950.9,
+      "sync": 1046.8,
+      "fallback_read": 2503.3,
+      "host": 525.0,
+      "fallback_write": 1870.3
+     },
+     "python_us": 1316.2,
+     "card_commands_us": 421.0,
+     "thread_us": 931.8,
+     "thread_idle_us": 469.9,
+     "lists_a_call": 7.0,
+     "fallbacks_a_call": {
+      "aten.add.Tensor": 8.0,
+      "aten.cat.default": 3.0,
+      "aten.mean.dim": 4.0,
+      "aten.mul.Tensor": 13.0,
+      "aten.pow.Tensor_Scalar": 4.0,
+      "aten.rsqrt.default": 4.0,
+      "aten.silu.default": 1.0,
+      "aten.slice.Tensor": 4.0,
+      "aten.view.default": 4.0
+     },
+     "first_call_us": 13242.2
+    }
+   },
+   "joint": {
+    "errors": {
+     "max_rel": 0.0074084246622783114,
+     "rms_rel": 0.004669971470549375
+    },
+    "ok": true,
+    "account": {
+     "wall_us": 1580.2,
+     "terms_us": {
+      "in_write": 576.1,
+      "run": 554.2,
+      "out_read": 312.1
+     },
+     "python_us": 137.8,
+     "card_commands_us": 351.4,
+     "thread_us": 354.2,
+     "thread_idle_us": 0.0,
+     "lists_a_call": 1.0,
+     "fallbacks_a_call": {},
+     "first_call_us": 1180677.0
+    }
+   }
+  }
+ },
+ "ok": true
+}
