@@ -34,7 +34,8 @@ Komorebi is on PyPI (`pip install "komorebi-tt[runtime]"`), an early release for
   [broadcast](reference/broadcast.md), [Movement](reference/movement.md),
   [dynamic handlers](reference/dynamic.md), the
   [X280 threads](reference/threads.md), [overlays](reference/overlays.md),
-  [islands](reference/islands.md) and [the chain](reference/chain.md).
+  [islands](reference/islands.md), [the chain](reference/chain.md) and the
+  [tile formats](reference/formats.md).
 - **Examples**: twenty-six programs of the repository, each with its own page, from the
   [first one](../examples/01_mapcollect/README.md) on; the
   [list](../examples/README.md) says what each one shows.

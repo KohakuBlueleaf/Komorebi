@@ -866,14 +866,22 @@ program's library silu and its product by b on the matrix unit, which copies no 
 ## Products
 
 A tile function whose body is `return a @ b` of its two parameters is a matrix
-product, the library's `matmul_block`. Its operands are bfloat16 tiles; its sums
-float32.
+product, the library's `matmul_block`. Its operands are tiles of any two matrix
+formats of one exponent family, each side its own (float32, held as tf32, bfloat16 and
+the B family's block formats, or float16 and the A family's; see
+[tile formats](formats.md)); its sums float32. A class of A-family buffers computes in a
+16-bit DST. The left operand goes into SrcB, unless the tile function places its
+operands with `km.srcb(...)` or `km.srca(...)` ([placement](formats.md#placement)):
+`return x @ km.srcb(w)` builds the turned product, its W tensor stored with transposed
+tiles (`session.tensor(..., transposed_tiles=True)`). Either way the build prints both
+placements with the significand bits each operand keeps.
 
 A product's weight is in one of two forms:
 
 - **A field.** `acc += self.f(block, self.w)` in a loop over X's stream adds the product
   of each tile of the stream by the field's row of `acc`'s width of tiles into `acc`.
-  The field is `km.L1[km.bf16, K, n, 32, 32]`, K rows of n tiles, filled whole before
+  The field is `km.L1[km.bf16, K, n, 32, 32]` (or another matrix format, `km.bfp8_b`
+  a block-float weight at 1,088 B a tile), K rows of n tiles, filled whole before
   the first product: the form for a weight that is kept (filled by one handler, read by
   others, or read by several loops).
 - **A stream.** `for xb, wb in zip(km.Stream(x.tiles[0:1, k0:k1], block=b),
@@ -1344,7 +1352,7 @@ made, naming the handler, the line and what to write instead (the classes of
 Sliced.copy, line 34, `km.Stream(source[1:4]).drain()`: a tensor is in DRAM: a slice is not a value; take a part: source[self.partition(...)], or use a stream or read()
 Unled.merge, line 44, `output.pages(0, 1).write(whole)`: whole is the reduce's sum, which only the leader holds; write it under `if self.rank == self.leader:`
 Unsolved.count, line 49, `count: km.L1[km.fp32, TILES, 32, 32]`: TILES is solved against the L1 the buffers leave; make the program with session=session (or l1=session.l1()[1])
-Product.multiply, line 94, `results.push(product(x, y))`: a product's operands are bfloat16 tiles (the matrix unit's), and product's are not; stream bfloat16 tensors into the product
+Product.multiply, line 93, `results.push(product(x, y))`: product: a tile function takes tiles of float32 or the B family (float32, bfloat16, bfp8_b, bfp4_b, bfp2_b), not float16, float16: its code runs on an fp32 Dst, which the card fills wrong from the A family; give it tiles of those
 OtherFunction.apply, line 121, `acc += scaled(block, self.weight)`: acc += f(...) adds a product, and the tile function scaled (line 103 of test_classes.py) is not `return a @ b`; write scaled as `return a @ b`, a the stream's block, b a field
 Unfilled.apply, line 131, `acc += project(block, self.weight)  # unfilled`: self.weight is not filled above in this handler, and no other handler of the class fills it; write self.weight.fill(km.Stream(...)) before, or in a handler of its own
 Narrow.apply, line 142, `acc += project(block, self.weight)  # narrow`: self.weight is K rows of 2 tiles and acc holds 1; declare self.weight: km.L1[km.bf16, K, 1, 32, 32] or make acc km.tile.zeros(km.fp32, 2)
@@ -1378,8 +1386,9 @@ partition, a cast) is refused at its line, and so is `compute={"unpack_to_dest_m
 `Run.submit` refuses a command of a reduce in groups of S whose cores are not a
 multiple of S, naming the reduce's line.
 
-Streaming float32 tiles into the product is refused the same way: "a product's operands
-are bfloat16 tiles (the matrix unit's)".
+Streaming tiles of the two exponent families into a product is refused the same way:
+"a product of float16 and bfloat16: its operands are of one exponent family (bfloat16
+and bfp*_b, or float16 and bfp*; float32 goes with either)".
 
 A `CommandTimeout` of a program made from a class names, for each core that did not
 report, the handler and the Python line its CPU was waiting in;

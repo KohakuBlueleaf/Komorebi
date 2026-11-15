@@ -262,9 +262,11 @@ cores hold their programs from the start.
 
 On a run of several islands (`km.Session(cards=[0, 1])`), `run.chain` takes calls whose
 cores are flat ranks, as the run's are. Each island walks the chain on its own cores:
-its records are written in its own DRAM, and the chain command is one ticket with a part
-an island, each part carrying its own island's record address (the islands' DRAM
-allocators place the records apart once their tensors do). A core marks and credits
+its records are written in its own block of its own DRAM, at an address that differs by
+island (each island's allocator places them, apart once the islands' tensors are placed
+differently: 7,057,536 and 6,815,872 in the run below), each record's next word its own
+island's. The chain command is one ticket with a part an island, and each part carries
+its own island's record address in a7; there is no buffer at a fixed address. A core marks and credits
 cores of its own island only; what must cross is moved by the calls a step already has,
 which wait for the far side themselves.
 
@@ -284,7 +286,7 @@ relay ask that adds to a word it names, or port slots for the chain) is not buil
 
 [Example 29](../../examples/29_chain/README.md#over-two-cards) on two p150a cards, 236
 ranks, 2 tiles a rank, the median of 50 runs, every word exact both ways, 2026-11-16
-(card: submit to done of the slowest island):
+(card: submit to done of the slowest island; before the fix below):
 
 | | a command a step | one chain |
 |---|---:|---:|
@@ -293,12 +295,41 @@ ranks, 2 tiles a rank, the median of 50 runs, every word exact both ways, 2026-1
 | with TOTAL (an all-reduce of SUM's copy over the islands) and ADD of it into w, which island 0 holds alone: on the card, us | 535.7 | 603.0 |
 | the same, on the host, us | 2,181.5 | 841.3 |
 
-The chain removes the host's round trips as on one card. On the card it is slower over
-two islands: a chain of one call takes what its command does (25.7 against 27.1 us), and
-each record after the first about 30 us more than a command (two calls 84.3 against
-54.2, three 148.2 against 84.3); the same three calls on island 0's 118 ranks alone take
-108.1 against 83.9, and on one card a chain is not slower (four calls: 126.1 as a
-chain, 130.6 as commands). Where a marked record loses that time in an island build is not found yet.
+The chain removes the host's round trips as on one card. On the card it was slower than
+its commands. Here is what was found and what remains:
+
+- **The cause.** A record's root walks every group of the next record and each of its
+  three ranges, to find the groups its block meets (`chain_mark`). That costs about 226
+  ns a group. On two islands the next record's groups are all 236 ranks' groups, and a
+  root walked the other island's 118 too, none of which it may mark.
+- **Fixed.** On an island of several, a root now walks only the groups with a rank on
+  its own island. A card of its own (`KM_ONE_ISLAND`) builds the same code as before.
+- **A known cost.** The walk over the island's own groups remains: about 226 ns a group
+  of the next record, each step (about 12 us a record after the first on 118 groups).
+  It could be cut by computing the marked groups from the ranges.
+
+Each record after the first waits for the walk: its writer takes it only once the walk
+of the record before is done, and a core's mark lands when the walk reaches its group.
+Measured with the chain's stamps (`KM_CHAIN_STAMPS`, the last of 50 runs, the median
+core, nanoseconds from the kernel's chain start) on the first three calls of example 29
+(SCALE, SCALE, ADD, a group a rank):
+
+| | 236 ranks, before | 236 ranks, after | island 0's 118 ranks alone (after) |
+|---|---:|---:|---:|
+| three calls as a chain, us (as commands: 84.3, 84.4, 84.0) | 148.4 | 108.6 | 108.3 |
+| record 0's writes acknowledged (the writer) | 31,852 | 31,849 | 31,788 |
+| record 0's marks all issued (the writer) | 85,209 | 58,557 | 58,493 |
+| the walk | 53,357 | 26,708 | 26,705 |
+| record 1's input marked (the reader; island 1's half) | 57,082 (71,637) | 44,738 (44,753) | 44,680 |
+| record 2 taken (the reader) | 84,252 | 71,934 | 71,837 |
+
+A chain of one call takes what its command does (25.7 against 27.1 us). Every mark goes
+from a core to itself, and every page is read on its own island, so there is no link
+traffic in this test. Example 29 on one card has 8 groups, and its chain is faster than
+its commands (126.1 against 130.6 us). A one-card chain whose next record has about 118
+groups should pay the same 12 us, but that was not measured (the one-card run could not
+open its card). A walk that finds the groups met from the ranges' base and step directly
+would remove the remaining cost. It is not built.
 
 ## A record of another program's handler: what it would need
 

@@ -6,8 +6,9 @@ value reduced to one word (tile.word_max) takes the last slot."""
 import copy
 from dataclasses import dataclass
 
+from komorebi import formats
 from komorebi.dsl.tile import chain as chains
-from komorebi.dsl.tile.ir import BF16, F32, PlanError, fail
+from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.lower import (
     ADDR_MOD,
     CONSTANT_REGISTERS,
@@ -69,8 +70,11 @@ def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4"):
         raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
     if not 1 <= width <= 3 or not width <= state_tile <= 3:
         fail("the step form takes 1 to 3 row tiles and the state in a tile after them")
-    if not {t.dtype for t in ir.tensors} <= {BF16, F32}:
-        fail(f"{ir.name}: tensors are bf16 or fp32")
+    if not {t.dtype for t in ir.tensors} <= set(TILE_DTYPES):
+        fail(
+            f"{ir.name}: tensors are fp32 or of the B family "
+            f"({', '.join(TILE_DTYPES[1:])})"
+        )
     shapes = chains._Shapes(True)
     nodes = ir.nodes()
     for n in nodes:
@@ -127,6 +131,7 @@ def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4"):
         operand, scale = _scale_out(r)
         plan.reductions.append((r, operand, chain_of(operand), scale))
     plan.store = (row_store, chain_of(row_store))
+    plan.row_dtype = rows_[0].view.tensor.dtype  # the sums' in0, unpacked to SrcB
     plan.per_row = [(n, chain_of(n)) for n in held]
     unit.passes.append(Pass("algebra", "templates", _templates(compiler.templates)))
     scaled = sum(1 for *_, s in plan.reductions if s is not None)
@@ -238,10 +243,22 @@ def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4"):
     return unit
 
 
-# Fidelities whose phases read SrcB's low mantissa bits (phases 2 and 3): the row is
-# in0, which the unpacker puts in SrcB; the tile of ones in SrcA is exact at phase 0.
-FULL_FIDELITY = ("HiFi3", "HiFi4")
+# The row of a sum on the matrix unit is in0, which the unpacker puts in SrcB; the
+# tile of ones in SrcA is exact at phase 0.
 SUM_TILE, SUM_STATE = 0, 1  # the sum part's Dst tiles: the product, the state
+
+
+def sum_bits_short(dtype, fidelity):
+    """None when a row sum on the matrix unit multiplies every significand bit of a
+    `dtype` row (in0, in SrcB) at `fidelity`, else the refusal's record."""
+    kept = formats.bits_used(dtype, "srcb", fidelity)
+    if kept == formats.SIGNIFICAND[dtype]:
+        return None
+    return (
+        f"refused: at {fidelity} the matrix unit multiplies {kept} of a {dtype} "
+        f"row's {formats.SIGNIFICAND[dtype]} significand bits (SrcB's low 4 come in "
+        "phases 2 and 3)"
+    )
 
 
 def _matrix_sums(plan, fidelity, word, nodes):
@@ -253,11 +270,9 @@ def _matrix_sums(plan, fidelity, word, nodes):
             out.add(id(r))
     if not out:
         return out, []
-    if fidelity not in FULL_FIDELITY:
-        return set(), [
-            f"refused: at {fidelity} the matrix unit reads the row's top 7 bits only "
-            "(SrcB's low bits come in phases 2 and 3)"
-        ]
+    short = sum_bits_short(plan.row_dtype, fidelity)
+    if short is not None:
+        return set(), [short]
     if word is not None and _depends(word, out):
         return set(), ["refused: the word reads a row sum"]
     return out, []
@@ -381,6 +396,7 @@ class _Plan:
         self.width, self.state_tile, self.level = width, state_tile, level
         self.stored, self.word, self.held, self.slots = stored, word, held, slots
         self.reductions, self.store, self.per_row = [], None, []
+        self.row_dtype = None  # the stored row's format
         # sums on the matrix unit (ids) and the per-row values computed after them
         self.matrix, self.later = set(), []
 
