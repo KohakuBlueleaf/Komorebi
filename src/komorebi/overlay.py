@@ -49,6 +49,9 @@ ALIGN = 64  # slots, images and DRAM copies are whole 64-byte lines
 # The service overlay's slot a class's build reserves on a one-island session: built
 # 8,640 B (8,840 B with KM_CHECK_NOC_SOURCES), rounded up to 9 KiB.
 SERVICE_SLOT_MOST = 9216
+# On an island session (KM_PAGE_LINKS): the largest island load logged, 41,856 B (two
+# cards; 39,552 B split in two, 39,512 in three), and 1,152 B of margin: 42 KiB.
+ISLAND_SERVICE_SLOT_MOST = 43008
 LINK_BASE = 0x100000  # the first of the two links; the second is one line above
 LINK_LENGTH = 1 << 20
 ENTRY = "km_overlay_entry"
@@ -530,6 +533,16 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
     persistent kernels) and sizes the slots as `declared_slots` (Slots) says: a Built.
     """
     by_part = {TARGETS[target]: recipe for target, recipe in recipes.items()}
+    island = any(
+        "KM_PAGE_LINKS" in define
+        for recipe in recipes.values()
+        for define in recipe.defines
+    )
+    most, named = (
+        (ISLAND_SERVICE_SLOT_MOST, "ISLAND_SERVICE_SLOT_MOST")
+        if island
+        else (SERVICE_SLOT_MOST, "SERVICE_SLOT_MOST")
+    )
     declared, images, extents, served = {}, {}, {}, {}
     number = constants()["kOverlayService"]
     for kernel in KERNELS:
@@ -544,11 +557,11 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
             extents.setdefault(part, []).append(linked.extent)
             if overlay.number == number:
                 served[part] = linked.extent
-                if linked.extent > SERVICE_SLOT_MOST:  # the load's L1 table decides
+                if linked.extent > most:  # the load's L1 table decides
                     log(
                         f"the service overlay's {part} part takes {linked.extent:,} "
-                        f"B, over SERVICE_SLOT_MOST ({SERVICE_SLOT_MOST:,} B): a "
-                        "class built with session= reserved less than this load takes"
+                        f"B, over {named} ({most:,} B): a class built with session= "
+                        "reserved less than this load takes"
                     )
             log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
     slots = {}

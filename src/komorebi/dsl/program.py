@@ -97,7 +97,7 @@ def make(
     cls = type(self)
     plan = dict(plan or {})
     if session is not None:
-        l1 = session.l1()[1] if l1 is None else l1
+        l1 = reserve_of(session)[0].l1()[1] if l1 is None else l1
         room = l1 - runtime_bytes(session, trace)
     else:
         room = l1
@@ -180,22 +180,33 @@ class Unbuilt:
     buffers, threads, overlays = (), {}, {}
 
 
+def reserve_of(session):
+    """(the Session whose L1 table a class's build checks, the service overlay's slot
+    it reserves): an island session's first island at ISLAND_SERVICE_SLOT_MOST, a
+    card's own at SERVICE_SLOT_MOST."""
+    islands = getattr(session, "sessions", None)
+    if not islands:
+        return session, overlay.SERVICE_SLOT_MOST
+    if len(islands) > 1:
+        return islands[0], overlay.ISLAND_SERVICE_SLOT_MOST
+    return islands[0], overlay.SERVICE_SLOT_MOST
+
+
 def runtime_bytes(session, trace):
     """The L1 the load takes besides a class's buffers, at least: its table's rows for
     a program of none (Session.l1_rows) and the service overlay's slot at its most. A
     field's symbol is solved against what is left; l1_checked checks the class."""
-    return sum(size for _, size in session.l1_rows(Unbuilt(), trace)) + (
-        overlay.SERVICE_SLOT_MOST
-    )
+    one, most = reserve_of(session)
+    return sum(size for _, size in one.l1_rows(Unbuilt(), trace)) + most
 
 
 def l1_checked(program, session, l1, trace, log):
     """The load's L1 table of a core for the built program (Session.l1_rows), the
-    service overlay's slot at its most (the load refuses a larger one), refused
+    service overlay's slot at its most (the load logs a larger one), refused
     (L1BudgetError) as the load refuses it; a class's own overlays' slots are the
     load's."""
+    session, most = reserve_of(session)
     rows = session.l1_rows(program, trace)
-    most = overlay.SERVICE_SLOT_MOST
     rows[2:2] = [(f"slots: reader, 1 x {most:,} B (at most)", most)]
     table, fits = overlay.budget(l1, rows)
     log(f"L1 budget of a core (the build's, as the load's):\n{table}")

@@ -77,9 +77,15 @@ is 8,640 B (with the islands defines too), and 8,840 B in the build that checks 
 core-table indices (`KM_CHECK_NOC_SOURCES`); rounded up to 9 KiB. The load does not
 refuse on it: it refuses only by its own L1 table, made from the real sizes, and logs a
 service part over the constant. The build's table shows the reserve, the load's the real
-slot (8,640 B), so a class has the 576 B between them to spare. An island session's
-service part is larger (39,512 B on a card split in three): a class's build for such a
-session reserves less than the load takes today.
+slot (8,640 B), so a class has the 576 B between them to spare. A class made with an
+island session (a card split, or two cards) reserves `overlay.ISLAND_SERVICE_SLOT_MOST`,
+43,008 B, and checks the first island's table: the island loads' service part has the
+links' and the tensor table's services built in, at most 41,856 B logged (two cards;
+39,512 B on a card split in three, 39,552 B in two), and 1,152 B of margin. The load
+logs a part over the reserve. On card 0 split in two, example 01's class: the build's
+table 43,008 B of slot and 32,848 B of host transfer buffer, the load's 39,552 B and
+82,000 B (the island load's host transfer buffer is larger, and the build does not
+count it).
 
 The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` eight hex
 digits of what changes the generated sources (the plan, each tensor's format, page
