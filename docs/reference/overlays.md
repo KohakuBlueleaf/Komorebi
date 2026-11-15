@@ -476,6 +476,20 @@ handler's overlay parts on the load's buffers, and added by `run.addon(...,
 handler=True)` ([classes, a set compiled on its first use](classes.md#a-set-compiled-on-its-first-use)).
 The gate's added sets ran within 1.6 % of the same blocks loaded.
 
+**Built ahead.** `program.ahead(name, parts, defines=..., compile_args=...)` names code
+a run of the program will add (run.addon's arguments), and `program.ahead(Gate.gate,
+size=4)` a class's handler at a set its first use compiles (compiled then, the same
+name and parts the first use adds). The load builds each part for each group against
+its kernels into the parts' cache, after the kernels and before the launch, and logs
+`ahead <name>: N parts for G groups in S s (H built before)`; the add later finds them
+there. A part's key holds no overlay number, so the number the add takes does not
+matter. A build off the card (the same kernels) fills the same cache, so the card's
+load finds them too. The gate's `GateBlocks` made with `km.ANY`, block 4 given to
+`ahead`: the build off the card built its five parts in 7.16 s; on the card the load
+found the five built (0.06 s), the first use's add took 56.8 ms (cached), and the
+command ran 0 wrong on 120 cores. A load that reserved no room builds none; a set of a
+handler without `km.ANY` is refused (a listed set is built with the program).
+
 ### Several programs with overlays
 
 Programs in the runtime's form ([host](host.md#several-programs-in-one-run)) may each

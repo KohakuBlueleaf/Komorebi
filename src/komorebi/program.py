@@ -365,6 +365,15 @@ class Program:
         self.overlays[name] = made
         return self
 
+    def ahead(self, name, parts=None, defines=None, compile_args=None, **wanted):
+        """Code a run of this program will add, built by the load (and by a build off
+        the card) into the parts' cache so the add finds it built: run.addon's `name`,
+        `parts`, `defines`, `compile_args`, or a class's handler at a set its first use
+        compiles, `program.ahead(Gate.gate, size=4)` (komorebi.added.ahead)."""
+        added = importlib.import_module("komorebi.added")  # it imports this module
+        added.ahead(self, name, parts, defines, compile_args, wanted)
+        return self
+
     def slots(self, count=None, bytes=None):
         """Declares the slots of the kernels: `count` (1 to 4) and `bytes` per slot,
         each an int or a {"reader"|"writer"|"compute": value}; by default a slot per

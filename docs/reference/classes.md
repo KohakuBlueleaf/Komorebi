@@ -277,6 +277,8 @@ values, the class's source files and a hash of the package's Python source (the 
 compiler that wrote them: a changed compiler compiles the set again). A later process that makes the same program finds
 them there and reads the set's words from `first_use.json`, so nothing is compiled.
 Its parts are then found in the parts' cache, so nothing is built either.
+`program.ahead(Gate.gate, size=4)` compiles a set before the run and has the load
+build its parts ([overlays](overlays.md#code-added-to-a-live-run), built ahead).
 
 What the opt-in costs and requires, checked at the make:
 

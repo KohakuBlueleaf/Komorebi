@@ -197,12 +197,46 @@ def handler(run, program, method, wanted):
     added = getattr(run, "added", {}).get(name)
     if added is not None:
         return added.number, variant
+    sources = set_sources(folder, variant)
+    number = run.addon(name, sources, handler=True, **added_with(program))
+    return number, variant
+
+
+def set_sources(folder, variant):
+    """run.addon's parts of a set compiled into `folder`."""
     sources = {"reader": folder / variant.name / "movement.cpp"}
     sources["writer"] = sources["reader"]
     if (folder / variant.name / "compute.cpp").is_file():
         sources["compute"] = folder / variant.name / "compute.cpp"
-    number = run.addon(name, sources, handler=True, **added_with(program))
-    return number, variant
+    return sources
+
+
+def ahead(program, handler, given):
+    """(name, parts, run.addon's keywords) of a class's handler at the set `given` (a
+    parameter not given takes its default), compiled as its first use compiles it,
+    for a build ahead of the first use (komorebi.added.ahead)."""
+    method = getattr(handler, "method", handler)
+    kept_ = getattr(program, "first_use", None)
+    if kept_ is None or method.name not in kept_.opted:
+        raise ProgramError(
+            f"{type(program).__name__}.{method.name}: built ahead only with "
+            f"km.{spelling('first_use')} among its sets at the make (a listed set is "
+            "built with the program)"
+        )
+    parameters = front.constant_parameters(method.function)
+    unknown = sorted(set(given) - set(parameters))
+    if unknown:
+        raise ProgramError(
+            f"{type(program).__name__}.{method.name}: {', '.join(unknown)} is not a "
+            f"constant parameter of it ({', '.join(parameters)})"
+        )
+    wanted = {k: given.get(k, default) for k, (_, default) in parameters.items()}
+    folder, variant = compiled(program, method, wanted)
+    return (
+        f"{kept_.key}.{variant.name}",
+        set_sources(folder, variant),
+        added_with(program),
+    )
 
 
 def added_with(program):
