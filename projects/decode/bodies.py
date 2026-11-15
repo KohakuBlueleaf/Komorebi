@@ -71,12 +71,14 @@ def rms(name, columns):
 def units():
     """{header name: unit program}: the streams (each with the load-macro rule, which
     refuses what does not fit; `emit` refuses a template its setup does not store),
-    the row's and the head's 1 / rms."""
+    the row's and the head's 1 / rms; each on the command's live rows (the band)."""
     out = {}
     for name, (inputs, fn) in STREAMS.items():
-        out[name] = unit_program(stream(name, inputs, fn), load_macro=True)
+        ir = stream(name, inputs, fn)
+        out[name] = unit_program(ir, load_macro=True, rows=True)
     for name, columns in (("rms_row", ROW), ("rms_head", HEAD)):
-        out[name] = row_program(rms(name, columns), 1, ROWS_TILE, COLS_TILE)
+        ir = rms(name, columns)
+        out[name] = row_program(ir, 1, ROWS_TILE, COLS_TILE, rows=True)
     return out
 
 
@@ -91,13 +93,17 @@ def sources_hash():
 
 def generate():
     """Writes every header into GENERATED and their costs beside them; returns the
-    costs (math CPU cycles a unit)."""
+    costs (math CPU cycles a unit at 1 and 32 live rows)."""
     GENERATED.mkdir(exist_ok=True)
     costs = {}
     for name, unit in units().items():
         (GENERATED / f"{name}.hpp").write_text(emit(unit))
         macro = next((p.done for p in unit.passes if p.name == "load_macro"), None)
-        costs[name] = {"cycles": unit.cost("math")[1], "load_macro": macro}
+        costs[name] = {
+            "cycles": unit.cost("math")[1],
+            "cycles_1_row": unit.cost("math", 1)[1],
+            "load_macro": macro,
+        }
     saved = {"sources": sources_hash(), "costs": costs}
     (GENERATED / "bodies.json").write_text(json.dumps(saved, indent=1))
     return costs

@@ -38,6 +38,12 @@
 #include "expstep_flash.hpp"
 #elif BODY == 17
 #include "softstep_accurate.hpp"
+#elif BODY == 24
+#include "add_band.hpp"
+#elif BODY == 25
+#include "gate_band.hpp"
+#elif BODY == 26
+#include "norm_band.hpp"
 #endif
 #if (BODY == 12 || BODY == 14) && defined(TRISC_MATH)
 #include "sfpu.hpp"  // projects/attention/kernels
@@ -206,10 +212,17 @@ namespace {
         MATH((km_tile::expstep_flash_init()));
 #elif BODY == 17
         MATH((km_tile::softstep_accurate_init()));
+#elif BODY == 24
+        MATH((km_tile::add_band_init()));
+#elif BODY == 25
+        MATH((km_tile::gate_band_init()));
+#elif BODY == 26
+        MATH((km_tile::norm_band_init()));
 #endif
     }
 
-    inline void body() {
+    // `rows`: the live rows a band body (BODY 24 to 26) takes.
+    inline void body([[maybe_unused]] uint32_t rows) {
 #if BODY == 0
         silu_tile(0);
 #elif BODY == 1
@@ -271,6 +284,12 @@ namespace {
         MATH((km_tile::expstep_flash(0)));
 #elif BODY == 17
         MATH((km_tile::softstep_accurate(0)));
+#elif BODY == 24
+        MATH((km_tile::add_band(0, rows)));
+#elif BODY == 25
+        MATH((km_tile::gate_band(0, rows)));
+#elif BODY == 26
+        MATH((km_tile::norm_band(0, rows)));
 #endif
     }
 
@@ -279,6 +298,7 @@ namespace {
 void kernel_main() {
     const uint32_t nonce = get_arg_val<uint32_t>(0);
     const uint32_t units = get_arg_val<uint32_t>(1);
+    [[maybe_unused]] const uint32_t rows = get_arg_val<uint32_t>(2);
     volatile uint32_t* info = (
         reinterpret_cast<volatile uint32_t*>(get_tile_address(rules::kCbInfo, 0))
     );
@@ -323,7 +343,7 @@ void kernel_main() {
         copy_tile(rules::kCbP, 0, P_TILE);
 #endif
         MATH(tensix_sync(); const uint32_t start = rules::wall());
-        body();
+        body(rows);
         MATH(tensix_sync(); info[rules::kBody + u] = rules::wall() - start);
         tile_regs_commit();
         cb_pop_front(rules::kCbA, kUnitTiles);

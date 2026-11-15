@@ -21,6 +21,10 @@ REPLAY_ENTRIES = 32  # entries of one thread's replay buffer
 PRICES = {
     "word": (1.0, "a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16)"),
     "loop": (2.0, "a pass of a loop the core runs: N + 2 cycles (probe 12)"),
+    # the band's own loop and tests: hidden behind the replayed or pushed words (the
+    # add band at 32 rows 93.5 on the card, its whole tile 93.0; the norm's 682, 689.5)
+    "band_loop": (0.0, "a pass of a band's loop: hidden (tile_rules: the band)"),
+    "guard": (0.0, "a band's test of the live rows: hidden (tile_rules: the band)"),
     "replayed": (1.004, "a replayed word: 1.004 cycles (probe 8)"),
     "mad_stall": (1.0, "a MAD result read next: 1 stall (probe 9: 4.03 against 3.04)"),
     # read by a store: no stall (experiments/tile_rules: add, scale, SiLU on the card)
@@ -295,12 +299,28 @@ class Product:
     insns: list = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class Runtime:
+    """A count the C++ computes from the body's live rows (the band): `text` its
+    expression, `of(rows)` its value for the cost model; `guard`: an `if`, 0 or 1."""
+
+    text: str
+    of: object
+    guard: bool = False
+
+
+def passes(count, rows):
+    """The passes of a loop of `count` (an int or a Runtime) at `rows` live rows."""
+    return max(0, count.of(rows)) if isinstance(count, Runtime) else count
+
+
 @dataclass(eq=False)
 class Loop:
-    """`count` passes over `body`; `unroll`: the C++ loop is unrolled."""
+    """`count` passes over `body` (a Runtime: the band's); `unroll`: the C++ loop is
+    unrolled."""
 
     name: str
-    count: int
+    count: object
     body: list
     unroll: bool = False
 
@@ -357,13 +377,15 @@ class UnitProgram:
     passes: list = field(default_factory=list)
     checks: list = field(default_factory=list)
     not_checked: list = field(default_factory=list)
+    # the band: the body takes its live rows, `<name>(dst, rows)`
+    band: bool = False
 
-    def cost(self, cpu):
-        """(instructions, cycles, terms) of one tile on `cpu`: coprocessor
-        instructions and their cycles; each term (what, count, cycles, source),
-        cycles None for a library call or a sync (not priced)."""
+    def cost(self, cpu, rows=32):
+        """(instructions, cycles, terms) of one tile on `cpu` at `rows` live rows (a
+        band's; whole tiles take no band): coprocessor instructions and their cycles;
+        each term (what, count, cycles, source), cycles None when not priced."""
         terms = []
-        state = {"previous": None, "recording": None, "buffer": {}}
+        state = {"previous": None, "recording": None, "buffer": {}, "rows": rows}
         _price(self.tile[cpu], 1, terms, state)
         if cpu == "math":
             for items in self.parts.values():
@@ -416,7 +438,10 @@ def _dump(items, depth):
     for item in items:
         if isinstance(item, Loop):
             how = ", unrolled" if item.unroll else ""
-            out.append(f"{pad}loop {item.name} < {item.count}{how}:")
+            count = item.count
+            if isinstance(count, Runtime):
+                count = f"{'if' if count.guard else 'band'} ({count.text})"
+            out.append(f"{pad}loop {item.name} < {count}{how}:")
             out += _dump(item.body, depth + 2)
         elif isinstance(item, Insn):
             args = " ".join(f"{n}={_arg(item.args[n])}" for n, _ in OPS[item.op].args)
@@ -441,11 +466,19 @@ def _price(items, times, terms, state):
     recorded into the replay buffer, and the recorded sequences by start index."""
     for item in items:
         if isinstance(item, Loop):
-            if not item.unroll:
-                cycles, source = PRICES["loop"]
-                passes = times * item.count
-                terms.append(("loop pass", passes, passes * cycles, source))
-            _price(item.body, times * item.count, terms, state)
+            count = passes(item.count, state["rows"])
+            if isinstance(item.count, Runtime) and item.count.guard:
+                cycles, source = PRICES["guard"]
+                terms.append(("band guard", times, times * cycles, source))
+            elif not item.unroll:
+                # a runtime face loop's pass is a loop's; a band's is hidden
+                band = isinstance(item.count, Runtime) and item.name == "band"
+                cycles, source = PRICES["band_loop" if band else "loop"]
+                what = "band loop pass" if band else None
+                terms.append(
+                    (what or "loop pass", times * count, times * count * cycles, source)
+                )
+            _price(item.body, times * count, terms, state)
         elif isinstance(item, Insn) and item.op == "REPLAY":
             a = item.args
             if a["load_mode"]:

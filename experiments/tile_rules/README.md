@@ -39,6 +39,9 @@ the tile layer is [docs/reference/tile.md](../../docs/reference/tile.md).
 | 21 | exp | ruled | BODY 16 with the store's address mode in place of the `INCRWC` |
 | 22 | product | hand | the library's `matmul_block_no_mop` of one bf16 tile by another at HiFi2, as the dense project's compute order calls it (`kernels/product.cpp`) |
 | 23 | product | emitted | the library's unpack, and the matrix words `komorebi.dsl.tile.matrix` emits for its math |
+| 24 | add | band | BODY 4 emitted with `rows=True`: the live rows a runtime argument (`--rows`) |
+| 25 | gate | band | `trace.silu(a) * b` with the load macro and `rows=True` |
+| 26 | norm | band | BODY 11's norm with `rows=True` (the row form's guarded groups) |
 
 The hand norm keeps decode's sequence with fp32 buffers where decode has bf16, and
 reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.

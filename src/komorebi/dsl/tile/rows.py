@@ -27,7 +27,9 @@ from komorebi.dsl.tile.unit import (
     Call,
     Check,
     Insn,
+    Loop,
     Pass,
+    Runtime,
     Sync,
     UnitError,
     UnitProgram,
@@ -80,10 +82,11 @@ def row_operand(row, width):
     return out
 
 
-def row_program(ir, width, rows_tile, cols_tile, dest="fp32"):
+def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
     """The unit program of row kernel `ir` over a row of `width` tiles in Dst tiles
     0 .. width - 1 (the result stored over them), its per-row value in Dst tile
-    `rows_tile` and its per-column operand read from Dst tile `cols_tile`."""
+    `rows_tile` and its per-column operand read from Dst tile `cols_tile`; `rows`:
+    the band, the body's live rows a runtime argument (`band_groups`)."""
     if dest != "fp32":
         raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
     if not 1 <= width <= 2:
@@ -209,8 +212,75 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32"):
     _checks(unit, body.code)
     # The checks' repairs went into body.code: the tile program takes it again.
     unit.tile["math"][-1 - len(body.code) + _repairs(unit) : -1] = body.code
+    if rows:
+        at = len(unit.tile["math"]) - 1 - len(body.code)
+        items, done = band_groups(body.code, layouts)
+        unit.tile["math"][at:-1] = items
+        unit.band = True
+        unit.passes.append(Pass("schedule", "band", done))
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
     return unit
+
+
+BAND_ROWS = 8  # the row form's band: two row groups (scheduled together)
+
+
+def _store_rows(insn, layouts):
+    """The first row of the band a store writes: a row's vector or a per-row slot."""
+    a = insn.args["dest_reg_addr"]
+    slots = layouts["bcast_col"]
+    if slots.tile * TILE <= a < (slots.tile + 1) * TILE:
+        group = (a - slots.tile * TILE - slots.offset) // 4
+    else:
+        group = 4 * (a % TILE // 32) + a % 16 // 4
+    return 4 * group // BAND_ROWS * BAND_ROWS
+
+
+def band_groups(code, layouts):
+    """Rule band in the row form: an instruction runs while the first band its stores
+    write (followed back through the registers) holds a live row: runs of one band
+    under `if`, an SFPNOP after a run's last MAD (the next run may not run). Refused
+    with lane flags (a flag set in a run would change the lanes of the next)."""
+    if any(x.sets_flags() or OPS[x.op].kind == "flags" for x in code):
+        raise UnitError("the row form's band takes no lane flags")
+    first = [None] * len(code)
+    need = {}
+    for i in range(len(code) - 1, -1, -1):
+        x = code[i]
+        if x.op == "SFPSTORE":
+            first[i] = _store_rows(x, layouts)
+        else:
+            found = [need.pop(w) for w in x.writes() if w in need]
+            first[i] = min(found) if found else None
+        for r in x.reads():
+            if first[i] is not None:
+                need[r] = min(need.get(r, first[i]), first[i])
+    start = 0
+    for i in range(len(code)):
+        start = start if first[i] is None else first[i]
+        first[i] = start
+    runs = []
+    for x, row in zip(code, first):
+        if runs and runs[-1][0] == row:
+            runs[-1][1].append(x)
+        else:
+            runs.append((row, [x]))
+    items, nops = [], 0
+    for k, (row, run) in enumerate(runs):
+        if OPS[run[-1].op].kind == "mad" and k + 1 < len(runs):
+            run.append(Insn("SFPNOP", {}, "the next run may not run"))
+            nops += 1
+        if row == 0:
+            items += run
+            continue
+        test = f"rows - 1u >= {row}u"
+        guard = Runtime(test, lambda r, row=row: int(not 1 <= r <= row), guard=True)
+        items.append(Loop("band", guard, run))
+    done = [
+        f"{len(runs)} runs in bands of {BAND_ROWS} rows, "
+        f"{sum(isinstance(x, Loop) for x in items)} guarded; {nops} SFPNOP"
+    ]
+    return items, done
 
 
 def _repairs(unit):

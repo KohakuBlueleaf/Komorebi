@@ -10,7 +10,8 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
         compute.arg(block.plan + kSpOh) * compute.arg(block.plan + kSpOw)
     );
 #if DC_EMIT_ADD
-    return decode::emitted::residual_add(compute, tiles) ? 1 : 0;
+    const uint32_t live = decode::live_rows(*block.command);
+    return decode::emitted::residual_add(compute, tiles, live) ? 1 : 0;
 #else
     if (!compute.wait_front(kCbSum, tiles) || !compute.wait_front(DC_CB_BLOCK, tiles)) {
         return 0;

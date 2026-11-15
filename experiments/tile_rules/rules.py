@@ -108,8 +108,15 @@ BODIES = {
     21: ("exp", "ruled"),
     22: ("product", "hand"),
     23: ("product", "emitted"),
+    24: ("add", "band"),
+    25: ("gate", "band"),
+    26: ("norm", "band"),
 }
-FORMS = ("hand", "emitted", "macro", "stated", "accurate", "ruled")
+FORMS = ("hand", "emitted", "macro", "stated", "accurate", "ruled", "band")
+# The band's bodies (form "band"): the live rows a runtime argument, run at each of
+# `card --rows`; their headers' names.
+BAND = {24: "add_band", 25: "gate_band", 26: "norm_band"}
+BAND_ROWS = {"add": 4, "gate": 4, "norm": 8}  # the rows a band runs in
 CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax", "attn", "product")
 # Run on the card already, over the same inputs (the tile-front experiment): built
 # and checked here, not run again.
@@ -155,11 +162,11 @@ def stream(name, inputs, fn):
     return ir
 
 
-def norm_ir():
+def norm_ir(name="norm"):
     """y = x rsqrt(mean(x^2) + eps) g over rows of WIDTH tiles, g one weight row."""
     x, g = TensorParam("x", False, F32), TensorParam("g", False, F32)
     y = TensorParam("y", True, F32)
-    ir = KernelIR("norm", [x, g, y], [], {})
+    ir = KernelIR(name, [x, g, y], [], {})
     with trace.Tracer(ir):
         xs, gs, ys = (trace.TensorProxy(t) for t in (x, g, y))
         weight = trace.resident(gs.tiles[0, :])
@@ -228,6 +235,11 @@ def units():
         unit = unit_program(stream(f"{name}_macro", inputs, fn), load_macro=True)
         out[f"{name}_macro"] = unit
     out["norm"] = row_program(norm_ir(), WIDTH, ROWS_TILE, P_TILE)
+    for name in ("add", "gate"):
+        ir = stream(f"{name}_band", *fns[name])
+        out[f"{name}_band"] = unit_program(ir, load_macro=True, rows=True)
+    band = norm_ir("norm_band")
+    out["norm_band"] = row_program(band, WIDTH, ROWS_TILE, P_TILE, rows=True)
     out["expstep"] = unit_program(expstep_ir())
     out["expstep_flash"] = unit_program(expstep_ir("expstep_flash", **STEP_EXP))
     out["softstep"] = step_program(softmax_ir(), STEP_WIDTH, STEP_TILE)
@@ -300,7 +312,7 @@ def aiclk_mhz():
 def p_pages(body):
     """Pages of P: the emitted norm's per-column operand tile; the hand norm's
     identity, mean and weight tiles (decode's constant tiles, and g in every row)."""
-    return {10: 2 + WIDTH, 11: 1}.get(body, int(body >= 12))
+    return {10: 2 + WIDTH, 11: 1, 24: 0, 25: 0, 26: 1}.get(body, int(body >= 12))
 
 
 def setting(body):
@@ -438,11 +450,11 @@ def launch_product(session, body, data):
     return run, t_out, t_info, nonce
 
 
-def launch(session, body, data, stage=None):
+def launch(session, body, data, stage=None, rows=32):
     """One program on core (0, 0) running BODY `body` over `data` (a, b, p: uint32
     words of fp32 tiles); returns (the Launch, the output, the info tensor, nonce).
-    `stage`: (number, folder) of headers found before kernels/generated (a STAGE
-    define keeps the stage's kernel apart in the runtime's cache)."""
+    `stage`: (number, folder) of headers ahead of kernels/generated (with a STAGE
+    define); `rows`: the live rows a band body takes (a runtime argument)."""
     case, form = BODIES[body]
     if case == "attn":
         return launch_attn(session, body, data)
@@ -489,7 +501,7 @@ def launch(session, body, data, stage=None):
     unpack = {CB_A: "UnpackToDestFp32"}
     if defines["COPY_B"]:
         unpack[CB_B] = "UnpackToDestFp32"
-    if body == 11 or body >= 12:
+    if body == 11 or 12 <= body < 24 or body == 26:
         unpack[CB_P] = "UnpackToDestFp32"
     if body == 20:
         unpack[CB_SQUARES] = "UnpackToDestFp32"  # the state, back into Dst
@@ -507,7 +519,7 @@ def launch(session, body, data, stage=None):
         [],
         [(k, str(v)) for k, v in defines.items()],
         headers,
-        args([nonce, count]),
+        args([nonce, count, rows]),
         **km_session.compute_config(options),
     )
     return run, t_out, t_info, nonce
@@ -951,6 +963,34 @@ def check(case, data, outputs, infos, nonces):
     return rec
 
 
+def face_rows():
+    """The tile row of each of a tile's 1024 words in face order."""
+    w = np.arange(TILE_WORDS)
+    return w // 512 * 16 + w % 256 // 16
+
+
+def check_band(case, data, out, info, nonce, rows):
+    """The record of a band body at `rows` live rows: its cycles; on the rows of the
+    live bands its error against float64 (the case's tolerance); past them, whether
+    the output is the input a bit for bit (rows past the band are left as they were)."""
+    got = _cycles(info, nonce)
+    band = BAND_ROWS[case]
+    end = min(32, -(-rows // band) * band) if 1 <= rows <= 32 else 32
+    live = face_rows() < end
+    ref = reference(case, data)
+    got["rows"], got["band_end"] = rows, end
+    got["vs_float64"] = errors(out[:, live], ref[:, live])
+    got["past_band_is_input"] = bool(np.array_equal(out[:, ~live], data["a"][:, ~live]))
+    got["ok"] = (
+        got["nonce_ok"]
+        and got["error"] == 0
+        and got["vs_float64"]["not_finite"] == 0
+        and got["vs_float64"]["max"] <= TOLERANCE[case]
+        and got["past_band_is_input"]
+    )
+    return got
+
+
 def bodies_of(cases, card=False):
     out = [b for b, (case, _) in BODIES.items() if case in cases]
     return [b for b in out if not (card and b in ALREADY_RUN | EARLIER_CODE)]
@@ -1010,10 +1050,26 @@ def card(args):
         for case in args.cases:
             data = inputs_of(case, args.units, args.seed)
             outputs, infos, nonces = {}, {}, {}
+            bands = []
             for body in bodies_of([case], card=True):
                 if args.forms and BODIES[body][1] not in args.forms:
                     continue
                 if args.bodies and body not in args.bodies:
+                    continue
+                if body in BAND:
+                    for rows in args.rows:
+                        run, t_out, t_info, nonce = launch(
+                            session, body, data, None, rows
+                        )
+                        log(f"launch {case} band, {rows} rows")
+                        run.run()
+                        session.device.finish()
+                        out = t_out.read().reshape(-1, TILE_WORDS).copy()
+                        info = t_info.read().reshape(-1).copy()
+                        bands.append(check_band(case, data, out, info, nonce, rows))
+                        log(f"band {case} {json.dumps(bands[-1])}")
+                        saved[f"{case}_band_{rows}"] = out
+                        clock.append(aiclk_mhz())
                     continue
                 run, t_out, t_info, nonce = launch(session, body, data)
                 log(f"launch {case} {BODIES[body][1]}")
@@ -1025,6 +1081,8 @@ def card(args):
                 nonces[body] = nonce
                 clock.append(aiclk_mhz())
             rec = check(case, data, outputs, infos, nonces)
+            if bands:
+                rec["band"] = bands
             saved.update({f"{case}_{BODIES[b][1]}": out for b, out in outputs.items()})
             saved.update({f"{case}_input_{k}": v for k, v in data.items()})
             unit = {"softmax": "softstep"}.get(case, case)
@@ -1041,7 +1099,9 @@ def card(args):
         r[form]["nonce_ok"] and r[form]["error"] == 0
         for r in records
         for form in FORMS
-        if form in r
+        if form in r and form != "band"
+    ) and all(
+        b["nonce_ok"] and b["error"] == 0 for r in records for b in r.get("band", [])
     )
     return 0 if clean else 1
 
@@ -1056,6 +1116,13 @@ def main():
     p.add_argument("--forms", nargs="+", help="card: only these forms (hand, ...)")
     p.add_argument(
         "--bodies", nargs="+", type=int, help="card: only these BODY numbers"
+    )
+    p.add_argument(
+        "--rows",
+        nargs="+",
+        type=int,
+        default=[1, 32],
+        help="card: the live rows each band body runs at",
     )
     args = p.parse_args()
     if not 1 <= args.units <= MAX_UNITS:
