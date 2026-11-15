@@ -191,8 +191,11 @@ def test_each_add_refusal_writes_nothing(tmp_path, cached):
     with pytest.raises(added.AddError, match="reserved no room"):
         added.addon(run, "mix", folder)
     run, writes, queued = fake_run(a_room(entered=False))
-    with pytest.raises(added.AddError, match="no path for an added handler"):
-        added.addon(run, "mix", folder, handler=True)
+    for kind in ({}, {"handler": True}, {"message": True}):
+        with pytest.raises(added.AddError, match="without the path for added code"):
+            added.addon(run, "mix", folder, **kind)
+    assert not writes and not queued
+    run, writes, queued = fake_run(a_room())
     added.addon(run, "mix", folder)
     with pytest.raises(added.AddError, match="added to this run already, as overlay 2"):
         added.addon(run, "mix", folder)
