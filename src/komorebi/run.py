@@ -396,6 +396,17 @@ class Run:
         self.submit_s += time.perf_counter() - started
         return handle
 
+    def thread_words(self, handler, args=()):
+        """(program field, handler number, [command words]) of a call as submit would
+        send it, for an X280 thread to build the same command (kmx_command) of a class
+        made after its image was built, an added one too; nothing is sent."""
+        if isinstance(handler, HandlerMethod | ClassHandler):
+            handler = self._built_for(handler, args)
+            method = handler if isinstance(handler, HandlerMethod) else handler.method
+            args = handler.args(*self._regions_named(method, args))
+        number, program_field = self._handler(handler)
+        return program_field, number, [int(word) for word in args]
+
     def _regions_named(self, method, args):
         """A class handler's arguments with each region parameter given by its name
         made (bank, bank address): the region of this run's thread that has it."""
@@ -1878,6 +1889,9 @@ class Run:
             {key: value for key, value in fin.items() if key != "words"}
         )
         self._read_back(stop_grid)
+        release = getattr(self.backend, "release_l1", None)
+        if release is not None:  # the next load of the session has its L1
+            release()
 
     def _read_back(self, stop_grid=False):
         blocks, trace_rows = self.backend.read_back(stop_grid=stop_grid)

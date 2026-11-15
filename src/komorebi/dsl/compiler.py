@@ -6070,6 +6070,21 @@ class HandlerCompiler:
             after.append(Line(f"cb_pop_front({buffer}, {pages_name});"))
         self.wait(node, "compute", WAIT_INPUT)
 
+    def take_constant(self, item, bound):
+        """`self.K` of a constant of the class (not a field), taken: the body's
+        `constexpr uint32_t K`, this program's value, on any CPU. False for any other
+        name."""
+        if not (
+            isinstance(item, ast.Attribute)
+            and isinstance(item.value, ast.Name)
+            and item.value.id == "self"
+            and item.attr not in self.compiled.fields
+            and item.attr in self.compiled.class_constants
+        ):
+            return False
+        bound.append(f"constexpr uint32_t {item.attr} = {self.class_constant(item)};")
+        return True
+
     def take_own(self, node, field, where, text, bound):
         """An own field a body takes: its buffer index by its name, on any CPU, no wait
         and no free. The CPU whose bodies push it (cb_push_back of the name: a mover's,
@@ -7486,6 +7501,8 @@ class HandlerCompiler:
         where = mover or cpu or "compute"
         uses, bound, before, after = set(), [], [], []
         for item in takes:
+            if self.take_constant(item, bound):
+                continue
             field = self.field_name(item)
             if field in self.compiled.own:
                 self.take_own(node, field, where, text, bound)
@@ -7670,7 +7687,11 @@ class HandlerCompiler:
         if isinstance(item, ast.Name):
             self.not_ended(node, item.id)
         if not isinstance(item, ast.Name) or item.id not in self.scope:
-            self.refuse(node, "takes= names the handler's values", "take names")
+            self.refuse(
+                node,
+                "takes= names the handler's values and the class's constants",
+                "take names, or self.K of a constant",
+            )
         value = self.scope[item.id]
         if value.kind in ("int", "partition", "pattern", "float"):
             return {item.id}  # a float word: a C++ float of that name

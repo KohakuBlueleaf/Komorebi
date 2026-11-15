@@ -26,7 +26,6 @@ DESCRIPTOR = (
 )
 CORES, K, WIDTH, REPEAT = 12, 32, 4, 5  # cores; K tiles; y's tiles a core; commands
 W_BLOCK = 2 * WIDTH  # W tiles a block: 2 K rows of WIDTH
-KERNEL_BYTES = 80 * 1024
 STARTED = time.monotonic()
 
 
@@ -141,7 +140,7 @@ def build(args):
     km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     km_session.Session.load = build_only()
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         tensors = tensors_of(session, inputs(), empty=True)
         session.load(LinearAct(log=log, session=session, **tensors))
     return 0
@@ -156,7 +155,7 @@ def card(args):
     wants = {"plain": plain, "in_dst": plain / (1 + np.exp(-plain))}
     wants["in_field"] = wants["in_dst"]
     rows, outputs = [], {}
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         tensors = tensors_of(session, (x, w), empty=False)
         run = session.load(LinearAct(log=log, session=session, **tensors))
         try:

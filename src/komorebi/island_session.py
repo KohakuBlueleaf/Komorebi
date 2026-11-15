@@ -12,13 +12,20 @@ import time
 
 import numpy as np
 
-from komorebi import abi, dram, formats, islands, native
+from komorebi import abi, dram, formats, islands, kernel_buffer, native, remembered
 from komorebi import chain as chain_module
 from komorebi import channel as channel_module
 from komorebi import programs as programs_module
 from komorebi import session as session_module
 from komorebi.dsl import front
-from komorebi.errors import CardBusy, CommandTimeout, KomorebiError, WaitTimeout
+from komorebi.errors import (
+    CardBusy,
+    CommandTimeout,
+    KernelSizeError,
+    KomorebiError,
+    L1BudgetError,
+    WaitTimeout,
+)
 from komorebi.program import Program
 
 M32 = 0xFFFFFFFF
@@ -917,6 +924,7 @@ class IslandSession:
         line=False,
         packet=None,
         message_links=False,
+        expect=None,
     ):
         self.cards = tuple(int(card) for card in cards)
         # two cards: a dynamic program's messages over every link, a service each
@@ -970,8 +978,9 @@ class IslandSession:
             "channel": channel,
             "slow_code": slow_code,
         }
+        self._memory = None  # the remembered kernel buffer (komorebi.remembered)
         if kernel_bytes is None and (len(self.cards) == 2 or self.split > 1):
-            kernel_bytes = KERNEL_BYTES  # the page links' code
+            kernel_bytes = self._remembered(expect)  # the page links' code
         self.kernel_bytes = kernel_bytes
         self._worker_l1 = session_module.worker_l1_size(kernel_bytes)
         self.tree = tree
@@ -1593,6 +1602,11 @@ class IslandSession:
                 except KomorebiError as error:
                     raise _named(error, island) from None
             self._check_links(runs, plans)
+        except (KernelSizeError, L1BudgetError) as error:
+            for run in runs:
+                run.abort()
+            self._refused(error)
+            raise
         except BaseException:
             for run in runs:
                 run.abort()
@@ -1607,6 +1621,7 @@ class IslandSession:
             counts=self._crossings if self.links else None,
         )
         self.run.session = self
+        self._remember(program)
         if self.links:
             try:
                 self._hold_links()
@@ -2484,10 +2499,52 @@ class IslandSession:
         if len(controls) != 1:
             raise KomorebiError(f"the islands' control blocks differ: {controls}")
 
+    def _remembered(self, expect):
+        """The kernel buffer this session opens at: the size remembered for the script
+        (or `expect`, a made Program), else KERNEL_BYTES; a message service a link
+        keeps KERNEL_BYTES_SERVICES (message_services)."""
+        shape = f"islands {len(self.cards)} cards x {self.split}"
+        self._memory = remembered.Memory(
+            self.log, expect, shape, default=f"{KERNEL_BYTES:,} B"
+        )
+        size = self._memory.size or KERNEL_BYTES
+        if self.message_links:
+            size = max(size, KERNEL_BYTES_SERVICES)
+        return min(size, session_module.KERNEL_BUFFER_MAX)
+
+    def _remember(self, program):
+        """The kernel buffer the islands' load needed (its largest), kept for the
+        script's next run."""
+        total = max((one._last_total for one in self.sessions), default=0)
+        if self._memory is not None and total:
+            self._memory.loaded(program, total)
+
+    def _refused(self, error):
+        """A load refused, its kernels over this session's buffer or its L1 table
+        failed below a larger buffer than they need: their size kept, so that the
+        script's next run opens at it; the log says so."""
+        total = getattr(getattr(error, "sizes", None), "total", 0) or max(
+            (one._last_total for one in self.sessions), default=0
+        )
+        if self._memory is None or not total:
+            return
+        need = kernel_buffer.need(total)
+        smaller = isinstance(error, L1BudgetError) and need < self.kernel_bytes
+        if not (smaller or isinstance(error, KernelSizeError)):
+            return
+        self._memory.wanted(total, smaller)
+        self.log(
+            f"kernel buffer: the kernels take {total:,} B, this session's buffer is "
+            f"{self.kernel_bytes:,} B; remembered, the script's next run opens at "
+            f"{need:,} B"
+        )
+
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'
         sessions, then the mesh (not while a grid did not return). Every island's
         session is tried; the first error is raised after, its island counted stuck."""
+        if self._memory is not None:
+            self._memory.closed()
         failed, first = [], None
         try:
             if self.split > 1 and self.run is not None and not self.run.stopped:

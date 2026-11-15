@@ -94,14 +94,14 @@ transfer buffer. On card 0 split in two, example 01's class: the build's table a
 load's are equal in every row but the slot (43,008 B reserved, 39,552 B loaded): host
 transfer buffer 82,000 B in both (the build counted 32,848 B before).
 
-The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` eight hex
-digits of what changes the generated sources (the plan, each tensor's format, page
-bytes, shape and layout, the field sizes solved from the L1 (not the L1 itself) and the
-trace depth, the rectangle and the NoCs, the class's constants by name and value, the
-listed sets of the constant parameters): two instances of one class built differently
-have a folder each, and two built alike share one. So a class built on a mock device is
-the card's build: the mock session's L1 left is the card's (it counts the host transfer
-buffer the card's channel takes), and a job that loads it compiles no kernel. In it: `<name>.h` (the
+The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` sixteen hex
+digits of the generated files' names and text (not of the make's inputs: the plan,
+the tensors, the constants and the sets that give a file its text are in the text): two
+instances whose files are equal share one folder, whoever made them and whatever else
+differed (a mock device's make and a card's), and files that differ are never one
+folder. A part's cache key and the kernels' own hash carry the folder's path, so a
+class made on a mock device is the card's build: a job that loads it compiles no
+kernel and no overlay part. A file the folder already holds equal is not written again. In it: `<name>.h` (the
 handler numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
 handler's parts in `<handler>/`, and `program.txt`, the report it also prints: each
 buffer with its indices, format, pages, bytes and the Python line that made it, and the
@@ -274,10 +274,10 @@ becomes the handler's overlay parts (`<set>/movement.cpp`, `<set>/compute.cpp`),
 are added to the run by `run.addon(..., handler=True)`
 ([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
 with the added number. Later submits of the set find it added. The files go into
-`build/<class>-use<key>/`: the key holds the load's build key, the handler, the set's
+`build/<class>-use<key>/`: the key holds the load's folder and make key, the handler, the set's
 values, the class's source files and a hash of the package's Python source (the class
 compiler that wrote them: a changed compiler compiles the set again). A later process that makes the same program finds
-them there and reads the set's words from `first_use.json`, so nothing is compiled.
+them there (their digest, kept in `first_use.json`, is compared with the files) and reads the set's words from it, so nothing is compiled.
 Its parts are then found in the parts' cache, so nothing is built either.
 `program.ahead(Gate.gate, size=4)` compiles a set before the run and has the load
 build its parts ([overlays](overlays.md#code-added-to-a-live-run), built ahead).
@@ -552,6 +552,7 @@ What a body takes, by where it runs:
 | `takes=` of | compute's three | one compute CPU | a mover |
 |---|---|---|---|
 | an int, a partition, a pattern, a page's words (`.read()[0:2]`) | by its name | by its name | by its name |
+| a constant of the class (`self.K`, [Constants](#constants)) | `K`, a `constexpr uint32_t` of this program's value | the same | the same |
 | an entry `e` of a table (`for e in ...entries(...)`), or a table | `e_word`, each of its words (a table: `name_count`) | the same | the same |
 | a body's word (`w = km.cxx(..., gives=int)`) | a word of compute's three | a word of that CPU, or of compute's three | a word of that mover |
 | a stream's tile or item (the loop's name) | `name_buffer` and `name_index`, its buffer and place | `name`, its L1 address: unpack's own; math and pack are handed it by mailbox before the body and hand a release back after it, and unpack frees the block only then | after the loop: `name_tiles` and `name_cycles`, what this mover moved in the loop's move (`km::Moved`: its tiles, the cycles of its passes that moved a block) |
@@ -1762,7 +1763,7 @@ static inline void workcluster_step(
 ```
 
 The thread is made and its C built at the make, before any card job: the header the
-thread was built with is in a folder of its own (`build/<name>-<key>/thread-<hash>/`),
+thread was built with is in a folder of its own (`build/<name>-<hash>/thread-<hash>/`),
 put first among its includes. The make refuses a region parameter that names no
 region of the class. It also refuses C that names a handler, a tensor or a region
 the program lacks. The message gives the class's line, the C's errors with their
@@ -1877,12 +1878,18 @@ session gives more with `kernel_bytes`
 (`t.pages(first, count)`, a partition's share `s[part]`, a rectangle `t.tiles[r0:r1,
 c0:c1]`), their zip, `.write` of a page range or of a rectangle (`t.tiles[r0:r1,
 c0:c1].write(...)`), `.drain` and `.fill`, the assignments
-before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write. A
+before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write (after the reduce, or `if self.rank % G
+== 0:` with G the reduce's group: each group's root; before the reduce, rank 0 alone,
+refused in a call of several groups). A
 first page is a number of the call's words, the class's constants, `self.rank`, `size`
 and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the first tensor
 written; each group's root writes block g, `width` tiles from g x width), the group size
-(the reduce's group, else 1), and each read as a share of K tiles or as ranges of
-`base + step x g`. The record's input is the call before's output; another read is an
+(the reduce's group, else 1), and each read as a share of K tiles (each group's ranks
+reading the same K tiles as `km::partition` shares them, whether by `self.partition` in
+one group or by the rank's share written out) or as ranges of `base + step x g` (a
+root's alone under its `if`). The decode layer's five calls (112, 120, 96 and 120 cores in groups of 7,
+15, 2 and 15) are described so, both ways with equal records; where its chain stands
+on the card is in [decode_class](../../experiments/language/decode_class/README.md). The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
 input that `run.chain` proves (as a written chain's,
 [the earlier input](chain.md#the-earlier-input-and-the-direct-input)). A rectangle of
