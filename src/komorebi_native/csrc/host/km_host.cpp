@@ -323,8 +323,88 @@ namespace {
         std::vector<uint32_t>,
         std::string>;
 
-    // Builds `desc`'s kernels for this device as generic_op does (its own build then
-    // hits the JIT cache) and lays out its kernel config, which checks its size.
+    // A bound of a built program's Tensix kernel config before finalize_offsets (its
+    // check logs a fatal line): runtime args, semaphores, CB configs, text.
+    std::pair<uint32_t, std::vector<uint32_t>> config_bound(
+        tt::tt_metal::Program& program, tt::tt_metal::IDevice* dev
+    ) {
+        const auto& hal = tt::tt_metal::MetalContext::instance().hal();
+        const auto tensix = tt::tt_metal::HalProgrammableCoreType::TENSIX;
+        const uint32_t index = hal.get_programmable_core_type_index(tensix);
+        const uint32_t align = hal.get_alignment(tt::tt_metal::HalMemType::L1);
+        const auto up = [align](uint32_t bytes) {
+            return (bytes + align - 1) / align * align;
+        };
+        auto& impl = program.impl();
+        const auto& kernels = impl.get_kernels(index);
+        const uint64_t key = (
+            tt::tt_metal::BuildEnvManager::get_instance(
+                tt::tt_metal::extract_context_id(dev)
+            )
+                .get_device_build_env(dev->build_id())
+                .build_key()
+        );
+        std::vector<uint32_t> text(hal.get_num_risc_processors(tensix), 0);
+        uint32_t rta = 0, crta = 0, text_bytes = 0, cb_end = 0;
+        uint32_t remote = hal.get_num_dataflow_buffers();
+        for (const auto& group : impl.get_kernel_groups(index)) {
+            uint32_t unique = 0, common = 0, packed = 0;
+            for (const auto id : group->kernel_ids) {
+                const auto& kernel = kernels.at(id);
+                uint32_t most = 0;  // the runtime args: their most words over the cores
+                for (const auto& range : group->core_ranges.ranges()) {
+                    for (auto x = range.start_coord.x; x <= range.end_coord.x; x++) {
+                        for (
+                            auto y = range.start_coord.y; y <= range.end_coord.y; y++
+                        ) {
+                            const auto words = (
+                                kernel->runtime_args(decltype(range.start_coord)(x, y))
+                                    .size()
+                            );
+                            most = std::max<uint32_t>(most, words);
+                        }
+                    }
+                }
+                unique += most * sizeof(uint32_t);
+                common = (
+                    up(common + kernel->common_runtime_args().size() * sizeof(uint32_t))
+                );
+                const auto& binaries = kernel->binaries(key);
+                for (size_t i = 0; i < kernel->expected_num_binaries(); i++) {
+                    packed = up(packed + binaries[i]->get_packed_size());
+                    for (const auto at : kernel->get_processor_indices_for_binary(i)) {
+                        text[at] = std::max(text[at], binaries[i]->get_packed_size());
+                    }
+                }
+            }
+            rta = std::max(rta, up(unique));
+            crta = std::max(crta, common);
+            text_bytes = std::max(text_bytes, packed);
+            const auto config = group->launch_msg.view().kernel_config();
+            const uint64_t mask = config.local_cb_mask();
+            cb_end = std::max<uint32_t>(cb_end, mask ? 64 - __builtin_clzll(mask) : 0);
+            remote = std::min<uint32_t>(remote, config.min_remote_cb_start_index());
+        }
+        int sem_most = -1;
+        for (const auto& sem : impl.semaphores()) {
+            if (sem.core_type() == tt::CoreType::WORKER) {
+                sem_most = std::max<int>(sem_most, sem.id());
+            }
+        }
+        const uint32_t sems = (sem_most + 1) * align;
+        const uint32_t cbs = (
+            up(
+                cb_end * UINT32_WORDS_PER_LOCAL_CIRCULAR_BUFFER_CONFIG * sizeof(uint32_t) +
+                (hal.get_num_dataflow_buffers() - remote) *
+                    UINT32_WORDS_PER_REMOTE_CIRCULAR_BUFFER_CONFIG * sizeof(uint32_t)
+            )
+        );
+        // the dataflow buffers, cross-node buffers and prefetcher pipes: none here
+        return {rta + crta + sems + cbs + text_bytes + align, text};
+    }
+
+    // Builds `desc`'s kernels as generic_op does (its build then hits the JIT cache)
+    // and lays out its kernel config; a bound over the buffer refused before that.
     KernelBuild kernel_build(
         const MeshDevice& mesh, const tt::tt_metal::ProgramDescriptor& desc
     ) {
@@ -354,6 +434,15 @@ namespace {
         const uint32_t index = hal.get_programmable_core_type_index(tensix);
         uint32_t config_bytes = 0;
         std::string error;
+        const auto [bound, bound_text] = config_bound(program, dev);
+        if (bound > kernel_buffer(mesh)[0]) {
+            const auto buffer = kernel_buffer(mesh)[0];
+            error = (
+                "Program size (" + std::to_string(bound) + ") too large for kernel " +
+                "config buffer (" + std::to_string(buffer) + ") (komorebi's bound)"
+            );
+            return {kernels, 0, static_cast<uint32_t>(buffer), bound_text, error};
+        }
         try {
             program.impl().finalize_offsets(dev);
             config_bytes = program.impl().get_program_config_sizes()[index];

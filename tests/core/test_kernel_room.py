@@ -233,3 +233,12 @@ def test_a_reopen_is_printed_once_without_a_log(log, capsys):
             and printed[0].startswith("komorebi: kernel buffer 70,656 ->")
         )
     )
+
+
+def test_the_bound_refused_before_the_layout_gives_the_total():
+    error = (
+        "Program size (92240) too large for kernel config buffer (70656) (komorebi's "
+        "bound)"
+    )
+    sizes = session.kernel_sizes((0, 70656, [28688, 25640, 14416, 9336, 13272], error))
+    assert (sizes.total, sizes.limit) == (92240, 70656)
