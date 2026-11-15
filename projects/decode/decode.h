@@ -92,9 +92,6 @@ enum {
     DC_LAYERS_DATA_DRAM = 2048
 };
 
-/* LAYERS' a4 bit 17: a mover looks at its mark only between W blocks (chain.h). */
-enum { DC_LAYERS_MARK_LATE = 131072 };
-
 /* A token's last record's stamp row (the others: their step's, 0 to 4). */
 enum { DC_CHAIN_LAST_ROW = 5 };
 

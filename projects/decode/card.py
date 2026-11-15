@@ -34,9 +34,9 @@ DEFAULT_BODIES = ()
 # The layer as one command: each core goes on to the next product by itself (stage 6;
 # the split's SPLIT_CHAIN), its records written by the thread; off: a command a step.
 CHAIN = abi.constants(dense_card.SPLIT_KERNELS / "chain.h")
-# The kernel buffer with the chain: its code (with the next W early) is over 84 K, the
-# runtime's own 70,656; stamped, 92 K. Its L1 is from what no buffer uses.
-CHAIN_KERNEL_BYTES, STAMPED_KERNEL_BYTES = 88 * 1024, 92 * 1024
+# The kernel buffer with the chain: its code (with the next W early) is over 80 K, the
+# runtime's own 70,656; stamped, 88 K. Its L1 is from what no buffer uses.
+CHAIN_KERNEL_BYTES, STAMPED_KERNEL_BYTES = 84 * 1024, 88 * 1024
 # The chain's records (LAYERS' a4 bits 12 on, in this order) whose input the roots
 # before send into their cores' L1 (stage 8): one, or a pair whose areas never overlap.
 DATA_STEPS = ("qkv", "attend", "o", "gate_up", "down")
@@ -470,12 +470,11 @@ class Decode:
         ahead=True,
         data=None,
         data_dram=False,
-        mark_late=False,
     ):
-        """One LAYERS command: result word, stats slot. `bare` products, `parts` parts,
-        `apart` q k v as three, `overlap` two in flight; `rows` a step from `position`;
-        `attend` modes; `chain` a layer, `pair` 2 records, `token` a token; `ahead` W
-        early; `data` sent inputs, `data_dram` DRAM acked; `mark_late` (stage 9)."""
+        """One LAYERS command: result word, stats slot. `bare` products, `parts` parts
+        only, `apart` q k v as three, `overlap` two in flight; `rows` tokens a step from
+        `position` (the cache's end); `attend` modes; `chain` a layer, `pair` 2 records,
+        `token` a token; `ahead` W early; `data` sent inputs, `data_dram` DRAM acked."""
         slot = self.slot
         if slot >= D["DC_STATS_SLOTS"]:
             raise ValueError(f"job {slot}: the thread has {D['DC_STATS_SLOTS']} slots")
@@ -497,7 +496,6 @@ class Decode:
             raise ValueError("a sent input: the chain's records only")
         mode |= data_bits(self.plans, self.model, data)
         mode |= D["DC_LAYERS_DATA_DRAM"] if data and data_dram else 0
-        mode |= D["DC_LAYERS_MARK_LATE"] if chain and mark_late else 0
         steps = tokens * rows
         position = self.context - steps if position is None else position
         if not 0 <= position <= self.context - steps or not 1 <= rows <= md.TILE:
