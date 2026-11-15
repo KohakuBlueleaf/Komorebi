@@ -125,6 +125,20 @@ What each takes:
 | a program's own overlays | yes | yes | yes |
 | a dynamic handler | the kernel form only | no | no |
 | `run.load(program, group=...)` | no | yes | no |
+| a class's constants, and sets of a handler's constant parameters (`handlers=`) | yes | yes | yes |
+| `km.ANY` among a handler's sets | yes | yes; a set added for a program runs on the cores that hold it ("does not hold" after a switch to another) | yes; a class made `beside=` builds its sets at the indices it leaves |
+| `km.merge` of classes in the kernel form, or a class merging classes (`class Layer(Gate, Linear)`) | yes | "several programs in one run are each in the runtime's form" | "several programs in one run are each in the runtime's form" |
+| `km.merge` of programs in the runtime's form: hand programs, classes made with `form="runtime"`, or both | yes | yes | yes |
+| `km.merge` of a class in the kernel form with a program in the runtime's form | "a class in the kernel form merged with programs in the runtime's form" | the same | the same |
+| `km.merge` of a class made with sets or `km.ANY` | "made with sets of its handlers' constant parameters" | the same | the same |
+| a class merging classes made with `form=` or `beside=` | "form= at the make of a class merging" | the same | the same |
+| `run.addon` of an overlay | yes | yes | yes; built against the runtime's kernels, which have no compile arguments: `compile_args=` gives a program's |
+| `run.addon(..., handler=True)` (every program names slot bytes: `Program.slots(bytes=)`) | yes | yes | yes |
+| `broadcast_wait=True` | yes | yes | yes; in a merge of programs in the runtime's form it is the source's own define |
+| a subclass of a class program | yes | yes | yes |
+
+In the rows after `run.load`, a class in a list or a dict is made with `form="runtime"`,
+as the second row says.
 
 The programs' order (the list, or the dict's) is their program field. Programs that share
 cores share compute options (`compute`) and `opt` levels. In a run of several programs
@@ -256,20 +270,27 @@ cycles faster merged than alone; that difference is not looked into. The parts a
 the sources' together (example 16 merged: reader 3,264 B against 1,536 + 1,536): each
 source keeps its own copy of the runtime's functions it uses.
 
+A class made with `form="runtime"` ([classes](classes.md#the-runtimes-form)) is a source
+like a hand program: classes made so merge with each other and with hand programs, into
+one program in the runtime's form, each source its own unit. Made `beside=` the other
+sources, a class leaves their buffer indices. A class's handler is named through its
+class there too (`Gate.gate` names the merged number of the one source of that class).
+Classes in the kernel form merge with classes in the kernel form only, as one program in
+the kernel form ([Classes merged into one](classes.md#classes-merged-into-one)).
+
 Not merged, each refused with its reason: a program in the kernel form (it owns
 `kernel_main` and the loop; merge it in the runtime's form, each source defining
-`km_program`); a class with a hand program (a class is built in the kernel form);
-a merged program as a source (merge its sources); a source with overlays of its own
-(`Program.overlay`: their numbers are the ones a merged program's sources placed as
-overlays take). Sources whose buffers are of both exponent families are refused as one
-program is (one family a kernel). Classes merge with classes, as one program in the
-kernel form ([Classes merged into one](classes.md#classes-merged-into-one)).
+`km_program`); a class in the kernel form with a program in the runtime's form (make
+every class with `form="runtime"`, or every class in the kernel form); a class made with
+sets of a handler's constant parameters or `km.ANY` (a merged program builds each
+handler once); a merged program as a source (merge its sources); a source with overlays
+of its own (`Program.overlay`: their numbers are the ones a merged program's sources
+placed as overlays take). Sources whose buffers are of both exponent families are
+refused as one program is (one family a kernel).
 
-A class in the runtime's form would need, five things: its movement lines in parts
-that the runtime's reader and writer call; the runtime's switch to set up each part's
-buffers at a command; its compute start-up on its own formats in its compute part; its
-own overlays numbered in the run; and the class compiler emitting `km_program` in place
-of `kernel_main`. That is a change of the runtime's kernels and of the compiler.
+Lifting the refusal of a class with sets would need the merge to number each built set
+as a handler of the merged program and, for `km.ANY`, a first use that compiles the set
+against the source's unit and adds it under the merged program's numbers.
 
 ## `Session`
 

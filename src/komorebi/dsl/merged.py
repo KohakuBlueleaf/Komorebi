@@ -295,6 +295,7 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
     to each class that declares it; a constant two classes declare differently is
     refused naming both), then the classes compiled as one program."""
     cls = type(self)
+    form_refused(cls, given)
     if handlers is not None:
         raise ProgramError(
             f"{cls.__name__}: {spelling('handlers')}= of a merged class is not built; "
@@ -344,6 +345,20 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
 
 
 # Both ways ---------------------------------------------------------------------------
+def form_refused(cls, given):
+    """Refuses the runtime's form (form=, beside=) at a merged class's make: it is
+    built in the kernel form; made classes merge in the runtime's form (km.merge)."""
+    asked = [key for key in ("form", "beside") if key in given]
+    if asked and (given.get("form", "kernel") != "kernel" or "beside" in given):
+        names = ", ".join(parent.__name__ for parent in cls.merged_parents)
+        raise ProgramError(
+            f"{cls.__name__}: {'= and '.join(asked)}= at the make of a class merging "
+            f"{names}: it is built as one program in the kernel form; for the "
+            'runtime\'s form merge the made classes, each made with form="runtime" '
+            f"(km.merge({names.split(', ')[0]}(..., form=\"runtime\"), ...))"
+        )
+
+
 def start(self, sources, name, overlay, resident, session, l1, trace, log):
     """The merged program's numbering, markers and first build."""
     for source in sources:
@@ -462,6 +477,13 @@ def build(self):
     ]
     compiled, tensors = compiler.compile_merged(self.cname, parts, room)
     self.compiled = compiled
+    made.place_handlers(  # a command by the merged copy or by its class's handler
+        compiled,
+        {
+            method.name: [method, handler_method(sources[index].cls, own)]
+            for (index, own), method in self.methods.items()
+        },
+    )
     defines, rect, nocs = {}, None, None
     for source in sources:
         for key, value in (source.given.get("defines") or {}).items():
@@ -547,10 +569,11 @@ def build(self):
     self.built_handlers = list(compiled.handlers)
     for key, method in getattr(type(self), "merged_methods", {}).items():
         mine = self.methods[key]  # the class's handler gives a call's words too
-        method.words, method.widths, method.returns = (
+        method.words, method.widths, method.returns, method.placed = (
             mine.words,
             mine.widths,
             mine.returns,
+            mine.placed,
         )
     for name in compiled.overlays:
         sources_of = {"reader": built.folder / name / "movement.cpp"}
