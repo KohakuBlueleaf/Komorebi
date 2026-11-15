@@ -117,6 +117,7 @@ nav:
       - reference/chain.md
       - reference/tile.md
       - reference/classes.md
+      - reference/hazards.md
   - Examples:
       - examples/README.md
       - examples/01_mapcollect/README.md
