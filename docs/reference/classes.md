@@ -138,6 +138,7 @@ and a name of the handler's with that prefix is refused.
 | `whole = km.reduce(acc, form="tree", group=S)`, `acc` n tiles | the same in `km::digit_group(command, me, 1, S)`: S consecutive ranks a group, n tiles a slot | each of the n tiles added through DST tile n (n + 1 tiles of DST) |
 | `whole = km.reduce(self.part, form="tree", group=S)`, `self.part` a float32 field of sums | `km::reduce_arrive` on mover A into slots of the field's tiles; `km::reduce_emit` of the field's pages on mover B (a sender) | each arrival copied into DST and packed onto the field with the packer's L1 accumulation; the field handed on (Products) |
 | `t.tiles[r0:r1, c0:c1]`, where a page range is taken | the first page `r0 x T + c0` (T the tensor's tile columns); one row, or all T columns, is a page range; more rows a `km::Walk` of whole rows, `T` apart; r and c any ints of the handler (words at run time) | |
+| `t.tiles[r0:r1:s, c0:c1]` | its rows s rows of t apart, `(r1 - r0 + s - 1) / s` of them: a `km::Walk` of whole rows `s x T` apart (s an int or a word) | |
 | `n = min(a, b)`, `max(a, b)`, a and b ints | `(a < b ? a : b)`, `(a > b ? a : b)` | the same |
 | `if self.rank == self.leader:` and `pages.write(whole)` | the leader's write of the sum | |
 | `return word` under `if self.rank == self.leader:` | `movement.result(word)` on mover B | |
@@ -146,6 +147,7 @@ and a name of the handler's with that prefix is refused.
 | `pages.write(word)` (one page), `word` a mover's | that mover: its word page (the word first, zeros after), `km::write_pages`, `noc_async_write_barrier` | |
 | `b = km.Broadcast(self, along="row", window=2)` | the broadcast on its mover (rows on mover A, columns on mover B); a core it leaves out skips the handler | the same core skips it |
 | `if b.sender():` `v = b.cast(t.pages(first, n).read())` `else:` `v = b.arrive()` | the sender's reserve, read and cast, the others' arrival, block by block of the loop around it; the last block's finish | |
+| `v = b.cast(k.tiles[k0:k1, 0:D].T, w.tiles[k0:k1, 0:E])` | several parts into one block, in order, each at its most's place (Several ranges into one block) | |
 | `for tile in v:` | | the block received, each page of it, then freed; the padding after the last |
 | `for i in range(n):` | a loop | a loop |
 | `km.cxx("...", takes=[n], on="mover_b")` | the C++ as written, on the CPU `on` names (Inline bodies) | compute's three CPUs when `on` is not given; `on="unpack"`, `"math"`, `"pack"`: that CPU's alone |
@@ -595,7 +597,55 @@ rectangle's pages, the build needs a side's most: a side `c:c + n` is n, and
   field a row of the rectangle; a side that may be more than the field's is refused.
 - A stream's blocks are whole rows: a stream of more than one row takes constant
   columns (its rows may be words).
-- A step (`r0:r1:2`) is refused.
+- A step on the rows (`r0:r1:s`) takes rows s apart; a step on the columns is refused.
+
+### Rows with a step
+
+`t.tiles[r0:r1:s, c0:c1]` is the rectangle's rows r0, r0 + s, ... below r1, the
+`(r1 - r0 + s - 1) / s` rows a `km::Walk` with a row pitch of `s x T` pages; s is an
+int or a word of the handler. A stream of it moves whole rows a block, and a block
+may be partly read: `km.Stream(q.tiles[r0:min(r0 + R * s, r0 + rows * s):s, 0:D],
+block=R * D)` reserves R rows whole, reads `rows` of them (at most R) and hands the
+block on; compute takes the read tiles alone. Where the line holds the rows (a cast's
+slot, a field), their most is stated by the slice:
+
+| Rows side | Rows | Their most |
+|---|---|---|
+| `a:b:s`, all ints | `(b - a + s - 1) / s` | the same |
+| `r:r + n * s:s` (n an int) | n | n |
+| `r:min(r + n * s, e):s` | `(min(...) - r + s - 1) / s` | n |
+| `r:r + m:s`, `r:min(r + m, e):s`, s an int | as above | `(m + s - 1) / s` |
+| anything else | as above | none: refused where a most is needed |
+
+### Several ranges into one block
+
+A cast takes one part or more, each a page range, `.read()` or not: `t.pages(first,
+n)` (n an int), `t.tiles[...]` (a rectangle, a step on its rows allowed) or
+`t.tiles[...].T`, the rectangle transposed: its columns in turn, a column a row of
+the slot. Each part takes the slot pages of its most (a side's most as above), the
+next part starting after them, so a short part leaves its unread pages in place and
+a body finds every part at the same page:
+
+```python
+for chunk in range(chunks):
+    k0 = chunk * KB
+    if down.sender():
+        kv = down.cast(
+            k.tiles[k0 : min(k0 + KB, keys), 0:DT].T,  # slot h x KB + key
+            v.tiles[k0 : min(k0 + KB, keys), 0:DV],  # slot KB x DT + key x DV + c
+        )
+    else:
+        kv = down.arrive()
+```
+
+The sender reads a transposed part a page at a time (`km::read_pages` of page
+`first + key x T + h` to slot page `h x KB + key`), a rectangle a row at a time at its
+most columns' pitch, a run of pages in one call; the parts' reads are joined by `&&`
+before the cast. The block is the parts' mosts summed (here `KB x DT + KB x DV`), in
+the slot `window` times. Refused at the line: a part that is not a page range of a
+tensor, a part with a side whose most the build cannot tell, and parts of tensors of
+different formats or page sizes. `.T` is a cast's: a stream, a fill or a write of a
+transposed rectangle is not a line.
 
 `@km.tile_function(fidelity="HiFi2")` sets the matrix unit's fidelity, tt-metal's word
 (LoFi, HiFi2, HiFi3, HiFi4): the compute kernel's `math_fidelity`, so a class's
@@ -932,7 +982,7 @@ OtherFunction.apply, line 121, `acc += scaled(block, self.weight)`: acc += f(...
 Unfilled.apply, line 131, `acc += project(block, self.weight)  # unfilled`: self.weight is not filled above in this handler, and no other handler of the class fills it; write self.weight.fill(km.Stream(...)) before, or in a handler of its own
 Narrow.apply, line 142, `acc += project(block, self.weight)  # narrow`: self.weight is K rows of 2 tiles and acc holds 1; declare self.weight: km.L1[km.bf16, K, 1, 32, 32] or make acc km.tile.zeros(km.fp32, 2)
 Mixed.apply, line 154, `acc += project(block, self.weight)  # mixed`: this loop has other tile lines, and a product holds the matrix unit's setup for the loop; keep the loop to the product
-Stepped.copy, line 204, `km.Stream(x.tiles[0:4:2, 0:4]).drain()  # stepped`: a rectangle of tiles is two slices, rows then columns, each with its start and end and no step; write x.tiles[r0:r1, c0:c1]
+Stepped.copy, line 213, `km.Stream(x.tiles[0:4, 0:4:2]).drain()  # stepped`: a rectangle of tiles is two slices, rows then columns, each with its start and end, a step on the rows alone; write x.tiles[r0:r1, c0:c1] or [r0:r1:s, c0:c1]
 Ragged.copy, line 210, `km.Stream(x.tiles[0:2, 0:n]).drain()  # ragged`: a stream's blocks are whole rows of its rectangle, and this rectangle's columns are a word; stream x.tiles[r0:r1, c:c + n], n a constant, or one row of it
 Uneven.copy, line 216, `km.Stream(x.tiles[0:4, 0:3], block=4).drain()  # uneven`: a block of a rectangle of 3 columns is whole rows of it; give block= a multiple of 3
 Owned.apply, line 228, `whole = km.reduce(acc, form="owner")  # owned`: a reduce of 2 tiles by owner holds a slot of them for each other core of the group; reduce them by tree: form="tree"
@@ -942,7 +992,6 @@ Fidelities.apply, line 267, `acc += coarse(block, self.weight)  # fidelities`: c
 Unpacked.copy, line 459, `km.Stream(items.items(0, 4, size=1000)).drain()`: items of 1000 B in pages of 4096 B: a page holds a whole number of items; give a size that divides 4096
 Untaken.use, line 467, `km.cxx("use(table);", takes=[self.table], on="pack")`: self.table is not filled above in this handler (or a body took it), and no other handler keeps it filled; write self.table.fill(km.Stream(...)) before this body, or in a handler of its own
 Outside.copy, line 473, `first, count, more = items.pages(0, 1).read()[0:2]`: words 0 to 1 of a page of 1024 words for 3 names; give a slice of the page with a name each word
-Pushed.copy, line 480, `km.cxx("fill(made);", takes=[made])`: made is a write stream: its pages are pack's to fill; take it in a body on="pack"
 Unknown, line 483: compute option 'dst_full_sync': the host API has no such option; give math_fidelity or one of fp32_dest_acc_en, dst_full_sync_en, bfp8_pack_precise, math_approx_mode, enable_trisc2_rvv
 Unproduct.apply, line 583, `for h, g in zip(km.Stream(a.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:2], block=2)):`: streams in step with blocks of different sizes are a product's operands: a tile of one is a row of the other; keep the loop to `acc += self.f(a, b)`, f `return a @ b`
 Unblocked.apply, line 596, `acc += coarse(xb, wb)  # unblocked`: acc is 2 tiles wide: each block of the second stream is the first's 1 K tiles by 2 columns (2 tiles), and it is 3; stream w.tiles[k0:k1, c:c + 2] with block=2 beside x's block=1
@@ -1000,7 +1049,8 @@ the packed text of the five CPUs, of 70,656 B.
 
 A rectangle per command; tile arithmetic outside a tile function (`tile * factors`
 in a handler's line); slices and `.columns` of a field; a rectangle of tiles with a
-step; a stream of a rectangle of more than one row whose columns are words; a field
+step on its columns; a transposed rectangle outside a cast; a stream of a rectangle
+of more than one row whose columns are words; a field
 filled from a broadcast; a product's operands other than a stream's tile and a field,
 two streams' blocks, or two broadcasts' blocks into a float32 field; a field of sums of
 more than one row from two streams; a product and a tile function in one body; the fidelity derived from a tile function's tolerance (it is

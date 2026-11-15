@@ -210,7 +210,7 @@ def coarse(x, w):
 class Stepped(km.Program):
     @km.handler
     def copy(self, x: km.Tensor):
-        km.Stream(x.tiles[0:4:2, 0:4]).drain()  # stepped
+        km.Stream(x.tiles[0:4, 0:4:2]).drain()  # stepped
 
 
 class Ragged(km.Program):

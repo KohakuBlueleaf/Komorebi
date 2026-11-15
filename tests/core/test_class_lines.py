@@ -307,3 +307,148 @@ def test_a_write_stream_a_loops_bodies_fill():
         compile_class(
             FedMoving, {}, {"source": tensor("bfloat16"), "target": tensor("bfloat16")}
         )
+
+
+def grid(dtype, rows, columns):
+    """A tensor of tiles, rows x columns of them."""
+    page = 2048 if dtype == "bfloat16" else 4096
+    pages = Pages(page)
+    pages.num_pages = rows * columns
+    return Tensor(pages, (rows * 32, columns * 32), dtype, "tile")
+
+
+class Strided(km.Program):
+    @km.handler
+    def rows(self, q: km.Tensor, out: km.Tensor, rows: int, stride: int):
+        r0 = self.rank
+        copied = km.Stream(
+            out.tiles[r0 : min(r0 + 4 * stride, r0 + rows * stride) : stride, 0:2],
+            write=True,
+            block=8,
+        )
+        for tile in km.Stream(
+            q.tiles[r0 : min(r0 + 4 * stride, r0 + rows * stride) : stride, 0:2],
+            block=8,
+        ):
+            copied.push(tile)
+
+
+def test_a_rectangles_rows_with_a_step_are_a_walk_of_that_pitch():
+    movement, compute = texts(Strided, "rows", q=grid("bfloat16", 16, 2),
+                              out=grid("bfloat16", 16, 2))  # fmt: skip
+    rows = "(((((r0 + (4 * stride)) < (r0 + (rows * stride))"
+    assert "// the rectangle's rows, 2 tiles each, ((stride) * 2) apart" in movement
+    assert ") / 4, 4 * ((stride) * 2), 4, ((stride) * 2), 2, 1, 2, 8, " in movement
+    assert rows in movement and rows in compute  # the rows: (r1 - r0 + s - 1) / s
+    assert "copy_tile(km_half0, km_tile0, 0);" in compute
+
+
+class Rows(km.Program):
+    @km.handler
+    def copy(self, q: km.Tensor, k: km.Tensor):
+        down = km.Broadcast(self, along="column")
+        if down.sender():  # noqa: SIM108 (the compiler's form)
+            got = down.cast(q.tiles[1:7:2, 0:2].read())
+        else:
+            got = down.arrive()
+        for _tile in got:
+            pass
+
+
+def test_known_rows_with_a_step_and_their_slot():
+    movement, _ = texts(Rows, "copy", q=grid("bfloat16", 16, 2),
+                        k=grid("bfloat16", 16, 2))  # fmt: skip
+    assert "km_row < 3; km_row++" in movement  # rows 1, 3 and 5
+    assert "((1) * 2 + (0)) + km_row * 4, 2, km_address" in movement
+
+
+class Gathered(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor, keys: int):
+        down = km.Broadcast(self, along="column")
+        for chunk in range(2):
+            k0 = chunk * 3
+            if down.sender():
+                kv = down.cast(
+                    k.tiles[k0 : min(k0 + 3, keys), 0:2].T,
+                    v.tiles[k0 : min(k0 + 3, keys), 0:4],
+                )
+            else:
+                kv = down.arrive()
+            for _tile in kv:
+                pass
+
+
+def test_a_cast_of_a_transposed_rectangle_and_a_second_range_into_one_block():
+    compiled = compile_class(Gathered, {}, {"k": grid("bfloat16", 8, 2),
+                                            "v": grid("bfloat16", 8, 4)})  # fmt: skip
+    movement = "\n".join(render(prune(compiled.movement["copy"]), 0))
+    compute = "\n".join(render(prune(compiled.compute["copy"]), 0))
+    slots = {b.name: b for b in compiled.buffers if b.role == "broadcast"}
+    assert slots["kBroadcast0"].block == 3 * 2 + 3 * 4  # K's most, then V's
+    # K's columns in turn, a page each: slot h x 3 + key holds page (k0 + key) x 2 + h
+    assert "km_column < 2; km_column++" in movement
+    assert "((k0) * 2 + (0)) + km_row * 2 + km_column, 1," in movement
+    assert "+ (km_column * 3 + km_row) * 2048))" in movement
+    # V's rows after K's most: slot page 6, byte 12,288
+    assert "() && km::read_pages(movement, command, V(v), ((k0) * 4 + (0))," in movement
+    assert " + 12288)) || !down.cast(chunk)" in movement
+    assert "km::broadcast_receive(compute, kBroadcast0, kBroadcast0Pages);" in compute
+
+
+class Unbound(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor, keys: int):
+        down = km.Broadcast(self, along="column")
+        if down.sender():  # noqa: SIM108
+            kv = down.cast(k.tiles[0:keys, 0:2].T)  # unbound
+        else:
+            kv = down.arrive()
+        for _tile in kv:
+            pass
+
+
+class Unstated(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor, rows: int, stride: int):
+        down = km.Broadcast(self, along="column")
+        if down.sender():
+            kv = down.cast(k.tiles[0 : rows * stride : stride, 0:2])  # unstated
+        else:
+            kv = down.arrive()
+        for _tile in kv:
+            pass
+
+
+class Mixed(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor):
+        down = km.Broadcast(self, along="column")
+        if down.sender():
+            kv = down.cast(k.tiles[0:1, 0:2], v.tiles[0:1, 0:2])  # mixed
+        else:
+            kv = down.arrive()
+        for _tile in kv:
+            pass
+
+
+class ColumnStep(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor):
+        km.Stream(k.tiles[0:2, 0:2:2]).drain()  # column step
+
+
+@pytest.mark.parametrize(
+    "cls, text, why",
+    [
+        (Unbound, "# unbound", "the build knows no most for a side here"),
+        (Unstated, "# unstated", "the build knows no most for a side here"),
+        (Mixed, "# mixed", "a cast's block is of one format and page size"),
+        (ColumnStep, "# column step", "a step on the rows alone"),
+    ],
+)
+def test_range_and_block_refusals_name_the_line(cls, text, why):
+    line = line_of(text)
+    tensors = {"k": grid("bfloat16", 8, 2), "v": grid("float32", 8, 2)}
+    with pytest.raises(Refused, match=rf"^{cls.__name__}.copy, line {line}, .*{why}"):
+        compile_class(cls, {}, tensors)

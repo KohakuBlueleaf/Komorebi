@@ -113,7 +113,13 @@ NAMES = {
     ),
     "item_size": Name("size", "items(..., size=B): the bytes an item", None),
     "tiles": Name(
-        "tiles", "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major", None
+        "tiles",
+        "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major; [r0:r1:s, "
+        "c0:c1] its rows s apart",
+        None,
+    ),
+    "transposed": Name(
+        "T", "tensor.tiles[...].T: a cast's part, the rectangle's columns in turn", None
     ),
     "read": Name(
         "read",
