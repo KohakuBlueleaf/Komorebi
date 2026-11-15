@@ -120,19 +120,22 @@ extern "C" uint32_t {function}(
 def merge(
     *sources, name=None, overlay=(), resident=(), session=None, l1=None, log=print
 ):
-    """ONE program from `sources`: programs in the runtime's form (Merged), or made
-    class programs (komorebi.dsl.merged, one program in the kernel form). A program
-    in the kernel form, and a class with a hand program, are refused with the way."""
+    """ONE program from `sources`: programs in the runtime's form (Merged; classes made
+    form="runtime" among them), or made classes in the kernel form (komorebi.dsl.merged,
+    one program in that form). A program in the kernel form, and a class in the kernel
+    form with a program in the runtime's form, are refused with the way."""
     classes = [hasattr(source, "make_given") for source in sources]
-    if any(classes) and all(classes):
+    runtime = [classes[i] and s.form() == "program" for i, s in enumerate(sources)]
+    if any(classes) and not any(runtime) and all(classes):
         made = importlib.import_module("komorebi.dsl.merged")  # it imports the DSL
         return made.merge_made(sources, name, overlay, resident, session, l1, log)
-    if any(classes):
+    kernel = [s.name for i, s in enumerate(sources) if classes[i] and not runtime[i]]
+    if kernel:  # a class in the kernel form beside a program in the runtime's form
         raise ProgramError(
-            f"{', '.join(getattr(s, 'name', repr(s)) for s in sources)}: a class with "
-            "a hand program: a class is built in the kernel form (its kernel_main and "
-            "loop), a hand program merges in the runtime's form; merge classes with "
-            "classes, hand programs with hand programs (docs/reference/host.md)"
+            f"{', '.join(kernel)}: a class in the kernel form merged with programs in "
+            'the runtime\'s form; make every class with form="runtime" (merged with '
+            "hand programs in the runtime's form) or every class in the kernel form "
+            "(one class program in the kernel form; docs/reference/host.md)"
         )
     return Merged(sources, name, overlay, resident, session, l1, log)
 
@@ -226,6 +229,17 @@ class Merged(Program):
                 f"its source: merged.handler({owners[0]}, {handler!r})"
             )
         return Program.handler(self, handler)
+
+    def merged_number(self, method):
+        """A class's own handler (Gate.gate) of a source made form="runtime" as this
+        program's number (run._handler)."""
+        owners = [s for s in self.merged_sources if isinstance(s, method.owner)]
+        if len(owners) != 1:
+            raise ValueError(
+                f"{method.name}: {len(owners)} sources of its class in {self.name}; "
+                f"name it through its program (program.handler({method.name!r}))"
+            )
+        return int(self.handler(owners[0].handler(method.name)))
 
     def _index(self, source):
         for index, given in enumerate(self.merged_sources):
@@ -625,6 +639,11 @@ def lifted(handler, loaded):
     return handler
 
 
+def merged_holds(program, cls):
+    """Whether `program` merged (komorebi.merge) a program of class `cls`."""
+    return any(isinstance(s, cls) for s in getattr(program, "merged_sources", ()))
+
+
 def _check_sources(sources):
     """Refuses what merge does not take, each with its reason."""
     if len(sources) < 2:
@@ -638,7 +657,10 @@ def _check_sources(sources):
             raise ProgramError(
                 f"{source.name}: a merged program; merge its sources with the others"
             )
-        if getattr(type(source), "built_handlers", None) is not None:
+        if (
+            getattr(type(source), "built_handlers", None) is not None
+            and source.form() != "program"
+        ):
             raise ProgramError(
                 f"{source.name}: a class is in the kernel form; programs in the "
                 "runtime's form (km_program) are merged"
@@ -648,6 +670,12 @@ def _check_sources(sources):
                 f"{source.name}: its sources define kernel_main, so they own the "
                 "kernel and its loop; a program merges in the runtime's form, each "
                 "source defining km_program (docs/reference/host.md)"
+            )
+        if getattr(source, "make_given", {}).get("sets"):  # a class made form="runtime"
+            raise ProgramError(
+                f"{source.name}: made with sets of its handlers' constant parameters "
+                "(handlers=, km.ANY among them); a merged program builds each handler "
+                "once"
             )
         if source.overlays:
             raise ProgramError(

@@ -31,7 +31,7 @@ from komorebi.errors import (
     ThreadFailed,
     WaitTimeout,
 )
-from komorebi.merge import lifted
+from komorebi.merge import lifted, merged_holds
 from komorebi.program import Handler
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
@@ -486,6 +486,7 @@ class Run:
                 field
                 for field, program in enumerate(self.programs)
                 if isinstance(program, handler.owner)
+                or merged_holds(program, handler.owner)
             ]
             if not fields:
                 raise ValueError(f"{handler.name}: no program of its class in the run")

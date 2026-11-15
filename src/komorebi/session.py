@@ -857,6 +857,12 @@ class Session:
             loaded = program.programs
         else:
             loaded = list(program) if isinstance(program, dict | list) else [program]
+        loaded = [  # and a merged program's sources made apart (komorebi.merge)
+            each
+            for one in loaded
+            for each in [one, *getattr(one, "merged_sources", ())]
+            if isinstance(each, Program)
+        ]
         needing = [one for one in loaded if getattr(one, "rectangle", None)]
         if needing:
             nocs = self.nocs()

@@ -295,6 +295,7 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
     to each class that declares it; a constant two classes declare differently is
     refused naming both), then the classes compiled as one program."""
     cls = type(self)
+    form_refused(cls, given)
     if handlers is not None:
         raise ProgramError(
             f"{cls.__name__}: {spelling('handlers')}= of a merged class is not built; "
@@ -344,6 +345,20 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
 
 
 # Both ways ---------------------------------------------------------------------------
+def form_refused(cls, given):
+    """Refuses the runtime's form (form=, beside=) at a merged class's make: it is
+    built in the kernel form; made classes merge in the runtime's form (km.merge)."""
+    asked = [key for key in ("form", "beside") if key in given]
+    if asked and (given.get("form", "kernel") != "kernel" or "beside" in given):
+        names = ", ".join(parent.__name__ for parent in cls.merged_parents)
+        raise ProgramError(
+            f"{cls.__name__}: {'= and '.join(asked)}= at the make of a class merging "
+            f"{names}: it is built as one program in the kernel form; for the "
+            'runtime\'s form merge the made classes, each made with form="runtime" '
+            f"(km.merge({names.split(', ')[0]}(..., form=\"runtime\"), ...))"
+        )
+
+
 def start(self, sources, name, overlay, resident, session, l1, trace, log):
     """The merged program's numbering, markers and first build."""
     for source in sources:
