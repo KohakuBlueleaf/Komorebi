@@ -6,6 +6,7 @@ the sizes printed, and the made object is a Program of those files.
 import ast
 import hashlib
 import importlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -158,7 +159,7 @@ def make(
         first_use.reserve(
             cls, compiled, found, plan, tensors, room, values, sets, reserved
         )
-    walked = chain_made(self, cls, compiled, chain)
+    walked = chain_made(self, cls, compiled, chain, tensors)
     # what km.merge builds this program's handlers again with (komorebi.dsl.merged)
     self.make_given = {
         "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
@@ -1835,16 +1836,67 @@ def chain_methods(cls):
     }
 
 
-def chain_made(program, cls, compiled, chain):
+def chain_made(program, cls, compiled, chain, tensors=None):
     """The chain's walk when `chain` or the class has a km.chain method (its lines
-    checked here, refused at their line); on `program`: its handler (0: none)."""
+    checked here, refused at their line); on `program`: its handler (0: none) and
+    its direct input's landing area (None: none)."""
     methods = chain_methods(cls)
     for method in methods.values():
         front.chain_calls_module().checked(cls, method)
     if chain or methods:
         chain_prepared(cls, compiled)
+        direct_prepared(cls, compiled, tensors or {})
     program.chain_handler = compiled.chain
+    program.direct_area = getattr(compiled, "direct_area", None)
     return bool(compiled.chain)
+
+
+DIRECT_FIRST = 33  # the landing area's buffer: the first index free from here
+
+
+def direct_prepared(cls, compiled, tensors):
+    """A chain build of a class whose handlers declare direct inputs: one landing
+    area (buffer kDirectArea) the size of the largest such tensor given at the make,
+    its tiles' bytes the same for each; an overlay handler's direct input refused."""
+    declared = {}
+    for name in compiled.handlers:
+        method = getattr(cls, name, None)
+        for place in getattr(method, "direct", ()):
+            if name in compiled.overlays:
+                raise ProgramError(
+                    f"{cls.__name__}.{name}: a direct input ({place}) to an overlay "
+                    "handler is not built (its part cannot reach the chain's record); "
+                    "make it resident or drop direct="
+                )
+            if place in tensors:
+                declared[(name, place)] = tensors[place]
+    if not declared:
+        return
+    sizes = {tensor.page_bytes for tensor in declared.values()}
+    if len(sizes) != 1:
+        raise ProgramError(
+            f"{cls.__name__}: direct inputs of tiles of {sorted(sizes)} bytes; one "
+            "landing area takes one tile size"
+        )
+    used = {b.index_a for b in compiled.buffers} | {
+        b.index_b for b in compiled.buffers if b.index_b is not None
+    }
+    index = next(i for i in range(DIRECT_FIRST, 64) if i not in used)
+    tiles = max(tensor.pages for tensor in declared.values())
+    (page,) = sizes
+    compiled.direct_area = (tiles, page, sorted(declared))
+    compiled.buffers.append(
+        compiler.Buffer(
+            "kDirectArea",
+            "direct",
+            index,
+            None,
+            "uint32",
+            page,
+            (tiles,),
+            what="a direct input's landing area (km_chain.hpp chain_send, DirectOr)",
+        )
+    )
 
 
 def chain_prepared(cls, compiled):
@@ -1881,6 +1933,19 @@ def chain_header(compiled):
     return [
         "// The chain's walk: a chain command's records, each its handler's case.",
         f"constexpr uint32_t kHandler{camel(CHAIN_HANDLER)} = {compiled.chain};",
+        *direct_header(compiled),
+    ]
+
+
+def direct_header(compiled):
+    """The landing area's tiles and their bytes (none without a direct input)."""
+    area = getattr(compiled, "direct_area", None)
+    if area is None:
+        return []
+    return [
+        "// A direct input's landing area: its tiles, each of these bytes.",
+        f"constexpr uint32_t kDirectAreaTiles = {area[0]};",
+        f"constexpr uint32_t kDirectAreaBytes = {area[1]};",
     ]
 
 
@@ -2064,6 +2129,161 @@ CHAIN_HELPERS = """namespace {
 """
 
 
+# A class with a direct input: the root's block kept for the send, read DRAM no more.
+DIRECT_HELPERS = """
+    // The root's block of the record's output, kept in its buffer for a direct send:
+    // the buffer, its pages, their address; a second write in the record: in pieces.
+    uint32_t km_kept_buffer = 0, km_kept_pages = 0, km_kept_source = 0;
+    bool km_kept_pending = false, km_kept_pieces = false;
+
+    // Whether the next record takes this record's output direct (false outside a
+    // chain). False: gave up (recorded).
+    __attribute__((noinline)) bool km_direct_next(
+        km::Movement& movement, bool& direct
+    ) {
+        direct = false;
+        if (!km::chain_now.on || km::chain_next_address(km::chain_now.now) == 0) {
+            return true;
+        }
+        const uint32_t tag = km::chain_now.tag_base + km::chain_now.record + 1;
+        if (!km::chain_reached(movement, km::kChainReady, tag, km::kStWriter)) {
+            return false;
+        }
+        uint32_t next[kChainWords];
+        km::chain_copy(tag, next);
+        direct = (next[kChainInfo] & kChainDataMark) != 0;
+        return true;
+    }
+
+    // A write of pages from a buffer: when the next record takes it direct, kept for
+    // the send (no DRAM copy), else written.
+    template <typename T>
+    bool km_direct_write(
+        km::Movement& movement, const km_command_t& command, const T& tensor,
+        uint32_t page, uint32_t pages, uint32_t address
+    ) {
+        bool direct = false;
+        if (!km_direct_next(movement, direct)) {
+            return false;
+        }
+        if (!direct) {
+            return km::write_pages(movement, command, tensor, page, pages, address);
+        }
+        km_kept_pieces = km_kept_pieces || km_kept_pages != 0 || km_kept_pending;
+        km_kept_source = address;
+        km_kept_pending = true;
+        return true;
+    }
+
+    // The write's pages done with: kept when the write was kept, else popped.
+    inline void km_direct_keep(uint32_t buffer, uint32_t pages) {
+        if (!km_kept_pending) {
+            cb_pop_front(buffer, pages);
+            return;
+        }
+        km_kept_pending = false;
+        km_kept_buffer = buffer;
+        km_kept_pages = pages;
+    }
+
+    inline void km_direct_release() {
+        if (km_kept_pages != 0) {
+            cb_pop_front(km_kept_buffer, km_kept_pages);
+        }
+        km_kept_buffer = km_kept_pages = km_kept_source = 0;
+        km_kept_pending = km_kept_pieces = false;
+    }
+
+    // This core's landing area in a direct record (base 0: read DRAM).
+    __attribute__((noinline)) km::DirectArea km_direct_area(km::Movement& movement) {
+        const uint32_t* now = km::chain_now.now;
+        if (!km::chain_now.on || (now[kChainInfo] & kChainDataMark) == 0) {
+            return {0, 0, 0};
+        }
+        const uint32_t size = km::ChainShape{}.size(movement, now);
+        const uint32_t index = movement.me() - (now[kChainGroup] & 0xFFFFu);
+        const km::ChainShape shape{};
+        const km::ChainRange range = (
+            km::chain_need(shape, movement, now, 0, index % size, index / size)
+        );
+        return {km::chain_area_base(kDirectArea), range.first, kDirectAreaBytes};
+    }
+"""
+
+DIRECT_END = """#else  // mover B
+        const uint32_t size = km::ChainShape{}.size(movement, km::chain_now.now);
+        if ((movement.me() - km::first(command)) % size != 0) {
+            km_direct_release();
+            return true;
+        }
+        bool direct = false;
+        if (!km_direct_next(movement, direct)) {
+            km_direct_release();
+            return false;
+        }
+        const uint32_t width = km::ChainShape{}.width(movement, km::chain_now.now);
+        if (direct && (km_kept_pieces || km_kept_pages != width)) {
+            km_direct_release();  // its block not one piece of its width: no send
+            movement.gave_up(km::kStWriter, km::kGaveBadItem, km::kWhereData, 0xC4u, 0);
+            return false;
+        }
+        const km::ChainDirect area = {
+            km_kept_source, km::chain_area_base(kDirectArea), kDirectAreaTiles,
+            kDirectAreaBytes
+        };
+        const bool marked = (
+            km::chain_mark(km::ChainShape{}, movement, command, area, false)
+        );
+        km_direct_release();
+        return marked;
+#endif"""
+
+
+def chain_helpers(compiled):
+    """The walk's helpers in the movement source; with a direct input's landing area,
+    the root's kept block, its send before the marks and the reader's area."""
+    if getattr(compiled, "direct_area", None) is None:
+        return CHAIN_HELPERS
+    start = CHAIN_HELPERS.index("#else  // mover B")
+    end = CHAIN_HELPERS.index("#endif", start) + len("#endif")
+    text = CHAIN_HELPERS[:start] + DIRECT_END + CHAIN_HELPERS[end:]
+    text = text.replace(
+        "        if (!km::chain_now.on) {\n            return true;\n        }\n"
+        "        if (!km_chain_waited) {",
+        "        if (!km::chain_now.on) {\n            km_direct_release();\n"
+        "            return true;\n        }\n        if (!km_chain_waited) {",
+        1,
+    )
+    head = "namespace {\n"
+    return text.replace(head, head + DIRECT_HELPERS, 1)
+
+
+def direct_reads(compiled, name, lines):
+    """A handler's case lines with each read stream of its direct-declared tensors
+    through the core's landing area in a direct record (km::direct_or)."""
+    area = getattr(compiled, "direct_area", None)
+    places = [place for handler, place in (area[2] if area else ()) if handler == name]
+    for place in places:
+        given = f"km::kMoveRead, {camel(place)}({place}),"
+        wrapped = (
+            f"km::kMoveRead, km::direct_or({camel(place)}({place}), "
+            "km_direct_area(movement)),"
+        )
+        lines = [line.replace(given, wrapped) for line in lines]
+    return lines
+
+
+def direct_writes(compiled, text):
+    """A chain build's cases with a direct input: each write of pages from a buffer
+    kept when the next record takes it direct (km_direct_write, km_direct_keep)."""
+    if getattr(compiled, "direct_area", None) is None:
+        return text
+    text = text.replace(
+        "!km::write_pages(movement, command, ", "!km_direct_write(movement, command, "
+    )
+    return re.sub(r"cb_pop_front\((\w+), ([^;]+)\);", r"km_direct_keep(\1, \2);", text)
+
+
 def chain_cases(compiled):
     """The switch of a chain build's movers: each handler's case with the input's
     waits, its end's marks, and a tree's credit before each emit."""
@@ -2077,7 +2297,7 @@ def chain_cases(compiled):
         if name in compiled.overlays:
             lines += chain_overlay_case(compiled, name, reads.get(name, {}))
             continue
-        body = render(prune(compiled.movement[name]), 4)
+        body = direct_reads(compiled, name, render(prune(compiled.movement[name]), 4))
         lines += chain_waits(compiled, name, body, reads.get(name, {}))
         lines += [
             f"{pad}{INDENT * 2}return km_chain_end(movement, command);",
@@ -2087,7 +2307,7 @@ def chain_cases(compiled):
     text = "\n".join(lines)
     emit = "!km::reduce_emit(movement,"
     text = text.replace(emit, "!km::chain_credit(movement) || " + emit)
-    return text.split("\n")
+    return direct_writes(compiled, text).split("\n")
 
 
 def chain_overlay_case(compiled, name, reads):
@@ -2151,7 +2371,7 @@ def chain_movement_source(compiled):
         '#include "komorebi/device/km_chain.hpp"',
         f'#include "{header_name(compiled)}"',
         "",
-        CHAIN_HELPERS,
+        chain_helpers(compiled),
         "void kernel_main() {",
     ]
     lines += [INDENT + line for line in tensor_aliases(compiled)]
