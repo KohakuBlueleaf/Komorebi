@@ -40,21 +40,22 @@ report = km.Stream(profile.pages(self.rank, 1), write=True, pattern="B")
 ```python
 first = self.rank * blocks // self.size
 end = (self.rank + 1) * blocks // self.size
-km.cxx("setup_pass::setup(); ...", on="pack", include=["../../passes_pack.hpp"])
+km.cxx(HEADERS + GIVE_UP, on="mover_b", at="start")  # once a kernel
+km.cxx("setup_pass::setup(); ...", on="pack")
 for camera_page in km.Stream(camera.pages(0, 1), pattern="A"):
     km.cxx(CAMERA, takes=[camera_page, self.out], on="pack")
 for block in km.Stream(mesh.pages(first, end - first), pattern="A"):
     km.cxx(BLOCK, takes=[block, first, self.work], on="pack")
 km.cxx(END, on="pack")
-km.cxx(HEADERS + GIVE_UP + "...the hand's count_stage...", takes=[...], on="mover_b")
+km.cxx("...the hand's count_stage...", takes=[...], on="mover_b")
 ```
 
 The pack bodies are the hand's code as it is. FILL's are `fill_list`, resumed at each
 list page, with `fill.hpp` included on pack alone. The passes' are the vector unit's
-setup, the camera page, and one block of 32 triangles. Their helpers are in
-`passes_pack.hpp`, a copy of the hand's `setup_compute.cpp` without its entry, with its
-out buffer a member: the hand's file included whole makes 72,544 B of kernel text,
-over the 70,656 B limit. `CAMERA`, `BLOCK` and `END` are module constants that
+setup, the camera page, and one block of 32 triangles. Their helpers are the hand's
+`setup_compute.cpp` itself, included on pack with the class's defines
+(`RASTER_PASS_HELPERS`, `RASTER_NO_ENTRY`, `RASTER_OUT_CB`): its helpers alone, its out
+buffer the class's field. `CAMERA`, `BLOCK` and `END` are module constants that
 `count_tiles` and `setup_lists` share. The mover B bodies are the hand's writer
 stages. The classes' files are under `build/<name>-<hash>/` beside the scripts.
 
@@ -121,8 +122,6 @@ that would replace it:
 | mover A's counters to mover B (FILL's profile) | the own field `handoff` | a mover A word taken on mover B |
 | mover B's loop over the pages pack pushes, to the last-page mark | in each writer body: wait, invalidate, pop | a loop over an own field's pages on mover B |
 | an own field written to a page by mover B (COUNT's counts, HIST's 64 B a tile) | `km::write_pages`, `noc_async_write` | a write stream mover B fills |
-| the directory's words past the first two (FILL's items and frame bases, HIST's tiles) | read into `table` on mover B | `.entries(...)` |
-| the hand's pack code included as it is | `passes_pack.hpp`, a copy | defines on an include |
 
 ## What a class cannot say of the frame
 
