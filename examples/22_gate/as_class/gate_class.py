@@ -18,7 +18,6 @@ sys.path.insert(0, str(HERE.parent))
 
 import gate as hand  # noqa: E402  (the hand program, its values and its check)
 
-BLOCK = 8  # tiles a block, as the hand program's kBlock
 SPANS_EMPTY, SPANS_FIRST = 16, 18  # a stamps page: the empty spans, then each call's
 TOLERANCE = 1e-6  # the gate's largest relative error against float64 (fp32 values)
 
@@ -33,6 +32,8 @@ class Gate(km.Program):
     """gate: each core's `tiles` pages of a and b from rank x tiles, silu(a) * b into
     the same pages of out, block by block in the command's pattern."""
 
+    BLOCK = km.constant(8)  # tiles a block, as the hand program's kBlock
+
     @km.handler
     def gate(
         self,
@@ -44,11 +45,11 @@ class Gate(km.Program):
     ):
         first = self.rank * tiles
         results = km.Stream(
-            out.pages(first, tiles), write=True, block=BLOCK, pattern=pattern
+            out.pages(first, tiles), write=True, block=self.BLOCK, pattern=pattern
         )
         for x, g in zip(
-            km.Stream(a.pages(first, tiles), block=BLOCK, pattern=pattern),
-            km.Stream(b.pages(first, tiles), block=BLOCK, pattern=pattern),
+            km.Stream(a.pages(first, tiles), block=self.BLOCK, pattern=pattern),
+            km.Stream(b.pages(first, tiles), block=self.BLOCK, pattern=pattern),
         ):
             results.push(silu_gate(x, g))
 
@@ -56,6 +57,8 @@ class Gate(km.Program):
 class GateTimed(km.Program):
     """Gate's handler with stamps: the math CPU's cycles of each call of the tile
     function, to page rank of stamps."""
+
+    BLOCK = km.constant(8)  # tiles a block, as Gate's
 
     @km.handler(stamps="stamps")
     def gate(
@@ -69,11 +72,11 @@ class GateTimed(km.Program):
     ):
         first = self.rank * tiles
         results = km.Stream(
-            out.pages(first, tiles), write=True, block=BLOCK, pattern=pattern
+            out.pages(first, tiles), write=True, block=self.BLOCK, pattern=pattern
         )
         for x, g in zip(
-            km.Stream(a.pages(first, tiles), block=BLOCK, pattern=pattern),
-            km.Stream(b.pages(first, tiles), block=BLOCK, pattern=pattern),
+            km.Stream(a.pages(first, tiles), block=self.BLOCK, pattern=pattern),
+            km.Stream(b.pages(first, tiles), block=self.BLOCK, pattern=pattern),
         ):
             results.push(silu_gate(x, g))
 
@@ -207,8 +210,9 @@ def main():
     )
     args = parser.parse_args()
     args.pattern = km.Pattern(args.pattern)
-    if args.tiles % BLOCK or not BLOCK <= args.tiles <= 256 - SPANS_FIRST:
-        parser.error(f"--tiles is a multiple of {BLOCK} up to {256 - SPANS_FIRST}")
+    block = Gate.BLOCK.default
+    if args.tiles % block or not block <= args.tiles <= 256 - SPANS_FIRST:
+        parser.error(f"--tiles is a multiple of {block} up to {256 - SPANS_FIRST}")
     report = {"runs": {}}
     with km.Session(log=hand.log) as session:
         cores = args.cores or session.grid[0] * session.grid[1]

@@ -25,7 +25,6 @@ from komorebi.layout import counter_tiles  # noqa: E402
 STARTED = time.monotonic()
 # The words of a core's totals, as the hand program's results words.
 LOOKUPS, VALUES, REPORTS, OWN, SUM_LOW, SUM_HIGH, PROBES, WRONG = range(8)
-WORDS = 16
 
 
 class Thread(km.Message):
@@ -45,11 +44,12 @@ class MessageHandlers(km.Program):
     """lookup at a key's owner, value at the value's owner, report at the thread's
     origin; the table a 32-bit mixer (words wrap at 2^32), so the cores load nothing."""
 
+    WORDS = km.constant(16)  # the words of a core's totals
     totals: km.L1[km.u32, WORDS]
 
     @km.handler
     def lookup(self, threads: int, steps: int):
-        for word in range(WORDS):
+        for word in range(self.WORDS):
             self.totals[word] = 0
         if self.seeding():  # the seeds have the RUN command's handler: lookup
             part = self.partition(threads)
@@ -169,7 +169,9 @@ def run_class(session, args):
     grid = session.grid
     cores = grid[0] * grid[1]
     totals = session.tensor(
-        np.zeros((cores, WORDS), np.uint32), "uint32", shard_grid=grid
+        np.zeros((cores, MessageHandlers.WORDS.default), np.uint32),
+        "uint32",
+        shard_grid=grid,
     )
     program = MessageHandlers(totals=totals, log=log).dynamic(
         "lookup", "value", "report", **hand.options(args)
