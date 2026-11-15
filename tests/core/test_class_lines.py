@@ -585,10 +585,13 @@ def test_a_read_stream_bodies_take_is_held_across_the_loops_inside():
     tensors = {"q": grid("bfloat16", 16, 2), "k": grid("bfloat16", 8, 2),
                "v": grid("bfloat16", 8, 2)}  # fmt: skip
     movement, compute = texts(Held, "copy", **tensors)
-    # the movers move it at its line, before the casts of the loop after it
-    assert movement.index("if (!movement.move(km_read0)) {") < movement.index(
+    # the movers move it at its line, before the casts of the loop after it; with no
+    # rows, mover A pushes its block empty (compute waits for one)
+    assert movement.index("} else if (!movement.move(km_read0)) {") < movement.index(
         "down.cast("
     )
+    assert "movement.reserve(kRead0.mover_a, kRead0Block)" in movement
+    assert "!= 0 && !movement.move(km_read0)) {" in movement
     # compute waits for its one block at the line, the bodies take it whole, and
     # it is freed at the end of the lines it stands in (the job loop's turn)
     wait = "km_ok = km_ok && compute.wait_front(km_held_qs, kRead0Block);"
@@ -624,6 +627,13 @@ class HeldMover(km.Program):
         km.cxx("use(qs);", takes=[qs], on="mover_a")  # on a mover
 
 
+class HeldB(km.Program):
+    @km.handler
+    def copy(self, q: km.Tensor, k: km.Tensor, v: km.Tensor, rows: int, jobs: int):
+        qs = km.Stream(q.tiles[0:4, 0:2], block=8, pattern="B")  # mover B's
+        km.cxx("use(qs);", takes=[qs])
+
+
 class HeldAfter(km.Program):
     @km.handler
     def copy(self, q: km.Tensor, k: km.Tensor, v: km.Tensor, rows: int, jobs: int):
@@ -639,6 +649,7 @@ class HeldAfter(km.Program):
         (HeldLarge, "# unbounded", "its pages are at most unknown to the build"),
         (HeldBlocks, "# two blocks", "its pages are at most 16, its block 8"),
         (HeldMover, "# on a mover", "a block of compute's three CPUs"),
+        (HeldB, "# mover B's", "a stream bodies take is mover A's block"),
         (
             HeldAfter,
             "# after its lines",

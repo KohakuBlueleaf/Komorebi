@@ -5847,6 +5847,13 @@ class HandlerCompiler:
                 f"give {spelling('block')}= its most pages (a side r:min(r + n, e), or "
                 "rows r:min(r + n * s, e):s), or iterate it in a for line",
             )
+        if not (letters or "").startswith("A"):
+            self.refuse(
+                node,
+                "a stream bodies take is mover A's block (an empty one is pushed "
+                "by mover A)",
+                'drop pattern=, or give one that starts with "A"',
+            )
         dtype, page_bytes = self.tensor_format(node, pages.tensor)
         index = self.reads
         self.reads += 1
@@ -5871,11 +5878,10 @@ class HandlerCompiler:
                 {variable},
                 stream_uses,
             ),
-            Line(
-                f"if (!movement.move({variable})) {{\n    return false;\n}}",
-                {variable},
-            ),
+            *held_move(variable, half, buffer.name, pages.count),
         ]
+        for line in movement[1:]:
+            line.uses |= text_uses(pages.count, self)
         self.wait(node, "mover A", WAIT_DATA)
         self.wait(node, "mover B", WAIT_DATA)
         self.wait(node, "compute", WAIT_INPUT)
@@ -6386,6 +6392,33 @@ def matrix_product(function):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
             return node.lineno
     return None
+
+
+def held_move(variable, half, buffer, count):
+    """The movers' lines of a held stream: its one block moved, or with no pages an
+    empty block pushed unread by mover A, block 0's (compute waits for one block a
+    stream, as a hand reader pushes a job's Q block of no rows)."""
+    return [
+        Line(
+            f"if (({count}) == 0) {{\n"
+            f"    if (!movement.reserve({buffer}.mover_a, {buffer}Block)) {{\n"
+            "        return false;\n"
+            "    }\n"
+            f"    cb_push_back({buffer}.mover_a, {buffer}Block);\n"
+            f"}} else if (!movement.move({variable})) {{\n"
+            "    return false;\n"
+            "}",
+            {variable},
+            mover="A",
+        ),
+        Line(
+            f"if (({count}) != 0 && !movement.move({variable})) {{\n"
+            "    return false;\n"
+            "}",
+            {variable},
+            mover="B",
+        ),
+    ]
 
 
 def held_most(pages):

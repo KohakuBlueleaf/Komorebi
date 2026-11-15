@@ -394,7 +394,10 @@ for job in jobs[first_job:end]:
 ```
 
 A body takes it on compute's three CPUs: `name_buffer` is the half its mover filled,
-`name` its first page there (0). Refused at the line: a stream whose most pages the
+`name` its first page there (0). The block is mover A's; a stream of no pages (a job
+of no rows) is one block too, pushed by mover A unread, as the hand reader pushes such
+a job's Q block. Refused at the line: a pattern whose block 0 is not mover A's; a
+stream whose most pages the
 build does not know (a side `r:min(r + n, e)`, rows `r:min(r + n * s, e):s`, or a
 known count says it), or more than its block; `row=`, `repeat=` and items; a body on
 one compute CPU or a mover that takes it; a line after the lines it stands in that
