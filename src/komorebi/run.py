@@ -245,16 +245,32 @@ class Run:
         or checked first (chain.ChainRefused names the call, the tensor, the core).
         `mode`: the program's chain mode (the command's a4), `flags` its a1."""
         report, word = chain_module.build(calls)
-        number, _ = self._handler(calls[0].handler)
+        numbers = [self._handler(call.handler) for call in calls]
+        for index, (_, field) in enumerate(numbers):
+            if field != numbers[0][1]:
+                raise chain_module.ChainRefused(
+                    f"call {index} ({calls[index].name}): a handler of program field "
+                    f"{field}, not of the chain's program (field {numbers[0][1]})"
+                )
+        handlers = [number for number, _ in numbers]
         first = min(call.group[0] for call in calls)
         end = max(call.group[0] + call.group[1] for call in calls)
         tensor = self.backend.block(
             bytes(64 * len(calls)),
-            lambda address: chain_module.records(calls, address).view(np.uint8).ravel(),
+            lambda address: chain_module.records(calls, address, handlers)
+            .view(np.uint8)
+            .ravel(),
         )
         self._unfenced = True
         return chain_module.Chain(
-            number, (first, end - first), mode, flags, word, tensor, report, calls
+            calls[0].handler,
+            (first, end - first),
+            mode,
+            flags,
+            word,
+            tensor,
+            report,
+            calls,
         )
 
     def submit(

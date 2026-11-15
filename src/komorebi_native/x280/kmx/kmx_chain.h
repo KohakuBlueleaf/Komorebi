@@ -17,8 +17,9 @@ typedef struct {
     uint32_t k_base, k_tiles;          /* the K range, shared out over the ranks */
     uint32_t ranges[kChainRangeCount]; /* kmx_chain_range words */
     uint32_t size,
-        width;    /* the group's size, a group's output tiles (0: the program) */
-    uint32_t row; /* its stamp row */
+        width;        /* the group's size, a group's output tiles (0: the program) */
+    uint32_t row;     /* its stamp row, 0 to 63 */
+    uint32_t handler; /* its handler; 0: the chain command's */
 } kmx_chain_call;
 
 enum {
@@ -53,7 +54,8 @@ static inline int kmx_chain_record(
         records == 0 || index >= kChainRecordsMax ||
         (uint64_t)(index + 1u) * kChainRecordBytes > bytes ||
         call->word > kChainTokenMask || call->size > kChainSizeMask ||
-        call->width > kChainWidthMask ||
+        call->width > kChainWidthMask || call->row > kChainRowMask ||
+        call->handler > 0xFFu || next % kChainRecordBytes != 0u ||
         kmx_block(
             &place, region, (uint64_t)index * kChainRecordBytes, kChainRecordBytes
         ) != KMX_OK
@@ -82,7 +84,7 @@ static inline int kmx_chain_record(
         call->flags | call->word << kChainTokenShift |
         (call->by_ranges ? (uint32_t)kChainNeedsRanges : 0u) << kChainNeedsShift |
         call->size << kChainSizeShift | call->width << kChainWidthShift |
-        call->row << kChainRowShift
+        call->handler << kChainHandlerShift
     );
     for (uint32_t range = 0u; range < kChainRangeCount; range++) {
         record[kChainRanges + range] = (
@@ -93,7 +95,7 @@ static inline int kmx_chain_record(
                     : 0u
         );
     }
-    record[kChainNext] = next;
+    record[kChainNext] = next | call->row;
     *address = place.a7;
     return KMX_OK;
 }

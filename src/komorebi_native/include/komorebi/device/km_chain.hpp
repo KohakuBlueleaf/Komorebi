@@ -34,12 +34,14 @@ namespace km {
         return sequence * kChainRecordsMax + record;
     }
 
-    // The command a record names: the chain command's header and sequence, its words
-    // (the one the info word names ORed with the chain's a0, the per-submit word).
+    // The command a record names: the chain command's header (the record's handler, if
+    // it names one) and sequence, its words (one ORed with a0, the per-submit word).
     inline km_command_t chain_command(
         const km_command_t& chain, const uint32_t* record
     ) {
         km_command_t command = chain;
+        const uint32_t handler = record[kChainInfo] >> kChainHandlerShift;
+        command.hdr = handler != 0 ? (chain.hdr & ~0xFFu) | handler : chain.hdr;
         command.group = record[kChainGroup];
         command.a0 = record[kChainArguments + 0];
         command.a1 = record[kChainArguments + 1];
@@ -56,6 +58,11 @@ namespace km {
         );
         reinterpret_cast<uint32_t*>(&command)[word] |= word != 0 ? chain.a0 : 0u;
         return command;
+    }
+
+    // The next record's address (0: this is the last).
+    inline uint32_t chain_next_address(const uint32_t* record) {
+        return record[kChainNext] & ~static_cast<uint32_t>(kChainRowMask);
     }
 
     // Whether core `me` is one of the record's cores.
@@ -109,7 +116,7 @@ namespace km {
         uint32_t area, uint32_t kernel, const uint32_t* record
     ) {
         chain_stamp_row = 0;
-        const uint32_t index = record[kChainInfo] >> kChainRowShift;
+        const uint32_t index = record[kChainNext] & kChainRowMask;
         if (index < kChainStampRecords) {
             const uint32_t row = kernel * kChainStampRecords + index;
             chain_stamp_row = area + kChainStamps + row * kChainStampWords * 4;
@@ -421,7 +428,7 @@ namespace km {
         }
         invalidate_l1_cache();
         if (
-            !wanted || !chain_now.on || chain_now.now[kChainNext] == 0 ||
+            !wanted || !chain_now.on || chain_next_address(chain_now.now) == 0 ||
             static_cast<int32_t>(*chain_word(kChainReady) - tag) < 0
         ) {
             return false;
@@ -484,7 +491,7 @@ namespace km {
         for (uint32_t record = 0; record < kChainRecordsMax; record++) {
             uint32_t words[kChainWords];
             chain_copy(base + record, words);
-            const uint32_t next = words[kChainNext];
+            const uint32_t next = chain_next_address(words);
             KM_CHAIN_STAMP(const uint32_t fetch_at = wall());
             if (next != 0) {
                 if (
@@ -499,7 +506,7 @@ namespace km {
                     break;
                 }
                 if (
-                    record + 1 == kChainRecordsMax || next % kChainRecordBytes != 0 ||
+                    record + 1 == kChainRecordsMax ||
                     !chain_fetch(reader, bank, next, base + record + 1)
                 ) {
                     reader.gave_up(kStReader, kGaveBadItem, kWhereData, 0xC2u, 0);
@@ -630,7 +637,7 @@ namespace km {
         bool dram_too
     ) {
         const uint32_t* now = chain_now.now;
-        if (!chain_now.on || now[kChainNext] == 0) {
+        if (!chain_now.on || chain_next_address(now) == 0) {
             return true;
         }
         const uint32_t tag = chain_now.tag_base + chain_now.record + 1;
@@ -722,7 +729,7 @@ namespace km {
                     *chain_credits_wanted() += 1;
                 }
             }
-            if (words[kChainNext] == 0) {
+            if (chain_next_address(words) == 0) {
                 break;
             }
         }
@@ -849,7 +856,7 @@ namespace km {
                 product(chain_command(command, words));
                 KM_CHAIN_STAMP(PACK((chain_stamp_row = 0)));
             }
-            if (words[kChainNext] == 0) {
+            if (chain_next_address(words) == 0) {
                 break;
             }
         }
