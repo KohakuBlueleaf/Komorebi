@@ -453,6 +453,21 @@ def test_inline_bodies_reach_items_words_cpus_and_kept_fields():
     assert len(compiled.handovers) == 4
 
 
+class Patterned(km.Program):
+    @km.handler
+    def copy(self, source: km.Tensor):
+        km.Stream(source.pages(0, 8), pattern="A").drain()
+        km.Stream(source.pages(8, 8)).drain()
+
+
+def test_a_stated_pattern_is_used_and_an_unstated_one_is_the_default():
+    compiled = compile_class(Patterned, {}, {"source": tensor("bfloat16")})
+    assert [b.patterns for b in compiled.buffers] == [
+        {"kRead0Pattern": "A"},
+        {"kRead1Pattern": "AAAB"},
+    ]
+
+
 class Unpacked(km.Program):
     @km.handler
     def copy(self, items: km.Tensor):

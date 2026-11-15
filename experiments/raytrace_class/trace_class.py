@@ -54,7 +54,7 @@ class TracePass(km.Program, compute=WALK):
             on="pack",
             include=["../../../../projects/raytrace/kernels/walk.hpp"],
         )
-        for rays in km.Stream(packets.items(first, count, size=PACKET), pattern="A"):
+        for rays in km.Stream(packets.items(first, count, size=PACKET)):
             km.cxx(
                 """
                 const uint32_t* page = reinterpret_cast<const uint32_t*>(rays);

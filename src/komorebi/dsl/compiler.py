@@ -2414,7 +2414,7 @@ class HandlerCompiler:
                 "a block of no pages, or not of whole rows",
                 "give block= a count, a multiple of row=",
             )
-        if pattern is None:
+        if pattern is None and letters is None:  # unstated: the default
             letters = WRITE_PATTERN if write else READ_PATTERN
         if pages.rect is not None:
             columns = pages.rect[1]
