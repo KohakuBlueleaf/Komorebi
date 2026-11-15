@@ -231,6 +231,9 @@ class Compiled:
     # block tiles).
     products: list = field(default_factory=list)
     fidelity: str | None = None  # the products' (one a compute kernel), when given
+    # Each product's placement: (handler, line, text, left format, right format,
+    # "none" | "plain" | "turned", ("field" | "tensor", W's name) or None).
+    placements: list = field(default_factory=list)
     # field -> (the handlers that fill it, those that read it and do not fill it)
     field_users: dict = field(default_factory=dict)
     full_dst: bool = False  # a row-form tile function: DST in full-sync mode
@@ -462,6 +465,48 @@ def product_refusal(left, right):
             "either)"
         )
     return None
+
+
+def marked_operand(node):
+    """An operand of `@`: its name and its marker ("srcb", "srca"; None: unmarked)."""
+    sides = {spelling("srcb"): "srcb", spelling("srca"): "srca"}
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "km"
+        and node.func.attr in sides
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        return getattr(node.args[0], "id", None), sides[node.func.attr]
+    return getattr(node, "id", None), None
+
+
+def product_placement(function):
+    """A product tile function's placement: "none" (no marker; the left operand in
+    SrcB, the right in SrcA), "plain" (marked so) or "turned" (marked the other way:
+    the right operand in SrcB); a str of why when both are marked for one side."""
+    value = source_of(function)[0].body[-1].value
+    left, right = marked_operand(value.left)[1], marked_operand(value.right)[1]
+    if left is not None and left == right:
+        return (
+            f"both operands are marked km.{spelling(left)}: a product has one of each"
+        )
+    if left is None and right is None:
+        return "none"
+    return "turned" if left == "srca" or right == "srcb" else "plain"
+
+
+def turned_tiles(tiles, first):
+    """The C++ that transposes DST tiles first.. (`tiles` of them) in place: the
+    matrix unit's transposed product's sums to and from the plain layout."""
+    return Line(
+        "transpose_dest_init<DST_ACCUM_MODE, true>();\n"
+        + "\n".join(
+            f"transpose_dest<DST_ACCUM_MODE, true>({first + j});" for j in range(tiles)
+        )
+    )
 
 
 def tile_format_refusal(formats):
@@ -2213,9 +2258,14 @@ class HandlerCompiler:
                 "give the class's products one fidelity",
             )
         self.compiled.fidelity = fidelity
+        weight = ("field", field_)
+        left, right = item.buffer.dtype, stored.format.dtype
+        turned = self.placed(node, state, function, left, right, weight)
         number = self.stream_loops[-1]
         buffer = f"kField{camel(field_)}"
         block = item.buffer.name + "Block"
+        if turned:
+            return self.turned_product(node, value, function, item, field_, columns)
         if state["function"] is None:
             state["function"] = "product"
             waited = ""
@@ -2256,6 +2306,96 @@ class HandlerCompiler:
             f"matmul_block({item.cxx}, {buffer}, {item.first}, (km_block{number} * "
             f"{block} + {item.first}) * {columns}, {value.dst}, 0, {columns}, 1, "
             f"{block});"
+        )
+        return [], [Line(text)]
+
+    def placed(self, node, state, function, left, right, weight):
+        """Whether the product is turned (product_placement): refused when both
+        operands are marked for one side, or the loop's other product is placed the
+        other way; noted for the build's report of both placements."""
+        placement = product_placement(function.function)
+        if placement not in ("none", "plain", "turned"):
+            self.refuse(
+                node,
+                f"{function.name}: {placement}",
+                f"mark one operand: `return a @ km.{spelling('srcb')}(b)`",
+            )
+        self.compiled.placements.append(
+            (
+                self.method.name,
+                node.lineno,
+                self.text(node),
+                left,
+                right,
+                placement,
+                weight,
+            )
+        )
+        turned = placement == "turned"
+        if state.setdefault("turned", turned) != turned:
+            self.refuse(
+                node,
+                "this loop's products are placed two ways, and a loop holds the "
+                "matrix unit's setup for one",
+                "mark both products' operands alike",
+            )
+        return turned
+
+    def turned_product(self, node, value, function, item, field_, columns):
+        """The field product turned: W's tiles (stored transposed) into SrcB, the
+        block's tile read transposed into SrcA, acc's tiles transposed before the
+        loop and after it, so DST sums (X W)^T between and X W outside."""
+        state, number = self.loop_states[-1], self.stream_loops[-1]
+        buffer = f"kField{camel(field_)}"
+        block = item.buffer.name + "Block"
+        x = f"{item.buffer.name}.mover_a"
+        turn = turned_tiles(value.width, value.dst)
+        if state["function"] is None:
+            state["function"] = "product"
+            waited = ""
+            if field_ not in self.waited_fields:  # once a handler
+                self.waited_fields.add(field_)
+                self.wait(node, "compute", WAIT_INPUT)
+                waited = (
+                    f"if (!compute.wait_front({buffer}, {buffer}Pages)) {{\n"
+                    "    return;\n}\n"
+                )
+                if not self.kept_field(field_):
+                    self.closing.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);"))
+            state["inits"].append(
+                Line(
+                    f"{waited}"
+                    "// the zeros' fills (vector unit) done before the matrix unit "
+                    "adds\n"
+                    "MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));"
+                )
+            )
+        state["inits"] += [
+            turn,
+            Line(
+                f"KM_UNPACK_FORMATS({x}, {buffer});\n"
+                f"matmul_block_init({buffer}, {x}, 1, 1, {columns}, 1);"
+            ),
+        ]
+        state["after"].append(turn)
+        stored = self.compiled.fields[field_]
+        state["inits"] += self.k_bound(node, state, field_, stored.shape[0], block)
+        self.compiled.includes |= {"matmul", "transpose_dest"}
+        self.compiled.products.append(
+            (
+                self.method.name,
+                node.lineno,
+                self.text(node),
+                function,
+                columns,
+                block,
+                self.compiled.fidelity,
+            )
+        )
+        text = (
+            f"matmul_block({buffer}, {item.cxx}, (km_block{number} * {block} + "
+            f"{item.first}) * {columns}, {item.first}, {value.dst}, 1, 1, "
+            f"{columns}, 1);"
         )
         return [], [Line(text)]
 
@@ -2360,6 +2500,10 @@ class HandlerCompiler:
         self.stream_operands(node, function, a, b, value.width, target)
         state = self.loop_states[-1]
         block = f"{a.buffer.name}Block"
+        weight = ("tensor", state["tensors"][b.buffer.name])
+        left, right = a.buffer.dtype, b.buffer.dtype
+        if self.placed(node, state, function, left, right, weight):
+            return self.turned_stream_product(node, value, function, a, b)
         if state["function"] is None:
             state["function"] = "product"
             state["inits"].append(
@@ -2387,6 +2531,48 @@ class HandlerCompiler:
         text = (
             f"matmul_block({a.cxx}, {b.cxx}, {a.first}, {a.first} * {value.width}, "
             f"{value.dst}, 0, {value.width}, 1, {block});"
+        )
+        return [], [Line(text)]
+
+    def turned_stream_product(self, node, value, function, a, b):
+        """The stream product turned: each W block (its tiles stored transposed)
+        into SrcB, X's tile read transposed into SrcA, acc's tiles transposed before
+        the loop and after it (turned_product's)."""
+        state = self.loop_states[-1]
+        x, w = f"{a.buffer.name}.mover_a", f"{b.buffer.name}.mover_a"
+        turn = turned_tiles(value.width, value.dst)
+        if state["function"] is None:
+            state["function"] = "product"
+            state["inits"].append(
+                Line(
+                    "// the zeros' fills (vector unit) done before the matrix unit "
+                    "adds\n"
+                    "MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));"
+                )
+            )
+        state["inits"] += [
+            turn,
+            Line(
+                f"KM_UNPACK_FORMATS({x}, {w});\n"
+                f"matmul_block_init({w}, {x}, 1, 1, {value.width}, 1);"
+            ),
+        ]
+        state["after"].append(turn)
+        self.compiled.includes.add("transpose_dest")
+        self.compiled.products.append(
+            (
+                self.method.name,
+                node.lineno,
+                self.text(node),
+                function,
+                value.width,
+                f"{a.buffer.name}Block",
+                self.compiled.fidelity,
+            )
+        )
+        text = (
+            f"matmul_block({b.cxx}, {a.cxx}, {a.first} * {value.width}, {a.first}, "
+            f"{value.dst}, 1, 1, {value.width}, 1);"
         )
         return [], [Line(text)]
 
@@ -2437,6 +2623,16 @@ class HandlerCompiler:
         why = product_refusal(blocks[0].dtype, blocks[1].dtype)
         if why is not None:
             self.refuse(node, why, "cast tiles of matrix formats of one family")
+        left, right = blocks[0].dtype, blocks[1].dtype
+        if self.placed(node, {}, function, left, right, None):
+            self.refuse(
+                node,
+                f"{function.name} turns the product (its right operand in SrcB), and "
+                "a product of two broadcasts' blocks is built in the plain placement "
+                "alone",
+                "drop the marker, or mark it the plain way: "
+                f"`return km.{spelling('srcb')}(a) @ b`",
+            )
         rows, columns = self.field_sides(node, field_)
         a, b = blocks
         inner = a.block // rows if rows and a.block % rows == 0 else 0
@@ -2574,17 +2770,26 @@ class HandlerCompiler:
         width = max(w for w in range(1, DST_HALF + 1) if columns % w == 0)
         valid = f"km_valid{self.stream_loops[-1]}"
         column, k = (f"km_{n}{node.lineno}" for n in ("sub_column", "k"))
+        weight = ("tensor", state["tensors"][b.buffer.name])
+        left, right = a.buffer.dtype, b.buffer.dtype
+        turned = self.placed(node, state, function, left, right, weight)
+        call = (
+            f"matmul_block({a.cxx}, {b.cxx}, {k}, {k} * {columns} + {column}, 0, 0, "
+            f"{width}, 1, {inner});"
+        )
+        init = (
+            f"KM_UNPACK_FORMATS({b.buffer.name}.mover_a, {a.buffer.name}.mover_a);\n"
+            f"matmul_block_init({a.buffer.name}.mover_a, {b.buffer.name}.mover_a, 0, "
+            f"{width}, 1, {inner});"
+        )
+        turn = ""
+        if turned:
+            call, init, turn = self.turned_sums(
+                a, b, f"{k} * {columns} + {column}", k, width
+            )
         if state["function"] is None:
             state["function"] = "product"
-            state["inits"].append(
-                Line(
-                    f"KM_UNPACK_FORMATS({b.buffer.name}.mover_a, "
-                    f"{a.buffer.name}.mover_a);\n"
-                    f"matmul_block_init({a.buffer.name}.mover_a, {b.buffer.name}"
-                    f".mover_a, 0, {width}, 1, {inner});\n"
-                    f"KM_PACK_FORMAT({buffer});"
-                )
-            )
+            state["inits"].append(Line(f"{init}\nKM_PACK_FORMAT({buffer});"))
         self.compiled.includes |= {"pack"}
         self.compiled.unpack_fp32.add(buffer)
         self.compiled.products.append(
@@ -2612,9 +2817,9 @@ class HandlerCompiler:
             f"{width}) {{\n"
             "        tile_regs_acquire();\n"
             f"        for (uint32_t {k} = 0; {k} < {valid}; {k}++) {{\n"
-            f"            matmul_block({a.cxx}, {b.cxx}, {k}, {k} * {columns} + "
-            f"{column}, 0, 0, {width}, 1, {inner});\n"
+            f"            {call}\n"
             "        }\n"
+            f"{turn}"
             "        tile_regs_commit();\n"
             "        tile_regs_wait();\n"
             f"{packs}\n"
@@ -2625,6 +2830,23 @@ class HandlerCompiler:
             "}"
         )
         return [], [Line(text, {"km_ok", valid})]
+
+    def turned_sums(self, a, b, w_tile, x_tile, width):
+        """The field sums' product turned: its call (W's tile `w_tile` into SrcB, X's
+        `x_tile` read transposed into SrcA, DST tiles 0.. the transposed sums), its
+        setup, and the lines after a subblock's K tiles: its DST tiles transposed
+        back, the setup again."""
+        x, w = f"{a.buffer.name}.mover_a", f"{b.buffer.name}.mover_a"
+        call = (
+            f"matmul_block({b.cxx}, {a.cxx}, {w_tile}, {x_tile}, 0, 1, 1, {width}, 1);"
+        )
+        init = (
+            f"KM_UNPACK_FORMATS({x}, {w});\n"
+            f"matmul_block_init({w}, {x}, 1, 1, {width}, 1);"
+        )
+        self.compiled.includes.add("transpose_dest")
+        lines = turned_tiles(width, 0).text.split("\n") + init.split("\n")[1:]
+        return call, init, "".join(f"        {line}\n" for line in lines)
 
     def field_sides(self, node, field_):
         """A field of tiles' rows and columns, its symbols the plan's."""
@@ -3081,6 +3303,7 @@ class HandlerCompiler:
                 "block": reads[0]["block"],
                 "first": reads[0]["half"],
                 "count": reads[0]["pages"].count,  # the loop's tiles, as written
+                "tensors": {r["buffer"].name: r["pages"].tensor for r in reads},
                 "repeat": reads[0]["repeat"],
                 "line": node.lineno,
             }
@@ -6440,7 +6663,8 @@ def function_line(function):
 
 
 def is_product(function):
-    """Whether a tile function is `return a @ b` of its two parameters."""
+    """Whether a tile function is `return a @ b` of its two parameters, either one
+    marked km.srcb(...) or km.srca(...)."""
     tree = source_of(function)[0]
     body = [
         n
@@ -6454,7 +6678,7 @@ def is_product(function):
     return (
         isinstance(value, ast.BinOp)
         and isinstance(value.op, ast.MatMult)
-        and [getattr(value.left, "id", None), getattr(value.right, "id", None)] == names
+        and [marked_operand(value.left)[0], marked_operand(value.right)[0]] == names
     )
 
 

@@ -134,6 +134,9 @@ def make(
     setattr(self, spelling("may_cross"), report)
     for line in report:
         log(line)
+    self.placements = placements_of(compiled, tensors)
+    for line in self.placements:
+        log(line)
     buffers = []
     for buffer in compiled.buffers:
         if buffer.index_b is None:
@@ -338,6 +341,65 @@ def may_cross(compiled, tensors):
             f"{lowered}; one island: {LOCAL[direction]}"
         )
     return lines
+
+
+def placements_of(compiled, tensors):
+    """The build's report of each product's two placements and the significand bits
+    (of 11) each operand keeps in each (formats.bits_used), the one built; refuses a
+    turned product's W tensor not stored with transposed tiles, a plain one's so."""
+    fidelity = compiled.fidelity or "HiFi4"
+    lines = []
+    for handler, line, text, left, right, placement, weight in compiled.placements:
+        where = f"{compiled.name}.{handler}, line {line}: {text}"
+        plain = (
+            formats.bits_used(left, "srcb", fidelity),
+            formats.bits_used(right, "srca", fidelity),
+        )
+        turned = (
+            formats.bits_used(left, "srca", fidelity),
+            formats.bits_used(right, "srcb", fidelity),
+        )
+        built = {"none": "plain, no marker", "plain": "plain, marked"}.get(
+            placement, "turned, marked: W's tiles stored transposed, X's read so"
+        )
+        lines.append(
+            f"  {where}: left {left}, right {right}, {fidelity}; plain (left in "
+            f"SrcB): left keeps {plain[0]}, right {plain[1]}; turned (right in "
+            f"SrcB): left {turned[0]}, right {turned[1]}; built {built}"
+        )
+        for name in weight_tensors(compiled, weight):
+            stored = getattr(tensors.get(name), "transposed_tiles", False)
+            if stored != (placement == "turned"):
+                raise ProgramError(
+                    f"{where}: the product is {built.split(',')[0]} and tensor {name} "
+                    f"is {'' if stored else 'not '}stored with its tiles transposed; "
+                    f"write it with session.tensor(..., transposed_tiles={not stored})"
+                )
+    if lines:
+        lines.insert(
+            0,
+            "placements (each product: the significand bits of 11 each operand keeps "
+            "in the matrix unit, either way):",
+        )
+    return lines
+
+
+def weight_tensors(compiled, weight):
+    """The tensor parameters of a product's W: its stream's, or those that fill its
+    field."""
+    if weight is None:
+        return []
+    kind, name = weight
+    if kind == "tensor":
+        return [name]
+    lines = {(handler, line) for f, _, handler, line in compiled.fills if f == name}
+    return sorted(
+        {
+            m.tensor
+            for m in compiled.moves
+            if m.how == "fill" and (m.handler, m.line) in lines
+        }
+    )
 
 
 def rectangle_of(program, compiled):
@@ -963,6 +1025,7 @@ COMPUTE_INCLUDES = [
     ("api/compute/pack.h", None),
     ("api/compute/reg_api.h", None),
     ("api/compute/tile_move_copy.h", None),
+    ("api/compute/transpose_dest.h", "transpose_dest"),
     ("komorebi/device/km_broadcast.hpp", "broadcast"),
     ("komorebi/device/km_movement.hpp", None),
     ("komorebi/device/km_port.hpp", "port"),

@@ -368,6 +368,21 @@ def line_only(kind):
     return call
 
 
+def placement(side):
+    """km.srcb / km.srca: marks a product's operand for that source register; read by
+    the compiler in a tile function `return a @ b`, never run."""
+
+    def call(*args, **kwargs):
+        raise ProgramError(
+            f"km.{spelling(side)} marks an operand of a tile function `return a @ b` "
+            "that a handler's product line adds; the compiler reads it, Python never "
+            "runs it"
+        )
+
+    call.__name__ = spelling(side)
+    return call
+
+
 class TileNamespace:
     """`km.tile`: the tile values of compute (`km.tile.zeros(km.fp32)`)."""
 
@@ -400,6 +415,8 @@ def exports():
         "reduce": line_only("reduce"),
         "broadcast": line_only("broadcast"),
         "cxx": line_only("cxx"),
+        "srcb": placement("srcb"),
+        "srca": placement("srca"),
         "tile": TileNamespace(),
         **{kind: FORMATS[kind] for kind in FORMATS},
         **{kind: tile_math(kind) for kind in NAMES if kind.startswith("math_")},

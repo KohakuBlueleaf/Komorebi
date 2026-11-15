@@ -102,6 +102,45 @@ Dst is not: against the float64 sum of the same products the median relative err
 2.9e-4 (about 2^-12), unbiased. This bounds a product's precision whatever its
 operands' bits; a single-term product (the bits probe) is exact.
 
+### The placement of a linear layer
+
+`placement.py`: Y = X W, 32 x 1024 x 1024 on 8 cores (each 4 columns of Y, X and W
+streamed in step, the sums in an fp32 field), X bf16, W float32 normal / 32 stored in
+each format; the tile function `return x @ w` (no marker: X in SrcB) against
+`return x @ km.srcb(w)` (W stored with its tiles transposed, the product turned). Error
+against the float64 product of the given values; "W stored" is the format's own loss;
+time the median of 3 commands; the weight bytes a command reads.
+
+| fidelity | W | form | rms rel | max / rms | us | W bytes | W stored |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| LoFi | bf16 | no marker | 2.62e-2 | 0.117 | 17.9 | 2,097,152 | 1.66e-3 |
+| LoFi | bf16 | km.srcb(w) | 2.66e-2 | 0.107 | 18.6 | 2,097,152 | 1.66e-3 |
+| LoFi | bfp8_b | no marker | 2.21e-2 | 0.094 | 17.4 | 1,114,112 | 7.26e-3 |
+| LoFi | bfp8_b | km.srcb(w) | 2.50e-2 | 0.108 | 17.9 | 1,114,112 | 7.26e-3 |
+| LoFi | bfp4_b | no marker | 0.118 | 0.511 | 17.1 | 589,824 | 0.117 |
+| LoFi | bfp4_b | km.srcb(w) | 0.119 | 0.509 | 17.7 | 589,824 | 0.117 |
+| HiFi2 | bf16 | no marker | 4.40e-3 | 0.023 | 17.9 | 2,097,152 | 1.66e-3 |
+| HiFi2 | bf16 | km.srcb(w) | 4.39e-3 | 0.022 | 18.9 | 2,097,152 | 1.66e-3 |
+| HiFi2 | bfp8_b | no marker | 8.33e-3 | 0.038 | 17.4 | 1,114,112 | 7.26e-3 |
+| HiFi2 | bfp8_b | km.srcb(w) | 7.34e-3 | 0.030 | 18.2 | 1,114,112 | 7.26e-3 |
+| HiFi2 | bfp4_b | no marker | 0.118 | 0.511 | 17.0 | 589,824 | 0.117 |
+| HiFi2 | bfp4_b | km.srcb(w) | 0.118 | 0.501 | 18.0 | 589,824 | 0.117 |
+| HiFi4 | bf16 | no marker | 1.70e-3 | 0.009 | 18.3 | 2,097,152 | 1.66e-3 |
+| HiFi4 | bf16 | km.srcb(w) | 1.70e-3 | 0.008 | 20.1 | 2,097,152 | 1.66e-3 |
+| HiFi4 | bfp8_b | no marker | 7.28e-3 | 0.031 | 17.7 | 1,114,112 | 7.26e-3 |
+| HiFi4 | bfp8_b | km.srcb(w) | 7.34e-3 | 0.030 | 19.7 | 1,114,112 | 7.26e-3 |
+| HiFi4 | bfp4_b | no marker | 0.119 | 0.513 | 17.4 | 589,824 | 0.117 |
+| HiFi4 | bfp4_b | km.srcb(w) | 0.118 | 0.501 | 19.7 | 589,824 | 0.117 |
+
+The turned product is right end to end: at HiFi4 it equals the plain one within the
+sum's noise. A bfp8_b or bfp4_b weight in SrcB uses all its bits from HiFi2, and X's 8
+in SrcA, so its HiFi2 result is its HiFi4 result bit for bit; unmarked, HiFi2 cuts X
+to 7 bits (8.33e-3 against 7.34e-3). At LoFi the unmarked placement is the better one
+for bfp8_b: SrcA's 5 bits cut a block-float weight (whose small datums have fewer bits
+than 7) less than they cut X. The turn costs 0.5 to 2 us a command (each subblock's
+Dst transposed back, the matrix unit set up again). bfp4_b is its storage's error at
+every fidelity. The commands are not bound by the weight's bytes at this size.
+
 ## Running it
 
     python experiments/core/formats/probe.py build [--set 2]   # mock device: builds every case
@@ -110,3 +149,6 @@ operands' bits; a single-term product (the bits probe) is exact.
 `build` fills the runtime's kernel cache on a mock device (and checks formats.py's
 block-float encode and decode against tt-metal's, bit for bit); `card` reads the same
 cache, runs each case once and writes `results/card<set>.json`.
+
+    python experiments/core/formats/placement.py build   # mock device: the three programs
+    python experiments/core/formats/placement.py card    # one card: results/placement.json

@@ -743,16 +743,19 @@ class Session:
         """The Tensix grid (x, y) of the open device."""
         return tuple(self.device.grid())
 
-    def tensor(self, data, dtype, layout="row", shard_grid=None):
+    def tensor(
+        self, data, dtype, layout="row", shard_grid=None, transposed_tiles=False
+    ):
         """A tensor on the card holding `data` (anything np.asarray takes) as `dtype`
-        (a name of formats.DTYPES; a block format in tiles) in `layout` ("row" or
-        "tile"); in DRAM, or one row in each core's L1 of `shard_grid`. Written before
-        the grid starts, or (DRAM, the host channel) while it runs."""
+        (formats.DTYPES; a block format in tiles) in `layout` ("row" or "tile"), each
+        tile transposed if `transposed_tiles`; in DRAM, or a row in each core's L1 of
+        `shard_grid`. Written before the grid starts, or (DRAM) while it runs."""
         self._module = self._module or native.load_module(self.tree)
-        raw, shape = formats.to_bytes(data, dtype, layout)
+        raw, shape = formats.to_bytes(data, dtype, layout, transposed_tiles)
         tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid
         )
+        tensor.transposed_tiles = transposed_tiles
         self._note_page(tensor)
         if self._transfer_way([tensor], 0, None) is None:
             tensor.buffer.write(raw)

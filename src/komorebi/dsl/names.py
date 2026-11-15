@@ -165,6 +165,8 @@ NAMES = {
     "tile": Name("tile", "km.tile: tile values of compute", "tile"),
     "zeros": Name("zeros", "km.tile.zeros(format): a tile of zeros", None),
     "cxx": Name("cxx", "km.cxx(text, takes=, gives=, on=): an inline body", None),
+    "srcb": Name("srcb", "x @ km.srcb(w): w is the product's SrcB operand", None),
+    "srca": Name("srca", "km.srca(x) @ w: x is the product's SrcA operand", None),
     "takes": Name("takes", "the names an inline body reads", None),
     "gives": Name("gives", "what an inline body gives: int or km.Tile", None),
     "tile_value": Name(

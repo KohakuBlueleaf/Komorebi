@@ -239,9 +239,18 @@ def page_bytes(shape, dtype, layout):
     return shape[-1] * itemsize(dtype)
 
 
-def to_bytes(data, dtype, layout):
+def transposed_tiles(array):
+    """`array` ([..., rows, cols], multiples of 32) with each 32 x 32 tile transposed
+    in its place: a turned product's SrcB operand as the card holds it."""
+    *outer, rows, cols = array.shape
+    tiles = array.reshape(*outer, rows // TILE, TILE, cols // TILE, TILE)
+    return tiles.swapaxes(-1, -3).reshape(array.shape)
+
+
+def to_bytes(data, dtype, layout, turned=False):
     """`data` as the buffer's bytes (uint8) and its shape on the card. A tile layout
-    zero-pads the last two dimensions to 32 and tiles every [rows, cols] slice."""
+    zero-pads the last two dimensions to 32 and tiles every [rows, cols] slice;
+    `turned`, each tile transposed (transposed_tiles)."""
     array = np.asarray(data)
     shape = padded_shape(array.shape, layout)
     if layout == "tile" and shape != array.shape:
@@ -251,6 +260,10 @@ def to_bytes(data, dtype, layout):
         array = np.pad(array, pad)
     if check_dtype(dtype) in BLOCK and layout != "tile":
         raise ValueError(f"{dtype}: a block format is laid out in tiles, not rows")
+    if turned and layout != "tile":
+        raise ValueError("a tensor of transposed tiles is laid out in tiles")
+    if turned:
+        array = transposed_tiles(array)
     if dtype == "bfloat16":
         array = bf16_bits(array.astype(np.float32, copy=False))
     elif dtype == "float16":
@@ -266,7 +279,7 @@ def to_bytes(data, dtype, layout):
     return np.ascontiguousarray(array).view(np.uint8).reshape(-1), shape
 
 
-def from_bytes(raw, shape, dtype, layout):
+def from_bytes(raw, shape, dtype, layout, turned=False):
     """The values of a buffer's bytes (to_bytes' inverse); bfloat16 as float32."""
     raw = np.ascontiguousarray(raw, np.uint8)
     if dtype == "bfloat16":
@@ -281,4 +294,5 @@ def from_bytes(raw, shape, dtype, layout):
         rows, cols = shape[-2:]
         array = array.reshape(-1, rows * cols)
         array = np.stack([untilize(tile_slice, rows, cols) for tile_slice in array])
-    return array.reshape(shape)
+    array = array.reshape(shape)
+    return transposed_tiles(array) if turned else array

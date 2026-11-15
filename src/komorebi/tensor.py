@@ -11,7 +11,8 @@ from komorebi import formats
 class Tensor:
     """A device buffer (the native module's `Buffer`) and the shape on the card, the
     data type name and the layout ("row" or "tile") of its contents. `shard_grid`
-    (x, y): one row in each core's L1, cores in row-major order; None: DRAM."""
+    (x, y): one row in each core's L1, cores in row-major order; None: DRAM.
+    `transposed_tiles`: each tile held transposed (a turned product's SrcB operand)."""
 
     def __init__(self, buffer, shape, dtype, layout, shard_grid=None):
         self.buffer = buffer
@@ -19,6 +20,7 @@ class Tensor:
         self.dtype = dtype
         self.layout = layout
         self.shard_grid = shard_grid
+        self.transposed_tiles = False
         self.freed = False
 
     def __repr__(self):
@@ -63,7 +65,9 @@ class Tensor:
     def write(self, data):
         """Writes `data` (this shape) over the whole buffer, once the cores of a
         launched program are done."""
-        raw, shape = formats.to_bytes(data, self.dtype, self.layout)
+        raw, shape = formats.to_bytes(
+            data, self.dtype, self.layout, self.transposed_tiles
+        )
         if shape != self.shape:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
         self.buffer.write(raw)
@@ -72,7 +76,11 @@ class Tensor:
         """The whole buffer as a numpy array (bfloat16 as float32), once the cores of
         a launched program are done."""
         return formats.from_bytes(
-            self.read_bytes(), self.shape, self.dtype, self.layout
+            self.read_bytes(),
+            self.shape,
+            self.dtype,
+            self.layout,
+            self.transposed_tiles,
         )
 
     def read_bytes(self):
