@@ -296,8 +296,8 @@ def price(session, args, cores):
     forms = {
         "kernel": (
             kernel_form(checked.inputs, checked.sums),
-            7,
-        ),  # 7: MAP's default branch
+            0,
+        ),  # 0: NOP, no work, reaches the default branch of the kernels' switch
         "program": (sum_program, sum_program.handler("empty")),
     }
     out = {}
