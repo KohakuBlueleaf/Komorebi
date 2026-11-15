@@ -13,7 +13,10 @@ void kernel_main() {
     using A = km::Tensor<0>;
     using W = km::Tensor<A::next_compile_time_args_offset()>;
     km::Reader reader;
-    reader.run([&](const km_command_t& command) {
+#if defined(SPLIT_CHAIN)
+    chain_start();
+#endif
+    const auto product = [&](const km_command_t& command) SPLIT_PRODUCT {
         if (km::handler(command) != kHandlerSplit || command.a5 >= kSplitPlans) {
             return;
         }
@@ -24,6 +27,11 @@ void kernel_main() {
         const uint32_t block_height = plan(kSpOh), block_width = plan(kSpOw);
         const km::Group group = km::digit_group(command, reader.me(), 1, plan(kSpS));
         if (mode == kSplitOp) {
+#if defined(SPLIT_CHAIN)
+            if (!chain_input(reader)) {
+                return;
+            }
+#endif
             split_op(reader, command);
             return;
         }
@@ -41,5 +49,16 @@ void kernel_main() {
             group.rank == 0) {
             split_op(reader, command);
         }
+    };
+#if defined(SPLIT_CHAIN)
+    reader.run([&](const km_command_t& command) {
+        if (km::handler(command) == kHandlerSplit && command.a4 == kChainMode) {
+            chain_reader(reader, command, product);
+        } else {
+            product(command);
+        }
     });
+#else
+    reader.run(product);
+#endif
 }
