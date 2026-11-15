@@ -69,13 +69,15 @@ void kernel_main() {
     for (uint32_t i = 0; i < 7; ++i) {
         p[i] = get_arg_val<uint32_t>(1 + i);
     }
-#if PROBE == 14
-    compute_kernel_hw_startup(probe::kCbIn, probe::kCbRne);
+#if PROBE == 15
+    compute_kernel_hw_startup<SrcOrder::Reverse>(
+        probe::kCbIn, probe::kCbIn, probe::kCbRne
+    );
     const uint32_t rne_addr = get_tile_address(probe::kCbRne, 0);
     const uint32_t sr_addr = get_tile_address(probe::kCbSr, 0);
     (void)rne_addr;
     (void)sr_addr;
-#elif PROBE == 11
+#elif PROBE == 11 || PROBE == 14
     compute_kernel_hw_startup<SrcOrder::Reverse>(
         probe::kCbIn, probe::kCbIn, probe::kCbOut
     );
@@ -108,16 +110,22 @@ void kernel_main() {
     // The order of the dense matrix-product kernel on all three threads.
     fpu::skeleton(out, scratch, p[0], p[1]);  // first config, count
 #elif PROBE == 14
-    // TRISC 0 fills SrcA and SrcB; TRISC 1 runs the matrix unit once they are full.
-#if defined(TRISC_UNPACK)
-    fpu::unpack(out, nonce);
-#elif defined(TRISC_MATH)
-    if (fpu::wait_word(out, probe::kDone0, nonce)) {
-        fpu::ties_math();
-    } else {
-        out[probe::kAuxError] = probe::kErrorSpin;
+    fpu::skeleton_mvmul_ties(out, scratch);
+#elif PROBE == 15
+    fpu::skeleton_pack_ties(
+        out,
+        reinterpret_cast<const volatile uint32_t*>(rne_addr),
+        reinterpret_cast<const volatile uint32_t*>(sr_addr)
+    );
+#endif
+
+#if PROBE == 12
+    // p0 run mask, p1 loop passes.
+    if ((p[0] >> kThread) & 1) {
+        icache::run(kThread, out, p[1]);
     }
-    fpu::post_word(out, probe::kDone0 + 1, nonce);
+#ifndef TRISC_PACK
+    fpu::post_word(out, probe::kDone0 + kThread, nonce);
 #endif
 #endif
 
@@ -180,19 +188,6 @@ void kernel_main() {
     vec::setup();
     costs::sfpi_run(in, out);
     vec::finish();
-#elif PROBE == 14
-    err |= wait_done(out, 3, nonce);
-    err |= out[probe::kAuxError];
-    if (err == 0) {
-        fpu::ties_pack(
-            in,
-            out,
-            probe::kCbRne,
-            probe::kCbSr,
-            reinterpret_cast<const volatile uint32_t*>(rne_addr),
-            reinterpret_cast<const volatile uint32_t*>(sr_addr)
-        );
-    }
 #endif
     out[probe::kError] = err;
     l1_fence();

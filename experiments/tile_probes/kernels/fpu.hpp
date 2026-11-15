@@ -1,5 +1,5 @@
-// Probes 11 (matrix-unit issue cost, K Dst blocks in rotation) and 14 (ties of MVMUL,
-// packer); probe 11 keeps the order of the dense matrix-product kernel on every thread.
+// Probes 11 (matrix-unit issue cost), 14 and 15 (ties of MVMUL and of the packer): the
+// dense matrix-product kernel's order; no thread waits for a word of another.
 #pragma once
 
 #include <stdint.h>
@@ -9,64 +9,23 @@
 namespace fpu {
 
     constexpr uint32_t kWallClock = 0xFFB121F0;  // RISCV_DEBUG_REG_WALL_CLOCK_L
-    constexpr uint32_t kDstWindow = 0xFFBD8000;
-    constexpr uint32_t kRows = 128;  // Dst rows (32-bit view) the ties probe reads
-    constexpr uint32_t kTileWords = 1024;  // one packed tile: Dst rows 0..63
+    constexpr uint32_t kTileWords = 1024;        // one packed tile: Dst rows 0..63
     constexpr uint32_t kAmInc = ADDR_MOD_7;  // Dst counter one block on (matmul init uses 0..5)
     constexpr uint32_t kAmClr = ADDR_MOD_6;  // Dst counter back to block 0
-    constexpr uint32_t kAm = kAmClr;         // probe 14: no step
+    constexpr uint32_t kAmCopy = ADDR_MOD_5;  // sources and Dst counter one 8-row block on
 
     inline uint32_t wall() {
         return *reinterpret_cast<volatile uint32_t*>(kWallClock);
-    }
-
-    inline volatile uint32_t* win() {
-        return reinterpret_cast<volatile uint32_t*>(kDstWindow);
     }
 
     inline void fence() {
         asm volatile("fence" ::: "memory");
     }
 
-    // Waits (bounded) until out[w] holds the nonce; false on a timeout.
-    inline bool wait_word(volatile uint32_t* out, uint32_t w, uint32_t nonce) {
-        for (uint32_t n = 0; n < probe::kSpinLimit; ++n) {
-            fence();
-            if (out[w] == nonce) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     inline void post_word(volatile uint32_t* out, uint32_t w, uint32_t nonce) {
         fence();
         out[w] = nonce;
         fence();
-    }
-
-    // Probe 14 unpack thread: face 0 of tile 0 into SrcA and SrcB, then its done word.
-    // One face: a face is a hand-over of a Src bank and a Src has two banks.
-    inline void unpack(volatile uint32_t* out, uint32_t nonce) {
-#ifdef TRISC_UNPACK
-        const ckernel::TensorShape one_face{16, 16, 1, 1};
-        _llk_unpack_AB_init_<BroadcastType::NONE>(one_face);
-        llk_unpack_AB(probe::kCbIn, probe::kCbIn, 0, 0);
-        tensix_sync();
-#endif
-        post_word(out, probe::kDone0, nonce);
-    }
-
-    // Dst rows 0..kRows-1 of the window set to zero (pack thread, between syncs).
-    inline void zero_rows() {
-        tensix_sync();
-        volatile uint32_t* w = win();
-        for (uint32_t i = 0; i < 16 * kRows; ++i) {
-            w[i] = 0;
-        }
-        (void)w[16 * kRows - 1];
-        fence();
-        tensix_sync();
     }
 
     // Address modes: kAmInc steps the Dst counter by ROWS (a block), kAmClr sets it
@@ -94,19 +53,6 @@ namespace fpu {
     inline void math_counters() {
         math_modes<8>();
         TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, 15);
-        tensix_sync();
-    }
-
-    // Probe 14: the same with the Dst offset zero.
-    inline void math_state() {
-        TTI_SETC16(DEST_TARGET_REG_CFG_MATH_Offset_ADDR32, 0);
-        math_counters();
-    }
-
-    // Math thread state with the window in FP32 (probe 14).
-    inline void math_setup() {
-        math_state();
-        configure_dest_access<ThreadId::MathThreadId>(DataFormat::Float32, true);
         tensix_sync();
     }
 
@@ -254,7 +200,9 @@ namespace fpu {
     ) {
 #ifdef TRISC_PACK
         cb_reserve_back(probe::kCbScratch, 1);
-        pack_tile(0, probe::kCbScratch);
+        pack_tile<true>(
+            0, probe::kCbScratch, 0
+        );  // tile slot 0 every time: no push follows
         tensix_sync();
         volatile uint32_t* d = out + probe::kData + 32 * c;
         uint32_t nonzero = 0, nv = 0;
@@ -305,9 +253,10 @@ namespace fpu {
         }
     }
 
-    // ---- Probe 14: ties (row 7) -----------------------------------------------------
+    // ---- Probes 14 and 15: ties (row 7)
+    // -----------------------------------------------
 
-    constexpr uint32_t kSrBlocks = 7;  // stochastic-rounding products at rows 8 .. 63
+    constexpr uint32_t kSrBlocks = 7;  // stochastic-rounding products in blocks 1 .. 7
 
     inline void set_fpu_srnd(uint32_t on) {
         TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::MATH);
@@ -315,23 +264,42 @@ namespace fpu {
         tensix_sync();
     }
 
-    // Math thread: Dst rows 0..7 = SrcB @ SrcA, rounded to nearest; rows 8 j (j = 1..7)
-    // the same with stochastic rounding; then commit the section.
-    inline void ties_math() {
-        tile_regs_acquire();
-        math_setup();
-        zero_rows();
-        TTI_MVMUL(0, 0, kAm, 0);
+    // Probe 14 math thread: block 0 = SrcB @ SrcA rounded to nearest, blocks 1..7 the
+    // same with stochastic rounding; then the release.
+    inline void ties_issue() {
+#ifdef TRISC_MATH
+        TTI_MVMUL(p_setrwc::CLR_NONE, 0, kAmInc, 0);
         tensix_sync();
         set_fpu_srnd(1);
-        for (uint32_t j = 1; j <= kSrBlocks; ++j) {
-            instrn_buffer[0] = TT_OP_MVMUL(0, 0, kAm, (8 * j) & 0x3FF);
+        for (uint32_t j = 1; j < kSrBlocks; ++j) {
+            TTI_MVMUL(p_setrwc::CLR_NONE, 0, kAmInc, 0);
         }
+        TTI_MVMUL(p_setrwc::CLR_NONE, 0, kAmClr, 0);
         tensix_sync();
         set_fpu_srnd(0);
         TTI_SETRWC(p_setrwc::CLR_AB, 0, 0, 0, 0, 15);
         tensix_sync();
-        tile_regs_commit();
+#endif
+    }
+
+    // Probe 15 math thread: SrcA's 64 rows copied to Dst rows 0..63, then the release.
+    inline void copy_issue() {
+#ifdef TRISC_MATH
+        addr_mod_t{
+            .srca = {.incr = 8},
+            .srcb = {.incr = 0},
+            .dest = {.incr = 8},
+            .fidelity = {.incr = 0, .clr = 0},
+        }
+            .set(kAmCopy);
+        TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, 15);
+        for (uint32_t j = 0; j < 8; ++j) {
+            TTI_MOVA2D(0, 0, kAmCopy, p_mova2d::MOV_8_ROWS, 0);
+        }
+        tensix_sync();
+        TTI_SETRWC(p_setrwc::CLR_AB, 0, 0, 0, 0, 15);
+        tensix_sync();
+#endif
     }
 
     inline void set_pack_srnd(uint32_t on) {
@@ -341,46 +309,73 @@ namespace fpu {
         tensix_sync();
     }
 
-    // Data 0..1023 = Dst rows 0..63 (products); tile 1 = in[1024 ..], packed to BF16
-    // into cb_rne (data 1024..1535), then stochastically rounded into cb_sr (1536..).
-    inline void ties_pack(
-        const volatile uint32_t* in,
+    // Probe 14 pack thread: the section packed to the scratch buffer (FP32), its 1024
+    // words copied to the probe's data words.
+    inline void ties_collect(volatile uint32_t* out, const volatile uint32_t* tile) {
+#ifdef TRISC_PACK
+        cb_reserve_back(probe::kCbScratch, 1);
+        pack_tile<true>(0, probe::kCbScratch, 0);
+        tensix_sync();
+        for (uint32_t i = 0; i < kTileWords; ++i) {
+            out[probe::kData + i] = tile[i];
+        }
+#endif
+    }
+
+    // Probe 15 pack thread: the section packed to BF16 twice, to nearest and with
+    // stochastic rounding; words 1024.. and 1536.. of the data hold the two tiles.
+    inline void pack_collect(
         volatile uint32_t* out,
-        uint32_t cb_rne,
-        uint32_t cb_sr,
         const volatile uint32_t* rne,
         const volatile uint32_t* sr
     ) {
-        volatile uint32_t* d = out + probe::kData;
-        tile_regs_wait();
-        configure_dest_access<ThreadId::PackThreadId>(DataFormat::Float32, true);
-        tensix_sync();
-        volatile uint32_t* w = win();
-        for (uint32_t i = 0; i < 1024; ++i) {
-            d[i] = w[i];
-        }
-        for (uint32_t i = 0; i < 1024; ++i) {
-            w[1024 + i] = in[1024 + i];
-        }
-        (void)w[2047];
-        fence();
-        tensix_sync();
-        cb_reserve_back(cb_rne, 1);
-        cb_reserve_back(cb_sr, 1);
-        pack_tile(1, cb_rne);
-        TTI_STALLWAIT(p_stall::STALL_THCON, p_stall::PACK);  // the packer is done
+#ifdef TRISC_PACK
+        cb_reserve_back(probe::kCbRne, 1);
+        pack_tile<true>(0, probe::kCbRne, 0);
+        TTI_STALLWAIT(p_stall::STALL_THCON, p_stall::PACK);
         tensix_sync();
         set_pack_srnd(1);
-        pack_tile(1, cb_sr);
+        cb_reserve_back(probe::kCbSr, 1);
+        pack_tile<true>(0, probe::kCbSr, 0);
         TTI_STALLWAIT(p_stall::STALL_THCON, p_stall::PACK);
         tensix_sync();
         set_pack_srnd(0);
-        tile_regs_release();
-        fence();
         for (uint32_t i = 0; i < 512; ++i) {
-            d[1024 + i] = rne[i];
-            d[1536 + i] = sr[i];
+            out[probe::kData + 1024 + i] = rne[i];
+            out[probe::kData + 1536 + i] = sr[i];
         }
+#endif
+    }
+
+    // Probe 14, all three threads: one section, tile 0 of the input as both operands.
+    inline void skeleton_mvmul_ties(
+        volatile uint32_t* out, const volatile uint32_t* tile
+    ) {
+        matmul_block_init(probe::kCbIn, probe::kCbIn, 0, 1, 1, 1);
+        MATH((math_counters()));
+        tile_regs_acquire();
+        UNPACK((llk_unpack_AB_matmul(probe::kCbIn, probe::kCbIn, 0, 0, 1, 1, 1)));
+        ties_issue();
+        tile_regs_commit();
+        tile_regs_wait();
+        ties_collect(out, tile);
+        tile_regs_release();
+    }
+
+    // Probe 15, all three threads: one section, tile 0 of the input through SrcA.
+    inline void skeleton_pack_ties(
+        volatile uint32_t* out,
+        const volatile uint32_t* rne,
+        const volatile uint32_t* sr
+    ) {
+        matmul_block_init(probe::kCbIn, probe::kCbIn, 0, 1, 1, 1);
+        tile_regs_acquire();
+        UNPACK((llk_unpack_AB_matmul(probe::kCbIn, probe::kCbIn, 0, 0, 1, 1, 1)));
+        copy_issue();
+        tile_regs_commit();
+        tile_regs_wait();
+        pack_collect(out, rne, sr);
+        tile_regs_release();
     }
 
 }  // namespace fpu

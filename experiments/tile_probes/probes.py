@@ -36,6 +36,7 @@ PROBES = {
     "icache": 12,
     "sfpi": 13,
     "ties": 14,
+    "packer": 15,
 }
 # probe.hpp layout
 NONCE, ERROR, NUM_TIMES, DONE0, TIMES, DATA = 0, 1, 2, 4, 16, 2048
@@ -843,9 +844,7 @@ def fpu(session, args):
     first, count = args.first, args.count
     if not (first >= 0 and count >= 1 and first + count <= len(FPU_CONFIGS)):
         raise SystemExit(f"fpu: configs 0..{len(FPU_CONFIGS) - 1}")
-    out, nonce = run_kernel(
-        session, "fpu", words, [first, count], in_format="bfloat16"
-    )
+    out, nonce = run_kernel(session, "fpu", words, [first, count], in_format="bfloat16")
     return fpu_rows(out, first, count), out, nonce
 
 
@@ -900,7 +899,7 @@ def sfpi(session, args):
     return {"values_bad": bad, "inputs_kept": bool(inputs_ok)}, out, nonce
 
 
-# ---- probe 14 -----------------------------------------------------------------------
+# ---- probes 14 and 15 ---------------------------------------------------------------
 
 TIE_CBS = {17: ("bfloat16", 2048), 18: ("bfloat16", 2048)}  # probe.hpp kCbRne, kCbSr
 TIE_A = 2.0**-12  # products 1 and A * A = 2^-24: sums at half an FP32 unit of 1
@@ -920,12 +919,12 @@ def tie_tile():
 
 
 def pack_values():
-    """1024 FP32 values for the packer, element e of tile 1: kind e >> 8 (0 a tie of
-    BF16, 1 just above it, 2 just below, 3 exact), sign bit 7, BF16 mantissa e & 127."""
+    """1024 FP32 values for the packer, element e: kind e >> 9 (0 a tie of BF16, 1
+    exact), sign bit 7, BF16 mantissa e & 127. Every value has no bit below 2^-10, so
+    SrcA's TF32 keeps it whole on its way to Dst."""
     e = np.arange(1024)
-    m, sign, kind = e & 127, (e >> 7) & 1, e >> 8
-    step = [2**-8, 2**-8 + 2**-16, 2**-8 - 2**-16]
-    v = 1 + m / 128 + np.select([kind == 0, kind == 1, kind == 2], step, 0.0)
+    m, sign, kind = e & 127, (e >> 7) & 1, e >> 9
+    v = 1 + m / 128 + np.where(kind == 0, 2**-8, 0.0)
     return np.where(sign == 1, -v, v), kind
 
 
@@ -953,9 +952,7 @@ def ties(session, args):
     t = tie_tile()
     tile = np.zeros(1024, dtype=np.float64)
     tile[:256] = t.reshape(-1)
-    pv, kind = pack_values()
-    words = np.concatenate([f32_bits(tile), f32_bits(pv)])
-    out, nonce = run_kernel(session, "ties", words, [], extra_cbs=TIE_CBS)
+    out, nonce = run_kernel(session, "ties", f32_bits(tile), [])
     d = out[DATA:]
     dst = d[0:1024].view(np.float32).reshape(64, 16)
     exact = t[:8, :] @ t  # Dst[i][j] = sum_k B[i][k] A[k][j], B = rows 0..7
@@ -974,6 +971,14 @@ def ties(session, args):
     rec["srnd_rows_nontie_equal"] = int(
         sum((dst[8 * b : 8 * b + 8] == dst[:8]).sum() for b in range(1, 8))
     )
+    return rec, out, nonce
+
+
+def packer(session, args):
+    pv, kind = pack_values()
+    out, nonce = run_kernel(session, "packer", f32_bits(pv), [], extra_cbs=TIE_CBS)
+    d = out[DATA:]
+    rec = {}
 
     def bf(words16):
         return (words16.astype(np.uint32) << 16).view(np.float32).astype(np.float64)
@@ -985,7 +990,7 @@ def ties(session, args):
     pk = {}
     for name, got in [("rne", p_rne), ("srnd", p_sr)]:
         res = {}
-        for kd, label in enumerate(["tie", "above", "below", "exact"]):
+        for kd, label in enumerate(["tie", "exact"]):
             sel = kind == kd
             g = got[sel]
             res[label] = {
@@ -1032,7 +1037,7 @@ def main():
     p.add_argument(
         "--allow-unproven",
         action="store_true",
-        help="run ties, whose only run did not finish (README section 8)",
+        help="run ties or packer, not yet run (README section 8)",
     )
     p.add_argument("--n-float", type=int, default=10000)
     p.add_argument("--rays", type=int, default=32, help="walk: multiple of 32, <= 1024")
@@ -1046,7 +1051,7 @@ def main():
     for name in names:
         if name not in PROBES:
             p.error(f"unknown probe {name!r}; one of {', '.join(PROBES)}")
-    unproven = {"ties"} & set(names)
+    unproven = {"ties", "packer"} & set(names)
     if unproven and not args.allow_unproven:
         p.error(f"{', '.join(sorted(unproven))}: not proven safe (README section 8)")
     if "slab" in names:
