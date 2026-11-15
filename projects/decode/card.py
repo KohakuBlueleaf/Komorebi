@@ -34,9 +34,9 @@ DEFAULT_BODIES = ()
 # The layer as one command: each core goes on to the next product by itself (stage 6;
 # the split's SPLIT_CHAIN), its records written by the thread; off: a command a step.
 CHAIN = abi.constants(dense_card.SPLIT_KERNELS / "chain.h")
-# The kernel buffer with the chain: its code takes 78,128 B (mock build), the
-# runtime's own 70,656; the L1 it takes is from the 217 K no buffer uses.
-CHAIN_KERNEL_BYTES = 80 * 1024
+# The kernel buffer with the chain: its code (stamped, with the next W early) is over
+# 80 K, the runtime's own 70,656; the L1 it takes is from the 217 K no buffer uses.
+CHAIN_KERNEL_BYTES = 84 * 1024
 
 
 def scale_fp32(bodies):
@@ -103,8 +103,7 @@ class Decode:
     """The model's layers loaded on a session: tensors, the program and its thread.
     `layers` layers of weights in DRAM (write_layer()); `trace`: the commands a core
     stamps (0: none); `chunk`, `patterns`: md.plans()'s; `context`: the cache's rows a
-    KV head and layer; `bodies`: BODIES'; `chain`: the layer as one command (stage 6).
-    """
+    KV head and layer; `bodies`: BODIES'; `chain`: a layer as one command (stage 6)."""
 
     def __init__(
         self,
@@ -131,7 +130,8 @@ class Decode:
             raise ValueError(f"bodies {self.bodies}: of {BODIES}")
         if self.bodies:
             emitted_bodies.require()
-        self.plans = md.plans(model, chunk=chunk, patterns=patterns)
+        halves = md.CHAIN_HALVES if chain else (md.DEPTH, 1)
+        self.plans = md.plans(model, chunk=chunk, patterns=patterns, halves=halves)
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
         for name in ("o", "down"):  # their roots write a row's squares, a tile a group
             if self.plans[md.plan_of(model, name)].groups() != D["DC_PARTS"]:
@@ -427,11 +427,12 @@ class Decode:
         chain=None,
         pair=False,
         token=False,
+        ahead=False,
     ):
         """One LAYERS command: its result word and stats slot. `bare` products only,
         `parts` their parts only, `apart` q, k, v as three, `overlap` two in flight;
-        `rows` tokens a step from `position` (default: the cache's end); `attend`
-        ATTEND_MODES'; `chain` a layer, `pair` its first two, `token` a token as one."""
+        `rows` tokens a step from `position` (default: the cache's end); `attend` its
+        modes; `chain` a layer, `pair` 2 records, `token` a token; `ahead` W early."""
         slot = self.slot
         self.slot += 1
         mode = 3 if parts else int(bare)
@@ -445,6 +446,7 @@ class Decode:
         if token and (pair or not chain):
             raise ValueError("a token as one command: the chain's whole layers")
         mode |= D["DC_LAYERS_TOKEN"] if token else 0
+        mode |= 0 if ahead or not chain else D["DC_LAYERS_AHEAD_OFF"]
         steps = tokens * rows
         position = self.context - steps if position is None else position
         if not 0 <= position <= self.context - steps or not 1 <= rows <= md.TILE:

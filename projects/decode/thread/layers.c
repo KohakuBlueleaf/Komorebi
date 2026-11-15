@@ -32,9 +32,11 @@ typedef struct {
     uint64_t span_ticks; /* q's submit to o's event, summed over the layers */
     uint64_t
         thread_ticks[DC_THREADS]; /* the chain's: records, submit, wait (decode.h) */
-    uint32_t chain;   /* the layer as one command: the cores go on by themselves */
-    uint32_t records; /* the chain's records: its first steps */
-    uint32_t token;   /* and a token as one command: every layer's records, once */
+    uint32_t chain;     /* the layer as one command: the cores go on by themselves */
+    uint32_t records;   /* the chain's records: its first steps */
+    uint32_t token;     /* and a token as one command: every layer's records, once */
+    uint32_t cores;     /* the records' cores: the chain command's */
+    uint32_t ahead_off; /* no record's W read in the record before */
 } job_t;
 
 /* Overlapped, q, k, v and o alternate the sum's two sets: k and o the second. */
@@ -265,8 +267,8 @@ static int chain_sends(const job_t* job, uint32_t step) {
 }
 
 /* The job's form its token records were written for (a4, first, count, rows), then 1
- * once written; after the load none (initialised: the thread has no zeroed data). */
-static uint32_t token_form[5] = {0u, 0u, 0u, 0u, TOKEN_NONE};
+ * once written (after the load none: the thread has no zeroed data), their cores. */
+static uint32_t token_form[6] = {0u, 0u, 0u, 0u, TOKEN_NONE, 0u};
 
 /* The records (chain.h) of `count` layers from the job's into region 3, each layer's
  * last naming the next layer's first; `token`: the position from the command's a0. */
@@ -286,6 +288,7 @@ static int chain_write(job_t* job, uint32_t count, int token) {
     km_command_t command;
     km_command_t chain;
     uint32_t address = 0u;
+    job->cores = 0u;
     for (uint32_t g = total; g-- > 0u;) { /* last first: each knows the next */
         const uint32_t i = g % steps, step = chain_steps[i];
         uint32_t* record = records + kChainWords * g;
@@ -340,6 +343,9 @@ static int chain_write(job_t* job, uint32_t count, int token) {
         }
         record[kChainNext] = address;
         address = chain.a7;
+        job->cores = (
+            (command.group >> 16) > job->cores ? command.group >> 16 : job->cores
+        );
     }
     job->layer = layer;
     job->index = index;
@@ -349,23 +355,18 @@ static int chain_write(job_t* job, uint32_t count, int token) {
 }
 
 /* One SPLIT in the chain's mode from region 3's first record, a0 the token's word,
- * on every core of the records; waited for once. */
+ * on the records' cores (job->cores); waited for once. */
 static int chain_run(job_t* job, uint32_t a0) {
     const uint32_t* words = job->words;
     km_command_t chain;
-    uint32_t cores = 0u;
-    for (uint32_t i = 0u; i < job->records; i++) {
-        km_command_t command;
-        step_command(job, chain_steps[i], &command);
-        cores = (command.group >> 16) > cores ? command.group >> 16 : cores;
-    }
     const uint64_t written = kmx_time();
-    kmx_command(&chain, 0u, words[DC_WORD_SPLIT], 0u, cores);
+    kmx_command(&chain, 0u, words[DC_WORD_SPLIT], 0u, job->cores);
     chain.hdr |= words[DC_WORD_EXCLUSIVE] << 8;
     if (kmx_block(&chain, 3, 0u, kChainRecordBytes) != KMX_OK) {
         return KMX_BAD;
     }
     chain.a0 = a0;
+    chain.a1 = job->ahead_off ? kChainAheadOff : 0u;
     chain.a4 = kChainMode;
     uint32_t handle = 0u;
     uint64_t deadline = kmx_time() + WAIT_TICKS;
@@ -409,7 +410,9 @@ static int run_token(job_t* job, const km_command_t* command) {
             token_form[word] = form[word];
         }
         token_form[4] = status == KMX_OK ? 1u : TOKEN_NONE;
+        token_form[5] = job->cores;
     }
+    job->cores = token_form[5];
     return status != KMX_OK ? status : chain_run(job, job->position);
 }
 
@@ -444,6 +447,7 @@ static uint32_t layers(const km_command_t* command) {
     job.chain = !job.apart && (command->a4 & DC_LAYERS_CHAIN) != 0u;
     job.records = (command->a4 & DC_LAYERS_PAIR) != 0u ? 2u : CHAIN_STEPS;
     job.token = job.chain && (command->a4 & DC_LAYERS_TOKEN) != 0u;
+    job.ahead_off = (command->a4 & DC_LAYERS_AHEAD_OFF) != 0u;
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |

@@ -118,7 +118,14 @@ def parse():
     parser.add_argument(
         "--token",
         action="store_true",
-        help="a token as one command (all its records written once); CASE/layer beside",
+        help="a token as one command (all its records written once)",
+    )
+    parser.add_argument(
+        "--beside",
+        nargs="*",
+        default=[],
+        choices=("layer", "ahead"),
+        help="each case also as CASE/FORM: the chain a layer, the next W read early",
     )
     parser.add_argument(
         "--commands",
@@ -243,12 +250,12 @@ def loop_check(decode, model, caches, seed, layers, length, want):
 
 
 def token_equal(decode, model, seed, length, layers):
-    """One token through `layers` layers as a command a layer, then as one command,
-    from the same x at row length - 1: whether every tensor the card keeps is equal."""
+    """One token through `layers` layers as a command a step (no chain), then as one
+    command, from the same x at row length - 1: whether every kept tensor is equal."""
     position, got = length - 1, []
-    for token in (False, True):
+    for job in ({"chain": False}, {"token": True}):
         decode.write_activation("x", md.start(seed, model))
-        decode.job(1, layers, position=position, token=token)
+        decode.job(1, layers, position=position, **job)
         got.append(
             {n: decode.read_activation(n) for n in ("qkv", "a", "x1", "gated", "x")}
         )
@@ -264,9 +271,11 @@ def measure(decode, case, tokens, layers, index, length, token=False):
         meter.mark("job")
         started = time.perf_counter()
         position = length - tokens
-        name, _, form = case.partition("/")  # CASE/commands, CASE/layer: as named
+        name, _, form = case.partition("/")  # CASE/commands, /layer, /ahead
         job = CASES[name] | (
-            {"chain": False} if form == "commands" else {"token": token and not form}
+            {"chain": False}
+            if form == "commands"
+            else {"token": token and form != "layer", "ahead": form == "ahead"}
         )
         got = decode.job(tokens, layers, timeout=60.0, position=position, **job)
         seconds = time.perf_counter() - started
@@ -725,8 +734,7 @@ def main():
             timed = list(args.cases)
             if args.commands and not args.no_chain:
                 timed += [f"{case}/commands" for case in args.cases]
-            if args.token:  # beside each: the chain a layer a command
-                timed += [f"{case}/layer" for case in args.cases]
+            timed += [f"{case}/{form}" for form in args.beside for case in args.cases]
             for length in args.lengths if ok else ():
                 for case in timed:
                     log(f"case {case}, T {length}: {args.tokens} x {layers} layers")
@@ -751,6 +759,14 @@ def main():
             log(f"waiting: {json.dumps(report['waiting'])}")
         decode.run.stop()
         log("run stopped")
+        if "failed" in report:  # each core whose kernel gave up: where and how
+            report["gave_up"] = [
+                {"core": state["core"]}
+                | {role: state[role] for role in ("reader", "writer", "compute")}
+                for state in decode.run.state()
+                if any(state[role] for role in ("reader", "writer", "compute"))
+            ]
+            log(f"gave up: {json.dumps(report['gave_up'][:8])}")
         stats = decode.stats()
         if args.trace:
             trace = decode.run.trace()
