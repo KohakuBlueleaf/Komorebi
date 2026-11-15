@@ -270,7 +270,7 @@ class Fidelities(km.Program):
 
 LINES = [
     (Stepped, "copy", "# stepped", "two slices, rows then columns"),
-    (Ragged, "copy", "# ragged", "a constant number of columns"),
+    (Ragged, "copy", "# ragged", "this rectangle's columns are a word"),
     (Uneven, "copy", "# uneven", "whole rows of it"),
     (Owned, "apply", "# owned", "by owner holds a slot of them"),
     (Tall, "apply", "# tall", "a page write of a rectangle is one row"),
@@ -507,3 +507,208 @@ def test_an_unknown_compute_option_is_refused_by_name():
     line = line_of('class Unknown(km.Program, compute={"dst_full_sync": True}):')
     with pytest.raises(Refused, match=rf"^Unknown, line {line}: .*'dst_full_sync'"):
         compile_class(Unknown, {}, {"items": tensor("float32")})
+
+
+class Streamed(km.Program):
+    sums: km.L1[km.fp32, 1, 4, 32, 32]
+    part: km.L1[km.fp32, 2, 3, 32, 32]
+
+    @km.handler
+    def dst(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        k0 = self.rank * 2
+        acc = km.tile.zeros(km.fp32, 2)
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, k0 : k0 + 2], block=1),
+            km.Stream(w.tiles[k0 : k0 + 2, 0:2], block=2),
+        ):
+            acc += coarse(xb, wb)
+        y.tiles[1:2, 0:2].write(acc)
+
+    @km.handler
+    def split(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        k0 = self.rank % 2 * 2
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, k0 : k0 + 2], block=1),
+            km.Stream(w.tiles[k0 : k0 + 2, 0:4], block=4),
+        ):
+            self.sums += coarse(xb, wb)
+        whole = km.reduce(self.sums, form="tree", group=2)
+        if self.rank == self.leader:
+            y.tiles[0:1, 0:4].write(whole)
+
+    @km.handler
+    def ragged(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        along = km.Broadcast(self, along="row")
+        down = km.Broadcast(self, along="column")
+        left = self.x * 3
+        for chunk in range(2):
+            k0 = chunk * 2
+            if along.sender():
+                xs = along.cast(x.tiles[0:2, k0 : k0 + 2].read())
+            else:
+                xs = along.arrive()
+            if down.sender():
+                ws = down.cast(w.tiles[k0 : k0 + 2, left : min(left + 3, 4)].read())
+            else:
+                ws = down.arrive()
+            self.part += coarse(xs, ws)
+        y.tiles[0:2, left : min(left + 3, 4)].write(self.part)
+
+
+def test_products_over_two_streams_reduces_of_fields_and_word_bounds():
+    tensors = {name: grid("bfloat16", 4, 4) for name in ("x", "w", "y")}
+    compiled = compile_class(Streamed, {}, tensors)
+    dst = "\n".join(render(prune(compiled.compute["dst"]), 0))
+    assert "matmul_block(half0, half1, tile0, tile0 * 2, 0, 0, 2, 1, kRead0Block);" in (
+        dst
+    )
+    split = "\n".join(render(prune(compiled.compute["split"]), 0))
+    assert "for (uint32_t k" in split and "< valid0;" in split  # the block's K tiles
+    assert "pack_tile<true>(3, kFieldSums, sub_column" in split
+    assert "km::reduce(compute, kArrival0" in split
+    moved = "\n".join(render(prune(compiled.movement["split"]), 0))
+    assert "kReduceTree, kFieldSums, kFieldSumsPages)" in moved  # a sender's field
+    ragged = "\n".join(render(prune(compiled.movement["ragged"]), 0))
+    assert "((left + 3) < 4 ? (left + 3) : 4)) - (left)), address" in ragged
+    assert "+ row * 6144)" in ragged  # the slot's rows at 3 columns' pitch
+    slots = {b.name: b.pages[0] for b in compiled.buffers if b.role == "broadcast"}
+    assert slots["kBroadcast1"] == 2 * 2 * 3  # window 2, the most: 2 x 3 tiles
+    assert {"kFieldSums", "kFieldPart"} <= compiled.summed_fields
+
+
+class Unproduct(km.Program):
+    @km.handler
+    def apply(self, a: km.Tensor, w: km.Tensor, out: km.Tensor):
+        results = km.Stream(out.pages(0, 2), write=True)
+        for h, g in zip(
+            km.Stream(a.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:2], block=2)
+        ):
+            results.push(gate(h, g))
+
+
+class Unblocked(km.Program):
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 2)
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:3], block=3)
+        ):
+            acc += coarse(xb, wb)  # unblocked
+        y.tiles[0:1, 0:2].write(acc)
+
+
+class Swapped(km.Program):
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 2)
+        for wb, xb in zip(
+            km.Stream(w.tiles[0:2, 0:2], block=2), km.Stream(x.tiles[0:1, 0:2], block=1)
+        ):
+            acc += coarse(xb, wb)  # swapped
+        y.tiles[0:1, 0:2].write(acc)
+
+
+class Unsummed(km.Program):
+    sums: km.L1[km.fp32, 1, 2, 32, 32]
+
+    @km.handler
+    def apply(self, y: km.Tensor):
+        whole = km.reduce(self.sums, form="tree", group=2)  # unsummed
+        if self.rank == self.leader:
+            y.tiles[0:1, 0:2].write(whole)
+
+
+class Owners(km.Program):
+    sums: km.L1[km.fp32, 1, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:2], block=2)
+        ):
+            self.sums += coarse(xb, wb)
+        whole = km.reduce(self.sums, form="owner")  # owners
+        if self.rank == self.leader:
+            y.tiles[0:1, 0:2].write(whole)
+
+
+class Unbounded(km.Program):
+    @km.handler
+    def apply(self, x: km.Tensor, n: int):
+        down = km.Broadcast(self, along="column")
+        if down.sender():
+            arrived_blocks = down.cast(x.tiles[0:2, 0:n].read())  # unbounded
+        else:
+            arrived_blocks = down.arrive()
+        for _tile in arrived_blocks:
+            pass
+
+
+class Overwide(km.Program):
+    part: km.L1[km.fp32, 1, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:2], block=2)
+        ):
+            self.part += coarse(xb, wb)
+        y.tiles[0:1, 0 : min(3, self.rank)].write(self.part)  # overwide
+
+
+class Unfillable(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def load(self, w: km.Tensor, n: int):
+        self.weight.fill(km.Stream(w.tiles[0:2, 0:n]))  # unfillable
+
+
+class Lone(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor):
+        km.Stream(x.pages(0, min(2))).drain()  # lone
+
+
+@pytest.mark.parametrize(
+    "cls, handler, text, match",
+    [
+        (
+            Unproduct,
+            "apply",
+            "for h, g in zip(",
+            "blocks of different sizes are a product's",
+        ),
+        (
+            Unblocked,
+            "apply",
+            "# unblocked",
+            "each block of the second stream is the first's",
+        ),
+        (Swapped, "apply", "# swapped", "the loop counts the first stream's tiles"),
+        (
+            Unsummed,
+            "apply",
+            "# unsummed",
+            "self.sums holds no sums above in this handler",
+        ),
+        (Owners, "apply", "# owners", "by owner holds a slot of its 2 tiles"),
+        (Unbounded, "apply", "# unbounded", "the build knows no most for a side here"),
+        (
+            Overwide,
+            "apply",
+            "# overwide",
+            "a side a word: the build must know it is at most",
+        ),
+        (Unfillable, "load", "# unfillable", "the build must know they are at most 2"),
+        (Lone, "copy", "# lone", r"min\(...\) of level 1 takes two ints or more"),
+    ],
+)
+def test_a_line_of_products_over_streams_or_word_bounds_is_refused_by_its_line(
+    cls, handler, text, match
+):
+    line = line_of(text)
+    tensors = {name: grid("bfloat16", 4, 4) for name in ("x", "w", "y", "a", "out")}
+    names = inspect.signature(getattr(cls, handler).function).parameters
+    with pytest.raises(Refused, match=rf"line {line}, .*{match}"):
+        compile_class(cls, {}, {n: tensors[n] for n in names if n in tensors})
