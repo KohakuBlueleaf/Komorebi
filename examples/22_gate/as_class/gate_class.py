@@ -7,6 +7,7 @@ Example: python gate_class.py --beside --cores 12
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -230,6 +231,91 @@ def run_blocks(session, args, cores, blocks):
     return records
 
 
+def run_first_use(session, args, cores):
+    """GateBlocks with block 8 listed and km.ANY (buffers sized for --reserve): 8, then
+    each of --first-use (compiled or found built, added), --repeat commands each, each
+    output judged; then each block listed in a load of its own (--listed-opted: also
+    in one made with km.ANY), for the same commands' times."""
+    pages = cores * args.tiles
+    rng = np.random.default_rng(args.seed)
+    a_raw, a_values = values(rng, pages, "bfloat16")
+    b_raw, b_values = values(rng, pages, "bfloat16")
+    a, b, out = (session.empty((pages, 1024), "bfloat16") for _ in range(3))
+    for tensor, raw in ((a, a_raw), (b, b_raw)):
+        session.write(tensor, raw.view(np.uint8).reshape(pages, -1))
+    wanted = hand.reference(a_values, b_values)
+    blocks = [Gate.BLOCK.default, *args.first_use]
+    first_use = km.ANY(block=args.reserve) if args.reserve else km.ANY
+    loads = [("first use", [{"block": blocks[0]}, first_use], blocks)]
+    loads += [(f"listed {b}", [{"block": b}], [b]) for b in args.first_use]
+    if args.listed_opted:  # the same, its kernels with the added handlers' path
+        loads += [
+            (f"listed {b}, km.ANY", [{"block": b}, km.ANY], [b]) for b in args.first_use
+        ]
+    records = {}
+    for name, listed, submitted in loads:
+        program = GateBlocks(a=a, b=b, out=out, log=hand.log, handlers={"gate": listed})
+        run = session.load(program)
+        try:
+            for block in submitted:
+                record = {"kernel_text": program.sizes.text, "runs": []}
+                for _ in range(args.repeat):
+                    session.write(out, np.zeros((pages, 2048), np.uint8))
+                    words = (a, b, out, args.tiles, args.pattern, block)
+                    started = time.perf_counter()
+                    handle = run.submit(program.gate, (0, cores), args=words)
+                    submitted_s = time.perf_counter() - started
+                    event = run.wait(handle, 30.0)
+                    judged = compared(session, out, wanted, "bfloat16")
+                    record["runs"].append(
+                        {
+                            "event": event.kind,
+                            "microseconds": event.microseconds,
+                            "submit_s": submitted_s,
+                            "wrong": judged["wrong"],
+                            "max_relative": judged["max_relative"],
+                        }
+                    )
+                record |= first_use_costs(program, run, block)
+                record["event"] = "done"
+                record["wrong"] = 0
+                for one in record["runs"]:
+                    record["wrong"] += one["wrong"]
+                    if one["event"] != "done":
+                        record["event"] = one["event"]
+                hand.log(f"GateBlocks {name}, block {block}: {record}")
+                records[f"{name}, block {block}"] = record
+        finally:
+            run.stop()
+            hand.log(f"GateBlocks {name}: run stopped")
+    return records
+
+
+def first_use_costs(program, run, block):
+    """What the first use of `block` took on the host: the class compile (or the look
+    in the build folder), the parts' build (or the look in their cache), the parts'
+    write and the entry commands; nothing for a listed block."""
+    kept = getattr(program, "first_use", None)
+    made = kept.made.get(("gate", (("block", block),))) if kept else None
+    if made is None:
+        return {}
+    folder, variant, seconds, cached = made
+    added = run.added[f"{kept.key}.{variant.name}"]
+    return {
+        "first_use": {
+            "folder": folder.name,
+            "compile_s": seconds,
+            "compile_cached": cached,
+            "number": added.number,
+            "build_s": added.build_s,
+            "build_cached": added.cached,
+            "write_s": added.write_s,
+            "entry_s": added.entry_s,
+            "parts": added.parts,
+        }
+    }
+
+
 def run_hand(session, args, cores):
     """../gate.py's program and command in this session, from the same seed."""
     pages = cores * args.tiles
@@ -262,7 +348,7 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
         "--formats",
-        nargs="+",
+        nargs="*",
         default=["bfloat16", "float32"],
         help="the class's tensors, each with Gate and GateTimed",
     )
@@ -273,13 +359,32 @@ def main():
         default=[],
         help="GateBlocks with these blocks listed (bfloat16), a command each",
     )
+    parser.add_argument(
+        "--first-use",
+        type=int,
+        nargs="*",
+        default=[],
+        help="GateBlocks with block 8 listed and these blocks by first use",
+    )
+    parser.add_argument(
+        "--reserve",
+        type=int,
+        default=0,
+        help="first use: the load's buffers also sized for this block (km.ANY(block=))",
+    )
+    parser.add_argument("--repeat", type=int, default=5, help="first use: commands")
+    parser.add_argument(
+        "--listed-opted",
+        action="store_true",
+        help="first use: each listed block also in a load made with km.ANY",
+    )
     args = parser.parse_args()
     args.pattern = km.Pattern(args.pattern)
     block = Gate.BLOCK.default
     if args.tiles % block or not block <= args.tiles <= 256 - SPANS_FIRST:
         parser.error(f"--tiles is a multiple of {block} up to {256 - SPANS_FIRST}")
-    if any(block < 1 or args.tiles % block for block in args.blocks):
-        parser.error("each of --blocks divides --tiles")
+    if any(block < 1 or args.tiles % block for block in args.blocks + args.first_use):
+        parser.error("each of --blocks and --first-use divides --tiles")
     report = {"runs": {}}
     with km.Session(log=hand.log) as session:
         cores = args.cores or session.grid[0] * session.grid[1]
@@ -292,6 +397,9 @@ def main():
                 report["runs"][f"{'timed ' if timed else ''}class {dtype}"] = record
         if args.blocks:
             for name, record in run_blocks(session, args, cores, args.blocks).items():
+                report["runs"][f"class bfloat16 {name}"] = record
+        if args.first_use:
+            for name, record in run_first_use(session, args, cores).items():
                 report["runs"][f"class bfloat16 {name}"] = record
     ok = True
     for name, record in report["runs"].items():
