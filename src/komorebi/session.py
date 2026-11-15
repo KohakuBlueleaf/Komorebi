@@ -1212,6 +1212,10 @@ class Session:
         holding each, or {program: (first, count)}) on every core, then the dispatcher,
         then the X280 thread (`thread` "card" or "host"); returns a Run. The arguments
         are described in docs/reference/host.md (`reserve`: room for Run.addon)."""
+        arguments = {k: v for k, v in locals().items() if k != "self"}
+        fits = getattr(program, "fits_kernels", None)  # a merged class's: a load again
+        if fits is not None and not program.fitting:  # with a handler as an overlay
+            return fits(self, arguments)
         if reserve < 0:
             raise ValueError(f"reserve={reserve}: bytes, 0 or more")
         if self.run is not None and not self.run.stopped:
@@ -2844,38 +2848,47 @@ class _Backend:
             held = [placed.programs[index] for index in group.programs]
             # a group that may switch program holds every program's own overlays
             owners = placed.programs if placed.switch else held
-            made = overlay.build_overlays(
-                [
-                    *(
-                        programs.program_overlay(program, switch=placed.switch)
-                        for program in held
-                    ),
-                    *(
-                        each
-                        for owner in owners
-                        for each in programs.own_overlays(owner)
-                    ),
-                    overlay.service(),
-                ],
-                declared,
-                recipes,
-                native.cache_directory() / "overlays",
-                session.log,
-            )
+            fits = False
+            while not fits:  # a merged program over L1 places a source as an overlay
+                declared = placed.programs[0].overlay_slots
+                made = overlay.build_overlays(
+                    [
+                        *(
+                            part
+                            for program in held
+                            for part in programs.program_overlays(
+                                program, placed.switch, len(placed.programs) == 1
+                            )
+                        ),
+                        *(
+                            each
+                            for owner in owners
+                            for each in programs.own_overlays(owner)
+                        ),
+                        overlay.service(),
+                    ],
+                    declared,
+                    recipes,
+                    native.cache_directory() / "overlays",
+                    session.log,
+                )
+                buffers = sum(
+                    buffer.page_bytes * buffer.pages
+                    for buffer in self.group_buffers[number]
+                )
+                rows = session.l1_rows(
+                    placed.programs[0], self.trace_cap, placed, buffers=buffers
+                )
+                rows[2:2] = slot_rows(made.slots)
+                table, fits = overlay.budget(session.l1()[1], rows)
+                names = ", ".join(program.name for program in held)
+                session.log(f"L1 budget of a core of {names}:\n{table}")
+                spills = [p.spill for p in held if hasattr(p, "spill")]
+                if not fits and not any(spill(session.log) for spill in spills):
+                    break
             for program in held:
                 program.overlays_built = made
             built.append(made)
-            buffers = sum(
-                buffer.page_bytes * buffer.pages
-                for buffer in self.group_buffers[number]
-            )
-            rows = session.l1_rows(
-                placed.programs[0], self.trace_cap, placed, buffers=buffers
-            )
-            rows[2:2] = slot_rows(made.slots)
-            table, fits = overlay.budget(session.l1()[1], rows)
-            names = ", ".join(program.name for program in held)
-            session.log(f"L1 budget of a core of {names}:\n{table}")
             if not fits:
                 raise L1BudgetError(names, table, self._held_bytes())
         images, stored = {}, []

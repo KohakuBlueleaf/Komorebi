@@ -673,7 +673,12 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
         for kernel, part in overlay.parts():
             # the service part sizes its slot (at least), whatever was declared
             size = None if overlay.number == number else declared[kernel][1]
-            linked = build_part(by_part[part], overlay, kernel, part, cache, size)
+            builder = getattr(overlay, "build_part", None)  # a part of several units
+            linked = (
+                builder(by_part[part], kernel, part, cache, size)
+                if builder is not None
+                else build_part(by_part[part], overlay, kernel, part, cache, size)
+            )
             images[overlay.number, part] = linked.image
             extents.setdefault(part, []).append(linked.extent)
             if overlay.number == number:
