@@ -163,6 +163,39 @@ on the host): the walk's checks cost a plain command about 0.16 us (0.63 us over
 python as_class/steps_class.py      # 8 cores, 2 tiles a core, 200 timed runs a way
 ```
 
+`as_class/overlay_steps.py` makes the three handlers overlays (the same bodies, each
+built apart and loaded into a slot when a record needs it) and runs the chain at each
+slot count:
+
+```python
+class OverlaySteps(Steps):
+    scale = km.handler(overlay=True)(Steps.scale.function)
+    add = km.handler(overlay=True)(Steps.add.function)
+    sum = km.handler(overlay=True)(Steps.sum.function)
+```
+
+A record of an overlay handler loads its overlay, waits for the record's input whole,
+then calls the part; SUM's tree waits for its credit in the part as in the resident
+case. Card 0, 2026-11-16, 8 cores, 200 timed chains a form, every word of y, z, s and t
+exact after each chain:
+
+| The chain | us on the card | us from the host | Slots a part | AICLK |
+|---|---:|---:|---:|---:|
+| resident | 20.88 | 161.25 | | 800 MHz |
+| overlays, the default slots | 21.86 | 159.15 | 3 | 800 MHz |
+| overlays, 1 slot | 30.06 | 169.82 | 1 | 1,350 MHz |
+| overlays, 2 slots | 30.70 | 168.65 | 2 | 1,350 MHz |
+
+The first two rows ran in one job, the last two in another, with the clock read before
+each: compare within a pair only. At the default slots every part is held after the
+first command, and the 0.98 us is the four records' checks and their whole-input waits.
+With fewer slots than handlers (1 or 2 for three) records load in line.
+
+```
+python as_class/overlay_steps.py                         # resident, then default slots
+python as_class/overlay_steps.py --skip-resident --slots 1,2
+```
+
 ## Over two cards
 
 `islands.py` runs the same program on two cards as two islands (236 ranks, 2 tiles a

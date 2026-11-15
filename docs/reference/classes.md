@@ -1859,6 +1859,26 @@ session gives more with `kernel_bytes`
 ([Host API, `Session`](host.md#session)). A plain command of a class with the walk took
 0.16 us more on the card (21.25 against 20.62 us for four).
 
+**Overlay handlers in the walk.** A handler marked `@km.handler(overlay=True)` keeps its
+body in its overlay's parts in a class with the walk too. Its case in a chain's record
+loads the overlay (the reader's load and the other cores' meet, as for a plain
+command, [overlays](overlays.md)), then waits for the record's input whole when the
+handler reads a tensor a call of the chain writes, then calls the part, then ends in
+the record's marks. The part cannot reach the walk's state, so its reads cannot wait
+line by line, as a resident handler's do: they all start after the input is marked,
+and a `prefetch` of an outside tensor within the record is lost. A tree's send in a
+part waits for its credit as in a resident case (`km::chain_credit` reads only the
+chain's words). The slots are the overlays' (a slot a handler by default, up to four;
+`program.slots(count=...)`): when they hold every handler's parts, a record loads
+nothing (72 cycles: the check), and when they hold fewer, a record's load waits until
+the core's other CPUs have ended the record before
+([overlays, the meet](overlays.md#costs)) and then reads the parts. Example 31's chain
+([swiglu](../../examples/31_swiglu/README.md#up-and-down-as-overlays)) took 105.67 us
+resident, 111.92 us with up and down as overlays at the default slots (the whole
+input waited for) and 115.70 us at 1 slot (two loads a chain), its words the same in
+all three. Loading the next record's parts while a core waits for its input is not
+built ([chain](chain.md#a-handler-as-an-overlay)).
+
 **The lines a call is described from.** A handler's streams of page ranges
 (`t.pages(first, count)`, a partition's share `s[part]`, a rectangle `t.tiles[r0:r1,
 c0:c1]`), their zip, `.write` of a page range or of a rectangle (`t.tiles[r0:r1,
@@ -1932,7 +1952,7 @@ island 0's program and `cores` in flat ranks.
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
 | more than 256 calls unrolled | the call of the method | the method |
-| a class with the walk that also has overlays or dynamic handlers | the make | the class |
+| a class with the walk that also has a dynamic handler | the make | the class |
 
 ## The runtime's form
 
