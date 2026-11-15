@@ -20,6 +20,9 @@ OP = abi.constants(SPLIT_OP, known=abi.headers().constants)
 TILE = 32
 CORES = 120
 BLOCK_WIDTH, CHUNK = 8, 2  # every plan's output block (1 x 8 tiles) and K chunk
+# A sum's tree takes at most half of a core's 8 ports (the other half is the set of
+# the product in flight beside it): 4 rounds, groups of at most 16 cores.
+SETS, GROUP_MOST = 2, 16
 # The layer's products: (weight, its name in the config's shapes, plan); in order.
 PRODUCTS = ("q", "k", "v", "o", "up", "gate", "down")
 
@@ -80,16 +83,17 @@ def from_config(path):
 
 def plans(model, cores=CORES):
     """{plan: Split} for the layer's shapes, sharing every buffer: 1 x 8 output blocks,
-    chunks of 2 K tiles, groups as large as the cores allow, one arrival buffer."""
+    chunks of 2 K tiles, groups as large as the cores allow up to GROUP_MOST, one
+    arrival buffer of two sets (two products in flight), each a slot per round."""
     shapes = {}
     for k, n in model.shapes().values():
         shapes.setdefault((k // TILE, n // TILE), None)
     sizes = {
-        shape: min(shape[0], cores // pl.cdiv(shape[1], BLOCK_WIDTH))
+        shape: min(shape[0], cores // pl.cdiv(shape[1], BLOCK_WIDTH), GROUP_MOST)
         for shape in shapes
     }
     slots = max(math.ceil(math.log2(s)) for s in sizes.values())
-    arrive = slots * BLOCK_WIDTH
+    arrive = SETS * slots * BLOCK_WIDTH
     return {
         shape: pl.split_plan(
             1, *shape, sizes[shape], 1, BLOCK_WIDTH, CHUNK, cores=cores, arrive=arrive

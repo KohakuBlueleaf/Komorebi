@@ -36,33 +36,38 @@ DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) 
   cores per 1 x 8 block of output tiles, each core reading 1/s of K in chunks of 2 tiles
   on both movers, the parts summed by a tree over the cores' ports. The four shapes of a
   layer are four plans in one table in the program's arguments; a command's a5 picks one.
-  Every plan uses all 120 cores and the same buffers.
+  The plans share every buffer; a group has at most 16 cores (a sum of 4 rounds, half
+  of a core's 8 ports): q, o and down 8 groups of 15, up and gate 24 of 5 (120 cores),
+  k and v 4 groups of 16 (64 cores).
 - What a layer does besides the products is an overlay (`kernels/`), called once at the
   hook after the sum (`split_op.hpp`): `add` (the residual: the sum plus a block of x),
   `gate` (silu of the sum times a block of u) and `norm` (on 16 cores in the split's
   operation-only mode: each core reads the whole row for the sums of squares and writes
   its 4 tiles of h).
 - An X280 thread (`thread/layers.c`) walks the layers: one host command (`layers`) runs
-  T tokens of L layers, each layer's nine commands submitted and waited for in order,
-  and records each command's time from its event.
+  T tokens of L layers, each layer's nine commands in order, and records each command's
+  time from its event. Every command is waited for before the next, except q, k, v and o
+  with the overlap on (stage 2): two of them in flight, each sum in its own set of
+  ports and arrival slots.
 
 ## Run
 
 ```
 python projects/decode/bench.py --layers 1 --tokens 10 --json out.json
 python projects/decode/bench.py --tokens 10 --json out.json
-python projects/decode/bench.py --tokens 10 --cases parts --no-check
+python projects/decode/bench.py --tokens 10 --cases overlap --no-check
 ```
 
 It writes each layer's weights through the host channel (6.2 GB/s), checks one layer
 from a known x against `model.layer()` (numpy, float64, each output rounded to bf16 as
-the card stores it), twice from the same x so that the second run follows every core's
-change of role, then runs each case as one `layers` command and prints one JSON line
+the card stores it), twice from the same x, waited and then overlapped (the second run
+after every core's change of role), then runs each case as one `layers` command and prints one JSON line
 with the thread's times and the account. The bound is loose (rms error / rms <= 2e-2,
 largest error / largest value <= 5e-2 a tensor); bf16 alone gives 5e-3 a product and
 1e-2 for the gate. The cases: `full`, the layer; `bare`, the products only (no
 operation, no norm); `parts`, the products' parts only (each core reads and multiplies
-its share, nothing is summed or written: the split's mode 1).
+its share, nothing is summed or written: the split's mode 1); `overlap`, the layer
+with q, k, v and o two in flight.
 
 The thread builds each command from its words and the layer's row of addresses
 (`thread/layers.c`):
@@ -125,8 +130,54 @@ core: a group's root pops it on unpack, which writes its own count of pops into 
 buffer's shared word, and every other core's writer pops it by adding to that word.
 With four plans a core is a root in one command (up, gate: groups of 5) and a sender in
 the next (down: groups of 15); the counts parted, the sender saw a stale item and sent
-its part before it was summed. Unpack now takes the shared count before it reserves the
-sum (`compute.cpp`); with one plan the two counts are already the same.
+its part before it was summed. Unpack now counts a sender's pop as its own
+(`compute.cpp`); with one plan the count it keeps is never used on a sender.
+
+## Stage 2: removing what is ours
+
+### The boundary: two products in flight
+
+A product's boundary is paid because the next product waits for the whole command,
+its sum and its write, before its first weight is read. q, k and v read h and o reads q,
+which is written two commands earlier; so with the overlap the thread submits each of
+them before it waits for the one ahead (`thread/layers.c`, `run_attention`):
+
+```c
+status = submit_step(job, step, &handle);
+if (status == KMX_OK) {
+    status = wait_step(job, step - 1u, ahead);
+```
+
+A core then takes the next product as soon as its own part is sent, while its group's
+root still sums. The two products' parts must not meet: k and o carry
+`kSplitSecondSet` in a3, and their sums use the upper four ports and the upper half of
+the arrival slots (`../dense/kernels/split/sets.hpp`); the arrival buffer holds both
+sets (64 pages). They go without the exclusive flag. The cost: a sum may take 4 rounds,
+so k and v moved from 4 groups of 30 cores to 4 groups of 16 (64 cores).
+up, gate and down read what the step before writes (A, or the gate's u at its root),
+so they stay waited.
+
+All 28 layers, 10 tokens, card clock 1,350 MHz (`results/qwen3-1.7b-x10-overlap.json`,
+all four cases in one run; both check runs, waited and overlapped, as exact as stage 1):
+
+| Term | Kind | waited | overlapped |
+|---|---|---:|---:|
+| the weights read at 495.6 GB/s | HARDWARE | 203.1 | 203.1 |
+| the read below the ceiling (k, v on 64 cores: 6.8 each, was 5.8) | OURS | 64.5 | 64.5 |
+| q, k, v, o: the boundary | OURS | 34.2 | 8.6 |
+| up, gate, down: the boundary | OURS | 23.2 | 23.2 |
+| the operations at the hook (o 1.1, gate 11.6, down 1.0, noise 0.3) | OURS | 13.9 | 13.9 |
+| norm1, norm2 | OURS | 28.0 | 28.0 |
+| the thread between commands | OURS | 18.7 | 10.3 |
+| total | | 385.6 | 351.6 |
+| unaccounted | | 0.0 | 0.0 |
+
+The overlapped layer: 351.6 us, **9.84 ms a token, 101.6 tokens a second, 286 GB/s** of
+weights. Of q, k, v and o's 34.2 us of boundary 25.6 are hidden; what is left (8.6 us)
+is about o's own (7.8 us waited), which nothing follows inside the span. The thread's
+term falls by 8.4 us: three of its submits a layer happen while a product runs. The "q,
+k, v, o" rows come from the span the thread measures (q's submit to o's event, 88.8 us)
+less those products' parts and o's add; the other rows as in stage 1.
 
 ## What the framework lacked
 
@@ -136,5 +187,7 @@ sum (`compute.cpp`); with one plan the two counts are already the same.
   product's kernels at one hook instead; and a core that changes program keeps its
   launch arguments, so the four shapes are a table of plans in those arguments.
 - Two commands that use ports cannot be in flight on the same cores: a port and an
-  arrival slot do not tell two commands apart. Every product is exclusive, so each
-  one's boundary is paid in full.
+  arrival slot do not tell two commands apart. The split splits them in two sets
+  itself (`sets.hpp`), which halves what a sum may use: 4 rounds of the tree.
+- The read takes a chunk of A with its chunk of W, so a product whose A is the step
+  before's output cannot start its weight's read early; only q, k, v and o overlap.

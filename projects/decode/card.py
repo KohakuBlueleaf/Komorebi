@@ -130,20 +130,20 @@ class Decode:
         )
         return program
 
+    def plan_word(self, weight):
+        """A product's plan word: the plan's index | the cores it takes << 8."""
+        shape = md.plan_of(self.model, weight)
+        return self.plan_index[shape] | self.plans[shape].cores() << 8
+
     def words(self):
         """The thread's words (decode.h, DC_WORD_*)."""
-        index = self.plan_index
         model = self.model
         epsilon = np.array([model.eps], np.float32).view(np.uint32)[0]
         return [
             S["kHandlerSplit"],
             pl.REDUCE_FORMS["tree"],
             EXCLUSIVE,
-            md.CORES,
-            index[md.plan_of(model, "q")],
-            index[md.plan_of(model, "k")],
-            index[md.plan_of(model, "up")],
-            index[md.plan_of(model, "down")],
+            *(self.plan_word(name) for name in ("q", "k", "up", "down")),
             operation_word(D["DC_OVERLAY_ADD"], PARTS),
             operation_word(D["DC_OVERLAY_GATE"], PARTS),
             operation_word(D["DC_OVERLAY_NORM"], NORM_PARTS),
@@ -173,12 +173,23 @@ class Decode:
         """A [32, width] activation as float32, after its command's event."""
         return dense_card.read_rows(self.session, self.tensors[name], range(md.TILE))
 
-    def job(self, tokens, layers, first=0, bare=False, parts=False, timeout=10.0):
+    def job(
+        self,
+        tokens,
+        layers,
+        first=0,
+        bare=False,
+        parts=False,
+        overlap=False,
+        timeout=10.0,
+    ):
         """One LAYERS command to the thread (`bare`: the products only; `parts`: their
-        parts only, no sum and nothing written): its result word and stats slot."""
+        parts only, no sum and nothing written; `overlap`: q, k, v, o two in flight):
+        its result word and stats slot."""
         slot = self.slot
         self.slot += 1
-        args = [tokens, layers, slot, first, 3 if parts else int(bare)]
+        mode = (3 if parts else int(bare)) | (4 if overlap else 0)
+        args = [tokens, layers, slot, first, mode]
         handle = self.run.submit("layers", cluster=CLUSTER, args=args, result=True)
         event = self.run.wait(handle, timeout=timeout)
         if event.kind != "done" or event.result >= 0xFFFFFFF0:
@@ -206,6 +217,10 @@ def decode_slot(words):
         )
         / TICKS_PER_MICROSECOND,
         "steps": {},
+        "span_us": (
+            int(words[D["DC_ST_SPAN_LOW"]]) | int(words[D["DC_ST_SPAN_HIGH"]]) << 32
+        )
+        / TICKS_PER_MICROSECOND,
     }
     for step, name in enumerate(STEPS):
         at = D["DC_ST_STEPS"] + D["DC_ST_STEP_WORDS"] * step

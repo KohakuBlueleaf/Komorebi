@@ -26,17 +26,15 @@ enum { DC_ROW_TILES = 64, DC_NORM_CORES = 16, DC_NORM_SHARE = 4 };
  * weight (its row in every row of a tile row), a9 the constants (identity, mean). */
 enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
 
-/* The thread. LAYERS: a0 tokens, a1 layers, a2 the stats slot, a3 the first layer, a4
- * 1 for the products only, 3 for their parts only. Its words: handler, plans, operation
- * words, in order. */
+/* The thread's LAYERS: a4 bits 1 the products only, 2 (with 1) their parts only, 4 q to
+ * o overlapped. Its words: handler, plans, operation words, in order. */
 enum { DC_HANDLER_LAYERS = 1 };
 
 enum {
     DC_WORD_SPLIT,     /* the SPLIT handler */
     DC_WORD_REDUCE,    /* the reduce form */
     DC_WORD_EXCLUSIVE, /* the command flag of a product */
-    DC_WORD_CORES,     /* the cores of a product */
-    DC_WORD_PLAN_Q,    /* plan indices: 2048 x 2048 */
+    DC_WORD_PLAN_Q,    /* plans: the index | its cores << 8; 2048 x 2048 */
     DC_WORD_PLAN_KV,   /* 2048 x 1024 */
     DC_WORD_PLAN_UP,   /* 2048 x 6144 */
     DC_WORD_PLAN_DOWN, /* 6144 x 2048 */
@@ -88,8 +86,8 @@ enum {
     DC_STEPS
 };
 
-/* Region `stats`, a slot of DC_STATS_WORDS a job: status, done, ticks (low, high), then
- * per step the event ticks summed (low, high), the most and the least. */
+/* Region `stats`, DC_STATS_WORDS a job: status, done, ticks, then per step the ticks
+ * summed, the most, the least; the overlapped span. 64-bit counts: low, high. */
 enum {
     DC_ST_STATUS,
     DC_ST_DONE,
@@ -97,6 +95,8 @@ enum {
     DC_ST_TICKS_HIGH,
     DC_ST_STEPS,
     DC_ST_STEP_WORDS = 4,
+    DC_ST_SPAN_LOW = 48, /* overlapped: q's submit to o's event, summed (low, high) */
+    DC_ST_SPAN_HIGH = 49,
     DC_STATS_WORDS = 64,
     DC_STATS_SLOTS = 8
 };

@@ -10,6 +10,7 @@
 #define KM_SPLIT_FULL 0u
 #define KM_SPLIT_PARTS 1u
 #define KM_SPLIT_OP 2u
+#define KM_SPLIT_SECOND_SET 0x100u /* a3: the sum's upper ports and slots */
 
 typedef struct {
     const uint32_t* words;
@@ -18,13 +19,22 @@ typedef struct {
     uint64_t step_ticks[DC_STEPS];
     uint32_t step_most[DC_STEPS], step_least[DC_STEPS];
     uint32_t done;
-    uint32_t bare;  /* products only: no operation, no norm */
-    uint32_t parts; /* and each product's parts only: no sum, nothing written */
+    uint32_t bare;       /* products only: no operation, no norm */
+    uint32_t parts;      /* and each product's parts only: no sum, nothing written */
+    uint32_t overlap;    /* q, k, v, o: each submitted before the one ahead is done */
+    uint64_t span_ticks; /* q's submit to o's event, summed over the layers */
 } job_t;
+
+/* Overlapped, the attention products alternate the sum's two sets: k and o the second.
+ */
+static int overlapped(const job_t* job, uint32_t step) {
+    return job->overlap && step >= DC_STEP_Q && step <= DC_STEP_O;
+}
 
 /* A SPLIT command on the product's cores: A, W, Y, the plan and the operation. */
 static void product(
     const job_t* job,
+    uint32_t step,
     km_command_t* command,
     uint32_t a,
     uint32_t w,
@@ -34,14 +44,19 @@ static void product(
     uint32_t other
 ) {
     const uint32_t* words = job->words;
-    kmx_command(command, 0u, words[DC_WORD_SPLIT], 0u, words[DC_WORD_CORES]);
-    command->hdr |= words[DC_WORD_EXCLUSIVE] << 8;
+    kmx_command(command, 0u, words[DC_WORD_SPLIT], 0u, words[plan] >> 8);
+    if (!overlapped(job, step)) {
+        command->hdr |= words[DC_WORD_EXCLUSIVE] << 8;
+    }
     command->a0 = a;
     command->a1 = w;
     command->a2 = y;
     command->a3 = words[DC_WORD_REDUCE];
+    if (overlapped(job, step) && (step == DC_STEP_K || step == DC_STEP_O)) {
+        command->a3 |= KM_SPLIT_SECOND_SET;
+    }
     command->a4 = job->parts ? KM_SPLIT_PARTS : KM_SPLIT_FULL;
-    command->a5 = words[plan];
+    command->a5 = words[plan] & 0xFFu;
     command->a6 = operation == 0u || job->bare ? 0u : words[operation];
     command->a7 = other;
 }
@@ -71,6 +86,7 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
         case DC_STEP_Q:
             product(
                 job,
+                step,
                 command,
                 t[DC_TENSOR_H],
                 w[DC_W_Q],
@@ -83,6 +99,7 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
         case DC_STEP_K:
             product(
                 job,
+                step,
                 command,
                 t[DC_TENSOR_H],
                 w[DC_W_K],
@@ -95,6 +112,7 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
         case DC_STEP_V:
             product(
                 job,
+                step,
                 command,
                 t[DC_TENSOR_H],
                 w[DC_W_V],
@@ -107,6 +125,7 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
         case DC_STEP_O: /* attention left out: its output stands in as q */
             product(
                 job,
+                step,
                 command,
                 t[DC_TENSOR_Q],
                 w[DC_W_O],
@@ -122,6 +141,7 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
         case DC_STEP_UP:
             product(
                 job,
+                step,
                 command,
                 t[DC_TENSOR_H],
                 w[DC_W_UP],
@@ -134,6 +154,7 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
         case DC_STEP_GATE:
             product(
                 job,
+                step,
                 command,
                 t[DC_TENSOR_H],
                 w[DC_W_GATE],
@@ -146,6 +167,7 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
         default: /* DC_STEP_DOWN */
             product(
                 job,
+                step,
                 command,
                 t[DC_TENSOR_GATED],
                 w[DC_W_DOWN],
@@ -158,21 +180,22 @@ static void step_command(const job_t* job, uint32_t step, km_command_t* command)
     }
 }
 
-/* Submits step `step` (retrying a full ring) and waits for it: KMX_OK once done. */
-static int run_step(job_t* job, uint32_t step) {
+/* Submits step `step` (retrying a full ring): KMX_OK once queued, its handle. */
+static int submit_step(const job_t* job, uint32_t step, uint32_t* handle) {
     km_command_t command;
     step_command(job, step, &command);
-    uint32_t handle = 0u;
     uint64_t deadline = kmx_time() + WAIT_TICKS;
-    int status = kmx_submit(&command, &handle);
+    int status = kmx_submit(&command, handle);
     while (status == KMX_FULL && kmx_time() < deadline && !kmx_stop_requested()) {
-        status = kmx_submit(&command, &handle);
+        status = kmx_submit(&command, handle);
     }
-    if (status != KMX_OK) {
-        return status;
-    }
+    return status;
+}
+
+/* Waits for step `step`'s command and counts its time: KMX_OK once done. */
+static int wait_step(job_t* job, uint32_t step, uint32_t handle) {
     kmx_event event;
-    status = kmx_wait(handle, kmx_time() + WAIT_TICKS, &event);
+    int status = kmx_wait(handle, kmx_time() + WAIT_TICKS, &event);
     if (status != KMX_OK) {
         return status;
     }
@@ -190,9 +213,35 @@ static int run_step(job_t* job, uint32_t step) {
     return KMX_OK;
 }
 
-/* LAYERS: a0 tokens, a1 layers, a2 the stats slot, a3 the first layer, a4 1 for the
- * products only, 3 for their parts only. The result word: ticks taken, or 0xFFFFFFF0 |
- * status. */
+/* Step `step`, submitted and waited for. */
+static int run_step(job_t* job, uint32_t step) {
+    uint32_t handle = 0u;
+    const int status = submit_step(job, step, &handle);
+    return status != KMX_OK ? status : wait_step(job, step, handle);
+}
+
+/* q, k, v, o with two in flight: each submitted before the one ahead of it is waited
+ * for (k, v and o do not read what the one ahead writes; o reads q, done by then). */
+static int run_attention(job_t* job) {
+    const uint64_t started = kmx_time();
+    uint32_t ahead = 0u, handle = 0u;
+    int status = submit_step(job, DC_STEP_Q, &ahead);
+    for (uint32_t step = DC_STEP_K; step <= DC_STEP_O && status == KMX_OK; step++) {
+        status = submit_step(job, step, &handle);
+        if (status == KMX_OK) {
+            status = wait_step(job, step - 1u, ahead);
+            ahead = handle;
+        }
+    }
+    if (status == KMX_OK) {
+        status = wait_step(job, DC_STEP_O, ahead);
+    }
+    job->span_ticks += kmx_time() - started;
+    return status;
+}
+
+/* LAYERS: a0 tokens, a1 layers, a2 stats slot, a3 first layer, a4 its bits (decode.h).
+ * The result word: the ticks taken, or 0xFFFFFFF0 | status. */
 static uint32_t layers(const km_command_t* command) {
     uint64_t weight_bytes = 0, tensor_bytes = 0, stats_bytes = 0;
     const uint32_t* weights = (const uint32_t*)kmx_region(0, &weight_bytes);
@@ -217,6 +266,8 @@ static uint32_t layers(const km_command_t* command) {
     job.done = 0u;
     job.bare = command->a4 & 1u;
     job.parts = job.bare && (command->a4 & 2u) != 0u;
+    job.overlap = (command->a4 & 4u) != 0u;
+    job.span_ticks = 0ull;
     for (uint32_t step = 0; step < DC_STEPS; step++) {
         job.step_ticks[step] = 0ull;
         job.step_most[step] = 0u;
@@ -229,7 +280,12 @@ static uint32_t layers(const km_command_t* command) {
             job.layer = weights + DC_LAYER_WORDS * (first + layer);
             kmx_progress(token << 16 | layer);
             for (uint32_t step = 0; step < DC_STEPS && status == KMX_OK; step++) {
-                if (!job.bare || (step != DC_STEP_NORM1 && step != DC_STEP_NORM2)) {
+                if (job.overlap && step == DC_STEP_Q) {
+                    status = run_attention(&job);
+                    step = DC_STEP_O;
+                } else if (
+                    !job.bare || (step != DC_STEP_NORM1 && step != DC_STEP_NORM2)
+                ) {
                     status = run_step(&job, step);
                 }
             }
@@ -249,6 +305,8 @@ static uint32_t layers(const km_command_t* command) {
         words[2] = job.step_most[step];
         words[3] = job.step_least[step];
     }
+    slot[DC_ST_SPAN_LOW] = (uint32_t)job.span_ticks;
+    slot[DC_ST_SPAN_HIGH] = (uint32_t)(job.span_ticks >> 32);
     kmx_flush(2);
     return status == KMX_OK ? (uint32_t)ticks : 0xFFFFFFF0u | (uint32_t)status;
 }

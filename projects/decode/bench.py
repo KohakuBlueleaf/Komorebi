@@ -23,10 +23,15 @@ from projects.dense import bench as dense_bench  # noqa: E402
 CEILING_GBS = 495.6  # the card's DRAM read, 120 cores on both movers (dense ceilings)
 # a loose bound on a layer of bf16 steps (bf16 alone: 6e-3 a product, 1e-2 the gate)
 CHECK_RMS, CHECK_MAX = 2e-2, 5e-2
-CHECK_RUNS = 2  # the layer twice from the same x: the second after every core's roles
+CHECK_RUNS = 2  # the layer twice from one x: waited, then overlapped (after every role)
 CHECKED = ("h1", "q", "k", "v", "x1", "h", "up", "gated", "x")
 READ_BACK = ("q", "k", "v", "h", "up", "gated", "x")  # h1 and x1 are overwritten
-CASES = {"full": {}, "bare": {"bare": True}, "parts": {"parts": True}}
+CASES = {
+    "full": {},
+    "bare": {"bare": True},
+    "parts": {"parts": True},
+    "overlap": {"overlap": True},
+}
 PRODUCT_STEPS = ("q", "k", "v", "o", "up", "gate", "down")
 STARTED = time.monotonic()
 
@@ -42,9 +47,7 @@ def parse():
     parser.add_argument("--config", default=None, help="a config.json instead")
     parser.add_argument("--layers", type=int, default=None, help="default: the model's")
     parser.add_argument("--tokens", type=int, default=10)
-    parser.add_argument(
-        "--cases", nargs="*", default=["full", "bare"], choices=list(CASES)
-    )
+    parser.add_argument("--cases", nargs="*", default=list(CASES), choices=list(CASES))
     parser.add_argument("--no-check", action="store_true")
     parser.add_argument("--pause", type=float, default=1.0, help="x a case's time")
     parser.add_argument("--seed", type=int, default=1)
@@ -58,9 +61,9 @@ def check(decode, model, weights, seed):
     start = md.start(seed, model)
     want = md.layer(model, start, weights)
     out = {}
-    for _ in range(CHECK_RUNS):
+    for run in range(CHECK_RUNS):
         decode.write_activation("x", start)
-        decode.job(1, 1)
+        decode.job(1, 1, overlap=run == 1)
         for name in READ_BACK:
             errors = md.errors(decode.read_activation(name), want[name])
             if name in out:
@@ -90,65 +93,96 @@ def measure(decode, case, tokens, layers, index):
     }
 
 
-def account(model, result, slot, bare=None):
-    """A layer's microseconds by term: HARDWARE (the weight read at the ceiling), OURS
-    (each command's time above it, the operations', the thread's between commands) and
-    what is left; from the thread's clock and each command's event."""
+def per_layer(result, slot):
+    """A case's microseconds a layer: the layer, each step's events, the span of the
+    overlapped products."""
     count = result["tokens"] * result["layers"]
-    layer_us = slot["microseconds"] / count
-    steps = {name: step["sum_us"] / count for name, step in slot["steps"].items()}
-    shapes = model.shapes()
-    hardware = {
-        name: 2 * k * n / (CEILING_GBS * 1e3) for name, (k, n) in shapes.items()
-    }
-    terms = []
-    for step in PRODUCT_STEPS:
-        if not steps.get(step):
-            continue
-        ceiling = hardware[step]
-        terms.append(
-            {"term": f"{step}: W at the ceiling", "kind": "HARDWARE", "us": ceiling}
-        )
-        plain = steps[step]
-        if bare is not None and step in ("o", "gate", "down"):
-            plain = bare["steps"][step] / bare["count"]
-            terms.append(
-                {
-                    "term": f"{step}: its operation",
-                    "kind": "OURS",
-                    "us": steps[step] - plain,
-                }
-            )
-        terms.append(
-            {
-                "term": f"{step}: the product above the ceiling",
-                "kind": "OURS",
-                "us": plain - ceiling,
-            }
-        )
-    terms += [
-        {"term": f"{step}: the command", "kind": "OURS", "us": steps[step]}
-        for step in ("norm1", "norm2")
-        if steps.get(step)
-    ]
-    commands = sum(steps.values())
-    terms.append(
-        {
-            "term": "the thread between commands (submit, wait)",
-            "kind": "OURS",
-            "us": layer_us - commands,
-        }
-    )
-    for term in terms:
-        term["us"] = round(term["us"], 2)
-    total = sum(term["us"] for term in terms)
     return {
-        "layer_us": round(layer_us, 2),
-        "ceiling_us": round(model.layer_bytes() / (CEILING_GBS * 1e3), 2),
-        "steps_us": {name: round(value, 2) for name, value in steps.items()},
-        "terms": terms,
-        "unaccounted_us": round(layer_us - total, 2),
+        "layer": slot["microseconds"] / count,
+        "steps": {name: step["sum_us"] / count for name, step in slot["steps"].items()},
+        "span": slot["span_us"] / count,
     }
+
+
+def account(model, cases):
+    """{case: terms a layer} of `full` and `overlap`: each weight at the ceiling, its
+    read below it (parts), its boundary (bare less parts), its operation (full less
+    bare), the norms, the thread; overlapped, q to o as one span. Needs full, bare,
+    parts."""
+    if not {"full", "bare", "parts"} <= cases.keys():
+        return {}
+    full, bare, parts = (cases[name]["steps"] for name in ("full", "bare", "parts"))
+    ceiling = {
+        name: 2 * k * n / (CEILING_GBS * 1e3) for name, (k, n) in model.shapes().items()
+    }
+
+    def product(step, own):
+        """The terms of a product whose own time is `own`."""
+        terms = [
+            ("HARDWARE", f"{step}: W at the ceiling", ceiling[step]),
+            (
+                "OURS",
+                f"{step}: the read below the ceiling",
+                parts[step] - ceiling[step],
+            ),
+            ("OURS", f"{step}: the boundary", bare[step] - parts[step]),
+        ]
+        operation = (
+            "its operation" if step in ("o", "gate", "down") else "full less bare"
+        )
+        return terms + [("OURS", f"{step}: {operation}", own - bare[step])]
+
+    out = {}
+    for name in ("full", "overlap"):
+        if name not in cases:
+            continue
+        case = cases[name]
+        steps, terms = case["steps"], []
+        spanned = PRODUCT_STEPS[:4] if name == "overlap" else ()
+        if spanned:
+            own = sum(parts[step] for step in spanned) + full["o"] - bare["o"]
+            terms += [
+                (
+                    "HARDWARE",
+                    "q, k, v, o: W at the ceiling",
+                    sum(ceiling[s] for s in spanned),
+                ),
+                (
+                    "OURS",
+                    "q, k, v, o: the read below the ceiling",
+                    sum(parts[s] - ceiling[s] for s in spanned),
+                ),
+                ("OURS", "o: its operation", full["o"] - bare["o"]),
+                (
+                    "OURS",
+                    "q, k, v, o: the boundary left, overlapped",
+                    case["span"] - own,
+                ),
+            ]
+        for step in PRODUCT_STEPS:
+            if step not in spanned:
+                terms += product(step, steps[step])
+        terms += [
+            ("OURS", f"{step}: the command", steps[step]) for step in ("norm1", "norm2")
+        ]
+        commands = case["span"] + sum(
+            value for step, value in steps.items() if step not in spanned
+        )
+        terms.append(
+            (
+                "OURS",
+                "the thread between commands (submit, wait)",
+                case["layer"] - commands,
+            )
+        )
+        rows = [{"kind": k, "term": t, "us": round(us, 2)} for k, t, us in terms]
+        out[name] = {
+            "layer_us": round(case["layer"], 2),
+            "ceiling_us": round(model.layer_bytes() / (CEILING_GBS * 1e3), 2),
+            "terms": rows,
+            "unaccounted_us": round(case["layer"] - sum(r["us"] for r in rows), 2),
+        }
+    return out
 
 
 def main():
@@ -194,27 +228,16 @@ def main():
         decode.run.stop()
         log("run stopped")
         stats = decode.stats()
-    slots = {
-        result["case"]: card.decode_slot(stats[result["stats_slot"]])
-        for result in results
-    }
-    bare = None
-    if "bare" in slots:
-        result = next(r for r in results if r["case"] == "bare")
-        bare = {
-            "steps": {n: s["sum_us"] for n, s in slots["bare"]["steps"].items()},
-            "count": result["tokens"] * result["layers"],
-        }
+    layered = {}
     for result in results:
-        slot = slots[result["case"]]
+        slot = card.decode_slot(stats[result["stats_slot"]])
         result["thread"] = slot
-        result["account"] = account(
-            model, result, slot, bare if result["case"] == "full" else None
-        )
+        layered[result["case"]] = per_layer(result, slot)
         token_ms = slot["microseconds"] / result["tokens"] / 1e3
         result["ms_per_token"] = round(token_ms, 3)
         result["tokens_per_second"] = round(1e3 / token_ms, 1)
         result["weight_gbs"] = round(layers * model.layer_bytes() / token_ms / 1e6, 1)
+    report["account"] = account(model, layered)
     report["ceiling_ms_per_token"] = round(
         layers * model.layer_bytes() / (CEILING_GBS * 1e6), 3
     )
