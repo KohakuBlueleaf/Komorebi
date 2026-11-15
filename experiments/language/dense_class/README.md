@@ -31,8 +31,17 @@ one load runs them; its files are under `build/linear-<hash>/` beside the script
 
 ```bash
 python linear_class.py --rows 1 32 --check exact swiglu  # the K split, then the grid
+python linear_class.py --rows 1 32 --check exact --k-tiles 128 64  # two programs
 python linear_parts.py --repeat 3          # the first version's plans' parts, alone
 ```
+
+The sizes are constants of the class (`K_TILES = km.constant(128)`, `W_BLOCK = CHUNK *
+WIDTH` derived; [Constants](../../../docs/reference/classes.md#constants)), so
+`--k-tiles 128 64` makes two programs of `Linear`, `Linear(..., K_TILES=64)` a build of
+its own, loaded one after the other in one session, each command named through its
+program (`program.split`). On card 0, `exact` at both: K_TILES 128, split 0 wrong
+(94.96 µs), grid 0 wrong (360.52 µs); K_TILES 64 (K = 2048), split 0 wrong (58.68 µs),
+grid 0 wrong (197.82 µs); kernel text 90,624 B and 90,608 B.
 
 The checks: `exact`, x in {-1, 0, 1} and w in {-1, 0, 0, 0, 1}, every sum an integer of
 at most 256, exact in bfloat16, so Y must equal the host's product; `swiglu`, normal

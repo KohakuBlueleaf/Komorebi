@@ -81,3 +81,22 @@ span) and 168 for the copies into DST, the acquire and the pack. Holding DST for
 tiles took nothing measurable off those 168; what is left of the difference is the
 body, the emitted silu and product in float32 on the vector unit against the hand's
 library silu and its product by b on the matrix unit, which copies no b into DST.
+
+### The block as a constant
+
+`Gate`'s block is a constant of the class, `BLOCK = km.constant(8)`, read in the
+handler as `self.BLOCK`; `Gate(..., BLOCK=4)` is another build of the same class
+([Constants](../../../docs/reference/classes.md#constants)). `GateBlocks` makes the
+block a constant parameter of the handler instead, `block: km.constant[int] = 8`: the
+make lists the blocks to build, each a handler of its own in one load, and a command
+gives its block in `args` at its place.
+
+```python
+program = GateBlocks(a=a, b=b, out=out, handlers={"gate": [{"block": 8}, {"block": 4}]})
+run.submit(program.gate, (0, cores), args=(a, b, out, tiles, pattern, 4))
+```
+
+`python gate_class.py --cores 12 --blocks 8 4` runs it. On card 0, 12 cores of 64
+tiles, AAAB, one load of both handlers (46,640 B of kernel text), each command's output
+cleared before it: block 8 0 of 786,432 values wrong, 81.72 µs; block 4 0 wrong,
+80.60 µs; the largest relative error 3.89e-3 for both, as the class's row above.

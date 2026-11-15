@@ -303,7 +303,7 @@ static int wake(uint64_t deadline) {
 }
 
 /* Core 0: submits `command` (again after each busy rejection) and waits for its event
- * by `deadline`. KMX_OK once done; KMX_BAD when refused or timed out (`event` says). */
+ * by `deadline`. KMX_OK once done; KMX_BAD when refused, timed out or stash full. */
 static int until_done(
     const km_command_t* command, uint64_t deadline, kmx_event* event
 ) {
@@ -326,7 +326,7 @@ static int until_done(
             status = kmx_wait(handle, deadline, event);
         }
         if (status != KMX_OK) {
-            return status;
+            return status == KMX_FULL ? KMX_BAD : status; /* KMX_STASH set aside */
         }
         if (event->kind == KM_EVENT_DONE) {
             return KMX_OK;
@@ -336,7 +336,7 @@ static int until_done(
         }
         status = wake(deadline);
         if (status != KMX_OK) {
-            return status;
+            return status == KMX_FULL ? KMX_BAD : status;
         }
     }
 }
@@ -1103,6 +1103,9 @@ int kmx_port_run(
         return KMX_BAD;
     }
     status = all_ready();
+    if (status == KMX_OK && g_spawn_busy && busy(1, 4)) {
+        return KMX_FULL; /* a spawned core still runs: nothing submitted */
+    }
     uint32_t handle = 0;
     status = status == KMX_OK ? kmx_submit(command, &handle) : status;
     if (status != KMX_OK) {
@@ -1169,7 +1172,13 @@ static void pull_part(int cluster, int x280_core, uint64_t arg) {
     uint32_t* log = (
         mode != KMX_PULL_COUNT ? kmx_region((int)(ports_line->pull[2] >> 8), &bytes) : 0
     );
-    const uint32_t capacity = log ? (uint32_t)(bytes / 4u / KMX_PORTS_CORES) - 1u : 0;
+    /* a cluster without the log region (or under one range a core): every ask lost */
+    const uint32_t no_log = (
+        mode != KMX_PULL_COUNT && (log == 0 || bytes < KMX_PULL_LOG_BYTES(1))
+    );
+    const uint32_t capacity = (
+        log && !no_log ? (uint32_t)(bytes / 4u / KMX_PORTS_CORES) - 1u : 0
+    );
     uint32_t* lists = log ? log + KMX_PORTS_CORES : 0;
     uint32_t groups;
     const uint32_t place = group_place(&groups);
@@ -1180,7 +1189,7 @@ static void pull_part(int cluster, int x280_core, uint64_t arg) {
         if (kmx_port_owner(core) == x280_core) {
             given[served_count] = 0;
             mine[served_count++] = (uint8_t)core;
-            if (mode == KMX_PULL_REPLAY) { /* the host's or a log run's writes */
+            if (mode == KMX_PULL_REPLAY && !no_log) { /* the host's or a log run's */
                 flush((uint64_t)(uintptr_t)(log + core), 4);
                 const uint32_t logged = log[core] < capacity ? log[core] : capacity;
                 flush((uint64_t)(uintptr_t)(lists + core * capacity), 4ull * logged);
@@ -1198,6 +1207,8 @@ static void pull_part(int cluster, int x280_core, uint64_t arg) {
             uint64_t range_index = KMX_PULL_NONE;
             uint32_t word = 0;
             if (message.w[0] != KM_PULL_ASK) {
+            } else if (no_log) {
+                lost++;
             } else if (mode == KMX_PULL_REPLAY) {
                 range_index = (
                     given[served] < log[core] && given[served] < capacity
@@ -1238,7 +1249,10 @@ static void pull_part(int cluster, int x280_core, uint64_t arg) {
             kmx_port_answer(core, message.sequence, first, count, count ? word : 0);
         }
     }
-    for (int served = 0; served < served_count && mode == KMX_PULL_LOG; served++) {
+    for (
+        int served = 0; served < served_count && mode == KMX_PULL_LOG && !no_log;
+        served++
+    ) {
         log[mine[served]] = given[served];
         flush((uint64_t)(uintptr_t)(log + mine[served]), 4);
         const uint32_t logged = given[served] < capacity ? given[served] : capacity;
@@ -1618,6 +1632,9 @@ static int serve_commands(void) {
 static uint32_t g_ranks_open __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_said __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_last __attribute__((section(".data"))) = 0;
+/* 1 + the core whose inbox place a ROOM give-up left unfilled: its inbox reads in
+ * order and stops there, so every later run of the load is refused (BROKEN) */
+static uint32_t g_ranks_broken __attribute__((section(".data"))) = 0;
 static volatile uint8_t* g_l1[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
 static uint8_t g_l1_mine[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
 static volatile uint8_t* g_ranks_status[KM_X280_RANKS_MAX]
@@ -1864,6 +1881,12 @@ int kmx_messages_run(
         messages->at = messages->head;
         messages->last = now;
     }
+    if (g_ranks_broken != 0) { /* refused at once: the dispatcher ends the run */
+        for (uint32_t rank = 0; rank < line->ranks; rank++) {
+            ranks_give_up(&g_ranks_state[rank], KMX_GAVE_BROKEN);
+        }
+        return KMX_BAD;
+    }
     g_ranks_function = function;
     g_ranks_arg = arg;
     for (uint32_t rank = 1; rank < line->ranks && status == KMX_OK; rank++) {
@@ -1989,6 +2012,7 @@ int kmx_messages_forward(
             x280_fence_ir();
         }
         if (position - *credit >= line->inbox_messages) {
+            g_ranks_broken = core + 1u;
             ranks_give_up(messages, KMX_GAVE_ROOM);
             return KMX_BAD;
         }
@@ -2123,7 +2147,7 @@ static void peers_close(void) {
 /* Whether the argument block is this run's and every entry is in range. */
 static int args_valid(const volatile kmx_args* arguments, uint64_t run) {
     if (
-        x280_hart_args_bytes() < KMX_ARGS_BYTES || arguments->run_value != run ||
+        x280_hart_args_bytes() < KMX_LIM_BYTES || arguments->run_value != run ||
         arguments->magic != KMX_MAGIC || arguments->version != KMX_VERSION ||
         arguments->deadline == 0 || arguments->deadline > KMX_DEADLINE_MAX ||
         arguments->nregions > KMX_REGIONS_MAX || arguments->cluster < 1 ||
@@ -2176,7 +2200,11 @@ static int ring_open(const volatile kmx_ring_descriptor* descriptor) {
                 KMX_RING_WINDOW, x, y, base, NOC_ORDER_POSTED, &programmed
             )
         );
-        if (window == 0 || noc_verify_tlb_2m(KMX_RING_WINDOW, &programmed) != 0) {
+        if (window == 0) {
+            return 0;
+        }
+        if (noc_verify_tlb_2m(KMX_RING_WINDOW, &programmed) != 0) {
+            noc_clear_tlb_2m(KMX_RING_WINDOW);
             return 0;
         }
         local.cmd = (uint64_t)(uintptr_t)window + (local.cmd - base);

@@ -86,6 +86,7 @@ A Komorebi install and a card prepared as in [Running on a card](../../docs/inst
 python thread_split.py --units 16384 --per 4 --run 64   # the numbers below
 python thread_split.py --units 256 --pull-units 1024     # a quick check
 python thread_split.py --far   # cards 0 and 1: island 0 runs, island 1 holds the pages
+python thread_split.py --units 256 --pull-units 1024 --addon sparse  # sparse added live
 ```
 
 The overlays write the tiles and the reader its line with `km::write_pages_at` and
@@ -93,6 +94,13 @@ The overlays write the tiles and the reader its line with `km::write_pages_at` a
 thread and the ports on island 0 only. The thread is then built with
 `TS_STARTED_BY_HOST`: it runs the passes on the host's command (`passes`) once both
 islands are loaded, not at its start, and leaves their ticks in its region.
+
+`--addon sparse` builds the thread the same way. The load leaves sparse out, and
+`run.addon` adds it to the live run with its number before the host starts the passes
+([code added to a live run](../../docs/reference/overlays.md#code-added-to-a-live-run)).
+The pull's answer then names it as any overlay. On card 0, 2026-11-16, 120 cores: the
+thread ended with code 0, every tile and line was right, and the sparse pass ran its
+256 units on the added overlay in 138.2 µs, with 120 loads.
 
 `--penalty` (cycles a unit costs off its overlay's kind, default 20,000), `--slots` (the
 reader's, default 2). The script exits non-zero if a tile or a line is wrong.

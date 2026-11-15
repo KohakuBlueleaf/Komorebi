@@ -299,6 +299,40 @@ def check_direct(calls):
     return report
 
 
+def check_islands(calls, island_of):
+    """Over islands (`island_of(rank)` its island): every mark and credit stays inside
+    one island, as each island walks the chain on its own cores; refused otherwise,
+    naming the two calls and the two islands (the far mark is not built)."""
+    for index, call in enumerate(calls):
+        label = _label(call, index)
+        if call.sends:
+            for group in range(_shape(call, index)):
+                first = call.group[0] + group * call.size
+                held = sorted({island_of(r) for r in range(first, first + call.size)})
+                if len(held) > 1:
+                    raise ChainRefused(
+                        f"{label}: group {group} (cores {first} to "
+                        f"{first + call.size - 1}) spans islands {held[0]} and "
+                        f"{held[-1]} and its parts go up its tree: a credit from one "
+                        "island to another (the far mark) is not built"
+                    )
+        if call.input is None or index == 0:
+            continue
+        before = calls[index - 1]
+        groups = _shape(before, index - 1)
+        for core, rank, group in _cores(call):
+            for first, count in tiles_of(call.k, call.ranges, rank, group, call.size):
+                for block in blocks_met(first, count, before.width, groups):
+                    root = before.group[0] + block * before.size
+                    if island_of(root) != island_of(core):
+                        raise ChainRefused(
+                            f"{label}: core {core} on island {island_of(core)} waits "
+                            f"for a mark from {_label(before, index - 1)}'s root "
+                            f"{root} on island {island_of(root)}: a mark from one "
+                            "island to another (the far mark) is not built"
+                        )
+
+
 def records(calls, address, handlers=None):
     """The calls' records (uint32, 16 words each) for a chain at DRAM `address`: each
     names the next one in the same bank (the last 0) and its handler's number from
@@ -376,10 +410,28 @@ class Chain:
         self.tensor.free()
 
 
-def build(calls):
+class IslandChain:
+    """A chain over islands: each island's records in its own DRAM (`chains`, a Chain
+    an island); run.submit(chain, **word) runs it as one ticket, a part an island."""
+
+    def __init__(self, chains, group):
+        self.chains = list(chains)
+        self.group = group
+        self.calls = self.chains[0].calls
+        self.report = self.chains[0].report
+
+    def free(self):
+        for chain in self.chains:
+            chain.free()
+
+
+def build(calls, island_of=None):
     """The checks run.chain makes before writing records: the calls' form, every
-    earlier input proven, the direct inputs checked; their report."""
+    earlier input proven, the direct inputs checked, over islands each mark and credit
+    inside one; their report."""
     prove(calls)
+    if island_of is not None:
+        check_islands(calls, island_of)
     report = check_direct(calls)
     names = {call.word[0] for call in calls if call.word is not None}
     if len(names) > 1:

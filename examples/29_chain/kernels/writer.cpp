@@ -27,16 +27,21 @@ namespace {
         return true;
     }
 
-}  // namespace
-
-void kernel_main() {
-    km::Writer writer;
-    const km::ChainDirect none = {0, 0, 0, kTileBytes};  // no direct input here
-    const auto product = [&](const km_command_t& command) {
+    // A step: its tiles out, and in a chain's record the marks after them.
+    bool step(km::Writer& writer, const km_command_t& command) {
+        const km::ChainDirect none = {0, 0, 0, kTileBytes};  // no direct input here
         if (!step_handler(km::handler(command))) {
             return true;
         }
-        const km::Group group = km::group_of(command, writer.me());
+        const km::Group group = step_group(command, writer.me());
+        if (km::handler(command) == kHandlerTotal) {  // the sum is in once its token is
+            if (!writer.wait_front(kCbOut, 1)) {
+                return false;
+            }
+            cb_pop_front(kCbOut, 1);
+            return group.rank != 0 ||
+                km::chain_mark(km::ChainShape{}, writer, command, none, false);
+        }
         const bool sum = km::handler(command) == kHandlerSum;
         if (sum && group.rank != 0) {
             const km::Arrival arrival = {kCbArrive, kArrivePages, 1};
@@ -55,11 +60,26 @@ void kernel_main() {
             }
         }
         return km::chain_mark(km::ChainShape{}, writer, command, none, false);
-    };
-    writer.run([&](const km_command_t& command) {
+    }
+
+    // A command: a chain command's records in turn, or one step.
+    bool command_of(km::Writer& writer, const km_command_t& command) {
+        const auto product = [&](const km_command_t& record) {
+            return step(writer, record);
+        };
         if (step_handler(km::handler(command)) && command.a4 == kChainMode) {
             return km::chain_writer(km::ChainShape{}, writer, command, product);
         }
         return product(command);
+    }
+
+}  // namespace
+
+#if !defined(KM_OVERLAY_PART)  // the runtime's form calls command_of (runtime/)
+void kernel_main() {
+    km::Writer writer;
+    writer.run([&](const km_command_t& command) {
+        return command_of(writer, command);
     });
 }
+#endif

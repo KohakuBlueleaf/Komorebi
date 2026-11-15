@@ -11,6 +11,9 @@
 #ifdef TRISC_PACK
 #include "setup.hpp"
 #endif
+#ifndef RASTER_OUT_CB  // the out buffer; a class that includes this file names its own
+#define RASTER_OUT_CB kCbOut
+#endif
 
 namespace {
 
@@ -276,12 +279,12 @@ namespace {
         bool open(const km::Compute& compute) {
             if (page == nullptr) {
                 const uint32_t asked = km::wall();
-                const bool reserved = compute.reserve_back(kCbOut, 1);
+                const bool reserved = compute.reserve_back(RASTER_OUT_CB, 1);
                 wait += km::wall() - asked;
                 if (!reserved) {
                     return false;
                 }
-                page = cb_ptr(kCbOut);
+                page = cb_ptr(RASTER_OUT_CB);
                 filled = 0;
             }
             return true;
@@ -329,7 +332,7 @@ namespace {
             asm volatile("fence" ::: "memory");
             const uint32_t last_word = reinterpret_cast<volatile uint32_t*>(page)[0];
             asm volatile("and x0, x0, %0" : : "r"(last_word) : "memory");
-            cb_push_back(kCbOut, 1);
+            cb_push_back(RASTER_OUT_CB, 1);
             page = nullptr;
         }
 
@@ -548,6 +551,7 @@ namespace {
 }  // namespace
 #endif
 
+#ifndef RASTER_PASS_HELPERS  // a class takes the helpers above alone
 // The passes' work for one command; the frame program's compute kernel calls it as
 // well.
 void setup_compute_command(const km::Compute& compute, const km_command_t& command) {
@@ -704,4 +708,5 @@ void kernel_main() {
         setup_compute_command(compute, command);
     });
 }
+#endif
 #endif

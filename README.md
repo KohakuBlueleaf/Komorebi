@@ -240,8 +240,6 @@ the vector unit's instructions for the compute kernel. Reduced from
 ```python
 import komorebi as km
 
-BLOCK = 8  # tiles a block
-
 
 @km.tile_function(tolerance=1e-6)  # the largest relative error against float64
 def silu_gate(a, b):
@@ -249,6 +247,8 @@ def silu_gate(a, b):
 
 
 class Gate(km.Program):
+    BLOCK = km.constant(8)  # tiles a block: fixed at the build, Gate(..., BLOCK=4)
+
     @km.handler
     def gate(
         self,
@@ -260,11 +260,11 @@ class Gate(km.Program):
     ):
         first = self.rank * tiles  # this core's share
         results = km.Stream(
-            out.pages(first, tiles), write=True, block=BLOCK, pattern=pattern
+            out.pages(first, tiles), write=True, block=self.BLOCK, pattern=pattern
         )
         for x, g in zip(
-            km.Stream(a.pages(first, tiles), block=BLOCK, pattern=pattern),
-            km.Stream(b.pages(first, tiles), block=BLOCK, pattern=pattern),
+            km.Stream(a.pages(first, tiles), block=self.BLOCK, pattern=pattern),
+            km.Stream(b.pages(first, tiles), block=self.BLOCK, pattern=pattern),
         ):
             results.push(silu_gate(x, g))
 
@@ -283,13 +283,13 @@ writes them. Reduced from
 [dense_class](experiments/language/dense_class/README.md):
 
 ```python
-K_TILES = 128  # K = 4096
-SPLIT = 14  # cores a group, each a fourteenth of K
-WIDTH = 16  # a group's columns of Y, in tiles
-CHUNK = 2  # K tiles a block
-
-
 class Linear(km.Program):
+    K_TILES = km.constant(128)  # K = 4096; Linear(..., K_TILES=256) another build
+    SPLIT = km.constant(14)  # cores a group, each a fourteenth of K
+    WIDTH = km.constant(16)  # a group's columns of Y, in tiles
+    CHUNK = km.constant(2)  # K tiles a block
+    W_BLOCK = CHUNK * WIDTH  # derived: follows an override of either
+
     sums: km.L1[km.fp32, 1, WIDTH, 32, 32]  # a field in each core's L1
 
     @km.tile_function(fidelity="HiFi2")
@@ -298,18 +298,18 @@ class Linear(km.Program):
 
     @km.handler
     def split(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
-        share = self.rank % SPLIT  # this core's part of K
-        first = self.rank // SPLIT * WIDTH  # its group's columns of Y
-        k0 = share * K_TILES // SPLIT
-        k1 = (share + 1) * K_TILES // SPLIT
+        share = self.rank % self.SPLIT  # this core's part of K
+        first = self.rank // self.SPLIT * self.WIDTH  # its group's columns of Y
+        k0 = share * self.K_TILES // self.SPLIT
+        k1 = (share + 1) * self.K_TILES // self.SPLIT
         for xb, wb in zip(
-            km.Stream(x.tiles[0:1, k0:k1], block=CHUNK),
-            km.Stream(w.tiles[k0:k1, first : first + WIDTH], block=CHUNK * WIDTH),
+            km.Stream(x.tiles[0:1, k0:k1], block=self.CHUNK),
+            km.Stream(w.tiles[k0:k1, first : first + self.WIDTH], block=self.W_BLOCK),
         ):
             self.sums += self.project(xb, wb)
-        whole = km.reduce(self.sums, form="tree", group=SPLIT)
+        whole = km.reduce(self.sums, form="tree", group=self.SPLIT)
         if self.rank == self.leader:  # the group's first core
-            y.tiles[0:1, first : first + WIDTH].write(whole)
+            y.tiles[0:1, first : first + self.WIDTH].write(whole)
 ```
 
 On the card each class gives the hand program's result. The time of a command, the

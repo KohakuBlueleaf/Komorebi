@@ -4,6 +4,7 @@ bookkeeping is the same against a fake transport.
 """
 
 import contextlib
+import importlib
 import time
 from array import array
 from typing import NamedTuple
@@ -13,9 +14,10 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi
+from komorebi import abi, added, overlay
 from komorebi import chain as chain_module
 from komorebi import state as device_state
+from komorebi.dsl import front
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
@@ -96,6 +98,19 @@ def _sequence_number(number):
     """The kernel's sequence number of the n-th command: it counts in 32 bits and skips
     0 (it also skips a slot's last value, which only a wrap can repeat)."""
     return (number - 1) % M32 + 1
+
+
+def with_area(writes, address, area, h):
+    """A reset list (whole 64-byte lines, ASSERT first) with the words `area` written
+    to L1 `address` right after its ASSERT, while the core's CPUs are held."""
+    entry = h["KMD_RESET_ENTRY"]
+    if int.from_bytes(writes[:4], "little") != h["KMD_RESET_ASSERT"]:
+        raise ValueError("a reset list that does not start with its ASSERT")
+    data = np.asarray(area, "<u4").tobytes()
+    data += bytes(-len(data) % 16)
+    line = array("I", [h["KMD_RESET_WRITE"], address, 4 * len(area), 0]).tobytes()
+    out = bytes(writes[:entry]) + line + data + bytes(writes[entry:])
+    return out + bytes(-len(out) % 64)
 
 
 class Run:
@@ -231,6 +246,7 @@ class Run:
         self._ticks = np.zeros(0, np.uint32)
         self._has = np.zeros(0, bool)  # the event arrived
         self._gone = np.zeros(0, bool)  # returned by wait() or forgotten
+        self._ports = {}  # a port command without its event yet: handle -> group
         self._unsent()
 
     def _unsent(self):
@@ -301,9 +317,10 @@ class Run:
         started = time.perf_counter()
         program_field, method = 0, None
         if isinstance(handler, HandlerMethod | ClassHandler):
+            handler = self._built_for(handler, args)
             method = handler if isinstance(handler, HandlerMethod) else handler.method
             result = result or method.returns
-            args = handler.args(*args)
+            args = handler.args(*self._regions_named(method, args))
         if cluster is not None:
             handler, group = self._to_thread(handler, cluster, group, exclusive, queued)
         else:
@@ -312,6 +329,7 @@ class Run:
             raise ValueError(
                 f"handler {handler}: not NOP and not in 1..KM_HANDLER_USER_MAX"
             )
+        ports = False
         if cluster is None and queued:
             if exclusive:
                 raise ValueError("a queued command cannot be exclusive")
@@ -320,6 +338,7 @@ class Run:
         elif cluster is None:
             group = self._group(group)
             self._check_holds(program_field, handler, *group)
+            ports = self._check_ports(program_field, handler, group, exclusive)
             if method is not None:
                 self._check_rectangle(method, program_field, group)
                 self._check_reduce_groups(method, program_field, group)
@@ -338,10 +357,35 @@ class Run:
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
         )
+        if ports:
+            self._ports[handle] = group
         if kept is not None:
             self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
         return handle
+
+    def _regions_named(self, method, args):
+        """A class handler's arguments with each region parameter given by its name
+        made (bank, bank address): the region of this run's thread that has it."""
+        out = list(args)
+        for index, ((parameter, kind), value) in enumerate(
+            zip(method.parameters(), args)
+        ):
+            if kind != "region" or not isinstance(value, str):
+                continue
+            found = [
+                thread.regions.address(value)
+                for thread in self.threads.values()
+                if thread.regions is not None and value in thread.regions.keys
+            ]
+            if len(found) != 1:
+                raise ValueError(
+                    f"{method.name}: {parameter} names region {value!r}, which "
+                    f"{'no' if not found else 'more than one'} thread of this run "
+                    "has; give (bank, address)"
+                )
+            out[index] = found[0]
+        return out
 
     def _check_rectangle(self, method, program_field, group):
         """Refuses a broadcast's command of a class whose group is not the group of
@@ -358,6 +402,35 @@ class Run:
                 f"{rectangle['group']}, fixed at load; submit it to that group "
                 f"(not {tuple(group)}), or make the program with rect="
             )
+
+    def _port_numbers(self, program_field):
+        """The handler numbers of the program's port_handlers."""
+        program = self.programs[program_field] if self.programs else None
+        return {
+            program.handlers.get(name, -1) if isinstance(name, str) else int(name)
+            for name in getattr(program, "port_handlers", ())
+        }
+
+    def _check_ports(self, program_field, handler, group, exclusive, handle=None):
+        """Whether `handler` is one of its program's port_handlers; such a command on
+        cores a port command without its event still holds is refused unless it is
+        exclusive (a group's port commands do not overlap: ports.md)."""
+        if handler not in self._port_numbers(program_field):
+            return False
+        handle = self._next if handle is None else int(handle)
+        first, count = group
+        for held, (low, cores) in list(self._ports.items()):
+            row = held - self._base
+            if held < self._base or (held < self._handed and self._has[row]):
+                del self._ports[held]  # its event came: the cores are free
+            elif not exclusive and low < first + count and first < low + cores:
+                raise ValueError(
+                    f"command {handle} (handler {handler}, cores {first} to "
+                    f"{first + count - 1}) uses ports on cores that command {held} "
+                    f"(cores {low} to {low + cores - 1}) still holds; submit it "
+                    f"exclusive=True, or wait for command {held} first"
+                )
+        return True
 
     def _check_reduce_groups(self, method, program_field, group):
         """Refuses a command of a class's handler that reduces in groups of S ranks
@@ -414,6 +487,8 @@ class Run:
             ]
             if not fields:
                 raise ValueError(f"{handler.name}: no program of its class in the run")
+            if len(fields) > 1:
+                raise ValueError(self._class_form_refused(handler, fields))
             return int(handler), fields[0]
         if handler.__class__ is not int:
             handler = (
@@ -422,6 +497,39 @@ class Run:
                 else int(handler)
             )
         return int(handler), 0
+
+    def _built_for(self, handler, args):
+        """A class's handler with constant parameters: the handler its program built
+        for the values `args` gives at their places (left out: the defaults); a set
+        not built is refused, naming the sets that were. Others: `handler`."""
+        method = handler if isinstance(handler, HandlerMethod) else handler.method
+        if not front.constant_parameters(method.function):
+            return handler
+        if isinstance(handler, ClassHandler):
+            program = handler.program
+        else:
+            program = self.programs[self._handler(handler)[1]]
+        made = importlib.import_module("komorebi.dsl.program")
+        number, built = made.constant_handler(
+            program, method, method.constants_given(args)
+        )
+        return ClassHandler(number, program, built)
+
+    def _class_form_refused(self, handler, fields):
+        """Why `Class.handler` names no program when the run holds several of its
+        class (at `fields`): each named by its constants."""
+        named = []
+        for field in fields:
+            program = self.programs[field]
+            values = getattr(program, "constant_values", None) or {}
+            given = ", ".join(f"{k}={v}" for k, v in values.items())
+            named.append(f"{type(program).__name__}({given}) at field {field}")
+        owner = handler.owner.__name__ if handler.owner else "its class"
+        return (
+            f"{owner}.{handler.name}: the run holds {len(fields)} programs of the "
+            f"class ({'; '.join(named)}), and the class's handler does not say which; "
+            f"name it through the program (program.{handler.name})"
+        )
 
     def field_handler(self, number, program_field):
         """What submit takes for handler `number` of the program with field
@@ -515,6 +623,30 @@ class Run:
             cores[low:high] = held == program_field
         return handle
 
+    def addon(
+        self,
+        name,
+        parts,
+        handler=False,
+        number=None,
+        defines=None,
+        timeout=10.0,
+        message=False,
+    ):
+        """Adds overlay `name` to the live run: `parts` as Program.overlay's, built
+        against the loaded kernels, written into the room the load reserved, its table
+        entry given to every core by a command. Returns its number: with `handler` a
+        handler's, with `message` a dynamic handler's (its body a compute part)."""
+        return added.addon(
+            self, name, parts, handler, number, defines, timeout, message
+        )
+
+    @property
+    def added(self):
+        """What run.addon placed: {name: komorebi.added.Added}."""
+        room = getattr(self.backend, "room", None)
+        return dict(room.added) if room is not None else {}
+
     def transfer(self, handler, group, args, timeout):
         """A PUSH or PULL (the session's transfers) on `group` (first, count, program
         field: the field its cores hold), waited for; returns its Event."""
@@ -524,12 +656,33 @@ class Run:
         )
         return self.wait(handle, timeout)
 
+    def _area_resets(self, lists, core_list):
+        """Adds the overlay area as the load wrote it (load_overlays) to each reset
+        list, so a reset core's slots, parks and meets start again from there; the
+        reason it cannot when the cores of one list hold different areas."""
+        rows = getattr(self.backend, "control_rows", None)
+        start = self.backend.control_offset + self.h["KM_CONTROL_BYTES"] // 4
+        words = overlay.constants()["kOverlayAreaBytes"] // 4
+        if rows is None or rows.shape[1] < start + words:
+            return None  # no overlay area after the control blocks
+        numbers = np.frombuffer(bytes(core_list), np.uint8)
+        address = self.backend.control_addr + self.h["KM_CONTROL_BYTES"]
+        for number, writes in enumerate(lists):
+            area = rows[np.flatnonzero(numbers == number), start : start + words]
+            if (area != area[0]).any():
+                return f"the overlay areas of reset list {number}'s cores differ"
+            lists[number] = with_area(writes, address, area[0], self.h)
+        return None
+
     def keep_resets(self, exclude=(), timeout=10.0):
         """Hands the dispatcher a reset list a group of cores with the same kernels and
         each core's list number (load(recover=True)): a give-up then resets and loads
         again each core that did not leave; `exclude` (link cores) get none. Sets
         `recovery`, or `recovery_refused` with the reason; True when kept."""
         started = time.perf_counter()
+        if self.recovery is not None:  # again (run.addon): the new lists replace them
+            self._reserved.remove((self.recovery["offset"], self.recovery["bytes"]))
+            self.recovery = None
         launch = getattr(self.backend, "launch", None)
         if launch is None:
             self.recovery_refused = "the session's backend has no launch to reload"
@@ -559,6 +712,10 @@ class Run:
         for core, group in enumerate(groups):
             if group in owner and core not in excluded:
                 core_list[core] = owner[group]
+        refused = self._area_resets(lists, core_list)
+        if refused:
+            self.recovery_refused = refused
+            return False
         head = self.h["KMD_RESET_DIRECTORY_ENTRIES"]
         at = -(-(head + 16 * len(lists)) // 64) * 64
         entries, body = [], b""
@@ -753,6 +910,23 @@ class Run:
                 self._check_holds(
                     program_field, int(handlers[i]), int(first[i]), int(count[i])
                 )
+        numbers = self._port_numbers(program_field)
+        rows = np.flatnonzero(np.isin(handlers, list(numbers))) if numbers else []
+        try:  # each port row checked against those before it too
+            for row in rows:
+                group = (int(first[row]), int(count[row]))
+                self._check_ports(
+                    program_field,
+                    int(handlers[row]),
+                    group,
+                    exclusive,
+                    self._next + row,
+                )
+                self._ports[self._next + int(row)] = group
+        except ValueError:
+            for row in rows:
+                self._ports.pop(self._next + int(row), None)
+            raise
         words = np.zeros((shape[0], 16), np.uint32)
         words[:, self._hdr] = handlers & 0xFF | program_field << 24
         words[:, self._group_at] = first | count << 16

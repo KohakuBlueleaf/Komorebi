@@ -117,6 +117,7 @@ nav:
       - reference/chain.md
       - reference/tile.md
       - reference/classes.md
+      - reference/hazards.md
   - Examples:
       - examples/README.md
       - examples/01_mapcollect/README.md
@@ -148,6 +149,7 @@ nav:
       - examples/27_islands_gather/README.md
       - examples/28_islands_reduce/README.md
       - examples/29_chain/README.md
+      - examples/30_add_overlay/README.md
   - Measured: measured.md
   - Releases:
       - releases/0.2.0.md

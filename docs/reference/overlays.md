@@ -356,9 +356,143 @@ The service overlay of every run serves it, so it needs no program field: the
 dispatcher does not check which program its cores hold. A failed bound gives up with
 where `copy`.
 
+## Code added to a live run
+
+`run.addon(name, parts, handler=False, number=None, defines=None, timeout=10.0,
+message=False)` adds an overlay to a run that is loaded and live. Its parts are built
+against the loaded kernels, exactly as the load builds its overlays, then written into
+room the load reserved, and every core is given the overlay's table entry by a command
+of the runtime's service overlay. The host writes no core's L1. The call returns the
+overlay's number. From then on the overlay is named, loaded and called as any overlay
+of the load is ([30_add_overlay](../../examples/30_add_overlay/README.md)).
+
+```python
+run = session.load(program)  # program.slots(...) gave slots for the code added later
+number = run.addon("mix", folder / "mix")  # an overlay: a kernel names it by number
+scale = run.addon("scale", folder / "scale", handler=True)  # a handler's body
+run.wait(run.submit(scale, (0, 120), words))  # submitted as any handler
+```
+
+What happens:
+
+1. **The build.** The overlay gets its number: `number`, or the lowest number from 1
+   to 62 that is neither a loaded overlay nor an added one. For a handler, the number
+   is also not a handler of the run's programs. Each group of cores with its own build
+   of the kernels gets its parts built against those kernels: the same compiler
+   command, the persistent kernel's ELF, its symbols and link script. Each part also
+   goes through the instruction check and the part checks ([the builder](#the-builder)),
+   and must fit the kernel's slot.
+2. **The cache of built parts.** A part is kept under a key of what decides its bytes:
+   its source file, its defines, the recipe of the kernel it is built against (compiler,
+   levels, flags, includes, defines), the persistent kernel's ELF and the link script.
+   The key does not hold the overlay's name or number. Beside the key, the cache keeps
+   the digest of every file the part includes. A part whose key and files are unchanged
+   is not built again, in this session or any later one, and the instruction check is
+   not run again either.
+3. **The room.** `session.load(reserve=)` gives the overlays' DRAM tensor that many
+   bytes more, after the load's parts. Each part is stored in every bank (default
+   256 KiB, one row of the tensor in each of the 8 banks). The parts are written there
+   through the host channel while the run goes on, and the same bytes are written once
+   for all groups.
+4. **The entry.** One command a group, handler 246 (`KM_HANDLER_ENTRY`, host only),
+   served by the service overlay. Each core writes the overlay's table entry (each
+   part's DRAM address and bytes) into its own overlay area and raises the table's
+   count. For a handler it also sets the number's bit in a mask of the area
+   (`kOverlayHandlers`); for a dynamic handler, a bit in `kOverlayMessages`. The
+   host's copy of the areas gets the same entry. A run that keeps reset lists
+   (`load(recover=True)`) hands them to the dispatcher again, so a core it resets
+   comes back with the added entries.
+
+**A handler added to the live run.** The kernels of a load whose program names slot
+bytes (`Program.slots(bytes=...)`, which defines `KM_ADDED_HANDLERS`) look at the
+handler mask before the body. A command whose handler has its bit set is entered: the
+reader loads the overlay of that number as any `load()`, and each kernel with a part
+calls it with the command. A tile's first command of that handler loads the parts,
+and later commands find them held. Without that define the kernels have no such path
+and cost nothing. It costs 2,560 B of kernel text on the decode program (148 B on the
+reader, 844 B on the writer, 484 to 544 B on each compute core), and an added handler
+is refused there. A load that names slot bytes for a kernel gives that kernel slots
+even when no overlay of the load has a part there.
+
+**Every way names it.** An added overlay is named by every way an overlay of the load
+is, with its number:
+
+| Way | How it names the overlay | Run on the card |
+|---|---|---|
+| a handler's `km::Overlay` | the number in a command's word | [30_add_overlay](../../examples/30_add_overlay/README.md): RUN names mix, 120 cores, from the host and the X280 thread |
+| a handler | `run.addon(handler=True)`, then `run.submit(number, ...)` or a thread's command | 30_add_overlay: SCALE, three kernels' parts, from the host and the thread |
+| a leader's cast | the broadcast's word | [17_leader_overlay](../../examples/17_leader_overlay/README.md) `--addon shift`: shift (reader and compute parts) added, cast to a column of 10 |
+| a pull's answer | the thread's `KMX_PULL_WORD` | [18_thread_split](../../examples/18_thread_split/README.md) `--addon sparse`: sparse added, 256 units on 120 cores |
+| a message's handler | `run.addon(..., message=True)`: dynamic handler n is overlay n, n from 1 to 16 | [20_message_overlays](../../examples/20_message_overlays/README.md) `--addon`: report added, 10,000 reports on 120 cores |
+
+A message's handler that is not in the program's list (`KM_MESSAGE_HANDLERS`) is looked
+up once in the area's mask `kOverlayMessages`. The reader does that lookup when it
+groups a packet. A handler in the list is found as before, so a message of the load's
+handlers costs what it did: ex20's kernel text grew by 16 B, and its run took 11.05 ms
+with report loaded and 11.11 ms with report added (medians of 3, one hour apart). A
+dynamic handler added this way is a message's handler only: a RUN command names one of
+the program's.
+
+**Refused**, with `km.ProgramError` (`komorebi.added.AddError`) and nothing written to
+the card:
+
+| Case | Message names |
+|---|---|
+| the load reserved no room (`reserve=0`, a load over islands) | `session.load(reserve=0)` |
+| the name was added before | its number |
+| a number outside 1 to 62, an overlay's, or (a handler) a handler's | the number |
+| no number left | how many overlays and handlers take them |
+| a part on a kernel without slots | `Program.slots(bytes={kernel: n})` |
+| a part larger than its slot, or one the instruction check or the part checks refuse | the part, its bytes and the slot's |
+| the room is short | the bytes the parts take and the bytes left |
+| a handler in a load without `KM_ADDED_HANDLERS` | `Program.slots(bytes=...)` |
+| a dynamic handler in a run with no handlers as parts, outside 1 to 16, or one the run has | the number |
+
+**Costs**, one Blackhole card at AICLK 1,350 MHz, 120 cores
+([30_add_overlay](../../examples/30_add_overlay/README.md)):
+
+| | |
+|---|---|
+| a first add (the parts compiled): mix, one reader part / scale, five parts | 0.85 s / 5.09 s (the build off the card, the same commands) |
+| a cached add: mix / scale | 8.6 to 9.0 ms / 42.8 ms |
+| the parts' write into the room | 0.3 to 0.4 ms |
+| the entry commands, with the reset lists kept again / without | 3.0 to 3.1 ms / 0.1 to 0.2 ms |
+| a command of RUN naming mix: first (every core loads) / later (held) | 3.78 µs / 2.76 µs (2.22 µs naming none) |
+| mix's `load()` on a core: loading / held | 1,286 / 115 cycles |
+| a command of SCALE, the added handler: first / later | 38.32 µs / 35.98 µs |
+| the same from the X280 thread: first / later | 36.74 µs / 35.96 µs |
+
+### Several programs with overlays
+
+Programs in the runtime's form ([host](host.md#several-programs-in-one-run)) may each
+declare overlays of their own. The 62 numbers below the service overlay are shared:
+
+- Program field p is overlay 62 - p, from 62 down.
+- Each program's own overlays are numbered after those of the programs before it: its
+  numbers plus the largest number of each earlier program. A part names its own
+  numbers, and the runtime adds the shift (`KM_OVERLAY_SHIFT`).
+- Overlays added to the live run take the lowest numbers left.
+
+At load the plan refuses (`ProgramError`) programs whose own overlays reach the
+programs' numbers, and one slot on a kernel with own parts: a program's part runs from
+one slot while it loads its own overlay into another. An add with no number left is
+refused with the counts.
+
+A program of the kernel form in such a run would need:
+
+1. its kernels to be the runtime's (a loop that gives the program field's overlay the
+   command), or the runtime's loop compiled around its body;
+2. its buffers in one L1 layout with the other programs', and the overlay slots after
+   them;
+3. its own overlays numbered as above, which its kernels name without a shift today;
+4. kernel text for the overlay path beside its own code (the decode program has 16 B
+   left);
+5. the dispatcher's per-core program table to hold it like any other program field.
+
 ## Not in this version
 
 - The dynamic handlers of two programs in one run.
+- Code added to a live run over islands.
 - A message with a body in a run that has X280 cores as ranks: a message carries a
   [body](../../examples/23_message_body/README.md) between Tensix cores, and X280
   cores are [ranks](../../examples/24_thread_rank/README.md) of a run whose messages

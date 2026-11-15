@@ -11,8 +11,9 @@ python movement_class.py --beside --cores 8 --pattern AB AAAB
 
 `--beside` runs the hand program first in the same session. The class's tensors are
 bfloat16 (the same bits as the hand program's pages): its buffers take the format of
-the tensor a stream reads. Its block is a size of the build (`plan={"BLOCK": 16}`,
-`--block`), not a command word.
+the tensor a stream reads. Its block is a constant of the class (`BLOCK =
+km.constant(16)`, read as `self.BLOCK`; `--block` gives `BLOCK=n` to the make), not a
+command word.
 
 Measured on one Blackhole card (the line above): every copy exact for both programs;
 READ GB/s, the hand program's and the class's: A 234.52 and 234.51, AB 185.61 and

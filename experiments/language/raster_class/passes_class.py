@@ -7,6 +7,9 @@ import komorebi as km
 
 # The passes' compute options, the hand program's: the pack CPU's vector unit.
 PASSES = {"fp32_dest_acc_en": True, "enable_trisc2_rvv": True}
+# The hand's setup_compute.cpp on the pack CPU: its helpers alone, its out buffer the
+# class's field `out` (buffer 10, after HIST's table's two; a start body checks it).
+PASS_HELPERS = {"RASTER_PASS_HELPERS": 1, "RASTER_NO_ENTRY": 1, "RASTER_OUT_CB": 10}
 HEADERS = """
 #include "../../../../../projects/raster/kernels/setup.h"
 #include "../../../../../projects/raster/kernels/setup_noc.hpp"
@@ -16,14 +19,13 @@ HEADERS = """
 CAMERA = """
 const uint32_t* camera_words = reinterpret_cast<const uint32_t*>(camera_page);
 asm volatile("fence" ::: "memory");
-pass.out.cb = out;
 for (uint32_t i = 0; i < kCamWords; ++i) {
     setup_pass::fill_slot(setup_pass::kSlotCamera + i, camera_words[i]);
 }
 setup_pass::order(setup_pass::word(setup_pass::kSlotCamera + kCamWords - 1) + 62);
 const uint32_t lane_numbers = setup_pass::word(setup_pass::kSlotLaneNumber);
 for (uint32_t lane = 0; lane < 32; ++lane) {
-    setup_pass::window()[lane_numbers + 2 * lane] = passes_class::float_bits(lane);
+    setup_pass::window()[lane_numbers + 2 * lane] = float_bits(lane);
 }
 setup_pass::order(lane_numbers + 62);
 """
@@ -37,10 +39,10 @@ if (pass.succeeded) {
     setup_pass::triangles(pass.handler != kHandlerCount);
     const uint32_t first_triangle = 32 * (first + block_index);
     setup_pass::finish_lanes(
-        pass.handler == kHandlerSetup, passes_class::float_bits(first_triangle)
+        pass.handler == kHandlerSetup, float_bits(first_triangle)
     );
     ckernel::tensix_sync();
-    pass.block_finished(mesh_words, passes_class::cb_ptr(work), first_triangle);
+    pass.block_finished(mesh_words, cb_ptr(work), first_triangle);
 }
 ++block_index;
 """
@@ -71,7 +73,14 @@ auto flushed = [&] {
 """
 
 
-class SetupPasses(km.Program, compute=PASSES):
+class Heavy(km.Entry):
+    """A tile HIST writes: its number (the heavy page's words from word 1, word 0
+    their count)."""
+
+    tile: int
+
+
+class SetupPasses(km.Program, compute=PASSES, defines=PASS_HELPERS):
     """count_tiles, hist_tiles and setup_lists: the hand program's COUNT, HIST and
     SETUP on every core, each over its part of the mesh blocks (rank x blocks /
     size up to the next rank's), as the hand's command words name them."""
@@ -80,7 +89,6 @@ class SetupPasses(km.Program, compute=PASSES):
     work: km.L1[km.u32, 3, 32, 32] = km.own(push=None)  # the pack CPU's space
     counts: km.L1[km.u32, 2, 32, 32] = km.own(push=None)  # entries, rows a tile
     hist: km.L1[km.u32, 16, 32, 32] = km.own(push=None)  # COUNT's, kept for HIST
-    table: km.L1[km.u32, 1, 32, 32] = km.own(push=None)  # HIST's heavy tiles
     next_slots: km.L1[km.u32, 2, 32, 32]  # SETUP: each item's next slot
     item_table: km.L1[km.u32, 2, 32, 32]  # SETUP: each tile's items and their rows
 
@@ -88,27 +96,35 @@ class SetupPasses(km.Program, compute=PASSES):
     def count_tiles(
         self, mesh: km.Tensor, counters: km.Tensor, blocks: int, camera: km.Tensor
     ):
+        # Once a kernel: the hand's pack helpers, and mover B's give-up and flush.
+        km.cxx(
+            'static_assert(out == RASTER_OUT_CB, "the out field is RASTER_OUT_CB");',
+            takes=[self.out],
+            on="pack",
+            include=["../../../../../projects/raster/kernels/setup_compute.cpp"],
+            at="start",
+        )
+        km.cxx(HEADERS + GIVE_UP, on="mover_b", at="start")
         me = self.rank
         first = self.rank * blocks // self.size
         end = (self.rank + 1) * blocks // self.size
         km.cxx(
             """
             setup_pass::setup();
-            passes_class::Pass pass{compute, kHandlerCount};
+            Pass pass{compute, kHandlerCount};
             uint32_t block_index = 0;
             """,
             on="pack",
-            include=["../../passes_pack.hpp"],
         )
         for camera_page in km.Stream(camera.pages(0, 1), pattern="A"):
-            km.cxx(CAMERA, takes=[camera_page, self.out], on="pack")
+            km.cxx(CAMERA, takes=[camera_page], on="pack")
         for block in km.Stream(mesh.pages(first, end - first), pattern="A"):
             km.cxx(BLOCK, takes=[block, first, self.work], on="pack")
         km.cxx(END, on="pack")
         # Mover B: the hand's count_stage. Per tile the entries and rows, and the
         # 2-row histograms kept for HIST, from the pack CPU's box words.
         km.cxx(
-            HEADERS + GIVE_UP + """
+            """
             volatile tt_l1_ptr uint32_t* counter_words = km::l1(get_write_ptr(counts));
             volatile tt_l1_ptr uint32_t* histogram_words = km::l1(get_write_ptr(hist));
             volatile tt_l1_ptr uint16_t* histogram = (
@@ -186,42 +202,28 @@ class SetupPasses(km.Program, compute=PASSES):
     def hist_tiles(self, heavy: km.Tensor, histograms: km.Tensor, page_bytes: int):
         me = self.rank
         # Mover B: the hand's HIST. Each heavy tile's 64 bytes of the histograms COUNT
-        # kept, to this core's page of histograms.
-        km.cxx(
-            HEADERS + GIVE_UP + """
-            const uint32_t heavy_space = get_write_ptr(table);
-            if (!km::read_pages(movement, command, heavy, 0, 1, heavy_space) ||
-                movement.poll(
-                    [] { return ncrisc_noc_reads_flushed(noc_index); },
-                    movement.args().wait_limit
-                ) != km::kGaveNone) {
-                return false;
-            }
-            invalidate_l1_cache();
-            volatile tt_l1_ptr uint32_t* heavy_words = km::l1(heavy_space);
-            const uint32_t heavy_count = heavy_words[0];
-            if (heavy_count >= kHeavyBytes / 4 || 64 * heavy_count > page_bytes) {
-                give_up(kGaveBadHeavy, heavy_count);
-                return true;
-            }
-            const uint32_t histogram_space = get_write_ptr(hist);
-            for (uint32_t heavy_index = 0; heavy_index < heavy_count; ++heavy_index) {
-                const uint32_t tile = heavy_words[1 + heavy_index] % kTiles;
+        # kept, to this core's page of histograms at the tile's place in the list.
+        km.cxx("uint32_t heavy_index = 0;", on="mover_b")
+        for cut in heavy.pages(0, 1).entries(Heavy, first=1, size=1, count=0):
+            km.cxx(
+                """
+                if (64 * (heavy_index + 1) > page_bytes) {
+                    give_up(kGaveBadHeavy, heavy_index + 1);
+                    return true;
+                }
                 noc_async_write(
-                    histogram_space + 64 * tile,
+                    get_write_ptr(hist) + 64 * (cut_tile % kTiles),
                     setup_pass::noc_address(
                         0, histograms.word, me, page_bytes, 64 * heavy_index
                     ),
                     64
                 );
-            }
-            if (!flushed()) {
-                return false;
-            }
-            """,
-            takes=[heavy, histograms, page_bytes, me, self.hist, self.table],
-            on="mover_b",
-        )
+                ++heavy_index;
+                """,
+                takes=[cut, histograms, page_bytes, me, self.hist],
+                on="mover_b",
+            )
+        km.cxx("if (!flushed()) {\n    return false;\n}", on="mover_b")
 
     @km.handler
     def setup_lists(
@@ -241,20 +243,20 @@ class SetupPasses(km.Program, compute=PASSES):
         km.cxx(
             """
             setup_pass::setup();
-            passes_class::Pass pass{compute, kHandlerSetup};
+            Pass pass{compute, kHandlerSetup};
             uint32_t block_index = 0;
             """,
             on="pack",
         )
         for camera_page in km.Stream(camera.pages(0, 1), pattern="A"):
-            km.cxx(CAMERA, takes=[camera_page, self.out], on="pack")
+            km.cxx(CAMERA, takes=[camera_page], on="pack")
         for block in km.Stream(mesh.pages(first, end - first), pattern="A"):
             km.cxx(BLOCK, takes=[block, first, self.work], on="pack")
         km.cxx(END, on="pack")
         # Mover B: the hand's setup_stage. Each record of the pack CPU's pages to the
         # next slot of every item (a tile, or a band of its rows) its box reaches.
         km.cxx(
-            HEADERS + GIVE_UP + """
+            """
             volatile tt_l1_ptr uint32_t* next_slot = km::l1(next_slots);
             volatile tt_l1_ptr uint32_t* items = km::l1(item_table);
             const volatile tt_l1_ptr uint16_t* rows = (

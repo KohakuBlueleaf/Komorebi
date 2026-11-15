@@ -152,6 +152,18 @@ def source_form(path):
     return "program"
 
 
+def broadcast_defines(name, defines, wait):
+    """`defines` with KM_BROADCAST_WAIT 1 when `wait` is True (the header's default
+    is 0, so a program without it adds nothing); a define that says otherwise raises."""
+    given = defines.get("KM_BROADCAST_WAIT")
+    if given is not None and (str(given) != "0") != bool(wait):
+        raise ProgramError(
+            f"{name}: defines KM_BROADCAST_WAIT={given} and broadcast_wait={wait}; "
+            "give broadcast_wait alone"
+        )
+    return {**defines, "KM_BROADCAST_WAIT": 1} if wait else defines
+
+
 @dataclass(eq=False)  # one program is one object: a key of session.load's dict
 class Program:
     """What the persistent kernel runs on every core: `kernels` a directory with
@@ -174,6 +186,12 @@ class Program:
     opt: dict = field(default_factory=dict)  # kernel -> optimisation level
     noc: dict = field(default_factory=dict)  # "reader" / "writer" -> 0 or 1
     x280_ports: dict | None = None  # Program.ports(): {"serve": ..., "noc": ...}
+    # handlers (names or numbers) whose commands use the cores' ports: run.submit
+    # refuses one on cores a command of them still holds unless it is exclusive
+    port_handlers: set = field(default_factory=set)
+    # True: a word-only broadcast's caster waits at finish for every receiver's
+    # clear of VALID (KM_BROADCAST_WAIT 1, km_broadcast.hpp); False (default): none
+    broadcast_wait: bool = False
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
     pairs: list = field(default_factory=list, init=False)  # the BufferPairs given
     overlays: dict = field(default_factory=dict, init=False)  # name -> Overlay
@@ -183,6 +201,8 @@ class Program:
     overlays_built: object = field(default=None, init=False, compare=False)
     # the program field of its commands: its place in the last load (0: the first)
     program_field: int = field(default=0, init=False, compare=False)
+    # in a run of programs, what the run adds to its own overlays' numbers
+    overlay_shift: int = field(default=0, init=False, compare=False)
 
     def __init_subclass__(cls, compute=None, defines=None, startup=None, **kwargs):
         """A class deriving Program with handler methods is a program written as a
@@ -202,6 +222,7 @@ class Program:
         for name, number in self.handlers.items():
             if not 1 <= number <= user_max:
                 raise ValueError(f"handler {name} = {number}: not in 1..{user_max}")
+        self.defines = broadcast_defines(self.name, self.defines, self.broadcast_wait)
         if not 1 <= self.depth <= abi.headers()["KM_RING_SLOTS"]:
             raise ValueError(f"depth {self.depth}: not in 1..KM_RING_SLOTS")
         self.pairs = [item for item in self.buffers if isinstance(item, BufferPair)]
@@ -343,10 +364,15 @@ class Program:
         return self
 
     def slots(self, count=None, bytes=None):
-        """Declares the slots of the kernels that have overlay parts: `count` (1 to 4)
-        and `bytes` per slot, each an int or a {"reader"|"writer"|"compute": value};
-        by default a slot per overlay with a part there, sized by the largest part."""
+        """Declares the slots of the kernels: `count` (1 to 4) and `bytes` per slot,
+        each an int or a {"reader"|"writer"|"compute": value}; by default a slot per
+        overlay with a part there, sized by its largest part. Named `bytes` also give
+        the kernels the path of an added handler (run.addon): KM_ADDED_HANDLERS."""
         self.overlay_slots = Slots(count, bytes)
+        if bytes is None:
+            self.defines.pop("KM_ADDED_HANDLERS", None)
+        else:
+            self.defines["KM_ADDED_HANDLERS"] = "1"
         return self
 
     def movement(self):
