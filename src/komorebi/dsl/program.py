@@ -6,10 +6,11 @@ the sizes printed, and the made object is a Program of those files.
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from komorebi import _env, abi, layout, overlay
 from komorebi import program as km_program
-from komorebi.dsl import compiler
+from komorebi.dsl import compiler, front
 from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
@@ -60,6 +61,7 @@ def prepare(cls, compute=None, defines=None, startup=None):
     handler methods: its handlers numbered, its constructor the compiler; `compute`
     the class's compute options (checked when it is compiled), `defines` its
     kernels' defines, `startup` compute's start-up (a km.Startup)."""
+    cls.constants_declared = front.constants_of(cls)
     methods = compiler.handler_methods(cls)
     if not methods:
         for given, kind in ((compute, "compute_options"), (defines, "defines")):
@@ -76,9 +78,12 @@ def prepare(cls, compute=None, defines=None, startup=None):
             f"{cls.__name__}: startup= is a km.{spelling('startup')}(...), got "
             f"{startup!r}"
         )
-    cls.compute_given = dict(compute or {})
-    cls.defines_given = defines_checked(cls.__name__, defines)
-    cls.startup_given = startup
+    # a subclass not giving them: its parent's (class_inherited)
+    cls.compute_given = dict(class_inherited(cls, "compute_given", compute, {}))
+    cls.defines_given = class_inherited(
+        cls, "defines_given", defines_checked(cls.__name__, defines), {}
+    )
+    cls.startup_given = class_inherited(cls, "startup_given", startup, None)
     user_max = abi.headers()["KM_HANDLER_USER_MAX"]
     if len(methods) > user_max:
         raise ProgramError(f"{cls.__name__}: {len(methods)} handlers, {user_max} most")
@@ -87,6 +92,13 @@ def prepare(cls, compute=None, defines=None, startup=None):
     cls.__init__ = make
     cls.built_handlers = [method.name for method in methods]
     cls.overlays_built = property(overlays_built, set_overlays_built)
+
+
+def class_inherited(cls, name, given, empty):
+    """What the class gives (`given`), or when it gives nothing, its parent's."""
+    if given is not None and given != {}:
+        return given
+    return getattr(cls, name, empty)
 
 
 def make(
@@ -109,12 +121,14 @@ def make(
     cls = type(self)
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
+    values, tensors = constants_given(cls, plan, tensors)
     if session is not None:
         l1 = reserve_of(session)[0].l1()[1] if l1 is None else l1
         room = l1 - runtime_bytes(session, trace)
     else:
         room = l1
-    compiled = compiler.compile_class(cls, plan, tensors, room)
+    compiled = compiler.compile_class(cls, plan, tensors, room, values)
+    constants_made(self, cls, values, compiled)
     program_args = None
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
@@ -124,7 +138,9 @@ def make(
         program_args = rectangle_of(self, compiled)
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
-    key = sources_key(plan, tensors, room, depth, rect, nocs)
+    key = sources_key(
+        plan, tensors, room, depth, rect, nocs, constants_keyed(cls, values)
+    )
     built = write(cls, compiled, room, key)
     for line in built.report:
         log(line)
@@ -187,6 +203,106 @@ def make(
         self.slots()
     if session is not None:
         l1_checked(self, session, l1, trace, log)
+
+
+def constants_given(cls, plan, given):
+    """(this program's values of the class's constants by name, the make's other
+    keywords): each declared constant's default, or its override by a keyword of its
+    name or by the plan (not both); a derived one from those values, a subclass's
+    declarations over its parents'. A symbol given by keyword joins the plan."""
+    declared = getattr(cls, "constants_declared", {})
+    tensors, overrides = {}, {}
+    for name, value in given.items():
+        if name in declared:
+            overrides[name] = value
+        elif isinstance(value, int | float):
+            names = ", ".join(declared) or "none"
+            raise ProgramError(
+                f"{cls.__name__}: {name}={value!r} is not a constant of the class "
+                f"(its constants: {names}); declare {name} = "
+                f"km.{spelling('constant')}(default) in its body"
+            )
+        else:
+            tensors[name] = value
+    values = {}
+    for name, declaration in declared.items():
+        if name in overrides and name in plan:
+            raise ProgramError(
+                f"{cls.__name__}: {name} is given twice, as {name}= and in the "
+                f"{spelling('plan')}; give it once"
+            )
+        given_value = overrides.get(name, plan.get(name))
+        if isinstance(declaration, front.Symbol):
+            if given_value is not None:
+                plan[name] = values[name] = constant_checked(
+                    cls, name, int, given_value
+                )
+            continue
+        if isinstance(declaration, front.Derived):
+            if name in overrides or name in plan:
+                raise ProgramError(
+                    f"{cls.__name__}: {name} is derived from the class's constants; "
+                    "give the constants it is made of"
+                )
+            continue
+        values[name] = (
+            declaration.default
+            if given_value is None
+            else constant_checked(cls, name, declaration.kind, given_value)
+        )
+    for name, declaration in declared.items():
+        if isinstance(declaration, front.Derived):
+            values[name] = derived_value(cls, name, declaration, values)
+    return values, tensors
+
+
+def constant_checked(cls, name, kind, value):
+    """An override of constant `name` of type `kind` (an int also gives a float)."""
+    fits = (
+        isinstance(value, bool)
+        if kind is bool
+        else not isinstance(value, bool)
+        and isinstance(value, int | float if kind is float else int)
+    )
+    if not fits:
+        raise ProgramError(
+            f"{cls.__name__}: {name}={value!r}: the constant is declared "
+            f"{kind.__name__}"
+        )
+    return kind(value)
+
+
+def derived_value(cls, name, declaration, values):
+    """A derived constant's value from this program's `values` by name."""
+    try:
+        return declaration.value(values)
+    except KeyError as missing:
+        raise ProgramError(
+            f"{cls.__name__}: {name} is derived from {missing.args[0]}, which has no "
+            f"value at the make (a symbol the build solves); give it in the "
+            f"{spelling('plan')}"
+        ) from None
+
+
+def constants_made(program, cls, values, compiled):
+    """Stores this program's constants on it, frozen: its values, each symbol's as
+    the plan gave it or the build solved it."""
+    values = dict(values)
+    for name, declaration in getattr(cls, "constants_declared", {}).items():
+        if isinstance(declaration, front.Symbol) and name in compiled.constants:
+            values.setdefault(name, compiled.constants[name])
+    program.__dict__["constant_values"] = MappingProxyType(values)
+
+
+def constants_keyed(cls, values):
+    """The constants a build's key holds: each declared constant but the symbols
+    (the plan holds those given; the build solves the others)."""
+    declared = getattr(cls, "constants_declared", {})
+    return {
+        name: value
+        for name, value in values.items()
+        if not isinstance(declared.get(name), front.Symbol)
+    }
 
 
 def defines_checked(name, defines):
@@ -469,10 +585,13 @@ def camel(name):
     return "".join(part.capitalize() for part in name.split("_"))
 
 
-def sources_key(plan, tensors, room, depth, rect, nocs):
+def sources_key(plan, tensors, room, depth, rect, nocs, constants=None):
     """A short hash of what a class is made with that changes its generated sources:
-    the plan, each tensor's format, page and shape, and the make's options."""
+    the plan, each tensor's format, page and shape, the make's options, and the
+    class's constants by name and value (constants_keyed)."""
     made = [sorted(plan.items()), room, depth, rect, nocs]
+    if constants:  # none: the key of a class without constants as before them
+        made.append(sorted(constants.items()))
     for name, tensor in sorted(tensors.items()):
         made.append((name, tensor.dtype, tensor.page_bytes, tuple(tensor.shape)))
         made.append(getattr(tensor, "layout", None))

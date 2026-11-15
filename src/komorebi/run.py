@@ -414,6 +414,8 @@ class Run:
             ]
             if not fields:
                 raise ValueError(f"{handler.name}: no program of its class in the run")
+            if len(fields) > 1:
+                raise ValueError(self._class_form_refused(handler, fields))
             return int(handler), fields[0]
         if handler.__class__ is not int:
             handler = (
@@ -422,6 +424,22 @@ class Run:
                 else int(handler)
             )
         return int(handler), 0
+
+    def _class_form_refused(self, handler, fields):
+        """Why `Class.handler` names no program when the run holds several of its
+        class (at `fields`): each named by its constants."""
+        named = []
+        for field in fields:
+            program = self.programs[field]
+            values = getattr(program, "constant_values", None) or {}
+            given = ", ".join(f"{k}={v}" for k, v in values.items())
+            named.append(f"{type(program).__name__}({given}) at field {field}")
+        owner = handler.owner.__name__ if handler.owner else "its class"
+        return (
+            f"{owner}.{handler.name}: the run holds {len(fields)} programs of the "
+            f"class ({'; '.join(named)}), and the class's handler does not say which; "
+            f"name it through the program (program.{handler.name})"
+        )
 
     def field_handler(self, number, program_field):
         """What submit takes for handler `number` of the program with field

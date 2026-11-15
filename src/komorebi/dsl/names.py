@@ -36,6 +36,12 @@ NAMES = {
     "symbol": Name(
         "symbol", "K = km.symbol(): a size the plan gives or the build solves", None
     ),
+    "constant": Name(
+        "constant",
+        "K = km.constant(n): a number of the class fixed at its build; "
+        "p: km.constant[int] = n: a handler's",
+        None,
+    ),
     "own": Name("own", "f: km.L1[...] = km.own(push=): a field only bodies use", None),
     "tensor": Name("Tensor", "km.Tensor: a parameter that is a tensor", "tensor"),
     "pattern": Name("Pattern", "km.Pattern: a parameter that is a pattern", "pattern"),

@@ -241,34 +241,56 @@ class Compiled:
     # The inline bodies at a kernel's start or end (at=): (at, kernel) -> texts.
     kernel_bodies: dict = field(default_factory=dict)
     startup: object = None  # the class's km.Startup, or None (the default start-up)
+    # The class's constants (km.constant) by name: this program's values; a symbol's
+    # only where the plan gives it (declared_constants).
+    class_constants: dict = field(default_factory=dict)
+    declared: dict = field(default_factory=dict)  # name -> its front.Constant
 
 
 def handler_methods(cls):
-    """The class's handler methods in the order of their definitions."""
-    found = [
-        value for value in vars(cls).values() if isinstance(value, front.HandlerMethod)
-    ]
-    return sorted(found, key=lambda method: method.function.__code__.co_firstlineno)
+    """The class's handler methods in the order of their definitions: its parents'
+    first, a subclass's handler of a parent's name in that one's place."""
+    found = {}
+    for klass in reversed(cls.__mro__):
+        own = [
+            value
+            for value in vars(klass).values()
+            if isinstance(value, front.HandlerMethod)
+        ]
+        for method in sorted(own, key=lambda m: m.function.__code__.co_firstlineno):
+            found[method.name] = method
+    return list(found.values())
 
 
-def compile_class(cls, plan, tensors, l1=None):
+def class_annotations(cls):
+    """The annotations of the class and its parents, a subclass's over its
+    parents'."""
+    merged = {}
+    for klass in reversed(cls.__mro__):
+        merged.update(inspect.get_annotations(klass))
+    return merged
+
+
+def compile_class(cls, plan, tensors, l1=None, constants=None):
     """Compiles each handler of `cls`; `plan` the program's sizes by name, `tensors`
     an example tensor of each tensor parameter (its format and page), `l1` the bytes
-    left for buffers (a field's unknown symbol takes what the others leave)."""
+    left for buffers (a field's unknown symbol takes what the others leave),
+    `constants` the program's values of the class's constants by name."""
     methods = handler_methods(cls)
     compiled = Compiled(cls.__name__, inspect.getsourcefile(methods[0].function))
+    declared_constants(compiled, cls, constants)
     compiled.fields = {
         name: front.Field(
             value.format,
-            tuple(n.name if isinstance(n, front.Symbol) else n for n in value.shape),
+            tuple(shape_size(compiled, name, n) for n in value.shape),
         )
-        for name, value in inspect.get_annotations(cls).items()
+        for name, value in class_annotations(cls).items()
         if isinstance(value, front.Field)
     }
     compiled.own = {
-        name: cls.__dict__[name].push
+        name: inspect.getattr_static(cls, name).push
         for name in compiled.fields
-        if isinstance(cls.__dict__.get(name), front.Own)
+        if isinstance(inspect.getattr_static(cls, name, None), front.Own)
     }
     for name, value in list(compiled.fields.items()):
         if word_field(value) and name in compiled.own:
@@ -307,6 +329,40 @@ def compile_class(cls, plan, tensors, l1=None):
     compiled.compute_options = class_compute(cls, compiled)
     compiled.startup = getattr(cls, "startup_given", None)
     return compiled
+
+
+def declared_constants(compiled, cls, constants):
+    """The class's declared constants and this program's values of them on
+    `compiled` (a symbol's where the plan or the make gives it)."""
+    compiled.declared = front.constants_of(cls)
+    compiled.class_constants = dict(constants or {})
+
+
+def shape_size(compiled, field_name, size):
+    """One size of a field's shape: an int; a constant of the class, this program's
+    value; a symbol, its name (the plan's or the build's)."""
+    if not isinstance(size, front.Constant):
+        return size
+    if isinstance(size, front.Symbol):  # as before constants: the plan's by name
+        return size.name
+    try:
+        value = size.value(compiled.class_constants)
+    except KeyError as missing:
+        raise field_refused(
+            compiled,
+            field_name,
+            f"its size {size!r} needs {missing.args[0]}, which the build solves "
+            "after the shapes",
+            f"give {missing.args[0]} in the {spelling('plan')}",
+        ) from None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise field_refused(
+            compiled,
+            field_name,
+            f"its size {size!r} is {value!r}",
+            "a size is an int of 1 or more",
+        )
+    return value
 
 
 def class_compute(cls, compiled):
@@ -1656,14 +1712,19 @@ class HandlerCompiler:
         """An int known at build: a literal, a module constant or a plan value."""
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
             return node.value
+        if self.is_class_constant(node):
+            return self.class_constant(node)
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return self.constant(node, node.value)  # a symbol: the plan's
         if isinstance(node, ast.Name) and node.id not in self.scope:
             return self.constant(node, node.id)
+        self.word_given(node, "a size the build needs")
         self.refuse(node, "a size the build needs", "give an int, or a plan name")
 
     def attribute(self, node):
         base = node.value
+        if self.is_class_constant(node):
+            return str(self.class_constant(node))
         if isinstance(base, ast.Name) and base.id == "self":
             kind = kind_of(node.attr, ("rank", "size", "leader", "x", "y", "core"))
             if kind == "core":
@@ -1693,6 +1754,57 @@ class HandlerCompiler:
             if value.kind == "tensor" and node.attr == spelling("pages"):
                 return self.counts[base.id]
         self.refuse(node, "an attribute level 1 does not know", "use .start, .count")
+
+    def is_class_constant(self, node):
+        """Whether `node` is self.X of a constant the class declares."""
+        return (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and node.attr in self.compiled.declared
+        )
+
+    def class_constant(self, node):
+        """self.X of a constant of the class: this program's value, lowered as a
+        module constant is (a non-negative int)."""
+        name = node.attr
+        if name not in self.compiled.class_constants:
+            self.refuse(
+                node,
+                f"self.{name} is a symbol the build solves after the handlers' lines",
+                f"give {name} in the {spelling('plan')}, or as {name}= at the make",
+            )
+        value = self.compiled.class_constants[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            self.refuse(node, f"self.{name} = {value!r}: not a word", "make it an int")
+        return value
+
+    def word_given(self, node, what):
+        """Refuses a command word where `what` needs a constant: the tier's error."""
+        if isinstance(node, ast.Name) and any(p.name == node.id for p in self.params):
+            self.refuse(
+                node,
+                f"{node.id} is a word of the command, known only when the command "
+                f"runs, and {what} is fixed when the program is built: it needs a "
+                "constant of the class",
+                f"declare {node.id.upper()} = km.{spelling('constant')}(n) in the "
+                f"class and write self.{node.id.upper()}",
+            )
+
+    def stated_words(self, node, what):
+        """word_given of each `n` a rectangle's side states as its most (r:r + n,
+        r:min(r + n, e))."""
+        if not isinstance(node, ast.Subscript):
+            return
+        sides = node.slice.elts if isinstance(node.slice, ast.Tuple) else []
+        for side in sides:
+            if not isinstance(side, ast.Slice) or side.upper is None:
+                continue
+            upper = side.upper
+            ends = upper.args if isinstance(upper, ast.Call) else [upper]
+            for end in ends:
+                if isinstance(end, ast.BinOp) and isinstance(end.op, ast.Add):
+                    self.word_given(end.right, what)
 
     def uses(self, node):
         """The names an expression reads (scope names and generated ones)."""
@@ -1924,6 +2036,8 @@ class HandlerCompiler:
         None."""
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
             return node.value
+        if self.is_class_constant(node):
+            return self.class_constant(node)
         if isinstance(node, ast.Name) and node.id not in self.scope:
             value = self.plan.get(node.id, self.names.get(node.id))
             return value if isinstance(value, int) else None
@@ -4323,6 +4437,7 @@ class HandlerCompiler:
         if pages.rect is not None and isinstance(pages.rect[1], str):  # field's
             pitch = self.field_sides(node, field)[1]
             if pages.bounds[1] is None or pages.bounds[1] > pitch:
+                self.stated_words(stream.args[0], "a fill of a field")
                 self.refuse(
                     node,
                     f"the rectangle's columns are a word and self.{field}'s rows are "
@@ -5189,6 +5304,7 @@ class HandlerCompiler:
                 if pages.count.isdigit():
                     most = int(pages.count)
                 elif None in pages.bounds:
+                    self.stated_words(source, "a cast's slot")
                     self.refuse(
                         cast,
                         "a cast's slot holds the rectangle's most rows and columns, "
