@@ -102,9 +102,16 @@ inline bool reduce_set(
         if (wanted == 0) {
             continue;
         }
+#if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP)
+        uint32_t at = 0;
+        PACK((at = km::wall()));
+#endif
         if (!km::take(compute, arrival)) {
             return false;
         }
+#if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP)
+        PACK((chain_stamp_add(kChainStampTakes, km::wall() - at), at = km::wall()));
+#endif
         if (form == km::kReduceOwner) {
             for (uint32_t arrival_slot = 0; arrival_slot < wanted; arrival_slot++) {
                 combine(base + arrival_slot);
@@ -114,6 +121,7 @@ inline bool reduce_set(
         }
         km::untake(arrival);
 #if defined(SPLIT_CHAIN_STAMPS) && defined(SPLIT_STAMP)
+        PACK((chain_stamp_add(kChainStampAdds, km::wall() - at)));
         if (port < kChainStampRounds) {
             SPLIT_STAMP(kChainStampRound + port);
         }

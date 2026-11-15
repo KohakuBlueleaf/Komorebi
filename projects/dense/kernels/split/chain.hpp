@@ -10,9 +10,9 @@
 
 // The chain's words in buffer kChainBuffer (bytes): marks and credits (one a record
 // parity) that other cores count up (16-byte slots), the ring, the counts waited for.
-constexpr uint32_t kChainMarks = 0;
-constexpr uint32_t kChainCredits = 16;         // even records'; odd records' at 112
-constexpr uint32_t kChainReady = 32;           // the reader: the last record read's tag
+constexpr uint32_t kChainMarks = 0;     // even records'; odd records' at kChainMarksOdd
+constexpr uint32_t kChainCredits = 16;  // even records'; odd records' at 112
+constexpr uint32_t kChainReady = 32;    // the reader: the last record read's tag
 constexpr uint32_t kChainWriterTaken = 48;     // the writer: the last record it took
 constexpr uint32_t kChainComputeTaken = 64;    // unpack: the last record compute took
 constexpr uint32_t kChainReaderWanted = 80;    // marks the reader waited for, in all
@@ -21,8 +21,12 @@ constexpr uint32_t kChainCreditsWanted = 100;  // credits the writer waited for 
 constexpr uint32_t kChainCreditDue = 104;  // 1: this record's emit waits for a credit
 constexpr uint32_t kChainCreditsWantedOdd = 108;
 constexpr uint32_t kChainCreditsOdd = 112;
+constexpr uint32_t kChainReaderWantedOdd = 84;
+constexpr uint32_t kChainWriterWantedOdd = 88;
 constexpr uint32_t kChainSlots = 128;  // record r in slot r % 2
 constexpr uint32_t kChainBytes = kChainSlots + 2 * kChainRecordBytes;
+constexpr uint32_t kChainMarksOdd = kChainStamps + kChainStampBytes;  // past the stamps
+static_assert(kChainMarksOdd + 16 <= kTileBytes, "the chain's buffer is one tile page");
 
 // A record's tag in the ring: the chain command's sequence and its index.
 inline uint32_t chain_tag(uint32_t sequence, uint32_t record) {
@@ -145,6 +149,7 @@ bool chain_credit(const Writer& writer) {
     volatile tt_l1_ptr uint32_t* wanted = chain_credits_wanted();
     const uint32_t target = *wanted + 1;
     *wanted = target;
+    CHAIN_STAMP(const uint32_t at = km::wall());
     const uint32_t code = writer.poll_at(
         km::kWhereEmit,
         [&] {
@@ -153,6 +158,7 @@ bool chain_credit(const Writer& writer) {
         },
         writer.args().wait_limit
     );
+    CHAIN_STAMP(chain_stamp_add(kChainStampCredit, km::wall() - at));
     if (code != km::kGaveNone) {
         writer.gave_up(km::kStWriter, code, km::kWhereEmit, 0xC3u, 0);
     }
@@ -184,6 +190,7 @@ struct ChainNow {
     bool has_before;
     bool ahead_on;
     bool data_dram;
+    bool mark_late;  // kChainMarkLate: the mark looked at only between W blocks
     uint32_t record;
     uint32_t tag_base;
     uint32_t ahead_tag;
@@ -264,17 +271,31 @@ bool chain_target(const Kernel& core, uint32_t& target) {
     ) {
         return false;
     }
+    const bool odd = (chain_now.record & 1u) != 0;
     volatile tt_l1_ptr uint32_t* wanted = (
-        chain_word(km::kMover == km::kMoverA ? kChainReaderWanted : kChainWriterWanted)
+        chain_word(
+            km::kMover == km::kMoverA
+                ? (odd ? kChainReaderWantedOdd : kChainReaderWanted)
+                : (odd ? kChainWriterWantedOdd : kChainWriterWanted)
+        )
     );
     target = *wanted + chain_wanted(core);
     *wanted = target;
     return true;
 }
 
+// The marks word of record `record` (its parity): a mark for the record after cannot
+// meet this one's wait.
+inline uint32_t chain_marks_at(uint32_t record) {
+    return (record & 1u) != 0 ? kChainMarksOdd : kChainMarks;
+}
+
 inline bool chain_marked(uint32_t target) {
     invalidate_l1_cache();
-    return static_cast<int32_t>(*chain_word(kChainMarks) - target) >= 0;
+    return (
+        static_cast<int32_t>(*chain_word(chain_marks_at(chain_now.record)) - target) >=
+        0
+    );
 }
 
 // The record's input: waits until it is marked (a record without marks: at once).
@@ -300,13 +321,33 @@ bool chain_input(const Kernel& core) {
     return code == km::kGaveNone;
 }
 
-// Until the input is marked: W's blocks once A freed the half (`held`: some are in),
-// then the next record's (`after`); `skip`, `after_skip` the blocks. False: gave up.
-template <typename Kernel, typename Accessor>
+// A W block in flight: until it lands, or (looking early) the input is marked first.
+template <typename Kernel>
+bool chain_settle(const Kernel& core, uint32_t target, bool& marked) {
+    const bool look = !chain_now.mark_late;
+    const uint32_t code = core.poll_at(
+        km::kWhereData,
+        [&] {
+            marked = look && chain_marked(target);
+            return marked || ncrisc_noc_reads_flushed(noc_index);
+        },
+        core.args().wait_limit,
+        core.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        core.gave_up(km::kStMover, code, km::kWhereData, 0, 0);
+    }
+    return code == km::kGaveNone;
+}
+
+// Until marked: W's blocks once A freed the half (`held`: some in), the next record's
+// (`after`); `early` beside a block in flight; `skip`s the blocks. False: gave up.
+template <typename Kernel, typename Accessor, typename Early>
 bool chain_weight_first(
     const Kernel& core,
     const km::Stream<Accessor>& weights,
     const km::Stream<Accessor>& after,
+    Early& early,
     bool held,
     uint32_t& skip,
     uint32_t& after_skip
@@ -331,8 +372,8 @@ bool chain_weight_first(
     const uint32_t half = weights.pair.half(km::kMover);
     const uint64_t limit = static_cast<uint64_t>(core.args().wait_limit) << 10;
     uint64_t deadline = km::wall64() + limit;
-    bool freed = held, any_after = false;
-    for (uint32_t pass = 0; !chain_marked(target); pass++) {
+    bool freed = held, any_after = false, seen = false;
+    for (uint32_t pass = 0; !seen && !chain_marked(target); pass++) {
         freed = (
             freed ||
             cb_pages_reservable_at_back(
@@ -356,8 +397,16 @@ bool chain_weight_first(
         }
         if (issued || later_issued) {
             CHAIN_STAMP(chain_stamp_once(kChainStampWeight));
-            if (!km::move_settle(core, true, false)) {
+            if (!chain_settle(core, target, seen)) {
                 return false;
+            }
+            if (seen) {  // the input's first block beside the W block still in flight
+                CHAIN_STAMP(chain_stamp(kChainStampMarked));
+                early.issue();
+                if (!km::move_settle(core, true, false)) {
+                    return false;
+                }
+                early.land();
             }
             km::Moved moved = {0, 0};
             km::move_hand_on(weights, cursor, issued, moved);
@@ -381,7 +430,7 @@ bool chain_weight_first(
     CHAIN_STAMP(
         chain_stamp_add(kChainStampFull, full_at != 0 ? km::wall() - full_at : 0)
     );
-    CHAIN_STAMP(chain_stamp(kChainStampMarked));
+    CHAIN_STAMP(seen ? (void)0 : chain_stamp(kChainStampMarked));
     skip = cursor.block < cursor.blocks ? cursor.block : cursor.blocks;
     after_skip = (
         any_after ? (later.block < later.blocks ? later.block : later.blocks) : 0
@@ -500,6 +549,7 @@ void chain_records(km::Reader& reader, const km_command_t& command, Product prod
     }
     CHAIN_STAMP(chain_stamp_start = km::wall());
     chain_now.ahead_on = (command.a1 & kChainAheadOff) == 0;
+    chain_now.mark_late = (command.a1 & kChainMarkLate) != 0;
     chain_now.ahead_tag = 0;
     for (uint32_t record = 0; record < kChainRecordsMax; record++) {
         uint32_t words[kChainWords];
@@ -683,7 +733,7 @@ bool chain_mark(const Writer& writer, const km_command_t& command) {
     CHAIN_STAMP(chain_stamp(kChainStampLast));
     const uint32_t first = next[kChainGroup] & 0xFFFFu, count = next[kChainGroup] >> 16;
     const uint32_t size = chain_plan(writer, next, kSpS), groups = count / size;
-    const uint32_t marks = chain_address(kChainMarks);
+    const uint32_t marks = chain_address(chain_marks_at(chain_now.record + 1));
     const auto meets = [&](const ChainRange& range) {
         return (
             range.count != 0 && range.first < high && low < range.first + range.count
@@ -724,6 +774,7 @@ bool chain_writer(km::Writer& writer, const km_command_t& command, Product produ
     bool ok = true;
     CHAIN_STAMP(chain_stamp_start = km::wall());
     chain_now.ahead_on = (command.a1 & kChainAheadOff) == 0;
+    chain_now.mark_late = (command.a1 & kChainMarkLate) != 0;
     chain_now.data_dram = (command.a1 & kChainDataDram) != 0;
     chain_now.ahead_tag = 0;
     for (uint32_t record = 0; ok && record < kChainRecordsMax; record++) {
@@ -791,6 +842,7 @@ inline void chain_start() {
     for (uint32_t offset = 0; offset < kChainSlots; offset += 4) {
         *chain_word(offset) = 0;
     }
+    *chain_word(kChainMarksOdd) = 0;
     CHAIN_STAMP(chain_stamps_zero());
 }
 #endif

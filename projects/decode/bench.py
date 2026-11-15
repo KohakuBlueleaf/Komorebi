@@ -133,9 +133,9 @@ def parse():
         "--beside",
         nargs="*",
         default=[],
-        choices=("layer", "no_ahead", "no_data"),
+        choices=("layer", "no_ahead", "no_data", "mark_late"),
         help="each case also as CASE/FORM: the chain a layer, no W read early, "
-        "no input sent",
+        "no input sent, the mark only between W blocks",
     )
     parser.add_argument(
         "--data",
@@ -296,6 +296,7 @@ def measure(decode, case, tokens, layers, index, length, token=False):
                 "token": token and form != "layer",
                 "ahead": form != "no_ahead",
                 "data": () if form == "no_data" else None,
+                "mark_late": form == "mark_late",
             }
         )
         got = decode.job(tokens, layers, timeout=60.0, position=position, **job)

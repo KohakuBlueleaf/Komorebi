@@ -1179,6 +1179,115 @@ the token, stamped, 28 layers, 10 tokens; beside it the same program without):
   acknowledged before the marks, `kChainDataDram`) at T 4096 and 256: equal to a
   command a step every time. The switch stays **off by default**.
 
+## Stage 9: the hand-over's plain inefficiencies
+
+Stage 8's table names the hand-over's pieces of OUR making. This stage takes the plain
+ones: the marks word, the movers' look at their mark, the marks' issue and a tree
+round. It does not move an operation, change one's math, or change the tree or the
+record.
+
+### The marks word, counted per record
+
+The marks word was one count for every record, as the credits were. A mark for the
+record after could complete this record's wait, giving a wrong input but no hang. It
+is now two words, one for each record parity, as the credits are. A root marks the word
+of the next record's parity, and a core waits on the word of its own record's parity.
+
+Why that is enough: a root marks record r + 2 only when record r + 1 of its own group
+is complete. For a core whose record r + 1 runs on the same cores after record r
+(attend, o, gate_up, down), that is after the core has left r. So while the core waits
+in r, the word of r's parity holds only r's marks. Before this change, a qkv core's
+wait was safe only by timing: o's roots, from attend, marked every qkv core in one loop,
+and qkv and attend take more than 40 us. Now those marks land in the other word.
+
+On the card: the staged checks pass, and a token is equal to a command a step at 2 and
+28 layers, at T 4096 and at T 256.
+
+### The movers look at their mark while a W block is in flight
+
+A mover's settle now also ends on its mark. Once marked, the mover issues its input's
+first block (one row of its K range, its half free) beside the W block still in flight,
+settles both, and hands both on.
+
+The first form, with the input as a third stream through the mover's own offer, did
+not fit: its code was 94,384 B against 90,112, most of it the third stream's begin and
+offer calls. The form built is a plain read of the one block. The kernel buffer goes
+from 84 K to 88 K (stamped: 92 K), leaving 4,208 B of L1 (stamped: 112). To turn it off,
+use LAYERS' a4 bit 17 (`Decode.job(mark_late=True)`, `bench.py --beside mark_late`).
+
+It gives nothing. At the mark, the median mover's W half had been full for 8 to 31 us
+at T 4096 (o 31, gate_up 25, qkv 20, down 8). Nothing was in flight, so the mover was
+idling on its mark and saw it at once. From the mark to B's first chunk is the same
+with and without the look: 2.0 to 2.3 us from DRAM and 1.3 to 1.8 sent. The "mark seen
+between W blocks" in stage 8's table is not a term. The time is the input read itself.
+
+### The marks' issue: not possible in the runtime
+
+The runtime offers state-set forms (the command's fixed words set once, then only the
+address per call) for reads, writes and inline word writes only. For an atomic
+increment it offers only the full call, which writes every command-buffer word each
+time. Issuing the marks that way would take such a form for an atomic in the runtime,
+or writing the registers ourselves, which is not done here. The marks are as before:
+8.3 us a layer.
+
+### A tree round, as terms
+
+Stamps at the root and its senders, T 4096, median, us a round. The send and the add
+are medians of the median root's rounds. The receiver's term is compute's wait from
+its round's start to its arrival handed in.
+
+| a round | qkv | o | gate_up | down |
+|---|---:|---:|---:|---:|
+| the send: the sender's 32 KB fp32 write, its acknowledge, the count's atomic, its acknowledge | 1.21 | 1.30 | 1.00 | 1.03 |
+| the receiver seeing it: the reader's port, its 64 arrival pages handed in | 0.51 | 0.53 | 0.23 | 0.80 |
+| the add: 8 fp32 tiles in and accumulated into the sum (one DEST acquire a tile) | 0.68 | 0.68 | 0.66 | 0.68 |
+| the credit back, and the sender seeing it | 0.07 | 0.08 | 0.07 | 0.07 |
+
+The add looked like a wait of ours: one tile in DEST at a time, with math and the
+packer handing each tile over. So I tried four fp32 tiles per DEST acquire (one half),
+behind a switch. The add went up from 0.71 to 0.79 us a round, and the layer did not
+move: 315.66 against 315.75 us at T 4096, the same within 0.2 at 1024 and 256. The add
+is bound by the packer accumulating 32 KB into L1, not by the hand-over. The change is
+reverted.
+
+What is left in a round, with its term:
+
+- **The send above its bytes**: 0.6 to 0.9 of the 1.0 to 1.3 (the bytes take 0.38).
+  This is the write's acknowledge before the count, then the atomic's. The count must
+  not overtake the data, and the runtime states no order between a write and a later
+  atomic.
+- **The receiver's hand-in**, 0.2 to 0.8 (1.1 to 1.3 at T 256). The reader takes a
+  round's 64 arrival pages only after compute has released the round before. Changing
+  that is a change to the framework's arrival, not to this program.
+- **The add's 0.7.** Its bytes take 0.38; the rest is the packer's accumulate.
+
+### Measured
+
+Each item was run on and off in the same job (28 layers, 10 tokens).
+`results/qwen3-1.7b-chain-hand-over-x10.json` holds the runs, the round terms and the
+per-transition pieces. In the default form, inputs are not sent.
+
+| us a layer | T 4096 | T 1024 | T 256 | tokens a second |
+|---|---:|---:|---:|---|
+| stage 8, stamped (none sent) | 315.8 | 288.1 | 280.6 | 113.1 / 123.9 / 127.3 |
+| marks per record and the look in flight, stamped | 315.8 | 288.5 | 280.7 | 113.1 / 123.8 / 127.2 |
+| the same without the look, stamped | 316.2 | 288.4 | 281.0 | 113.0 / 123.8 / 127.1 |
+| the add 4 tiles a DEST, stamped (reverted) | 315.7 | 288.7 | 281.0 | 113.1 / 123.7 / 127.1 |
+| the add a tile a DEST, the same build, stamped | 315.8 | 288.9 | 281.1 | 113.1 / 123.6 / 127.1 |
+| **this stage's code, unstamped** | **315.2** | **288.2** | **279.9** | **113.3 / 123.9 / 127.6** |
+| the same without the look, unstamped | 315.1 | 287.9 | 279.7 | 113.4 / 124.1 / 127.7 |
+
+The real prompt is 16 of 16 at 124.9 tokens a second, with every layer's error the
+same as before.
+
+So this stage gave correctness (the marks word) and terms, not time. The hand-over's
+OURS pieces that stage 8 named are mostly not on the layer's path as plain waits. The
+movers already idle on a full W half, and a round's add is the packer's rate. What is
+left: the marks' issue at 8.3 us a layer (a runtime form for atomics), the send's
+acknowledge and the receiver's hand-in (about 0.6 to 1.2 a round, 12 rounds a layer on
+a root's path; the framework's emit and arrival), and the operations' own compute
+(28.6 us a layer; with the owner).
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
