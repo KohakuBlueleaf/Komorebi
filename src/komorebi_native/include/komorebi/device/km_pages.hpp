@@ -11,10 +11,6 @@
 #include "km_core.hpp"
 #include "km_transport.hpp"
 
-// The link page CPUs' loops of a put line, kept at speed where the link kernels are
-// built for size (session.LINK_OPT): the rest of them is -Os.
-#define KM_LINK_HOT __attribute__((noinline, optimize("O2")))
-
 namespace km {
 
     // A CPU's L1 (its chunk): the connection's two words (LinkSender), a packet header
@@ -1030,7 +1026,8 @@ namespace km {
     // Page CPU `cpu` of its core: its ring's ready slots, in order, over its link in
     // bursts; a burst is counted sent once its packets left L1. kGave* code.
     template <typename Kernel>
-    KM_LINK_HOT uint32_t pages_ring(const Kernel& kernel, uint32_t cpu, uint32_t area) {
+    __attribute__((noinline)) uint32_t
+    pages_ring(const Kernel& kernel, uint32_t cpu, uint32_t area) {
         PagesRing& ring = pages_ring_held;
         if (ring.slots == 0) {
             return kGaveNone;
@@ -1539,7 +1536,8 @@ namespace km {
     // Page CPU j: its island's next put line: share j of its pages into the holder's
     // DRAM (pages_push); the lead CPU sends the line across. kGave* code.
     template <typename Kernel>
-    KM_LINK_HOT uint32_t pages_put(const Kernel& kernel, uint32_t cpu, uint32_t area) {
+    __attribute__((noinline)) uint32_t
+    pages_put(const Kernel& kernel, uint32_t cpu, uint32_t area) {
         volatile tt_l1_ptr uint32_t* words = l1(area);
         invalidate_l1_cache();
         const uint32_t j = page_index(area);
@@ -1649,7 +1647,7 @@ namespace km {
     // The lead page CPU: owner `owner`'s batch read from its landing page, each record
     // one NoC write at its page plus the offset, in order, waited for (bad: counted).
     template <typename Kernel>
-    KM_LINK_HOT uint32_t
+    __attribute__((noinline)) uint32_t
     pages_batch_apply(const Kernel& kernel, uint32_t area, uint32_t owner) {
         const Islands view = islands_at(kernel.args().control);
         const uint32_t room = put_batch(view.own_words(), 0);  // a link core puts none
@@ -1753,7 +1751,8 @@ namespace km {
     // The lead page CPU: far put lines arrive as pending; each once its pages landed
     // (KM_QUEUE_ARRIVED) is confirmed to the asker's port and parity word. kGave* code.
     template <typename Kernel>
-    KM_LINK_HOT uint32_t pages_confirm(const Kernel& kernel, uint32_t area) {
+    __attribute__((noinline)) uint32_t
+    pages_confirm(const Kernel& kernel, uint32_t area) {
         const uint32_t queue = link_queue();
         if (queue == 0) {
             return kGaveNone;
