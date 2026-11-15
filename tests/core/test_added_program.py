@@ -12,7 +12,7 @@ import pytest
 from test_class_handler_constants import grid, quiet
 
 import komorebi as km
-from komorebi import added, added_program, formats, native, overlay, programs
+from komorebi import added, added_program, formats, native, overlay, programs, thread
 from komorebi.build import BuildError
 from komorebi.errors import ProgramError
 
@@ -244,3 +244,50 @@ def test_the_added_class_s_parts_get_its_formats_in_a_copy_of_the_tables(tmp_pat
     (tmp_path / "chlkc_descriptors.h").write_text(descriptors_text(wrong, sizes))
     with pytest.raises(added.AddError, match=r"unpack_dst_format .* is not the one"):
         added_program.own_recipes(run, other, {"unpack": recipe})
+
+
+def test_the_load_reserves_a_record_row_for_every_field_an_added_class_may_take():
+    other = project(form="runtime")
+    placed = programs.plan({twice(form="runtime", beside=other): (0, 60)}, 120)
+    service = overlay.constants()["kOverlayService"]
+    assert added_program.spare_fields(placed) == range(1, service - 1)
+    switch = {"records": {0: 0x100}, "spare": {1: (0x140, 1), 2: (0x180, 2)}}
+    switch["refused"] = None
+    assert thread.load_records(switch) == (0x100, 0x40, 1)
+    switch["records"][1] = switch["spare"].pop(1)[0]  # the add's row
+    assert thread.load_records(switch) == (0x100, 0x40, 2)
+
+
+def test_an_added_field_past_the_reserved_rows_is_refused():
+    other = project(form="runtime")
+    run = run_of(twice(form="runtime", beside=other))
+    run._switch["spare"], run._check_alive = {}, lambda: None
+    with pytest.raises(added.AddError, match=r"field 1 is past the record rows"):
+        added_program.add(run, other)
+
+
+class Port:
+    def __init__(self):
+        self.writes = []
+
+    def work_write(self, cluster, offset, data):
+        self.writes.append((cluster, offset, bytes(data)))
+
+
+def test_an_add_raises_the_count_a_live_thread_s_kmx_load_reads():
+    ring = thread.RingPlacement(1, 2, 3, 4, 8, 16)
+    port = Port()
+    live = SimpleNamespace(
+        records=(0x100, 0x40, 1), ring=ring, buffer=0, on_card=True, running=True,
+        port=port, thread=SimpleNamespace(cluster=1),
+    )  # fmt: skip
+    switch = {
+        "records": {0: 0x100, 1: 0x140},
+        "spare": {2: (0x180, 2)},
+        "refused": None,
+    }
+    thread.ThreadRun.write_records(live, switch)
+    ((cluster, offset, line),) = port.writes
+    assert (cluster, offset) == (1, thread.layout()["KMX_LIM_RING"])
+    assert line == thread.ring_line(ring, 0, (0x100, 0x40, 2))
+    assert np.frombuffer(line[-12:], np.uint32).tolist() == [0x100, 0x40, 2]
