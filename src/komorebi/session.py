@@ -31,6 +31,7 @@ from komorebi import (
     insn_check,
     island_session,
     islands,
+    kernel_buffer,
     layout,
     native,
     overlay,
@@ -618,7 +619,8 @@ class Session:
         self.tree = tree
         self.log = log or (lambda message: None)
         self.grid_timeout = grid_timeout
-        self.kernel_bytes = kernel_bytes  # None: the runtime's default buffer
+        self.kernel_bytes = kernel_bytes  # None: the runtime's, then the kernels'
+        self._kept = kernel_buffer.Kept()  # the tensors made before the first load
         self.slow_code = slow_code  # slots may end above L1_FAST_CODE
         self._worker_l1 = worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
@@ -796,6 +798,7 @@ class Session:
             tensor.buffer.write(raw)
         else:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        self._kept.keep(tensor, data=(data, transposed_tiles))  # after: not the raw
         return tensor
 
     def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
@@ -804,6 +807,7 @@ class Session:
         tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid, address
         )
+        self._kept.keep(tensor, address)
         self._note_page(tensor)
         return tensor
 
@@ -948,6 +952,8 @@ class Session:
         """Writes `pages` ([n, page_bytes] uint8, as read() returns them) into pages
         first .. first + n - 1 of a tensor in DRAM or L1, through the host channel
         (also while a run is loaded); without it only a whole tensor, before a load."""
+        if tensor.kept is not None:  # the array given, for a reopened card
+            tensor.kept.append(("pages", pages, first))
         pages = np.ascontiguousarray(pages, np.uint8)
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
             raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
@@ -1198,7 +1204,62 @@ class Session:
         self.pll_mhz = X280_FALLBACK_MHZ
         return module.Dispatch(self.device, self.pll_mhz)
 
-    def load(
+    def load(self, program, *args, **options):
+        """Launches `program` (a list or {program: (first, count)}: the runtime's form)
+        on every core, then the dispatcher and the X280 thread; returns a Run
+        (docs/reference/host.md). A session not given `kernel_bytes` opens its card
+        again first when the kernels need another kernel buffer (kernel_buffer)."""
+        loading, self._kept.loading = self._kept.loading, True
+        try:
+            run = self._load(program, *args, **options)
+        except kernel_buffer.Resize as resize:
+            size, why = resize.size, resize.why
+        else:
+            self._kept.stop()
+            return run
+        finally:
+            self._kept.loading = loading
+        kernel_buffer.reopen(self, size, worker_l1_size(size), why)
+        self._kept.loading = True
+        try:
+            run = self._load(program, *args, **options)
+        finally:
+            self._kept.loading = loading
+        self._kept.stop()
+        return run
+
+    def _resize(self, total, l1_failed=False):
+        """Raises kernel_buffer.Resize when this session follows its kernels (no
+        `kernel_bytes` given, its own card alone) and kernels of `total` bytes need
+        another buffer: a larger one, or a smaller one when the L1 table failed.
+        Returns why it does not follow them, or None."""
+        size, buffer = kernel_buffer.need(total), self.l1()[0]
+        grow = size > buffer
+        if not (grow or (l1_failed and size < buffer)):
+            return None
+        refused = (
+            "the session was given kernel_bytes"
+            if self.kernel_bytes is not None
+            else (
+                "it did not open its card"
+                if not self._own_device or self.island is not None
+                else (
+                    f"{size} B is over the most, {KERNEL_BUFFER_MAX} B"
+                    if size > KERNEL_BUFFER_MAX
+                    else self._kept.refused()
+                )
+            )
+        )
+        if refused is not None:
+            return f"{refused}; Session(kernel_bytes={size}) holds them"
+        why = (
+            f"the kernels take {total:,} B"
+            if grow
+            else f"the L1 table does not fit and the kernels take {total:,} B"
+        )
+        raise kernel_buffer.Resize(size, why)
+
+    def _load(
         self,
         program,
         depth=None,
@@ -1220,10 +1281,7 @@ class Session:
         recover=True,
         reserve=added.RESERVE,
     ):
-        """Launches `program` (or programs in the runtime's form: a list, every core
-        holding each, or {program: (first, count)}) on every core, then the dispatcher,
-        then the X280 thread (`thread` "card" or "host"); returns a Run. The arguments
-        are described in docs/reference/host.md (`reserve`: room for Run.addon)."""
+        """Session.load's one try on the card as it is opened."""
         arguments = {k: v for k, v in locals().items() if k != "self"}
         fits = getattr(program, "fits_kernels", None)  # a merged class's: a load again
         if fits is not None and not program.fitting:  # with a handler as an overlay
@@ -1364,7 +1422,10 @@ class Session:
                 f"(text: {text})"
             )
             if build[-1]:
-                raise KernelSizeError(program.name, program.sizes, KERNEL_BUFFER_MAX)
+                refused = self._resize(program.sizes.total or KERNEL_BUFFER_MAX)
+                raise KernelSizeError(
+                    program.name, program.sizes, KERNEL_BUFFER_MAX, refused
+                )
             if insn_check.enabled():
                 insn_check.check_kernels(
                     program.name,
@@ -2748,7 +2809,8 @@ class _Backend:
         table, fits = overlay.budget(session.l1()[1], rows)
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
-            raise L1BudgetError(program.name, table, self._held_bytes())
+            refused = session._resize(program.sizes.total, l1_failed=True)
+            raise L1BudgetError(program.name, table, self._held_bytes(), refused)
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed = overlay.dram_rows(built, reserve)
         image = _words(session, image_rows)
@@ -2909,7 +2971,8 @@ class _Backend:
                 program.overlays_built = made
             built.append(made)
             if not fits:
-                raise L1BudgetError(names, table, self._held_bytes())
+                refused = session._resize(placed.programs[0].sizes.total, True)
+                raise L1BudgetError(names, table, self._held_bytes(), refused)
         images, stored = {}, []
         service = overlay.constants()["kOverlayService"]
         for made in built:
@@ -2936,10 +2999,12 @@ class _Backend:
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
             if not fits:
+                refused = session._resize(placed.programs[0].sizes.total, True)
                 raise L1BudgetError(
                     ", ".join(p.name for p in placed.programs),
                     table,
                     self._held_bytes(),
+                    refused,
                 )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
