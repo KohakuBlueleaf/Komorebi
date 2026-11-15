@@ -181,7 +181,9 @@ class FakePort:
                 self.consumed = req
                 self._event(req, CONSTANTS["KM_EVENT_PONG"])
                 continue
-            if handler == CONSTANTS["KMD_HANDLER_INSPECT"]:
+            if handler == CONSTANTS["KMD_HANDLER_INSPECT"] and (
+                flags & CONSTANTS["KMD_FLAG_DISPATCHER"]
+            ):
                 self.consumed = req
                 self._inspect(CONSTANTS["KMD_INSPECT_HOST"], req, first, count)
                 self._event(req, CONSTANTS["KM_EVENT_PONG"])

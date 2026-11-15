@@ -112,7 +112,12 @@ def dispatcher_reset(run, core, x, y, report):
     report["list_s"] = round(time.perf_counter() - started, 4)
     log(f"write list: {len(writes)} B uploaded in {report['list_s']} s")
     started = time.perf_counter()
-    handle = run._queue_command(run.h["KMD_HANDLER_RESET"], (core, 1), [0, len(writes)])
+    handle = run._queue_command(
+        run.h["KMD_HANDLER_RESET"],
+        (core, 1),
+        [0, len(writes)],
+        flags=run.h["KMD_FLAG_DISPATCHER"],
+    )
     run._counts[-1] = 0  # the kernel's own command: no sequence number
     (event,) = run.wait([handle], timeout=10.0)
     report["reset_s"] = round(time.perf_counter() - started, 4)
@@ -128,7 +133,12 @@ def keep_list(run, report):
     writes = run.backend.launch.reset_list(0, 0, every=True)
     run.backend.port.upload(0, writes)
     report["list_bytes"] = len(writes)
-    handle = run._queue_command(run.h["KMD_HANDLER_RESET"], (0, 0), [0, len(writes)])
+    handle = run._queue_command(
+        run.h["KMD_HANDLER_RESET"],
+        (0, 0),
+        [0, len(writes)],
+        flags=run.h["KMD_FLAG_DISPATCHER"],
+    )
     run._counts[-1] = 0  # the kernel's own command: no sequence number
     (event,) = run.wait([handle], timeout=10.0)
     log(f"reset list kept: {len(writes)} B, {event}")

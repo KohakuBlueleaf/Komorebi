@@ -914,16 +914,34 @@ What crosses is a small part: a put line of one page goes out and is confirmed i
 5.1 µs, one of 128 pages (512 KiB) in 15.0 µs, of which about 5 µs is the links' rate
 (101 GB/s each way) and the rest the line's pushes, one line at 53 GB/s. The largest
 terms are ours: the second island's command starts about 28 µs after the first's (the
-other island waits 0.2 µs for the share), the adds of the reduce, the release and the
-go (117 atomics each). The adds take ceil(pages of the share / ranks) pages on the
+other island waits 0.2 µs for the share; the host stored the islands' commands one after
+the other, fixed since: below), the adds of the reduce, the release and the go (117
+atomics each). The adds take ceil(pages of the share / ranks) pages on the
 slowest rank: 1 page at 2 pages, 2 at 1 MiB. The first call of a run costs about
 15 µs more (the service overlay's first load on every rank).
 
+From a kernel, the form a chain of layers calls between layers, two cards, a gather of
+2 pages took 46.6 µs while the host stored each island's command in turn and waited
+for it before the next (the first island waited 36.3 µs for the other's share; storing
+the other island first moved the wait to it). The wait now hands every island's
+command first and stores them back to back: 19.7 µs (the median of 3), of which the
+command 2.4, the entries and the meeting 1.4, the lines out 2.0, the wait for the other
+share 9.5 (about 4.3 the share's line, about 5 the second island's store, still after
+the first's), the confirm 0.1 and the release 4.4. The host's form takes the same wait.
+Still ours: the release (117 atomics, where one multicast would do), the second store
+and the command.
+
 On the host every call costs about 270 µs more than on the card: the host's submit and
-wait (ours). On one card split into three islands in a line, 1 MiB: all-gather from a kernel 158.7 µs on the card, exact; all-reduce 978 µs,
-exact from a kernel and from the host. The all-gather from the host was not exact
-there (2454 µs on the card): open. Four islands were not run. On one card as one
-island both calls return at once, exact: from a kernel the command's own 2.2 µs.
+wait (ours). On one card split into three islands in a line, 1 MiB: all-gather from a
+kernel 79 to 159 µs on the card, exact; all-reduce 978 µs, exact from a kernel and from
+the host. The all-gather from the host moved no page there (2.4 ms on the card, no
+error): its handler number, 243, is also the dispatcher's own inspect, and a
+dispatcher whose cores hold the whole group (each island's on a split card; between two
+cards each island holds half of it) read its cores and answered as an inspect, the
+ranks never running the call. The dispatcher's own commands now carry a header flag
+(`KMD_FLAG_DISPATCHER`) and are taken by it, not by their number.
+Four islands were not run. On one card as one island both calls return at once,
+exact: from a kernel the command's own 2.2 µs.
 
 ## Measured
 

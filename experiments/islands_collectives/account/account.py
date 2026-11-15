@@ -43,8 +43,30 @@ def parse():
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--stamps", action="store_true")
     parser.add_argument("--wait", type=float, default=0.5)
+    parser.add_argument(
+        "--store",
+        default="wait",
+        help="the kernel form's command stored by the wait, or first: island by "
+        "island (old), the other island first (reversed), or send(); a list, in turn",
+    )
     parser.add_argument("--json")
     return parser.parse_args()
+
+
+def store(run, how):
+    """Stores the queued command on every island as `how` says before the wait;
+    the host's microseconds each island's store took, island order."""
+    took = [0.0] * len(run.runs)
+    if how == "send":
+        start = time.perf_counter()
+        run.send()
+        return [round((time.perf_counter() - start) * 1e6, 2)]
+    order = range(len(run.runs))
+    for island in reversed(order) if how == "reversed" else order:
+        start = time.perf_counter()
+        run.runs[island].store()
+        took[island] = round((time.perf_counter() - start) * 1e6, 2)
+    return took
 
 
 def aiclk(cards):
@@ -165,6 +187,9 @@ def main():
     if args.islands:
         opened = {"card": cards[0], "islands": args.islands, "line": True}
     sizes = [int(size) for size in args.sizes.split(",")]
+    stores_how = args.store.split(",")
+    if set(stores_how) - {"wait", "old", "reversed", "send"}:
+        sys.exit(f"--store {args.store}: wait, old, reversed, send")
     rows, ok = [], True
     generator = np.random.default_rng(1)
     with km.Session(**opened, log=log) as session:
@@ -218,8 +243,12 @@ def main():
                     for _ in range(islands)
                 ]
                 whole = np.sum(partials, axis=0) if call == "reduce" else partials[0]
-                for form in args.forms.split(","):
-                    card, kinds, bad = [], set(), []
+                for form, how in [
+                    (one, how)
+                    for one in args.forms.split(",")
+                    for how in (stores_how if one == "kernel" else ["wait"])
+                ]:
+                    card, kinds, bad, stores = [], set(), [], []
                     for _ in range(args.rounds):
                         if call == "gather":  # island c's share, zeros elsewhere
                             for c in range(islands):
@@ -235,7 +264,10 @@ def main():
                         if form == "kernel":
                             handler = "gather" if call == "gather" else "reduce"
                             words = [tensor.address, 0, pages, scratch.address, 1]
-                            events = run.wait(run.submit(handler, (0, ranks), words))
+                            ticket = run.submit(handler, (0, ranks), words)
+                            if how != "wait":
+                                stores.append(store(run, how))
+                            events = run.wait(ticket)
                         elif call == "gather":
                             events = run.all_gather(tensor)
                         else:
@@ -250,6 +282,7 @@ def main():
                         "card_us": round(float(np.median(card)), 2) if card else None,
                         "card_us_all": [round(c, 2) for c in card],
                         "events": sorted(kinds), "wrong_shares": bad, "aiclk": mhz,
+                        "store": how, "stores_us": stores,
                     }  # fmt: skip
                     if args.stamps and card:
                         row["account"] = account(session, stamps, mhz, card[-1])
