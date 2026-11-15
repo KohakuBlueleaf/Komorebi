@@ -497,6 +497,10 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         ring_push(ring, request, KM_EVENT_REJECTED | (reject << 8), 0);
         dispatcher->last_event_mtime = now;
         dispatcher->rejected++;
+        if (queued && source == KMD_SRC_ENGINE) { /* the engine counted it: taken */
+            dispatcher->queue->taken++;
+            queue_tell(dispatcher);
+        }
         return KMD_TAKEN;
     }
     if (queued) {
