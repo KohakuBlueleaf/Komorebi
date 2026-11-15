@@ -782,61 +782,61 @@ def sfpcfg(session, args):
 
 # ---- probe 11 -----------------------------------------------------------------------
 
+# (op, K): K Dst blocks in rotation; ("mvmul", 0) is one MVMUL pushed once.
 FPU_CONFIGS = (
-    [("none", 1, 0)]
-    + [("mvmul", k, 0) for k in (1, 2, 3, 4, 5, 6, 8)]
-    + [
-        ("mvmul", 8, 1),
-        ("mvmul", 8, 2),
-        ("mvmul", 8, 3),
-        ("elwmul", 1, 0),
-        ("elwmul", 8, 0),
-        ("elwadd", 1, 0),
-        ("elwadd", 8, 0),
-        ("elwsub", 8, 0),
-        ("gapool", 1, 0),
-        ("gapool", 8, 0),
-        ("gmpool", 1, 0),
-        ("gmpool", 8, 0),
-        ("mova2d", 1, 0),
-        ("mova2d", 8, 0),
-        ("movb2d", 8, 0),
-        ("movd2a", 8, 0),
-        ("movd2b", 8, 0),
-    ]
-)  # fmt: skip  (fpu.hpp kConfigs)
+    [("mvmul", 0)]
+    + [("mvmul", k) for k in (1, 2, 3, 4, 5, 6, 8)]
+    + [("elwmul", 1), ("elwmul", 8), ("elwadd", 1), ("elwadd", 8)]
+    + [("mova2d", 1), ("mova2d", 8), ("movb2d", 8)]
+)  # fmt: skip  (fpu.hpp run_config)
 FPU_A = 1 + 2**-6  # every SrcA and SrcB value
+FPU_REPS, FPU_PLAYS = 3, 64  # kReps spans of kReplays replays of the body (fpu.hpp)
+# Words one block of an instruction covers (rows x 16), and what a word holds after n
+# instructions on its block, with SrcA = SrcB = FPU_A: MVMUL phase 0 adds 16 products
+# of 1.0 (SrcA's implicit one and top 4 bits) and FPU_A; ELWMUL adds the same product
+# of one pair; ELWADD with its accumulate bit adds SrcA + SrcB; the moves copy.
+FPU_ROWS = {"mvmul": 8, "elwmul": 8, "elwadd": 8, "mova2d": 8, "movb2d": 4}
+FPU_ADDS = {"mvmul": 16 * FPU_A, "elwmul": FPU_A, "elwadd": 1 + FPU_A}
+
+
+def fpu_rows(out, first, count):
+    """One row of the result per config run: spans, cycles per instruction, Dst check."""
+    d = out[DATA:]
+    empty = [int(v) for v in d[32 * len(FPU_CONFIGS) : 32 * len(FPU_CONFIGS) + 3]]
+    base = statistics.median(empty)
+    rows = []
+    for c in range(first, first + count):
+        op, k = FPU_CONFIGS[c]
+        w = d[32 * c : 32 * c + 32]
+        single = k == 0
+        length = 1 if single else (20 if k == 5 else 24)
+        blocks = 1 if single else k
+        n = 1 if single else FPU_REPS * FPU_PLAYS * length // blocks  # a block gets
+        spans = [int(w[0])] if single else [int(v) for v in w[0:3]]
+        hist = [(float(np.uint32(w[5 + 2 * q]).view(np.float32)), int(w[6 + 2 * q]))
+                for q in range(4) if int(w[6 + 2 * q])]  # fmt: skip
+        want = n * FPU_ADDS[op] if op in FPU_ADDS else FPU_A
+        want_words = FPU_ROWS[op] * 16 * blocks
+        rows.append({
+            "config": c, "op": op, "k": k, "spans": spans,
+            "instr_a_span": 1 if single else FPU_PLAYS * length,
+            "per_instr": None if single else
+                round((statistics.median(spans) - base) / (FPU_PLAYS * length), 3),
+            "len_ok": int(w[3]) == length,
+            "nonzero": int(w[4]), "nonzero_expected": want_words,
+            "values": hist, "value_expected": want,
+            "dst_ok": int(w[4]) == want_words and hist == [(want, want_words)],
+        })  # fmt: skip
+    return {"empty_cycles": empty, "rows": rows}
 
 
 def fpu(session, args):
     words = np.full(1024, f32_bits(FPU_A), dtype=np.uint32)
-    out, nonce = run_kernel(session, "fpu", words, [])
-    d = out[DATA:]
-    rows = []
-    empty = [int(v) for v in d[0:3]]
-    base = statistics.median(empty)
-    for c, (op, k, phase) in enumerate(FPU_CONFIGS):
-        w = d[32 * c : 32 * c + 32]
-        n = 64 * (20 if k == 5 else 24)  # kReplays x the body (fpu.hpp)
-        spans = [int(v) for v in w[0:3]]
-        hist = [(float(np.uint32(w[5 + 2 * q]).view(np.float32)), int(w[6 + 2 * q]))
-                for q in range(4) if int(w[6 + 2 * q])]  # fmt: skip
-        rows.append({
-            "op": op, "k": k, "phase": phase, "instr": n, "spans": spans,
-            "per_instr": round((statistics.median(spans) - base) / n, 3) if c else None,
-            "len_ok": int(w[3]) == n // 64,
-            "nonzero": int(w[4]), "values": hist,
-        })  # fmt: skip
-    # Expected Dst contents per MVMUL phase: 16 products of A x B slices.
-    ah, al = 1.0, 2**-6  # SrcA: implicit 1 + top 4 bits, then the rest
-    bh, bl = FPU_A, 0.0  # SrcB: implicit 1 + top 6 bits, then the rest
-    per_phase = [16 * ah * bh, 16 * al * bh, 16 * ah * bl, 16 * al * bl]
-    return (
-        {"empty_cycles": empty, "rows": rows,
-         "mvmul_add_per_phase_model": per_phase},  # fmt: skip
-        out,
-        nonce,
-    )
+    first, count = args.first, args.count
+    if not (0 <= first and 1 <= count and first + count <= len(FPU_CONFIGS)):
+        raise SystemExit(f"fpu: configs 0..{len(FPU_CONFIGS) - 1}")
+    out, nonce = run_kernel(session, "fpu", words, [first, count])
+    return fpu_rows(out, first, count), out, nonce
 
 
 # ---- probe 12 -----------------------------------------------------------------------
@@ -1022,19 +1022,21 @@ def main():
     p.add_argument(
         "--allow-unproven",
         action="store_true",
-        help="run fpu and ties, whose only run did not finish (README section 8)",
+        help="run ties, whose only run did not finish (README section 8)",
     )
     p.add_argument("--n-float", type=int, default=10000)
     p.add_argument("--rays", type=int, default=32, help="walk: multiple of 32, <= 1024")
     p.add_argument("--ray-set", choices=["camera", "random"], default="random")
     p.add_argument("--form", choices=["a", "b"], default="a")
+    p.add_argument("--first", type=int, default=0, help="fpu: first config (0 = one MVMUL)")
+    p.add_argument("--count", type=int, default=1, help="fpu: number of configs")
     p.add_argument("--copy", choices=["rvv", "scalar"], default="rvv")
     args = p.parse_args()
     names = args.probe.split(",")
     for name in names:
         if name not in PROBES:
             p.error(f"unknown probe {name!r}; one of {', '.join(PROBES)}")
-    unproven = {"fpu", "ties"} & set(names)
+    unproven = {"ties"} & set(names)
     if unproven and not args.allow_unproven:
         p.error(f"{', '.join(sorted(unproven))}: not proven safe (README section 8)")
     if "slab" in names:

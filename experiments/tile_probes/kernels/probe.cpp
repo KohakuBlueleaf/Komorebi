@@ -104,15 +104,15 @@ void kernel_main() {
 #if defined(TRISC_UNPACK)
     fpu::unpack(out, nonce);
 #elif defined(TRISC_MATH)
-    if (fpu::wait_word(out, probe::kDone0, nonce)) {
 #if PROBE == 11
-        fpu::issue(out);
+    fpu::math(out, nonce, p[0], p[1]);  // first config, count
 #else
+    if (fpu::wait_word(out, probe::kDone0, nonce)) {
         fpu::ties_math();
-#endif
     } else {
         out[probe::kAuxError] = probe::kErrorSpin;
     }
+#endif
     fpu::post_word(out, probe::kDone0 + 1, nonce);
 #endif
 #endif
@@ -179,6 +179,8 @@ void kernel_main() {
     costs::sfpcfg(out);
     vec::finish();
 #elif PROBE == 11
+    out[probe::kAuxError] = 0;
+    err |= fpu::watch(out, nonce, p[0], p[1]);
     err |= wait_done(out, 3, nonce);
     err |= out[probe::kAuxError];
 #elif PROBE == 12
