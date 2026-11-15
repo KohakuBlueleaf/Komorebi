@@ -237,6 +237,9 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   1 half switching to scale and widen and back 200 times, 600 commands exact, the load
   onto island 0 refused.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
+  Commands queued on islands one by one (`run.island(i)`) that wait on each other are
+  all stored this way before any is waited for: a command reaches its card only at a
+  store or at its own wait ([hazards](hazards.md#an-islands-part-waited-for-before-the-other-islands-parts-are-stored)).
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
 - A dynamic program (`Program.dynamic`) on two islands: each core

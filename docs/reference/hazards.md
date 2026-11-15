@@ -754,6 +754,23 @@ card alone after a mesh and for a mesh after a card alone, before any device cal
 
 Described in [Islands, the session](islands.md#the-session).
 
+### An island's part waited for before the other islands' parts are stored
+
+**The hazard.** A command reaches its card only at its run's `store()` or at a wait on
+it. If parts of one exchange are queued on each island's own `Run` and the first is
+waited for, the other islands' parts reach their cards only after that wait ends. The
+waited part's cores then wait for pages or confirmations that cannot come, and give up
+at their limit. Seen 2026-11-16 in a two-card layer driven by hand: island 0's leader
+always gave up, island 1's always finished.
+
+**The rule.** Store every island's part before waiting for any of them.
+
+**The guard.** `IslandRun.submit`, `wait` and `send` store every island's queued commands
+together. Commands queued on `run.island(i)` and waited for one island at a time are the
+caller's to store first (`run.send()`).
+
+Described in [Islands, the session](islands.md#the-session).
+
 ## The host
 
 ### A process that leaves the card half closed
