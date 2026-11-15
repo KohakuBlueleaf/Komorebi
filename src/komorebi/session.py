@@ -363,11 +363,16 @@ def chip_holder(card, path=None):
         return pid  # alive, another user's
 
 
+def _state_page():
+    """The page of the dispatcher's state area (_state_area): KMD_STATE_BYTES."""
+    return abi.headers()["KMD_STATE_BYTES"] // 4 * 4
+
+
 def _state_area(session):
     """A DRAM buffer whose bank address holds the dispatcher's state in every
     bank (KMD_STATE_BYTES at least); rejected if it covers the runtime's IPI word."""
     abi_headers = abi.headers()
-    rows = _words(session, np.zeros((STATE_PAGES, abi_headers["KMD_STATE_BYTES"] // 4)))
+    rows = _words(session, np.zeros((STATE_PAGES, _state_page() // 4)))
     address = rows.address
     if address <= IPI_ACK_DDR < address + STATE_PAGES * abi_headers["KMD_STATE_BYTES"]:
         raise StartError(f"the kernel state at {address:#x} covers the X280 IPI word")
@@ -436,11 +441,11 @@ def _control_bytes():
 
 
 def _transfer_chunk_of(session, held, switch, trace_cap, control_bytes):
-    """The chunk of a run's transfer buffer: CHUNK_DEFAULT, or the largest page of the
-    session's DRAM tensors when two of them take at most half of what a core has left
-    after its buffers. A run with overlays, or whose groups switch program, keeps the
-    default: it has slots to place."""
-    page = session.largest_page
+    """The chunk of a run's transfer buffer: CHUNK_DEFAULT, or the largest DRAM page
+    (the session's tensors' and the state area's a load makes first) when two take at
+    most half of what a core has left after its buffers. A run with overlays, or whose
+    groups switch program, keeps the default: it has slots to place."""
+    page = max(session.largest_page, _state_page())
     if switch or any(each.overlays for each in held):
         return channel_module.CHUNK_DEFAULT
     buffers = max(
