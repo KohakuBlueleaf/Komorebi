@@ -258,6 +258,14 @@ namespace km {
                     KM_BROADCAST_VALID
                 ) = 0;  // every VALID of this command has arrived
             }
+            // word-only: a receiver marks a block past its last once it cleared VALID;
+            // its caster waits for every mark: its next VALID lands after the clear
+            if (
+                !caster() && args_.pages == 0 && block_count_ != 0 &&
+                !took_word(block_count_)
+            ) {
+                return false;
+            }
             if (args_.pages != 0 && !drain()) {
                 return false;
             }
@@ -276,6 +284,17 @@ namespace km {
                     return false;
                 }
                 if (args_.pages != 0 && !wait_done(block_count_, block_count_)) {
+                    return false;
+                }
+                if (
+                    args_.pages == 0 &&
+                    !wait_done(
+                        block_count_ + 1,
+                        block_count_,
+                        KM_BROADCAST_ARRIVED,
+                        args_.receivers
+                    )
+                ) {  // every receiver cleared its VALID
                     return false;
                 }
                 for (uint32_t receiver = 1; receiver <= rows(); receiver++) {
@@ -737,14 +756,17 @@ namespace km {
 
         // Sender: waits (with a timeout) until every receiver's DONE word (or the word
         // `word` of its slot) counts `blocks`; the next part's row after them.
-        bool wait_done(uint32_t blocks, uint32_t block, uint32_t word = 0) {
+        bool wait_done(
+            uint32_t blocks, uint32_t block, uint32_t word = 0, uint32_t last = ~0u
+        ) {
+            const uint32_t rows_waited = last < rows() ? last : rows();
             uint32_t receiver = 1;
             const uint64_t started = wall64();
             const uint32_t code = core_.poll_at(
                 kWhereBroadcastDone,
                 [&] {
                     while (
-                        receiver <= rows() &&
+                        receiver <= rows_waited &&
                         broadcast_reached(
                             area_word(KM_BROADCAST_DONE + 16 * receiver)[word],
                             receiver > args_.receivers ? 0 : sequence_,
@@ -753,7 +775,7 @@ namespace km {
                     ) {
                         receiver++;
                     }
-                    return receiver > rows();
+                    return receiver > rows_waited;
                 },
                 core_.args().wait_limit
             );
