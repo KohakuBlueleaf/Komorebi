@@ -550,6 +550,31 @@ CPU and not a unit left running.
 Described in [how reset works, a core stuck inside a compute unit](../concepts/reset.md) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
+### A value one compute thread decides, steering a branch all three take
+
+**The hazard.** `Compute::reserve_back` is decided by pack alone: on unpack and math it
+returns true at once. A kernel that keeps its result in the flag its loops and branches
+test (`ok = compute.reserve_back(...)`, then `if (ok)` around a section) lets pack leave
+the body at a give-up while unpack and math go on issuing sections that only pack's
+`tile_regs_release` frees. They stall inside the compute unit, where no wait reads the
+abort word: the dispatcher cannot give the command up, its core reset does not clear
+the unit, and the run ends with `km.GridTimeout` and a card reset (2026-11-16, a class's
+products, before its compiler kept the reserve pack's own).
+
+**The rule.** A value only one compute thread knows guards only that thread's calls.
+Pack's reserve is held in a flag of its own (`room`) that guards `pack_reconfig_l1_acc`,
+`pack_tile` and `cb_push_back` and nothing else; `tile_regs_acquire`, `commit`, `wait`
+and `release`, the unpack and math calls and every loop head stay on all three threads,
+steered only by what all three see alike (`wait_front`, which unpack tells the others).
+The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the pattern:
+`const bool room = compute.reserve_back(...)`, `room &&` on its packs, the push under
+`ok && room`.
+
+**The guard.** A class's generated compute follows the rule at every reserve (a test
+checks the generated text). A hand kernel: nothing.
+
+Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
+
 ### A vector word with a destination register of 12 or more
 
 **The hazard.** While `LaneConfig`'s back door is open, any vector word but `SFPCONFIG`
