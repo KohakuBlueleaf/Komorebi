@@ -677,6 +677,14 @@ namespace km {
             return heard(thread, kWhereCMailbox);
         }
 
+        // A give-up the command's words decided (each compute CPU sees the same
+        // words and ends the command): recorded once, by unpack.
+        void gave_up(uint32_t code, uint32_t where) const {
+            UNPACK(
+                (command_gave_up(control_, kStCompute, code, where, slot_, sequence_))
+            );
+        }
+
         // Timed cb_reserve_back of a contiguous item (buffer, pushes, pops: multiples
         // of it), decided by pack. False on pack: gave up (recorded); true elsewhere.
         bool reserve_back(uint32_t cb, uint32_t pages) const {

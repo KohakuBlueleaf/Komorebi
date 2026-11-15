@@ -3,7 +3,7 @@
 `STEP` and `SUM` of [../kernels](../kernels) as two handlers of a class deriving
 `km.Program` ([Programs written as classes](../../../docs/reference/classes.md#x280-threads),
 experimental), driven by an X280 thread on cluster 1. Made, the class is compiled into
-an ordinary program's files under `build/workcluster/` beside the script, with
+an ordinary program's files under `build/workcluster-<hash>/` beside the script, with
 `workcluster_thread.h`: each handler's number and the place of each of its command
 words. The thread ([thread/driver.c](thread/driver.c)) runs [../decide.c](../decide.c)
 as the hand program's thread does and places each command's words by that header

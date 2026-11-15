@@ -94,12 +94,18 @@ class Product(km.Program):
             results.push(product(x, y))
 
 
-def test_a_matrix_product_in_a_tile_function_is_refused_by_its_line():
+def test_a_product_in_a_tile_function_is_unpacked_and_issued_by_the_body():
+    tensors = {"a": tensor("bfloat16"), "b": tensor("bfloat16")}
+    compiled = compile_class(Product, {}, {**tensors, "out": tensor("float32")})
+    compute = "\n".join(render(prune(compiled.compute["multiply"]), 0))
+    assert "mm_no_mop_init_short(kRead0.mover_a, kRead1.mover_a, false, 1, 1, 1);" in (
+        compute
+    )
+    assert "UNPACK((llk_unpack_AB_matmul(km_half0, km_half1, km_tile0 + " in compute
+    assert "copy_tile(" not in compute  # no copy into a product's Dst tile
+    assert compute_options(compiled)["math_fidelity"] == "HiFi4"
     line = line_of("results.push(product(x, y))")
-    product_line = line_of("return a @ b")
-    with pytest.raises(
-        Refused, match=rf"^Product.multiply, line {line}, .*line {product_line}, has a"
-    ):
+    with pytest.raises(Refused, match=rf"^Product.multiply, line {line}, .*bfloat16"):
         made(Product, a=tensor("float32"), b=tensor("float32"), out=tensor("float32"))
 
 
@@ -407,9 +413,9 @@ class Placed(km.Program):
 def test_a_word_field_is_written_by_the_unpack_cpu():
     compiled = compile_class(Placed, {}, {"source": tensor("bfloat16")})
     text = render(prune(compiled.compute["place"]), 0)
-    assert "const uint32_t self_core = compute.me();" in text
-    assert "UNPACK((field_places[0] = self_core));" in text
-    assert "UNPACK((field_places[1] += rank));" in text
+    assert "const uint32_t km_self_core = compute.me();" in text
+    assert "UNPACK((km_field_places[0] = km_self_core));" in text
+    assert "UNPACK((km_field_places[1] += km_rank));" in text
     assert compiled.word_fields == {"places": 4} and "places" not in compiled.fields
 
 
@@ -447,7 +453,7 @@ def test_inline_bodies_reach_items_words_cpus_and_kept_fields():
     assert "first = compute.handed(ckernel::ThreadId::UnpackThreadId);" in compute
     assert "cb_pop_front(kFieldTable" not in compute  # kept: load's next fill frees it
     assert "compute.hand(ckernel::ThreadId::PackThreadId, get_tile_l1_byte_address(" \
-        "half0, tile0));" in compute  # fmt: skip
+        "km_half0, km_tile0));" in compute  # fmt: skip
     assert '#if defined(TRISC_PACK)\n#include "walk.hpp"\n#endif' in (
         compiled.body_includes["compute"]
     )
@@ -600,12 +606,15 @@ def test_mover_b_adds_words_to_a_page_before_the_movers_write_it():
     tensors = {"source": tensor("bfloat16"), "out": tensor("uint32")}
     compiled = compile_class(Assembled, {}, tensors)
     movement = "\n".join(render(prune(compiled.movement["page"]), 0))
-    assert "km::Moved moved0 = {0, 0};\nif (!movement.move(moved0, read0))" in movement
-    assert "const uint32_t tile_cycles = moved0.cycles;" in movement  # mover A's
-    waited = movement.index("if (!movement.wait_front(out_report, kWrite0Block))")
+    assert (
+        "km::Moved km_moved0 = {0, 0};\nif (!movement.move(km_moved0, km_read0))"
+        in movement
+    )
+    assert "const uint32_t tile_cycles = km_moved0.cycles;" in movement  # mover A's
+    waited = movement.index("if (!movement.wait_front(km_out_report, kWrite0Block))")
     body = movement.rindex("add(report, words);")  # the body, not its comment
-    assert waited < body < movement.index("if (!movement.move(write0))")
-    assert "const uint32_t report = get_read_ptr(out_report);" in movement
+    assert waited < body < movement.index("if (!movement.move(km_write0))")
+    assert "const uint32_t report = get_read_ptr(km_out_report);" in movement
     assert "const uint32_t words = kFieldWords;" in movement  # A to B by an own field
     for cls, match in (
         (AssembledOnA, "report is a write stream: its pages are pack's to fill"),
@@ -749,18 +758,19 @@ def test_products_over_two_streams_reduces_of_fields_and_word_bounds():
     tensors = {name: grid("bfloat16", 4, 4) for name in ("x", "w", "y")}
     compiled = compile_class(Streamed, {}, tensors)
     dst = "\n".join(render(prune(compiled.compute["dst"]), 0))
-    assert "matmul_block(half0, half1, tile0, tile0 * 2, 0, 0, 2, 1, kRead0Block);" in (
-        dst
+    assert (
+        "matmul_block(km_half0, km_half1, km_tile0, km_tile0 * 2, 0, 0, 2, 1, "
+        "kRead0Block);" in dst
     )
     split = "\n".join(render(prune(compiled.compute["split"]), 0))
-    assert "for (uint32_t k" in split and "< valid0;" in split  # the block's K tiles
-    assert "pack_tile<true>(3, kFieldSums, sub_column" in split
+    assert "for (uint32_t km_k" in split and "< km_valid0;" in split  # the K tiles
+    assert "pack_tile<true>(3, kFieldSums, km_sub_column" in split
     assert "km::reduce(compute, kArrival0" in split
     moved = "\n".join(render(prune(compiled.movement["split"]), 0))
     assert "kReduceTree, kFieldSums, kFieldSumsPages)" in moved  # a sender's field
     ragged = "\n".join(render(prune(compiled.movement["ragged"]), 0))
-    assert "((left + 3) < 4 ? (left + 3) : 4)) - (left)), address" in ragged
-    assert "+ row * 6144)" in ragged  # the slot's rows at 3 columns' pitch
+    assert "((left + 3) < 4 ? (left + 3) : 4)) - (left)), km_address" in ragged
+    assert "+ km_row * 6144)" in ragged  # the slot's rows at 3 columns' pitch
     slots = {b.name: b.pages[0] for b in compiled.buffers if b.role == "broadcast"}
     assert slots["kBroadcast1"] == 2 * 2 * 3  # window 2, the most: 2 x 3 tiles
     assert {"kFieldSums", "kFieldPart"} <= compiled.summed_fields
@@ -902,3 +912,210 @@ def test_a_line_of_products_over_streams_or_word_bounds_is_refused_by_its_line(
     names = inspect.signature(getattr(cls, handler).function).parameters
     with pytest.raises(Refused, match=rf"line {line}, .*{match}"):
         compile_class(cls, {}, {n: tensors[n] for n in names if n in tensors})
+
+
+class KeptOwn(km.Program):
+    tree: km.L1[km.bf16, 1, 32, 32]
+
+    @km.handler
+    def load(self, source: km.Tensor):
+        self.tree.fill(km.Stream(source.pages(0, 1)))
+        km.cxx("(void)tree;", takes=[self.tree], on="mover_b")
+
+    @km.handler
+    def use(self, out: km.Tensor):
+        km.cxx("(void)tree;", takes=[self.tree], on="mover_b")
+
+
+class FedOther(km.Program):
+    @km.handler
+    def copy(self, source: km.Tensor, out: km.Tensor, tiles: int, others: int):
+        results = km.Stream(out.pages(0, others), write=True, block=4)
+        for tile in km.Stream(source.pages(0, tiles), block=8):
+            results.push(tile)  # fed other
+
+
+class FilledAdded(km.Program):
+    sums: km.L1[km.fp32, 1, 2, 32, 32]
+
+    @km.handler
+    def go(self, x: km.Tensor, w: km.Tensor, a: km.Tensor, k0: int, k1: int):
+        self.sums.fill(km.Stream(a.pages(0, 2)))  # filled added
+        km.cxx("(void)sums;", takes=[self.sums], on="mover_b")
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, k0:k1], block=2),
+            km.Stream(w.tiles[k0:k1, 0:2], block=4),
+        ):
+            self.sums += coarse(xb, wb)  # added filled
+
+
+class Rows(km.Program):
+    @km.handler
+    def part(self, x: km.Tensor, y: km.Tensor):
+        mine = self.partition(x.tiles[0:4, 0:2])  # rows partition
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(x[mine], block=2):
+            total += tile
+        y.pages(self.rank, 1).write(total)
+
+
+class Prefixed(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor, tiles: int):
+        km_row = tiles + 1  # prefixed
+        km.Stream(x.pages(0, km_row)).drain()
+
+
+class Truthy(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor, tiles: int):
+        n = tiles or 1  # truthy
+        km.Stream(x.pages(0, n)).drain()
+
+
+class Below(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor, tiles: int, done: int):
+        n = 1
+        if tiles - done > 0:  # below
+            n = 2
+        km.Stream(x.pages(0, n)).drain()
+
+
+class Reset(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor, tiles: int):
+        tiles = tiles + 1  # reset
+        km.Stream(x.pages(0, tiles)).drain()
+
+
+class Ended(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor, tiles: int):
+        if tiles > 4:
+            bonus = 7
+        km.Stream(x.pages(0, bonus)).drain()  # ended
+
+
+class Deep(km.Program):
+    weight: km.L1[km.bf16, 4, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, tiles: int):
+        self.weight.fill(km.Stream(w.pages(0, 8)))
+        acc = km.tile.zeros(km.fp32, 2)
+        for xt in km.Stream(x.pages(0, tiles), block=2):
+            acc += project(xt, self.weight)
+        y.pages(0, 2).write(acc)
+
+
+class TooDeep(km.Program):
+    weight: km.L1[km.bf16, 4, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        self.weight.fill(km.Stream(w.pages(0, 8)))
+        acc = km.tile.zeros(km.fp32, 2)
+        for xt in km.Stream(x.pages(0, 8), block=2):
+            acc += project(xt, self.weight)  # too deep
+        y.pages(0, 2).write(acc)
+
+
+class TreeOfOne(km.Program):
+    @km.handler
+    def merge(self, x: km.Tensor, y: km.Tensor):
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(x.pages(self.rank, 1)):
+            total += tile
+        whole = km.reduce(total, form="tree")
+        if self.rank == self.leader:
+            y.pages(0, 1).write(whole)
+
+
+class HalfSync(km.Program, compute={"dst_full_sync_en": False}):
+    @km.handler
+    def apply(self, x: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 6)
+        for tile in km.Stream(x.pages(0, 4), block=4):
+            acc += tile
+
+
+class Nested(km.Program):
+    @km.handler
+    def page(self, x: km.Tensor, n: int):
+        if n > 0:
+            for tile in km.Stream(x.pages(0, 8), pattern="A"):
+                km.cxx("look(tile);", takes=[tile], on="pack")
+        km.cxx("hand(tile_tiles);", takes=[tile], on="mover_a")  # nested
+
+
+@pytest.mark.parametrize(
+    "cls, handler, text, match",
+    [
+        (FedOther, "copy", "# fed other", "results is others pages in blocks of 4"),
+        (FilledAdded, "go", "# added filled", "self.sums is pushed by mover A too"),
+        (Rows, "part", "# rows partition", "a rectangle of rows is not one"),
+        (Prefixed, "copy", "# prefixed", "its own names start km_"),
+        (Truthy, "copy", "# truthy", r"write max\(a, 1\), or an if"),
+        (Below, "copy", "# below", "compare the two: write tiles > done"),
+        (Reset, "copy", "# reset", "tiles is a parameter, a command word"),
+        (Ended, "copy", "# ended", "bonus is first assigned inside the if"),
+        (TooDeep, "apply", "# too deep", "self.weight is 4 K rows, and the loop's"),
+        (Nested, "page", "# nested", "the loop is inside the if at line"),
+    ],
+)
+def test_a_line_the_hunt_found_unsound_is_refused_by_its_line(
+    cls, handler, text, match
+):
+    line = line_of(text)
+    tensors = {"source": tensor("bfloat16"), "out": tensor("bfloat16")}
+    tensors |= {name: grid("bfloat16", 4, 4) for name in ("x", "w", "y")}
+    tensors["a"] = tensor("float32")
+    names = inspect.signature(getattr(cls, handler).function).parameters
+    with pytest.raises(Refused, match=rf"line {line}, .*{match}"):
+        compile_class(cls, {}, {n: tensors[n] for n in names if n in tensors})
+
+
+def test_the_hunts_generated_lines_hold_what_the_build_says():
+    compiled = compile_class(KeptOwn, {}, {"source": tensor("bfloat16")})
+    compute = "\n".join(render(prune(compiled.compute["load"]), 0))
+    assert compute.count("cb_pop_front(kFieldTree") == 1  # the last fill's, held
+    tensors = {name: grid("bfloat16", 4, 4) for name in ("x", "w", "y")}
+    compiled = compile_class(Deep, {}, tensors)
+    compute = "\n".join(render(prune(compiled.compute["apply"]), 0))
+    assert compute.count("if (tiles > 4) {") == 1  # one compare a command
+    assert "compute.gave_up(km::kGaveBadItem, km::kWhereCInput);" in compute
+    tensors = {"x": tensor("bfloat16"), "y": tensor("float32")}
+    compiled = compile_class(TreeOfOne, {}, tensors)
+    (arrival,) = [b for b in compiled.buffers if b.role == "arrival"]
+    assert arrival.pages[0] == 7  # a tree's rounds, not a slot a sender
+    with pytest.raises(Refused, match="'dst_full_sync_en' = False: the class's"):
+        compile_class(HalfSync, {}, {"x": tensor("bfloat16")})
+
+
+def test_two_builds_of_a_class_have_a_folder_each():
+    from komorebi.dsl.program import sources_key  # noqa: PLC0415
+
+    small, wide = {"x": grid("bfloat16", 4, 4)}, {"x": grid("bfloat16", 4, 8)}
+    keys = {
+        sources_key({"BLOCK": 4}, small, None, 4, None, None),
+        sources_key({"BLOCK": 8}, small, None, 4, None, None),
+        sources_key({"BLOCK": 4}, wide, None, 4, None, None),
+    }
+    assert len(keys) == 3
+
+
+class Walked(km.Program):
+    @km.handler
+    def copy(self, x: km.Tensor, y: km.Tensor):
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(x.tiles[0:2, 0:2], block=2):
+            total += tile
+        y.pages(0, 1).write(total)
+
+
+def test_a_tensor_of_another_tile_width_is_refused_at_submit():
+    program = made(Walked, x=grid("bfloat16", 4, 4), y=tensor("float32"))
+    assert len(program.copy.args(grid("bfloat16", 2, 4), tensor("float32"))) == 2
+    with pytest.raises(ProgramError, match="x is 8 tiles wide, .* built for 4"):
+        program.copy.args(grid("bfloat16", 4, 8), tensor("float32"))

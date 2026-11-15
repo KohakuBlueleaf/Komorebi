@@ -1,5 +1,5 @@
 """The merge tree written as a class: MERGE of ../merge.py as one method, its tree of
-arrivals one km.reduce line, compiled into the program's files (build/mergetree/
+arrivals one km.reduce line, compiled into the program's files (build/mergetree-<hash>/
 beside this file); the same jobs and checks as ../merge.py. See README.md.
 """
 

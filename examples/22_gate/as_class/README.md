@@ -5,7 +5,7 @@ deriving `km.Program`
 ([Programs written as classes](../../../docs/reference/classes.md#tile-functions)):
 the arithmetic is a tile function, `silu_gate`, which the tile compiler
 ([Tile functions](../../../docs/reference/tile.md)) traces and emits for compute; the
-streams and the handler are compiled into the program's files under `build/gate/`
+streams and the handler are compiled into the program's files under `build/gate-<hash>/`
 beside the script (`movement.cpp`, `compute.cpp`, `gate.h`, and the emitted body
 `tile_silu_gate.hpp` with its unit program as text, `tile_silu_gate.txt`).
 

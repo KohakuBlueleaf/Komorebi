@@ -8,7 +8,7 @@ called on the tiles of a stream on many cores, as they ran in the one-core harne
 `rules_class.py` makes the class `Rules`: two tile functions, `residual` and `scaled`,
 and two handlers, `add` (two streams read in step) and `scale` (one stream), each
 `@km.handler(stamps="stamps")`: the math CPU reads the wall clock around each call
-between two `tensix_sync()`, as the harness does. Its files are under `build/rules/`
+between two `tensix_sync()`, as the harness does. Its files are under `build/rules-<hash>/`
 beside the script (`tile_residual.hpp`, `tile_scaled.hpp` and their unit programs as
 text).
 
@@ -43,7 +43,7 @@ Kernel text 47,520 B for the two stamped handlers.
 `y = x rsqrt(mean(x^2) + 1e-6) g` over a row of 2 tiles, and the stamped handler
 `norm_rows`, which fills the field `weight` with the row form's per-column tile of g
 (`p_tile` of ../rules.py) and reads x with `row=2`. Its files are under
-`build/rownorm/` (`tile_norm.hpp`, `tile_norm.txt`).
+`build/rownorm-<hash>/` (`tile_norm.hpp`, `tile_norm.txt`).
 
 ```bash
 python norm_class.py --cores 12 --rows 32
@@ -63,3 +63,26 @@ replay rule and the step form.
 | norm, row form, now | 677.0 a row (617 instructions) | 687.0 (raw 696 to 760) | 689.5 | 2.33e-7 | 37.22 µs | 41,248 B |
 
 The build printed for both that the product-into-add rule fired 8 times.
+
+## Two products in the body
+
+`mm_gate_class.py` makes the class `MmGate`: the tile function
+`gate(a, w1, w3) = km.silu(a @ w1) * (a @ w3)` of ../README.md's BODY 29, called on
+the tiles of three bfloat16 streams read in step, `@km.handler(stamps="stamps")`. Its
+files are under `build/mmgate-<hash>/`. The unpack CPU unpacks each product's two
+tiles (`llk_unpack_AB_matmul`, a into SrcB, w into SrcA) after `mm_no_mop_init_short`
+once before the blocks; the body issues the products' words before its vector code,
+and nothing is copied into `Dst`. The values are ../rules.py's for BODY 29 (A in
+[0.5, 1.5), W1 and W3 in [0.5, 1.5) / 16, bf16), the output against float64, the
+stated tolerance 2^-7.
+
+```bash
+python mm_gate_class.py --cores 12 --tiles 64
+```
+
+Card 0, 12 cores, 64 tiles a core (768 calls), seed 1, one run:
+
+| Body | Printed at the build | On the card, class | Harness (../README.md) | Largest relative error | Command | Kernel text |
+|---|---|---|---|---|---|---|
+| silu(a @ w1) (a @ w3), HiFi4 | 1,678.6 a tile (1,336 instructions) | 1,706.0 (raw 1,716 to 1,790) | 1,707 (BODY 29) | 5.64e-4 | 92.96 µs | 40,800 B |
+

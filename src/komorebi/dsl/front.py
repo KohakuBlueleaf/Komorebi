@@ -161,6 +161,7 @@ class HandlerMethod:
         self.name = function.__name__
         self.number = None
         self.words = None  # [(parameter, kind)] in word order, set by the compiler
+        self.widths = {}  # tensor parameter -> the tile width of its rectangles
         self.owner = None  # the class it is a handler of
         self.returns = False  # it returns a word: its commands ask for the result
 
@@ -199,6 +200,15 @@ class HandlerMethod:
             value = given.get(parameter)
             if value is None:
                 raise ProgramError(f"{self.name}: no argument {parameter!r}")
+            width = self.widths.get(parameter)
+            shape = getattr(value, "shape", None)
+            if width is not None and shape is not None and shape[-1] // 32 != width:
+                raise ProgramError(
+                    f"{self.name}: {parameter} is {shape[-1] // 32} tiles wide, and "
+                    f"the handler's rectangles of {parameter} were built for {width} "
+                    "(the example tensor's): make the program with a tensor of this "
+                    "width"
+                )
             words.append(word_of(self.name, parameter, kind, value))
         return words
 

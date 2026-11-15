@@ -4,7 +4,7 @@
 ([Programs written as classes](../../../docs/reference/classes.md), experimental): each core
 adds its part of the tiles, `km.reduce` sums the parts by owner or along a tree, and the
 leader writes the sum. Made, the class is compiled into the program's files under
-`build/mergetree/` beside the script. The jobs and the checks are the hand program's.
+`build/mergetree-<hash>/` beside the script. The jobs and the checks are the hand program's.
 
 ```bash
 python merge_class.py --beside                   # 20 groups of 8, owner and tree in turn

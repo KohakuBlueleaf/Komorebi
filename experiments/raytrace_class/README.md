@@ -38,7 +38,7 @@ loop and read in it. No body names a buffer, a command word or a generated type:
 packets and hit pages are items of the tensors' pages (1,408 B and 2,432 B, 64 to a
 page), the directory's first two words are ints of every kernel, and each packet's L1
 address reaches the pack CPU by mailbox from unpack, as in the hand program. The
-class's files are under `build/tracepass/` beside the script.
+class's files are under `build/tracepass-<hash>/` beside the script.
 
 ```bash
 python prepare.py                              # the inputs, off the card
@@ -188,12 +188,34 @@ runs.
 The counts, the waits and the totals are within the spread. The read and write words
 are not. The class's movers spend 8.0 and 9.5 million cycles more over the cores in
 passes that move a block, about 50 and 59 us a core, out of a total of about 3,300 us.
-That cost is not chased here, and the job that would chase it was not run. One
-difference is how the words are defined. The class's word counts a whole pass of the
-move engine, from its start to its hand-on (the L1 invalidate, the offers of every
-stream, the barrier, the push or pop). The hand's word counts its own read loop less
-its reserve's wait. Each of the walk's counts is still equal, and 0 of 18,874,368 hit
-words differ.
+That cost is not chased here, and the job that would chase it was not run. Each of the
+walk's counts is still equal, and 0 of 18,874,368 hit words differ.
+
+The two words do not count the same work. The hand's read word is, for each packet,
+the time from before its reserve to after its push, less the reserve's wait. That
+covers the address of the packet, one `noc_async_read` of 1,408 B, the barrier
+(`reads_done`) and `cb_push_back`. The hand's write word is the same for each hit page:
+from before its `wait_front` to after its pop, less that wait. That covers one
+`noc_async_write`, the barrier (`writes_sent`) and `cb_pop_front`. The class's word
+(`km::Moved::cycles`, km_movement.hpp) is, for each pass of the move engine that
+issued a block, the time from the pass's start to its hand-on. A pass with no room or
+no data counts nothing, so neither word holds a wait. The class's word counts four
+things the hand's does not:
+
+- the L1 cache invalidate at the start of each pass;
+- the item's bounds check (`item_fits`) and the room or data check before the
+  reserve or the wait;
+- after the push or pop, the stream cursor's step and its seek to the next item's page
+  and byte (`km::items`: item i is page i / 64, byte (i % 64) x 1,408);
+- on the writer only, the move's last wait, once a command, until its writes are
+  acknowledged (`move_settle(..., acknowledged)`). The hand's writer waits only until
+  they are sent.
+
+Over the 32,768 packets these come to 245.6 cycles a packet on the reader (0.18 us;
+8,046,844 cycles, 49.7 us a core over the 120) and 290.3 on the writer (0.22 us;
+9,513,030 cycles, 58.7 us a core). The words are left as they are. Their totals agree
+within the spread because both totals hold these passes, measured from the same
+stamps.
 
 | | Class | Hand | Class without the movers' words (card 1) |
 |---|---|---|---|

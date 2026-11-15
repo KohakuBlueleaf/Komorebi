@@ -2,7 +2,7 @@
 
 `READ` and `COPY` of [../movement.py](../movement.py) as two methods of a class deriving
 `km.Program` ([Programs written as classes](../../../docs/reference/classes.md), experimental).
-Made, the class is compiled into the program's files under `build/movement/` beside the
+Made, the class is compiled into the program's files under `build/movement-<hash>/` beside the
 script. The copies, checked word by word, and the rates are the hand program's.
 
 ```bash

@@ -1,6 +1,6 @@
 """Forward written as a class: the dynamic handler of ../forward.py as a method whose
 loop takes each message this core is given, compiled into the program's compute
-kernel (build/forward/ beside this file); the reader and writer are the runtime's.
+kernel (build/forward-<hash>/ here); the reader and writer are the runtime's.
 The same runs and checks as ../forward.py (beside it with --beside). See README.md.
 """
 

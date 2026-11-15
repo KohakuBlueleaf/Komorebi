@@ -1,6 +1,6 @@
 """Overlays written as a class: mix and scale of ../overlays.py as two handlers whose
 code is an overlay each (built apart, loaded into a slot when a command needs it,
-called), compiled into the program's files (build/overlays/ beside this file). The
+called), compiled into the program's files (build/overlays-<hash>/ here). The
 same turns and checks as ../overlays.py (beside it with --beside). See README.md.
 """
 

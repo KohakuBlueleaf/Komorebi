@@ -3,6 +3,7 @@
 the sizes printed, and the made object is a Program of those files.
 """
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,7 +97,7 @@ def make(
     cls = type(self)
     plan = dict(plan or {})
     if session is not None:
-        l1 = session.l1()[1] if l1 is None else l1
+        l1 = reserve_of(session)[0].l1()[1] if l1 is None else l1
         room = l1 - runtime_bytes(session, trace)
     else:
         room = l1
@@ -110,7 +111,8 @@ def make(
         program_args = rectangle_of(self, compiled)
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
-    built = write(cls, compiled, room)
+    key = sources_key(plan, tensors, room, depth, rect, nocs)
+    built = write(cls, compiled, room, key)
     for line in built.report:
         log(line)
     report = may_cross(compiled, tensors)
@@ -178,22 +180,33 @@ class Unbuilt:
     buffers, threads, overlays = (), {}, {}
 
 
+def reserve_of(session):
+    """(the Session whose L1 table a class's build checks, the service overlay's slot
+    it reserves): an island session's first island at ISLAND_SERVICE_SLOT_MOST, a
+    card's own at SERVICE_SLOT_MOST."""
+    islands = getattr(session, "sessions", None)
+    if not islands:
+        return session, overlay.SERVICE_SLOT_MOST
+    if len(islands) > 1:
+        return islands[0], overlay.ISLAND_SERVICE_SLOT_MOST
+    return islands[0], overlay.SERVICE_SLOT_MOST
+
+
 def runtime_bytes(session, trace):
     """The L1 the load takes besides a class's buffers, at least: its table's rows for
     a program of none (Session.l1_rows) and the service overlay's slot at its most. A
     field's symbol is solved against what is left; l1_checked checks the class."""
-    return sum(size for _, size in session.l1_rows(Unbuilt(), trace)) + (
-        overlay.SERVICE_SLOT_MOST
-    )
+    one, most = reserve_of(session)
+    return sum(size for _, size in one.l1_rows(Unbuilt(), trace)) + most
 
 
 def l1_checked(program, session, l1, trace, log):
     """The load's L1 table of a core for the built program (Session.l1_rows), the
-    service overlay's slot at its most (the load refuses a larger one), refused
+    service overlay's slot at its most (the load logs a larger one), refused
     (L1BudgetError) as the load refuses it; a class's own overlays' slots are the
     load's."""
+    session, most = reserve_of(session)
     rows = session.l1_rows(program, trace)
-    most = overlay.SERVICE_SLOT_MOST
     rows[2:2] = [(f"slots: reader, 1 x {most:,} B (at most)", most)]
     table, fits = overlay.budget(l1, rows)
     log(f"L1 budget of a core (the build's, as the load's):\n{table}")
@@ -415,10 +428,22 @@ def camel(name):
     return "".join(part.capitalize() for part in name.split("_"))
 
 
-def write(cls, compiled, l1):
-    """Writes the header, the two kernels and program.py into build/<name>/ beside
-    the class's source; returns what was written and the report."""
-    folder = Path(compiled.source).resolve().parent / BUILD / compiled.name.lower()
+def sources_key(plan, tensors, room, depth, rect, nocs):
+    """A short hash of what a class is made with that changes its generated sources:
+    the plan, each tensor's format, page and shape, and the make's options."""
+    made = [sorted(plan.items()), room, depth, rect, nocs]
+    for name, tensor in sorted(tensors.items()):
+        made.append((name, tensor.dtype, tensor.page_bytes, tuple(tensor.shape)))
+        made.append(getattr(tensor, "layout", None))
+    return hashlib.sha256(repr(made).encode()).hexdigest()[:8]
+
+
+def write(cls, compiled, l1, key):
+    """Writes the header, the two kernels and program.py into build/<name>-<key>/
+    beside the class's source (`key`, sources_key: two instances made otherwise do
+    not share a folder); returns what was written and the report."""
+    folder = Path(compiled.source).resolve().parent / BUILD
+    folder = folder / f"{compiled.name.lower()}-{key}"
     folder.mkdir(parents=True, exist_ok=True)
     files = {
         header_name(compiled): header(compiled),
@@ -631,8 +656,8 @@ def cases(compiled, nodes_of, ending, depth, kernel):
             inner = pad + INDENT * 2
             gave_up = "return false;" if kernel == "movement" else "break;"
             lines += [
-                f"{inner}km::Overlay part({kernel}, kOverlay{camel(name)});",
-                f"{inner}if (!part.load()) {{",
+                f"{inner}km::Overlay km_part({kernel}, kOverlay{camel(name)});",
+                f"{inner}if (!km_part.load()) {{",
                 f"{inner}{INDENT}{gave_up}",
                 f"{inner}}}",
             ]
@@ -641,10 +666,10 @@ def cases(compiled, nodes_of, ending, depth, kernel):
                 lines.append(f"{pad}{INDENT}}}")
                 continue
             if kernel == "movement":
-                lines.append(f"{inner}return part.call(command) != 0;")
+                lines.append(f"{inner}return km_part.call(command) != 0;")
                 lines.append(f"{pad}{INDENT}}}")
                 continue
-            lines.append(f"{inner}part.call(command);")
+            lines.append(f"{inner}km_part.call(command);")
         lines.append(f"{pad}{INDENT * 2}{ending}")
         lines.append(f"{pad}{INDENT}}}")
     lines.append(f"{pad}{INDENT}default:")
@@ -659,34 +684,34 @@ def stamped(compiled, name, inner):
     tensor, word = compiled.stamps[name]
     overlay = f"kOverlay{camel(name)}"
     body = [
-        f"km::Overlay part(movement, {overlay});",
-        "const bool held = part.held();",
-        "const uint64_t started = km::wall64();",
-        "if (!part.load()) {",
+        f"km::Overlay km_part(movement, {overlay});",
+        "const bool km_held = km_part.held();",
+        "const uint64_t km_started = km::wall64();",
+        "if (!km_part.load()) {",
         f"{INDENT}return false;",
         "}",
-        "const uint64_t loaded = km::wall64();",
-        "const bool called_ok = part.call(command) != 0;",
-        "const uint64_t called = km::wall64();",
+        "const uint64_t km_loaded = km::wall64();",
+        "const bool km_called_ok = km_part.call(command) != 0;",
+        "const uint64_t km_called = km::wall64();",
         "#if defined(COMPILE_FOR_BRISC)",
-        "const uint32_t mover = 0;",
+        "const uint32_t km_mover = 0;",
         "#else",
-        "const uint32_t mover = 1;",
+        "const uint32_t km_mover = 1;",
         "#endif",
-        "const uint32_t stamp = get_write_ptr(kStamps) + mover * kStampsBytes;",
-        "volatile tt_l1_ptr uint32_t* stamped = km::l1(stamp);",
-        "stamped[0] = command.sequence;",
-        f"stamped[1] = {overlay};",
-        "stamped[2] = static_cast<uint32_t>(loaded - started);",
-        "stamped[3] = static_cast<uint32_t>(called - loaded);",
-        "stamped[4] = held;",
-        f"const {camel(tensor)} stamps(command.a{word});",
-        "if (!km::write_pages(movement, command, stamps, 2 * movement.me() + mover, 1,",
-        "                     stamp)) {",
+        "const uint32_t km_stamp = get_write_ptr(kStamps) + km_mover * kStampsBytes;",
+        "volatile tt_l1_ptr uint32_t* km_stamped = km::l1(km_stamp);",
+        "km_stamped[0] = command.sequence;",
+        f"km_stamped[1] = {overlay};",
+        "km_stamped[2] = static_cast<uint32_t>(km_loaded - km_started);",
+        "km_stamped[3] = static_cast<uint32_t>(km_called - km_loaded);",
+        "km_stamped[4] = km_held;",
+        f"const {camel(tensor)} km_stamps(command.a{word});",
+        "if (!km::write_pages(movement, command, km_stamps,",
+        "                     2 * movement.me() + km_mover, 1, km_stamp)) {",
         f"{INDENT}return false;",
         "}",
         "noc_async_write_barrier();",
-        "return called_ok;",
+        "return km_called_ok;",
     ]
     return [line if line.startswith("#") else inner + line for line in body]
 
@@ -729,7 +754,7 @@ def compute_includes(compiled):
 # A movement part's first lines: the resident case's km::Movement, as its runtime.
 PART_MOVEMENT = [
     INDENT + "// the resident case's km::Movement, as its mover's runtime",
-    INDENT + "km::Movement& movement = static_cast<km::Movement&>(core);",
+    INDENT + "km::Movement& movement = static_cast<km::Movement&>(km_core);",
 ]
 
 
@@ -750,7 +775,7 @@ def parts(compiled):
                     f'#include "../{header_name(compiled)}"',
                     "",
                     "uint32_t km_overlay("
-                    "km::MoverRuntime& core, const km_command_t& command) {",
+                    "km::MoverRuntime& km_core, const km_command_t& command) {",
                     *PART_MOVEMENT,
                     *(INDENT + line for line in tensor_aliases(compiled)),
                     *render(prune(compiled.movement[name]), 1),
@@ -839,6 +864,7 @@ COMPUTE_INCLUDES = [
     ("api/compute/compute_kernel_hw_startup.h", None),
     ("api/compute/eltwise_binary_sfpu.h", "add"),
     ("api/compute/eltwise_unary/fill.h", "fill"),
+    ("api/compute/experimental/matmul_custom.h", "matmul_custom"),
     ("api/compute/matmul.h", "matmul"),
     ("api/compute/pack.h", None),
     ("api/compute/reg_api.h", None),
@@ -946,11 +972,16 @@ def tile_costs(compiled):
             if p.done and p.name in ("load_macro", "replay", "fuse_mad")
         ]
         code = function.function.__code__
-        operands = list(unit.operands)
+        products = {p.dst: p for p in unit.products}  # a product's Dst tile: a @ w
+        operands = [
+            f"{products[k].a} @ {products[k].w}" if name is None else name
+            for k, name in enumerate(unit.operands)
+        ]
+        taken = set(unit.operands) | {n for p in unit.products for n in (p.a, p.w)}
         operands += [
             f"{name} (resident)"
             for name in code.co_varnames[: code.co_argcount]
-            if name not in operands
+            if name not in taken
         ]
         each = "a tile" if width == 1 else f"a row of {width} tiles"
         tolerance = (
