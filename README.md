@@ -437,11 +437,12 @@ chain = run.chain(steps, mode)  # steps: the calls; proven, then written once
 run.wait(run.submit(chain, factor=5))  # one command for all of them
 ```
 
-In [29_chain](examples/29_chain/), four calls on 8 cores take 268 µs a run from the
-host as one chain against 721 µs as four commands waited for one by one; the cores'
-work is the same either way (126 against 131 µs on the card), and what goes is three
-round trips to the host. A chain runs one handler today, and a record naming its own
-handler is in work, as are the class lines that state a chain.
+In [29_chain](examples/29_chain/), four calls of three handlers on 8 cores take 267 µs
+a run from the host as one chain against 704 µs as four commands waited for one by
+one; the cores' work is the same either way (126 against 131 µs on the card), and what
+goes is three round trips to the host. A record names its handler, or leaves it to the
+chain's command, as the decode's records do. The class lines that state a chain are in
+work.
 
 ### One program on the grid
 
@@ -502,7 +503,7 @@ counts what crossed (`run.crossings()`), so a program can be placed to cross les
 | X280 ports: a core tells, asks and pulls from its X280 core; a pull's answer carries a range and a word | implemented | [ports](docs/reference/ports.md) | [10_x280_ports](examples/10_x280_ports/), [18_thread_split](examples/18_thread_split/) |
 | Code placement: overlays built on the host, loaded into slots of a core's L1 and called; named by a handler, a message, a leader's cast or a pull's answer; a group changes program inside a run by `run.load` or a thread's `kmx_load` | implemented; not: the dynamic handlers of two programs in one run | [overlays](docs/reference/overlays.md) | [12_overlays](examples/12_overlays/), [16_two_programs](examples/16_two_programs/), [17_leader_overlay](examples/17_leader_overlay/), [20_message_overlays](examples/20_message_overlays/), [21_thread_load](examples/21_thread_load/) |
 | Page calls: `km::Tensor`, `km::read_pages`, `km::write_pages`, `km::put_bytes`, `km::read_bytes`, one call wherever the page is held | implemented | [islands](docs/reference/islands.md#a-kernels-page-reads-and-writes) | [06_graph](examples/06_graph/), [09_bucket_sort](examples/09_bucket_sort/) |
-| The chain: calls written once as records in DRAM and run as one command, every core going on to its next record by itself, a record's input waiting for the marks of the cores that wrote it; from the host (`run.chain`) and from an X280 thread (`kmx_chain_record`) | implemented on one island; a chain runs one handler, and its program runs untraced | [the chain](docs/reference/chain.md) | [29_chain](examples/29_chain/) |
+| The chain: calls written once as records in DRAM and run as one command, every core going on to its next record by itself, a record's input waiting for the marks of the cores that wrote it; from the host (`run.chain`) and from an X280 thread (`kmx_chain_record`) | implemented on one island, for the handlers of one program; a chain's program runs untraced | [the chain](docs/reference/chain.md) | [29_chain](examples/29_chain/) |
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |

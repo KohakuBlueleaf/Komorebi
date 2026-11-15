@@ -10,7 +10,7 @@
 void kernel_main() {
     km::Compute compute;
     compute.run([&](const km_command_t& command) {
-        if (km::handler(command) == kHandlerStep && command.a4 == kChainMode) {
+        if (step_handler(km::handler(command)) && command.a4 == kChainMode) {
             km::chain_compute(compute, command, [](const km_command_t&) {});
         }
     });

@@ -61,8 +61,8 @@ def calls(t, cores, width, add_read=None):
     add = kc.Read("y", ranges=(add_read or own,))
     return [
         kc.Call(
-            "step",
-            (C["kScale"], t["x"], t["y"], 0, 0, 0, width),
+            "scale",
+            (0, t["x"], t["y"], 0, 0, 0, width),
             group,
             1,
             width,
@@ -71,8 +71,8 @@ def calls(t, cores, width, add_read=None):
             name="scale x",
         ),
         kc.Call(
-            "step",
-            (C["kScale"], t["y"], t["z"], 0, 0, 3, width),
+            "scale",
+            (0, t["y"], t["z"], 0, 0, 3, width),
             group,
             1,
             width,
@@ -82,8 +82,8 @@ def calls(t, cores, width, add_read=None):
             name="scale y",
         ),
         kc.Call(
-            "step",
-            (C["kAdd"], t["z"], t["s"], t["y"], 0, 0, width),
+            "add",
+            (0, t["z"], t["s"], t["y"], 0, 0, width),
             group,
             1,
             width,
@@ -94,8 +94,8 @@ def calls(t, cores, width, add_read=None):
             name="add",
         ),
         kc.Call(
-            "step",
-            (C["kSum"], t["s"], t["t"], tiles, 0, 0, 1),
+            "sum",
+            (0, t["s"], t["t"], tiles, 0, 0, 1),
             group,
             cores,
             1,

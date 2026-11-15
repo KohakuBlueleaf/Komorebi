@@ -299,9 +299,10 @@ def check_direct(calls):
     return report
 
 
-def records(calls, address):
+def records(calls, address, handlers=None):
     """The calls' records (uint32, 16 words each) for a chain at DRAM `address`: each
-    names the next one in the same bank, the last 0."""
+    names the next one in the same bank (the last 0) and its handler's number from
+    `handlers` (None: 0 each, the chain command's)."""
     w = words()
     arguments = abi.headers().positions[2]  # a0 to a9's words of a command
     out = np.zeros((len(calls), w["kChainWords"]), np.uint32)
@@ -313,8 +314,11 @@ def records(calls, address):
         )
         word = arguments[call.word[1]] if call.word is not None else 0
         needs = w["kChainNeedsRanges"] if call.ranges else w["kChainNeedsK"]
-        if not 0 <= call.row <= 0xFF:
-            raise ChainRefused(f"{_label(call, index)}: stamp row 0 to 255")
+        if not 0 <= call.row <= w["kChainRowMask"]:
+            raise ChainRefused(f"{_label(call, index)}: stamp row 0 to 63")
+        handler = 0 if handlers is None else handlers[index]
+        if not 0 <= handler <= 0xFF:
+            raise ChainRefused(f"{_label(call, index)}: handler {handler}, 1 to 255")
         out[index, : len(call.args)] = call.args
         out[index, w["kChainGroup"]] = call.group[0] | call.group[1] << 16
         out[index, w["kChainInfo"]] = (
@@ -323,7 +327,7 @@ def records(calls, address):
             | needs << w["kChainNeedsShift"]
             | call.size << w["kChainSizeShift"]
             | call.width << w["kChainWidthShift"]
-            | call.row << w["kChainRowShift"]
+            | handler << w["kChainHandlerShift"]
         )
         ranges = (
             [Range(call.k[0], 0, call.k[1]).word()]
@@ -332,7 +336,8 @@ def records(calls, address):
         )
         out[index, w["kChainRanges"] : w["kChainRanges"] + len(ranges)] = ranges
         last = index + 1 == len(calls)
-        out[index, w["kChainNext"]] = 0 if last else address + (index + 1) * 64
+        next_address = 0 if last else address + (index + 1) * 64
+        out[index, w["kChainNext"]] = next_address | call.row
     return out
 
 
@@ -379,9 +384,4 @@ def build(calls):
     names = {call.word[0] for call in calls if call.word is not None}
     if len(names) > 1:
         raise ChainRefused(f"one per-submit word a chain, not {sorted(names)}")
-    handlers = {call.handler for call in calls}
-    if len(handlers) != 1:
-        raise ChainRefused(
-            f"a chain's calls run its command's handler; these name {len(handlers)}"
-        )
     return report, (names.pop() if names else None)

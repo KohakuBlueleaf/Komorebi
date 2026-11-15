@@ -124,8 +124,13 @@ def test_run_chain_writes_once_and_submit_takes_its_word():
         run.submit(chain, m=7)
 
 
-def test_calls_of_two_handlers_are_refused():
+def test_a_record_names_its_handler_and_its_stamp_row():
     calls = steps()
-    calls[1] = calls[1]._replace(handler=2)
-    with pytest.raises(kc.ChainRefused, match="run its command's handler"):
-        kc.build(calls)
+    calls[1] = calls[1]._replace(handler=2, row=5)
+    records = kc.records(calls, ADDRESS, [1, 2, 1, 1])
+    handlers = [int(word) >> W["kChainHandlerShift"] for word in records[:, 11]]
+    assert handlers == [1, 2, 1, 1]
+    assert records[1, W["kChainNext"]] == (ADDRESS + 128) | 5
+    assert kc.records(calls, ADDRESS)[1, W["kChainInfo"]] >> 24 == 0  # the chain's
+    with pytest.raises(kc.ChainRefused, match="stamp row 0 to 63"):
+        kc.records([calls[0]._replace(row=64)], ADDRESS)

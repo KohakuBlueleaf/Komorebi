@@ -41,7 +41,8 @@ class Call(NamedTuple):
     """One kernel call: `handler` (a number) on cores `cores` (first, count) with ten
     words `args`; `flags` the command's (KM_FLAG_*), `program` its program field,
     `overlay` the operation it calls (the host's note); `record` the chain's four words
-    (info, three ranges) when the call can be a chain's record."""
+    (info, three ranges) and `row` its stamp row when the call can be a chain's record.
+    """
 
     handler: int
     cores: tuple
@@ -50,6 +51,7 @@ class Call(NamedTuple):
     program: int = 0
     overlay: int = 0
     record: tuple = (0, 0, 0, 0)
+    row: int = 0
 
 
 def entry(call, kind):
@@ -61,6 +63,7 @@ def entry(call, kind):
     words[RECORD["kChainArguments"] : RECORD["kChainGroup"]] = call.args
     words[RECORD["kChainGroup"]] = first | count << 16
     words[RECORD["kChainInfo"] : RECORD["kChainNext"]] = call.record
+    words[RECORD["kChainNext"]] = call.row  # its links' low bits (km_chain.h)
     words[NN["NN_ENTRY_HEADER"]] = call.handler | call.flags << 8 | call.program << 24
     words[NN["NN_ENTRY_KIND"]] = kind
     words[NN["NN_ENTRY_OVERLAY"]] = call.overlay
@@ -119,7 +122,7 @@ class Entries:
                 0 if last else address[self.items[number + 1][0]]
             )
             for record in range(row, row + count - 1):
-                out[record, RECORD["kChainNext"]] = address[record + 1]
+                out[record, RECORD["kChainNext"]] |= address[record + 1]
         out[:, NN["NN_ENTRY_SEQUENCE"]] = sequence
         out[:, NN["NN_ENTRY_CHECK"]] = checks(out)
         return out
@@ -432,8 +435,7 @@ def layer_calls(decode, layer, position, rows=1, token=False):
     )
     calls = [qkv, attend, o, gate_up, down]
     return [  # each record's stamp row: its step's
-        call._replace(record=(call.record[0] | row << 24, *call.record[1:]))
-        for row, call in enumerate(calls)
+        call._replace(row=row) for row, call in enumerate(calls)
     ]
 
 
@@ -451,9 +453,7 @@ def token_calls(decode, layers, rows=1):
         info, *ranges = calls[at].record
         calls[at] = calls[at]._replace(record=(info | marked, *ranges))
     if layers > 1:
-        info, *ranges = calls[-1].record
-        info = info & 0xFFFFFF | D["DC_CHAIN_LAST_ROW"] << 24
-        calls[-1] = calls[-1]._replace(record=(info, *ranges))
+        calls[-1] = calls[-1]._replace(row=D["DC_CHAIN_LAST_ROW"])
     return calls
 
 

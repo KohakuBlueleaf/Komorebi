@@ -3,14 +3,17 @@
 
 #include <stdint.h>
 
-// STEP: a0 the operation, a1 the input, a2 the output, a3 ADD's second input (SUM's
-// input tiles), a4 the chain mode or 0, a5 SCALE's factor, a6 a group's output tiles.
-constexpr uint32_t kHandlerStep = 1;
-
-constexpr uint32_t kScale = 0;  // output tile = factor x input tile
-constexpr uint32_t kAdd = 1;    // output tile = input tile + second input's tile
-constexpr uint32_t kSum = 2;    // the group's input tiles summed, at its root
+// Every handler: a1 the input, a2 the output, a3 ADD's second input (SUM's input
+// tiles), a4 the chain mode or 0, a5 SCALE's factor, a6 a group's output tiles.
+constexpr uint32_t kHandlerScale = 1;  // output tile = factor x input tile
+constexpr uint32_t kHandlerAdd = 2;    // output tile = input tile + second input's tile
+constexpr uint32_t kHandlerSum = 3;    // the group's input tiles summed, at its root
 constexpr uint32_t kChainMode = 1;
+
+// One of this program's handlers (a chain command names any of them).
+inline bool step_handler(uint32_t handler) {
+    return handler >= kHandlerScale && handler <= kHandlerSum;
+}
 
 constexpr uint32_t kCbIn = 0;         // a tile read, worked on in place
 constexpr uint32_t kCbOther = 1;      // ADD's second tile

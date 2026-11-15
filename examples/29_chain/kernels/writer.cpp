@@ -33,11 +33,12 @@ void kernel_main() {
     km::Writer writer;
     const km::ChainDirect none = {0, 0, 0, kTileBytes};  // no direct input here
     const auto product = [&](const km_command_t& command) {
-        if (km::handler(command) != kHandlerStep) {
+        if (!step_handler(km::handler(command))) {
             return true;
         }
         const km::Group group = km::group_of(command, writer.me());
-        if (command.a0 == kSum && group.rank != 0) {
+        const bool sum = km::handler(command) == kHandlerSum;
+        if (sum && group.rank != 0) {
             const km::Arrival arrival = {kCbArrive, kArrivePages, 1};
             return (
                 km::chain_credit(writer) &&
@@ -46,17 +47,17 @@ void kernel_main() {
                 )
             );
         }
-        const uint32_t width = command.a0 == kSum ? 1 : command.a6;
+        const uint32_t width = sum ? 1 : command.a6;
         const uint32_t first = (writer.me() - km::first(command)) * width;
         for (uint32_t tile = first; tile < first + width; tile++) {
-            if (!write_tile(writer, command, command.a0 == kSum ? 0 : tile)) {
+            if (!write_tile(writer, command, sum ? 0 : tile)) {
                 return false;
             }
         }
         return km::chain_mark(km::ChainShape{}, writer, command, none, false);
     };
     writer.run([&](const km_command_t& command) {
-        if (km::handler(command) == kHandlerStep && command.a4 == kChainMode) {
+        if (step_handler(km::handler(command)) && command.a4 == kChainMode) {
             return km::chain_writer(km::ChainShape{}, writer, command, product);
         }
         return product(command);
