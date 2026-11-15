@@ -66,7 +66,7 @@ run.submit(
 |---|---|
 | a tensor by each tensor parameter's name | an example of the tensor: its format and page size (the buffers', the movers' compile arguments); a tensor of an island session too |
 | `plan` | the sizes by name: a module constant the handlers use (`BLOCK`), a field's symbol |
-| `session`, `trace` | the session it is loaded on and the trace pages its load is given: the build checks the load's L1 table of a core (`Session.l1_rows`: the buffers with the token and trace pages, the control block and overlay area, the host transfer buffer, what the session keeps) with the service overlay's slot at its most (`overlay.SERVICE_SLOT_MOST`, which the load enforces), so a class that builds loads; a class's own overlays' slots are the load's; a field's last symbol takes what is left |
+| `session`, `trace` | the session it is loaded on and the trace pages its load is given: the build checks the load's L1 table of a core (`Session.l1_rows`: the buffers with the token and trace pages, the control block and overlay area, the host transfer buffer, what the session keeps) with the service overlay's slot at its most (`overlay.SERVICE_SLOT_MOST`), so a class that builds loads; a class's own overlays' slots are the load's; a field's last symbol takes what is left |
 | `l1` | without a session, the bytes left for buffers (`Session.l1()[1]`): the buffers alone must fit, a field's last symbol takes what they leave |
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
@@ -74,9 +74,12 @@ run.submit(
 The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
 service's reader part built for every example and project that builds without a card
 is 8,640 B (with the islands defines too), and 8,840 B in the build that checks the
-core-table indices (`KM_CHECK_NOC_SOURCES`); rounded up to 9 KiB. The load refuses a
-larger service part, naming the constant. The build's table shows the reserve, the
-load's the real slot (8,640 B), so a class has the 576 B between them to spare.
+core-table indices (`KM_CHECK_NOC_SOURCES`); rounded up to 9 KiB. The load does not
+refuse on it: it refuses only by its own L1 table, made from the real sizes, and logs a
+service part over the constant. The build's table shows the reserve, the load's the real
+slot (8,640 B), so a class has the 576 B between them to spare. An island session's
+service part is larger (39,512 B on a card split in three): a class's build for such a
+session reserves less than the load takes today.
 
 The build writes `build/<name>/` beside the class's source: `<name>.h` (the handler
 numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
