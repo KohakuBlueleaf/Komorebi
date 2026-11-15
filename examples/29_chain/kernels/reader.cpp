@@ -99,12 +99,8 @@ namespace {
         cb_push_back(kCbOut, 1);
     }
 
-}  // namespace
-
-void kernel_main() {
-    km::Reader reader;
-    km::chain_start();
-    const auto product = [&](const km_command_t& command) {
+    // A step: in a chain's record, once its input is marked.
+    void step(km::Reader& reader, const km_command_t& command) {
         if (!step_handler(km::handler(command))) {
             return;
         }
@@ -116,12 +112,28 @@ void kernel_main() {
         } else {
             map_tiles(reader, command);
         }
-    };
-    reader.run([&](const km_command_t& command) {
+    }
+
+    // A command: a chain command's records in turn, or one step.
+    void command_of(km::Reader& reader, const km_command_t& command) {
+        const auto product = [&](const km_command_t& record) {
+            step(reader, record);
+        };
         if (step_handler(km::handler(command)) && command.a4 == kChainMode) {
             km::chain_reader(reader, command, product);
         } else {
             product(command);
         }
+    }
+
+}  // namespace
+
+#if !defined(KM_OVERLAY_PART)  // the runtime's form calls command_of (runtime/)
+void kernel_main() {
+    km::Reader reader;
+    km::chain_start();
+    reader.run([&](const km_command_t& command) {
+        command_of(reader, command);
     });
 }
+#endif
