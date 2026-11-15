@@ -283,8 +283,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
   hold the outcome. `KMD_H_ABANDONED` counts the commands in flight (busy slots 0 to 31 in
   `KMD_R_BUSY`, 32 to 63 in the core block's `KMD_H_BUSY_HIGH`) and
   the jobs still queued at the finish: none of them gets its `KM_EVENT_DONE`.
-- **Inspect.** `KMD_HANDLER_INSPECT` (243) from the host, group `[first, first +
-  count)`, reads each core's state words, the first `KM_LIVE_READ` bytes of its live
+- **Inspect.** `KMD_HANDLER_INSPECT` (243) from the host with a0 `KMD_INSPECT_MARK` (the
+  host's `KM_HANDLER_GATHER` has the same number, its a0 an aligned tensor word), group
+  `[first, first + count)`, reads each core's state words, the first `KM_LIVE_READ` bytes of its live
   words and, when the live words name a trace in L1, the trace entries of the four
   latest sequences, all from the control block, by aligned 64-bit loads through window
   `KMD_WIN_INSPECT` (22, aimed at each core in turn at the coordinates of the host's

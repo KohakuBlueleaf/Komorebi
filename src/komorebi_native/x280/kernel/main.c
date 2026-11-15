@@ -331,7 +331,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
     if (
-        host && handler == KMD_HANDLER_INSPECT &&
+        host && handler == KMD_HANDLER_INSPECT && argument == KMD_INSPECT_MARK &&
         !group_outside(dispatcher, first, count)
     ) {
         if (dispatcher->inspect.active) {

@@ -37,6 +37,7 @@ RESET_STATUS = ("BAD_LIST", "NO_WINDOW", "NO_FIRMWARE", "NO_LIST", "HELD")
 
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
+_NO_HANDLES = np.zeros(0, np.uint32)  # a store's native round waits for no event
 THREAD_POLL_S = 0.002  # one look at a thread while several are waited for
 COMPACT_ROWS = 4096  # released handles kept before the columns are shifted
 COLUMNS = (
@@ -569,7 +570,9 @@ class Run:
         and `trace` (the latest commands' entries); `read` False for a core it could
         not reach. inspect_ticks: the X280 timer ticks the read took on core 0."""
         first, count = self._group(group) if group is not None else (0, self.cores)
-        handle = self._queue_command(self.h["KMD_HANDLER_INSPECT"], (first, count))
+        handle = self._queue_command(  # a0 the mark: not the host's GATHER (243 too)
+            self.h["KMD_HANDLER_INSPECT"], (first, count), [self.h["KMD_INSPECT_MARK"]]
+        )
         self._counts[-1] = 0  # the kernel's own command: no sequence number
         self.wait(handle, timeout)
         block = device_state.inspect(self.backend.inspect(count)["block"], self.h)
@@ -963,10 +966,16 @@ class Run:
         command reaches the card only here or in a wait. Runs that talk to each
         other (islands joined by a link) are all started before any is waited on."""
         self._hand()
+        rows = self._store_handed()
+        if len(rows):
+            self._take(rows)
+
+    def _store_handed(self):
+        """Stores the commands already handed to the port (one native round, no wait);
+        returns the events read meanwhile, not yet filed."""
         if self.port.queued and self._handed > self._base:
-            rows = self.port.wait(np.zeros(0, np.uint32), (self._handed - 1) & M32, 0.0)
-            if len(rows):
-                self._take(rows)
+            return self.port.wait(_NO_HANDLES, (self._handed - 1) & M32, 0.0)
+        return ()
 
     def wait_any(self, handles, timeout=10.0):
         """Sends what is queued and waits for the first event among the handles;

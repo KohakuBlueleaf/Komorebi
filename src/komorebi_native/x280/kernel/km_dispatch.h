@@ -120,8 +120,8 @@
 /* Work cluster to kernel: its thread's answer to command line a0, a1 the word that
  * kmx_program returned; no event. */
 #define KMD_HANDLER_ANSWER 243u
-/* Host to kernel: read cores [first, first + count) into the inspect block, then PONG
- * {ticks: the mtime ticks it took} (the same number as ANSWER, from another source). */
+/* Host to kernel, a0 KMD_INSPECT_MARK (GATHER's a0, an aligned word, never is): read
+ * cores [first, first + count), then PONG {ticks}; ANSWER's number, another source. */
 #define KMD_HANDLER_INSPECT 243u
 /* The inspect block's header words, its kinds, and a record's first line's words. */
 #define KMD_INSPECT_MARK 0x50534E49u /* "INSP": the block is complete */
