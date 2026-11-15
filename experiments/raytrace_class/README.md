@@ -25,7 +25,7 @@ first, count = directory.pages(self.rank, 1).read()[0:2]
 hit = km.Stream(hits.items(first, count, size=HIT), write=True, pattern="B")
 image = km.cxx("image = tree;", takes=[self.tree], gives=int, on="pack")
 km.cxx("...setup...", takes=[image], on="pack", include=[".../walk.hpp"])
-for rays in km.Stream(packets.items(first, count, size=PACKET), pattern="A"):
+for rays in km.Stream(packets.items(first, count, size=PACKET)):
     km.cxx("...the walk of one packet...", takes=[rays, hit, mode], on="pack")
 report = km.Stream(profile.pages(self.rank, 1), write=True, pattern="B")
 km.cxx("...finish, the profile page...", takes=[report], on="pack")

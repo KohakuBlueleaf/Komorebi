@@ -66,7 +66,8 @@ run.submit(
 |---|---|
 | a tensor by each tensor parameter's name | an example of the tensor: its format and page size (the buffers', the movers' compile arguments); a tensor of an island session too |
 | `plan` | the sizes by name: a module constant the handlers use (`BLOCK`), a field's symbol |
-| `l1` | the bytes left for buffers (`Session.l1()[1]`): the buffers must fit, a field's last symbol takes what they leave |
+| `session`, `trace` | the session it is loaded on and the trace pages its load is given: the build checks the load's L1 table of a core (`Session.l1_rows`: the buffers with the token and trace pages, the control block and overlay area, the host transfer buffer, what the session keeps) with the service overlay's slot at its most (`overlay.SERVICE_SLOT_MOST`, which the load enforces), so a class that builds loads; a class's own overlays' slots are the load's; a field's last symbol takes what is left |
+| `l1` | without a session, the bytes left for buffers (`Session.l1()[1]`): the buffers alone must fit, a field's last symbol takes what they leave |
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
 
@@ -718,7 +719,7 @@ made, naming the handler, the line and what to write instead (the classes of
 ```text
 Sliced.copy, line 34, `km.Stream(source[1:4]).drain()`: a tensor is in DRAM: a slice is not a value; take a part: source[self.partition(...)], or use a stream or read()
 Unled.merge, line 44, `output.pages(0, 1).write(whole)`: whole is the reduce's sum, which only the leader holds; write it under `if self.rank == self.leader:`
-Unsolved.count, line 49, `count: km.L1[km.fp32, TILES, 32, 32]`: TILES is solved against the L1 the buffers leave; make the program with l1=session.l1()[1]
+Unsolved.count, line 49, `count: km.L1[km.fp32, TILES, 32, 32]`: TILES is solved against the L1 the buffers leave; make the program with session=session (or l1=session.l1()[1])
 Product.multiply, line 91, `results.push(product(x, y))`: the tile function product, line 83, has a matrix product (`@`), and the tile compiler has no lowering of one yet; make the product in a km.cxx body (gives=km.Tile) until it has
 OtherFunction.apply, line 121, `acc += scaled(block, self.weight)`: acc += f(...) adds a product, and the tile function scaled (line 103 of test_classes.py) is not `return a @ b`; write scaled as `return a @ b`, a the stream's block, b a field
 Unfilled.apply, line 131, `acc += project(block, self.weight)  # unfilled`: self.weight is not filled above in this handler, and no other handler of the class fills it; write self.weight.fill(km.Stream(...)) before, or in a handler of its own

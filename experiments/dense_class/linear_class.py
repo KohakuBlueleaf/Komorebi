@@ -145,7 +145,7 @@ def made(session, rows):
         log=log,
         plan={"OH": oh},
         rect=(0, 0, COLUMNS, ROWS),
-        l1=session.l1()[1],
+        session=session,
         **tensors,
     )
     return program
