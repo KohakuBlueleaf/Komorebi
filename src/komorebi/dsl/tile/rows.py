@@ -58,6 +58,28 @@ class Layout:
         return base + 16 * c + 8 * t + 2 * p
 
 
+TILE_VALUES = 1024  # a 32 x 32 tile in face order
+
+
+def row_operand(row, width):
+    """The per-column operand tile a `.row()` of a resident row reads (Dst tile
+    `cols_tile` of `row_program`), from a plain row of 32 `width` values: 1024 values in
+    face order, face c rows 8 t .. 8 t + 3 holding columns 32 t + 16 c .. + 15, the rest
+    0. The host writes it once, as the stream's resident page."""
+    if not 1 <= width <= 2:
+        fail("the row form takes rows of 1 or 2 tiles (a per-column tile holds 2)")
+    row = list(row)
+    if len(row) != 32 * width:
+        fail(f"a row of {width} tile(s) has {32 * width} values, not {len(row)}")
+    out = [0.0] * TILE_VALUES
+    for t in range(width):
+        for c in range(2):
+            for r in range(8 * t, 8 * t + 4):
+                at = 256 * c + 16 * r
+                out[at : at + 16] = row[32 * t + 16 * c : 32 * t + 16 * c + 16]
+    return out
+
+
 def row_program(ir, width, rows_tile, cols_tile, dest="fp32"):
     """The unit program of row kernel `ir` over a row of `width` tiles in Dst tiles
     0 .. width - 1 (the result stored over them), its per-row value in Dst tile
@@ -444,7 +466,9 @@ def _unit_after(unit, live, left, later, issue=False):
 
 
 def _pressure(code):
-    """The most work registers the allocator needs at one instruction of `code`."""
+    """The most work registers the allocator needs at one instruction of `code` (as
+    `allocate` counts: a value whose last read is an instruction frees its register
+    for that instruction's result)."""
     first, last = {}, {}
     for i, insn in enumerate(code):
         for v in insn.writes():
@@ -453,15 +477,17 @@ def _pressure(code):
         for v in insn.reads():
             if _work(v):
                 last[v] = i
-    starts, ends = [0] * (len(code) + 1), [0] * (len(code) + 1)
+    starts, ends = [0] * (len(code) + 2), [0] * (len(code) + 2)
     for v, i in first.items():
         starts[i] += 1
-        ends[max(i, last.get(v, i))] += 1
+        end = last.get(v, i)
+        if end == i or v in code[end].writes():  # written there: held through it
+            end += 1
+        ends[end] += 1
     most = live = 0
     for i in range(len(code)):
-        live += starts[i]
+        live += starts[i] - ends[i]
         most = max(most, live)
-        live -= ends[i]
     return most
 
 

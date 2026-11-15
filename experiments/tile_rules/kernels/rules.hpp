@@ -22,6 +22,8 @@ namespace rules {
     // or a row of tiles), kLoop + u the whole unit; kSync + i an empty timed span.
     constexpr uint32_t kNonce = 0, kError = 1, kUnits = 2, kMathDone = 3;
     constexpr uint32_t kBody = 64, kLoop = 128, kSync = 192, kSyncs = 16;
+    // BODY 20: kSumPart + u the row sums' products and the sum part of unit u.
+    constexpr uint32_t kSumPart = 256;
 
     constexpr uint32_t kErrorSpin = 1;           // the pack CPU's wait for math gave up
     constexpr uint32_t kSpinLimit = 1u << 24;    // about a second of polls
