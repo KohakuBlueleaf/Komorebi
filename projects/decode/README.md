@@ -45,9 +45,10 @@ weights, 16 of 16 greedy tokens are torch's, at 125.3 tokens a second.
   rotation, attention, the residual and silu are overlays that the group's root calls
   on the product's sum, where it would have packed it. The product's loop stays
   resident; an overlay is loaded into its slot once and found there on later calls.
-- **A layer and a token as one command** (`../dense/kernels/split/chain.hpp`,
-  `chain.h`). The thread writes one 64-byte record per kernel: the command's words, its
-  cores and the next record's address. A token's 140 records are written once a job;
+- **A layer and a token as one command** (the framework's chain,
+  [reference](../../docs/reference/chain.md); the split's plans as the records' shape in
+  `../dense/kernels/split/chain.hpp`). The thread writes one 64-byte record per
+  kernel: the command's words, its cores and the next record's address. A token's 140 records are written once a job;
   the token's one changing word, its position, rides in the command. The dispatcher
   starts the command and nothing else. Each core's reader fetches the next record
   while this one runs, and the core goes on to it by itself. A record's input is ready
