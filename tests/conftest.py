@@ -5,12 +5,22 @@ import os
 
 import pytest
 
+from komorebi import remembered
+
 
 @pytest.fixture(autouse=True)
 def no_inherited_git_environment(monkeypatch):
     """Drops GIT_DIR and the other GIT_* variables a hook or rebase exports."""
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
+def remembered_apart(tmp_path_factory, monkeypatch):
+    """The remembered kernel buffers (komorebi.remembered) in a folder of the test's
+    own: no test reads or writes the build cache's file."""
+    folder = tmp_path_factory.mktemp("remembered")
+    monkeypatch.setattr(remembered, "_path", lambda: folder / remembered.FILE)
 
 
 def pytest_collection_modifyitems(config, items):
