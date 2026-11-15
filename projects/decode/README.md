@@ -5,6 +5,125 @@ layer) on one Blackhole p150a: the weights are read once a token, so the step's 
 the time the card's DRAM takes to read them. The question is whether the programming
 model lets a decode step run at that floor, and where every microsecond above it goes.
 
+The first sections below give the whole program as it stands. Stages 1 to 9, further
+down, are the history in the order it was built, each with its own measurements.
+
+## What runs
+
+The model is Qwen3-1.7B, with its own weights and a real prompt. One token is 28
+layers of five kernels: qkv (with the norm before it, each head's norm of q and k, and
+the rotation), attend over the cache, o (with the residual), gate_up (with the norm
+before it and silu), and down (with the residual). The weights, 100.7 MB a layer, sit
+in DRAM, interleaved over its banks. Each layer's cache of keys and values (two
+tensors, 8 KV heads x 4096 rows x 128) is in DRAM too; the token's key and value are
+appended on the card. A whole token, all 140 kernels, is one command on all 120
+cores.
+
+The final code (`results/qwen3-1.7b-final-x10.json`; 28 layers, 10 tokens, unstamped):
+
+| | T 4096 | T 1024 | T 256 |
+|---|---:|---:|---:|
+| us a layer | 315.2 | 287.1 | 278.6 |
+| tokens a second | 113.3 | 124.4 | 128.2 |
+| the weights' and the cache's read at the DRAM ceiling (495.6 GB/s), us a layer | 236.9 | 211.5 | 205.2 |
+| share of that ceiling | 75 % | 74 % | 74 % |
+
+The weights alone are 64 % of the ceiling at T 4096 and 73 % at T 256 (319 and 361 of
+495.6 GB/s). Every check passes. Each tensor is within bf16's error of a float64
+reference (the three lengths, and 32 rows). A token as one command equals a command a
+step to the last digit at 2 and 28 layers, at T 4096 and T 256. With the model's
+weights, 16 of 16 greedy tokens are torch's, at 125.3 tokens a second.
+
+## How the program uses the model
+
+- **The split product and its tree** (`../dense/kernels/split`). Every product is a
+  K split: a group of s cores shares one 1 x 8 block of output tiles. Each core reads
+  1/s of K in chunks, on both movers, and multiplies it. The parts are then summed up a
+  tree over the cores' ports, at most 4 rounds. The shapes are plans in a table in the
+  program's arguments: qkv 16 groups of 7, o and down 8 of 15, gate_up 48 of 2.
+- **The operations as overlays** (`kernels/`, `split_op.hpp`). The norms, the
+  rotation, attention, the residual and silu are overlays that the group's root calls
+  on the product's sum, where it would have packed it. The product's loop stays
+  resident; an overlay is loaded into its slot once and found there on later calls.
+- **A layer and a token as one command** (`../dense/kernels/split/chain.hpp`,
+  `chain.h`). The thread writes one 64-byte record per kernel: the command's words, its
+  cores and the next record's address. A token's 140 records are written once a job;
+  the token's one changing word, its position, rides in the command. The dispatcher
+  starts the command and nothing else. Each core's reader fetches the next record
+  while this one runs, and the core goes on to it by itself. A record's input is ready
+  when the record before's roots have marked it: each root, once its block is written,
+  adds one to a marks word on every core whose input that block meets. A tree's
+  receiver sends a credit to its senders before they may use its ports again. Marks and
+  credits are counted per record parity, so a count for the record after cannot meet
+  this record's wait.
+- **The weight read early** (`../dense/kernels/split/chunks.hpp`). A core that waits
+  for its mark keeps reading weights: first its next record's, then the record
+  after's, into the same buffer half. So DRAM keeps reading while a record's roots
+  finish.
+- **The X280 thread** (`thread/layers.c`). The thread builds the records from the
+  layer's addresses and the plans. It submits one command a token and waits on its
+  event: 1.0 us a layer in all.
+- **The direct input send, off by default** (stage 8). A record's roots can write the
+  next record's input straight into its cores' L1 and mark it there, instead of
+  through DRAM. With o's and down's inputs sent it gains 0.9 to 3.2 us a layer, and it
+  is exact. It stays off because it fits only pairs of records whose areas are never
+  live at once, and because one root's serial sends lengthen the hand-over almost as
+  much as the DRAM read they save.
+
+## The account of a layer at T 4096
+
+The floor is stage 7's account. The terms above it are stage 8's hand-over pieces
+(the median root of each of a layer's five transitions, summed), with stage 9's
+reading of them. The thread is stage 7's, as one command a token.
+
+| term | us | kind |
+|---|---:|---|
+| the weights at the DRAM ceiling | 203.1 | HARDWARE |
+| the cache's keys and values at the ceiling | 33.8 | HARDWARE |
+| attention's tile products and exponents on its busiest core | 7.7 | HARDWARE |
+| **the floor** | **244.6** | |
+| the operations' compute at the roots (qkv's norms and rotation 14.5) | 28.6 | OURS |
+| the trees' adds: 0.38 a round of bytes, 12 rounds | 4.6 | HARDWARE |
+| the trees' adds above their bytes (the packer's accumulate into L1) | 11.1 | OURS |
+| a root waiting for a late sender | 4.0 | OURS |
+| the sum's end and the overlay met | 1.8 | OURS |
+| the roots' writes issued and acknowledged | 5.2 | HARDWARE, most of it |
+| the marks issued, one atomic a core | 8.3 | OURS |
+| the next record's input read, to its first chunk in compute | 7.7 | HARDWARE about 2.4, the rest OURS |
+| its first chunk's product | 2.4 | HARDWARE 1.6 |
+| the thread: one submit and wait a token, the records once a job | 1.0 | OURS |
+| the medians' overlap (pieces partly under one another) | -4.1 | |
+| **a layer** | **315.2** | |
+
+## What is left, and why
+
+- **The operations' compute at the roots, 28.6 us**: moving qkv's norms and rotation
+  elsewhere changes where an operation runs, and is not built.
+- **The marks' issue, 8.3 us**: the runtime has no form that sets an atomic's fixed
+  words once, and the program does not write the NoC's registers itself.
+- **The send's acknowledge, 0.6 to 0.9 us a round**: a tree's count must not overtake
+  its data, and the runtime states no order between a write and a later atomic.
+- **The receiver's hand-in, 0.2 to 0.8 us a round**: a reader takes a round's arrival
+  only after compute releases the round before (the framework's arrival).
+
+## What a language would have to say
+
+What this program does that a class cannot say today:
+
+- A chain of records: each one a command, its cores and the next record, which a core
+  follows by itself.
+- A record's waits: marks counted per record parity from the roots before it, credits
+  from a tree's receivers, each with its releaser.
+- A record's input as ranges: a base, plus a step times the group's index, a width
+  wide; or the K range of its plan.
+- The weight read early: the next record's weight while the mark is awaited, then the
+  record after's, into the same half.
+- The operations as overlays of the product's sum, called by the group's root at the
+  hook where the sum would be packed.
+- A record's input sent into its cores' L1 by the roots before, as an alternative to a
+  DRAM tensor.
+- A token's one changing word, ORed into named words of the records.
+
 ## What a layer is here
 
 The shapes are Qwen3-1.7B's (`model.py`, from its `config.json`): hidden 2048, MLP 6144,
@@ -1220,6 +1339,9 @@ at T 4096 (o 31, gate_up 25, qkv 20, down 8). Nothing was in flight, so the move
 idling on its mark and saw it at once. From the mark to B's first chunk is the same
 with and without the look: 2.0 to 2.3 us from DRAM and 1.3 to 1.8 sent. The "mark seen
 between W blocks" in stage 8's table is not a term. The time is the input read itself.
+
+The look has since been removed (the kernel buffer is 84 K again); see "What runs" above
+for the final code's numbers.
 
 ### The marks' issue: not possible in the runtime
 
