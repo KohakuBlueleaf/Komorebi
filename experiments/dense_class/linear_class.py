@@ -1,6 +1,6 @@
 """Y = X W as a class in the dense project's two plans, picked by the shape as its plan
 picker does (the K split for one row tile of X, the grid plan for more), and a SwiGLU
-gate after it; against the host's product (build/linear/ beside this file). README.md.
+gate after it; against the host's product (build/linear-<hash>/ here). README.md.
 Example: python linear_class.py --rows 1 32 --check exact swiglu"""
 
 import argparse

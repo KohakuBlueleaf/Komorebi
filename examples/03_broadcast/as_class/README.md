@@ -4,7 +4,7 @@
 `km.Program` ([Programs written as classes](../../../docs/reference/classes.md), experimental):
 the row broadcast runs on mover A (NoC 0) and the column broadcast on mover B (NoC 1);
 each core adds every tile of both into one tile. Made with the rectangle and the
-grid's NoCs, the class is compiled into the program's files under `build/broadcasts/`
+grid's NoCs, the class is compiled into the program's files under `build/broadcasts-<hash>/`
 beside the script, and each core's program arguments come from
 `layout.broadcast_args`. The jobs and the checks are the hand program's.
 

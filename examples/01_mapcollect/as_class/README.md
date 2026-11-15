@@ -2,7 +2,7 @@
 
 `MAP` of [../mapcollect.py](../mapcollect.py) as one method of a class deriving
 `km.Program` ([Programs written as classes](../../../docs/reference/classes.md), experimental).
-Made, the class is compiled into an ordinary program's files under `build/mapcollect/`
+Made, the class is compiled into an ordinary program's files under `build/mapcollect-<hash>/`
 beside the script: `mapcollect.h`, `movement.cpp` (both movers) and `compute.cpp`,
 with `program.txt`, the buffers the build chose. The jobs, the checks and the JSON line
 are the hand program's.

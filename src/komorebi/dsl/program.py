@@ -3,6 +3,7 @@
 the sizes printed, and the made object is a Program of those files.
 """
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,7 +111,8 @@ def make(
         program_args = rectangle_of(self, compiled)
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
-    built = write(cls, compiled, room)
+    key = sources_key(plan, tensors, room, depth, rect, nocs)
+    built = write(cls, compiled, room, key)
     for line in built.report:
         log(line)
     report = may_cross(compiled, tensors)
@@ -415,10 +417,22 @@ def camel(name):
     return "".join(part.capitalize() for part in name.split("_"))
 
 
-def write(cls, compiled, l1):
-    """Writes the header, the two kernels and program.py into build/<name>/ beside
-    the class's source; returns what was written and the report."""
-    folder = Path(compiled.source).resolve().parent / BUILD / compiled.name.lower()
+def sources_key(plan, tensors, room, depth, rect, nocs):
+    """A short hash of what a class is made with that changes its generated sources:
+    the plan, each tensor's format, page and shape, and the make's options."""
+    made = [sorted(plan.items()), room, depth, rect, nocs]
+    for name, tensor in sorted(tensors.items()):
+        made.append((name, tensor.dtype, tensor.page_bytes, tuple(tensor.shape)))
+        made.append(getattr(tensor, "layout", None))
+    return hashlib.sha256(repr(made).encode()).hexdigest()[:8]
+
+
+def write(cls, compiled, l1, key):
+    """Writes the header, the two kernels and program.py into build/<name>-<key>/
+    beside the class's source (`key`, sources_key: two instances made otherwise do
+    not share a folder); returns what was written and the report."""
+    folder = Path(compiled.source).resolve().parent / BUILD
+    folder = folder / f"{compiled.name.lower()}-{key}"
     folder.mkdir(parents=True, exist_ok=True)
     files = {
         header_name(compiled): header(compiled),
@@ -631,8 +645,8 @@ def cases(compiled, nodes_of, ending, depth, kernel):
             inner = pad + INDENT * 2
             gave_up = "return false;" if kernel == "movement" else "break;"
             lines += [
-                f"{inner}km::Overlay part({kernel}, kOverlay{camel(name)});",
-                f"{inner}if (!part.load()) {{",
+                f"{inner}km::Overlay km_part({kernel}, kOverlay{camel(name)});",
+                f"{inner}if (!km_part.load()) {{",
                 f"{inner}{INDENT}{gave_up}",
                 f"{inner}}}",
             ]
@@ -641,10 +655,10 @@ def cases(compiled, nodes_of, ending, depth, kernel):
                 lines.append(f"{pad}{INDENT}}}")
                 continue
             if kernel == "movement":
-                lines.append(f"{inner}return part.call(command) != 0;")
+                lines.append(f"{inner}return km_part.call(command) != 0;")
                 lines.append(f"{pad}{INDENT}}}")
                 continue
-            lines.append(f"{inner}part.call(command);")
+            lines.append(f"{inner}km_part.call(command);")
         lines.append(f"{pad}{INDENT * 2}{ending}")
         lines.append(f"{pad}{INDENT}}}")
     lines.append(f"{pad}{INDENT}default:")
@@ -659,34 +673,34 @@ def stamped(compiled, name, inner):
     tensor, word = compiled.stamps[name]
     overlay = f"kOverlay{camel(name)}"
     body = [
-        f"km::Overlay part(movement, {overlay});",
-        "const bool held = part.held();",
-        "const uint64_t started = km::wall64();",
-        "if (!part.load()) {",
+        f"km::Overlay km_part(movement, {overlay});",
+        "const bool km_held = km_part.held();",
+        "const uint64_t km_started = km::wall64();",
+        "if (!km_part.load()) {",
         f"{INDENT}return false;",
         "}",
-        "const uint64_t loaded = km::wall64();",
-        "const bool called_ok = part.call(command) != 0;",
-        "const uint64_t called = km::wall64();",
+        "const uint64_t km_loaded = km::wall64();",
+        "const bool km_called_ok = km_part.call(command) != 0;",
+        "const uint64_t km_called = km::wall64();",
         "#if defined(COMPILE_FOR_BRISC)",
-        "const uint32_t mover = 0;",
+        "const uint32_t km_mover = 0;",
         "#else",
-        "const uint32_t mover = 1;",
+        "const uint32_t km_mover = 1;",
         "#endif",
-        "const uint32_t stamp = get_write_ptr(kStamps) + mover * kStampsBytes;",
-        "volatile tt_l1_ptr uint32_t* stamped = km::l1(stamp);",
-        "stamped[0] = command.sequence;",
-        f"stamped[1] = {overlay};",
-        "stamped[2] = static_cast<uint32_t>(loaded - started);",
-        "stamped[3] = static_cast<uint32_t>(called - loaded);",
-        "stamped[4] = held;",
-        f"const {camel(tensor)} stamps(command.a{word});",
-        "if (!km::write_pages(movement, command, stamps, 2 * movement.me() + mover, 1,",
-        "                     stamp)) {",
+        "const uint32_t km_stamp = get_write_ptr(kStamps) + km_mover * kStampsBytes;",
+        "volatile tt_l1_ptr uint32_t* km_stamped = km::l1(km_stamp);",
+        "km_stamped[0] = command.sequence;",
+        f"km_stamped[1] = {overlay};",
+        "km_stamped[2] = static_cast<uint32_t>(km_loaded - km_started);",
+        "km_stamped[3] = static_cast<uint32_t>(km_called - km_loaded);",
+        "km_stamped[4] = km_held;",
+        f"const {camel(tensor)} km_stamps(command.a{word});",
+        "if (!km::write_pages(movement, command, km_stamps,",
+        "                     2 * movement.me() + km_mover, 1, km_stamp)) {",
         f"{INDENT}return false;",
         "}",
         "noc_async_write_barrier();",
-        "return called_ok;",
+        "return km_called_ok;",
     ]
     return [line if line.startswith("#") else inner + line for line in body]
 
@@ -729,7 +743,7 @@ def compute_includes(compiled):
 # A movement part's first lines: the resident case's km::Movement, as its runtime.
 PART_MOVEMENT = [
     INDENT + "// the resident case's km::Movement, as its mover's runtime",
-    INDENT + "km::Movement& movement = static_cast<km::Movement&>(core);",
+    INDENT + "km::Movement& movement = static_cast<km::Movement&>(km_core);",
 ]
 
 
@@ -750,7 +764,7 @@ def parts(compiled):
                     f'#include "../{header_name(compiled)}"',
                     "",
                     "uint32_t km_overlay("
-                    "km::MoverRuntime& core, const km_command_t& command) {",
+                    "km::MoverRuntime& km_core, const km_command_t& command) {",
                     *PART_MOVEMENT,
                     *(INDENT + line for line in tensor_aliases(compiled)),
                     *render(prune(compiled.movement[name]), 1),

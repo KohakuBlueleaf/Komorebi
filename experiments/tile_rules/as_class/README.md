@@ -8,7 +8,7 @@ called on the tiles of a stream on many cores, as they ran in the one-core harne
 `rules_class.py` makes the class `Rules`: two tile functions, `residual` and `scaled`,
 and two handlers, `add` (two streams read in step) and `scale` (one stream), each
 `@km.handler(stamps="stamps")`: the math CPU reads the wall clock around each call
-between two `tensix_sync()`, as the harness does. Its files are under `build/rules/`
+between two `tensix_sync()`, as the harness does. Its files are under `build/rules-<hash>/`
 beside the script (`tile_residual.hpp`, `tile_scaled.hpp` and their unit programs as
 text).
 
@@ -43,7 +43,7 @@ Kernel text 47,520 B for the two stamped handlers.
 `y = x rsqrt(mean(x^2) + 1e-6) g` over a row of 2 tiles, and the stamped handler
 `norm_rows`, which fills the field `weight` with the row form's per-column tile of g
 (`p_tile` of ../rules.py) and reads x with `row=2`. Its files are under
-`build/rownorm/` (`tile_norm.hpp`, `tile_norm.txt`).
+`build/rownorm-<hash>/` (`tile_norm.hpp`, `tile_norm.txt`).
 
 ```bash
 python norm_class.py --cores 12 --rows 32

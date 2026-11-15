@@ -3,7 +3,7 @@
 The dynamic handler of [../forward.py](../forward.py) as one method of a class deriving
 `km.Program` ([Programs written as classes](../../../docs/reference/classes.md#dynamic-handlers-and-messages),
 experimental). Its loop `for message in self.arrive():` makes it dynamic: made, the
-class is compiled into a compute kernel alone under `build/forward/` beside the script,
+class is compiled into a compute kernel alone under `build/forward-<hash>/` beside the script,
 and the reader and writer are the runtime's message movers. A message is `Visit`, a
 class deriving `km.Message` whose int annotations are its words (`id`, `forwards`,
 `state`, `sum`: words 1 to 4, as the hand program's). The program is made dynamic as

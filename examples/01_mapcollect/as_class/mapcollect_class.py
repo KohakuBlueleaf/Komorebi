@@ -1,6 +1,6 @@
 """Map/collect written as a class: MAP of ../mapcollect.py as one method, compiled into
-the program's files (build/mapcollect/ beside this file); the same jobs, checks and
-JSON line as ../mapcollect.py. See README.md.
+the program's files (build/mapcollect-<hash>/ beside this file); the same jobs,
+checks and JSON line as ../mapcollect.py. See README.md.
 """
 
 import argparse

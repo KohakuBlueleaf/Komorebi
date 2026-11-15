@@ -1,6 +1,6 @@
 """The gate of ../gate.py written as a class: out = silu(a) * b, the arithmetic a tile
 function the tile compiler emits for compute, the streams and the handler compiled
-into the program's files (build/gate/ beside this file). See README.md.
+into the program's files (build/gate-<hash>/ beside this file). See README.md.
 Example: python gate_class.py --beside --cores 12
 """
 

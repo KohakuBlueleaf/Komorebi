@@ -5,7 +5,7 @@ class deriving `km.Program`
 ([Programs written as classes](../../../docs/reference/classes.md#dynamic-handlers-and-messages)):
 its three dynamic handlers, `lookup`, `value` and `report`, are methods, each a loop
 over the messages that name it; the build makes them one message loop of the compute
-kernel, a case for each handler (`build/messagehandlers/` beside the script). The
+kernel, a case for each handler (`build/messagehandlers-<hash>/` beside the script). The
 reader and writer are the runtime's.
 
 ```bash

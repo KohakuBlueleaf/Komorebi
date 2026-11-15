@@ -1,6 +1,6 @@
 """Broadcast written as a class: BROADCAST of ../broadcast.py as one method, its row
 broadcast on mover A and its column broadcast on mover B, compiled into the program's
-files (build/broadcasts/ beside this file); the same jobs and checks as
+files (build/broadcasts-<hash>/ beside this file); the same jobs and checks as
 ../broadcast.py. See README.md.
 """
 

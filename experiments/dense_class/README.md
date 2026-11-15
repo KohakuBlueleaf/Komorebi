@@ -27,7 +27,7 @@ picked by the shape, as the dense project's plan picker does:
 The product is at HiFi2, as the dense project's rows (`@km.tile_function(fidelity=
 "HiFi2")`). The host lays out nothing: X, W and Y are the plain tensors, read as
 rectangles of tiles. One program serves both shapes (the grid's block of 1024 rows), so
-one load runs them; its files are under `build/linear/` beside the script.
+one load runs them; its files are under `build/linear-<hash>/` beside the script.
 
 ```bash
 python linear_class.py --rows 1 32 --check exact swiglu  # the K split, then the grid

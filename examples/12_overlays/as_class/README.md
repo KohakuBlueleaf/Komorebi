@@ -5,7 +5,7 @@ deriving `km.Program`
 ([Programs written as classes](../../../docs/reference/classes.md), experimental), each
 marked `@km.handler(overlay=True)`: its code is an overlay, built apart, loaded into a
 slot when a command needs it, and called. Made, the class is compiled into the
-program's files under `build/overlays/` beside the script: the kernels, whose cases
+program's files under `build/overlays-<hash>/` beside the script: the kernels, whose cases
 load and call, and each overlay's parts (`mix/movement.cpp`; `scale/movement.cpp` and
 `scale/compute.cpp`). When the session builds the parts it prints where each handler's
 code lives.

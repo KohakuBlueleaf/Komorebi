@@ -81,8 +81,11 @@ slot (8,640 B), so a class has the 576 B between them to spare. An island sessio
 service part is larger (39,512 B on a card split in three): a class's build for such a
 session reserves less than the load takes today.
 
-The build writes `build/<name>/` beside the class's source: `<name>.h` (the handler
-numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
+The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` eight hex
+digits of what changes the generated sources (the plan, each tensor's format, page
+bytes, shape and layout, the L1 and the trace depth, the rectangle and the NoCs): two
+instances of one class built differently have a folder each. In it: `<name>.h` (the
+handler numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
 handler's parts in `<handler>/`, and `program.txt`, the report it also prints: each
 buffer with its indices, format, pages, bytes and the Python line that made it, and the
 L1 they take. The files are kept; a compile error names their lines, and an inline
@@ -93,7 +96,17 @@ arguments: a tensor's reference word (`tensor.address`), an int (32 bits), a pat
 word, in the order of the parameters; a tensor whose `pages` a line uses whole adds a
 word, its page count. A handler that returns a word asks for the result. For arrays of
 words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, and
-`submit_many(Class.handler, firsts, counts, words)` takes them.
+`submit_many(Class.handler, firsts, counts, words)` takes them. A tensor whose
+rectangles (`t.tiles[...]`) the build wrote with the example's tile width is refused at
+submit when its own width is another, naming both.
+
+The words of a handler (its int parameters, the ints it computes, a page's words) are
+unsigned 32-bit, as the C++ they become: a subtraction below 0 wraps to a large word,
+so `a - b > 0` is refused (write `a > b`), and `a or b`, `a and b` of words, a word in
+Python and a truth in C++, are refused (write `max(a, 1)`, or an `if`). A parameter is
+not assigned again, and a name first assigned inside an `if` or a loop ends with it, as
+in C++ (assign it before the `if`). The generated code's own names start with `km_`,
+and a name of the handler's with that prefix is refused.
 
 ## The lines of a handler
 
@@ -599,7 +612,9 @@ free it, and the filler frees its last fill before the next. The build prints it
   field weight: filled by load, read by apply (it stays in L1 between commands)
 ```
 
-A field that no handler fills is still refused where it is read.
+A field that no handler fills is still refused where it is read. A field is declared
+on the class itself: a subclass does not inherit its parent's fields (declare them
+again).
 
 A field of fewer than 1,024 `km.u32` words, `km.L1[km.u32, n]`, is words the host
 reads after the run: the class is made with a tensor of the field's name, one row of

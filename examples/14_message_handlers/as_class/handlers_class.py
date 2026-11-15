@@ -1,5 +1,5 @@
 """../message_handlers.py as a class: three dynamic handlers, each a method looping
-over the messages that name it, compiled into compute (build/messagehandlers/ here);
+over the messages that name it, compiled (build/messagehandlers-<hash>/ here);
 each core's counts a field of words the host reads after the run, checked against the
 replay as the hand program's (beside it with --beside). See README.md.
 """

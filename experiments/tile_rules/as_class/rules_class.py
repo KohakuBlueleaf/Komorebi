@@ -1,6 +1,6 @@
 """The residual add and the scale of ../rules.py as tile functions of a class: the
 load-macro forms the tile compiler emits, called on a stream's tiles, timed on the
-math CPU and checked against float64 (build/rules/ beside this file). See README.md.
+math CPU and checked against float64 (build/rules-<hash>/ here). See README.md.
 Example: python rules_class.py --cores 12 --tiles 64
 """
 

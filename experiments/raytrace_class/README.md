@@ -38,7 +38,7 @@ loop and read in it. No body names a buffer, a command word or a generated type:
 packets and hit pages are items of the tensors' pages (1,408 B and 2,432 B, 64 to a
 page), the directory's first two words are ints of every kernel, and each packet's L1
 address reaches the pack CPU by mailbox from unpack, as in the hand program. The
-class's files are under `build/tracepass/` beside the script.
+class's files are under `build/tracepass-<hash>/` beside the script.
 
 ```bash
 python prepare.py                              # the inputs, off the card

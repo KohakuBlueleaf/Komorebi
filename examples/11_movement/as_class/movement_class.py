@@ -1,5 +1,5 @@
 """Both movers on one stream, written as a class: READ and COPY of ../movement.py as two
-methods, compiled into the program's files (build/movement/ beside this file); the same
+methods, compiled into the program's files (build/movement-<hash>/ here); the same
 copies checked word by word and the same rates as ../movement.py. See README.md.
 """
 
