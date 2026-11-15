@@ -511,7 +511,7 @@ class Run:
             program = self.programs[self._handler(handler)[1]]
         made = importlib.import_module("komorebi.dsl.program")
         number, built = made.constant_handler(
-            program, method, method.constants_given(args)
+            program, method, method.constants_given(args), run=self
         )
         return ClassHandler(number, program, built)
 

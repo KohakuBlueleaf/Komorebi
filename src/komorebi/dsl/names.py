@@ -48,6 +48,13 @@ NAMES = {
         "constant parameters built, each a handler of its own",
         None,
     ),
+    "first_use": Name(
+        "ANY",
+        'Class(handlers={"h": km.ANY}): any set of handler h\'s constant parameters, '
+        "a set not built compiled at its first submit and added to the run; "
+        "km.ANY(p=n): the load's buffers sized for p=n too",
+        None,
+    ),
     "own": Name("own", "f: km.L1[...] = km.own(push=): a field only bodies use", None),
     "tensor": Name("Tensor", "km.Tensor: a parameter that is a tensor", "tensor"),
     "pattern": Name("Pattern", "km.Pattern: a parameter that is a pattern", "pattern"),

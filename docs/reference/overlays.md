@@ -130,7 +130,7 @@ when:
 | no entry at the image's first byte | the slot's first byte is called |
 | relocations left | nothing relocates a part at run time |
 | it calls a function in the persistent kernel's text | the kernel's code is not part of the overlay's contract; header-only calls are compiled into the part instead |
-| it defines its own copy of the runtime's state (an object the persistent kernel also defines) | the kernel's copy is the one that counts |
+| it defines its own copy of the runtime's state (an object the persistent kernel also defines) | the kernel's copy is the one that counts. A movement part uses the kernel's words of which halves were filled and drained (`km_movement.hpp`, linked against its symbols), or words of its own when the kernel never moves; the build's constant tables of the buffers' formats are not state |
 | its two links are not byte-identical | it would not run in any slot |
 | its code, data and `.bss` are larger than its slot | it would overwrite the next slot |
 
@@ -462,6 +462,12 @@ the card:
 | a command of SCALE, the added handler: first / later | 38.32 µs / 35.98 µs |
 | the same from the X280 thread: first / later | 36.74 µs / 35.96 µs |
 
+**A class's handler on its first use.** A class made with `km.ANY` among a handler's
+sets has a set that was not built compiled at its first `run.submit`, as that
+handler's overlay parts on the load's buffers, and added by `run.addon(...,
+handler=True)` ([classes, a set compiled on its first use](classes.md#a-set-compiled-on-its-first-use)).
+The gate's added sets ran within 1.6 % of the same blocks loaded.
+
 ### Several programs with overlays
 
 Programs in the runtime's form ([host](host.md#several-programs-in-one-run)) may each
@@ -477,6 +483,13 @@ At load the plan refuses (`ProgramError`) programs whose own overlays reach the
 programs' numbers, and one slot on a kernel with own parts: a program's part runs from
 one slot while it loads its own overlay into another. An add with no number left is
 refused with the counts.
+
+On the card ([overlay_shift](../../experiments/code/overlay_shift/README.md)): first
+(times 1, xor 2) and second (plus 1, the run's 3) on 120 cores, every core holding both,
+and one overlay added to the live run (4). Each program's TAG named its overlays in its
+own numbers: 16 commands, 0 wrong in the result, the number named and the shift.
+A command took 4.04 to 4.22 µs after one of its own program and 5.5 to 5.7 µs after the
+other program's: that is the program's switch.
 
 A program of the kernel form in such a run would need:
 
