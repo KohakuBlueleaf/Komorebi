@@ -105,16 +105,23 @@ python attention.py --shape causal64
 
 ## What differs from the hand program
 
-- `flash.hpp` is the hand's compute with the buffer indices as template arguments
-  (the bodies' names, constants: the class's buffers) where the hand has `constexpr`
-  indices. Q's and the output's buffers are set at run time (a stream's half). With
-  all of them set at run time, unpack's text was 30,360 B and the class did not fit
-  (86,512 B of 70,656). The profile counters are gone. `finalize` packs into the
-  write stream's block; the line reserves and pushes it, where the hand's reserve has
-  a timeout of its own. `finalize` restores SrcA by the ones buffer's format where
-  the hand names K / V's: both bf16.
-- The start-up is of the own fields ones, causal and p (all bf16 tiles, as the hand's
-  Q, K / V and P are), since `km.Startup` names fields.
+- `flash.hpp` is the hand's compute (`score`, `pv_columns`, `output`, `finalize`,
+  `constant_tiles`, the vector and pack-format helpers, and the block loop of `job`):
+  each arithmetic line is the hand's, its tokens unchanged (the formatter rewraps a few
+  at the deeper indent of a template). The buffer indices are template arguments (the
+  bodies' names of the class's buffers, constants) where the hand has `constexpr`
+  indices; Q's and the output's are set at run time (a stream's half). With all of
+  them set at run time, unpack's text was 30,360 B and the class did not fit (86,512 B
+  of 70,656). The profile counters and their `km::wall()` reads are gone.
+- `finalize` is a variant: the line reserves and pushes the output row, so the hand's
+  `const bool room = compute.reserve_back(cb_output, VALUE_TILES);` and
+  `if (room) { cb_push_back(cb_output, VALUE_TILES); }` are removed (and with them the
+  `room &&` in the pack loop's condition). Its other lines are the hand's;
+  `cb_keys_values` there is the ones buffer, where no K / V block is held: both are
+  bf16, so SrcA's restore is the same.
+- The start-up is `km.Startup("ones", "causal", "p", order="reverse")`: own fields of
+  bf16 tiles, as the hand's Q, K / V and P are, so the unpacker's and the packer's
+  configuration is the hand's.
 - Mode 1 (broadcast only) and the rest of mode 2 (no Q reads, no O writes) are not
   lines here: only the unread blocks of mode 2 are. The class was run in mode 0 only.
 - No `prof` handler: a word of unpack or math into pack's page is still not a line
