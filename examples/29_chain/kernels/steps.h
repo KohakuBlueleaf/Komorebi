@@ -7,10 +7,11 @@
 
 // a1 in, a2 out, a3 ADD's second input (SUM: tiles a group, TOTAL: scratch), a4 the
 // chain mode, a5 the factor, a6 tiles a core, a7 SUM's and TOTAL's group, a8 ADD's.
-constexpr uint32_t kHandlerScale = 1;  // output tile = factor x input tile
-constexpr uint32_t kHandlerAdd = 2;    // input + second input's tile (a8 1: page 0)
-constexpr uint32_t kHandlerSum = 3;    // the group's input tiles summed, at its root
-constexpr uint32_t kHandlerTotal = 4;  // a copy's page 0 summed over the islands
+constexpr uint32_t kHandlerScale = 1;   // output tile = factor x input tile
+constexpr uint32_t kHandlerAdd = 2;     // input + second input's tile (a8 1: page 0)
+constexpr uint32_t kHandlerSum = 3;     // the group's input tiles summed, at its root
+constexpr uint32_t kHandlerTotal = 4;   // a copy's page 0 summed over the islands
+constexpr uint32_t kHandlerStamps = 5;  // the chain's stamps out (KM_CHAIN_STAMPS)
 constexpr uint32_t kChainMode = 1;
 
 // One of this program's handlers (a chain command names any of them).

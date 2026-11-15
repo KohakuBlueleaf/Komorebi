@@ -127,9 +127,12 @@ card: submit to done of the slowest island):
 | six calls (TOTAL, ADD into w), on the card, us | 535.7 | 603.0 |
 | six calls, on the host, us | 2,181.5 | 841.3 |
 
-The host saves its round trips as on one card; on the card each record after the first
-takes about 30 us more than its command over two islands (see the
-[reference](../../docs/reference/chain.md#over-islands)).
+The host saves its round trips as on one card. These are the times before the island fix
+in the [reference](../../docs/reference/chain.md#over-islands). On the card, each record
+after the first took about 30 us more than its command, in a root's walk over every group
+of the next record. Since the fix a root walks its own island's groups only (three calls
+148.4 -> 108.6 us). The remaining 12 us is still unsolved. Built with `KM_CHAIN_STAMPS`,
+STAMPS (handler 5) writes each core's stamps to page `me` of the bank address in a1.
 
 ## Output
 
