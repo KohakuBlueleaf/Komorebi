@@ -511,11 +511,35 @@ chain or on a stream) when a read must wait anyway.
 
 **The guard.** Refused when the chain is made: a read stated `prefetch=True` of a tensor
 a call of the chain writes, naming the call, the line and the tensor; a handler whose
-inline body takes a tensor (what it reads is its own C++), and a `kc.Call` among the
-class's calls (its tensors are names the build cannot compare). The automatic prefetch
-is on by default and costs nothing; off, every read waits for the input's marks.
+inline body takes a tensor and states neither `reads=` nor `writes=` (what it reads is
+its own C++), and a `kc.Call` among the class's calls (its tensors are names the build
+cannot compare). The automatic prefetch is on by default and costs nothing; off, every
+read waits for the input's marks.
 
 Described in [Programs written as classes, chains](classes.md#chains).
+
+### A body's reads and writes stated wrong
+
+**The hazard.** An inline body's `reads=[t]` and `writes=[t]` are the programmer's
+statement of what its C++ reads and writes in DRAM; a chain describes the call from
+them. A body that writes a tensor stated only in `reads=`, or reads or writes one it
+does not state, leaves the chain with a wrong description: a call after it can read the
+pages before they are written, or an outside input can change while the chain runs.
+You see stale or mixed words, and no error.
+
+**The rule.** State every tensor whose pages the body's C++ touches: `reads=` for what
+it only reads, `writes=` for what it writes (both when it does both). A tensor in
+`reads=` is never written by any call of the chain; one in `writes=` is read by no
+other call of the chain (read it in a later chain or command).
+
+**The guard.** At the build, `reads=` and `writes=` must name tensor parameters the
+body takes (refused at the line). At `run.chain`: a taken tensor stated in neither, a
+`reads=` tensor that a call of the chain writes, and a read by another call of a tensor
+a body writes are refused, naming the call, the line and the tensor. That the C++ does
+what is stated: nothing (the build does not read it).
+
+Described in [Programs written as classes, a body's reads and writes
+stated](classes.md#a-bodys-reads-and-writes-stated).
 
 ### A slice of a constant set's words
 
@@ -626,9 +650,36 @@ The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the 
 `ok && room`.
 
 **The guard.** A class's generated compute follows the rule at every reserve (a test
-checks the generated text). A hand kernel: nothing.
+checks the generated text: the products, the field reduce, a write stream's push of a
+copy, of a tile function's result and of a body's tile, a tile or a sum written to a
+page, a drained stream and its end). A body on compute that takes a written page gets
+its word as pack's (the page's address, 0 once pack's reserve gave up; the address on
+unpack and math): the class compiler refuses a body where that word steers a section,
+a copy, a product or a way out (`return`, `break`), and lets it guard `pack_tile`. A
+body that packs without testing the word packs into a buffer it holds no room in: the
+three threads stay in step, and the pages are the given-up command's, cleared at its
+end. A hand kernel: nothing.
 
 Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
+
+### A merged state read before pack wrote it
+
+**The hazard.** `km.reduce(self.state, ..., combine=MERGE)` runs the MERGE body once for
+each arrival, and each run reads the state the run before wrote in place. The state is
+written by pack and read by unpack, which share no variable and run apart: unpack can
+read the state of a merge pack has not yet packed, and the root's body after the merge
+can read it before the last merge. You see a state that misses an arrival, and no error.
+
+**The rule.** The MERGE body hands a token from its pack to its unpack after it writes
+the state (an own field `km.own(push="pack")`: pack pushes a page after its packs,
+unpack waits for it and frees it before it reads the state), as the attention pass's
+bodies do; the body after the merge waits for the last one.
+
+**The guard.** Nothing: the build runs the body as written. A sender's push of the
+state for mover B comes after the body's packs on pack itself.
+
+Described in [Programs written as classes, a state merged, not
+added](classes.md#a-state-merged-not-added).
 
 ### A vector word with a destination register of 12 or more
 
@@ -745,6 +796,22 @@ it in the B family.
 **The guard.** Nothing.
 
 Described in [Tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function).
+
+### A tile function's sqrt, reciprocal and division outside their domain
+
+**The hazard.** `km.sqrt(x)` is `x * rsqrt(x)` and `km.reciprocal(y)` the unit's
+estimate refined by two Newton steps, neither guarded: `km.sqrt` of a negative value,
+`km.rsqrt` of 0 or a negative value and `km.reciprocal(0)` (so `x / 0`) give what the
+words compute, not the IEEE answer (tt-metal's `sqrt_tile` and `div_binary_tile` test
+those cases; the unit program does not). `km.sqrt(0)` is 0.
+
+**The rule.** Give `km.sqrt` values of 0 or more and `km.rsqrt`, `km.reciprocal` and a
+divisor values away from 0, or write the guard in the expression (`km.maximum(x, 0.0)`),
+or use the inline body of the library's call.
+
+**The guard.** Nothing.
+
+Described in [Tile functions, what a tile function may contain](tile.md#what-a-tile-function-may-contain).
 
 ## X280 threads
 
@@ -969,6 +1036,28 @@ wait. SIGKILL: nothing, the card is reset.
 
 Described in [Host API, `Session`](host.md#session) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
+
+### A session that follows its kernels
+
+**The hazard.** A session not given `kernel_bytes` opens its card again at its first
+load when the kernels need another kernel buffer, and writes into each tensor again
+what it was given. It keeps the host arrays given to `session.tensor`, `session.write`
+and `tensor.write` by reference until that load, so an array changed in between is
+written as it is then, and bytes written through `tensor.buffer` itself are not
+written again. Where it cannot open the card again (a run already loaded, a session
+on a given device, an island or mesh session), the load is refused.
+
+**The rule.** Until the first load, do not change an array once it is given to the
+session, and write tensors through `session.tensor`, `session.write` or
+`tensor.write`. A session that loads a second, larger program gives `kernel_bytes`
+the size the refusal names.
+
+**The guard.** The refusals: `km.KernelSizeError` (or `km.L1BudgetError` for a
+smaller buffer) naming why and the size that holds the kernels; `km.KomorebiError`
+when a tensor comes back at another address. A changed array or a write through the
+buffer: nothing.
+
+Described in [Host API, the kernel buffer](host.md#the-kernel-buffer).
 
 ### A tensor or a thread's region touched while the kernels run
 

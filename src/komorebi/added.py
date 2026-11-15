@@ -5,6 +5,7 @@ runtime's service overlay (KM_HANDLER_ENTRY). The host writes no core's L1.
 """
 
 import dataclasses
+import importlib
 import time
 from dataclasses import dataclass, field
 
@@ -162,33 +163,76 @@ def _message_number(room, name, number):
 def _builds(run, made, log):
     """Each group's parts built against its kernels (cached), checked against its
     slots and the instruction check: [{part: Linked}], seconds, all cached."""
-    session = run.backend.session
-    cache = native.cache_directory() / "overlays"
     builds, cached, started = [], True, time.perf_counter()
     for each in run.backend.room.groups:
         images = {}
         for kernel, part in made.parts():
-            slots = each.slots.get(part)
-            if not slots or not slots[0]:
-                raise AddError(
-                    f"{made.name}: the load gave the {kernel} no overlay slots; "
-                    f"declare them with Program.slots(bytes={{{kernel!r}: n}})"
-                )
-            linked, elf, hit = overlay.build_part_cached(
-                each.recipes[part], made, kernel, part, cache, slots[1]
-            )
+            linked, hit = _part(run.backend.session, each, made, kernel, part)
             cached = cached and hit
-            if not hit and insn_check.enabled():
-                insn_check.check_kernels(
-                    made.name,
-                    [(made.sources[kernel], [elf])],
-                    native.metal_tree(session.tree),
-                    native.cache_directory() / "insn-check",
-                )
             images[part] = linked.image
             log(f"added {made.name}: {part} part {len(linked.image)} B")
         builds.append(images)
     return builds, time.perf_counter() - started, cached
+
+
+def _part(session, each, made, kernel, part):
+    """(Linked, whether it was in the cache) of one part of `made` built against the
+    kernels of group `each` and checked against its slot and the instruction check."""
+    slots = each.slots.get(part)
+    if not slots or not slots[0]:
+        raise AddError(
+            f"{made.name}: the load gave the {kernel} no overlay slots; "
+            f"declare them with Program.slots(bytes={{{kernel!r}: n}})"
+        )
+    cache = native.cache_directory() / "overlays"
+    linked, elf, hit = overlay.build_part_cached(
+        each.recipes[part], made, kernel, part, cache, slots[1]
+    )
+    if not hit and insn_check.enabled():
+        insn_check.check_kernels(
+            made.name,
+            [(made.sources[kernel], [elf])],
+            native.metal_tree(session.tree),
+            native.cache_directory() / "insn-check",
+        )
+    return linked, hit
+
+
+def ahead(program, name, parts, defines, compile_args, wanted):
+    """Program.ahead: keeps code a run of `program` will add (run.addon's `name`,
+    `parts`, `defines`, `compile_args`; or a class's handler at the set `wanted` that
+    its first use compiles) for the load to build (build_ahead)."""
+    if not isinstance(name, str):  # a class's handler at a set (km.ANY at the make)
+        first_use = importlib.import_module("komorebi.dsl.first_use")
+        name, parts, given = first_use.ahead(program, name, wanted)
+        defines, compile_args = given.get("defines"), given.get("compile_args")
+    elif wanted:
+        raise ProgramError(
+            f"{name}: constants ({', '.join(wanted)}) are a class handler's set; "
+            "name the handler (program.ahead(Class.handler, ...))"
+        )
+    made = overlay.declare(name, parts, 1, defines)  # its number: the add's
+    if compile_args:
+        made = dataclasses.replace(made, compile_args=dict(compile_args))
+    program.added_ahead = [*getattr(program, "added_ahead", ()), made]
+
+
+def build_ahead(session, room, programs):
+    """At a load: the parts of the code each program said a run will add
+    (Program.ahead), built against each group's kernels into the parts' cache (the
+    number is not in a part's key), so the add finds them built. Nothing is written
+    to the card; a load that reserved no room builds none."""
+    for program in programs:
+        for made in getattr(program, "added_ahead", ()) if room is not None else ():
+            started, hits, count = time.perf_counter(), 0, 0
+            for each in room.groups:
+                for kernel, part in made.parts():
+                    hits += _part(session, each, made, kernel, part)[1]
+                    count += 1
+            session.log(
+                f"ahead {made.name}: {count} parts for {len(room.groups)} groups in "
+                f"{time.perf_counter() - started:.2f} s ({hits} built before)"
+            )
 
 
 def _place(run, made, builds):

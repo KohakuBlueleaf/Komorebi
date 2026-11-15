@@ -67,6 +67,7 @@ def plan(spec, cores):
     holds every one) or {Program: (first, count)}; sets each program's field."""
     if isinstance(spec, Program):
         spec = [spec]
+    spec = loaded_first(spec, cores)
     if isinstance(spec, dict):
         programs = list(spec)
         ranges = [_range(program, spec[program], cores) for program in programs]
@@ -164,6 +165,27 @@ def core_args(placed, core):
         for kernel, part in zip(lists, program.core_args(core), strict=True):
             kernel += [0] * (program.args_at - len(kernel)) + list(part)
     return lists
+
+
+def loaded_first(spec, cores):
+    """`spec`, a program with a start-up of its own (load_start: a class's body at a
+    kernel's start or km.Startup, run at a load of the program) alone in a list made a
+    dict over every core: its run loads it before any command. In a list of several,
+    each core holds every program and none is loaded: refused."""
+    if not isinstance(spec, list | tuple):
+        return spec
+    started = [p for p in spec if getattr(p, "load_start", False)]
+    if started and len(spec) == 1:
+        return {spec[0]: (0, cores)}
+    if started:
+        raise ProgramError(
+            f"{started[0].name}: a start-up of its own (a body at a kernel's start or "
+            "startup=) runs at a load of the program; in a list every core holds "
+            "every program and none is loaded, and a start-up would set the hardware "
+            "up for one program under the others' commands: give a dict, each program "
+            "on its own cores"
+        )
+    return spec
 
 
 def check(program, count):

@@ -401,12 +401,21 @@ class Program:
         self.overlays[name] = made
         return self
 
-    def slots(self, count=None, bytes=None):
-        """Declares the slots of the kernels: `count` (1 to 4) and `bytes` per slot,
-        each an int or a {"reader"|"writer"|"compute": value}; by default a slot per
-        overlay with a part there, sized by its largest part. Named `bytes` also give
-        the kernels the path of an added handler (run.addon): KM_ADDED_HANDLERS."""
-        self.overlay_slots = Slots(count, bytes)
+    def ahead(self, name, parts=None, defines=None, compile_args=None, **wanted):
+        """Code a run of this program will add, built by the load (and by a build off
+        the card) into the parts' cache so the add finds it built: run.addon's `name`,
+        `parts`, `defines`, `compile_args`, or a class's handler at a set its first use
+        compiles, `program.ahead(Gate.gate, size=4)` (komorebi.added.ahead)."""
+        added = importlib.import_module("komorebi.added")  # it imports this module
+        added.ahead(self, name, parts, defines, compile_args, wanted)
+        return self
+
+    def slots(self, count=None, bytes=None, service=None):
+        """Declares the slots: `count` (1 to 4) and `bytes` per slot, each an int or a
+        {"reader"|"writer"|"compute": value}, and the service overlay's ("own",
+        "shared"; None: the load chooses). Named `bytes` also give the kernels the
+        path of an added handler (run.addon): KM_ADDED_HANDLERS."""
+        self.overlay_slots = Slots(count, bytes, service)
         if bytes is None:
             self.defines.pop("KM_ADDED_HANDLERS", None)
         else:

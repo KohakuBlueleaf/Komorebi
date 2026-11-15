@@ -274,8 +274,6 @@ def main():
         islands=args.islands or None,
         links=args.links,
         log=log,
-        # a split card: the session's (the link services, forwarding, in every kernel)
-        kernel_bytes=None if args.islands else 84 * 1024,
     ) as session:
         ranks = session.ranks
         graph = session.graph

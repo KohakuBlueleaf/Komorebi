@@ -9,7 +9,7 @@ import importlib
 import re
 from pathlib import Path
 
-from komorebi import native, overlay, programs
+from komorebi import _env, native, overlay, programs
 from komorebi import overlay as overlay_module
 from komorebi.errors import L1LayoutError, ProgramError
 from komorebi.program import Handler, Program
@@ -528,7 +528,8 @@ def build_units(recipe, name, kernel, part, units, cache, slot_bytes=None):
         made.append((wrapper, defines, compile_args, keep))
     provided = recipe.provided()
     digest.update(recipe.elf.read_bytes() + (overlay.SCRIPT + provided).encode())
-    digest.update(OWN_UNIT.encode())
+    digest.update(OWN_UNIT.encode() + overlay.checks_key().encode())
+    digest.update(_env.code_key("merge.py").encode())  # its units' wrapping
     work = Path(cache) / f"{stem}-merged-{digest.hexdigest()[:16]}"
     work.mkdir(exist_ok=True)
     objects = []
@@ -678,6 +679,12 @@ def _check_sources(sources):
                 f"{source.name}: made with sets of its handlers' constant parameters "
                 "(handlers=, km.ANY among them); a merged program builds each handler "
                 "once"
+            )
+        if getattr(source, "load_start", False):  # a class made form="runtime"
+            raise ProgramError(
+                f"{source.name}: a start-up of its own (a body at a kernel's start or "
+                "startup=), run at a load of the program; a merged program has one "
+                "load, its sources' start-ups not merged"
             )
         if source.overlays:
             raise ProgramError(

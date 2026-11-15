@@ -9,6 +9,7 @@ import copy
 import importlib
 import inspect
 import keyword
+import linecache
 import math
 import re
 import textwrap
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from komorebi import abi
 from komorebi.dsl import front
-from komorebi.dsl.names import kind_of, spelling
+from komorebi.dsl.names import NAMES, kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
 from komorebi.dsl.tile import trace, unit_program
 from komorebi.dsl.tile.ir import (
@@ -78,6 +79,12 @@ TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 # An inline body's CPU (on=): a mover, one compute CPU, or compute's three; the #if of
 # each one CPU's code.
 COMPUTE_CPUS = ("unpack", "math", "pack")
+# What compute's three CPUs run together in a body: a word of pack's alone must not
+# steer it (Compiler.pack_words_steer).
+STEERED = re.compile(
+    r"\btile_regs_\w+\s*\(|\bcopy_tile\s*\(|\bmatmul\w*\s*\(|\b(?!pack_)\w+_tile\s*\(|"
+    r"\b(?:return|break|continue|goto)\b"
+)
 BODY_CPUS = ("mover_a", "mover_b", *COMPUTE_CPUS)
 CPU_GUARDS = {
     "mover_a": "defined(COMPILE_FOR_BRISC)",
@@ -1059,6 +1066,7 @@ class HandlerCompiler:
         # Per read loop around the statement: its tile function, its other tile
         # lines, and the lines compute runs once before its blocks.
         self.loop_states = []
+        self.expression_calls = {}  # id of a tile expression's call: (call, function)
         self.blocks = []  # the statement lists around the statement, innermost last
         self.body_moves = []  # the movers' lines of an inline body's write stream
         self.held = {}  # a statement list -> its read streams bodies take (held_stream)
@@ -1836,6 +1844,7 @@ class HandlerCompiler:
         made = self.message_class(node, value)
         if made is not None:
             return self.made_message(node, name, made, value)
+        value = self.tile_expression(node, value) or value
         if self.tile_function_of(value) is not None:
             return self.tile_call(node, value, name)
         if (
@@ -3322,7 +3331,8 @@ class HandlerCompiler:
         self.stream_operands(node, function, a, b, columns, f"self.{field_}")
         state = self.loop_states[-1]
         state["whole"] = True  # the product takes the block, not its tiles
-        state["sums"] = sums  # mover B counts the loop's blocks into it
+        # mover B counts the loop's blocks into each field the loop adds to
+        state.setdefault("sums", []).append(sums)
         buffer = f"kField{camel(field_)}"
         inner = a.buffer.block
         width = max(w for w in range(1, DST_HALF + 1) if columns % w == 0)
@@ -3347,7 +3357,9 @@ class HandlerCompiler:
             )
         if state["function"] is None:
             state["function"] = "product"
+            state["product_init"] = init
             state["inits"].append(Line(f"{init}\nKM_PACK_FORMAT({buffer});"))
+        own, restore = product_setups(state.get("product_init"), init)
         self.compiled.includes |= {"pack"}
         self.compiled.unpack_fp32.add(buffer)
         self.compiled.products.append(
@@ -3373,6 +3385,7 @@ class HandlerCompiler:
         text = (
             f"{sums_reserve(sums, room, buffer)}"
             "if (km_ok) {\n"
+            f"{own}"
             f"    if ({room}) {{\n"
             f"        pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
             "    }\n"
@@ -3391,6 +3404,7 @@ class HandlerCompiler:
             f"    if ({room}) {{\n"
             "        pack_reconfig_l1_acc(0);\n"
             "    }\n"
+            f"{restore}"
             f"    {sums}++;\n"
             "}"
         )
@@ -3931,15 +3945,15 @@ class HandlerCompiler:
             f"if (!movement.move({moved})) {{\n    return false;\n}}", set(variables)
         )
         movement.append(move)
-        if state.get("sums"):  # a sum a block: mover B counts them as compute does
-            movement.append(
-                Line(
-                    f"{state['sums']} += ({first['pages'].count} + "
-                    f"{first['buffer'].name}Block - 1) / {first['buffer'].name}Block;",
-                    range_uses(first["pages"], self),
-                    mover="B",
-                )
+        movement.extend(  # a sum a block into each field, as compute counts them
+            Line(
+                f"{sums} += ({first['pages'].count} + "
+                f"{first['buffer'].name}Block - 1) / {first['buffer'].name}Block;",
+                range_uses(first["pages"], self),
+                mover="B",
             )
+            for sums in state.get("sums", ())
+        )
         for read in reads:  # after the loop: what each mover moved (a mover's body)
             self.scope[read["name"]] = Value("moved", f"km_moved{number}", move=move)
         self.wait(node, "mover A", WAIT_DATA)
@@ -4070,6 +4084,8 @@ class HandlerCompiler:
         construct = self.construct(call)
         if construct == "cxx":
             return self.inline(node, call)
+        if construct == "reduce":
+            return self.reduce(node, None, call)
         if construct == "result":
             self.refuse(
                 node,
@@ -4087,6 +4103,8 @@ class HandlerCompiler:
         class, or `f(...)` of the module's), or None."""
         if not isinstance(node, ast.Call):
             return None
+        if id(node) in self.expression_calls:
+            return self.expression_calls[id(node)][1]
         func = node.func
         if (
             isinstance(func, ast.Attribute)
@@ -4128,6 +4146,68 @@ class HandlerCompiler:
                 "write the loop's tile arithmetic in that tile function",
             )
         state["other"] = node
+
+    def tile_expression(self, node, value):
+        """`out.push(x * y)`, `t = km.silu(x) * y`: an expression of the loop's tiles,
+        numbers and km's tile arithmetic, made a tile function of those tiles (its
+        parameters in the order the expression names them) and returned as that
+        function's call; None when `value` names no tile of the loop."""
+        if not isinstance(value, (ast.BinOp, ast.UnaryOp, ast.Call)):
+            return None
+        if self.tile_function_of(value) is not None:
+            return None
+        arithmetic = {spelling(k) for k in NAMES if k.startswith("math_")}
+        for call in ast.walk(value):
+            if isinstance(call, ast.Call) and not (
+                (isinstance(call.func, ast.Name) and call.func.id == "abs")
+                or (
+                    isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "km"
+                    and call.func.attr in arithmetic
+                )
+            ):
+                return None  # a call of no tile arithmetic: not a tile expression
+        names = [n for n in ast.walk(value) if isinstance(n, ast.Name)]
+        tiles = []
+        for n in names:
+            kind = self.scope.get(n.id, Value("")).kind
+            if kind == "streamed" and n.id not in tiles:
+                tiles.append(n.id)
+        if not tiles:
+            return None
+        for n in names:
+            kind = self.scope.get(n.id, Value("")).kind if n.id in self.scope else None
+            if n.id == "self" or kind not in (None, "streamed"):
+                what = "self" if n.id == "self" else f"`{n.id}` ({kind})"
+                self.refuse(
+                    node,
+                    f"a tile expression reads the loop's tiles, numbers, module "
+                    f"constants and km's tile arithmetic, and {what} is none of them: "
+                    "the unit program's numbers are immediates built into its code",
+                    "write a number or a module constant there; a word of the "
+                    "command's line is a body's (km.cxx(..., gives=km.Tile))",
+                )
+        text = ast.unparse(value)
+        name = f"tile_line_{node.lineno}"
+        filename = (
+            f"<the tile expression of {Path(self.compiled.source).name}, "
+            f"line {node.lineno}>"
+        )
+        source = f"def {name}({', '.join(tiles)}): return {text}\n"
+        lines = ["\n"] * (node.lineno - 1) + [source]
+        linecache.cache[filename] = (len(source), None, lines, filename)
+        names_of = dict(self.names)
+        exec(compile("".join(lines), filename, "exec"), names_of)
+        function = front.TileFunction(names_of[name])
+        call = ast.Call(
+            func=ast.Name(id=name, ctx=ast.Load()),
+            args=[ast.Name(id=t, ctx=ast.Load()) for t in tiles],
+            keywords=[],
+        )
+        ast.copy_location(call, value)
+        self.expression_calls[id(call)] = (call, function)
+        return call
 
     def tile_call(self, node, call, name):
         """`t = self.f(a, b)` (or pushed): a, b the loop's stream tiles (or a row of
@@ -4510,6 +4590,9 @@ class HandlerCompiler:
                 f"{target.id} is not a write stream",
                 "open it with km.Stream(..., write=True)",
             )
+        pushed = call.args and self.tile_expression(node, call.args[0])
+        if len(call.args) == 1 and pushed:
+            call.args[0] = pushed
         if len(call.args) == 1 and self.tile_function_of(call.args[0]) is not None:
             _, made = self.tile_call(node, call.args[0], None)
             _, pushed = self.push_made(
@@ -4625,6 +4708,12 @@ class HandlerCompiler:
         summed = call.args[0] if len(call.args) == 1 else None
         if self.field_name(summed) in self.summed:
             return self.write_sums(node, pages, self.field_name(summed))
+        if (
+            self.tile_function_of(summed) is not None
+            and summed.args
+            and all(self.field_name(arg) in self.summed for arg in summed.args)
+        ):
+            return self.write_function_of_sums(node, pages, summed)
         if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
             self.refuse(node, "write one tile", "write pages.write(total)")
         name = call.args[0].id
@@ -4859,6 +4948,133 @@ class HandlerCompiler:
         self.wait(node, "mover B", WAIT_DATA)
         return [Line(movement, range_uses(pages, self), mover="B")], [
             Line(compute, {"km_ok"})
+        ]
+
+    def write_function_of_sums(self, node, pages, call):
+        """`t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of
+        fields of sums of one shape: each tile's fields copied into DST k (the unit's
+        operand order), f's body, DST 0 packed in t's format and written a row at a
+        time by mover B as `write(self.h)` is; the fields freed, the next sums start."""
+        function = self.tile_function_of(call)
+        fields = [self.field_name(arg) for arg in call.args]
+        sides = {self.field_sides(node, f) for f in fields}
+        if len(sides) > 1 or len(set(fields)) != len(fields):
+            self.refuse(
+                node,
+                f"{function.name} takes fields of sums of one shape, each once, and "
+                f"is given {', '.join('self.' + f for f in fields)}",
+                "give it fields of one shape",
+            )
+        ((rows, columns),) = sides
+        formats = [self.compiled.fields[f].format.dtype for f in fields]
+        why = tile_format_refusal(formats)
+        if why is not None:
+            self.refuse(node, f"{function.name}: {why}", "give it fields of those")
+        unit, cxx = self.tile_unit(node, function, formats)
+        if unit.products:
+            self.refuse(
+                node,
+                f"{function.name} has a matrix product (`@`), and its operands here "
+                "are fields of sums in L1, which the unit reads from DST",
+                f"add the product into a field (self.f += self.p(a, b)) and write "
+                f"{function.name} of the fields",
+            )
+        rect = pages.rect
+        bounds = pages.bounds or (None, None)
+        written = rect[:2] if rect is not None else ("1", pages.count)
+        fits = all(
+            side_fits(side, bound, most)
+            for side, bound, most in zip(written, bounds, (rows, columns), strict=True)
+        )
+        if not fits:
+            self.refuse(
+                node,
+                f"the fields are {rows} x {columns} tiles; write a rectangle of them",
+                f"write {pages.tensor}.{spelling('tiles')}[r:r + {rows}, c:c + "
+                f"{columns}].write({function.name}(...))",
+            )
+        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        name = f"kOutRows{columns}"
+        held = [b.pages[0] for b in self.compiled.buffers if b.name == name]
+        out = self.out_buffer(
+            dtype, page_bytes, f"line {node.lineno}: {self.text(node)}", columns, name
+        )
+        out.pages = (max(held + [columns * min(rows, 2)]),)
+        parameters = list(inspect.signature(function.function).parameters)
+        buffers = {f: f"kField{camel(f)}" for f in fields}
+        counts = [self.summed[f] for f in fields]
+        made = " && ".join(f"{sums} > 0" for sums in counts)
+        tile, out_room = f"km_tile{node.lineno}", f"km_room{node.lineno}"
+        lines = [f"// {self.text(node)}: {function.name} of the fields' sums"]
+        for f in fields:
+            buffer, sums = buffers[f], self.summed[f]
+            lines += [
+                f"if (km_ok && {sums} > 0) {{",
+                f"    if ({sums_room(f)}) {{  // pack's: its pages held",
+                f"        cb_push_back({buffer}, {buffer}Pages);",
+                "    }",
+                f"    km_ok = compute.wait_front({buffer}, {buffer}Pages);",
+                "}",
+            ]
+        first = buffers[fields[0]]
+        lines += [
+            f"if (km_ok && {made}) {{",
+            f"    KM_UNPACK_FORMAT_A({first});",
+            f"    copy_init({first});",
+            f"    MATH((km_tile::{cxx}_init()));  // {function.name}'s setup",
+            f"    bool {out_room} = true;  // pack's alone: it guards the packs only",
+            f"    for (uint32_t {tile} = 0; km_ok && {tile} < {rows * columns}; "
+            f"{tile}++) {{",
+            "        tile_regs_acquire();",
+        ]
+        for dst, operand in enumerate(unit.operands):
+            buffer = buffers[fields[parameters.index(operand)]]
+            lines.append(f"        copy_tile({buffer}, {tile}, {dst});")
+        lines += [
+            f"        MATH((km_tile::{cxx}(0)));",
+            "        tile_regs_commit();",
+            "        tile_regs_wait();",
+            f"        {out_room} = {out_room} && compute.reserve_back({out.name}, 1);",
+            f"        if ({out_room}) {{",
+            f"            KM_PACK_FORMAT({out.name});",
+            f"            pack_tile(0, {out.name});",
+            f"            cb_push_back({out.name}, 1);",
+            "        }",
+            "        tile_regs_release();",
+            "    }",
+            *[f"    cb_pop_front({b}, {b}Pages);" for b in buffers.values()],
+            "}",
+            *[f"{sums} = 0;" for sums in counts],
+        ]
+        tensor = f"{camel(pages.tensor)}({pages.tensor})"
+        row = f"km_row{node.lineno}"
+        row_step = rect[2] if rect is not None else columns
+        whole = str(written[0]) == str(rows)
+        part = "" if whole else f"{row} < ({written[0]}) &&\n    "
+        movement = [
+            f"if ({made}) {{",
+            f"    for (uint32_t {row} = 0; {row} < {rows}; {row}++) {{",
+            f"        if (!movement.wait_front({out.name}, {columns}) ||",
+            f"            {'(' if part else ''}{part}!km::write_pages(movement, "
+            f"command, {tensor}, {pages.first} + {row} * {row_step}, {written[1]}, "
+            f"get_read_ptr({out.name})){')' if part else ''}) {{",
+            "            return false;",
+            "        }",
+            "        noc_async_writes_flushed();",
+            f"        cb_pop_front({out.name}, {columns});",
+            "    }",
+            "}",
+            *[f"{sums} = 0;" for sums in counts],
+        ]
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        self.compiled.includes |= {"pack", "ask"}
+        self.moved(node, pages.tensor, "page write")
+        self.wait(node, "compute", WAIT_OUTPUT)
+        self.wait(node, "mover B", WAIT_DATA)
+        return [Line("\n".join(movement), range_uses(pages, self), mover="B")], [
+            Line("\n".join(lines), {"km_ok"})
         ]
 
     def read_word(self, node, name, pages):
@@ -5628,6 +5844,21 @@ class HandlerCompiler:
         group (by owner or by tree) at its rank 0, a slot of n tiles a sender;
         `km.reduce(self.part, ...)`: a field of sums, the same in L1."""
         field_ = self.field_name(call.args[0]) if len(call.args) == 1 else None
+        merging = any(keyword_.arg == spelling("combine") for keyword_ in call.keywords)
+        if name is None and not merging:
+            self.refuse(
+                node,
+                "a reduce's sum is a value: it is assigned",
+                f"write whole = km.reduce(...), or merge a state in place with "
+                f"{spelling('combine')}=",
+            )
+        if field_ is None and merging:
+            self.refuse(
+                node,
+                f"a reduce with {spelling('combine')}= merges a state written in "
+                "place: an own field of fp32 tiles",
+                f"write km.reduce(self.state, ..., {spelling('combine')}=MERGE)",
+            )
         if field_ is None:
             if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
                 self.refuse(
@@ -5643,8 +5874,11 @@ class HandlerCompiler:
                     "reduce the tile held in DST",
                     "write km.reduce(total, form=form)",
                 )
-        form, size = None, None
+        form, size, combine = None, None, None
         for keyword_ in call.keywords:
+            if keyword_.arg == spelling("combine"):
+                combine = keyword_.value
+                continue
             if keyword_.arg == spelling("group"):
                 size = self.constant_int(keyword_.value)
                 if size < 1:
@@ -5656,7 +5890,9 @@ class HandlerCompiler:
                 continue
             if keyword_.arg != spelling("form"):
                 self.refuse(
-                    node, f"a reduce has no {keyword_.arg}=", "use form= and group="
+                    node,
+                    f"a reduce has no {keyword_.arg}=",
+                    f"use form=, group= and {spelling('combine')}=",
                 )
             value = keyword_.value
             if isinstance(value, ast.Constant) and value.value in ("owner", "tree"):
@@ -5685,6 +5921,16 @@ class HandlerCompiler:
             group = f"km::digit_group(command, {{cpu}}.me(), 1, {size})"
             uses_group = set()
             self.leader_text = f"(km_rank - km_rank % {size})"
+        if combine is not None or name is None:
+            return self.merge_reduce(
+                node,
+                name,
+                field_,
+                (form, form_uses),
+                size,
+                (group, uses_group),
+                combine,
+            )
         if field_ is not None:
             return self.field_reduce(
                 node, name, field_, (form, form_uses), size, (group, uses_group)
@@ -5763,6 +6009,131 @@ class HandlerCompiler:
         tile.kind = "written"
         self.scope[name] = Value("reduced", name, buffer=out, width=width)
         self.reduced.append(name)
+        self.wait(node, "mover A", WAIT_PORT)
+        self.wait(node, "mover B", WAIT_EMIT)
+        self.wait(node, "compute", WAIT_INPUT)
+        return movement, compute
+
+    def merge_reduce(self, node, name, field_, form, size, group, combine):
+        """`km.reduce(self.state, form="tree", group=S, combine=MERGE)`: an own fp32
+        field written in place, merged up the group: the MERGE body on compute's three
+        for each arrival slot (`arrival_buffer`, `arrival_index`, the field by name); a
+        sender pushes the state for mover B's send, the root's stays in place."""
+        combine_ = spelling("combine")
+        if combine is None:
+            self.refuse(
+                node,
+                "a reduce's sum is a value: it is assigned",
+                f"write whole = km.reduce(...), or merge a state in place with "
+                f"{combine_}=",
+            )
+        if name is not None:
+            self.refuse(
+                node,
+                f"a reduce with {combine_}= leaves the merged state in place, at the "
+                "group's rank 0: it gives no value",
+                f"write km.reduce(self.state, ..., {combine_}=MERGE) on its own line",
+            )
+        own = f"km.{spelling('own')}(push=None)"
+        stored = self.compiled.fields.get(field_) if field_ else None
+        if (
+            stored is None
+            or field_ not in self.compiled.own
+            or self.compiled.own[field_] is not None
+        ):
+            self.refuse(
+                node,
+                f"{combine_}= merges a state written in place: an own field of fp32 "
+                "tiles that only bodies write",
+                f"declare it state: km.L1[km.fp32, n, 32, 32] = {own}",
+            )
+        if stored.format.dtype != "float32":
+            self.refuse(
+                node,
+                f"self.{field_} is {stored.format.dtype}: a merged state is fp32 "
+                "tiles, as the arrival's slots are",
+                f"declare self.{field_}: km.L1[km.fp32, ...] = {own}",
+            )
+        tiles = 1
+        for side in stored.shape[:-2]:
+            tiles *= side
+        merge = textwrap.dedent(
+            self.body_text(node, ast.Call(func=None, args=[combine], keywords=[]))
+        ).strip("\n")
+        form, form_uses = form
+        group, uses_group = group
+        if form == "km::kReduceOwner":
+            if size is None:
+                self.refuse(
+                    node,
+                    f"a merge by owner holds a slot of self.{field_}'s {tiles} tiles "
+                    "for each other core of the group, and the group's size is the "
+                    "command's",
+                    f'give {spelling("group")}=S, or merge by tree: form="tree"',
+                )
+            slots = max(1, size - 1)
+        elif form == "km::kReduceTree":
+            slots = TREE_ROUNDS if size is None else max(1, (size - 1).bit_length())
+        else:
+            self.refuse(
+                node,
+                f"a merge of self.{field_} sizes its slots by the form",
+                'write form="owner" or form="tree"',
+            )
+        number = self.arrivals
+        self.arrivals += 1
+        arrival = self.arrival_buffer(
+            number, slots, tiles, f"line {node.lineno}: {self.text(node)}"
+        )
+        self.compiled.unpack_fp32.add(arrival.name)
+        self.compiled.unpack_fp32.add(f"kField{camel(field_)}")
+        buffer = f"kField{camel(field_)}"
+        self.compiled.includes |= {"port", "pack"}
+        self.compiled.port_handlers.add(self.method.name)
+        uses = uses_group | form_uses
+        moving = group.format(cpu="movement")
+        movement = [
+            Line(
+                f"if (!km::reduce_arrive(movement, command, {arrival.name}, {moving}, "
+                f"{form})) {{\n    return false;\n}}",
+                uses,
+                mover="A",
+            ),
+            Line(
+                f"if (!km::reduce_emit(movement, command, {arrival.name}, {moving}, "
+                f"{form}, {buffer}, {buffer}Pages)) {{\n    return false;\n}}",
+                uses,
+                mover="B",
+            ),
+        ]
+        start = combine.lineno + 1 if isinstance(combine, ast.Constant) else node.lineno
+        body = (
+            f"const uint32_t arrival{spelling('tile_buffer')} = {arrival.name}.cb;\n"
+            f"const uint32_t arrival{spelling('tile_index')} = "
+            f"km::slot_page({arrival.name}, km_slot);\n"
+            f"const uint32_t {field_} = {buffer};\n"
+            f'#line {start} "{self.compiled.source}"\n{merge}\n#line RESUME'
+        )
+        inner = "\n".join("    " + line for line in body.split("\n"))
+        compute_group = group.format(cpu="compute")
+        compute = [
+            Line(
+                f"// self.{field_} merged with the group's: each arrival by the "
+                f"{combine_} body\n"
+                f"km_ok = km_ok && km::reduce(compute, {arrival.name}, "
+                f"{compute_group}, {form}, [&](uint32_t km_slot) {{\n{inner}\n}});\n"
+                f"if (km_ok && !km::reduce_send({compute_group}, {form}).root) {{  "
+                "// to mover B's send\n"
+                f"    const bool km_room_{field_} = compute.reserve_back({buffer}, "
+                f"{buffer}Pages);\n"
+                f"    if (km_room_{field_}) {{\n"
+                f"        cb_push_back({buffer}, {buffer}Pages);\n"
+                "    }\n"
+                "}",
+                uses | {"km_ok"},
+            ),
+        ]
+        self.compute_waits = True
         self.wait(node, "mover A", WAIT_PORT)
         self.wait(node, "mover B", WAIT_EMIT)
         self.wait(node, "compute", WAIT_INPUT)
@@ -6742,9 +7113,12 @@ class HandlerCompiler:
             )
         text = "\n".join(lines[included:])
         on, takes, gives, includes, at = "compute", [], None, [], None
+        stated = {}  # reads= and writes=: the tensors it reads or writes, stated
         for keyword_ in call.keywords:
             value = keyword_.value
-            if keyword_.arg == spelling("at"):
+            if keyword_.arg in (spelling("body_reads"), spelling("body_writes")):
+                stated[keyword_.arg] = value
+            elif keyword_.arg == spelling("at"):
                 at = self.kernel_at(node, value)
             elif keyword_.arg == spelling("on"):
                 if not (isinstance(value, ast.Constant) and value.value in BODY_CPUS):
@@ -6790,8 +7164,10 @@ class HandlerCompiler:
                 self.refuse(
                     node,
                     f"km.cxx has no {keyword_.arg}=",
-                    "use takes=, gives=, on=, include= and at=",
+                    f"use takes=, gives=, on=, include=, at=, "
+                    f"{spelling('body_reads')}= and {spelling('body_writes')}=",
                 )
+        self.stated_tensors(node, stated, takes)
         if at is not None:
             self.kernel_takes(node, takes, gives, name)
         if (gives is None) != (name is None):
@@ -6819,6 +7195,8 @@ class HandlerCompiler:
                 self.take_field(node, field, where, bound, before, after)
                 continue
             uses |= self.take(node, item, where, bound, before, after)
+        if where == "compute":
+            self.pack_words_steer(node, text, takes)
         kernel = "compute" if mover is None else "movement"
         guard = CPU_GUARDS.get(on)
         entries = [line.strip() for line in lines[:included]]
@@ -6865,6 +7243,72 @@ class HandlerCompiler:
         if mover is None:
             return moves, lines
         return lines, []
+
+    def stated_tensors(self, node, stated, takes):
+        """`reads=[t]` and `writes=[t]` of a body: tensor parameters it takes, whose
+        pages its own C++ reads or writes (a chain's description of the call; the
+        build cannot check the C++ against them)."""
+        taken = {item.id for item in takes if isinstance(item, ast.Name)}
+        for keyword_, value in stated.items():
+            if not isinstance(value, ast.List) or not all(
+                isinstance(item, ast.Name) for item in value.elts
+            ):
+                self.refuse(
+                    node,
+                    f"{keyword_}= is a list of the tensors the body {keyword_}",
+                    f"write {keyword_}=[t]",
+                )
+            for item in value.elts:
+                if getattr(self.scope.get(item.id), "kind", None) != "tensor":
+                    self.refuse(
+                        node,
+                        f"{item.id} in {keyword_}= is not a tensor parameter: "
+                        f"{keyword_}= names the tensors whose pages the body "
+                        f"{keyword_} in DRAM",
+                        f"name tensor parameters in {keyword_}=",
+                    )
+                if item.id not in taken:
+                    self.refuse(
+                        node,
+                        f"{item.id} is in {keyword_}= and not in "
+                        f"{spelling('takes')}=: a body states what it {keyword_} of "
+                        "what it takes",
+                        f"take it: {spelling('takes')}=[..., {item.id}]",
+                    )
+
+    def pack_words_steer(self, node, text, takes):
+        """A written page's word in a body on compute is pack's (0 once pack's reserve
+        gave up, the address on unpack and math): it may guard the packs only, and is
+        refused where it steers a section, a copy, a product or a way out (pack would
+        leave unpack and math held inside the unit)."""
+        words = [
+            item.id
+            for item in takes
+            if isinstance(item, ast.Name)
+            and getattr(self.scope.get(item.id), "kind", None) in ("write", "drained")
+        ]
+        for word in words:
+            mentions = re.compile(rf"\b{re.escape(word)}\b")
+            heads = []
+            for line in text.splitlines():
+                code = line.split("//")[0]
+                steered = any(mentions.search(head) for head in heads)
+                shared = STEERED.search(code)
+                if shared and (steered or mentions.search(code)):
+                    self.refuse(
+                        node,
+                        f"{word} is pack's word (0 once pack's reserve gave up, the "
+                        f"page on unpack and math): `{code.strip()}` would run on some "
+                        "of compute's CPUs and not on others",
+                        f"guard only pack_tile (and the packer's lines) with {word}; "
+                        "keep tile_regs_*, copies, products and the way out on all "
+                        "three",
+                    )
+                for char in code:
+                    if char == "{":
+                        heads.append(code)
+                    elif char == "}" and heads:
+                        heads.pop()
 
     def kernel_at(self, node, value):
         """`at="start"` or `at="end"`: a body at its kernel's start (before the
@@ -7013,6 +7457,8 @@ class HandlerCompiler:
                 value.waited = True
             bound.append(f"const uint32_t {item.id} = {value.buffer.name};")
             return set()
+        if value.kind == "reduced" and value.summed:
+            return self.take_sum(node, item.id, value, where, bound, before, after)
         self.refuse(
             node,
             f"{item.id} is a {value.kind} here: a body takes ints, partitions, "
@@ -7020,6 +7466,41 @@ class HandlerCompiler:
             "tensors (on a mover) and written tiles",
             "pass those",
         )
+
+    def take_sum(self, node, name, value, where, bound, before, after):
+        """A reduce's sum of a field, taken by a body of compute's three at the root:
+        the field's buffer and first tile bound (the group's sum, fp32), waited for
+        before the body and freed after it, as the hand's operation on the sum."""
+        field_ = value.summed
+        if not self.in_leader or value.popped:
+            self.refuse(
+                node,
+                f"{name} is the reduce's sum of self.{field_}, which only the leader "
+                "holds, once",
+                f"take it once in a body under `if self.{spelling('rank')} == "
+                f"self.{spelling('leader')}:`",
+            )
+        if where != "compute":
+            self.refuse(
+                node,
+                f"{name} is the group's sum in compute's L1 (fp32 tiles of "
+                f"self.{field_}): a body of compute's three takes it",
+                f"drop {spelling('on')}= from this body",
+            )
+        value.popped = True
+        self.leader_writes.add(name)
+        buffer = f"kField{camel(field_)}"
+        before.append(
+            Line(
+                f"if (!compute.wait_front({buffer}, {buffer}Pages)) {{  // {name}\n"
+                "    return;\n}"
+            )
+        )
+        bound.append(f"const uint32_t {name}{spelling('tile_buffer')} = {buffer};")
+        bound.append(f"const uint32_t {name}{spelling('tile_index')} = 0;")
+        after.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);  // {name} freed"))
+        self.wait(node, "compute", WAIT_INPUT)
+        return set()
 
     def cpu_address(self, node, name, address, cpu, bound, before, after, release):
         """An L1 address unpack knows, for a body on one compute CPU: unpack's own;
@@ -8031,6 +8512,17 @@ CXX_KEYWORDS = {
     "km",
     "uint32_t",
 }
+
+
+def product_setups(first, init):
+    """A loop's later product of sums whose setup (`init`: SrcA's and SrcB's formats,
+    the block's shape, a turn) is not the loop's first product's (`first`, set once
+    before the blocks): the lines that set its own before its K tiles and the first's
+    again after them; none when they are one."""
+    if first is None or first == init:
+        return "", ""
+    own = "".join(f"    {line}\n" for line in init.split("\n"))
+    return own, "".join(f"    {line}\n" for line in first.split("\n"))
 
 
 def sums_room(field_):

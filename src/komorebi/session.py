@@ -31,6 +31,7 @@ from komorebi import (
     insn_check,
     island_session,
     islands,
+    kernel_buffer,
     layout,
     native,
     overlay,
@@ -373,11 +374,16 @@ def slot_area(base, size, used, slow_code):
     size = -(-size // overlay.ALIGN) * overlay.ALIGN
     if base + size > L1_FAST_CODE and not slow_code:
         raise SlowCodeError(base, size, L1_FAST_CODE)
-    # below the highest index in use: the kernel config keeps its size
+    return base, size, slot_index(used)
+
+
+def slot_index(used):
+    """The slots' buffer index: the highest one below the highest index in `used`
+    (the kernel config keeps its size)."""
     free = set(range(max(used))) - set(used)
     if not free:
         raise ProgramError(f"no circular buffer index below {max(used)} for the slots")
-    return base, size, max(free)
+    return max(free)
 
 
 def visible_card():
@@ -510,12 +516,25 @@ def _transfer_chunk_of(session, held, switch, trace_cap, control_bytes):
     return channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
 
 
-def slot_rows(slots):
-    """The L1 budget table's rows of overlay slots ({part: (count, bytes)})."""
-    return [
+def slot_rows(slots, service=0, why=""):
+    """The L1 budget table's rows of overlay slots ({part: (count, bytes)}) and of the
+    service overlay's own reader slot (`service` bytes; 0: the reader's, `why`)."""
+    rows = [(f"slots: service (reader), 1 x {service:,} B", service)] if service else []
+    if why:
+        place = "its own" if service else "in the reader slots"
+        rows = [(f"slots: service (reader), {place}: {why}", 0)] + rows
+    return rows + [
         (f"slots: {part}, {count} x {size:,} B", count * size)
         for part, (count, size) in slots.items()
+        if count
     ]
+
+
+def fit_slots(built, declared, free, rows, log):
+    """`built` with the undeclared slot counts lowered until `rows` (the L1 table's
+    rows besides the slots) and the slots fit `free` bytes, where they can."""
+    room = free - sum(size for _, size in rows)
+    return overlay.choose(built, declared, room, log)
 
 
 def read_tensors(device, module, tensors, first=0, pages=None):
@@ -630,7 +649,8 @@ class Session:
         self.tree = tree
         self.log = log or (lambda message: None)
         self.grid_timeout = grid_timeout
-        self.kernel_bytes = kernel_bytes  # None: the runtime's default buffer
+        self.kernel_bytes = kernel_bytes  # None: the runtime's, then the kernels'
+        self._kept = kernel_buffer.Kept()  # the tensors made before the first load
         self.slow_code = slow_code  # slots may end above L1_FAST_CODE
         self._worker_l1 = worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
@@ -808,6 +828,7 @@ class Session:
             tensor.buffer.write(raw)
         else:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        self._kept.keep(tensor, data=(data, transposed_tiles))  # after: not the raw
         return tensor
 
     def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
@@ -816,6 +837,7 @@ class Session:
         tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid, address
         )
+        self._kept.keep(tensor, address)
         self._note_page(tensor)
         return tensor
 
@@ -966,6 +988,8 @@ class Session:
         """Writes `pages` ([n, page_bytes] uint8, as read() returns them) into pages
         first .. first + n - 1 of a tensor in DRAM or L1, through the host channel
         (also while a run is loaded); without it only a whole tensor, before a load."""
+        if tensor.kept is not None:  # the array given, for a reopened card
+            tensor.kept.append(("pages", pages, first))
         pages = np.ascontiguousarray(pages, np.uint8)
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
             raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
@@ -1216,7 +1240,62 @@ class Session:
         self.pll_mhz = X280_FALLBACK_MHZ
         return module.Dispatch(self.device, self.pll_mhz)
 
-    def load(
+    def load(self, program, *args, **options):
+        """Launches `program` (a list or {program: (first, count)}: the runtime's form)
+        on every core, then the dispatcher and the X280 thread; returns a Run
+        (docs/reference/host.md). A session not given `kernel_bytes` opens its card
+        again first when the kernels need another kernel buffer (kernel_buffer)."""
+        loading, self._kept.loading = self._kept.loading, True
+        try:
+            run = self._load(program, *args, **options)
+        except kernel_buffer.Resize as resize:
+            size, why = resize.size, resize.why
+        else:
+            self._kept.stop()
+            return run
+        finally:
+            self._kept.loading = loading
+        kernel_buffer.reopen(self, size, worker_l1_size(size), why)
+        self._kept.loading = True
+        try:
+            run = self._load(program, *args, **options)
+        finally:
+            self._kept.loading = loading
+        self._kept.stop()
+        return run
+
+    def _resize(self, total, l1_failed=False):
+        """Raises kernel_buffer.Resize when this session follows its kernels (no
+        `kernel_bytes` given, its own card alone) and kernels of `total` bytes need
+        another buffer: a larger one, or a smaller one when the L1 table failed.
+        Returns why it does not follow them, or None."""
+        size, buffer = kernel_buffer.need(total), self.l1()[0]
+        grow = size > buffer
+        if not (grow or (l1_failed and size < buffer)):
+            return None
+        refused = (
+            "the session was given kernel_bytes"
+            if self.kernel_bytes is not None
+            else (
+                "it did not open its card"
+                if not self._own_device or self.island is not None
+                else (
+                    f"{size} B is over the most, {KERNEL_BUFFER_MAX} B"
+                    if size > KERNEL_BUFFER_MAX
+                    else self._kept.refused()
+                )
+            )
+        )
+        if refused is not None:
+            return f"{refused}; Session(kernel_bytes={size}) holds them"
+        why = (
+            f"the kernels take {total:,} B"
+            if grow
+            else f"the L1 table does not fit and the kernels take {total:,} B"
+        )
+        raise kernel_buffer.Resize(size, why)
+
+    def _load(
         self,
         program,
         depth=None,
@@ -1238,10 +1317,7 @@ class Session:
         recover=True,
         reserve=added.RESERVE,
     ):
-        """Launches `program` (or programs in the runtime's form: a list, every core
-        holding each, or {program: (first, count)}) on every core, then the dispatcher,
-        then the X280 thread (`thread` "card" or "host"); returns a Run. The arguments
-        are described in docs/reference/host.md (`reserve`: room for Run.addon)."""
+        """Session.load's one try on the card as it is opened."""
         arguments = {k: v for k, v in locals().items() if k != "self"}
         fits = getattr(program, "fits_kernels", None)  # a merged class's: a load again
         if fits is not None and not program.fitting:  # with a handler as an overlay
@@ -1382,7 +1458,10 @@ class Session:
                 f"(text: {text})"
             )
             if build[-1]:
-                raise KernelSizeError(program.name, program.sizes, KERNEL_BUFFER_MAX)
+                refused = self._resize(program.sizes.total or KERNEL_BUFFER_MAX)
+                raise KernelSizeError(
+                    program.name, program.sizes, KERNEL_BUFFER_MAX, refused
+                )
             if insn_check.enabled():
                 insn_check.check_kernels(
                     program.name,
@@ -1801,21 +1880,20 @@ def _start_loads(run, placed, part=False):
 
 def _common_slots(placed, declared, built):
     """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, the reader one more for the service overlay, at most kOverlaySlotsMax) of
-    the largest part any program has there."""
+    program, at most kOverlaySlotsMax) of the largest part any program has there."""
     most = overlay.constants()["kOverlaySlotsMax"]
     slots = {}
     for made in built:
         for part, (_, size) in made.slots.items():
             slots[part] = max(slots.get(part, 0), size)
     count = declared.count
+    service = max(made.service for made in built)
     out = {}
     for part, size in slots.items():
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
-        service = part == "reader"  # the service overlay's slot beside them
-        out[part] = (wanted or min(len(placed.programs) + service, most), size)
-    return overlay.Built({}, out)
+        out[part] = (wanted or min(len(placed.programs), most), size)
+    return overlay.Built({}, out, service, service)
 
 
 def _program_cbs(buffers):
@@ -2276,7 +2354,24 @@ class _Backend:
             cores
         )
 
-    def describe(
+    def describe(self, *args, **options):
+        """_describe's descriptor with the slots' buffer declared first, its size
+        set once the overlays are built (_slot_buffer): what is built is launched."""
+        self.link_cb = None
+        launch = self._describe(*args, **options)
+        link_cb = set() if self.link_cb is None else {self.link_cb}  # the link cores'
+        self.slot_index = slot_index(self.cb_indices | link_cb)
+        launch.cb(self._slot_cores(), self.slot_index, "uint32", 64, 64, first=True)
+        return launch
+
+    def _slot_cores(self):
+        """The cores that hold slots: every rank (an island's link cores apart)."""
+        grid = (self.port.grid_x, self.port.grid_y)
+        if self.apart_links:  # the link cores hold their link area there: no slots
+            return programs.rectangles(0, grid[0] * grid[1] - self.apart_links, grid[0])
+        return [(0, 0, grid[0] - 1, grid[1] - 1)]
+
+    def _describe(
         self,
         program,
         sources,
@@ -2518,6 +2613,7 @@ class _Backend:
             )
         size = h["KM_QUEUE_BYTES"] + 2 * chunk
         launch.cb(rects, index, "uint32", size, size)
+        self.link_cb = index
         return [("KM_LINK_QUEUE", "1")]
 
     def _link_chunk(self, program, cores, apart=0):
@@ -2722,15 +2818,11 @@ class _Backend:
         """Every core's slots as the launch's first circular buffer, at the L1 base,
         so they lie below 1 MB and the buffers above them; returns their address."""
         base = L1_BYTES - self.session.l1()[1]
-        address, size, index = slot_area(
+        address, size, _ = slot_area(
             base, slot_bytes, self.cb_indices, self.session.slow_code
         )
-        grid = (self.port.grid_x, self.port.grid_y)
-        cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
-        if self.apart_links:  # the link cores hold their link area there: no slots
-            ranks = grid[0] * grid[1] - self.apart_links
-            cores = programs.rectangles(0, ranks, grid[0])
-        descriptor.cb(cores, index, "uint32", size, size, first=True)
+        index = self.slot_index  # declared by describe
+        descriptor.resize_cb(index, size, size)
         # a switch's buffers of every program field move up with the rest
         if getattr(self, "switch_layouts", None):
             for layout in self.switch_layouts.values():
@@ -2759,13 +2851,17 @@ class _Backend:
             native.cache_directory() / "overlays",
             session.log,
         )
-        program.overlays_built = built
         rows = session.l1_rows(program, self.trace_cap)
-        rows[2:2] = slot_rows(built.slots)
+        built = fit_slots(
+            built, program.overlay_slots, session.l1()[1], rows, session.log
+        )
+        program.overlays_built = built
+        rows[2:2] = slot_rows(built.slots, built.service, built.why)
         table, fits = overlay.budget(session.l1()[1], rows)
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
-            raise L1BudgetError(program.name, table, self._held_bytes())
+            refused = session._resize(program.sizes.total, l1_failed=True)
+            raise L1BudgetError(program.name, table, self._held_bytes(), refused)
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed = overlay.dram_rows(built, reserve)
         image = _words(session, image_rows)
@@ -2778,6 +2874,7 @@ class _Backend:
             [added.group(0, len(self.control_rows), recipes, built)],
             [program],
         )
+        added.build_ahead(session, self.room, [program])  # Program.ahead's parts
         area = overlay.area_words(
             built, placed, image.address, image.aligned_page_bytes, slot_base
         )
@@ -2913,7 +3010,9 @@ class _Backend:
                 rows = session.l1_rows(
                     placed.programs[0], self.trace_cap, placed, buffers=buffers
                 )
-                rows[2:2] = slot_rows(made.slots)
+                if not placed.switch:  # a switch's slots are common: sized below
+                    made = fit_slots(made, declared, session.l1()[1], rows, session.log)
+                rows[2:2] = slot_rows(made.slots, made.service, made.why)
                 table, fits = overlay.budget(session.l1()[1], rows)
                 names = ", ".join(program.name for program in held)
                 session.log(f"L1 budget of a core of {names}:\n{table}")
@@ -2924,7 +3023,8 @@ class _Backend:
                 program.overlays_built = made
             built.append(made)
             if not fits:
-                raise L1BudgetError(names, table, self._held_bytes())
+                refused = session._resize(placed.programs[0].sizes.total, True)
+                raise L1BudgetError(names, table, self._held_bytes(), refused)
         images, stored = {}, []
         service = overlay.constants()["kOverlayService"]
         for made in built:
@@ -2939,18 +3039,24 @@ class _Backend:
             stored.append(mine)
         if placed.switch:  # one set of slots, every program's parts fit any core's
             common = _common_slots(placed, declared, built)
-            built = [overlay.Built(made.images, common.slots) for made in built]
             rows = session.l1_rows(placed.programs[0], self.trace_cap, placed)
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
-            rows[2:2] = slot_rows(common.slots)
+            common = fit_slots(common, declared, session.l1()[1], rows, session.log)
+            built = [
+                overlay.Built(made.images, common.slots, common.service)
+                for made in built
+            ]
+            rows[2:2] = slot_rows(common.slots, common.service, common.why)
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
             if not fits:
+                refused = session._resize(placed.programs[0].sizes.total, True)
                 raise L1BudgetError(
                     ", ".join(p.name for p in placed.programs),
                     table,
                     self._held_bytes(),
+                    refused,
                 )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
@@ -2971,6 +3077,7 @@ class _Backend:
             ],
             placed.programs,
         )
+        added.build_ahead(session, self.room, placed.programs)  # Program.ahead's parts
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}
