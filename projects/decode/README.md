@@ -843,6 +843,101 @@ it is not a cost a command. The operations' row is 3.1 to 3.5 smaller (likely th
 tails under the next record's reads on other cores). The chain's unaccounted is zero by
 its form: its large row is the rest.
 
+## Stage 7: the chain further
+
+### Where the chain's time is
+
+With `--stamps` (`SPLIT_CHAIN_STAMPS`, off by default) each kernel adds the wall
+clock at a record's edges into words of its own in the chain's buffer, from its
+chain's start (`chain.h`'s `kChainStamp*`): the reader and the writer the record
+taken, W's first block issued, the time W's half held the next weight before the
+mark, the mark seen, the moves done, the root's output ready and its writes
+acknowledged, the next record's fetch; compute's pack its first chunk, its last
+product, the sum, the output. A SPLIT in `kChainStampsMode` writes each core's page
+to DRAM and zeroes it; the thread sums its own parts (records written, submit,
+wait). Stamped, a layer takes 0.6 us more (357.2 against 356.6).
+
+Each record's span runs from the record before's end (its slowest root's writes
+acknowledged) to its own; its terms are its median root's, and the tail is the
+slowest root's end against it, so the spans and the end add to the command exactly
+(`results/qwen3-1.7b-chain-stamps-x10.json`, 28 layers, 10 tokens, us a layer):
+
+| Record | Term | Kind | T 4096 | T 1024 | T 256 |
+|---|---|---|---:|---:|---:|
+| qkv | W at the ceiling | HARDWARE | 33.9 | 33.9 | 33.9 |
+|  | W's rate below the ceiling | OURS | -2.7 | -2.7 | -2.8 |
+|  | W read under the record before | OURS | 2.7 | 2.6 | 2.6 |
+|  | compute after the last chunk | OURS | 1.4 | 1.4 | 1.4 |
+|  | the tree's rounds | OURS | 6.0 | 6.2 | 6.2 |
+|  | the operation and the output | OURS | 14.8 | 14.8 | 14.8 |
+|  | the root's write and acknowledge | OURS | 1.2 | 1.2 | 1.2 |
+|  | the tail: the slowest root against the median | OURS | 16.2 | 7.1 | 5.7 |
+| | **span** | | **73.5** | **64.4** | **63.0** |
+| attend | its input's mark after the record before's end | OURS | -3.4 | -0.7 | -0.8 |
+|  | the cache's K and V at the ceiling | HARDWARE | 33.8 | 8.4 | 2.1 |
+|  | the busiest core's tile products | HARDWARE | 4.2 | 1.4 | 0.5 |
+|  | the exponent tiles (measured, d5) | HARDWARE | 3.5 | 1.1 | 0.2 |
+|  | attend's read, compute and merge above them | OURS | 41.8 | 43.8 | 45.8 |
+|  | the root's write and acknowledge | OURS | 1.0 | 1.0 | 1.2 |
+|  | the tail: the slowest root against the median | OURS | 6.0 | 2.0 | 2.1 |
+| | **span** | | **86.8** | **57.1** | **51.1** |
+| o | W at the ceiling | HARDWARE | 16.9 | 16.9 | 16.9 |
+|  | W's rate below the ceiling | OURS | -1.2 | 3.9 | 3.9 |
+|  | W read under the record before | OURS | -9.3 | -12.3 | -13.2 |
+|  | compute after the last chunk | OURS | 1.1 | 2.3 | 2.2 |
+|  | the tree's rounds | OURS | 5.1 | 9.0 | 8.8 |
+|  | the operation and the output | OURS | 4.5 | 6.5 | 6.5 |
+|  | the root's write and acknowledge | OURS | 0.7 | 0.7 | 0.7 |
+|  | the tail: the slowest root against the median | OURS | 0.1 | 4.5 | 4.0 |
+| | **span** | | **17.9** | **31.4** | **29.7** |
+| gate_up | W at the ceiling | HARDWARE | 101.6 | 101.6 | 101.6 |
+|  | W's rate below the ceiling | OURS | 6.8 | 4.4 | 4.0 |
+|  | W read under the record before | OURS | -18.1 | -20.1 | -19.2 |
+|  | compute after the last chunk | OURS | 2.2 | 2.2 | 2.2 |
+|  | the tree's rounds | OURS | 2.7 | 1.2 | 1.2 |
+|  | the operation and the output | OURS | 9.6 | 7.9 | 7.8 |
+|  | the root's write and acknowledge | OURS | 1.4 | 1.4 | 1.4 |
+|  | the tail: the slowest root against the median | OURS | 33.1 | 37.4 | 37.9 |
+| | **span** | | **139.2** | **136.0** | **136.8** |
+| down | W at the ceiling | HARDWARE | 50.8 | 50.8 | 50.8 |
+|  | W's rate below the ceiling | OURS | -26.5 | -27.2 | -27.1 |
+|  | W read under the record before | OURS | -13.9 | -15.7 | -15.9 |
+|  | compute after the last chunk | OURS | 1.0 | 1.0 | 1.0 |
+|  | the tree's rounds | OURS | 9.3 | 10.4 | 10.4 |
+|  | the operation and the output | OURS | 2.8 | 2.8 | 2.8 |
+|  | the tail: the slowest root against the median | OURS | 2.1 | 2.6 | 2.6 |
+| | **span** | | **25.5** | **24.6** | **24.5** |
+| | the command's end (the last writes, the report) | OURS | 3.0 | 2.8 | 2.8 |
+| | the thread: the records written | OURS | 8.8 | 8.8 | 8.8 |
+| | the thread: the submit | OURS | 1.1 | 1.1 | 1.1 |
+| | the thread: its wake past the event | OURS | 1.1 | 1.1 | 1.1 |
+| | the thread: the rest | OURS | 0.3 | 0.3 | 0.3 |
+| | **a layer** | | **357.2** | **327.5** | **319.1** |
+| | unaccounted | | 0.0 | 0.0 | -0.0 |
+
+| Record | cores waiting with W's half full | their wait (us) | the next record's fetch (us) |
+|---|---:|---:|---:|
+| qkv | 0 | 0.0 | 2.14 |
+| attend | 0 | 0.0 | 0.95 |
+| o | 120 | 38.3 | 0.90 |
+| gate_up | 91 | 19.4 | 0.82 |
+| down | 90 | 54.4 | 0.02 |
+
+Read together:
+
+- **The weights are read at about the ceiling overall.** The DRAM terms net -4.8
+  us at T 4096: the tails (gate_up 33.1, qkv 16.2) are the record still reading
+  while cores that are done read the next one's W (the credits under the record
+  before, -38.6, and the median root's read faster than its share, -23.6). qkv's
+  tail grows with T: the groups attend marks first read the cache meanwhile.
+- **DRAM idles while cores wait.** o's, gate_up's and down's cores hold the next W in
+  a full half and wait for their mark (o: all 120 cores for 38.3 us, under attend):
+  the command is 346 us, its DRAM reads at the ceiling 237.
+- **The thread's 11.3 us is writing the records** (8.8): 80 words a layer from the
+  X280 into DRAM. Submit and wake are 2.2.
+- What is ours and not about DRAM: attend above its hardware 41.8, the operations
+  31.7 (qkv's norms and rotation 14.8, the gate 9.6), the tree's rounds 23.1.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
