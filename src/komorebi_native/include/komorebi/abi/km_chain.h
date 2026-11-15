@@ -4,11 +4,12 @@
 
 /* A record: 16 words, 64 bytes, 64-byte aligned, at most kChainRecordsMax a chain. */
 enum {
-    kChainArguments = 0, /* words 0 to 9: the command's a0 to a9 */
-    kChainGroup = 10,    /* the command's cores: first | count << 16 */
-    kChainInfo = 11,     /* the info word (below) */
-    kChainRanges = 12,   /* three: base | step << 12 | width << 20 | root only << 31 */
-    kChainNext = 15,     /* the next record's address in the same bank; 0: the last */
+    kChainArguments = 0,  /* words 0 to 9: the command's a0 to a9 */
+    kChainGroup = 10,     /* the command's cores: first | count << 16 */
+    kChainInfo = 11,      /* the info word (below) */
+    kChainRanges = 12,    /* three: base | step << 12 | width << 20 | root only << 31 */
+    kChainNext = 15,      /* the next record's address (same bank; 0 the last) | row */
+    kChainRowMask = 0x3F, /* the next word's bits 0 to 5: the record's stamp row */
     kChainWords = 16,
     kChainRecordBytes = 64,
     kChainRecordsMax = 256
@@ -23,7 +24,7 @@ enum { kChainMarked = 1, kChainSends = 2, kChainDataMark = 4 };
 enum { kChainTokenShift = 4, kChainTokenMask = 0xF };
 
 /* Info bits 8 to 31: what a core reads of the record before's output, the group's
- * size and a group's output tiles (0: the program says them), the stamp row. */
+ * size and a group's output tiles (0: the program says them), the record's handler. */
 enum {
     kChainNeedsK = 0,      /* bit 8 clear: its rank's share of range 0 (a K range) */
     kChainNeedsRanges = 1, /* bit 8 set: range i from base + step x its group */
@@ -33,7 +34,7 @@ enum {
     kChainSizeMask = 0x7F,
     kChainWidthShift = 16, /* bits 16 to 23 */
     kChainWidthMask = 0xFF,
-    kChainRowShift = 24 /* bits 24 to 31 */
+    kChainHandlerShift = 24 /* bits 24 to 31; 0: the chain command's handler */
 };
 
 /* The chain's words and two record slots on each core: the runtime's trace buffer's

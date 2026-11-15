@@ -49,7 +49,7 @@ namespace {
             if (!read_tile(reader, command, command.a1, tile, out)) {
                 return;
             }
-            if (command.a0 == kAdd) {
+            if (km::handler(command) == kHandlerAdd) {
                 const uint32_t other = get_write_ptr(kCbOther);
                 if (!read_tile(reader, command, command.a3, tile, other)) {
                     return;
@@ -105,20 +105,20 @@ void kernel_main() {
     km::Reader reader;
     km::chain_start();
     const auto product = [&](const km_command_t& command) {
-        if (km::handler(command) != kHandlerStep) {
+        if (!step_handler(km::handler(command))) {
             return;
         }
         if (!km::chain_input(km::ChainShape{}, reader)) {  // a chain's record: marked
             return;
         }
-        if (command.a0 == kSum) {
+        if (km::handler(command) == kHandlerSum) {
             sum_tiles(reader, command);
         } else {
             map_tiles(reader, command);
         }
     };
     reader.run([&](const km_command_t& command) {
-        if (km::handler(command) == kHandlerStep && command.a4 == kChainMode) {
+        if (step_handler(km::handler(command)) && command.a4 == kChainMode) {
             km::chain_reader(reader, command, product);
         } else {
             product(command);

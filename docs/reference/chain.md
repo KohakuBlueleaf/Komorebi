@@ -40,9 +40,12 @@ A program runs chains with three things of its own; the rest is the framework's.
 | buffer index 31, one page of at least 1,808 bytes: the chain's words and two record slots on each core | the program's buffers; it is the runtime's trace buffer's index, so a chain's program runs untraced |
 | in each kernel, the chain command handed to the framework's walk, and in the step, the wait for its input and the marks after its output | the kernels (below) |
 
-The record's handler is the chain command's: every call of a chain names the same
-handler, and a program with several operations selects them by a word of the call
-(example 29's a0, the decode program's a4 and a6).
+Each record names its handler, one of the chain's program: a core goes from one
+handler to the next by itself (example 29: SCALE, SCALE, ADD, SUM). A record whose
+handler field is 0 runs the chain command's handler (the decode program's five calls
+are one handler's, its records keep 0). The chain command goes to the first call's
+handler with the chain mode in a4, so every kernel hands a chain command of any of the
+program's handlers to the walk.
 
 ## The record
 
@@ -55,7 +58,7 @@ plain C for the device, the X280 and the host).
 | 10 | its cores: first \| count << 16 |
 | 11 | the info word (below) |
 | 12 to 14 | three range words: base \| step << 12 \| width << 20 \| root only << 31 |
-| 15 | the next record's address in the same DRAM bank; 0: the last |
+| 15 | the next record's address in the same DRAM bank (0: the last), its bits 0 to 5 the record's stamp row |
 
 | Info bits | Holds |
 |---|---|
@@ -66,7 +69,7 @@ plain C for the device, the X280 and the host).
 | 8 | what a core reads of the record before's output: 0 its rank's share of a K range (range word 0's base and width, over the group's ranks), 1 the range words (range i from base + step x its group's index, width tiles) |
 | 9 to 15 | the group's size (0: the program says) |
 | 16 to 23 | the output tiles a group writes (0: the program says) |
-| 24 to 31 | the record's stamp row |
+| 24 to 31 | the record's handler (0: the chain command's) |
 
 Group g of a record is cores first + g x size on; its root (rank 0) writes block g of
 the output, tiles g x width to (g + 1) x width - 1.
@@ -103,14 +106,14 @@ const auto step = [&](const km_command_t& command) {
     if (!km::chain_input(km::ChainShape{}, reader)) {  // a chain's record: marked
         return;
     }
-    if (command.a0 == kSum) {
+    if (km::handler(command) == kHandlerSum) {
         sum_tiles(reader, command);
     } else {
         map_tiles(reader, command);
     }
 };
 reader.run([&](const km_command_t& command) {
-    if (km::handler(command) == kHandlerStep && command.a4 == kChainMode) {
+    if (step_handler(km::handler(command)) && command.a4 == kChainMode) {
         km::chain_reader(reader, command, step);
     } else {
         step(command);
@@ -140,7 +143,7 @@ From an X280 thread, `kmx_chain.h` writes the same records and the chain command
 
 | Call | What it does |
 |---|---|
-| `kmx_chain_record(region, index, &call, next, &address)` | `call` (a `kmx_chain_call`: the command, flags, word, a K range or three ranges, size, width, row) as record `index` of a region, its next record at `next`; `address` what the chain command and other records name it by |
+| `kmx_chain_record(region, index, &call, next, &address)` | `call` (a `kmx_chain_call`: the command, flags, word, a K range or three ranges, size, width, row, handler: 0 the chain command's) as record `index` of a region, its next record at `next`; `address` what the chain command and other records name it by |
 | `kmx_chain_command(&chain, region, handler, cores, mode, a0, a1)` | the chain command from the region's record 0 |
 | `kmx_chain_range(base, step, width, root_only)` | a range word |
 
@@ -170,7 +173,9 @@ root sends and to how many cores.
 | an earlier input that the call before writes (it is this call's input) | the call, the tensor |
 | a direct input not read by a share of K, from more than one root, or past its landing area | the call, the core, the tiles |
 | a group size that does not divide the call's cores, over 127, or a width over 255 | the call |
-| calls of different handlers, more than one per-submit word, more than 256 calls | the chain |
+| a call of a handler of another program than the first call's | the call, both program fields |
+| a handler number over 255, a stamp row over 63 | the call |
+| more than one per-submit word, more than 256 calls | the chain |
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
 
 On the card a record with a bad address, a next record not 64-byte aligned or a chain
@@ -184,15 +189,40 @@ Blackhole p150a, 2026-11-15.
 
 | | A command a step | One chain |
 |---|---:|---:|
-| on the host, us a run | 721.0 | 268.2 |
-| on the card (the dispatcher's submit to done), us a run | 130.5 | 126.3 |
+| on the host, us a run | 703.6 | 266.9 |
+| on the card (the dispatcher's submit to done), us a run | 130.6 | 126.3 |
 
 The card's work is the same either way; the chain removes three of the host's four
-round trips (about 150 us each on this host).
+round trips (about 145 us each on this host).
 
 The decode project, a whole token of 28 layers (140 records) as one chain on 120 cores,
 10 tokens: 314.9 / 287.0 / 278.5 us a layer at T 4096 / 1024 / 256 on the framework's
 chain, within the spread of its own chain before (315.0 to 315.2, 287.1 to 288.2, 278.6
-to 279.9), the token equal to a command a step at 2 and 28 layers. Its kernels grew by
-80 bytes with the move (85,568 of 86,016). The chain's words take one page of buffer 31
-on each core.
+to 279.9), the token equal to a command a step at 2 and 28 layers, the real prompt's 16
+tokens equal to the reference. The chain's words take one page of buffer 31 on each
+core.
+
+| Decode, 28 layers, 10 tokens | T 4096 | T 1024 | T 256 | kernels (of 86,016 B) |
+|---|---:|---:|---:|---:|
+| its own chain before the move, us a layer | 315.2 | 287.1 | 278.6 | 85,488 |
+| the framework's chain, one handler a chain | 314.9 | 287.0 | 278.5 | 85,568 |
+| the framework's chain, a record names its handler | 315.2 | 286.9 | 278.7 | 85,856 |
+
+A record naming its handler costs decode nothing measurable (the last two rows differ
+by +0.3 / -0.1 / +0.2 us, inside the run-to-run spread) and 288 bytes of kernel code:
+the header set from the record and the next word's row masked off, at every place a
+record's command or its next address is read, in all five kernels. With the chain's
+stamps compiled in (`KM_CHAIN_STAMPS`) the decode kernels are 90,240 bytes, 128 over
+their 90,112: that build needs a larger kernel buffer than it has.
+
+## A handler as an overlay
+
+A record's handler can load and call overlays in its step as any handler does: the
+decode program's records call their operations (the norms, the rotation, attention, the
+residual) as overlays, at the [overlays' costs](overlays.md#costs) (72 cycles a load
+when the slot holds it). A record cannot name a handler of a program placed as an
+overlay ([a program as an overlay](overlays.md#a-program-as-an-overlay)) other than
+the chain's own: the record's command keeps the chain command's program field, and the
+walk runs inside one program's kernels, so the runtime's load of another program
+between two records does not happen. Whether a program in the runtime's form runs a
+chain at all has not been tried.
