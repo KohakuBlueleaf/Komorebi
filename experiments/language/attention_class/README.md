@@ -1,69 +1,123 @@
-# Attention, as a class: what a class cannot say
+# Attention, as a class
 
 Question: can the attention project's program
 ([projects/attention](../../../projects/attention/README.md)) be written as a class
-([Programs written as classes](../../../docs/reference/classes.md)), as the ray tracer's
-trace pass was ([raytrace_class](../raytrace_class/README.md)): every arithmetic body
-the hand program's, inline and unchanged (`ktt_flash`'s compute with `sfpu.hpp`),
-every move a class line? And where it cannot, which line is missing?
+([Programs written as classes](../../../docs/reference/classes.md)), with every move a
+class line and every compute step the hand program's? And does it give the hand's O,
+word for word, in the hand's time?
 
-It cannot be written yet. Rows 1 to 3 below are now built; the rows from 4 on are
-not. Before row 1 the compute body's own buffers could not be made: a body that takes a field which no line fills is refused at
-its line ("self.state is not filled above in this handler ..., and no other handler
-keeps it filled"), and an inline body cannot declare a buffer. Without them the
-compute body would have to change, so the pass stops at this table: no class file and
-no card run. Each row is one thing the hand program does and no line says, with the
-general line that would say it, its size in the compiler (an estimate, in lines of
-`src/komorebi/dsl/`), and where the ray tracer's, the rasterizer's and the decode
-project's hand programs need the same (paths under each project). The rows are ordered
-by how many of the four places need them.
+It can. `attention.py` makes the class `Attention`, one handler `attend` with the hand
+program's ATTEND words in the hand's order (a0 q .. a8 job_count). The script runs the
+hand program (`card.Attention`) and then the class in one session, on the same Q, K, V
+and job tables, and compares the two O tensors. The compute steps are in `flash.hpp`:
+the hand's compute (`kernels/compute.cpp`, the body of Kohaku-TT's `ktt_flash`, with
+`sfpu.hpp` included as it is), as a template on the class's buffers.
 
-## What a class can say of it today
+```python
+for _ in range(max(passes, 1)):
+    for job in jobs[first_job:end]:
+        r0 = job.q // DT
+        qs = km.Stream(
+            q.tiles[
+                r0 : min(r0 + R * job.stride, r0 + job.rows * job.stride) : job.stride,
+                0:DT,
+            ],
+            block=QB,
+        )
+        k0 = job.k // DT
+        v0 = job.v // DV
+        for b in range((job.keys + KB - 1) // KB):
+            kr = k0 + b * KB
+            vr = v0 + b * KB
+            if down.sender():
+                kv = down.cast(
+                    k.tiles[kr : min(kr + KB, k0 + job.keys), 0:DT].T,
+                    v.tiles[vr : min(vr + KB, v0 + job.keys), 0:DV],
+                )
+            else:
+                kv = down.arrive()
+            km.cxx(
+                "...Flash<kv_buffer, ...>::block(job_rows, ...)...",
+                takes=[qs, kv, job, b, ...],
+            )
+        o0 = job.o // DV
+        out = km.Stream(
+            o.tiles[
+                o0 : min(o0 + R * job.stride, o0 + job.rows * job.stride) : job.stride,
+                0:DV,
+            ],
+            write=True,
+            block=DV,
+        )
+        for row in range(job.rows):
+            km.cxx("...Flash<...>::finalize(row)...", takes=[out, row, ...])
+```
 
-- The two handlers and their words: `attend(q, k, v, o, tables, mode, passes,
-  first_job, job_count)` and `prof(profile, zero)`, the command words a0 to a8 and a0
-  to a1 in the hand's order.
-- The plan's sizes as module constants (head tiles, value tiles, rows R, block keys
-  KB, the window) and the exponential's constants (scale bits, threshold bits).
-- The passes, `for _ in range(max(passes, 1))`, and the jobs' end (all jobs when
-  job_count is 0, else `min(first_job + job_count, jobs)`), once the job count is an
-  int of the handler (row 5).
-- The job table's page as a field of words filled each command,
-  `self.table.fill(km.Stream(tables.pages(self.rank, 1)))`. Only bodies could read
-  it (row 5).
-- The compute options HiFi2 and fp32 DST (`compute={...}`); the float32 buffers'
-  unpack to DST is row 2.
-- The submit with `KM_FLAG_EXCLUSIVE` (`Run.submit(..., exclusive=True)`).
+## Each thing the hand program does, and its line
 
-## The table
+The rows are the ones this page listed before the class could be written: what the
+hand program does that no line said.
 
-| # | What the hand program does | The general line that would say it | Size (estimate) | Ray tracer | Rasterizer | Decode |
-|---|---|---|---|---|---|---|
-| 1 | Compute's own buffers, of three kinds: a FIFO between its CPUs (P, 3 bf16 pages from pack to unpack; two token buffers from pack to unpack and math), slots written in place (the row state, 2 R float32 tiles at `pack_tile<true>` slots; O and the row sums, R x (Dv + 1) float32 tiles with L1 accumulation), constants built once (the ones tile, the causal mask); none moved by a mover | BUILT: `p: km.L1[km.bf16, 3, 32, 32] = km.own()`, a buffer of its format and pages given to bodies by name (`takes=[self.p]` binds `p`, its index), never filled, waited for or freed by a line; one pushing CPU, `km.own(push="pack")` or `push=None` for a buffer written in place ([own_buffer](../own_buffer/README.md)) | 50 to 70 | yes: `kernels/compute.cpp`'s work pages, signal, packet states, lists and slots (the treelet path) | yes: `kernels/setup_compute.cpp`'s work space, `kernels/writer.cpp`'s empty tile, the histograms and list slots | yes: `kernels/attend/compute.cpp`'s scores, reference, P, rescale and state buffers |
-| 2 | Unpack to DST as float32 keyed by those buffers (O and the row state, `unpack_to_dest_mode`); the class refuses the option and sets it from its float32 streams alone | BUILT with row 1: a float32 own field is unpacked to DST as float32, as a float32 stream is | 10 (with row 1) | yes: `card.py`, the packet states | no | yes: `card.py`, the arrivals, the sums and the state buffers |
-| 3 | The profile page of five CPUs' words: the reader's (Q waits and reads, the sender's slot waits, K / V reads, casts, arrivals, finish), unpack's, math's and pack's (each at its own submit), the writer's; stored by `prof` and zeroed | BUILT: pack's body fills the page, `km.cxx(..., takes=[report, rays, self.handoff], on="mover_b")` adds the movers' words before the movers write it; mover A's words by an own field it pushes (`km.own(push="mover_a")`); the loop's name on a mover after the loop gives `rays_tiles`, `rays_cycles` ([raytrace_class](../raytrace_class/README.md)). Attention's page needs unpack's and math's words too: a word of one compute CPU into pack's page is still not a line | more than 40 | yes: the trace pass's profile page (the walk's, the reader's and the writer's words) | yes: `kernels/reader.cpp`'s and `kernels/writer.cpp`'s counts at the directory page's end | no |
-| 4 | Defines the unchanged bodies test: `FLASH_CAUSAL`, `FLASH_APPROX`; `BROADCAST_ON_WRITER` moves the broadcast to the writer | the class's defines, `class A(km.Program, defines={...})`, or made from the plan | 10 | no | no | yes: `card.py`'s `DC_KEYS_MOST`, `DC_EPSILON` and the emitted bodies' defines |
-| 5 | The job table: a 4,096 B page each command, its word 0 the job count, then 8 words a job (first Q, K, V, O pages, rows, the first row, key tiles, the row step); the reader pushes it to compute, the writer reads its own copy, and each CPU walks the jobs, its streams and broadcasts inside that loop | a page's words as a table of entries, `for job in tables.pages(self.rank, 1).entries(first=8, size=8, count=0)`, each `job[i]` an int of every CPU (mover A's read pushed to compute, mover B's own), the streams and broadcasts inside the loop kept in step on the three kernels | 150 to 250 | no (two words of its directory: `.read()[0:2]`) | yes: `kernels/reader.cpp`'s directory, its item ids (up to 997 a page) | no (its words are the command's) |
-| 6 | Compute packs each finished row's Dv tiles into the output buffer (`pack_tile`, a timed reserve of the row, then push), the writer writes them at O's page `first + row x stride x Dv` | a write stream that a pack body fills by `pack_tile` (its buffer given, the reserve and push the line's), and a write stream of a rectangle with a row step (row 7's) | 25 | no (its hits are written by address) | no (its pages are written by address) | yes: `kernels/attend/compute.cpp` packs a head's tiles into the split's output buffer |
-| 7 | Q's rows of a job: `rows` rows of DT tiles, `stride` tile rows apart (a causal call's rows L apart), into one block of R x DT pages reserved whole (a short job fills part of it) | a rectangle with a row step, `q.tiles[r0:r1:s, 0:DT]` (a `km::Walk` with a row pitch of s x T), and a stream of one block a job whose block may be partly read | 40 | no | no | no |
-| 8 | A broadcast's block from two tensors: K's tiles head-tile-major `[DT][KB]` (page `(k0 + key) x DT + h` to slot `h x KB + key`), then V's `[KB][Dv]`, read by the sender into the slot it reserved, then cast | a cast of several page ranges into one block in order, and a transposed rectangle, `b.cast(k.tiles[k0:k1, 0:DT].T, v.tiles[k0:k1, 0:DV])` | 60 | no | no | no |
-| 9 | Broadcasts in bands of L rows down each grid column, on a chosen NoC: the reader's NoC 0 by default, the writer's NoC 1 with `BROADCAST_ON_WRITER`; the sender each band's top; L from the plan (2, 5 or 10) | a broadcast's length and mover, `km.Broadcast(self, along="column", length=L, mover="A")`; today a column's broadcast is the rectangle's whole column on mover B (NoC 1), the hand's `--noc 1` form, and the same as the hand's only at L 10 | 40 | no | no | no (its heads meet by ports) |
-| 10 | A broadcast's blocks counted over the whole command (passes x jobs x the job's blocks), the receivers' padding to the window after the last (`km::broadcast_end` with the count) | the broadcast's blocks counted over every loop around its cast; today block by block of the one loop around it | 30 | no | no | no |
-| 11 | Compute takes a block from the broadcast and its bodies index K's and V's pages inside it (the score's `head_tile x KB + chunk_start`, P V's `first value page + key x Dv + column`), then hands it back (`km::broadcast_done`) | a body that takes a broadcast's received block whole: its buffer and the block's first page, freed after the body; today `for tile in v:` gives each page | 30 | no | no | no |
-| 12 | Compute's start and end, outside the command loop: `compute_kernel_hw_startup<SrcOrder::Reverse>(Q, KV, P)`, `flash::init(scale)`, `macro_init`, `addr_init`, the ones and causal tiles built and packed once, the row state and O reserved once; `restore_constants` after the loop | bodies at the kernel's start and end, `km.cxx(..., at="start")` and `at="end"`, and the start-up's operand buffers and source order on the class | 40 | no (its start-up is the class's) | no | no |
-| 13 | The cut-down modes: compute only pushes the broadcast buffer's blocks unread and pads to the window; broadcast only has compute pop the blocks unused; no row written | a broadcast's block pushed without a read or a cast (the `if mode` around it is a line today) | 20 | no | no | no |
+| # | What the hand program does | The line |
+|---|---|---|
+| 1 | Compute's own buffers: P (pack to unpack), the two tokens, the row state and O written in place, the ones and causal tiles | `p: km.L1[km.bf16, 2 * SUB, 32, 32] = km.own(push="pack")`, `state: km.L1[km.fp32, 2 * R, 32, 32] = km.own(push=None)` and the others |
+| 2 | The float32 buffers unpacked to DST as float32 | a float32 own field (`state`, `acc`) |
+| 3 | The profile page of five CPUs' words | not in this class (below) |
+| 4 | `FLASH_CAUSAL` and the sizes the unchanged steps test | `class Attention(km.Program, defines={...})`; `Attention(..., defines={"FLASH_CAUSAL": 1, "FLASH_SCALE_BITS": ...})` at the make |
+| 5 | The job table, 8 words a job from word 8, the count at word 0, on all CPUs | `jobs = tables.pages(self.rank, 1).entries(Job, first=8, size=8, count=0)`, `for job in jobs[first_job:end]:` |
+| 6 | Each finished row's DV tiles packed and written at O's row `first + row x stride` | a write stream of O's stepped rectangle, `block=DV`, that the row loop's body fills (`out_buffer`) |
+| 7 | Q's `rows` rows, `stride` apart, one block of R x DT pages, partly read, held through the job's K / V blocks | the stepped rectangle `q.tiles[r0:min(...):job.stride, 0:DT]` and the held stream `qs = km.Stream(..., block=QB)`: moved at its line, waited for there, freed at the end of the job's lines; a job of no rows pushes its block empty, as the hand reader does |
+| 8 | A block of K transposed (`[DT][KB]`) and then V (`[KB][DV]`), read by the sender, then cast | `down.cast(k.tiles[...].T, v.tiles[...])` |
+| 9 | Bands of L rows down each column, on the reader's NoC 0 | `km.Broadcast(self, along="column", length=LENGTH, mover="A", window=WINDOW)` |
+| 10 | The blocks counted over passes x jobs x the job's blocks, the receivers' padding to the window after the last | the cast inside the three loops: `km_blocks_down`, and `km::broadcast_end` with the count |
+| 11 | Compute takes each block whole and indexes K's and V's pages inside it | `takes=[kv]`: `kv_buffer`, the block's first page `kv` (0), freed after the body |
+| 12 | Compute's start-up, `flash::init`, the constant tiles, the state reserved once; `restore_constants` at the end | `startup=km.Startup("ones", "causal", "p", order="reverse")`, `km.cxx(..., at="start")`, `km.cxx(..., at="end", on="pack")` |
+| 13 | Compute only: each block pushed unread, then padded to the window | `unread=mode // 2` (mode 2) |
 
-Rows 1, 2 and 4 to 13 are the attention pass's skeleton: with them every move of the
-hand program is a line and the bodies are the hand's own, the profile page (row 3)
-aside, as in the ray tracer's class. Row 1 alone lets the pass build with every move
-still an inline body. That proves only that the bodies run unchanged; it says nothing
-of the moves, so it was not built here. Row 1 is needed by all four places; rows 2
-and 3 by three; rows 4 to 6 by two; the rest are attention's own.
+## Results
 
-## The proof that was not run
+Card 0, a Blackhole p150a, 120 cores; the plan's R 13, KB 12, window 2, L 10 for both
+shapes. Q, K and V are the project run's (`sdpa.inputs`, seed 1); 20 commands each,
+back to back, the median.
 
-With the lines of rows 1, 2 and 4 to 13, the proof would be the project README's `t1`
-(1 x 1 x 128 x 64, L 10, its RMS 5.50e-3 recorded) or `causal64` (58.1 us a call
-recorded), the class's O beside the hand program's, word for word. The recorded runs
-keep only the sampled rows' errors, not O, so the hand program would run once beside
-the class in the same job.
+| | t1 (1 x 1 x 128 x 64) | causal64 (1 x 8 x 1,024 x 64, causal) |
+|---|---|---|
+| O: words that differ from the hand's | 0 of 8,192 | 0 of 524,288 |
+| time a command: hand, class | 13.33 us, 13.42 us | 57.64 us, 57.75 us |
+| kernel text, hand (mover A, mover B, unpack, math, pack) | 23,440, 8,648, 14,108, 7,796, 9,092 (63,084 B) | 23,440, 8,648, 14,388, 8,436, 9,340 (64,252 B) |
+| kernel text, class | 25,836, 10,236, 16,376, 7,340, 8,288 (68,076 B) | 25,836, 10,236, 14,928, 7,988, 8,592 (67,580 B) |
+| L1 circular buffers, hand, class | 551,360 B, 653,440 B | 551,360 B, 653,440 B |
+
+The class's L1 is larger by Q's pair (two halves of 26 pages, mover B's unused), the
+tokens (pages of 2,048 B where the hand's are 64 B), and the write pair of O (two halves
+of two blocks). A first run on causal64 with Q held in a read stream's pair of four
+blocks a half took 972,928 B in the same 57.7 us; the held stream's pair is one block
+a half now.
+
+The first run on t1 hung: the plan gives most cores of a band a job of no rows, the
+held stream of no pages moved no block, and compute waited for one. A held stream of
+no pages now pushes one empty block, as the hand reader pushes such a job's Q block.
+
+```bash
+python attention.py --shape t1        # the hand, then the class: O compared, times, text
+python attention.py --shape causal64
+```
+
+## What differs from the hand program
+
+- `flash.hpp` is the hand's compute with the buffer indices as template arguments
+  (the bodies' names, constants: the class's buffers) where the hand has `constexpr`
+  indices. Q's and the output's buffers are set at run time (a stream's half). With
+  all of them set at run time, unpack's text was 30,360 B and the class did not fit
+  (86,512 B of 70,656). The profile counters are gone. `finalize` packs into the
+  write stream's block; the line reserves and pushes it, where the hand's reserve has
+  a timeout of its own. `finalize` restores SrcA by the ones buffer's format where
+  the hand names K / V's: both bf16.
+- The start-up is of the own fields ones, causal and p (all bf16 tiles, as the hand's
+  Q, K / V and P are), since `km.Startup` names fields.
+- Mode 1 (broadcast only) and the rest of mode 2 (no Q reads, no O writes) are not
+  lines here: only the unread blocks of mode 2 are. The class was run in mode 0 only.
+- No `prof` handler: a word of unpack or math into pack's page is still not a line
+  (row 3).
+- `BROADCAST_ON_WRITER` would be `mover="B"` (NoC 1); `FLASH_APPROX` a define at the
+  make. Neither was run.
