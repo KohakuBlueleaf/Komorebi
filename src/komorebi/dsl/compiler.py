@@ -5,6 +5,7 @@ line. `komorebi.dsl.program` writes the files and makes the Program.
 """
 
 import ast
+import copy
 import importlib
 import inspect
 import keyword
@@ -14,6 +15,7 @@ import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from komorebi import abi
 from komorebi.dsl import front
 from komorebi.dsl.names import kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line
@@ -241,6 +243,9 @@ class Compiled:
     # The inline bodies at a kernel's start or end (at=): (at, kernel) -> texts.
     kernel_bodies: dict = field(default_factory=dict)
     startup: object = None  # the class's km.Startup, or None (the default start-up)
+    # A handler with constant parameters -> [(its set of values, the handler built
+    # for them)] (handler_variants).
+    variants: dict = field(default_factory=dict)
     # The class's constants (km.constant) by name: this program's values; a symbol's
     # only where the plan gives it (declared_constants).
     class_constants: dict = field(default_factory=dict)
@@ -271,11 +276,11 @@ def class_annotations(cls):
     return merged
 
 
-def compile_class(cls, plan, tensors, l1=None, constants=None):
+def compile_class(cls, plan, tensors, l1=None, constants=None, handlers=None):
     """Compiles each handler of `cls`; `plan` the program's sizes by name, `tensors`
-    an example tensor of each tensor parameter (its format and page), `l1` the bytes
-    left for buffers (a field's unknown symbol takes what the others leave),
-    `constants` the program's values of the class's constants by name."""
+    an example tensor of each tensor parameter, `l1` the bytes left for buffers (an
+    unknown symbol takes what the others leave), `constants` the class's constants'
+    values, `handlers` the sets of the constant parameters (handler_variants)."""
     methods = handler_methods(cls)
     compiled = Compiled(cls.__name__, inspect.getsourcefile(methods[0].function))
     declared_constants(compiled, cls, constants)
@@ -319,11 +324,11 @@ def compile_class(cls, plan, tensors, l1=None, constants=None):
             )
         run = loops[0] if loops else dynamic[0]
         compiled.folded = {m.name: m for m in dynamic if m is not run}
-    for number, method in enumerate(methods, start=1):
+    for number, method in handler_variants(compiled, methods, handlers):
         compiled.handlers[method.name] = number
         if method.overlay:
             compiled.overlays[method.name] = len(compiled.overlays) + 1
-        names = method.function.__globals__
+        names = handler_names(method)
         HandlerCompiler(compiled, method, names, plan, tensors).run()
     bind_fields(compiled, plan, l1)
     compiled.compute_options = class_compute(cls, compiled)
@@ -336,6 +341,55 @@ def declared_constants(compiled, cls, constants):
     `compiled` (a symbol's where the plan or the make gives it)."""
     compiled.declared = front.constants_of(cls)
     compiled.class_constants = dict(constants or {})
+
+
+def handler_variants(compiled, methods, handlers):
+    """(number, method) of each handler built: a handler without constant
+    parameters, or with none of its sets listed, itself (its defaults), numbered as
+    the class numbers it; each listed set of one a handler of its own, named by its
+    values, the first at the handler's number and the others after the class's."""
+    handlers = handlers or {}
+    built, after = [], len(methods) + 1
+    for number, method in enumerate(methods, start=1):
+        parameters = front.constant_parameters(method.function)
+        sets = handlers.get(method.name)
+        if not parameters or not sets:
+            method.constant_set = {n: default for n, (_, default) in parameters.items()}
+            if parameters:
+                compiled.variants[method.name] = [(method.constant_set, method)]
+            built.append((number, method))
+            continue
+        compiled.variants[method.name] = []
+        for index, values in enumerate(sets):
+            variant = copy.copy(method)
+            variant.constant_set = dict(values)
+            variant.name = f"{method.name}_" + "_".join(
+                f"{n}{variant_word(v)}" for n, v in values.items()
+            )
+            variant.number = number if index == 0 else after
+            after += index > 0
+            compiled.variants[method.name].append((variant.constant_set, variant))
+            built.append((variant.number, variant))
+    user_max = abi.headers()["KM_HANDLER_USER_MAX"]
+    if after - 1 > user_max:
+        raise Refused(
+            f"{compiled.name}: {after - 1} handlers with the listed sets of their "
+            f"constant parameters, {user_max} most"
+        )
+    return built
+
+
+def variant_word(value):
+    """A constant parameter's value as a part of a C++ name."""
+    return str(value).replace(".", "p").replace("-", "m")
+
+
+def handler_names(method):
+    """The names a handler's lines read: its module's, and its constant parameters'
+    values as module constants."""
+    if not method.constant_set:
+        return method.function.__globals__
+    return {**method.function.__globals__, **method.constant_set}
 
 
 def shape_size(compiled, field_name, size):
@@ -1254,13 +1308,19 @@ class HandlerCompiler:
         """Each parameter after self is a command word: a tensor's reference word, an
         int, a pattern's word; a tensor whose pages are counted gets a word more."""
         args = self.definition.args
-        if args.vararg or args.kwarg or args.kwonlyargs or args.defaults:
+        constants = self.constant_parameters(args)
+        if (
+            args.vararg
+            or args.kwarg
+            or args.kwonlyargs
+            or (len(args.defaults) > len(constants))
+        ):
             self.refuse(
                 self.definition,
                 "a handler's parameters are plain, one a command word",
                 "write `def name(self, a: km.Tensor, b: int, ...)`",
             )
-        parameters = args.args[1:]
+        parameters = [p for p in args.args[1:] if p.arg not in constants]
         words = []
         for word, parameter in enumerate(parameters):
             kind = self.parameter_kind(parameter)
@@ -1305,6 +1365,24 @@ class HandlerCompiler:
             )
         self.method.words = words
         self.compiled.words[self.method.name] = words
+
+    def constant_parameters(self, args):
+        """The handler's constant parameters (km.constant[int] = n): each with its
+        default, after the command words."""
+        constants = front.constant_parameters(self.method.function)
+        defaulted = [p.arg for p in args.args[len(args.args) - len(args.defaults) :]]
+        for parameter in args.args[1:]:
+            if parameter.arg in constants and parameter.arg not in defaulted:
+                self.refuse(
+                    parameter,
+                    f"{parameter.arg} is a constant parameter: the handler is built "
+                    "for its default when no set of it is listed",
+                    f"give it a default, {parameter.arg}: "
+                    f"km.{spelling('constant')}[int] = n",
+                )
+        if any(name not in constants for name in defaulted):
+            return {}  # a default of a command word: refused by bind_parameters
+        return constants
 
     def parameter_kind(self, parameter):
         annotation = parameter.annotation

@@ -112,23 +112,26 @@ def make(
     session=None,
     trace=0,
     defines=None,
+    handlers=None,
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
-    by name; `session` (its L1 table checked, l1_checked; `trace` the load's) or `l1`
-    (Session.l1()[1]); with broadcasts `rect` (x, y, columns, rows; the grid if not
-    given) and `nocs`; `defines` the kernels' defines over the class's."""
+    by name; `session` (its L1 table checked; `trace` the load's) or `l1`; `rect` and
+    `nocs` a broadcast's; `defines` over the class's; `handlers` the sets of the
+    handlers' constant parameters (handler_sets); a constant of the class by name."""
     cls = type(self)
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
     values, tensors = constants_given(cls, plan, tensors)
+    sets = handler_sets(cls, handlers)
     if session is not None:
         l1 = reserve_of(session)[0].l1()[1] if l1 is None else l1
         room = l1 - runtime_bytes(session, trace)
     else:
         room = l1
-    compiled = compiler.compile_class(cls, plan, tensors, room, values)
+    compiled = compiler.compile_class(cls, plan, tensors, room, values, sets)
     constants_made(self, cls, values, compiled)
+    self.constant_handlers = compiled.variants
     program_args = None
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
@@ -138,9 +141,13 @@ def make(
         program_args = rectangle_of(self, compiled)
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
-    key = sources_key(
-        plan, tensors, room, depth, rect, nocs, constants_keyed(cls, values)
-    )
+    keyed = constants_keyed(cls, values)
+    if sets:  # the listed sets of the handlers' constant parameters
+        keyed[spelling("handlers")] = sorted(
+            (name, [sorted(one.items()) for one in listed])
+            for name, listed in sets.items()
+        )
+    key = sources_key(plan, tensors, room, depth, rect, nocs, keyed)
     built = write(cls, compiled, room, key)
     for line in built.report:
         log(line)
@@ -254,6 +261,93 @@ def constants_given(cls, plan, given):
         if isinstance(declaration, front.Derived):
             values[name] = derived_value(cls, name, declaration, values)
     return values, tensors
+
+
+def handler_sets(cls, handlers):
+    """The make's `handlers`, {handler: [{parameter: value}, ...]}: each a handler
+    of the class with constant parameters, each set of them (a parameter not named
+    takes its default), each value of its parameter's type, no set twice."""
+    if handlers is None:
+        return {}
+    word = spelling("handlers")
+    if not isinstance(handlers, dict):
+        raise ProgramError(
+            f"{cls.__name__}: {word}= is a dict, {{handler: [{{parameter: value}}, "
+            "...]}"
+        )
+    methods = {method.name: method for method in compiler.handler_methods(cls)}
+    sets = {}
+    for name, listed in handlers.items():
+        method = methods.get(name)
+        if method is None:
+            raise ProgramError(
+                f"{cls.__name__}: {word}= names {name!r}, not a handler of the class "
+                f"({', '.join(methods)})"
+            )
+        parameters = front.constant_parameters(method.function)
+        if not parameters:
+            raise ProgramError(
+                f"{cls.__name__}.{name}: {word}= lists sets of a handler's constant "
+                f"parameters (p: km.{spelling('constant')}[int] = n), and it has none"
+            )
+        if not isinstance(listed, list | tuple) or not all(
+            isinstance(one, dict) for one in listed
+        ):
+            raise ProgramError(
+                f"{cls.__name__}.{name}: {word}= gives a list of sets, each a dict "
+                "of its constant parameters' values"
+            )
+        sets[name] = []
+        for one in listed:
+            unknown = sorted(set(one) - set(parameters))
+            if unknown:
+                raise ProgramError(
+                    f"{cls.__name__}.{name}: {', '.join(unknown)} is not a constant "
+                    f"parameter of it ({', '.join(parameters)})"
+                )
+            full = {
+                parameter: constant_checked(
+                    cls, f"{name}'s {parameter}", kind, one.get(parameter, default)
+                )
+                for parameter, (kind, default) in parameters.items()
+            }
+            if full in sets[name]:
+                raise ProgramError(
+                    f"{cls.__name__}.{name}: the set {full} is listed twice"
+                )
+            sets[name].append(full)
+    return sets
+
+
+def constant_handler(program, method, given):
+    """The handler of `program` built for `method`'s constant parameters at `given`
+    (by name; a parameter not given takes its default): (its number, the built
+    method). A set not built is refused, naming the sets that were."""
+    built = getattr(program, "constant_handlers", {}).get(method.name, [])
+    parameters = front.constant_parameters(method.function)
+    unknown = sorted(set(given) - set(parameters))
+    if unknown:
+        raise ProgramError(
+            f"{type(program).__name__}.{method.name}: {', '.join(unknown)} is not a "
+            f"constant parameter of it ({', '.join(parameters) or 'none'})"
+        )
+    wanted = {
+        name: given.get(name, default) for name, (_, default) in parameters.items()
+    }
+    for values, variant in built:
+        if values == wanted:
+            return variant.number, variant
+    sets = "; ".join(
+        ", ".join(f"{k}={v}" for k, v in values.items()) for values, _ in built
+    )
+    asked = ", ".join(f"{k}={v}" for k, v in wanted.items())
+    # A set compiled on first use (placed as an overlay) is not built: refused here.
+    raise ProgramError(
+        f"{type(program).__name__}.{method.name} with {asked}: no handler was built "
+        f"for it (built: {sets}); list it at the make, "
+        f"{spelling('handlers')}={{{method.name!r}: [{{...}}]}} (a set is not "
+        "compiled on first use)"
+    )
 
 
 def constant_checked(cls, name, kind, value):

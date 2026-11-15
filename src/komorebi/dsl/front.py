@@ -370,6 +370,8 @@ class HandlerMethod:
         self.widths = {}  # tensor parameter -> the tile width of its rectangles
         self.owner = None  # the class it is a handler of
         self.returns = False  # it returns a word: its commands ask for the result
+        # its constant parameters' values this handler is built for (km.constant[int])
+        self.constant_set = {}
 
     def __set_name__(self, owner, name):
         self.name = name
@@ -421,6 +423,20 @@ class HandlerMethod:
     def parameters(self):
         """The (name, kind) of each parameter, in order, without page counts."""
         return [(p, kind) for p, kind in self.words if kind != "pages"]
+
+
+def constant_parameters(function):
+    """A handler's constant parameters (`p: km.constant[int] = n`) by name: (their
+    type, their default; None: no default)."""
+    found = {}
+    for name, parameter in inspect.signature(function).parameters.items():
+        if isinstance(parameter.annotation, ConstantParameter):
+            default = parameter.default
+            found[name] = (
+                parameter.annotation.kind,
+                None if default is inspect.Parameter.empty else default,
+            )
+    return found
 
 
 def is_tensor(value):
