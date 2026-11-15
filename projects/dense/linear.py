@@ -353,15 +353,16 @@ def split_ns(plan, ranks):
     return 1e9 * (w_bytes * ranks / DRAM_BYTES_PER_S + reduce)
 
 
-def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget, adds=False):
+def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget, adds=False, least_k=None):
     """The K-split plan of the island's part with the least split_ns on `ranks` ranks
     inside `budget`: one block height (all the rows), every block width, the largest
-    group the ranks allow; K chunks of at most SPLIT_CHUNK_PAGES pages of W."""
+    group the ranks allow with K for each rank (`least_k`: the least island's K part,
+    default k_tiles); K chunks of at most SPLIT_CHUNK_PAGES pages of W."""
     best = None
     # at least 8 columns where N has them: a K row of a chunk on every bank
     for width in range(min(8, n_tiles), n_tiles + 1):
         groups = pl.cdiv(n_tiles, width)
-        size = min(ranks // groups, k_tiles)
+        size = min(ranks // groups, k_tiles if least_k is None else least_k)
         if size < 1:
             continue
         chunk = max(1, min(pl.cdiv(k_tiles, size), SPLIT_CHUNK_PAGES // width))
@@ -891,8 +892,10 @@ class Linear:
         # a few rows: the K-split plan
         self.split, self.casts, self.priced = None, None, {}
         if part_m <= SPLIT_ROWS and COLUMNS is None:
+            # every rank of a group on every island gets K: the least island's part
+            least_k = min((count for _, count in self.k_parts if count), default=1)
             self.split = split_choice(
-                part_m, part_k, part_n, planned, self.budget, self.adds
+                part_m, part_k, part_n, planned, self.budget, self.adds, least_k
             )
             whole = cast_choice(
                 part_m, part_k, part_n, planned, self.budget, self.nocs, self.adds

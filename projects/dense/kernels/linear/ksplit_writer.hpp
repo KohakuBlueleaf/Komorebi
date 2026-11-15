@@ -29,6 +29,16 @@ void kernel_main() {
         const KPlace at = k_place(command, writer.me(), plan, km::island());
         const uint32_t block_height = plan(kKsOh), block_width = plan(kKsOw);
         const uint32_t block_tiles = block_height * block_width;
+        if (at.any && at.k_count == 0) {  // a rank with no K: its sum never written
+            writer.gave_up(
+                km::kStWriter,
+                km::kGaveBadItem,
+                km::kWhereData,
+                km::slot(command),
+                command.sequence
+            );
+            return false;
+        }
         if (at.any) {
             const X x_matrix(command.a0);
             const W w_matrix(command.a1);

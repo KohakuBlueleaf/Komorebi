@@ -85,7 +85,7 @@ void kernel_main() {
             return;
         }
         const KPlace at = k_place(command, compute.me(), plan, km::island());
-        if (!at.any) {
+        if (!at.any || at.k_count == 0) {  // no K: the movers give up
             return;
         }
         uint32_t index = 0;

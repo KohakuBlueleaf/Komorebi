@@ -20,6 +20,16 @@ void kernel_main() {
         if (!at.any) {
             return;
         }
+        if (at.k_count == 0) {  // a rank of a group with no K: its sum never written
+            reader.gave_up(
+                km::kStReader,
+                km::kGaveBadItem,
+                km::kWhereData,
+                km::slot(command),
+                command.sequence
+            );
+            return;
+        }
         if (!move_k_chunks(reader, command, plan, at, X(command.a0), W(command.a1))) {
             return;
         }
