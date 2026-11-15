@@ -804,6 +804,18 @@ def turned_tiles(tiles, first):
     )
 
 
+SCALAR = "scalar"  # a tile function's argument that is a float word, not a tile
+
+
+def scalar_words(unit, scalars):
+    """The call's run-time scalar arguments after `dst`: each float word's bits, in
+    the unit's order (`unit.scalars`: `<parameter>_bits`)."""
+    return "".join(
+        f", __builtin_bit_cast(uint32_t, {scalars[name.removesuffix('_bits')]})"
+        for name in unit.scalars
+    )
+
+
 def tile_format_refusal(formats):
     """None, or why a tile function is refused tiles of `formats`: float32 and the B
     family run on an fp32 Dst, the A family on a 16-bit one (tile_dest); a mix of
@@ -1650,6 +1662,12 @@ class HandlerCompiler:
                     f"const km::Pattern {param.name} = "
                     f"km::Pattern::of(command.a{word});"
                 )
+            elif kind == "float":
+                self.scope[param.name] = Value("float", param.name)
+                text = (
+                    f"const float {param.name} = "
+                    f"__builtin_bit_cast(float, command.a{word});"
+                )
             else:
                 self.scope[param.name] = Value("int", param.name)
                 text = f"const uint32_t {param.name} = command.a{word};"
@@ -1709,8 +1727,8 @@ class HandlerCompiler:
                 f"write `{parameter.arg}: km.{spelling('tensor')}`, `: int` or "
                 f"`: km.{spelling('pattern')}`",
             )
-        if isinstance(annotation, ast.Name) and annotation.id == "int":
-            return "int"
+        if isinstance(annotation, ast.Name) and annotation.id in ("int", "float"):
+            return annotation.id
         if isinstance(annotation, ast.Attribute):
             kind = kind_of(annotation.attr, ("tensor", "pattern", "region"))
             if kind:
@@ -1718,7 +1736,8 @@ class HandlerCompiler:
         self.refuse(
             self.definition,
             f"parameter {parameter.arg}: a type the command words cannot carry",
-            f"a parameter is km.{spelling('tensor')}, int or km.{spelling('pattern')}",
+            f"a parameter is km.{spelling('tensor')}, int, float or "
+            f"km.{spelling('pattern')}",
         )
 
     def bind_region(self, parameter, word):
@@ -2036,6 +2055,15 @@ class HandlerCompiler:
                         f"{node.id} is a tile: tile arithmetic is a tile function's",
                         "write it in a @km.tile_function and call that on the "
                         "stream's tiles",
+                    )
+                if value.kind == "float":
+                    self.refuse(
+                        node,
+                        f"{node.id} is a float word (a float32's bits), and this is "
+                        "the handler's integer arithmetic (a slice bound, a range, a "
+                        "count)",
+                        f"pass an int word for it, or use {node.id} in a tile "
+                        "expression, a tile function's call or a body",
                     )
                 if value.kind != "int":
                     self.refuse(
@@ -4169,24 +4197,31 @@ class HandlerCompiler:
             ):
                 return None  # a call of no tile arithmetic: not a tile expression
         names = [n for n in ast.walk(value) if isinstance(n, ast.Name)]
-        tiles = []
+        tiles = []  # the function's parameters: the loop's tiles and float words
         for n in names:
             kind = self.scope.get(n.id, Value("")).kind
-            if kind == "streamed" and n.id not in tiles:
+            if kind in ("streamed", "float") and n.id not in tiles:
                 tiles.append(n.id)
-        if not tiles:
+        if not any(self.scope[t].kind == "streamed" for t in tiles):
             return None
         for n in names:
             kind = self.scope.get(n.id, Value("")).kind if n.id in self.scope else None
-            if n.id == "self" or kind not in (None, "streamed"):
+            if kind == "int":
+                self.refuse(
+                    node,
+                    f"`{n.id}` is an int word, and a tile expression's run-time "
+                    "scalar is a float word (a float32's bits, loaded by the unit "
+                    "program's setup)",
+                    f"annotate it `{n.id}: float` and pass the number",
+                )
+            if n.id == "self" or kind not in (None, "streamed", "float"):
                 what = "self" if n.id == "self" else f"`{n.id}` ({kind})"
                 self.refuse(
                     node,
                     f"a tile expression reads the loop's tiles, numbers, module "
                     f"constants and km's tile arithmetic, and {what} is none of them: "
                     "the unit program's numbers are immediates built into its code",
-                    "write a number or a module constant there; a word of the "
-                    "command's line is a body's (km.cxx(..., gives=km.Tile))",
+                    "write a number, a module constant or a float word there",
                 )
         text = ast.unparse(value)
         name = f"tile_line_{node.lineno}"
@@ -4242,10 +4277,16 @@ class HandlerCompiler:
                 f"drop fidelity= from {function.name}",
             )
         operands = []  # (Value of a stream tile, or None, field name or None)
+        scalars = {}  # {the function's parameter: the float word passed for it}
+        names = list(inspect.signature(function.function).parameters)
         for arg in call.args:
             field = self.field_name(arg)
             if field is not None:
                 operands.append((None, field))
+                continue
+            if self.scalar_argument(node, arg):
+                scalars[names[len(operands)]] = arg.id
+                operands.append((None, None))
                 continue
             item = isinstance(arg, ast.Name) and self.scope.get(arg.id)
             if (
@@ -4278,13 +4319,22 @@ class HandlerCompiler:
                 "a tile function's result is DST 0, which another tile holds",
                 "write or push that tile first",
             )
+        if scalars and width > 1:
+            self.refuse(
+                node,
+                f"{', '.join(scalars.values())}: a run-time scalar of a tile function "
+                "called on a row: the row form's numbers are immediates",
+                "call it on a stream's tiles, one tile a side",
+            )
         formats = []
         for item, field in operands:
             if item is not None:
                 formats.append(item.buffer.dtype)
-            else:
+            elif field is not None:
                 formats.append(self.compiled.fields[field].format.dtype)
-        why = tile_format_refusal(formats)
+            else:
+                formats.append(SCALAR)
+        why = tile_format_refusal([f for f in formats if f != SCALAR])
         if why is not None:
             self.refuse(node, f"{function.name}: {why}", "give it tiles of those")
         unit, cxx = self.tile_unit(node, function, formats, width, fields)
@@ -4385,7 +4435,8 @@ class HandlerCompiler:
                     f"    copy_tile({item.cxx}, {item.first} + {slot}, "
                     f"{count} * {slot} + {dst});"
                 )
-            call_ = [f"MATH((km_tile::{cxx}({count} * {slot})));"]
+            words = scalar_words(unit, scalars)
+            call_ = [f"MATH((km_tile::{cxx}({count} * {slot}{words})));"]
             lines += ["    " + line for line in self.timed_call(call_, timed)] + ["}"]
         elif width == 1:
             for a, w in products:  # unpacked in the unit's issue order
@@ -4408,7 +4459,8 @@ class HandlerCompiler:
             for field in fields:
                 lines.append(f"copy_tile(kField{camel(field)}, 0, {2 * width});")
         if slots == 1:
-            lines += self.timed_call([f"MATH((km_tile::{cxx}(0)));"], timed)
+            words = scalar_words(unit, scalars)
+            lines += self.timed_call([f"MATH((km_tile::{cxx}(0{words})));"], timed)
         self.compiled.tile_calls.append(
             (self.method.name, node.lineno, self.text(node), function, cxx)
         )
@@ -4422,7 +4474,20 @@ class HandlerCompiler:
             width=width,
             batch=(number, count) if slots > 1 else None,
         )
-        return [], [Line("\n".join(lines))]
+        return [], [Line("\n".join(lines), uses=set(scalars.values()))]
+
+    def scalar_argument(self, node, arg):
+        """Whether a tile function's argument is a float word (a run-time scalar);
+        an int word is refused, naming the float annotation."""
+        value = isinstance(arg, ast.Name) and self.scope.get(arg.id)
+        if value and value.kind == "int":
+            self.refuse(
+                node,
+                f"`{arg.id}` is an int word, and a tile function's run-time scalar is "
+                "a float word (a float32's bits, loaded by the unit program's setup)",
+                f"annotate it `{arg.id}: float` and pass the number",
+            )
+        return bool(value) and value.kind == "float"
 
     def traced_placement(self, node, function):
         """Each product's placement ("none" or "plain") in a traced tile function, by
@@ -4544,9 +4609,18 @@ class HandlerCompiler:
                 "the B family",
             )
         kinds = {**TILE_FORMATS, **{f: f for f in A_DTYPES}}
-        tensors = [TensorParam(p, False, kinds[f]) for p, f in zip(parameters, formats)]
+        tensors = [
+            TensorParam(p, False, kinds[f])
+            for p, f in zip(parameters, formats)
+            if f != SCALAR
+        ]
+        values = [  # the run-time scalars: float words of the call
+            trace.ValueParam(p, "float")
+            for p, f in zip(parameters, formats)
+            if f == SCALAR
+        ]
         result = TensorParam("result", True, F32)
-        ir = KernelIR(cxx, [*tensors, result], [], {})
+        ir = KernelIR(cxx, [*tensors, result], values, {})
         held = len(parameters) - len(fields)  # the fields are the last parameters
         try:
             with trace.Tracer(ir):
@@ -4554,8 +4628,10 @@ class HandlerCompiler:
                 out = trace.TensorProxy(result)
                 if width == 1:
                     for t in trace.grid(trace.num_tiles(proxies[0])):
-                        loads = [trace.load(p.tiles[t]) for p in proxies]
-                        trace.store(out.tiles[t], function.function(*loads))
+                        loads = iter([trace.load(p.tiles[t]) for p in proxies])
+                        given = iter(values)
+                        args = [next(given if f == SCALAR else loads) for f in formats]
+                        trace.store(out.tiles[t], function.function(*args))
                 else:
                     rows = [trace.resident(p.tiles[0, :]) for p in proxies[held:]]
                     for t in trace.grid(trace.num_tile_rows(proxies[0])):
@@ -4714,6 +4790,8 @@ class HandlerCompiler:
             and all(self.field_name(arg) in self.summed for arg in summed.args)
         ):
             return self.write_function_of_sums(node, pages, summed)
+        if self.tile_function_of(summed) is not None and self.dst_sums_of(summed):
+            return self.write_function_of_dst(node, call, summed)
         if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
             self.refuse(node, "write one tile", "write pages.write(total)")
         name = call.args[0].id
@@ -4949,6 +5027,43 @@ class HandlerCompiler:
         return [Line(movement, range_uses(pages, self), mover="B")], [
             Line(compute, {"km_ok"})
         ]
+
+    def dst_sums_of(self, call):
+        """The name of the DST sums a tile function's call takes (`f(acc)`, acc a
+        km.tile.zeros sum compute holds), or None."""
+        if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
+            return None
+        value = self.scope.get(call.args[0].id)
+        if value is None or value.kind != "tile" or value.batch is not None:
+            return None
+        return call.args[0].id
+
+    def write_function_of_dst(self, node, write, call):
+        """`pages.write(f(acc))`, acc DST sums (a product's over K, added in the
+        loop): f's body run on each of acc's DST tiles in place on the math CPU, then
+        acc written as `pages.write(acc)` writes it."""
+        function = self.tile_function_of(call)
+        name = self.dst_sums_of(call)
+        value = self.scope[name]
+        unit, cxx = self.tile_unit(node, function, ["float32"])
+        if unit.products:
+            self.refuse(
+                node,
+                f"{function.name} has a matrix product (`@`), and its operand here is "
+                f"{name}, sums in DST that the matrix unit does not read",
+                f"add the product in the loop and write {function.name}({name}) of "
+                "its sums",
+            )
+        calls = "\n".join(
+            f"MATH((km_tile::{cxx}({value.dst + k})));" for k in range(value.width)
+        )
+        body = f"MATH((km_tile::{cxx}_init()));  // {function.name}'s setup\n{calls}"
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        write.args[0] = ast.Name(id=name, ctx=ast.Load())
+        movement, compute = self.write(node, write)
+        return movement, [Line(body), *compute]
 
     def write_function_of_sums(self, node, pages, call):
         """`t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of
@@ -7394,8 +7509,8 @@ class HandlerCompiler:
                 "take names, or self.K of a constant",
             )
         value = self.scope[item.id]
-        if value.kind in ("int", "partition", "pattern"):
-            return {item.id}
+        if value.kind in ("int", "partition", "pattern", "float"):
+            return {item.id}  # a float word: a C++ float of that name
         if value.kind == "page" and where == value.mover:  # its L1 address
             return {item.id}
         if value.kind == "drained":

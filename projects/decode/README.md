@@ -912,8 +912,8 @@ Every wait has a releaser: the marks (A's roots), the ring (the reader; the writ
 and compute's takes), the credits (the receivers). The chain's words and the two slots
 sit in buffer 31, the runtime's trace buffer's index (0 to 27 are the program's, 28 the
 overlay slots', 29 and 30 the runtime's), so a chain's program runs untraced. The chain's kernels take 78,128 B of code
-against the runtime's 70,656 B kernel buffer, so the program takes 80 K (from the
-212 K no buffer uses). Off (`--no-chain`), the program is stage 5's byte for byte: its
+against the runtime's 70,656 B kernel buffer, so the program took 80 K then (from the
+212 K no buffer uses); the session now sizes the buffer from the built kernels. Off (`--no-chain`), the program is stage 5's byte for byte: its
 five kernel images (and the dense project's K split's) are main's.
 
 ### The check
@@ -1341,7 +1341,7 @@ idling on its mark and saw it at once. From the mark to B's first chunk is the s
 with and without the look: 2.0 to 2.3 us from DRAM and 1.3 to 1.8 sent. The "mark seen
 between W blocks" in stage 8's table is not a term. The time is the input read itself.
 
-The look has since been removed (the kernel buffer is 84 K again); see "What runs" above
+The look has since been removed (the kernel buffer back to the chain's size); see "What runs" above
 for the final code's numbers.
 
 ### The marks' issue: not possible in the runtime

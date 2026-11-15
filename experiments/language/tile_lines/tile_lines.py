@@ -25,7 +25,6 @@ DESCRIPTOR = (
     "tt_metal/third_party/umd/tests/cluster_descriptor_examples/blackhole_P150.yaml"
 )
 CORES, TILES, REPEAT = 12, 64, 3  # cores, tiles a core, commands a handler
-KERNEL_BYTES = 88 * 1024  # nine handlers' kernels: over the default 70,656 B
 STARTED = time.monotonic()
 
 
@@ -227,7 +226,7 @@ def build(args):
     km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     km_session.Session.load = build_only()
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         tensors = tensors_of(session, inputs(), empty=True)
         out = session.empty(tensors["a"].shape, "float32", "tile")
         session.load(Lines(log=log, session=session, **tensors, out=out))
@@ -239,7 +238,7 @@ def card(args):
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     data = inputs()
     rows = []
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         tensors = tensors_of(session, data, empty=False)
         out = session.empty(data[0].shape, "float32", "tile")
         run = session.load(Lines(log=log, session=session, **tensors, out=out))

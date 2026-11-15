@@ -14,7 +14,7 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi, added, overlay
+from komorebi import abi, added, added_program, overlay
 from komorebi import chain as chain_module
 from komorebi import state as device_state
 from komorebi.dsl import front
@@ -33,7 +33,7 @@ from komorebi.errors import (
     describe_core,
 )
 from komorebi.merge import lifted, merged_holds
-from komorebi.program import Handler
+from komorebi.program import Handler, Program, unguarded
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
 NO_LIST = 0xFF  # a core with no kept reset list (KMD_RESET_DIRECTORY)
@@ -286,9 +286,9 @@ class Run:
         end = max(call.group[0] + call.group[1] for call in calls)
         tensor = self.backend.block(
             bytes(64 * len(calls)),
-            lambda address: chain_module.records(calls, address, handlers)
-            .view(np.uint8)
-            .ravel(),
+            lambda address: (
+                chain_module.records(calls, address, handlers).view(np.uint8).ravel()
+            ),
         )
         self._unfenced = True
         handler = self.field_handler(*numbers[0]) if walk is None else walk
@@ -395,6 +395,17 @@ class Run:
             self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
         return handle
+
+    def thread_words(self, handler, args=()):
+        """(program field, handler number, [command words]) of a call as submit would
+        send it, for an X280 thread to build the same command (kmx_command) of a class
+        made after its image was built, an added one too; nothing is sent."""
+        if isinstance(handler, HandlerMethod | ClassHandler):
+            handler = self._built_for(handler, args)
+            method = handler if isinstance(handler, HandlerMethod) else handler.method
+            args = handler.args(*self._regions_named(method, args))
+        number, program_field = self._handler(handler)
+        return program_field, number, [int(word) for word in args]
 
     def _regions_named(self, method, args):
         """A class handler's arguments with each region parameter given by its name
@@ -678,7 +689,7 @@ class Run:
     def addon(
         self,
         name,
-        parts,
+        parts=None,
         handler=False,
         number=None,
         defines=None,
@@ -686,11 +697,14 @@ class Run:
         message=False,
         compile_args=None,
     ):
-        """Adds overlay `name` to the live run: `parts` as Program.overlay's, built
-        against the loaded kernels (`compile_args` {kernel: [words]} in place of
-        theirs), written into the room the load reserved, its table entry given to
-        every core by a command. Returns its number (a handler's, a dynamic handler's).
-        """
+        """Adds overlay `name` (`parts` as Program.overlay's, built against the loaded
+        kernels, `compile_args` in place of theirs) to the live run; returns its number.
+        A class `name` in the runtime's form becomes one more program of a run loaded
+        as a dict (komorebi.added_program); returns its program field."""
+        if isinstance(name, Program):
+            return added_program.add(self, name)
+        if parts is None:
+            raise TypeError(f"run.addon({name!r}): parts, as Program.overlay's")
         return added.addon(
             self, name, parts, handler, number, defines, timeout, message, compile_args
         )
@@ -876,6 +890,13 @@ class Run:
         this island; default every core): core_state's dict, `live` (each kernel's wait
         and command), `trace` (the latest commands' entries); `read` False for a core
         it could not reach. inspect_ticks: X280 ticks the read took on core 0."""
+        off = unguarded(self.programs)
+        if off:
+            raise KomorebiError(
+                f"run.inspect: {', '.join(off)} built with guard=False: its kernels "
+                "keep no live words, so there is nothing to read; build it with "
+                "guard=True (the default)"
+            )
         first, count = (0, self.cores)
         if group is not None:  # flat ranks, of this island: the dispatcher reads cores
             low, high = self._part(*self._group(group))
@@ -1259,6 +1280,14 @@ class Run:
             links=self.links_named(handle),
         )
         self._name_lines(error)
+        off = unguarded(self.programs)
+        if off:
+            error.args = (
+                f"{error.args[0]}; guard=False ({', '.join(off)}): no core was asked "
+                "to leave the command, a core may still be held in it, and the next "
+                "command to it may not run: a card reset if it does not",
+                *error.args[1:],
+            )
         return error
 
     def _name_lines(self, error):
@@ -1860,6 +1889,9 @@ class Run:
             {key: value for key, value in fin.items() if key != "words"}
         )
         self._read_back(stop_grid)
+        release = getattr(self.backend, "release_l1", None)
+        if release is not None:  # the next load of the session has its L1
+            release()
 
     def _read_back(self, stop_grid=False):
         blocks, trace_rows = self.backend.read_back(stop_grid=stop_grid)

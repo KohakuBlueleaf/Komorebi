@@ -57,11 +57,16 @@ def parse():
         help="merged: scale's code an overlay (km.merge's marker), sum's resident",
     )
     parser.add_argument("--cards", default="", help="e.g. 0,1: a session of islands")
+    parser.add_argument(
+        "--no-guard",
+        action="store_true",
+        help="price: the programs built with guard=False (no give-up, no inspect)",
+    )
     return parser.parse_args()
 
 
 # --8<-- [start:programs]
-def programs(inputs, sums, doubled, slots=None, wide=None):
+def programs(inputs, sums, doubled, slots=None, wide=None, guard=True):
     """sum and scale in the runtime's form: buffers 0 and 16 declared identically,
     so combined they are one shared buffer each; handler 1 in each."""
     buffers = [
@@ -76,6 +81,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
         compile_args={"reader": inputs.tensor_args(), "writer": sums.tensor_args()},
         compute=compute,
         handlers={"sum": 1, "empty": 2},
+        guard=guard,
     )
     scale_program = km.Program(
         "scale",
@@ -87,6 +93,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
         },
         compute=compute,
         handlers={"scale": 1, "empty": 2},
+        guard=guard,
     )
     if slots is not None:
         sum_program.slots(count=slots)
@@ -103,6 +110,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
         compile_args={"reader": inputs.tensor_args(), "writer": wide.tensor_args()},
         compute=compute,
         handlers={"widen": 1},
+        guard=guard,
     )
     return sum_program, scale_program, widen_program
 
@@ -110,7 +118,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
 # --8<-- [end:programs]
 
 
-def kernel_form(inputs, sums):
+def kernel_form(inputs, sums, guard=True):
     """The sum of 01_mapcollect in the kernel form (its MAP takes the same words)."""
     return km.Program(
         "mapcollect",
@@ -122,6 +130,7 @@ def kernel_form(inputs, sums):
         compile_args={"reader": inputs.tensor_args(), "writer": sums.tensor_args()},
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         handlers=KERNEL_FORM / "mapcollect.h",
+        guard=guard,
     )
 
 
@@ -292,10 +301,13 @@ def price(session, args, cores):
     per command, an empty one and a sum of 16 tiles, on one core and on `cores`."""
     generator = np.random.default_rng(args.seed)
     checked = Checked(session, cores, args.rounds, generator)
-    sum_program, _ = programs(checked.inputs, checked.sums, checked.doubled)
+    guard = not args.no_guard
+    sum_program, _ = programs(
+        checked.inputs, checked.sums, checked.doubled, guard=guard
+    )
     forms = {
         "kernel": (
-            kernel_form(checked.inputs, checked.sums),
+            kernel_form(checked.inputs, checked.sums, guard),
             0,
         ),  # 0: NOP, no work, reaches the default branch of the kernels' switch
         "program": (sum_program, sum_program.handler("empty")),
@@ -310,6 +322,11 @@ def price(session, args, cores):
                 (f"{form} sum {group[1]}", program.handler(1), group, words)
             )
         run = session.load(program, trace=4 * args.rounds + 2)
+        if not guard:
+            try:
+                run.inspect()
+            except km.KomorebiError as error:
+                log(f"{form}: inspect refused: {error}")
         out.update(one_at_a_time(run, commands, args.rounds))
     return out
 

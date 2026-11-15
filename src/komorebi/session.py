@@ -25,6 +25,7 @@ from komorebi import (
     _env,
     abi,
     added,
+    added_program,
     chain,
     dram,
     formats,
@@ -36,6 +37,7 @@ from komorebi import (
     native,
     overlay,
     programs,
+    remembered,
 )
 from komorebi import channel as channel_module
 from komorebi import state as device_state
@@ -53,7 +55,13 @@ from komorebi.errors import (
     SlowCodeError,
     StartError,
 )
-from komorebi.program import KernelSizes, Program, messages_header
+from komorebi.program import (
+    KernelSizes,
+    Program,
+    guard_says,
+    messages_header,
+    unguarded,
+)
 from komorebi.run import Run
 
 CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
@@ -91,6 +99,7 @@ GROUP_LINE = re.compile(r"^#define KM_PROGRAM_GROUP (\d+)$", re.M)
 # a name the compiler gives a source file's own symbol (trisck.cc.4c8b3e06): the
 # build's hash, which no part refers to
 UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
+TAKEN_ROW = "L1 held by the session (its L1 tensors, runs not stopped)"
 KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 # A taken branch to code at or above this L1 address costs about 4 cycles more: the
 # kernels and the slots go below it, the circular buffers above them.
@@ -352,6 +361,13 @@ def added_path(placed):
     if placed and all("KM_ADDED_HANDLERS" in p.defines for p in placed):
         return [("KM_ADDED_HANDLERS", "1")]
     return []
+
+
+def guard_path(programs):
+    """The runtime's kernels' define of KM_GUARD 0 when the load's programs are built
+    with guard=False (programs.same_guard: they all are, or none); a program's own
+    parts get it from its defines."""
+    return [("KM_GUARD", "0")] if unguarded(programs) else []
 
 
 def slot_area(base, size, used, slow_code):
@@ -627,6 +643,7 @@ class Session:
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
         slow_code=False,
+        expect=None,
     ):
         self.card = card
         self.device = device
@@ -635,6 +652,7 @@ class Session:
         self._default_clock = pll_mhz is None  # may fall back to X280_FALLBACK_MHZ
         self.tree = tree
         self.log = log or (lambda message: None)
+        self.log_given = log is not None  # without one, a reopen is printed to stderr
         self.grid_timeout = grid_timeout
         self.kernel_bytes = kernel_bytes  # None: the runtime's, then the kernels'
         self._kept = kernel_buffer.Kept()  # the tensors made before the first load
@@ -642,6 +660,12 @@ class Session:
         self._worker_l1 = worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
             raise ValueError("kernel_bytes is set when the session opens the device")
+        self._memory = None  # the remembered kernel buffer (komorebi.remembered)
+        self._last_total = 0  # the kernels' total of the last load built
+        if kernel_bytes is None and device is None:
+            self._memory = remembered.Memory(self.log, expect)
+            if self._memory.size and self._memory.size <= KERNEL_BUFFER_MAX:
+                self._worker_l1 = worker_l1_size(self._memory.size)
         self.run = None
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
@@ -651,6 +675,7 @@ class Session:
         # the owner's L1 on every core of this session's card, kept at the top (an
         # island session's link areas, relay, tensor table): () -> [(name, bytes)]
         self.l1_held = lambda: []
+        self._taken = None  # l1_taken() as a load found it before its own L1
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
         self._starting = None  # the Dispatch of a load before its Run exists
@@ -749,6 +774,8 @@ class Session:
     def close(self):
         """Stops a loaded run through the X280 runtime, then closes the device if the
         session opened it. A session on a given device is closed before that device."""
+        if self._memory is not None:
+            self._memory.closed()
         try:
             if self.run is not None and not self.run.stopped:
                 self.run.abort()
@@ -870,7 +897,7 @@ class Session:
             chunk = _transfer_chunk_of(self, held, switch, trace_cap, control)
             size = 2 * chunk + abi_headers["KM_TRANSFER_WORD_BYTES"] + NOC_ALIGN
             rows.append(("host transfer buffer", size))
-        return rows + list(self.l1_held())
+        return rows + list(self.l1_held()) + self.l1_taken()
 
     def _hand_nocs(self, program):
         """A program written as a class whose rectangle needs the grid's NoCs gets
@@ -1234,22 +1261,54 @@ class Session:
         again first when the kernels need another kernel buffer (kernel_buffer)."""
         loading, self._kept.loading = self._kept.loading, True
         try:
-            run = self._load(program, *args, **options)
+            run = self._try_load(program, *args, **options)
         except kernel_buffer.Resize as resize:
             size, why = resize.size, resize.why
         else:
             self._kept.stop()
+            self._remember(program)
             return run
         finally:
             self._kept.loading = loading
         kernel_buffer.reopen(self, size, worker_l1_size(size), why)
         self._kept.loading = True
         try:
-            run = self._load(program, *args, **options)
+            run = self._try_load(program, *args, **options)
         finally:
             self._kept.loading = loading
         self._kept.stop()
+        self._remember(program)
         return run
+
+    def _remember(self, program):
+        """The kernel buffer a load needed, kept for the script's next run."""
+        if self._memory is not None and self._last_total:
+            self._memory.loaded(program, self._last_total)
+
+    def _try_load(self, program, *args, **options):
+        """_load with the L1 the session held before it (l1_taken) fixed for its
+        table: the load's own L1 is counted by its own rows."""
+        self._taken = self.l1_taken()
+        try:
+            return self._load(program, *args, **options)
+        finally:
+            self._taken = None
+
+    def l1_taken(self):
+        """The L1 budget table's row of the L1 this session already holds on every
+        core (its L1 tensors, a run not stopped): the L1 top down to the lowest L1
+        buffer, less what the owner keeps (l1_held). [] when none."""
+        if self._taken is not None:
+            return self._taken
+        if self.device is None:
+            return []
+        self._module = self._module or native.load_module(self.tree)
+        lowest = int(self._module.lowest_l1(self.device))
+        if not lowest:
+            return []
+        top = int(self._module.kernel_buffer(self.device)[2])
+        held = top - lowest - sum(size for _, size in self.l1_held())
+        return [(TAKEN_ROW, held)] if held > 0 else []
 
     def _resize(self, total, l1_failed=False):
         """Raises kernel_buffer.Resize when this session follows its kernels (no
@@ -1274,6 +1333,9 @@ class Session:
             )
         )
         if refused is not None:
+            if self._memory is not None and grow:  # the next run opens right
+                self._memory.wanted(total)
+                refused += " (remembered: the script's next run opens at it)"
             return f"{refused}; Session(kernel_bytes={size}) holds them"
         why = (
             f"the kernels take {total:,} B"
@@ -1303,6 +1365,7 @@ class Session:
         tensors=0,
         recover=True,
         reserve=added.RESERVE,
+        buffers=None,
     ):
         """Session.load's one try on the card as it is opened."""
         arguments = {k: v for k, v in locals().items() if k != "self"}
@@ -1423,6 +1486,7 @@ class Session:
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
             backend.reserve = reserve
+            backend.added_buffers = added_program.buffers_given(buffers)
             if ranks is not None:
                 ranks = _x280_words(self, program, dispatch, rings, regions, plan)
             descriptor = backend.describe(
@@ -1435,6 +1499,7 @@ class Session:
             except Exception as error:
                 raise ProgramError(f"{program.name}: build failed: {error}") from error
             program.sizes = kernel_sizes(build)
+            self._last_total = program.sizes.total
             for other in placed.programs if placed is not None else ():
                 other.sizes = program.sizes
             text = ", ".join(
@@ -1524,6 +1589,8 @@ class Session:
                 self.log(f"no reset list: {run.recovery_refused}")
         elif recover:
             run.recovery_refused = "a run whose groups switch program"
+        if unguarded(run.programs):
+            self.log(guard_says(unguarded(run.programs), recover))
         self.log("ready")
         if works:
             shared = {name: _host_array(value) for name, value in owner.shared.items()}
@@ -1681,6 +1748,7 @@ class Session:
             except Exception as error:
                 raise ProgramError(f"{program.name}: build failed: {error}") from error
             program.sizes = kernel_sizes(build)
+            self._last_total = program.sizes.total
             if build[-1]:
                 raise KernelSizeError(program.name, program.sizes, KERNEL_BUFFER_MAX)
             if insn_check.enabled():
@@ -2638,8 +2706,19 @@ class _Backend:
 
     def _held_rows(self):
         """The L1 budget table's rows of what the session's owner keeps at the top of
-        every core (two cards: the link area, the relay, the tensor table)."""
-        return list(self.session.l1_held())
+        every core (two cards: the link area, the relay, the tensor table) and of
+        what the session already holds there (l1_taken)."""
+        return list(self.session.l1_held()) + self.session.l1_taken()
+
+    def _taken_bytes(self):
+        """The bytes of the session's own L1 held from before this load."""
+        return sum(size for _, size in self.session.l1_taken())
+
+    def release_l1(self):
+        """A finished run's L1 tensors (its host transfer buffer, control blocks and
+        trace, all read back) given back, so a later load of the session has them."""
+        self.io = [tensor for tensor in self.io if tensor.in_dram]
+        self.control = self.trace_tensor = None
 
     def _held_bytes(self):
         """The bytes of _held_rows."""
@@ -2673,6 +2752,7 @@ class _Backend:
             self.switch_layouts[program.program_field] = layout
             end = max(end, last)
         self.switch_base = l1_bytes - kernel_free
+        self.switch_start, self.switch_shift = start, 0  # an added program's start
         return end
 
     def _describe_groups(self, launch, placed, sources, args, grid):
@@ -2691,6 +2771,7 @@ class _Backend:
         island, ranks, links = self._placed_links(placed, grid)
         if placed.switch:  # the runtime's buffers first, then room for the largest
             reserve = -(-self._switch_layouts(placed) // align) * align
+            reserve = added_program.pad_reserve(self, placed, reserve)
             self.switch_reserve = reserve - self.switch_base
         for number, group in enumerate(placed.groups):
             held = [placed.programs[index] for index in group.programs]
@@ -2702,9 +2783,8 @@ class _Backend:
                 cbs = self._runtime_cbs() + _program_cbs(buffers)
                 _, end = programs.buffer_layout(cbs, self.switch_base)
                 pad = reserve - -(-end // align) * align
-                if pad > 0:
-                    index = min(set(range(32)) - {cb[0] for cb in cbs})
-                    cbs.append((index, "uint32", pad, 1))
+                if pad > 0:  # one index on every group: an add resizes it
+                    cbs.append((self.switch_pad, "uint32", pad, 1))
             for index, fmt, page, pages in cbs:
                 launch.cb(cores, index, fmt, page, page * pages)
                 self.cb_indices.add(index)
@@ -2726,6 +2806,7 @@ class _Backend:
             defines += island
             defines += self._one_island()
             defines += added_path(placed.programs)
+            defines += guard_path(placed.programs)
             first = held[0] if held else None
             if placed.switch and first is None:
                 first = placed.programs[0]  # one build for every group's kernels
@@ -2812,6 +2893,7 @@ class _Backend:
             for layout in self.switch_layouts.values():
                 for key, (at, *rest) in layout.items():
                     layout[key] = (at + size, *rest)
+            self.switch_shift = size
         self.session.log(f"slots: {size:,} B from {address:#x} (buffer {index})")
         return address
 
@@ -2845,7 +2927,9 @@ class _Backend:
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
             refused = session._resize(program.sizes.total, l1_failed=True)
-            raise L1BudgetError(program.name, table, self._held_bytes(), refused)
+            raise L1BudgetError(
+                program.name, table, self._held_bytes(), refused, self._taken_bytes()
+            )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed = overlay.dram_rows(built, reserve)
         image = _words(session, image_rows)
@@ -2904,6 +2988,9 @@ class _Backend:
                 program.program_field, self.switch_layouts[program.program_field], table
             )
             records[(program.program_field, "record")] = words.tobytes()
+        spare = added_program.spare_fields(placed)  # rows for added classes' records
+        empty = bytes(c["kRecordBytes"])
+        records |= {(field, "record"): empty for field in spare}
         rows, placed_records = overlay.dram_rows(overlay.Built(records, {}))
         tensor = _words(self.session, rows)
         self.io.append(tensor)
@@ -2921,11 +3008,15 @@ class _Backend:
                 f"{differ[0][0]}'s {differ[0][1]}, {len(differ)} symbols), so a "
                 "program's parts would not fit another group's kernels"
             )
+        addresses = {
+            key[0]: tensor.address + row * tensor.aligned_page_bytes
+            for key, (row, _) in placed_records.items()
+        }
         self.switch = {
-            "records": {
-                key[0]: tensor.address + row * tensor.aligned_page_bytes
-                for key, (row, _) in placed_records.items()
-            },
+            "records": {f: a for f, a in addresses.items() if f not in spare},
+            # an added class's record goes in its row (run.addon(program))
+            "spare": {f: (addresses[f], placed_records[f, "record"][0]) for f in spare},
+            "tensor": tensor,
             "refused": refused,
             # an island's part of a plan: programs none of its groups holds, whose parts
             # were not built here (a part is built against its group's kernels' buffers)
@@ -2980,6 +3071,7 @@ class _Backend:
                             for owner in owners
                             for each in programs.own_overlays(owner)
                         ),
+                        *added_program.ahead_overlays(self, placed, number, recipes),
                         overlay.service(),
                     ],
                     declared,
@@ -3008,7 +3100,9 @@ class _Backend:
             built.append(made)
             if not fits:
                 refused = session._resize(placed.programs[0].sizes.total, True)
-                raise L1BudgetError(names, table, self._held_bytes(), refused)
+                raise L1BudgetError(
+                    names, table, self._held_bytes(), refused, self._taken_bytes()
+                )
         images, stored = {}, []
         service = overlay.constants()["kOverlayService"]
         for made in built:
@@ -3032,6 +3126,7 @@ class _Backend:
                 for made in built
             ]
             rows[2:2] = slot_rows(common.slots, common.service, common.why)
+            added_program.grow_area(self, descriptor, rows, placed)
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
             if not fits:
@@ -3041,6 +3136,7 @@ class _Backend:
                     table,
                     self._held_bytes(),
                     refused,
+                    self._taken_bytes(),
                 )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
@@ -3062,6 +3158,7 @@ class _Backend:
             placed.programs,
         )
         added.build_ahead(session, self.room, placed.programs)  # Program.ahead's parts
+        added_program.build_ahead(session, self, self.room, placed)  # classes ahead
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}

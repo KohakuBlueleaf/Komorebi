@@ -63,9 +63,9 @@ call: the host submits commands and the card runs them. Three handlers of one cl
 ```python
 import numpy as np
 import komorebi as km
-from steps_class import Steps, bits  # examples/29_chain/as_class: the kernels
+from steps_class import Steps  # examples/29_chain/as_class: the kernels
 
-with km.Session(kernel_bytes=84 * 1024) as session:  # room for the chain's code
+with km.Session() as session:
     x = session.tensor(np.ones((16, 1024), np.float32), "float32")  # 16 tiles in DRAM
     y, z, s = (
         session.tensor(np.zeros((16, 1024), np.float32), "float32") for _ in "yzs"
@@ -75,9 +75,7 @@ with km.Session(kernel_bytes=84 * 1024) as session:  # room for the chain's code
     cores = (0, 8)  # a command goes to a core group; each core takes its share
 
     def scale(a, out, factor):  # a kernel call, as a function
-        return run.submit(
-            Steps.scale, cores, args=(a, out, bits(factor), 2), exclusive=True
-        )
+        return run.submit(Steps.scale, cores, args=(a, out, factor, 2), exclusive=True)
 
     # Commands queue on the card: submit as many as you like, wait once.
     run.wait([scale(x, y, 2.0), scale(y, z, 3.0), scale(z, s, 0.5)])
@@ -86,8 +84,8 @@ with km.Session(kernel_bytes=84 * 1024) as session:  # room for the chain's code
     # itself, with no host between them. Stated once, submitted as often as needed.
     layer = run.chain(
         [
-            Steps.scale(x, y, bits(2.0), 2),
-            Steps.scale(y, z, bits(3.0), 2),
+            Steps.scale(x, y, 2.0, 2),
+            Steps.scale(y, z, 3.0, 2),
             Steps.add(z, km.past(y), s, 2),
             Steps.sum(s, t, 16),
         ],
@@ -456,10 +454,17 @@ kernel, which pushes its pages to the host's memory.
 
 In the [nn project](projects/nn/README.md) a call takes 140.9 µs with the host
 submitting and waiting, 23.0 µs with the host appending to an open list, and 4.4 µs
-replaying a written list. The list and its thread are that project's; a kernel added
-to a live run is the framework's ([30_add_overlay](examples/30_add_overlay/),
-[a set compiled on its first use](docs/reference/classes.md#a-set-compiled-on-its-first-use)).
-The two have not run as one program yet.
+replaying a written list. The list and its thread are that project's. Adding a kernel
+to a live run is the framework's: `run.addon(program)` makes another class one more
+program of the run, compiled against the loaded kernels, and a group then loads and
+runs it ([another class added to a live run](docs/reference/classes.md#another-class-added-to-a-live-run),
+[30_add_overlay](examples/30_add_overlay/)). On the card a class added this way gave
+exact results at the time of the same class loaded at the start (9.4 µs a command),
+beside a loaded program that ran as before. An X280 thread loads and calls it too:
+from one thread command, the added class was loaded on a group in 10.5 µs and called
+at 10.4 to 11.3 µs a call, where the host's submit and wait took 232 to 319 µs for the
+same call ([threads](docs/reference/threads.md)). The nn project's list calling an
+added class has not run yet.
 
 ### One program on the grid
 

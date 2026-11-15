@@ -73,6 +73,7 @@ run.submit(
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
 | `broadcast_wait` | as a `Program`'s ([host](host.md#program)), `False` by default: `True` builds the kernels with a word broadcast's wait at `finish` (the guard), in a build folder of its own |
+| `guard` | as a `Program`'s ([host](host.md#program)), `True` by default: `False` builds the kernels without a command's deadline, give-up and inspect ([hazards](hazards.md#a-wait-that-never-completes)), in a build folder of its own |
 | `form` | `"kernel"` (the default): the class owns its kernels; `"runtime"`: the class is a program in the runtime's form, in parts the runtime's kernels call, which loads in a list or a dict and which a group switches to ([The runtime's form](#the-runtimes-form)); each form has its build folder |
 | `beside` | with `form="runtime"`, a program or a list of them that share the run's cores: the class leaves their buffer indices and takes their unpack modes ([The runtime's form](#the-runtimes-form)) |
 
@@ -108,8 +109,9 @@ L1 they take. The files are kept; a compile error names their lines, and an inli
 body's lines name the Python file's.
 
 `Run.submit(Class.handler, group, args=(...))` makes the command words from the
-arguments: a tensor's reference word (`tensor.address`), an int (32 bits), a pattern's
-word, in the order of the parameters (a constant parameter's value, at its place, is
+arguments: a tensor's reference word (`tensor.address`), an int (32 bits), a float
+(`scale: float`: the value's float32 bits; a number that is no float32 or not a number
+is refused, naming the parameter), a pattern's word, in the order of the parameters (a constant parameter's value, at its place, is
 no word: it picks the handler built for it); a tensor whose `pages` a line uses whole adds a
 word, its page count. A handler that returns a word asks for the result. For arrays of
 words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, and
@@ -358,17 +360,49 @@ Sets with different blocks share the template's ring. A block never wraps the ri
 end, so a ring left at a position that is not a multiple of the next set's block makes
 that command give up ([hazards](hazards.md#sets-of-a-handler-on-one-ring-with-blocks-that-do-not-divide-each-others)).
 
-A handler of **another** class added to a live run is not built. It would need:
+### Another class added to a live run
 
-1. its own buffers and fields, which the load's L1 layout does not have, placed in L1
-   the load left free and given to every core's circular buffer table by a command;
-2. its streams' buffer indices free in the loaded kernels, and its fields' L1
-   addresses as command words, not program arguments;
-3. its tensors' compile arguments (`km::Tensor<n>`) equal to the loaded kernel's, or
-   carried as words;
-4. its class's header (handlers, buffers, formats) built against the loaded kernels'
-   recipe, the formats in one exponent family with the load's;
-5. its compute options (fidelity, accumulation) equal to the load's, set once a kernel.
+A handler of **another** class can be added to a live run whose groups switch program
+(a run loaded with a dict): `run.addon(Other(..., form="runtime"))` makes the class one
+more program of the run and returns its program field; `run.load(other, group)` gives a
+group its buffers and its parts, and `run.submit(Other.handler, group, args=...)` runs
+it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are met so:
+
+1. **Its buffers and fields** lie in the switch area above the runtime's buffers, which
+   the load keeps on every core: the largest program's layout, grown by default into
+   what the load's L1 table leaves free less 64 KiB (`session.load(..., buffers=N)`
+   states or caps it). Its record (its buffers' four words and its parts' table
+   entries) is written to DRAM; the load command sets its buffers up as for a program
+   given at the start.
+2. **Its buffer indices** are any the loaded kernels' buffers do not use with another
+   format: make it with `beside=` the loaded class to leave that class's indices.
+3. **Its tensors** are command words, as every runtime-form class's are.
+4. **Its formats.** The kernel build bakes a table of each buffer index's formats
+   (unpack source and destination, pack source and destination, the tile sizes) into
+   every part as constants. The added class's parts are compiled against a copy of the
+   loaded kernels' table with its own buffers' entries, recomputed by tt-metal's
+   functions over the load's formats and its own; the copy must equal the kernels' at
+   every other index (an added format that would change the shared Dst format is
+   refused). Its fp32 fields' `UnpackToDestFp32`, per buffer index, comes with it. The
+   loaded kernels are not rebuilt.
+5. **Its compute options** that are one a kernel (fidelity, `fp32_dest_acc_en`,
+   `dst_full_sync_en`, `math_approx_mode`, `bfp8_pack_precise`) equal the load's;
+   refused by name with both values.
+
+Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
+`opt` levels or NoCs, per-core args (a rectangle, a broadcast, `self.x`: a run's
+per-core args are set at the launch), overlays of its own or a dynamic handler, buffers
+past the switch area or a part past its slot, an island run, a traced run and a merged
+program. The slots cannot grow under a live run: the load sizes them by the parts of the
+classes named with `Program.ahead(other)`, which the load also builds, or by
+`Program.slots(bytes=)`.
+
+On the card (cores 0 to 59 the gate, 60 to 119 the added class, a row of 4 tiles times
+4 x 4 tiles with an fp32 field and a bfloat8_b weight stream that the gate does not
+have): its words exact; the add took 7.84 s (its parts linked and checked on its own
+tables) and 72 ms with the class named ahead; its command 9.42 and 9.40 µs against 9.26
+and 9.42 µs loaded at the start; the gate 22.84 µs before the add, 22.40 after and
+22.58 after its group switched back, 0 wrong, the same largest error each time.
 
 ## The lines of a handler
 
@@ -426,6 +460,7 @@ A handler of **another** class added to a live run is not built. It would need:
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
 | `y.tiles[r0:r1, c0:c1].write(gate(self.h, self.g))`, gate a tile function, h and g fields of sums of one shape | as the field's write | tile by tile each field's tile copied into the DST tile of its operand, gate's body on the math CPU, DST 0 packed into Y's format; both fields freed, both counts reset |
+| `y.pages(first, n).write(act(acc))`, act a tile function of one tile, acc DST sums | as acc's write | act's setup, then act's body on each of acc's DST tiles in place on the math CPU; the tiles packed as acc's write packs them |
 | `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
@@ -992,9 +1027,8 @@ SCALE`: an expression of the loop's tiles, numbers, module constants and the til
 arithmetic above is the tile function of the tiles it names, in the order it names
 them, and is emitted as that function's call is (`tile_line_N` in the build's list,
 N the line): its unit program is the same, word for word, as the one a
-`@km.tile_function` of the same expression gives. A word of the command, a field or
-`self` in such an expression is refused at its line (the unit program's numbers are
-immediates built into its code); a call that is no tile arithmetic (`km.cxx(...)`)
+`@km.tile_function` of the same expression gives. A field or `self` in such an
+expression is refused at its line; a call that is no tile arithmetic (`km.cxx(...)`)
 leaves the line to its own form. On the card
 ([tile lines](../../experiments/language/tile_lines/README.md), bf16 tiles, 768 a
 command on 12 cores): `results.push(km.silu(x) * y)` equal datum for datum to the tile
@@ -1002,6 +1036,27 @@ function's call, 82.1 us both; `x / y` within 1.6e-7 of float64 at 30.3 us again
 75.5 us for the inline body of tt-metal's `div_binary_tile`; `km.sqrt(x)` within 9.5e-8
 at 40.2 us against 53.9 us for `sqrt_tile`; `km.minimum(abs(x), y)` exact; four tiles
 `x * y + z * w` within 6.0e-8.
+
+**A float word in tile arithmetic.** A handler parameter `scale: float` is one command
+word, the value's float32 bits (the host packs it at submit and in a chain's calls). In
+a tile expression (`results.push(x * scale)`) or as a tile function's argument
+(`results.push(affine(x, scale, shift))`, `def affine(x, scale, shift): return x *
+scale + shift`) it is a run-time scalar: the call passes its bits
+(`km_tile::affine(dst, scale_bits, shift_bits)`), and the unit program loads each into
+a work register it holds across the rows, by two `TT_SFPLOADI` whose halves the core
+builds from the argument, before the rows; the rows and their replay are the same
+words as for a number. Each command takes its own value, with no build. An inline body
+takes it as a C++ `float` of its name (`takes=[scale]`; tt-metal's `mul_unary_tile`
+takes the bits: `__builtin_bit_cast(uint32_t, scale)`). Refused at the line: an `int`
+word in a tile expression or a tile function's call (annotate it `float`), a float
+word in the handler's integer arithmetic (a slice bound, a range, a count), a division
+by a float word (pass its reciprocal and multiply), and a float word of a function
+called on a row (the row form's numbers are immediates). On the card
+([run-time scalars](../../experiments/language/tile_lines/README.md#run-time-scalars-in-a-tile-function)):
+bf16 tiles, 768 a command on 12 cores, four scales one command each:
+`results.push(x * scale)` equal datum for datum to the inline body of tt-metal's
+`mul_unary_tile` at each, 15.5 to 16.3 us against 33.6 to 34.0 us; `affine(x, scale,
+shift)` within 5.9e-8 of float64 at the same time.
 
 A function called on a row of a stream of `row=` tiles is traced in the tile
 compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows of the
@@ -1126,8 +1181,12 @@ command's sums is kept for the next. One loop may add two products into two fiel
 (`self.h += self.p(xb, w1b)` and `self.g += self.p(xb, w3b)`, X's block read once for
 both): each is counted on mover B for its write, and a product whose setup differs from
 the loop's first (W's format, the block's shape, a turn) sets its own before its K
-tiles and the first's after them. A tile function of fields of sums is written as one
-rectangle (the table above): the README's SwiGLU layer,
+tiles and the first's after them. A tile function of a product's sums is written in
+the same handler: of DST sums, `y.pages(first, n).write(act(acc))` runs act's body on
+each of acc's tiles in place before the pack (on the card silu over 4 tiles adds 1.1 us
+a tile to the product's command, and the result is the product's own error:
+[a product and a tile function](../../experiments/language/tile_lines/README.md#a-product-and-a-tile-function-in-one-handler));
+of fields of sums, as one rectangle (the table above): the README's SwiGLU layer,
 [31 swiglu](../../examples/31_swiglu/README.md), whose `up` handler writes
 `gate(self.h, self.g)`.
 
@@ -1766,18 +1825,18 @@ two forms, and they give the same records
 ```python
 class Steps(km.Program):
     @km.handler
-    def scale(self, a: km.Tensor, out: km.Tensor, factor: int, width: int): ...
+    def scale(self, a: km.Tensor, out: km.Tensor, factor: float, width: int): ...
 
     @km.chain
-    def steps(self, x, y, z, s, t, factor: int, width: int, tiles: int):
+    def steps(self, x, y, z, s, t, factor: float, width: int, tiles: int):
         self.scale(x, y, factor, width)
-        self.scale(y, z, THREE, width)
+        self.scale(y, z, 3.0, width)
         self.add(z, km.past(y), s, width)  # y: written two calls back
         self.sum(s, t, tiles)
 
 
-chain = run.chain(program.steps(x, y, z, s, t, bits(5), 2, 16), cores=(0, 8))
-listed = run.chain([Steps.scale(x, y, bits(5), 2), ...], cores=(0, 8))
+chain = run.chain(program.steps(x, y, z, s, t, 5.0, 2, 16), cores=(0, 8))
+listed = run.chain([Steps.scale(x, y, 5.0, 2), ...], cores=(0, 8))
 run.wait(run.submit(chain))
 ```
 
@@ -2080,13 +2139,39 @@ the packed text of the five CPUs, of 70,656 B.
 
 ## Not in this version
 
-A rectangle per command; slices and `.columns` of a field; a rectangle of tiles with a
-step on its columns; a transposed rectangle outside a cast; a stream of a rectangle
-of more than one row whose columns are words; a field
-filled from a broadcast; a product's operands other than a stream's tile and a field,
-two streams' blocks, or two broadcasts' blocks into a float32 field; a field of sums of
-more than one row from two streams; a product and a tile function in one body; the fidelity derived from a tile function's tolerance (it is
-given as `fidelity=`); a word field with a rectangle (`self.x`, a broadcast). Of a
+Each of these is a line a user would write that this version refuses, with what it
+would take:
+
+- A rectangle per command (`run.submit(h, rect=...)`): the rectangle's words in the
+  command, the index arithmetic at run time, and every table now sized by the
+  rectangle at the build sized at run time (more than 200 lines).
+- Slices and `.columns` of a field (`y.tiles[...].write(self.sums[:, 0:2])`): an
+  offset into the field at each place that uses one (its pack, its write, its unpack),
+  about 100 lines.
+- A rectangle of tiles with a step on its columns (`x.tiles[0:2, 0:8:2]`): a column
+  stride in the movement's rectangle walk (`km::Walk`) and in the compiler, about 80
+  lines.
+- A transposed rectangle outside a cast (`km.Stream(w.tiles[...].T)`): the cast's
+  transposed walk moved into the stream's movement, about 80 lines.
+- A stream of a rectangle of more than one row whose columns are words: the
+  rectangle's row walk with run-time columns, about 80 lines.
+- A field filled from a broadcast (`self.w.fill(down.arrive())`): the arrived block
+  copied into the field's buffer, in step with the broadcast's window, about 50
+  lines.
+- A product's operands other than a stream's tile and a field, two streams' blocks,
+  or two broadcasts' blocks into a float32 field (a stream's tile with a broadcast's
+  block): a fifth product form, about 100 lines.
+- A field of sums of more than one row from two streams: the field product's
+  subblock over rows in the streams' block layout, about 80 lines.
+- The fidelity derived from a tile function's tolerance: a model of the error by the
+  data, which the build does not have; it stays `fidelity=`.
+- A word field with a rectangle (`self.x`, a broadcast): the rectangle's words in the
+  word table, about 60 lines.
+
+A product and a tile function meet in one handler as a product's sums and the tile
+function written of them (`y.pages(first, n).write(act(acc))` of DST sums,
+`y.tiles[...].write(act(self.part))` of a field of sums: [Products](#products)); a
+traced tile function's `act(a @ w)` multiplies one tile a side. Of a
 class's X280 thread: a thread in a merged class's body, shared regions, a region's
 size checked against the pages a handler reads of it, chain records in its header
 (see [X280 threads](#x280-threads)).
