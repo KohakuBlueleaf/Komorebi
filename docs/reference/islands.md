@@ -59,6 +59,9 @@ written for islands runs on one card unchanged.
   opens once over the mesh, then each island gets a `Session` given its device
   (`session.island(i)`). The cards must be the visible ones (`TT_VISIBLE_DEVICES` is
   set to them) and must not be held by another process.
+  A process that opened cards as a mesh may not open a card alone, nor the
+  reverse: the open is refused, and the other kind runs in a new process
+  ([hazard](hazards.md#a-card-opened-alone-in-a-process-that-opened-a-mesh)).
 - **Ranks.** Flat and contiguous by island, in island order: island i holds ranks
   `session.graph.first(i)` to `first(i) + count(i) - 1`, its cores in core order.
   `session.ranks` is the total, at most 65,024 (below), a group's first

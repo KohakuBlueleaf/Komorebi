@@ -724,7 +724,7 @@ Komorebi has run on Blackhole P150A cards, one and two together, and on no other
 | [islands](docs/concepts/islands.md), [recovery](docs/guides/recovery.md) | two cards as one session; a command that does not return |
 | [X280 threads](docs/threads.md) | C on a work cluster with kmx |
 | [host API](docs/reference/host.md) | `Program`, `Session`, `Run`, errors, builds |
-| [classes](docs/reference/classes.md), [tile functions](docs/reference/tile.md) | kernels written as Python classes; arithmetic compiled for the vector and matrix units |
+| [classes](docs/reference/classes.md), [tile functions](docs/reference/tile.md), [tile formats](docs/reference/formats.md) | kernels written as Python classes; arithmetic compiled for the vector and matrix units; the card's formats and a product's placement |
 | [the chain](docs/reference/chain.md) | calls written once as records and run as one command, each input waiting for marks, not for the host |
 | [measured](docs/measured.md) | every program's tables, with conditions and where the time goes |
 | [examples](examples/README.md), [projects](projects/README.md) | runnable examples; the five programs and their results |

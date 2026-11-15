@@ -6,7 +6,7 @@ broadcast with `.row()`. Layout rule: a per-row value is lanes of one tile."""
 from dataclasses import dataclass
 
 from komorebi.dsl.tile import chain as chains
-from komorebi.dsl.tile.ir import BF16, F32, PlanError, fail
+from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.lower import (
     NOT_CHECKED,
     STALL_SFPU,
@@ -91,8 +91,11 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
         raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
     if not 1 <= width <= 2:
         fail("the row form takes rows of 1 or 2 tiles (a per-column tile holds 2)")
-    if not {t.dtype for t in ir.tensors} <= {BF16, F32}:
-        fail(f"{ir.name}: tensors are bf16 or fp32")
+    if not {t.dtype for t in ir.tensors} <= set(TILE_DTYPES):
+        fail(
+            f"{ir.name}: tensors are fp32 or of the B family "
+            f"({', '.join(TILE_DTYPES[1:])})"
+        )
     if len(ir.stores) != 1:
         fail(f"{ir.name}: the row form takes one store")
     store = ir.stores[0]

@@ -10,6 +10,11 @@ import sys
 from dataclasses import dataclass, field
 
 BF16, F32 = "bfloat16", "float32"
+# The tensor formats the tile level reads into its fp32 Dst: fp32, and the B family,
+# whose tiles the unpacker gives exactly (no A family: an fp32 Dst reads it wrong).
+BLOCK_B = ("bfp8_b", "bfp4_b", "bfp2_b")
+TILE_DTYPES = (F32, BF16, *BLOCK_B)
+BF16_EXACT = (BF16, *BLOCK_B)  # formats whose every value a bf16 holds
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 

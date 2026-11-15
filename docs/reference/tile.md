@@ -119,7 +119,9 @@ between the products and the gate.
   complete. A product stored as it is (`y = a @ w`) emits the product's words alone,
   the words `matrix.product_program` emits.
 - **The caller.** The unpack CPU unpacks each product's operands in the same order,
-  `llk_unpack_AB_matmul(a, w, ...)` (a into SrcB, w into SrcA), after
+  `llk_unpack_AB_matmul(a, w, ...)` (a into SrcB, w into SrcA: the plain placement;
+  the `km.srcb` / `km.srca` markers of [placement](formats.md#placement) are refused in
+  a traced tile function), after
   `mm_no_mop_init_short(a, w, ...)` once and the body's `_init()`; the compute kernel's
   `math_fidelity` is the unit's. `Dst` is clear when the body starts (the pack's release
   clears it): a product adds into its tile. `unit.products` names each product's tile
@@ -147,8 +149,9 @@ alone (1568) is 139.0 cycles: the two products' estimate.
 
 **Stream form.** Each tile of the output is an expression of the same tile of up to
 three inputs: `+`, `-`, `*`, unary minus, Python number constants, `trace.sigmoid`,
-`trace.silu` (`x * sigmoid(x)`) and `trace.rsqrt`. Inputs are bf16 or fp32 tensors;
-`Dst` is fp32. Constants become `SFPLOADI` immediates, or one of the constant registers
+`trace.silu` (`x * sigmoid(x)`) and `trace.rsqrt`. Inputs are fp32 tensors or tensors
+of the B family (bf16, bfp8_b, bfp4_b, bfp2_b; [tile formats](formats.md)); `Dst` is
+fp32, which reads the A family wrong, so A-family tensors are refused. Constants become `SFPLOADI` immediates, or one of the constant registers
 when that saves words: the three programmable ones (LReg 12 to 14), then LReg 11, which
 the unit sets after its setup and restores to -1.0 at its end.
 
@@ -247,7 +250,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | "the unit program reads whole-tile operands" | a slice or a broadcast operand needs the row form |
 | "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering |
 | "the unit program takes no runtime scalars" | every immediate is built into the header; a run-time word would need building on the core |
-| "tensors are bf16 or fp32" | the loads and stores are fp32 `Dst` accesses |
+| "tensors are fp32 or of the B family" | the loads and stores are fp32 `Dst` accesses, and an fp32 `Dst` reads the A family's datums 2^-15 off |
 | "the unit program is built for fp32 Dst" | the address walk assumes 64 address units a tile |
 | row form: "rows of 1 or 2 tiles" | the per-column operand tile holds two tiles of columns |
 | exp / exp2: "no template meets relative error E over [lo, hi]" | no template's bound meets the stated error over that range |

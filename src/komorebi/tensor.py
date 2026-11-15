@@ -3,8 +3,6 @@ and read into numpy arrays: interleaved in DRAM (a page a row, or a page a 32 x 
 tile), or one row in the L1 of every core of a grid.
 """
 
-import math
-
 import numpy as np
 
 from komorebi import formats
@@ -13,7 +11,8 @@ from komorebi import formats
 class Tensor:
     """A device buffer (the native module's `Buffer`) and the shape on the card, the
     data type name and the layout ("row" or "tile") of its contents. `shard_grid`
-    (x, y): one row in each core's L1, cores in row-major order; None: DRAM."""
+    (x, y): one row in each core's L1, cores in row-major order; None: DRAM.
+    `transposed_tiles`: each tile held transposed (a turned product's SrcB operand)."""
 
     def __init__(self, buffer, shape, dtype, layout, shard_grid=None):
         self.buffer = buffer
@@ -21,6 +20,7 @@ class Tensor:
         self.dtype = dtype
         self.layout = layout
         self.shard_grid = shard_grid
+        self.transposed_tiles = False
         self.freed = False
 
     def __repr__(self):
@@ -65,7 +65,9 @@ class Tensor:
     def write(self, data):
         """Writes `data` (this shape) over the whole buffer, once the cores of a
         launched program are done."""
-        raw, shape = formats.to_bytes(data, self.dtype, self.layout)
+        raw, shape = formats.to_bytes(
+            data, self.dtype, self.layout, self.transposed_tiles
+        )
         if shape != self.shape:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
         self.buffer.write(raw)
@@ -74,7 +76,11 @@ class Tensor:
         """The whole buffer as a numpy array (bfloat16 as float32), once the cores of
         a launched program are done."""
         return formats.from_bytes(
-            self.read_bytes(), self.shape, self.dtype, self.layout
+            self.read_bytes(),
+            self.shape,
+            self.dtype,
+            self.layout,
+            self.transposed_tiles,
         )
 
     def read_bytes(self):
@@ -93,7 +99,7 @@ def empty(module, device, shape, dtype, layout="row", shard_grid=None, address=N
     formats.check_dtype(dtype)
     shape = formats.padded_shape(shape, layout)
     page = formats.page_bytes(shape, dtype, layout)
-    size = math.prod(shape) * formats.itemsize(dtype)
+    size = formats.buffer_bytes(shape, dtype, layout)
     if shard_grid is not None:
         if layout != "row" or len(shape) != 2:
             raise ValueError("an L1 tensor is [cores, words] rows, one a core")
