@@ -31,5 +31,6 @@ code, the rounds, the sum, the trail and every round's group against
 
 Measured on one Blackhole card (`--beside`, the defaults: 119 cores, 30 a STEP, limit
 1,000,000): both the same as numpy: 204 rounds, sum 1,004,917, every state word. The
-loop on the thread: 10.55 ms against the hand program's 10.75 ms (408 commands, two
-submitted and waited for in turn each round). Kernel text 21,200 B against 21,424 B.
+loop on the thread, its commands filled by the header's functions: 10.21 ms against
+the hand program's 10.74 ms (408 commands, two submitted and waited for in turn each
+round). The class's kernel text 20,836 B.
