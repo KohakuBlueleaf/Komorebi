@@ -165,6 +165,7 @@ class Merged(Program):
         for attribute, what in (("compute", "compute options"), ("opt", "opt levels")):
             programs._same(sources, attribute, what)
         programs._same_nocs(sources, "programs merged into one")
+        programs.same_guard(sources)
         common = {
             key: value
             for key, value in first.defines.items()
@@ -199,6 +200,7 @@ class Merged(Program):
             shared=dict(owner.shared) if owner else {},
             opt=dict(first.opt),
             noc=dict(first.noc),
+            guard=first.guard,
         )
         self.x280_ports = owner.x280_ports if owner else None
         self._markers(overlay, resident)

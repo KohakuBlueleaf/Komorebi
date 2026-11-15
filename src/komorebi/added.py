@@ -13,7 +13,7 @@ import numpy as np
 
 from komorebi import abi, insn_check, native, overlay
 from komorebi.errors import ProgramError
-from komorebi.program import messages_header
+from komorebi.program import messages_header, unguarded
 
 # The load's default room for added parts: bytes of parts, each stored in every bank.
 RESERVE = 256 * 1024
@@ -346,6 +346,14 @@ def addon(
     if handler and message:
         raise AddError(f"{name}: a handler or a dynamic handler, not both")
     run._check_alive()
+    if unguarded(run.programs):  # the added code is built as the run's programs are
+        given = (defines or {}).get("KM_GUARD")
+        if given is not None and str(given) != "0":
+            raise AddError(
+                f"{name}: defines KM_GUARD={given}, and the run's programs are built "
+                "with guard=False"
+            )
+        defines = {**(defines or {}), "KM_GUARD": 0}
     if message:
         made = overlay.declare(
             name, parts, _message_number(room, name, number), defines

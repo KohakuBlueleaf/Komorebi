@@ -122,6 +122,30 @@ What the numbers say:
   core or on 120, whether or not the program changes: the five cores meet, wait for their
   buffers to be empty and set them up again; the parts stay in their slots.
 
+### With and without the guard
+
+The table above is from a head before the guard: a command given up at its deadline with
+the run going on, and `run.inspect` of a running core. Both are on by default
+(`guard=True`) and cost every command cycles and kernel text; `km.Program(guard=False)`
+builds the kernels without them ([the hazard](../../docs/reference/hazards.md#a-wait-that-never-completes)).
+`python two_programs.py --phase price` and the same with `--no-guard`, 120 cores, 40
+rounds, AICLK 1,350 MHz, 2026-11-16, cycles a command (1 core / 120 cores):
+
+| | guard on (default) | guard off |
+|---|---:|---:|
+| empty command, the kernel form | 1,012.5 / 1,149.5 | 639 / 848 |
+| empty command, runtime's form | 1,067.5 / 1,228 | 726.5 / 942 |
+| sum of 16 tiles, the kernel form | 5,641.5 / 1,989 | 5,242 / 1,736 |
+| sum of 16 tiles, runtime's form | 6,477 / 2,158.5 | 5,586 / 1,886 |
+| kernel text, the kernel form | 34,848 B | 25,328 B |
+| kernel text, runtime's form (sum) | 30,432 B | 24,032 B |
+
+Off, an empty command costs about 340 to 370 cycles less on one core and 290 to 300 less
+on 120, a sum of 16 tiles 250 to 890 less, and the kernels 6.4 to 9.5 KB less text. What it takes away: a
+command that never completes is not given up at its deadline (the dispatcher frees it
+with its cores still in it), `run.inspect` is refused, and a hang costs a card reset; the
+load's log says so once.
+
 ### Merged into one program
 
 `python two_programs.py --phase merged` and `--phase merged --overlay`, 120 cores, 40
