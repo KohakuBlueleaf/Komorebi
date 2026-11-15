@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi import _env, abi
+from komorebi import _env, abi, formats
 from komorebi.abi import handlers_from_header
 from komorebi.errors import ProgramError
 from komorebi.movement import check_pairs
@@ -106,6 +106,36 @@ class Handler(int):
 
     def __repr__(self):
         return f"Handler({int(self)}, {self.program.name!r})"
+
+
+# The earlier names of two buffer formats.
+FORMAT_ALIASES = {"bfloat8_b": "bfp8_b", "bfloat4_b": "bfp4_b"}
+
+
+def check_families(name, buffers, compute):
+    """One exponent family a kernel (the unpacker and packer have one): a program
+    whose buffers are of the A and the B family is refused, naming one of each;
+    float32 and the integers go with either. An A buffer needs a 16-bit Dst."""
+    first = {}
+    for buffer in buffers:
+        family = formats.FAMILY.get(FORMAT_ALIASES.get(buffer.format, buffer.format))
+        if family is not None:
+            first.setdefault(family, buffer)
+    if len(first) == 2:
+        a, b = first["a"], first["b"]
+        raise ProgramError(
+            f"{name}: buffer {a.index} ({a.format}) is of the A family (a 5-bit "
+            f"exponent) and buffer {b.index} ({b.format}) of the B family (an 8-bit "
+            "one): a kernel's buffers are of one family; float32 and the integers "
+            "go with either"
+        )
+    if "a" in first and compute.get("fp32_dest_acc_en"):
+        a = first["a"]
+        raise ProgramError(
+            f"{name}: buffer {a.index} ({a.format}) is of the A family, which the "
+            "card reads right only into a 16-bit Dst (in an fp32 Dst each datum "
+            "arrives 2^-15 off): fp32_dest_acc_en is off for it"
+        )
 
 
 def source_form(path):
@@ -234,6 +264,7 @@ class Program:
                     f"{self.name}: 'movement' stands for the reader and the writer; "
                     "give it or them, not both"
                 )
+        check_families(self.name, self.buffers, self.compute)
 
     def thread(self, cluster=1, clusters=None, **kwargs):
         """Declares an X280 thread on work cluster `cluster` (the arguments of

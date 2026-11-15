@@ -8,7 +8,7 @@ import struct
 
 from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile import macro, sfpu
-from komorebi.dsl.tile.ir import BF16, F32, PlanError, fail
+from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.matrix import PHASES, tile_products
 from komorebi.dsl.tile.unit import (
     FIXED,
@@ -1313,8 +1313,11 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
     if len(chain.operands) > OPERANDS:
         fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     dtypes = {t.dtype for t in ir.tensors}
-    if not dtypes <= {BF16, F32}:
-        fail(f"{ir.name}: tensors are bf16 or fp32")
+    if not dtypes <= set(TILE_DTYPES):
+        fail(
+            f"{ir.name}: tensors are fp32 or of the B family "
+            f"({', '.join(TILE_DTYPES[1:])})"
+        )
     body = Body()
     per_row = [k for k, leaf in enumerate(chain.operands) if leaf.kind == "bcast_col"]
     if per_row:

@@ -1,0 +1,2021 @@
+{
+ "cases": {
+  "bits bfloat16 x bfloat16 LoFi": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "left_significand": 7,
+   "right_significand": 5,
+   "cross_terms": 99,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    972.0
+   ]
+  },
+  "bits bfloat16 x bfloat16 HiFi2": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 7,
+   "right_significand": 8,
+   "cross_terms": 132,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1086.0
+   ]
+  },
+  "bits bfloat16 x bfloat16 HiFi3": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 8,
+   "right_significand": 8,
+   "cross_terms": 141,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1000.0
+   ]
+  },
+  "bits bfloat16 x bfloat16 HiFi4": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 8,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1033.0
+   ]
+  },
+  "bits bfloat16 x bfp8_b LoFi": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "left_significand": 7,
+   "right_significand": 5,
+   "cross_terms": 110,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    917.0
+   ]
+  },
+  "bits bfloat16 x bfp8_b HiFi2": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "left_significand": 7,
+   "right_significand": 7,
+   "cross_terms": 132,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    953.0
+   ]
+  },
+  "bits bfloat16 x bfp8_b HiFi3": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "left_significand": 8,
+   "right_significand": 7,
+   "cross_terms": 142,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    983.0
+   ]
+  },
+  "bits bfloat16 x bfp8_b HiFi4": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "left_significand": 8,
+   "right_significand": 7,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    999.0
+   ]
+  },
+  "bits bfloat16 x bfp4_b LoFi": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2
+   ],
+   "left_significand": 7,
+   "right_significand": 3,
+   "cross_terms": 132,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    907.0
+   ]
+  },
+  "bits bfloat16 x bfp4_b HiFi2": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2
+   ],
+   "left_significand": 7,
+   "right_significand": 3,
+   "cross_terms": 132,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    916.0
+   ]
+  },
+  "bits bfloat16 x bfp4_b HiFi3": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "right_bits": [
+    1,
+    2
+   ],
+   "left_significand": 8,
+   "right_significand": 3,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    970.0
+   ]
+  },
+  "bits bfloat16 x bfp4_b HiFi4": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "right_bits": [
+    1,
+    2
+   ],
+   "left_significand": 8,
+   "right_significand": 3,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    992.0
+   ]
+  },
+  "bits bfloat16 x bfp2_b LoFi": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [],
+   "left_significand": 7,
+   "right_significand": 1,
+   "cross_terms": 132,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    917.0
+   ]
+  },
+  "bits bfloat16 x bfp2_b HiFi2": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [],
+   "left_significand": 7,
+   "right_significand": 1,
+   "cross_terms": 132,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    924.0
+   ]
+  },
+  "bits bfloat16 x bfp2_b HiFi3": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "right_bits": [],
+   "left_significand": 8,
+   "right_significand": 1,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    961.0
+   ]
+  },
+  "bits bfloat16 x bfp2_b HiFi4": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "right_bits": [],
+   "left_significand": 8,
+   "right_significand": 1,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    973.0
+   ]
+  },
+  "bits bfp8_b x bfloat16 LoFi": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "left_significand": 7,
+   "right_significand": 5,
+   "cross_terms": 108,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    947.0
+   ]
+  },
+  "bits bfp8_b x bfloat16 HiFi2": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 7,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    965.0
+   ]
+  },
+  "bits bfp8_b x bfloat16 HiFi3": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 7,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    985.0
+   ]
+  },
+  "bits bfp8_b x bfloat16 HiFi4": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 7,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1001.0
+   ]
+  },
+  "bits bfp4_b x bfloat16 LoFi": {
+   "left_bits": [
+    1,
+    2
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "left_significand": 3,
+   "right_significand": 5,
+   "cross_terms": 108,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    985.0
+   ]
+  },
+  "bits bfp4_b x bfloat16 HiFi2": {
+   "left_bits": [
+    1,
+    2
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 3,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    912.0
+   ]
+  },
+  "bits bfp4_b x bfloat16 HiFi3": {
+   "left_bits": [
+    1,
+    2
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 3,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    954.0
+   ]
+  },
+  "bits bfp4_b x bfloat16 HiFi4": {
+   "left_bits": [
+    1,
+    2
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 3,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    983.0
+   ]
+  },
+  "bits bfp2_b x bfloat16 LoFi": {
+   "left_bits": [],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "left_significand": 1,
+   "right_significand": 5,
+   "cross_terms": 108,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1022.0
+   ]
+  },
+  "bits bfp2_b x bfloat16 HiFi2": {
+   "left_bits": [],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 1,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    927.0
+   ]
+  },
+  "bits bfp2_b x bfloat16 HiFi3": {
+   "left_bits": [],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 1,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    974.0
+   ]
+  },
+  "bits bfp2_b x bfloat16 HiFi4": {
+   "left_bits": [],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left_significand": 1,
+   "right_significand": 8,
+   "cross_terms": 144,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    989.0
+   ]
+  },
+  "bits float32 x float32 LoFi": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "left_significand": 7,
+   "right_significand": 5,
+   "cross_terms": 24,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1043.0
+   ]
+  },
+  "bits float32 x float32 HiFi2": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+   ],
+   "left_significand": 7,
+   "right_significand": 10,
+   "cross_terms": 54,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1058.0
+   ]
+  },
+  "bits float32 x float32 HiFi3": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+   ],
+   "left_significand": 11,
+   "right_significand": 10,
+   "cross_terms": 70,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1108.0
+   ]
+  },
+  "bits float32 x float32 HiFi4": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+   ],
+   "left_significand": 11,
+   "right_significand": 10,
+   "cross_terms": 90,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1124.0
+   ]
+  },
+  "bits float16 x float16 LoFi": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "left_significand": 7,
+   "right_significand": 5,
+   "cross_terms": 48,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    994.0
+   ]
+  },
+  "bits float16 x float16 HiFi2": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+   ],
+   "left_significand": 7,
+   "right_significand": 10,
+   "cross_terms": 88,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    965.0
+   ]
+  },
+  "bits float16 x float16 HiFi3": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+   ],
+   "left_significand": 11,
+   "right_significand": 10,
+   "cross_terms": 112,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1010.0
+   ]
+  },
+  "bits float16 x float16 HiFi4": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+   ],
+   "left_significand": 11,
+   "right_significand": 10,
+   "cross_terms": 132,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1027.0
+   ]
+  },
+  "bits bfp8 x float16 HiFi4": {
+   "left_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "right_bits": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+   ],
+   "left_significand": 7,
+   "right_significand": 10,
+   "cross_terms": 132,
+   "model_mismatch": 0,
+   "first_mismatch": [],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1057.0
+   ]
+  },
+  "offset bfloat16 x bfp4_b": {
+   "tiles": [
+    {
+     "model": {
+      "rms_rel": 0.00017580604235458973,
+      "max_rel": 0.0009195821576903271
+     },
+     "exact": {
+      "rms_rel": 0.0001758059484573173,
+      "max_rel": 0.0009195820966346079
+     }
+    },
+    {
+     "model": {
+      "rms_rel": 0.0001722863023346116,
+      "max_rel": 0.0009584894698425611
+     },
+     "exact": {
+      "rms_rel": 0.0001722864883877172,
+      "max_rel": 0.0009584894574799907
+     }
+    }
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    2157.0,
+    75.0
+   ]
+  },
+  "offset bfloat16 x bfp2_b": {
+   "tiles": [
+    {
+     "model": {
+      "rms_rel": 0.00010203635393774547,
+      "max_rel": 0.0005592104673358636
+     },
+     "exact": {
+      "rms_rel": 0.00010203635213465021,
+      "max_rel": 0.000559210457453996
+     }
+    },
+    {
+     "model": {
+      "rms_rel": 0.00012011133563607446,
+      "max_rel": 0.000753086178648813
+     },
+     "exact": {
+      "rms_rel": 0.00012011133820957463,
+      "max_rel": 0.0007530861947844041
+     }
+    }
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    2059.0,
+    75.0
+   ]
+  },
+  "plain LoFi": {
+   "tiles": [
+    {
+     "model": {
+      "rms_rel": 0.000319472567364081,
+      "max_rel": 0.0012808044547181013
+     },
+     "exact": {
+      "rms_rel": 0.02718964849571335,
+      "max_rel": 0.09179800554747607
+     }
+    }
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    922.0
+   ]
+  },
+  "transposed LoFi": {
+   "tiles": [
+    {
+     "model": {
+      "rms_rel": 0.0003179810933861021,
+      "max_rel": 0.001625277553528381
+     },
+     "exact": {
+      "rms_rel": 0.02587877977607598,
+      "max_rel": 0.09289459154395721
+     }
+    }
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    891.0
+   ],
+   "transpose_span": [
+    179.0
+   ]
+  },
+  "plain HiFi2": {
+   "tiles": [
+    {
+     "model": {
+      "rms_rel": 0.0003132434692140538,
+      "max_rel": 0.0012279630462778187
+     },
+     "exact": {
+      "rms_rel": 0.004104946582041876,
+      "max_rel": 0.01547103980441907
+     }
+    }
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    984.0
+   ]
+  },
+  "transposed HiFi2": {
+   "tiles": [
+    {
+     "model": {
+      "rms_rel": 0.00031174114046577517,
+      "max_rel": 0.0015757743655096792
+     },
+     "exact": {
+      "rms_rel": 0.004233635780560594,
+      "max_rel": 0.014856694483447024
+     }
+    }
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    937.0
+   ],
+   "transpose_span": [
+    189.0
+   ]
+  },
+  "plain HiFi4": {
+   "tiles": [
+    {
+     "model": {
+      "rms_rel": 0.00031236923621906916,
+      "max_rel": 0.0012246469691485258
+     },
+     "exact": {
+      "rms_rel": 0.00031236923621906916,
+      "max_rel": 0.0012246469691485258
+     }
+    }
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    1010.0
+   ]
+  },
+  "transposed HiFi4": {
+   "tiles": [
+    {
+     "model": {
+      "rms_rel": 0.0003108495564309093,
+      "max_rel": 0.001572690542379394
+     },
+     "exact": {
+      "rms_rel": 0.0003108495564309093,
+      "max_rel": 0.001572690542379394
+     }
+    }
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    960.0
+   ],
+   "transpose_span": [
+    166.0
+   ]
+  },
+  "copy float16 to float32": {
+   "differ": 320,
+   "examples": [
+    [
+     6.103515625e-05,
+     9.1552734375e-05
+    ],
+    [
+     -6.103515625e-05,
+     -3.0517578125e-05
+    ],
+    [
+     5.960464477539063e-08,
+     3.0517578125e-05
+    ],
+    [
+     9.5367431640625e-07,
+     3.0517578125e-05
+    ],
+    [
+     1.0013580322265625e-05,
+     3.0517578125e-05
+    ],
+    [
+     Infinity,
+     65536.0
+    ],
+    [
+     -Infinity,
+     -65536.0
+    ],
+    [
+     NaN,
+     98304.0
+    ],
+    [
+     -0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     -0.11004638671875,
+     -0.1099853515625
+    ],
+    [
+     -0.0030803680419921875,
+     -0.0030498504638671875
+    ]
+   ],
+   "extremes": [
+    [
+     65504.0,
+     65504.0
+    ],
+    [
+     -65504.0,
+     -65504.0
+    ],
+    [
+     6.103515625e-05,
+     9.1552734375e-05
+    ],
+    [
+     -6.103515625e-05,
+     -3.0517578125e-05
+    ],
+    [
+     5.960464477539063e-08,
+     3.0517578125e-05
+    ],
+    [
+     9.5367431640625e-07,
+     3.0517578125e-05
+    ],
+    [
+     1.0013580322265625e-05,
+     3.0517578125e-05
+    ],
+    [
+     Infinity,
+     65536.0
+    ],
+    [
+     -Infinity,
+     -65536.0
+    ],
+    [
+     NaN,
+     98304.0
+    ],
+    [
+     -0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.333251953125,
+     0.333251953125
+    ],
+    [
+     32768.0,
+     32768.0
+    ],
+    [
+     0.50048828125,
+     0.50048828125
+    ],
+    [
+     7.0,
+     7.0
+    ]
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    272.0
+   ]
+  },
+  "copy float16 to float16": {
+   "differ": 1024,
+   "examples": [
+    [
+     65504.0,
+     2.46875
+    ],
+    [
+     -65504.0,
+     -2.46875
+    ],
+    [
+     6.103515625e-05,
+     1.7734375
+    ],
+    [
+     -6.103515625e-05,
+     -1.75
+    ],
+    [
+     5.960464477539063e-08,
+     1.75
+    ],
+    [
+     9.5367431640625e-07,
+     1.75
+    ],
+    [
+     1.0013580322265625e-05,
+     1.75
+    ],
+    [
+     Infinity,
+     2.46875
+    ],
+    [
+     -Infinity,
+     -2.46875
+    ],
+    [
+     NaN,
+     2.484375
+    ],
+    [
+     -0.0,
+     1.75
+    ],
+    [
+     0.0,
+     1.75
+    ]
+   ],
+   "bytes_differ": 2001,
+   "extremes": [
+    [
+     65504.0,
+     2.46875
+    ],
+    [
+     -65504.0,
+     -2.46875
+    ],
+    [
+     6.103515625e-05,
+     1.7734375
+    ],
+    [
+     -6.103515625e-05,
+     -1.75
+    ],
+    [
+     5.960464477539063e-08,
+     1.75
+    ],
+    [
+     9.5367431640625e-07,
+     1.75
+    ],
+    [
+     1.0013580322265625e-05,
+     1.75
+    ],
+    [
+     Infinity,
+     2.46875
+    ],
+    [
+     -Infinity,
+     -2.46875
+    ],
+    [
+     NaN,
+     2.484375
+    ],
+    [
+     -0.0,
+     1.75
+    ],
+    [
+     0.0,
+     1.75
+    ],
+    [
+     0.333251953125,
+     1.9580078125
+    ],
+    [
+     32768.0,
+     2.4375
+    ],
+    [
+     0.50048828125,
+     1.96875
+    ],
+    [
+     7.0,
+     2.0546875
+    ]
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    343.0
+   ]
+  },
+  "copy bfp8 to float32": {
+   "differ": 141,
+   "examples": [
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ],
+    [
+     0.0,
+     3.0517578125e-05
+    ]
+   ],
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    323.0
+   ]
+  },
+  "copy bfp8 to bfp8": {
+   "differ": 975,
+   "examples": [
+    [
+     65024.0,
+     0.0
+    ],
+    [
+     6.103515625e-05,
+     0.0
+    ],
+    [
+     3.0517578125e-05,
+     0.0
+    ],
+    [
+     3.0517578125e-05,
+     0.0
+    ],
+    [
+     -6.103515625e-05,
+     0.0
+    ],
+    [
+     69632.0,
+     0.0
+    ],
+    [
+     -130048.0,
+     0.0
+    ],
+    [
+     -0.000518798828125,
+     0.0
+    ],
+    [
+     0.0010223388671875,
+     0.0
+    ],
+    [
+     9.1552734375e-05,
+     0.0
+    ],
+    [
+     0.001007080078125,
+     0.0
+    ],
+    [
+     0.00140380859375,
+     0.0
+    ]
+   ],
+   "bytes_differ": 1039,
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    331.0
+   ]
+  },
+  "pack float32 to bfp8_b precise 0": {
+   "negative_zero": 0,
+   "host": {
+    "exponents_differ": 9,
+    "datums_differ": 235,
+    "rows": [
+     0,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19
+    ]
+   },
+   "away": {
+    "exponents_differ": 9,
+    "datums_differ": 164,
+    "rows": [
+     0,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     12,
+     13,
+     14,
+     15,
+     46,
+     48,
+     49,
+     50
+    ]
+   },
+   "early_away": {
+    "exponents_differ": 0,
+    "datums_differ": 0,
+    "rows": []
+   },
+   "values_error": {
+    "rms_rel": 0.009252151982004622,
+    "max_rel": 0.1413118860977754
+   },
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    417.0
+   ]
+  },
+  "pack float32 to bfp8_b precise 1": {
+   "negative_zero": 0,
+   "host": {
+    "exponents_differ": 9,
+    "datums_differ": 235,
+    "rows": [
+     0,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19
+    ]
+   },
+   "away": {
+    "exponents_differ": 9,
+    "datums_differ": 164,
+    "rows": [
+     0,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     12,
+     13,
+     14,
+     15,
+     46,
+     48,
+     49,
+     50
+    ]
+   },
+   "early_away": {
+    "exponents_differ": 0,
+    "datums_differ": 0,
+    "rows": []
+   },
+   "values_error": {
+    "rms_rel": 0.009252151982004622,
+    "max_rel": 0.1413118860977754
+   },
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    463.0
+   ]
+  },
+  "pack float32 to bfp4_b precise 0": {
+   "negative_zero": 0,
+   "host": {
+    "exponents_differ": 9,
+    "datums_differ": 377,
+    "rows": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ]
+   },
+   "away": {
+    "exponents_differ": 9,
+    "datums_differ": 128,
+    "rows": [
+     9,
+     15,
+     48,
+     49,
+     50,
+     51,
+     52,
+     53,
+     54,
+     55,
+     58
+    ]
+   },
+   "early_away": {
+    "exponents_differ": 0,
+    "datums_differ": 0,
+    "rows": []
+   },
+   "values_error": {
+    "rms_rel": 0.1484901397440809,
+    "max_rel": 2.64402565408647
+   },
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    593.0
+   ]
+  },
+  "pack float32 to bfp4_b precise 1": {
+   "negative_zero": 0,
+   "host": {
+    "exponents_differ": 9,
+    "datums_differ": 377,
+    "rows": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ]
+   },
+   "away": {
+    "exponents_differ": 9,
+    "datums_differ": 128,
+    "rows": [
+     9,
+     15,
+     48,
+     49,
+     50,
+     51,
+     52,
+     53,
+     54,
+     55,
+     58
+    ]
+   },
+   "early_away": {
+    "exponents_differ": 0,
+    "datums_differ": 0,
+    "rows": []
+   },
+   "values_error": {
+    "rms_rel": 0.1484901397440809,
+    "max_rel": 2.64402565408647
+   },
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    442.0
+   ]
+  },
+  "pack float32 to bfp2_b precise 0": {
+   "negative_zero": 0,
+   "host": {
+    "exponents_differ": 9,
+    "datums_differ": 244,
+    "rows": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ]
+   },
+   "away": {
+    "exponents_differ": 9,
+    "datums_differ": 63,
+    "rows": [
+     48,
+     49,
+     50,
+     51,
+     52,
+     53,
+     54,
+     55,
+     58
+    ]
+   },
+   "early_away": {
+    "exponents_differ": 0,
+    "datums_differ": 0,
+    "rows": []
+   },
+   "values_error": {
+    "rms_rel": 0.3781580462473029,
+    "max_rel": 7.257903414613973
+   },
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    442.0
+   ]
+  },
+  "pack float32 to bfp2_b precise 1": {
+   "negative_zero": 0,
+   "host": {
+    "exponents_differ": 9,
+    "datums_differ": 244,
+    "rows": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ]
+   },
+   "away": {
+    "exponents_differ": 9,
+    "datums_differ": 63,
+    "rows": [
+     48,
+     49,
+     50,
+     51,
+     52,
+     53,
+     54,
+     55,
+     58
+    ]
+   },
+   "early_away": {
+    "exponents_differ": 0,
+    "datums_differ": 0,
+    "rows": []
+   },
+   "values_error": {
+    "rms_rel": 0.3781580462473029,
+    "max_rel": 7.257903414613973
+   },
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.5,
+   "product_span": [
+    504.5
+   ]
+  },
+  "pack float32 to bfp8 precise 0": {
+   "negative_zero": 0,
+   "host": {
+    "exponents_differ": 64,
+    "datums_differ": 831,
+    "rows": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ]
+   },
+   "away": {
+    "exponents_differ": 64,
+    "datums_differ": 839,
+    "rows": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ]
+   },
+   "early_away": {
+    "exponents_differ": 64,
+    "datums_differ": 839,
+    "rows": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ]
+   },
+   "values_error": {
+    "rms_rel": 1.0,
+    "max_rel": 18.73882484512092
+   },
+   "nonce_ok": true,
+   "error": 0,
+   "empty_span": 10.0,
+   "product_span": [
+    453.0
+   ]
+  }
+ },
+ "wall_s": 13.4
+}

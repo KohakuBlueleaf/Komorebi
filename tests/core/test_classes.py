@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import komorebi as km
+from komorebi import formats
 from komorebi.dsl.compiler import Refused, compile_class
 from komorebi.dsl.nodes import prune, render
 from komorebi.dsl.program import compute_options
@@ -26,9 +27,7 @@ class Pages:
 
 
 def tensor(dtype):
-    return Tensor(
-        Pages(2048 if dtype == "bfloat16" else 4096), (2048, 32), dtype, "tile"
-    )
+    return Tensor(Pages(formats.tile_bytes(dtype)), (2048, 32), dtype, "tile")
 
 
 class Sliced(km.Program):
@@ -105,8 +104,8 @@ def test_a_product_in_a_tile_function_is_unpacked_and_issued_by_the_body():
     assert "copy_tile(" not in compute  # no copy into a product's Dst tile
     assert compute_options(compiled)["math_fidelity"] == "HiFi4"
     line = line_of("results.push(product(x, y))")
-    with pytest.raises(Refused, match=rf"^Product.multiply, line {line}, .*bfloat16"):
-        made(Product, a=tensor("float32"), b=tensor("float32"), out=tensor("float32"))
+    with pytest.raises(Refused, match=rf"^Product.multiply, line {line}, .*B family"):
+        made(Product, a=tensor("float16"), b=tensor("float16"), out=tensor("float32"))
 
 
 @km.tile_function
@@ -181,10 +180,10 @@ def test_a_product_the_compiler_does_not_take_is_refused_by_its_line(
         made(cls, x=tensor("bfloat16"), w=tensor("bfloat16"))
 
 
-def test_a_product_of_float32_tiles_is_refused_by_its_line():
+def test_a_product_of_two_families_is_refused_by_its_line():
     line = line_of("# narrow")
-    with pytest.raises(Refused, match=rf"^Narrow.apply, line {line}, .*bfloat16 tiles"):
-        made(Narrow, x=tensor("float32"), w=tensor("bfloat16"))
+    with pytest.raises(Refused, match=rf"^Narrow.apply, line {line}, .*one exponent"):
+        made(Narrow, x=tensor("float16"), w=tensor("bfloat16"))
 
 
 def grid(dtype, rows, columns):
