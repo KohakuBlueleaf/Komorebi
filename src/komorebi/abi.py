@@ -59,6 +59,7 @@ class Headers:
 
     def __init__(self, include, kernel):
         self.abi = Path(include) / "komorebi" / "abi" / "km_abi.h"
+        self.chain = Path(include) / "komorebi" / "abi" / "km_chain.h"  # the record
         device = Path(include) / "komorebi" / "device"
         self.core = device / "km_core.hpp"
         # the device headers whose constants a program's header may use (km::name)
