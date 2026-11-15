@@ -13,7 +13,6 @@ from komorebi import formats
 from komorebi.errors import ProgramError
 from komorebi.tensor import Tensor
 
-HERE = Path(__file__).resolve().parent
 K, N = 8, 4
 
 
@@ -124,12 +123,8 @@ PART = 0
 
 
 def compute_of(cls):
-    cls(l1=1 << 20, log=quiet, rect=(0, 0, 2, 4), **tensors())
-    folder = sorted(
-        (HERE / "build").glob(f"{cls.__name__.lower()}-*"),
-        key=lambda p: p.stat().st_mtime,
-    )[-1]
-    return (folder / "compute.cpp").read_text()
+    program = cls(l1=1 << 20, log=quiet, rect=(0, 0, 2, 4), **tensors())
+    return (Path(program.built.folder) / "compute.cpp").read_text()
 
 
 def test_a_window_is_read_from_its_first_column_between_receive_and_done():
