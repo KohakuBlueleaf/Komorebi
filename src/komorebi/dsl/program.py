@@ -191,6 +191,7 @@ def make(
     for line in report:
         log(line)
     self.placements = placements_of(compiled, tensors)
+    cls.placed_parameters = placed_parameters(compiled)
     for line in self.placements:
         log(line)
     buffers = []
@@ -623,7 +624,7 @@ def placements_of(compiled, tensors):
             f"SrcB): left keeps {plain[0]}, right {plain[1]}; turned (right in "
             f"SrcB): left {turned[0]}, right {turned[1]}; built {built}"
         )
-        for name in weight_tensors(compiled, weight):
+        for _, name in weight_tensors(compiled, handler, weight):
             stored = getattr(tensors.get(name), "transposed_tiles", False)
             if stored != (placement == "turned"):
                 raise ProgramError(
@@ -640,22 +641,33 @@ def placements_of(compiled, tensors):
     return lines
 
 
-def weight_tensors(compiled, weight):
-    """The tensor parameters of a product's W: its stream's, or those that fill its
-    field."""
+def weight_tensors(compiled, handler, weight):
+    """(handler, tensor parameter) of a product's W: its stream's or those a
+    broadcast's block casts (the product's handler), or each fill of its field."""
     if weight is None:
         return []
     kind, name = weight
     if kind == "tensor":
-        return [name]
-    lines = {(handler, line) for f, _, handler, line in compiled.fills if f == name}
+        return [(handler, one) for one in name.split(",") if one]
+    lines = {(h, line) for f, _, h, line in compiled.fills if f == name}
     return sorted(
         {
-            m.tensor
+            (m.handler, m.tensor)
             for m in compiled.moves
             if m.how == "fill" and (m.handler, m.line) in lines
         }
     )
+
+
+def placed_parameters(compiled):
+    """{(handler, tensor parameter): (turned, the product's place)} of every product's
+    W: what a command's tensor there is checked against (HandlerMethod.args)."""
+    placed = {}
+    for handler, line, text, _, _, placement, weight in compiled.placements:
+        where = f"{compiled.name}.{handler}, line {line}: {text}"
+        for pair in weight_tensors(compiled, handler, weight):
+            placed[pair] = (placement == "turned", where)
+    return placed
 
 
 def rectangle_of(program, compiled):
