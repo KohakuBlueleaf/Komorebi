@@ -12,6 +12,7 @@
 #define KM_SPLIT_PARTS 1u
 #define KM_SPLIT_OP 2u
 #define KM_SPLIT_SECOND_SET 0x100u /* a3: the sum's upper ports and slots */
+#define TOKEN_NONE 0xFFFFFFFFu     /* token_form's last word: no records written */
 
 typedef struct {
     const uint32_t* words;
@@ -29,8 +30,13 @@ typedef struct {
     uint32_t index; /* the layer's number: its head norms' weights in the qk tensor */
     uint32_t rows;  /* the tokens a step: a3's DC_ROWS field of every command */
     uint64_t span_ticks; /* q's submit to o's event, summed over the layers */
-    uint32_t chain;      /* the layer as one command: the cores go on by themselves */
-    uint32_t records;    /* the chain's records: its first steps */
+    uint64_t
+        thread_ticks[DC_THREADS]; /* the chain's: records, submit, wait (decode.h) */
+    uint32_t chain;     /* the layer as one command: the cores go on by themselves */
+    uint32_t records;   /* the chain's records: its first steps */
+    uint32_t token;     /* and a token as one command: every layer's records, once */
+    uint32_t cores;     /* the records' cores: the chain command's */
+    uint32_t ahead_off; /* no record's W read in the record before */
 } job_t;
 
 /* Overlapped, q, k, v and o alternate the sum's two sets: k and o the second. */
@@ -260,24 +266,37 @@ static int chain_sends(const job_t* job, uint32_t step) {
     return !job->parts;
 }
 
-/* The layer as one command: its records (chain.h) into region 3, then one SPLIT in
- * the chain's mode on every core of the records, waited for once. */
-static int run_chain(job_t* job) {
+/* The job's form its token records were written for (a4, first, count, rows), then 1
+ * once written (after the load none: the thread has no zeroed data), their cores. */
+static uint32_t token_form[6] = {0u, 0u, 0u, 0u, TOKEN_NONE, 0u};
+
+/* The records (chain.h) of `count` layers from the job's into region 3, each layer's
+ * last naming the next layer's first; `token`: the position from the command's a0. */
+static int chain_write(job_t* job, uint32_t count, int token) {
     uint64_t bytes = 0;
     uint32_t* records = (uint32_t*)kmx_region(3, &bytes);
     const uint32_t* words = job->words;
-    if (records == 0 || bytes < (uint64_t)job->records * kChainRecordBytes) {
+    const uint32_t steps = job->records, total = steps * count;
+    if (records == 0 || total > kChainRecordsMax || bytes < total * kChainRecordBytes) {
         return KMX_BAD;
+    }
+    const uint32_t* layer = job->layer;
+    const uint32_t index = job->index, position = job->position;
+    if (token) {
+        job->position = 0u;
     }
     km_command_t command;
     km_command_t chain;
-    uint32_t cores = 0u, address = 0u;
-    for (uint32_t i = job->records; i-- > 0u;) { /* last first: each knows the next */
-        const uint32_t step = chain_steps[i];
-        uint32_t* record = records + kChainWords * i;
+    uint32_t address = 0u;
+    job->cores = 0u;
+    for (uint32_t g = total; g-- > 0u;) { /* last first: each knows the next */
+        const uint32_t i = g % steps, step = chain_steps[i];
+        uint32_t* record = records + kChainWords * g;
+        job->layer = layer + DC_LAYER_WORDS * (g / steps);
+        job->index = index + g / steps;
         step_command(job, step, &command);
         if (
-            kmx_block(&chain, 3, (uint64_t)i * kChainRecordBytes, kChainRecordBytes) !=
+            kmx_block(&chain, 3, (uint64_t)g * kChainRecordBytes, kChainRecordBytes) !=
             KMX_OK
         ) {
             return KMX_BAD;
@@ -299,11 +318,14 @@ static int run_chain(job_t* job) {
         }
         record[kChainGroup] = command.group;
         uint32_t flags = 0u;
-        if (i > 0u && chain_writes(job, chain_steps[i - 1u])) {
+        if (g > 0u && chain_writes(job, chain_steps[(g - 1u) % steps])) {
             flags |= kChainMarked;
         }
         if (chain_sends(job, step)) {
             flags |= kChainSends;
+        }
+        if (token && (step == DC_STEP_QKV || step == DC_STEP_ATTEND)) {
+            flags |= 15u << kChainTokenShift; /* a9: qkv's (the op's) and attend's */
         }
         const uint32_t needs = (
             step == DC_STEP_ATTEND ? kChainNeedsRanges : kChainNeedsK
@@ -311,7 +333,9 @@ static int run_chain(job_t* job) {
         const uint32_t width = (
             step == DC_STEP_GATE_UP && !job->bare ? words[DC_WORD_GATE_TILES] : 0u
         );
-        record[kChainInfo] = flags | needs << 8 | width << 16;
+        /* stamp row: the step's; the token's last record its own (bench.py folds it) */
+        const uint32_t row = count > 1u && g == total - 1u ? DC_CHAIN_LAST_ROW : i;
+        record[kChainInfo] = flags | needs << 8 | width << 16 | row << 24;
         for (uint32_t range = 0u; range < kChainRangeCount; range++) {
             record[kChainRanges + range] = (
                 step == DC_STEP_ATTEND ? words[DC_WORD_ATTEND_NEEDS + range] : 0u
@@ -319,14 +343,30 @@ static int run_chain(job_t* job) {
         }
         record[kChainNext] = address;
         address = chain.a7;
-        cores = (command.group >> 16) > cores ? command.group >> 16 : cores;
+        job->cores = (
+            (command.group >> 16) > job->cores ? command.group >> 16 : job->cores
+        );
     }
+    job->layer = layer;
+    job->index = index;
+    job->position = position;
     kmx_flush(3);
-    kmx_command(&chain, 0u, words[DC_WORD_SPLIT], 0u, cores);
+    return KMX_OK;
+}
+
+/* One SPLIT in the chain's mode from region 3's first record, a0 the token's word,
+ * on the records' cores (job->cores); waited for once. */
+static int chain_run(job_t* job, uint32_t a0) {
+    const uint32_t* words = job->words;
+    km_command_t chain;
+    const uint64_t written = kmx_time();
+    kmx_command(&chain, 0u, words[DC_WORD_SPLIT], 0u, job->cores);
     chain.hdr |= words[DC_WORD_EXCLUSIVE] << 8;
     if (kmx_block(&chain, 3, 0u, kChainRecordBytes) != KMX_OK) {
         return KMX_BAD;
     }
+    chain.a0 = a0;
+    chain.a1 = job->ahead_off ? kChainAheadOff : 0u;
     chain.a4 = kChainMode;
     uint32_t handle = 0u;
     uint64_t deadline = kmx_time() + WAIT_TICKS;
@@ -334,7 +374,46 @@ static int run_chain(job_t* job) {
     while (status == KMX_FULL && kmx_time() < deadline && !kmx_stop_requested()) {
         status = kmx_submit(&chain, &handle);
     }
-    return status != KMX_OK ? status : wait_step(job, DC_STEP_CHAIN, handle);
+    const uint64_t submitted = kmx_time();
+    job->thread_ticks[DC_THREAD_SUBMIT] += submitted - written;
+    if (status == KMX_OK) {
+        status = wait_step(job, DC_STEP_CHAIN, handle);
+    }
+    job->thread_ticks[DC_THREAD_WAIT] += kmx_time() - submitted;
+    return status;
+}
+
+/* The layer as one command: its records written, then run (stage 6). */
+static int run_chain(job_t* job) {
+    const uint64_t started = kmx_time();
+    token_form[4] = TOKEN_NONE; /* region 3 holds this layer's records now */
+    const int status = chain_write(job, 1u, 0);
+    job->thread_ticks[DC_THREAD_RECORDS] += kmx_time() - started;
+    return status != KMX_OK ? status : chain_run(job, 0u);
+}
+
+/* A token as one command: every layer's records written once a form, then each token
+ * one command with its position. */
+static int run_token(job_t* job, const km_command_t* command) {
+    const uint32_t form[4] = {command->a4, command->a3, command->a1, command->a6};
+    int status = KMX_OK;
+    uint32_t same = token_form[4] == 1u;
+    for (uint32_t word = 0u; word < 4u; word++) {
+        same = same && token_form[word] == form[word];
+    }
+    if (!same) {
+        const uint64_t started = kmx_time();
+        token_form[4] = TOKEN_NONE;
+        status = chain_write(job, command->a1, 1);
+        job->thread_ticks[DC_THREAD_RECORDS] += kmx_time() - started;
+        for (uint32_t word = 0u; word < 4u && status == KMX_OK; word++) {
+            token_form[word] = form[word];
+        }
+        token_form[4] = status == KMX_OK ? 1u : TOKEN_NONE;
+        token_form[5] = job->cores;
+    }
+    job->cores = token_form[5];
+    return status != KMX_OK ? status : chain_run(job, job->position);
 }
 
 /* LAYERS: a0 steps, a1 layers, a2 stats slot, a3 first layer, a4 bits, a5 the first
@@ -367,6 +446,8 @@ static uint32_t layers(const km_command_t* command) {
     job.overlap = job.apart && (command->a4 & 8u) != 0u;
     job.chain = !job.apart && (command->a4 & DC_LAYERS_CHAIN) != 0u;
     job.records = (command->a4 & DC_LAYERS_PAIR) != 0u ? 2u : CHAIN_STEPS;
+    job.token = job.chain && (command->a4 & DC_LAYERS_TOKEN) != 0u;
+    job.ahead_off = (command->a4 & DC_LAYERS_AHEAD_OFF) != 0u;
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |
@@ -374,6 +455,9 @@ static uint32_t layers(const km_command_t* command) {
     );
     job.rows = command->a6;
     job.span_ticks = 0ull;
+    for (uint32_t part = 0u; part < DC_THREADS; part++) {
+        job.thread_ticks[part] = 0ull;
+    }
     for (uint32_t step = 0; step < DC_STEPS; step++) {
         job.step_ticks[step] = 0ull;
         job.step_most[step] = 0u;
@@ -387,6 +471,10 @@ static uint32_t layers(const km_command_t* command) {
             job.index = first + layer;
             job.position = command->a5 + token * job.rows;
             kmx_progress(token << 16 | layer);
+            if (job.token) {
+                status = run_token(&job, command);
+                break;
+            }
             if (job.chain) {
                 status = run_chain(&job);
                 continue;
@@ -417,6 +505,10 @@ static uint32_t layers(const km_command_t* command) {
     }
     slot[DC_ST_SPAN_LOW] = (uint32_t)job.span_ticks;
     slot[DC_ST_SPAN_HIGH] = (uint32_t)(job.span_ticks >> 32);
+    for (uint32_t part = 0u; part < DC_THREADS; part++) {
+        slot[DC_ST_THREAD + 2u * part] = (uint32_t)job.thread_ticks[part];
+        slot[DC_ST_THREAD + 2u * part + 1u] = (uint32_t)(job.thread_ticks[part] >> 32);
+    }
     kmx_flush(2);
     return status == KMX_OK ? (uint32_t)ticks : 0xFFFFFFF0u | (uint32_t)status;
 }

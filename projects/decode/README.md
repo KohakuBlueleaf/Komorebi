@@ -843,6 +843,221 @@ it is not a cost a command. The operations' row is 3.1 to 3.5 smaller (likely th
 tails under the next record's reads on other cores). The chain's unaccounted is zero by
 its form: its large row is the rest.
 
+## Stage 7: the chain further
+
+### Where the chain's time is
+
+With `--stamps` (`SPLIT_CHAIN_STAMPS`, off by default) each kernel adds the wall
+clock at a record's edges into words of its own in the chain's buffer, from its
+chain's start (`chain.h`'s `kChainStamp*`): the reader and the writer the record
+taken, W's first block issued, the time W's half held the next weight before the
+mark, the mark seen, the moves done, the root's output ready and its writes
+acknowledged, the next record's fetch; compute's pack its first chunk, its last
+product, the sum, the output. A SPLIT in `kChainStampsMode` writes each core's page
+to DRAM and zeroes it; the thread sums its own parts (records written, submit,
+wait). Stamped, a layer takes 0.6 us more (357.2 against 356.6).
+
+Each record's span runs from the record before's end (its slowest root's writes
+acknowledged) to its own; its terms are its median root's, and the tail is the
+slowest root's end against it, so the spans and the end add to the command exactly
+(`results/qwen3-1.7b-chain-stamps-x10.json`, 28 layers, 10 tokens, us a layer):
+
+| Record | Term | Kind | T 4096 | T 1024 | T 256 |
+|---|---|---|---:|---:|---:|
+| qkv | W at the ceiling | HARDWARE | 33.9 | 33.9 | 33.9 |
+|  | W's rate below the ceiling | OURS | -2.7 | -2.7 | -2.8 |
+|  | W read under the record before | OURS | 2.7 | 2.6 | 2.6 |
+|  | compute after the last chunk | OURS | 1.4 | 1.4 | 1.4 |
+|  | the tree's rounds | OURS | 6.0 | 6.2 | 6.2 |
+|  | the operation and the output | OURS | 14.8 | 14.8 | 14.8 |
+|  | the root's write and acknowledge | OURS | 1.2 | 1.2 | 1.2 |
+|  | the tail: the slowest root against the median | OURS | 16.2 | 7.1 | 5.7 |
+| | **span** | | **73.5** | **64.4** | **63.0** |
+| attend | its input's mark after the record before's end | OURS | -3.4 | -0.7 | -0.8 |
+|  | the cache's K and V at the ceiling | HARDWARE | 33.8 | 8.4 | 2.1 |
+|  | the busiest core's tile products | HARDWARE | 4.2 | 1.4 | 0.5 |
+|  | the exponent tiles (measured, d5) | HARDWARE | 3.5 | 1.1 | 0.2 |
+|  | attend's read, compute and merge above them | OURS | 41.8 | 43.8 | 45.8 |
+|  | the root's write and acknowledge | OURS | 1.0 | 1.0 | 1.2 |
+|  | the tail: the slowest root against the median | OURS | 6.0 | 2.0 | 2.1 |
+| | **span** | | **86.8** | **57.1** | **51.1** |
+| o | W at the ceiling | HARDWARE | 16.9 | 16.9 | 16.9 |
+|  | W's rate below the ceiling | OURS | -1.2 | 3.9 | 3.9 |
+|  | W read under the record before | OURS | -9.3 | -12.3 | -13.2 |
+|  | compute after the last chunk | OURS | 1.1 | 2.3 | 2.2 |
+|  | the tree's rounds | OURS | 5.1 | 9.0 | 8.8 |
+|  | the operation and the output | OURS | 4.5 | 6.5 | 6.5 |
+|  | the root's write and acknowledge | OURS | 0.7 | 0.7 | 0.7 |
+|  | the tail: the slowest root against the median | OURS | 0.1 | 4.5 | 4.0 |
+| | **span** | | **17.9** | **31.4** | **29.7** |
+| gate_up | W at the ceiling | HARDWARE | 101.6 | 101.6 | 101.6 |
+|  | W's rate below the ceiling | OURS | 6.8 | 4.4 | 4.0 |
+|  | W read under the record before | OURS | -18.1 | -20.1 | -19.2 |
+|  | compute after the last chunk | OURS | 2.2 | 2.2 | 2.2 |
+|  | the tree's rounds | OURS | 2.7 | 1.2 | 1.2 |
+|  | the operation and the output | OURS | 9.6 | 7.9 | 7.8 |
+|  | the root's write and acknowledge | OURS | 1.4 | 1.4 | 1.4 |
+|  | the tail: the slowest root against the median | OURS | 33.1 | 37.4 | 37.9 |
+| | **span** | | **139.2** | **136.0** | **136.8** |
+| down | W at the ceiling | HARDWARE | 50.8 | 50.8 | 50.8 |
+|  | W's rate below the ceiling | OURS | -26.5 | -27.2 | -27.1 |
+|  | W read under the record before | OURS | -13.9 | -15.7 | -15.9 |
+|  | compute after the last chunk | OURS | 1.0 | 1.0 | 1.0 |
+|  | the tree's rounds | OURS | 9.3 | 10.4 | 10.4 |
+|  | the operation and the output | OURS | 2.8 | 2.8 | 2.8 |
+|  | the tail: the slowest root against the median | OURS | 2.1 | 2.6 | 2.6 |
+| | **span** | | **25.5** | **24.6** | **24.5** |
+| | the command's end (the last writes, the report) | OURS | 3.0 | 2.8 | 2.8 |
+| | the thread: the records written | OURS | 8.8 | 8.8 | 8.8 |
+| | the thread: the submit | OURS | 1.1 | 1.1 | 1.1 |
+| | the thread: its wake past the event | OURS | 1.1 | 1.1 | 1.1 |
+| | the thread: the rest | OURS | 0.3 | 0.3 | 0.3 |
+| | **a layer** | | **357.2** | **327.5** | **319.1** |
+| | unaccounted | | 0.0 | 0.0 | -0.0 |
+
+| Record | cores waiting with W's half full | their wait (us) | the next record's fetch (us) |
+|---|---:|---:|---:|
+| qkv | 0 | 0.0 | 2.14 |
+| attend | 0 | 0.0 | 0.95 |
+| o | 120 | 38.3 | 0.90 |
+| gate_up | 91 | 19.4 | 0.82 |
+| down | 90 | 54.4 | 0.02 |
+
+Read together:
+
+- **The weights are read at about the ceiling overall.** The DRAM terms net -4.8
+  us at T 4096: the tails (gate_up 33.1, qkv 16.2) are the record still reading
+  while cores that are done read the next one's W (the credits under the record
+  before, -38.6, and the median root's read faster than its share, -23.6). qkv's
+  tail grows with T: the groups attend marks first read the cache meanwhile.
+- **DRAM idles while cores wait.** o's, gate_up's and down's cores hold the next W in
+  a full half and wait for their mark (o: all 120 cores for 38.3 us, under attend):
+  the command is 346 us, its DRAM reads at the ceiling 237.
+- **The thread's 11.3 us is writing the records** (8.8): 80 words a layer from the
+  X280 into DRAM. Submit and wake are 2.2.
+- What is ours and not about DRAM: attend above its hardware 41.8, the operations
+  31.7 (qkv's norms and rotation 14.8, the gate 9.6), the tree's rounds 23.1.
+
+### A token as one command
+
+`--token` (LAYERS' a4 512): the thread writes the records of all 28 layers once, 140
+of them, the last of each layer naming the next layer's qkv, whose input is marked by
+the previous layer's down like any other record's. They hold everything that does not
+change from token to token; they are written again only when a job's form changes
+(its flags, first layer, layer count, rows). The one word a token changes is the
+position, in qkv's a9 (its rotation's place) and attend's a9 (the cache's new row; the
+length it attends over follows from it): the token's one command carries it in its a0,
+and a record's info word names the word of its command the core ORs it into
+(`kChainTokenShift`). The thread submits once a token and waits once.
+
+The check: one token through 2 layers and through 28 as one command, against the
+chain a layer a command from the same x: every tensor the card keeps (qkv, a, x1,
+gated, x) equal to the last digit, both times. The real prompt: 16 of 16 of torch's
+tokens, every layer's error equal to the commands' to the last digit
+(`results/qwen3-1.7b-real-prompt-token.json`), 117.2 tokens a second at T <= 256.
+
+Beside each other in one job (`results/qwen3-1.7b-chain-token-x10.json`, stamped, 28
+layers, 10 tokens; "layer": the chain a layer a command; a token's spans folded over
+its 28 layers, qkv's from the previous layer's down):
+
+| us a layer | T 4096 token | T 4096 layer | T 1024 token | T 1024 layer | T 256 token | T 256 layer |
+|---|---:|---:|---:|---:|---:|---:|
+| qkv | 47.1 | 73.5 | 43.6 | 64.5 | 43.1 | 63.3 |
+| attend | 94.6 | 86.5 | 58.6 | 56.8 | 52.0 | 51.3 |
+| o | 31.0 | 18.0 | 37.8 | 31.1 | 36.2 | 29.1 |
+| gate_up | 147.7 | 138.9 | 147.5 | 136.5 | 148.2 | 138.2 |
+| down | 24.8 | 25.7 | 24.6 | 24.5 | 24.5 | 24.4 |
+| the end (the last record to the event) | 0.2 | 3.0 | 0.2 | 2.8 | 0.2 | 1.2 |
+| **the command** | **345.4** | **345.6** | **312.3** | **316.2** | **304.2** | **307.6** |
+| the thread: records written | 0.81 | 12.06 | 0.81 | 12.05 | 0.82 | 12.05 |
+| submit | 0.04 | 1.05 | 0.04 | 1.05 | 0.04 | 1.05 |
+| wake after the event | 0.04 | 1.13 | 0.04 | 1.12 | 0.04 | 1.11 |
+| the rest | 0.11 | 2.96 | 0.11 | 2.97 | 0.11 | 2.96 |
+| **a layer** | **346.4** | **362.8** | **313.3** | **333.4** | **305.2** | **324.8** |
+| tokens a second | 103.1 | 98.4 | 114.0 | 107.1 | 117.0 | 109.9 |
+
+- **The thread's 11 to 17 us a layer are gone.** The 140 records are written once a
+  job (227 us; over 10 tokens 0.81 a layer, and none when the form is the one already
+  written); submit and wake are 2.2 us a token, the rest 3.1.
+- **The command itself gained almost nothing** (T 4096: 345.4 against 345.6; T 1024 and
+  256: 3.5 to 3.9). qkv's span fell by 26 us, its W read under the previous down's
+  tail, but its cores now wait 35 us with the W half full (112 of them), and attend,
+  o and gate_up took the time back: the layer's DRAM reads still stop while cores wait
+  for their marks (o 120 cores, 40 us; gate_up 94, 20; down 95, 56).
+- The layer chain beside it here has a slower thread than in the table above (17.2
+  against 11.3 us a layer): its rest, 3.0 against 0.3, is the command's cores computed
+  once more from five commands; its records, 12.1 against 8.8, are not explained yet.
+
+### The next weight earlier
+
+The term the account names: cores that wait for their mark with the W half full while
+DRAM idles (the command 345 us against 237 us of reads at the ceiling at T 4096). A
+half held 3 chunks on mover A and 1 on mover B (a chunk: 2 x 8 tiles, 32 KB), so a
+waiting core held at most 128 KB of the next weight. The card's own L1 table (the
+load's) leaves 151,856 B a core free with the chain's 80 K kernel buffer; the mock's
+table showed 202,112, as it lacks the runtime's 32,848 B host transfer buffer (the
+first try at deeper halves was refused at the load).
+
+Two changes, by the bytes the free L1 allows (the waits of the token's table):
+
+- **(a) more of the next weight in the wait**: the chain's program takes halves of 5
+  chunks on A and 3 on B (`model.CHAIN_HALVES`, plan `depth_b`; +139,264 B, the kernel
+  buffer 84 K). A core then holds all of its next record's share but gate_up's: qkv
+  16 to 32 KB more (5.4 us of DRAM at the ceiling), o nothing (it held all of o
+  already), gate_up 128 KB more (12.3 MB, bounded by its wait to 19.7 us), down all of
+  it (13.8 us): at most 38.9 us a layer.
+- **(b) the weight after the next**: once a mover has issued all of its next record's
+  W, it goes on with the record after's into the same half, behind it (the record is
+  in the reader's ring already; `chain_next`, `chunk_w_stream`); that record's own
+  stream starts after the blocks read. It adds o's wait (gate_up's first chunks: 5.5 a
+  core, 16.9 MB, 34 us) and down's (the next layer's qkv: 1.5 of mover A's chunks,
+  10.9 us): with (a), at most 84 us a layer. In a FIFO half the record after can only
+  follow a next record held whole, so (b) is built on (a)'s halves.
+
+Measured (`results/qwen3-1.7b-chain-halves-x10.json` for (a),
+`results/qwen3-1.7b-chain-ahead-x10.json` for (a) + (b); the token, stamped, 28
+layers, 10 tokens; "3/1": the token before this change):
+
+| us a layer | T 4096 halves 3/1 | T 4096 (a) | T 4096 (a)+(b) | T 1024 3/1 | T 1024 (a) | T 1024 (a)+(b) | T 256 3/1 | T 256 (a) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| qkv | 47.1 | 41.0 | 49.7 | 43.6 | 34.2 | 34.8 | 43.1 | 29.6 |
+| attend | 94.6 | 93.1 | 91.5 | 58.6 | 53.8 | 70.8 | 52.0 | 50.5 |
+| o | 31.0 | 62.1 | 16.5 | 37.8 | 69.7 | 23.2 | 36.2 | 68.6 |
+| gate_up | 147.7 | 118.6 | 129.2 | 147.5 | 124.0 | 130.6 | 148.2 | 125.0 |
+| down | 24.8 | 24.2 | 27.3 | 24.6 | 25.0 | 27.3 | 24.5 | 24.6 |
+| **the command** | **345.4** | **339.2** | **314.3** | **312.3** | **307.0** | **286.9** | **304.2** | **298.5** |
+| **a layer** | **346.4** | **340.2** | **315.2** | **313.3** | **307.1** | **287.8** | **305.2** | **298.6** |
+| tokens a second | 103.1 | 105.0 | 113.3 | 114.0 | 116.3 | 124.1 | 117.0 | 119.6 |
+
+| waits with W's half full (cores, us) | T 4096 halves 3/1 | T 4096 (a) | T 4096 (a)+(b) | T 1024 3/1 | T 1024 (a) | T 1024 (a)+(b) | T 256 3/1 | T 256 (a) |
+|---|---|---|---|---|---|---|---|---|
+| qkv | 112, 35.1 | 107, 30.0 | 110, 27.7 | 111, 36.6 | 107, 31.9 | 109, 28.1 | 112, 36.2 | 105, 32.4 |
+| o | 120, 40.2 | 120, 40.5 | 120, 32.1 | 120, 32.1 | 120, 31.5 | 120, 21.6 | 120, 30.9 | 120, 29.9 |
+| gate_up | 94, 19.7 | 93, 27.0 | 96, 20.6 | 94, 19.3 | 94, 20.6 | 96, 18.6 | 94, 19.3 | 94, 22.0 |
+| down | 95, 56.1 | 89, 58.7 | 82, 50.6 | 93, 57.2 | 89, 56.9 | 82, 49.8 | 92, 57.8 | 90, 56.2 |
+
+- **(a) gave 6.2 us a layer** (T 4096: 346.4 to 340.2; 1024 6.2, 256 6.6), where up to
+  38.9 were open: gate_up's span fell 29 us, but o's grew 31 (gate_up's deeper share
+  is now read under o, whose cores held all of o already), and every record still has
+  its cores waiting with a full half (o 120 cores, down 89).
+- **(a) + (b) gave 31.1 us a layer at T 4096 and 25.5 at T 1024** (315.2 and 287.8; 113.3
+  and 124.1 tokens a second): o's span is 16.5 against 31.0, its wait 32 us against
+  40. With (a) and with (a) + (b) the token's output equals a command a step's to the
+  last digit at 2 and 28 layers (T 4096).
+- **(b) hangs at T 256**, at its first token, every time: 119 cores' compute waits for
+  an input past its limit with their movers already in the next record's mark wait,
+  and one root (core 15, a root of the 15-core plans) waits for its tree's last round.
+  At T 256 a KV head's ranks 7 to 14 hold no key tile in attend (at T 1024 every rank
+  holds some); that is the one difference found, and the cause is not found. So the
+  early read of the record after is **off by default** (`Decode.job(ahead=False)`; the
+  chain command's a1 `kChainAheadOff` bit; `bench.py --beside ahead` runs it beside),
+  and (a) is on. The real prompt has not run with the deeper halves.
+
+What is left at T 4096 with (a), by the account: DRAM idle under waits with full halves
+(o's 40 us on 120 cores, down's 59 on 89, qkv's 30 on 107, gate_up's 27 on 93); (b)
+takes 25 to 31 of it where it runs. Outside this step, as recorded: attend above its
+hardware about 42, the operations about 32, the tree's rounds about 23.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer

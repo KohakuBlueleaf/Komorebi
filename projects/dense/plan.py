@@ -414,9 +414,9 @@ PATTERNS = {"AB": S["kSplitAB"], "AAAB": S["kSplitAAAB"]}  # the chunks' movers
 @dataclass(frozen=True)
 class Split:
     """[mt, kt] @ [kt, nt] with K split: groups of s cores, an oh x ow block a group,
-    each core 1/s of K in chunks of kc (pattern, depth: mover A's half), parts summed by
-    owner or tree. Subblock sh x sw; arrive: arrival pages (0: either form's). cast: the
-    whole-K plan (s 1), X multicast once a panel."""
+    each core 1/s of K in chunks of kc (pattern; depth, depth_b: mover A's and B's W
+    halves), parts summed by owner or tree. Subblock sh x sw; arrive: arrival pages (0:
+    either form's). cast: the whole-K plan (s 1), X multicast once a panel."""
 
     mt: int
     kt: int
@@ -431,6 +431,7 @@ class Split:
     pattern: str = "AB"
     depth: int = 1
     cast: bool = False
+    depth_b: int = 1
 
     def nbw(self):
         return cdiv(self.nt, self.ow)
@@ -470,7 +471,12 @@ class Split:
             (S["kCbSa"], "bfloat16", TILE_BYTES, self.depth * self.oh * self.kc),
             (S["kCbSaMoverB"], "bfloat16", TILE_BYTES, self.oh * self.kc),
             (S["kCbSw"], "bfloat16", TILE_BYTES, self.depth * self.kc * self.ow),
-            (S["kCbSwMoverB"], "bfloat16", TILE_BYTES, self.kc * self.ow),
+            (
+                S["kCbSwMoverB"],
+                "bfloat16",
+                TILE_BYTES,
+                self.depth_b * self.kc * self.ow,
+            ),
             (S["kCbArrive"], "float32", S["kSumBytes"], self.arrive_pages()),
             (S["kCbSum"], "float32", S["kSumBytes"], block_tiles),
             (S["kCbSplitOut"], "bfloat16", TILE_BYTES, block_tiles),
@@ -488,7 +494,7 @@ class Split:
             raise ValueError(f"subblock {self.sh} x {self.sw} of {self.oh} x {self.ow}")
         if self.l1_bytes() > budget:
             raise ValueError(f"{self.l1_bytes()} bytes of L1 > {budget}")
-        if self.pattern not in PATTERNS or self.depth < 1:
+        if self.pattern not in PATTERNS or min(self.depth, self.depth_b) < 1:
             raise ValueError(f"pattern {self.pattern!r}, depth {self.depth}")
         if self.arrive % (self.oh * self.ow):
             raise ValueError(f"{self.arrive} arrival pages: not whole slots")
@@ -507,11 +513,12 @@ def split_plan(
     arrive=0,
     pattern="AB",
     depth=1,
+    depth_b=1,
 ):
     """A K-split plan: group_cores cores a group, output block block_height x
     block_width, K chunk chunk_tiles (default: the whole partition of K, at most
     MAX_CHUNK), arrive arrival pages (0: enough for either form), the chunks' pattern
-    and mover A's depth."""
+    and the movers' W halves in chunks (depth A's, depth_b B's)."""
     chunk_tiles = chunk_tiles or min(cdiv(k_tiles, group_cores), MAX_CHUNK)
     subblock_height, subblock_width = subblock(block_height, block_width)
     plan = Split(
@@ -527,6 +534,7 @@ def split_plan(
         arrive,
         pattern,
         depth,
+        depth_b=depth_b,
     )
     plan.check(cores, budget)
     return plan

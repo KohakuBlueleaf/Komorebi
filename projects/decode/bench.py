@@ -106,9 +106,26 @@ def parse():
         help="a command a step (before stage 6), not the layer as one command",
     )
     parser.add_argument(
+        "--stamps",
+        action="store_true",
+        help="the chain's stamps (SPLIT_CHAIN_STAMPS): the layer's account per record",
+    )
+    parser.add_argument(
         "--staged",
         action="store_true",
         help="checks first a command a step, then the chain's first two records",
+    )
+    parser.add_argument(
+        "--token",
+        action="store_true",
+        help="a token as one command (all its records written once)",
+    )
+    parser.add_argument(
+        "--beside",
+        nargs="*",
+        default=[],
+        choices=("layer", "ahead"),
+        help="each case also as CASE/FORM: the chain a layer, the next W read early",
     )
     parser.add_argument(
         "--commands",
@@ -232,16 +249,34 @@ def loop_check(decode, model, caches, seed, layers, length, want):
     return {"layers": layers, "length": length} | out
 
 
-def measure(decode, case, tokens, layers, index, length):
+def token_equal(decode, model, seed, length, layers):
+    """One token through `layers` layers as a command a step (no chain), then as one
+    command, from the same x at row length - 1: whether every kept tensor is equal."""
+    position, got = length - 1, []
+    for job in ({"chain": False}, {"token": True}):
+        decode.write_activation("x", md.start(seed, model))
+        decode.job(1, layers, position=position, **job)
+        got.append(
+            {n: decode.read_activation(n) for n in ("qkv", "a", "x1", "gated", "x")}
+        )
+    differ = [name for name in got[0] if not np.array_equal(got[0][name], got[1][name])]
+    return {"layers": layers, "equal": not differ, "different": differ}
+
+
+def measure(decode, case, tokens, layers, index, length, token=False):
     """One job of `tokens` x `layers` under the power and clock samplers, the last
-    token at the cache's row length - 1."""
+    token at the cache's row length - 1; `token`: a token as one command."""
     meter = power.PowerSampler(index)
     with meter, dense_bench.Clock(index) as clock:
         meter.mark("job")
         started = time.perf_counter()
         position = length - tokens
-        name, _, commands = case.partition("/")
-        job = CASES[name] | ({"chain": False} if commands else {})
+        name, _, form = case.partition("/")  # CASE/commands, /layer, /ahead
+        job = CASES[name] | (
+            {"chain": False}
+            if form == "commands"
+            else {"token": token and form != "layer", "ahead": form == "ahead"}
+        )
         got = decode.job(tokens, layers, timeout=60.0, position=position, **job)
         seconds = time.perf_counter() - started
         meter.mark("after")
@@ -264,6 +299,7 @@ def per_layer(result, slot):
         "layer": slot["microseconds"] / count,
         "steps": {name: step["sum_us"] / count for name, step in slot["steps"].items()},
         "span": slot["span_us"] / count,
+        "thread": {name: us / count for name, us in slot["thread"].items()},
     }
 
 
@@ -324,7 +360,7 @@ def chain_account(model, cases, length, tokens):
     for name, case in cases.items():
         command = (
             case["steps"]["chain"]
-            if "/" not in name
+            if not name.endswith("/commands")
             else sum(us for step, us in case["steps"].items() if step != "chain")
         )
         out[name] = {
@@ -332,7 +368,165 @@ def chain_account(model, cases, length, tokens):
             "commands_us": round(command, 2),
             "thread_us": round(case["layer"] - command, 2),
         }
+        if not name.endswith("/commands"):  # DC_THREAD_*: records, submit, wake
+            parts = case["thread"]
+            out[name]["thread_parts_us"] = {
+                "records": round(parts["records"], 2),
+                "submit": round(parts["submit"], 2),
+                "wait_past_event": round(parts["wait"] - command, 2),
+                "rest": round(
+                    case["layer"] - parts["records"] - parts["submit"] - parts["wait"],
+                    2,
+                ),
+            }
     return {"weights_us": round(weights, 2), "cache_us": round(cache, 2), "cases": out}
+
+
+AICLK_MHZ = 1350.0  # the stamps' clock when the sampler has none
+RECORDS = ("qkv", "attend", "o", "gate_up", "down")  # the chain's, in order
+# attend's exponent tiles in the chain, us a layer (stage 6: exp_twice less full)
+EXPS = {4096: 3.47, 1024: 1.09, 256: 0.20}
+# chain.h's stamp kernels and words
+READER, WRITER, COMPUTE = 0, 1, 2
+LAST_ROW = 5  # decode.h DC_CHAIN_LAST_ROW: a token's last record
+TAKEN, WEIGHT, FULL, MARKED, MOVED, DONE, LAST = range(1, 8)
+FIRST, PARTS, SUM, OUT, OP_START, OP_END = range(2, 8)
+
+
+def stamp_means(stamps, mhz):
+    """Each core's mean stamp (us from its kernel's chain start) of every kernel,
+    record and word, NaN where it did not run; and the runs of each."""
+    counts = stamps[..., 0].astype(np.float64)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        means = stamps.astype(np.float64) / counts[..., None] / mhz
+    means[counts == 0] = np.nan
+    return means, counts
+
+
+def records_account(model, plans, stamps, mhz, command_us, length, tokens, exps):
+    """The chain's layer per record from the stamps (sums over the runs): each record's
+    span on the path, from the record before's end (its slowest root's writes
+    acknowledged) to its own; its terms on its median root; the tail to the slowest.
+    A token as one command: its last down folded into down's, qkv's from the one before.
+    """
+    before, layers, token_end = 0.0, 1.0, None
+    if stamps[:, READER, LAST_ROW, 0].any():  # a token: its last down apart
+        last = stamps[:, :, LAST_ROW]
+        stamps = stamps.copy()
+        stamps[:, :, len(RECORDS) - 1] += last
+        layers = stamps[:, READER, len(RECORDS) - 1, 0].max() / last[:, READER, 0].max()
+        plan = plans[md.plan_of(model, "down")]
+        roots = np.arange(0, plan.cores(), plan.s)
+        token_end = float(np.nanmax(stamp_means(last, mhz)[0][roots, COMPUTE, OUT]))
+        down = stamp_means(stamps, mhz)[0][roots, COMPUTE, len(RECORDS) - 1, OUT]
+        before = float(np.nanmax(down)) - token_end / layers  # qkv's: the down before
+    means, counts = stamp_means(stamps, mhz)
+    rows = []
+    for index, name in enumerate(RECORDS):
+        plan = plans[md.plan_of(model, "o" if name == "attend" else name)]
+        cores = plan.cores()
+        roots = np.arange(0, cores, plan.s)
+        m = means[:cores, :, index]
+        last = name == RECORDS[-1]
+        if name == "attend":
+            end = m[roots, COMPUTE, OP_END] if last else m[roots, WRITER, LAST]
+        else:
+            end = m[roots, COMPUTE, OUT] if last else m[roots, WRITER, LAST]
+        root = roots[np.argsort(end)[len(end) // 2]]  # the median root
+        at = m[root]
+        span = float(np.nanmax(end)) - before
+        terms = []
+        if name == "attend":
+            rows_attended = length - (tokens - 1) / 2
+            cache = 2 * model.kv_heads * rows_attended * model.head_dim * 2
+            keys = busiest(length, plan.s)
+            products = (2 * keys * (2 * D_HEAD + 1) + 2) / MATMUL_PER_CORE * 1e6
+            marked = np.nanmax(at[[READER, WRITER], MARKED])
+            op = at[COMPUTE, OP_END] - marked
+            hardware = cache / (CEILING_GBS * 1e3) + products + exps
+            terms += [
+                (
+                    "OURS",
+                    "its input's mark after the record before's end",
+                    marked - before,
+                ),
+                (
+                    "HARDWARE",
+                    "the cache's K and V at the ceiling",
+                    cache / (CEILING_GBS * 1e3),
+                ),
+                ("HARDWARE", "the busiest core's tile products", products),
+                ("HARDWARE", "the exponent tiles (measured, d5)", exps),
+                ("OURS", "attend's read, compute and merge above them", op - hardware),
+                (
+                    "OURS",
+                    "the root's write and acknowledge",
+                    (at[WRITER, LAST] - at[COMPUTE, OP_END]) if not last else 0.0,
+                ),
+            ]
+            ended = at[COMPUTE, OP_END] if last else at[WRITER, LAST]
+        else:
+            k, n = model.products()[name]
+            ceiling = 2 * k * n / (CEILING_GBS * 1e3)
+            first = np.nanmin(at[[READER, WRITER], WEIGHT])
+            moved = np.nanmax(at[[READER, WRITER], MOVED])
+            terms += [
+                ("HARDWARE", "W at the ceiling", ceiling),
+                ("OURS", "W's rate below the ceiling", moved - first - ceiling),
+                ("OURS", "W read under the record before", -(before - first)),
+                ("OURS", "compute after the last chunk", at[COMPUTE, PARTS] - moved),
+                ("OURS", "the tree's rounds", at[COMPUTE, SUM] - at[COMPUTE, PARTS]),
+                (
+                    "OURS",
+                    "the operation and the output",
+                    at[COMPUTE, OUT] - at[COMPUTE, SUM],
+                ),
+            ]
+            if not last:
+                terms.append(
+                    (
+                        "OURS",
+                        "the root's write and acknowledge",
+                        at[WRITER, LAST] - at[COMPUTE, OUT],
+                    )
+                )
+            ended = at[COMPUTE, OUT] if last else at[WRITER, LAST]
+        terms.append(
+            (
+                "OURS",
+                "the tail: the slowest root against the median",
+                np.nanmax(end) - ended,
+            )
+        )
+        full = m[:, [READER, WRITER], FULL]
+        waiting = np.nan_to_num(full).max(axis=1)
+        fetch = np.nanmedian(m[:, READER, LAST])
+        rows.append(
+            {
+                "record": name,
+                "span_us": round(span, 2),
+                "terms": [
+                    {"kind": kd, "term": t, "us": round(float(us), 2)}
+                    for kd, t, us in terms
+                ],
+                "unaccounted_us": round(span - float(sum(us for _, _, us in terms)), 2),
+                "full_wait_us": round(
+                    float(waiting[waiting > 0].mean()) if (waiting > 0).any() else 0.0,
+                    2,
+                ),
+                "full_wait_cores": int((waiting > 0).sum()),
+                "next_fetch_us": round(float(fetch), 2),
+                "runs": int(np.nanmax(counts[:cores, READER, index])),
+            }
+        )
+        before = float(np.nanmax(end))
+    return {
+        "records": rows,
+        "command_us": round(command_us, 2),
+        "end_us": round(
+            command_us - (before if token_end is None else token_end / layers), 2
+        ),
+    }
 
 
 def account(model, cases, attend=()):
@@ -438,9 +632,12 @@ def main():
     args = parse()
     model = md.from_config(args.config) if args.config else md.MODELS[args.model]
     layers = args.layers or model.layers
+    if args.token and args.no_chain:
+        raise SystemExit("--token: the chain's program")
     report = {"model": model.name, "layers": layers, "tokens": args.tokens}
     report["bodies"] = args.bodies
     report["chain"] = not args.no_chain
+    report["token"] = args.token
     report["layer_bytes"] = model.layer_bytes()
     report["plans"] = {
         f"{k}x{n}": plan.words()
@@ -450,7 +647,7 @@ def main():
     }
     index = visible_card()
     deadline = args.deadline or round(max(1.0, args.tokens * layers * 2e-3 + 0.5), 3)
-    results, ok = [], True
+    results, ok, stamped = [], True, {}  # stamped: {(length, case): stamps}
     if args.loop_check:
         looped = chain(model, layers, args.seed, args.context, args.lengths[0])
     kernel_bytes = None if args.no_chain else card.CHAIN_KERNEL_BYTES
@@ -467,6 +664,7 @@ def main():
             context=args.context,
             bodies=args.bodies,
             chain=not args.no_chain,
+            stamps=args.stamps,
         )
         log(
             f"loaded: {len(decode.plans)} plans, deadline {deadline} s, "
@@ -518,6 +716,11 @@ def main():
                     report["check"][stage] = got
                     ok &= got["append_exact"] and all(got[name]["ok"] for name in names)
                     log(f"check, {stage}: {json.dumps(got)}")
+                for count in sorted({2, layers}) if args.token and ok else ():
+                    got = token_equal(decode, model, args.seed, args.lengths[0], count)
+                    report["check"][f"token x{count}"] = got
+                    ok &= got["equal"]
+                    log(f"check, a token as one command: {json.dumps(got)}")
                 checks = [(length, 1) for length in args.lengths]
                 for length, rows in checks + [(args.lengths[0], CHECK_ROWS)]:
                     if not ok:
@@ -531,10 +734,17 @@ def main():
             timed = list(args.cases)
             if args.commands and not args.no_chain:
                 timed += [f"{case}/commands" for case in args.cases]
+            timed += [f"{case}/{form}" for form in args.beside for case in args.cases]
             for length in args.lengths if ok else ():
                 for case in timed:
                     log(f"case {case}, T {length}: {args.tokens} x {layers} layers")
-                    result = measure(decode, case, args.tokens, layers, index, length)
+                    if decode.stamps:
+                        decode.chain_stamps()  # zeroed: this case's only
+                    result = measure(
+                        decode, case, args.tokens, layers, index, length, args.token
+                    )
+                    if decode.stamps and not case.endswith("/commands"):
+                        stamped[(length, case)] = decode.chain_stamps()
                     log(f"case {case}: {json.dumps(result)}")
                     results.append(result)
                     end = time.monotonic() + args.pause * result["host_seconds"]
@@ -549,6 +759,14 @@ def main():
             log(f"waiting: {json.dumps(report['waiting'])}")
         decode.run.stop()
         log("run stopped")
+        if "failed" in report:  # each core whose kernel gave up: where and how
+            report["gave_up"] = [
+                {"core": state["core"]}
+                | {role: state[role] for role in ("reader", "writer", "compute")}
+                for state in decode.run.state()
+                if any(state[role] for role in ("reader", "writer", "compute"))
+            ]
+            log(f"gave up: {json.dumps(report['gave_up'][:8])}")
         stats = decode.stats()
         if args.trace:
             trace = decode.run.trace()
@@ -585,6 +803,23 @@ def main():
         if apart:
             terms = attend_terms(model, apart, length, args.tokens, group)
             report["account"][length]["commands"] = account(model, apart, terms)
+    plans = md.plans(model, chunk=args.chunk, patterns=patterns(args))
+    for result in results:
+        key = (result["length"], result["case"])
+        if key in stamped and result["case"].partition("/")[0] in ("full", "bare"):
+            count = result["tokens"] * result["layers"]
+            report["account"][result["length"]].setdefault("records", {})[
+                result["case"]
+            ] = records_account(
+                model,
+                plans,
+                stamped[key],
+                np.mean(result["aiclk_mhz"] or AICLK_MHZ),  # [least, mean, most]
+                result["thread"]["steps"]["chain"]["sum_us"] / count,
+                result["length"],
+                result["tokens"],
+                EXPS.get(result["length"], 0.0),
+            )
     report["ceiling_ms_per_token"] = round(
         layers * model.layer_bytes() / (CEILING_GBS * 1e6), 3
     )

@@ -54,9 +54,11 @@ void kernel_main() {
         const km::Pattern pattern = chunk_pattern(plan(kSpPattern));
         const uint32_t reduce_form = split_form(command), mode = command.a4;
         if (mode == kSplitOp) {
+            SPLIT_STAMP(kChainStampOpStart);
             if (split_op_part(command, kOpCompute)) {
                 split_op(compute, command);
             }
+            SPLIT_STAMP(kChainStampOpEnd);
             return;
         }
         const km::Group group = km::digit_group(command, compute.me(), 1, group_size);
@@ -85,6 +87,7 @@ void kernel_main() {
             if (!ok) {
                 break;
             }
+            SPLIT_STAMP(kChainStampFirst);
             pack_reconfig_l1_acc(offset > 0 ? 1 : 0);
             for (
                 uint32_t subblock_row = 0; subblock_row < block_height;
@@ -132,6 +135,7 @@ void kernel_main() {
             cb_pop_front(a_half, block_height * chunk_tiles);
             cb_pop_front(w_half, chunk_tiles * block_width);
         }
+        SPLIT_STAMP(kChainStampParts);
         reconfig_data_format_srca(kCbSw, kCbArrive);
         copy_init(kCbArrive);
         if (ok && full) {
@@ -147,6 +151,7 @@ void kernel_main() {
             );
         }
         pack_reconfig_l1_acc(0);
+        SPLIT_STAMP(kChainStampSum);
         if (ok && full && room) {
             cb_push_back(kCbSum, block_tiles);
         }
@@ -180,12 +185,18 @@ void kernel_main() {
                 cb_pop_front(kCbSum, block_tiles);
             }
         }
+        SPLIT_STAMP(kChainStampOut);
         reconfig_data_format_srca(kCbArrive, kCbSw);
     };
 #if defined(SPLIT_CHAIN)
     compute.run([&](const km_command_t& command) {
         if (km::handler(command) == kHandlerSplit && command.a4 == kChainMode) {
             chain_compute(compute, command, product);
+#if defined(SPLIT_CHAIN_STAMPS)
+        } else if (
+            km::handler(command) == kHandlerSplit && command.a4 == kChainStampsMode
+        ) {
+#endif
         } else {
             product(command);
         }
