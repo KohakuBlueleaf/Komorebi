@@ -341,6 +341,15 @@ NAMES = {
             ("minimum", "the smaller of two, value by value"),
             ("reduce_sum", "a row's sum (the row form), reduce_sum(x, exact=)"),
             ("reduce_max", "a row's largest value (the row form)"),
+            (
+                "lagging_max",
+                "a reference that moves only past a lag, lagging_max(m, r, lag) "
+                "(the step form)",
+            ),
+            (
+                "word_max",
+                "a per-row value's largest over the rows, one word (the step form)",
+            ),
         )
     },
     "tolerance": Name(

@@ -31,6 +31,7 @@ from komorebi.dsl.tile.ir import (
     TensorParam,
 )
 from komorebi.dsl.tile.rows import row_program
+from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.errors import ProgramError
 from komorebi.movement import Pattern
@@ -1098,6 +1099,7 @@ class HandlerCompiler:
         self.summed = {}  # a field of sums -> its counter's C++ name
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
         self.waited_fields = set()  # fields compute waited for (a product's, once)
+        self.stepped = {}  # a step's state field -> its pages (a state tile a page)
         self.leader_text = "0"  # self.leader: rank 0, or a reduce group's first rank
         self.stream_loops = []  # the numbers of the read loops around the statement
         # Per read loop around the statement: its tile function, its other tile
@@ -4972,6 +4974,10 @@ class HandlerCompiler:
             return self.write_function_of_sums(node, pages, summed)
         if self.tile_function_of(summed) is not None and self.dst_sums_of(summed):
             return self.write_function_of_dst(node, call, summed)
+        if self.tile_function_of(summed) is not None and self.step_of_dst(summed):
+            return self.write_step_of_dst(node, call, summed)
+        if self.field_name(summed) in self.stepped:
+            return self.write_state(node, pages, self.field_name(summed))
         if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
             self.refuse(node, "write one tile", "write pages.write(total)")
         name = call.args[0].id
@@ -5244,6 +5250,247 @@ class HandlerCompiler:
         write.args[0] = ast.Name(id=name, ctx=ast.Load())
         movement, compute = self.write(node, write)
         return movement, [Line(body), *compute]
+
+    def step_of_dst(self, call):
+        """(acc, field, index) of a step function's call `f(acc, self.s[r])`, acc DST
+        sums and self.s a field, or None."""
+        if len(call.args) != 2 or call.keywords:
+            return None
+        acc, slot = call.args
+        value = isinstance(acc, ast.Name) and self.scope.get(acc.id)
+        if not value or value.kind != "tile" or value.batch is not None:
+            return None
+        field_ = isinstance(slot, ast.Subscript) and self.field_name(slot.value)
+        return (acc.id, field_, slot.slice) if field_ else None
+
+    def write_step_of_dst(self, node, write, call):
+        """`pages.write(f(acc, self.s[r]))`, f a step-form function of acc (1 to 3 DST
+        tiles) and state r of the fp32 field self.s: the state into the DST tile after
+        the row, f, the row written as acc is and the state packed back into page r,
+        ordered by a token pack pushes and unpack takes (primed at the handler's start).
+        """
+        function = self.tile_function_of(call)
+        name, field_, index = self.step_of_dst(call)
+        value = self.scope[name]
+        width = value.width
+        if value.dst != 0 or not 1 <= width <= 3:
+            self.refuse(
+                node,
+                f"{name} is {width} tile(s) of DST from tile {value.dst}; a step takes "
+                "a row of 1 to 3 tiles from DST 0 and its state in the tile after them",
+                "sum the row in km.tile.zeros(km.fp32, n), n at most 3",
+            )
+        stored = self.compiled.fields[field_]
+        pages = stored.shape[0] if len(stored.shape) == 3 else None
+        if stored.format.dtype != "float32" or not isinstance(pages, int):
+            self.refuse(
+                node,
+                f"self.{field_} holds a step's states: fp32 tiles, a page each",
+                f"declare self.{field_}: km.L1[km.fp32, states, 32, 32]",
+            )
+        buffer, token = f"kField{camel(field_)}", f"kStepToken{camel(field_)}"
+        if field_ not in self.stepped:
+            if self.filled.get(field_) is None:
+                self.refuse(
+                    node,
+                    f"self.{field_} is not filled above in this handler: a step's "
+                    "states start from a fill",
+                    f"write self.{field_}.fill(km.{spelling('stream')}(t.pages(first, "
+                    f"{pages}))) before the loop",
+                )
+            self.filled[field_] = None
+            self.stepped[field_] = pages
+            self.other_buffer(
+                token,
+                "token",
+                "float32",
+                16,
+                1,
+                f"line {node.lineno}: the states' token",
+            )
+            self.compiled.summed_fields.add(buffer)  # pack writes the states
+            self.compiled.unpack_fp32.add(buffer)
+            self.opening.append(
+                Line(
+                    f"if (compute.reserve_back({token}, 1)) {{  // self.{field_}'s "
+                    "states: the fill's\n"
+                    f"    cb_push_back({token}, 1);\n}}"
+                )
+            )
+            self.closing.append(
+                Line(
+                    f"if (km_ok && compute.wait_front({token}, 1)) {{\n"
+                    f"    cb_pop_front({token}, 1);\n}}\n"
+                    f"cb_pop_front({buffer}, {buffer}Pages);",
+                    {"km_ok"},
+                )
+            )
+        slot = self.integer(index)
+        known = slot.rstrip("u").isdigit()
+        if known and not int(slot.rstrip("u")) < pages:
+            self.refuse(
+                node,
+                f"self.{field_} holds {pages} states, 0 .. {pages - 1}",
+                f"index it below {pages}",
+            )
+        bound = (
+            ""
+            if known
+            else (
+                f"if (!(({slot}) < {pages})) {{  // self.{field_}'s states\n"
+                "    compute.gave_up(km::kGaveBadItem, km::kWhereCInput);\n"
+                "    return;\n}\n"
+            )
+        )
+        unit, cxx = self.step_unit(node, function, width)
+        before = (
+            f"{bound}"
+            f"// {function.name}'s step: self.{field_}[{ast.unparse(index)}] into "
+            f"DST {width}\n"
+            f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages) &&\n"
+            f"    compute.wait_front({token}, 1);\n"
+            "if (km_ok) {\n"
+            f"    cb_pop_front({token}, 1);\n"
+            f"    KM_UNPACK_FORMAT_A({buffer});\n"
+            f"    copy_init({buffer});\n"
+            f"    copy_tile({buffer}, {slot}, {width});\n"
+            f"    MATH((km_tile::{cxx}_init()));\n"
+            f"    MATH((km_tile::{cxx}(0)));\n"
+            "}"
+        )
+        self.wait(node, "compute", WAIT_INPUT)
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        write.args[0] = ast.Name(id=name, ctx=ast.Load())
+        movement, compute = self.write(node, write)
+        packed = (
+            f"if (km_ok && compute.reserve_back({token}, 1)) {{  // pack's alone\n"
+            f"    KM_PACK_FORMAT({buffer});\n"
+            f"    pack_tile<true>({width}, {buffer}, {slot});\n"
+            f"    cb_push_back({token}, 1);\n"
+            "}\n"
+            "tile_regs_release();"
+        )
+        last = compute[-1]
+        at = last.text.rindex("tile_regs_release();")
+        last.text = (
+            last.text[:at] + packed + last.text[at + len("tile_regs_release();") :]
+        )
+        last.uses = last.uses | self.uses(index)
+        return movement, [Line(before, {"km_ok"} | self.uses(index)), *compute]
+
+    def step_unit(self, node, function, width):
+        """The step form's unit of `function(row, state)` over a row of `width` DST
+        tiles and the state tile after them: it returns (the row, the state's
+        per-row values) or (the row, the values, a word of word_max)."""
+        made = (function.function, ("step",), width)
+        for cxx, (key, unit) in self.compiled.units.items():
+            if key == made:
+                return unit, cxx
+        where = function_line(function)
+        drawn = "return (row, (m, l, ...)) or (row, (m, l), km.word_max(...))"
+        if len(inspect.signature(function.function).parameters) != 2:
+            self.refuse(
+                node,
+                f"the step function {function.name} ({where}) takes a row and its "
+                "state",
+                f"def {function.name}(row, state): ... {drawn}",
+            )
+        cxx = function.name
+        while cxx in self.compiled.units:
+            cxx += "_"
+        tensors = [
+            TensorParam(n, out, F32)
+            for n, out in (
+                ("row", False),
+                ("state", False),
+                ("result", True),
+                ("state_out", True),
+            )
+        ]
+        ir = KernelIR(cxx, tensors, [], {})
+        try:
+            with trace.Tracer(ir):
+                rows, states, results, outs = (trace.TensorProxy(t) for t in tensors)
+                for t in trace.grid(trace.num_tile_rows(rows)):
+                    got = function.function(
+                        trace.load(rows.tiles[t, :]), trace.load_state(states.tiles[t])
+                    )
+                    if not isinstance(got, tuple) or len(got) not in (2, 3):
+                        self.refuse(
+                            node,
+                            f"the step function {function.name} ({where}) returns "
+                            "the row and its state",
+                            drawn,
+                        )
+                    trace.store(results.tiles[t, :], got[0])
+                    word = got[2] if len(got) == 3 else None
+                    trace.store_state(outs.tiles[t], got[1], word=word)
+            fidelity = function.fidelity or "HiFi4"
+            unit = step_program(ir, width, width, fidelity=fidelity, matrix_sum=False)
+        except (PlanError, UnitError) as error:
+            self.refuse(
+                node,
+                f"the step function {function.name} ({where}) is not lowered by the "
+                f"tile compiler: {error}",
+                "write this body inline: km.cxx(..., gives=km.Tile)",
+            )
+        self.compiled.units[cxx] = (made, unit)
+        self.compiled.body_includes["compute"].append(f'#include "tile_{cxx}.hpp"')
+        return unit, cxx
+
+    def write_state(self, node, pages, field_):
+        """`t.pages(first, n).write(self.s)`, self.s a step's n states: after the last
+        step's token, each state copied into DST 0 and packed in t's format, written
+        by mover B a page at a time."""
+        count = self.stepped[field_]
+        if pages.rect is not None or pages.count != str(count):
+            self.refuse(
+                node,
+                f"self.{field_} is {count} states, a page each",
+                f"write {pages.tensor}.{spelling('pages')}(first, {count})"
+                f".write(self.{field_})",
+            )
+        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        out = self.out_buffer(
+            dtype, page_bytes, f"line {node.lineno}: {self.text(node)}"
+        )
+        buffer, token = f"kField{camel(field_)}", f"kStepToken{camel(field_)}"
+        tile = f"km_state{node.lineno}"
+        packed = "\n".join("        " + line for line in pack(0, out.name).split("\n"))
+        compute = (
+            f"// self.{field_}'s states, after the last step's\n"
+            f"km_ok = km_ok && compute.wait_front({token}, 1);\n"
+            "if (km_ok) {\n"
+            f"    KM_UNPACK_FORMAT_A({buffer});\n"
+            f"    copy_init({buffer});\n"
+            f"    for (uint32_t {tile} = 0; {tile} < {count}; {tile}++) {{\n"
+            "        tile_regs_acquire();\n"
+            f"        copy_tile({buffer}, {tile}, 0);\n"
+            f"{packed}\n"
+            "    }\n"
+            "}"
+        )
+        tensor = f"{camel(pages.tensor)}({pages.tensor})"
+        movement = (
+            f"for (uint32_t {tile} = 0; {tile} < {count}; {tile}++) {{\n"
+            f"    if (!movement.wait_front({out.name}, 1) ||\n"
+            f"        !km::write_pages(movement, command, {tensor}, {pages.first} + "
+            f"{tile}, 1, get_read_ptr({out.name}))) {{\n"
+            "        return false;\n"
+            "    }\n"
+            "    noc_async_writes_flushed();\n"
+            f"    cb_pop_front({out.name}, 1);\n"
+            "}"
+        )
+        self.compiled.includes |= {"pack", "ask"}
+        self.moved(node, pages.tensor, "page write")
+        self.wait(node, "compute", WAIT_OUTPUT)
+        self.wait(node, "mover B", WAIT_DATA)
+        return [Line(movement, range_uses(pages, self), mover="B")], [
+            Line(compute, {"km_ok"})
+        ]
 
     def write_function_of_sums(self, node, pages, call):
         """`t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of
