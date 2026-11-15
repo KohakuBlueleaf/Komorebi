@@ -405,8 +405,10 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    command and returns when it is done. Where that order is not given, by name: the
    host refuses a command to a group whose cores do not hold the class
    (`does not hold`), and `run.load` refuses a group that does not contain the
-   class's rectangle; a thread's command to cores that never loaded the class reaches
-   them unchecked (only their compute refuses it, `program start`). The row costs the
+   class's rectangle; the dispatcher refuses a command of the class, from any source (a
+   thread, a stream, a graph), to a group with a core that does not hold it, by its
+   table of the field each core holds (`CommandRejected`, reason 13, `program`), so no
+   CPU of such a core takes it and the run goes on. The row costs the
    load command little: 6.80 and 4.78 µs (first load, second) with a 64 B row and 7.86
    and 4.60 µs with a 128 B row, against 8.02 and 4.34 µs for a class without args and
    7.84 and 4.38 µs for the loaded gate. The row read is built into the load's kernels
