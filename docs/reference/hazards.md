@@ -759,6 +759,21 @@ into a `memset` call, does not link.
 Described in [X280 threads reference, the image](threads.md#the-image) and
 [writing one](../threads.md#writing-one).
 
+### A class's command from a thread on a tensor other than the make's
+
+**The hazard.** A handler's function in a class's thread header writes the address of
+the tensor the class was made with into each tensor parameter's word. A thread that
+means the command for another tensor gets the make's tensor: it reads or writes the
+wrong pages, and nothing fails.
+
+**The rule.** For another tensor, set the word after the function
+(`command->a<n>`, `n` the place `<NAME>_<HANDLER>_<PARAMETER>` gives), or make the
+class with that tensor.
+
+**The guard.** Nothing.
+
+Described in [classes, X280 threads](classes.md#x280-threads).
+
 ### An X280 clock above the default under matrix load
 
 **The hazard.** At 1,750 MHz the card lowers its core voltage when the Tensix grid is
