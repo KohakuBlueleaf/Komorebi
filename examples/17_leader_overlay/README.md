@@ -70,6 +70,7 @@ overlay.call(TileArgument{scalar});
 python leader_overlay.py --rect 0,0,1,10 --choices cycle            # a column of 10
 python leader_overlay.py --rect 0,0,12,1 --along row --choices blocks
 python leader_overlay.py --rect 0,0,12,10 --choices cycle --compiled
+python leader_overlay.py --rect 0,0,1,10 --choices cycle --addon shift  # added live
 ```
 
 `--choices cycle` picks 0, 1, 2, 3 in turn: with 3 reader slots every round loads.
@@ -116,6 +117,13 @@ A round on average (command time / rounds), overlays against compiled in:
 Commands: `python leader_overlay.py --rect R --along A --rounds 100000 --per 2000 --timed
 10 --choices C [--compiled]`, R and A `0,0,12,1 row`, `0,0,1,10 column`, `0,0,12,10
 column`, C `cycle` and `blocks`.
+
+`--addon shift` (card 0, 2026-11-16): shift is not loaded. `run.addon` adds it to the
+live run with its number, 4, before the first command
+([code added to a live run](../../docs/reference/overlays.md#code-added-to-a-live-run)),
+and the leader casts it as any overlay. A column of 10 ran 100,000 rounds, 0 wrong, at
+10.64 µs a round. From the cast to the last call done, shift (added) took 19.65 µs when
+loading and scale (loaded) 19.62 µs, in the same run.
 
 L1 of a core, overlays against compiled in:
 

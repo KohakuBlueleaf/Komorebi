@@ -179,6 +179,22 @@ namespace km {
         }
         return 0;
     }
+
+    // The reader's message_overlay(): a handler the program's list does not have is
+    // overlay n when the live run added it as dynamic handler n (kOverlayMessages).
+    inline uint32_t message_number(uint32_t control, uint32_t word) {
+        const uint32_t listed = message_overlay(word);
+        if (listed != 0 || word >> kMessagesProgramShift != 0) {
+            return listed;
+        }
+        const uint32_t handler = messages_handler(word);
+        const uint32_t added = overlay_area(control)[kOverlayMessages / 4];
+        return (
+            handler <= kMessagesHandlersMax && (added >> handler & 1u) != 0
+                ? handler
+                : 0
+        );
+    }
 #endif
 
     // Queue position `position` of core `core`: DRAM page and byte offset in it.
@@ -491,7 +507,7 @@ namespace km {
         uint8_t starts[kMessagesHandlersMax + 1];
         for (uint32_t index = 0; index < count; index++) {
             const uint32_t word = l1(page + kMessagesHeader + index * message_bytes)[0];
-            const uint32_t number = message_overlay(word);
+            const uint32_t number = message_number(control, word);
             if (number == 0) {
                 return word;
             }
@@ -522,15 +538,19 @@ namespace km {
 
     // The overlay of group `group` of the packet at `page`: its first message's.
     inline uint32_t message_group_overlay(
-        uint32_t page, uint32_t group, uint32_t message_bytes
+        uint32_t control, uint32_t page, uint32_t group, uint32_t message_bytes
     ) {
         volatile tt_l1_ptr uint8_t*
             header = (reinterpret_cast<volatile tt_l1_ptr uint8_t*>(page));
         const uint32_t first = group == 0 ? 0 : header[kMessagesGroupEnds + group - 1];
         return (
-            message_overlay(l1(
-                page + kMessagesHeader + header[kMessagesOrder + first] * message_bytes
-            )[0])
+            message_number(
+                control,
+                l1(
+                    page + kMessagesHeader +
+                    header[kMessagesOrder + first] * message_bytes
+                )[0]
+            )
         );
     }
 
@@ -543,7 +563,8 @@ namespace km {
         const uint32_t groups = l1(page)[kMessagesGroups];
         for (uint32_t group = 0; group < groups; group++) {
             Overlay<ReaderType> part(
-                reader, message_group_overlay(page, group, message_bytes)
+                reader,
+                message_group_overlay(reader.args().control, page, group, message_bytes)
             );
             if (!part.load()) {
                 return false;

@@ -56,6 +56,11 @@ def parse():
         action="store_true",
         help=f"rank 0 also seeds a message for handler {STRAY}: the run must stop",
     )
+    parser.add_argument(
+        "--addon",
+        action="store_true",
+        help="report is not loaded: run.addon adds it to the live run before RUN",
+    )
     return parser.parse_args()
 
 
@@ -106,16 +111,23 @@ def run_once(session, args):
     results = session.tensor(
         np.zeros((cores, WORDS["kResWords"]), np.int32), "int32", shard_grid=grid
     )
+    loaded = ("lookup", "value") if args.addon else ("lookup", "value", "report")
     # --8<-- [start:program]
     program = km.Program(
         "message_overlays",
         kernels=None,  # the runtime's: each handler's body is a part
         args=lambda core: ([], [], [results.address]),  # the handlers' state in L1
         handlers=KERNELS / "handlers.h",
-    ).dynamic("lookup", "value", "report", parts=KERNELS, **options(args))
+    ).dynamic(*loaded, parts=KERNELS, **options(args))
     program.slots(count=args.slots)
     # --8<-- [end:program]
     run = session.load(program, deadline=args.deadline, wait=args.wait)
+    if args.addon:  # messages of handler 3 run the part added here, as overlay 3
+        report = {"compute": KERNELS / "report.cpp"}
+        number = run.addon(
+            "report", report, message=True, number=WORDS["kHandlerReport"]
+        )
+        log(f"report added as dynamic handler {number}: {run.added['report']}")
     count = args.count or cores
     handle = run.submit(
         "lookup",
@@ -186,6 +198,7 @@ def check(args, count, rows, event, states, timed_out, loads):
     result = {
         "count": count,
         "slots": args.slots,
+        "addon": args.addon,
         "threads": args.threads,
         "steps": args.steps,
         "event": event.kind if event else None,

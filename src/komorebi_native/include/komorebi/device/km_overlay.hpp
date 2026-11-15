@@ -11,6 +11,12 @@
 #include "cmath_common.h"
 #endif
 
+// A program's own overlays in a run of several programs: the run's number of each is
+// the program's own plus its shift (the host's, a define of its parts; else 0).
+#if !defined(KM_OVERLAY_SHIFT)
+#define KM_OVERLAY_SHIFT 0
+#endif
+
 namespace km {
 
     // The overlay area: kOverlayAreaBytes after the control block, written by the
@@ -54,6 +60,12 @@ namespace km {
     constexpr uint32_t kOverlayGo = kOverlayMet + 16;
     // Each follower's park line to the reader (8 bytes each): token, its count.
     constexpr uint32_t kOverlayPark = kOverlayGo + 8 * kOverlayFollowers;
+    // The handlers added to the live run (run.add), a bit a number in two words: the
+    // body of handler n is overlay n (enter()). Its service command sets the bit.
+    constexpr uint32_t kOverlayHandlers = kOverlayPark + 8 * kOverlayFollowers;
+    // The dynamic handlers added to the live run, a bit a number: a message of handler
+    // n runs overlay n's compute part (message_number(), km_messages.hpp).
+    constexpr uint32_t kOverlayMessages = kOverlayHandlers + 8;
     // The clock at the last use of each overlay (a word per number): the slot a load
     // replaces holds the least recently used one.
     constexpr uint32_t kOverlayUsed = 512;
@@ -80,8 +92,7 @@ namespace km {
     constexpr uint32_t kRecordBytes = 4 * (kRecordBuffers + 4 * 32);
     constexpr uint32_t kOverlayAreaBytes = kOverlayRecord + kRecordBytes;
     static_assert(
-        kOverlayEpoch < kOverlayMet &&
-            kOverlayPark + 8 * kOverlayFollowers <= kOverlayUsed &&
+        kOverlayEpoch < kOverlayMet && kOverlayMessages + 4 <= kOverlayUsed &&
             kOverlayTable % 64 == 0 && KM_CONTROL_BYTES % 64 == 0 &&
             kOverlayRecord % 64 == 0 && kRecordBytes % 64 == 0,
         "the overlay area's lines do not overlap and end before its table"
@@ -123,6 +134,28 @@ namespace km {
                 control + kOverlayArea + kOverlayTable + 8 * (kOverlayParts * number + part)
             )
         );
+    }
+
+    // Whether the command's handler was added to the live run: its body an overlay.
+    // Only a load whose program names slot bytes (KM_ADDED_HANDLERS) has the path.
+    inline bool entered(uint32_t control, const km_command_t& command) {
+#if !defined(KM_ADDED_HANDLERS)
+        (void)control;
+        (void)command;
+        return false;
+#else
+        const uint32_t number = handler(command);
+        return (
+            number < kOverlaysMax &&
+            (
+                (
+                    overlay_area(control)[kOverlayHandlers / 4 + (number >> 5)] >>
+                    (number & 31u)
+                ) &
+                1u
+            ) != 0
+        );
+#endif
     }
 
     // Whether `number` is in the table and has a part `part`.
@@ -484,7 +517,8 @@ namespace km {
     template <typename Kernel>
     class Overlay {
     public:
-        Overlay(Kernel& kernel, uint32_t number) : kernel_(kernel), number_(number) {
+        Overlay(Kernel& kernel, uint32_t number) :
+            kernel_(kernel), number_(number + KM_OVERLAY_SHIFT) {
         }
 
         // Whether a slot of this core holds this kernel's part of the overlay.
@@ -757,6 +791,35 @@ namespace km {
     }
 #endif
 
+    // An added handler (entered()): the reader loads its number's overlay, each
+    // kernel with a part calls it with the command. False: gave up (recorded).
+    template <typename Kernel>
+    __attribute__((noinline)) bool enter(Kernel& kernel, const km_command_t& command) {
+#if !defined(KM_ADDED_HANDLERS)
+        (void)kernel;
+        (void)command;
+        return true;
+#else
+        const uint32_t number = handler(command);
+        const bool mine = (
+            overlay_has_part(kernel.args().control, number, kOverlayPartHere)
+        );
+#if defined(COMPILE_FOR_NCRISC)
+        if (!mine) {
+            return true;  // the reader loads the tile's parts
+        }
+#endif
+        Overlay<Kernel> body(kernel, number);
+        if (!body.load()) {
+            return false;
+        }
+        if (mine) {
+            body.call(command);
+        }
+        return true;
+#endif
+    }
+
 }  // namespace km
 #else
 namespace km {
@@ -774,7 +837,8 @@ namespace km {
     template <typename Kernel>
     class Overlay {
     public:
-        Overlay(Kernel& kernel, uint32_t number) : kernel_(kernel), number_(number) {
+        Overlay(Kernel& kernel, uint32_t number) :
+            kernel_(kernel), number_(number + KM_OVERLAY_SHIFT) {
         }
 
         // Whether a slot of this compute core holds its part of the overlay.
@@ -842,6 +906,28 @@ namespace km {
         uint32_t slot_ = 0;
         volatile tt_l1_ptr uint32_t* record_ = nullptr;
     };
+
+    // A handler added to the live run, on a compute core: its part, when it has one,
+    // loaded (the reader's load() meets it) and called with the command.
+    template <typename Kernel>
+    __attribute__((noinline)) bool enter(Kernel& kernel, const km_command_t& command) {
+#if !defined(KM_ADDED_HANDLERS)
+        (void)kernel;
+        (void)command;
+        return true;
+#else
+        const uint32_t number = handler(command);
+        if (!overlay_has_part(kernel.control(), number, kOverlayPartHere)) {
+            return true;
+        }
+        Overlay<Kernel> body(kernel, number);
+        if (!body.load()) {
+            return false;
+        }
+        body.call(command);
+        return true;
+#endif
+    }
 
 }  // namespace km
 #endif

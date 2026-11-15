@@ -44,6 +44,12 @@ def parse():
         action="store_true",
         help="cards 0 and 1: island 0's cores write tiles and lines island 1 holds",
     )
+    parser.add_argument(
+        "--addon",
+        default="",
+        help="overlays not loaded (a comma list, e.g. sparse): run.addon adds each to "
+        "the live run, then the host starts the thread's passes",
+    )
     args = parser.parse_args()
     if not 1 <= args.per <= 255 or args.run < 1:
         parser.error("--per: 1 to 255 (a tell counts kinds in bytes); --run: 1 or more")
@@ -108,9 +114,10 @@ def program(args, words, tiles, lines, thread=True):
             "writer": tiles.tensor_args(),
         },
     )
-    made.overlay("plain", KERNELS / "plain", number=C["TS_OVERLAY_PLAIN"])
-    made.overlay("sparse", KERNELS / "sparse", number=C["TS_OVERLAY_SPARSE"])
-    made.overlay("dense", KERNELS / "dense", number=C["TS_OVERLAY_DENSE"])
+    later = args.addon.split(",")  # added to the live run instead (--addon)
+    for name in ("plain", "sparse", "dense"):
+        if name not in later:
+            made.overlay(name, KERNELS / name, number=C[f"TS_OVERLAY_{name.upper()}"])
     made.slots(count={"reader": args.slots})  # fewer than three: loads happen
     if not thread:
         return made
@@ -121,11 +128,11 @@ def program(args, words, tiles, lines, thread=True):
         regions={"ticks": 4096},
         words=words,
         deadline=60.0,
-        # islands: the passes wait for the host's command (the far island loads after)
+        # islands, or --addon: the passes wait for the host's command
         **(
             {"handlers": {"passes": C["TS_THREAD_PASSES"]}}
             | {"defines": {"TS_STARTED_BY_HOST": "1"}}
-            if args.far
+            if args.far or args.addon
             else {}
         ),
     )
@@ -205,7 +212,7 @@ def table(args, cores, lines, ticks, megahertz, unit_kinds, choice):
 
 
 class Passes:
-    """The thread's passes as the host's command ran them (--far): their event."""
+    """The thread's passes as the host's command ran them: their event."""
 
     def __init__(self, event):
         done = event.kind == "done"
@@ -216,7 +223,7 @@ class Passes:
 
 
 def started_passes(part):
-    """Island 0's thread runs the passes on its command, waited for (--far)."""
+    """The thread runs the passes on its command, waited for (--far, --addon)."""
     handle = part.submit("passes", cluster=CLUSTER, args=(), result=True)
     return Passes(part.wait(handle, timeout=120.0))
 
@@ -259,6 +266,11 @@ def main():
         log(f"loaded, {cores} cores, aiclk {megahertz} MHz, far {args.far}")
         if args.far:
             result = started_passes(run.island(0))
+        elif args.addon:  # a pull's answer names each as any overlay
+            for name in args.addon.split(","):
+                number = C[f"TS_OVERLAY_{name.upper()}"]
+                run.addon(name, KERNELS / name, number=number)
+            result = started_passes(run)
         else:
             try:
                 thread = run.thread_results(timeout=180.0)
@@ -269,6 +281,9 @@ def main():
         run.stop()
         if args.far:
             raw = run.island(0).threads[CLUSTER].read("ticks").view(np.uint32)
+            result.words = raw[: C["TS_PASSES"]].tolist()
+        elif args.addon:
+            raw = run.thread.read("ticks").view(np.uint32)
             result.words = raw[: C["TS_PASSES"]].tolist()
         (raw_lines,) = session.read(lines)
         (raw_tiles,) = session.read(tiles)
@@ -289,6 +304,7 @@ def main():
     out = {
         "cores": cores,
         "far": args.far,
+        "addon": args.addon,
         "units": args.units,
         "per": args.per,
         "run": args.run,
