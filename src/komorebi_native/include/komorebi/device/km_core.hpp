@@ -193,6 +193,7 @@ namespace km {
     constexpr uint32_t kWhereLinkRunFound = 66;  // the RUN's counter tile not ready
     constexpr uint32_t kWhereLinkUp = 67;        // no hello from the far side
     constexpr uint32_t kWhereRelay = 68;  // link core 0 (km_relay.hpp): an ask not served
+    constexpr uint32_t kWhereCoreIndex = 69;  // KM_CHECK_NOC_SOURCES: no core at that index
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -265,7 +266,8 @@ namespace km {
                 kWhereLinkOverflow,
                 kWhereLinkRunFound,
                 kWhereLinkUp,
-                kWhereRelay
+                kWhereRelay,
+                kWhereCoreIndex
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {
@@ -481,6 +483,27 @@ namespace km {
                 return stopped ? kGaveStop : kGaveLimit;
             }
         }
+    }
+
+    // Core table entry `index`. KM_CHECK_NOC_SOURCES: past the table or 0 (no core)
+    // stops the CPU before a NoC address is made; live where kWhereCoreIndex.
+    inline uint32_t core_entry(
+        const volatile tt_l1_ptr uint32_t* table,
+        uint32_t index,
+        uint32_t control,
+        uint32_t role
+    ) {
+#if defined(KM_CHECK_NOC_SOURCES)
+        if (index >= KM_CORES_MAX || table[index] == 0) {
+            if (role < kRoles) {
+                l1(control + KM_CONTROL_LIVE)[kLvWhere + role] = kWhereCoreIndex;
+            }
+            for (;;) {
+                asm volatile("");
+            }
+        }
+#endif
+        return table[index];
     }
 
     // poll_stop for kernel `role` in the runtime wait `where` (0: not shown live), on
@@ -748,7 +771,9 @@ namespace km {
 
         // NoC address of `address` on core `index` of the core table.
         uint64_t core_noc(uint32_t index, uint32_t address) const {
-            const uint32_t coordinates = control(KM_CONTROL_CORES)[index];
+            const uint32_t coordinates = (
+                core_entry(control(KM_CONTROL_CORES), index, args_.control, role_)
+            );
             return get_noc_addr(coordinates & 0xFFFFu, coordinates >> 16, address);
         }
 

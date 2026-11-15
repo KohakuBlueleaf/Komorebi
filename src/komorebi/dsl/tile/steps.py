@@ -4,11 +4,13 @@ of the state tile (slot k of row group (h, q) at 16 h + 4 q + SLOT[k]); a per-ro
 value reduced to one word (tile.word_max) takes the last slot."""
 
 import copy
+from dataclasses import dataclass
 
 from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile.ir import BF16, F32, PlanError, fail
 from komorebi.dsl.tile.lower import (
     ADDR_MOD,
+    CONSTANT_REGISTERS,
     NOT_CHECKED,
     STALL_SFPU,
     TILE,
@@ -26,24 +28,28 @@ from komorebi.dsl.tile.lower import (
     fuse_mad,
     hoist,
 )
+from komorebi.dsl.tile.macro import macro_setup, max_macro
+from komorebi.dsl.tile.matrix import tile_products
 from komorebi.dsl.tile.rows import (
     GROUPS,
     ROTATE,
     Layout,
     _check_broadcast,
     _check_lanes,
-    _repairs,
     _vectors,
     interleave,
 )
 from komorebi.dsl.tile.unit import (
     OPS,
-    PROGRAMMABLE,
     Call,
+    Check,
     Insn,
     Pass,
+    Product,
     Sync,
     UnitProgram,
+    encode,
+    matrix_cost,
 )
 
 SLOT = (0, 2, 32, 34)  # slot k: even / odd columns of faces 0-1, then of faces 2-3
@@ -54,10 +60,11 @@ WORD = 2 * 256 + 1
 MAX_SWAP = 1  # SFPSWAP mod1: the larger into VC, the smaller into VD
 
 
-def step_program(ir, width, state_tile, dest="fp32"):
+def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4"):
     """The unit program of step kernel `ir` over a row of `width` tiles in Dst tiles
     0 .. width - 1 (stored over them) and its state tile in Dst tile `state_tile`
-    (read and written in place; see the module text for its layout)."""
+    (read and written in place; see the module text for its layout). `fidelity`: the
+    matrix unit's, for a row sum the cost model gives it (rule matrix_sum)."""
     if dest != "fp32":
         raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
     if not 1 <= width <= 3 or not width <= state_tile <= 3:
@@ -137,20 +144,36 @@ def step_program(ir, width, state_tile, dest="fp32"):
             ),
         )
     )
-    # Constants kept in a work register for a group's level, most loads first, while
-    # the values still fit the 8 work registers (each trial builds the body anew).
-    best = _attempt(ir.name, dest, plan, set())
+    best = _search(ir.name, dest, plan)
     if best is None:
         fail(f"{ir.name}: the step's values do not fit the 8 work registers")
-    kept, loads = set(), best[0].loaded
-    for bits in sorted(loads, key=lambda b: -loads[b]):
-        got = _attempt(ir.name, dest, plan, kept | {bits})
-        if got is not None and _estimate(got[0].code) < _estimate(best[0].code):
-            kept.add(bits)
-            best = got
-    body, probe, passes, setup = best
-    cached = len(kept)
-    note = f"{cached} constant(s) loaded once a group and level, the rest once a read"
+    sums, record = _matrix_sums(plan, fidelity, word, nodes)
+    chosen = None
+    if sums:
+        plan.matrix, plan.later = sums, _later(plan, sums)
+        on_matrix = _search(ir.name, dest, plan)
+        if on_matrix is not None:
+            part = _sum_part(ir.name, dest, plan)
+            product = _sum_product(plan, fidelity)
+            cost = on_matrix.estimate + _estimate(part.code)
+            cost += matrix_cost(product.words)
+            record = [
+                f"{len(sums)} row sum(s) as products with a tile of ones ({fidelity}): "
+                f"{cost:.1f} cycles a step against {best.estimate:.1f} on the vector "
+                "unit"
+            ]
+            if cost < best.estimate:
+                chosen = (on_matrix, part, product)
+            else:
+                record.append("kept on the vector unit (cheaper)")
+        else:
+            record = ["refused: the step without its sums does not fit the registers"]
+    if chosen is None:
+        plan.matrix, plan.later = set(), []
+    else:
+        best = chosen[0]
+    unit.passes.append(Pass("algebra", "matrix_sum", record))
+    body, probe, passes, setup = best.body, best.probe, best.passes, best.setup
     unit.passes += passes
     unit.passes.append(
         Pass(
@@ -159,14 +182,16 @@ def step_program(ir, width, state_tile, dest="fp32"):
             [
                 f"{len(stored)} per-row values in slots of tile {state_tile}"
                 + (", the word in the last" if word is not None else ""),
-                note,
+                best.note,
             ],
         )
     )
     unit.checks += probe.checks
     if word is not None:
         body.code += _word_tail(TILE * state_tile + SLOT[WORD_SLOT])
-    unit.constants = {PROGRAMMABLE[i]: v for i, v in enumerate(body.prog.values())}
+    unit.constants = {
+        CONSTANT_REGISTERS[i]: v for i, v in enumerate(body.prog.values())
+    }
     unit.init["math"] = [
         Insn(
             "SFPCONFIG",
@@ -174,6 +199,7 @@ def step_program(ir, width, state_tile, dest="fp32"):
             "lane configuration",
         ),
         *setup,
+        *macro_setup(best.templates),
     ]
     copies = [f"copy_tile(x, {t}, dst + {t})" for t in range(width)]
     copies.append(f"copy_tile(state, 0, dst + {state_tile})")
@@ -181,7 +207,7 @@ def step_program(ir, width, state_tile, dest="fp32"):
         Sync("unpack", "reader", "cb_wait_front(x, width)", "the row's tiles"),
         *[Call(c, "into Dst (fp32, unpacked to Dst)") for c in copies],
     ]
-    unit.tile["math"] = [
+    head = [
         Sync("math", "pack", "tile_regs_acquire()", "a free Dst half"),
         *[Call(c, "the math part of the copy (none to Dst)") for c in copies],
         Call(
@@ -194,9 +220,9 @@ def step_program(ir, width, state_tile, dest="fp32"):
             {"stall_res": STALL_SFPU, "wait_res": WAIT_MATH},
             "SFPU waits for the matrix unit",
         ),
-        *body.code,
-        Sync("math", "pack", "tile_regs_commit()", "hands Dst to the pack CPU"),
     ]
+    tail = [Sync("math", "pack", "tile_regs_commit()", "hands Dst to the pack CPU")]
+    unit.tile["math"] = [*head, *body.code, *tail]
     packs = [f"pack_tile(dst + {t}, out)" for t in range(width)]
     packs.append(f"pack_tile(dst + {state_tile}, state_out)")
     unit.tile["pack"] = [
@@ -205,16 +231,98 @@ def step_program(ir, width, state_tile, dest="fp32"):
         Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
     ]
     _checks(unit, body.code)
-    unit.tile["math"][-1 - len(body.code) + _repairs(unit) : -1] = body.code
+    unit.tile["math"] = [*head, *body.code, *tail]
+    if chosen is not None:
+        _sum_unit(unit, plan, chosen[1], chosen[2])
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
     return unit
 
 
-def _attempt(name, dest, plan, cacheable):
-    """(body, checks, passes, setup) of the body with constants `cacheable` loaded
-    once a group and level, or None when its values do not fit the registers."""
+# Fidelities whose phases read SrcB's low mantissa bits (phases 2 and 3): the row is
+# in0, which the unpacker puts in SrcB; the tile of ones in SrcA is exact at phase 0.
+FULL_FIDELITY = ("HiFi3", "HiFi4")
+SUM_TILE, SUM_STATE = 0, 1  # the sum part's Dst tiles: the product, the state
+
+
+def _matrix_sums(plan, fidelity, word, nodes):
+    """The row sums the matrix unit may take (ids), and the record if none: a sum of
+    the row the step stores, read by no word."""
+    out = set()
+    for r, operand, _, _ in plan.reductions:
+        if r.attrs["op"] == "sum" and operand is plan.store[0]:
+            out.add(id(r))
+    if not out:
+        return out, []
+    if fidelity not in FULL_FIDELITY:
+        return set(), [
+            f"refused: at {fidelity} the matrix unit reads the row's top 7 bits only "
+            "(SrcB's low bits come in phases 2 and 3)"
+        ]
+    if word is not None and _depends(word, out):
+        return set(), ["refused: the word reads a row sum"]
+    return out, []
+
+
+def _depends(node, ids, seen=None):
+    """True when `node` reads (through its arguments) a node of `ids`."""
+    seen = {} if seen is None else seen
+    if id(node) in ids:
+        return True
+    if id(node) not in seen:
+        seen[id(node)] = any(_depends(a, ids, seen) for a in node.args)
+    return seen[id(node)]
+
+
+def _later(plan, sums):
+    """The per-row values that read a matrix sum: they are computed after the
+    product, in the sum part."""
+    later = [n for n, _ in plan.per_row if _depends(n, sums)]
+    for n in later:
+        if plan.slot_of(n) is None:
+            fail("a per-row value read after the product has no state slot")
+    return later
+
+
+@dataclass(eq=False)
+class _Built:
+    """One build of the step's first part: its body, checks, passes, setup, the load
+    macro templates its maxima use, the estimate and the constants' record."""
+
+    body: Body
+    probe: UnitProgram
+    passes: list
+    setup: list
+    templates: dict
+    estimate: float
+    note: str = ""
+
+
+def _search(name, dest, plan):
+    """The cheapest build: each constant, most loads first, held for the whole unit
+    when that is cheaper, else for a group's level, else loaded at each read."""
+    best = _attempt(name, dest, plan, set(), set())
+    if best is None:
+        return None
+    whole, kept, loads = set(), set(), best.body.loaded
+    for bits in sorted(loads, key=lambda b: -loads[b]):
+        for trial in ((whole | {bits}, kept), (whole, kept | {bits})):
+            got = _attempt(name, dest, plan, *trial)
+            if got is not None and got.estimate < best.estimate:
+                whole, kept = trial
+                best = got
+                break
+    best.note = (
+        f"{len(whole)} constant(s) held for the unit, {len(kept)} loaded once a group "
+        "and level, the rest once a read"
+    )
+    return best
+
+
+def _attempt(name, dest, plan, whole, cacheable):
+    """The first part built with constants `whole` held for the unit and
+    `cacheable` once a group and level, or None when its values do not fit."""
     body, probe = Body(), UnitProgram(name, dest)
-    body.cacheable, body.pairs = set(cacheable), []
+    body.whole, body.cacheable, body.pairs = set(whole), set(cacheable), []
     _build(body, plan)
     passes = [
         Pass("algebra", "fold_negation", _tally(fold_negation(body.code))),
@@ -222,25 +330,30 @@ def _attempt(name, dest, plan, cacheable):
         Pass("algebra", "drop_copies", drop_copies(body.code)),
         Pass("algebra", "common_values", _tally(common_values(body.code))),
     ]
+    done = constant_registers(body.code, body.prog, len(CONSTANT_REGISTERS))
+    passes.append(Pass("layout", "constant_registers", done))
+    setup = []
+    passes.append(Pass("schedule", "hoist", hoist(body.code, setup)))
     moved = 0
     for pair in body.pairs:
-        at = [i for i, x in enumerate(body.code) if id(x) in pair]
-        moved += interleave(body.code, at[0], at[-1] + 1)
+        ids = {id(x) for x in pair}
+        at = [i for i, x in enumerate(body.code) if id(x) in ids]
+        if at:
+            moved += interleave(body.code, at[0], at[-1] + 1)
     done = [f"{moved} instructions moved in {len(body.pairs)} pairs of row vectors"]
     passes.append(Pass("schedule", "interleave", done))
     layouts = plan.layouts()
     _check_lanes(probe, body.code, layouts["slot0"])
     _check_broadcast(probe, body.code, layouts, plan.width)
-    done = constant_registers(body.code, body.prog)
-    passes.append(Pass("layout", "constant_registers", done))
-    setup = []
-    passes.append(Pass("schedule", "hoist", hoist(body.code, setup)))
     try:
-        passes.append(Pass("layout", "allocate", allocate(body.code, body.prog)))
+        done = allocate(body.code, body.prog, high=body.held)
     except ValueError:
         return None
+    passes.append(Pass("layout", "allocate", done))
     allocate(setup, body.prog)
-    return body, probe, passes, setup
+    templates, done = max_macro(body.code)
+    passes.append(Pass("schedule", "max_macro", done))
+    return _Built(body, probe, passes, setup, templates, _estimate(body.code))
 
 
 def _estimate(code):
@@ -268,6 +381,8 @@ class _Plan:
         self.width, self.state_tile, self.level = width, state_tile, level
         self.stored, self.word, self.held, self.slots = stored, word, held, slots
         self.reductions, self.store, self.per_row = [], None, []
+        # sums on the matrix unit (ids) and the per-row values computed after them
+        self.matrix, self.later = set(), []
 
     def levels(self):
         """The levels the body walks: 0 to the highest reduction, per-row value or
@@ -285,8 +400,13 @@ class _Plan:
         return None
 
     def per_row_of(self, lv):
-        """The per-row values of level `lv` and their chains, in order."""
-        return [(n, c) for n, c in self.per_row if self.level[id(n)] == lv]
+        """The per-row values of level `lv` and their chains, in order (not those
+        computed after the matrix unit's sums)."""
+        return [
+            (n, c)
+            for n, c in self.per_row
+            if self.level[id(n)] == lv and not any(n is x for x in self.later)
+        ]
 
     def address(self, k, h, q):
         return Layout("rows", self.state_tile, SLOT[k]).address(0, h, 0, q, 0)
@@ -385,6 +505,123 @@ def _build(b, plan):
     b.cache = None
 
 
+@dataclass(eq=False)
+class _Part:
+    """The sum part: its code (allocated) and passes."""
+
+    code: list
+    passes: list
+
+
+def _sum_part(name, dest, plan):
+    """The per-row values that read the matrix unit's sums, per row group: the sum
+    from the product's tile (each row's sum in every column: the per-row lanes), the
+    state's slots from the state tile, then their slots stored."""
+    b = Body()
+    for h, q in GROUPS:
+        values = {}
+        for r in plan.matrix:
+            where = TILE * SUM_TILE + 32 * h + 4 * q
+            values[r] = b.load(where, f"the row sums ({h} {q})")
+
+        def per_row(node, h=h, q=q, values=values):
+            if id(node) not in values:
+                k = node.attrs["slot"] if node.kind == "slot" else plan.slot_of(node)
+                where = Layout("rows", SUM_STATE, SLOT[k]).address(0, h, 0, q, 0)
+                values[id(node)] = b.load(where, f"slot {k} ({h} {q})")
+            return values[id(node)]
+
+        for node, c in plan.per_row:
+            if not any(node is x for x in plan.later):
+                continue
+            v = _value(b, c.fn.result, {}, _source(c, per_row, None))
+            values[id(node)] = v
+            k = plan.slot_of(node)
+            where = Layout("rows", SUM_STATE, SLOT[k]).address(0, h, 0, q, 0)
+            b.store(v, where, f"slot {k} ({h} {q})")
+    passes = [
+        Pass("algebra", "fold_negation", _tally(fold_negation(b.code))),
+        Pass("algebra", "fuse_mad", _tally(fuse_mad(b.code))),
+        Pass("algebra", "drop_copies", drop_copies(b.code)),
+        Pass("algebra", "common_values", _tally(common_values(b.code))),
+    ]
+    passes.append(Pass("layout", "allocate", allocate(b.code, b.prog)))
+    if b.prog:
+        fail(f"{name}: the sum part takes no constant register")
+    return _Part(b.code, passes)
+
+
+def _sum_product(plan, fidelity):
+    """The products of the step's row tiles with the tile of ones, accumulated into
+    the sum part's Dst tile (one library call a tile: in0 the row, in1 the ones; every
+    sum taken is of the stored row, so one tile holds them all)."""
+    words = []
+    for _ in range(plan.width):
+        words += [w for w, _ in tile_products(fidelity, 1, 1, SUM_TILE)]
+    text = f"matmul_tiles(row, ones, t, 0, dst + {SUM_TILE}) for t < {plan.width}"
+    return Product(text, words, f"row sums on the matrix unit ({fidelity})")
+
+
+def _sum_unit(unit, plan, part, product):
+    """The unit's later part: the state back into Dst, the products, then the sum
+    part's vector code; the pack CPU's and the unpacker's lines for both parts."""
+    unit.passes += [Pass(p.kind, f"{p.name} (sum part)", p.done) for p in part.passes]
+    n = check_mad_readers([part.code])
+    unit.checks.append(
+        Check(
+            "mad-reader (sum part)",
+            "SFPNOP between a MAD and a reader not held back",
+            f"repaired: {n} SFPNOP" if n else "ok",
+        )
+    )
+    for insn in part.code:
+        encode(insn.op, insn.args)
+    unit.checks.append(
+        Check(
+            "lanes (sum part)",
+            "a product with ones holds each row's sum in every column: complete lanes",
+            f"ok: {len(plan.later)} per-row value(s) a row group from it",
+        )
+    )
+    state = f"copy_tile(state_in, 0, dst + {SUM_STATE})"
+    unit.parts["sum"] = [
+        Sync("math", "pack", "tile_regs_acquire()", "a free Dst half"),
+        Call(state, "the math part of the copy (none to Dst)"),
+        product,
+        Call(
+            "ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, "
+            "UnpackDestination::SrcRegs>(dst)",
+            "Dst base of tile dst (RISC-V writes)",
+        ),
+        Insn(
+            "STALLWAIT",
+            {"stall_res": STALL_SFPU, "wait_res": WAIT_MATH},
+            "SFPU waits for the products",
+        ),
+        *part.code,
+        Sync("math", "pack", "tile_regs_commit()", "hands Dst to the pack CPU"),
+    ]
+    width = plan.width
+    unit.tile["unpack"] += [
+        Sync("unpack", "pack", "cb_wait_front(row, width)", "the packed row"),
+        Call(state, "the state into Dst (fp32, unpacked to Dst)"),
+        Call(product.text, "the row and the ones into SrcB and SrcA"),
+    ]
+    unit.tile["pack"] = [
+        Sync("pack", "math", "tile_regs_wait()", "Dst from the math CPU"),
+        *[
+            Call(f"pack_tile(dst + {t}, out)", "a tile of the row")
+            for t in range(width)
+        ],
+        *[Call(f"pack_tile(dst + {t}, row)", "the row again") for t in range(width)],
+        Call(f"pack_tile(dst + {plan.state_tile}, state_in)", "the state"),
+        Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
+        Sync("pack", "math", "tile_regs_wait()", "Dst from the math CPU"),
+        Call(f"pack_tile(dst + {SUM_STATE}, state_out)", "the new state"),
+        Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
+    ]
+
+
 def _source(c, per_row, vector):
     """source(index) of chain `c`: a row vector (`vector(leaf)`) or a per-row value."""
 
@@ -401,7 +638,11 @@ def _row_pass(b, plan, lv, h, q, per_row, values):
     """Level `lv`'s pass over the group's row vectors: the reductions of this level
     (lane by lane, then the 8 lanes of each lane row by rotations) and the row's
     store when its value is of the level before."""
-    mine = [x for x in plan.reductions if plan.level[id(x[0])] == lv]
+    mine = [
+        x
+        for x in plan.reductions
+        if plan.level[id(x[0])] == lv and id(x[0]) not in plan.matrix
+    ]
     node, chain = plan.store
     storing = plan.level[id(node)] + 1 == lv
     if not mine and not storing:
@@ -433,7 +674,8 @@ def _row_pass(b, plan, lv, h, q, per_row, values):
         if storing:
             b.store(result(node, chain), address, f"row {(t, h, c, q, p)}")
         if n % 2:
-            b.pairs.append({id(x) for x in b.code[start:]})
+            # the instructions themselves: a deleted one's id is not reused
+            b.pairs.append(list(b.code[start:]))
     for r, _, _, scale in mine:
         acc = accs[id(r)]
         for k in (1, 2, 4):

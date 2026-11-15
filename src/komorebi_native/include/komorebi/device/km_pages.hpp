@@ -366,7 +366,9 @@ namespace km {
         // range: the far core of the share's rank q (the core tables of both islands
         // are the same, checked by the session) and address `at` there
         const auto far = [&](uint32_t q, uint32_t at) {
-            const uint32_t xy = cores[r.to_core + q];
+            const uint32_t xy = (
+                core_entry(cores, r.to_core + q, kernel.args().control, kernel.role())
+            );
             return link_noc(xy & 0xFFFFu, xy >> 16, at);
         };
         const uint32_t limit = kernel.args().wait_limit;

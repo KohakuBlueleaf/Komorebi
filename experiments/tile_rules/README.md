@@ -6,8 +6,10 @@ a scale by a constant, the SwiGLU gate `silu(a) * b` and the row norm
 stand in for, what does a unit cost on one core with each, and how close is the printed
 cost to the card? Then the same for attention's exponent step and its online softmax
 step at the error the program states, and the whole per-core attention body assembled
-from the library's matrix calls and the emitted softmax step. The page for the tile layer
-is [docs/reference/tile.md](../../docs/reference/tile.md).
+from the library's matrix calls and the emitted softmax step. Then the five rules that
+close the softmax step's gap to the hand step, one at a time on the card, and the
+matrix unit's words of a tile product emitted against the library call. The page for
+the tile layer is [docs/reference/tile.md](../../docs/reference/tile.md).
 
 ## Bodies
 
@@ -33,6 +35,10 @@ is [docs/reference/tile.md](../../docs/reference/tile.md).
 | 17 | softmax | accurate | the same with the accurate exp2 |
 | 18 | attn | hand | the per-core body (`kernels/attention.cpp`): per step of 3 key tiles the score products, BODY 14's step, P packed bf16, P V and l = P 1 added into O |
 | 19 | attn | emitted | the same with BODY 15's step (l from the step's state) |
+| 20 | softmax | ruled | the step form with every rule: the row sums as products with a tile of ones on the matrix unit (HiFi4), in a second part after them |
+| 21 | exp | ruled | BODY 16 with the store's address mode in place of the `INCRWC` |
+| 22 | product | hand | the library's `matmul_block_no_mop` of one bf16 tile by another at HiFi2, as the dense project's compute order calls it (`kernels/product.cpp`) |
+| 23 | product | emitted | the library's unpack, and the matrix words `komorebi.dsl.tile.matrix` emits for its math |
 
 The hand norm keeps decode's sequence with fp32 buffers where decode has bf16, and
 reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.
@@ -46,14 +52,21 @@ reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.
 | writer (RISCV_0): the output tiles, then the info page | `kernels/writer.cpp` |
 | shared layout of buffers and the info page | `kernels/rules.hpp` |
 | the per-core attention body (BODY 18, 19) and its reader | `kernels/attention.cpp`, `kernels/attn_reader.cpp` |
+| the product (BODY 22, 23): unpack, math, pack in the dense project's order | `kernels/product.cpp` |
 | the attention body in stages (score product, + the step, the whole body, body 19), one session, each stage's name printed before its launch | `attn_stages.py` |
 | driver: emits `kernels/generated/*.hpp`, builds, runs, checks | `rules.py` |
+| the rules in stages (the hand step, the emitted step with none, one rule added a stage, BODY 20, 21, then 22 and 23), one session, each stage's name printed before its launch; a rule is switched off by replacing its entry point while its header is built | `rule_stages.py` |
 
 ```
 python rules.py build                                   # mock device: every body built, host checks
 python rules.py card --cases silu add scale             # one core: values and cycles
 python rules.py card --cases norm --forms hand --save out.npz
+python rule_stages.py build                             # mock device: every stage built
+python rule_stages.py card --stages 4 5 6 8 9 --save out.npz
 ```
+
+A card job compiles nothing: `build` fills the runtime's kernel cache
+(`.logs/jit-rules/mock`) and `card` reads it (the device's build key is the same).
 
 - **Timing.** The math CPU reads the wall clock (AICLK cycles) around the body between
   two `tensix_sync()` calls; the tables give the median of 16 units less the empty span
@@ -115,9 +128,10 @@ instructions a 4-row block, 351.5 against 443.2 cycles a tile):
 | the address step in the store's address mode | an `SFPINCRWC` each block | 16 |
 | the same clamp (`SFPSWAP`) and its stall | the same | 0 |
 
-Not built: the rule that closes the first two keeps a per-row value that depends only
-on the state in the state tile, computed once a step; the third needs the emitter to
-own the address modes (the follow-up form that lowers the matrix words too).
+The third is closed now (the store's address mode, BODY 21: 443.2 to 401.0 priced, 402
+on the card). The rule for the first two (the per-row term computed once a block in a
+pass first) is built and refused by the cost model: its pass costs 68 cycles a tile
+against the 64 words it saves.
 
 What the hand softmax step has that the emitted one does not (1590.5 against 2369 on
 the card; the emitted side's cycles are its estimate's terms, 2350 in all):
@@ -143,6 +157,51 @@ model of the products with the step's instructions emulated, bf16 inputs and P):
 within 3.1e-3 of float64 (tolerance 4e-3); estimate a step 2350 for the vector part and
 199 (6 or more `Dst` blocks rotating) to 1154 (none) for each product set.
 
+### The rules, one at a time
+
+`rule_stages.py`, the same core, cycles a step (3 score tiles and the state), the median
+of 16 less the empty span; values against float64 (tolerance 2e-3 each). The smallest
+saving first; the row sums on the matrix unit last: the cost model takes them only with
+the interleave on, and they alone add waits and buffers.
+
+| stage | estimate | card | error | p / l / alpha / m |
+|---|---|---|---|---|
+| hand step (BODY 14) | - | 1591.5 | - | p 1.76e-3, m 2.9e-5 abs. |
+| emitted step, no rule | 2350.0 | 2369 | -0.8% | 1.76e-3 / 1.12e-3 / 1.73e-3 / 5e-8 |
+| + constants held for the step | 2291.0 | 2311 | -0.9% | the same |
+| + LReg 11 a fourth constant register | 2289.0 | 2308 | -0.8% | the same |
+| + interleave (the live-value count as the allocator's) | 2015.0 | 2034 | -0.9% | the same |
+| + max macro | 1939.0 | 2045 | -5.2% | the same |
+| + row sums on the matrix unit (BODY 20): first part | 1659.0 | 1761 | -5.8% | 1.76e-3 / 1.03e-3 / 1.73e-3 / 5e-8 |
+| the same, second part from the products' issue | 246.0 | 366 | -33% | |
+| exp step at 2e-3, + the store's address mode (BODY 21) | 401.0 | 402 | -0.2% | 1.77e-3 |
+
+- The interleave is most of it (274 cycles): before, the pressure count it moves under
+  counted one value more than the allocator does, so no pair ever moved.
+- The max macro saved nothing on the card: 88 load-and-max pairs cost about 3 cycles
+  each in both forms, where the price list gives the macro 2.05. A candidate, not
+  measured: the template's swap issues in the `SFPNOP` after the macro, and the next
+  macro is then a word right after an `SFPSWAP`, which stalls one; the price list has
+  that stall for a plain swap only. With it the cost model would refuse the rule here.
+- The row sums on the matrix unit make the step's first part 284 cycles shorter than
+  the vector sums (2045 to 1761), but its second part costs 366 where 246 was priced:
+  P goes out through a buffer and back through the unpacker before its products. In
+  all 2127 against 2045. The hand attention body adds l = P 1 as one more product
+  beside P V, with no second copy of P.
+- Left against the hand step (1591.5), from the best measured step (2034): 442.5 cycles.
+  The terms, from its estimate: the row sum on the vector unit (lane rotations, their
+  stalls and the adds), about 350, which the hand body does as a product outside the
+  step; the selects of `exact_at_zero`, the lagging max and the word, 77; the model's
+  1%, about 19.
+
+### The matrix unit's words of a tile product
+
+BODY 22 and 23 over 16 units of bf16 tiles with values in [0.5, 1.5) at HiFi2: BODY
+23's output is bit-equal to BODY 22's (both 4.83e-3 of float64, tolerance 2^-4), and a
+unit measured 1147.0 cycles against 1145.5 (math CPU, from the product's issue to a
+`tensix_sync` after it, less the empty span). Both are bound by the reader's tile reads:
+the 34 words are priced 41.0 (`matrix.block_cost`) and are not seen under that wait.
+
 ## The cost model against the card
 
 Each price is a one-core measurement (`../tile_probes/README.md`, section 8). The
@@ -161,6 +220,21 @@ the accurate softmax step (-12%: 26 KB of straight-line code, unexplained).
   error of 0.667. The ISA's `SFPMAD` page lists the lane modes of `SFPSHFT2` among the
   readers the stall logic does not see; the `mad-reader` check now follows that list
   (32 `SFPNOP` in the norm), and the norm is right.
+- **A word whose `VD` is 12 + k stores load-macro template k.** The step's clamps
+  against constant register 12 (`SFPSWAP` with `VD` 12) overwrote the max macro's
+  template 0: from the second unit on every macro swapped the wrong register (rows 0 to
+  3 kept their old reference max; P off by 10^5). The emulator ran the init before each
+  unit, the card runs it once a stream. The rule now takes a template slot no word of
+  the unit writes, and `emit` refuses a macro whose template its init does not store or
+  its tile's code writes.
+- **A reader told the wrong number of inputs leaves the core stuck.** The first launch
+  of BODY 20 passed the reader the case's input count (1), not the body's (2): the tile
+  of ones was never read and the unpacker's wait for it never returned. The mock build
+  runs no kernel and could not see it; the reader now takes the body's define.
+- **A wall-clock stamp with no sync is the RISC-V's issue time.** The first product
+  timing stamped after `tile_regs_acquire` and after `tile_regs_wait` with no sync:
+  both are waits of the coprocessor, the RISC-V runs ahead, and the spans came out
+  negative. The product is now timed as the attention body times its products.
 - **The hand bodies must set their source formats.** tt-metal's `state_configure` does
   nothing without its sentinel, so after `compute_kernel_hw_startup` on a buffer
   unpacked to `Dst` in fp32, the matrix unit's sources keep that buffer's format
@@ -176,4 +250,5 @@ page, then the pack CPU's) hangs: the pack CPU's push writes its own count of pu
 into the buffer's received counter, not an increment, so after its first push the
 counter reads 1 although two pages were pushed, equals the pops, and the unpacker's wait
 for the next page never returns. The first version of the body did that and left the
-core stuck twice.
+core stuck twice. The tile emitter now refuses such a
+buffer in a unit's table (`emit`'s `one-producer` check).

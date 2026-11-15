@@ -1,13 +1,16 @@
 """The tile layer: instruction words, SiLU's unit program (passes, checks, cost), the
-emitted header, the load-macro rule and the row form's lane checks."""
+emitted header and its refusals, the load-macro and max-macro rules, the row form's
+lane checks and operand layout, and the matrix unit's words and prices."""
 
 import math
 import random
 
 import pytest
 
-from komorebi.dsl.tile import UnitError, emit, trace, unit_program
+from komorebi.dsl.tile import UnitError, emit, row_operand, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
+from komorebi.dsl.tile.macro import macro_setup, max_macro
+from komorebi.dsl.tile.matrix import block_cost, tile_products
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import (
@@ -15,6 +18,8 @@ from komorebi.dsl.tile.unit import (
     Call,
     Insn,
     Loop,
+    Sync,
+    UnitProgram,
     decode,
     encode,
     insns,
@@ -64,7 +69,7 @@ def test_silu_unit_program():
     )
     assert isinstance(rest, Loop) and rest.count == 7
     assert rest.body[0].op == "REPLAY" and rest.body[0].args["load_mode"] == 0
-    assert unit.cost("math")[1] == 1533.6
+    assert unit.cost("math")[1] == 1475.6
     assert unit.constants and unit.not_checked
 
 
@@ -97,7 +102,7 @@ def test_load_macro_fits_add_and_refuses_silu():
     fit = next(p for p in unit.passes if p.name == "load_macro")
     assert "SFPLOADMACRO" in fit.done[0] and unit.cost("math")[1] == 91.6
     refused = next(p for p in silu(load_macro=True).passes if p.name == "load_macro")
-    assert refused.done[0].startswith("refused: the row computes with 39")
+    assert refused.done[0].startswith("refused: the row computes with 37")
 
 
 def test_row_norm_lanes_and_broadcast():
@@ -196,3 +201,74 @@ def test_matrix_unit_rotation_prices_and_rule():
     rotated = rotate_blocks(inner_fastest)
     assert [b for _, b in rotated] == list(range(8)) * 2
     assert matrix_cost(inner_fastest) == 63.0 and matrix_cost(rotated) == 23.0
+
+
+def test_header_refuses_a_buffer_with_two_producers():
+    unit = stream("add", 2, lambda a, b: a + b)
+    emit(unit)
+    assert any(c.rule == "one-producer" for c in unit.checks)
+    # a state waited from the reader and packed back into the same buffer
+    unit.tile["unpack"].insert(0, Sync("unpack", "reader", "cb_wait_front(st, 1)", ""))
+    unit.tile["pack"].insert(1, Call("pack_tile(dst + 3, st)", "the new state"))
+    with pytest.raises(UnitError, match="buffer st is pushed by pack and reader"):
+        emit(unit)
+
+
+def _load(reg, at):
+    args = {"lreg_ind": reg, "instr_mod0": 0, "sfpu_addr_mode": 7, "dest_reg_addr": at}
+    return Insn("SFPLOAD", args, "")
+
+
+def _swap(c, d):
+    args = {"imm12_math": 0, "lreg_src_c": c, "lreg_dest": d, "instr_mod1": 1}
+    return Insn("SFPSWAP", args, "")
+
+
+def _max_code():
+    # max into LReg 0 over 3 loads, then a clamp against constant register 12
+    code = [_load(0, 0), _load(1, 2), _swap(0, 1), _load(1, 16), _swap(0, 1)]
+    return code + [_swap(0, 12)]
+
+
+def test_max_macro_takes_a_template_no_word_writes():
+    code = _max_code()
+    templates, done = max_macro(code)
+    assert templates == {1: 0} and done[0].startswith("2 load and max pairs")
+    macros = [x for x in code if x.op == "SFPLOADMACRO"]
+    assert [x.args["lreg_ind"] >> 2 for x in macros] == [1, 1]
+
+
+def _macro_unit(templates, code):
+    unit = UnitProgram("maxes", "fp32")
+    unit.init["math"] = macro_setup(templates)
+    unit.tile["math"] = code
+    return unit
+
+
+def test_header_refuses_a_template_the_tile_overwrites_or_never_stores():
+    code = _max_code()
+    templates, _ = max_macro(code)
+    emit(_macro_unit(templates, code))
+    clobbered = [*code[:-1], _swap(0, 13)]  # the clamp now writes template 1
+    with pytest.raises(UnitError, match="writes VD 13 in the tile's code"):
+        emit(_macro_unit(templates, clobbered))
+    unstored = _macro_unit(templates, code)
+    unstored.init["math"] = [x for x in unstored.init["math"] if x.op != "SFPSWAP"]
+    with pytest.raises(UnitError, match="which the init does not store"):
+        emit(unstored)
+
+
+def test_row_operand_places_a_plain_row():
+    out = row_operand([float(i) for i in range(64)], 2)
+    # face c, rows 8 t .. 8 t + 3 hold columns 32 t + 16 c ..; the rest 0
+    assert out[256 * 1 + 16 * 8 + 3] == 32 + 16 + 3 and out[16 * 4] == 0.0
+    assert sum(1 for v in out if v) == 63 * 4  # each value in 4 rows, 0 once
+    with pytest.raises(PlanError, match="has 64 values"):
+        row_operand([0.0] * 32, 2)
+
+
+def test_matrix_block_words_and_price():
+    pairs = tile_products("HiFi2", 1, 1, 0)
+    assert [x.op for _, x in pairs].count("MVMUL") == 32 and len(pairs) == 34
+    assert block_cost("HiFi2", 1, 1) == (41.0, [w for w, _ in pairs])
+    assert block_cost("HiFi4", 2, 2, 4)[0] == 1055.0

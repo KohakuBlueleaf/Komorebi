@@ -16,7 +16,6 @@ import komorebi as km  # noqa: E402
 from komorebi.dsl.tile import emit, trace, unit_program  # noqa: E402
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam  # noqa: E402
 from komorebi.dsl.tile.rows import row_program  # noqa: E402
-from komorebi.dsl.tile.unit import OPS, Insn  # noqa: E402
 
 GENERATED = HERE / "kernels" / "generated"
 EPS = 1e-6  # Qwen3's norms (model.py)
@@ -69,28 +68,13 @@ def rms(name, columns):
     return ir
 
 
-def templates_stored(unit):
-    """Whether each template the load macro's setup writes has VD 12 + k (the back
-    door). Where the template's instruction writes a plain operand's register
-    (square_add, mad) the setup renames VD with it: the word is never stored and the
-    macro runs the template the previous body left."""
-    return all(
-        insn.args[OPS[insn.op].writes[0]] >= 12
-        for insn in unit.init["math"]
-        if isinstance(insn, Insn) and insn.note.startswith("template")
-    )
-
-
 def units():
     """{header name: unit program}: the streams (each with the load-macro rule, which
-    refuses what does not fit, kept where its templates are stored), the row's and
-    the head's 1 / rms."""
+    refuses what does not fit; `emit` refuses a template its setup does not store),
+    the row's and the head's 1 / rms."""
     out = {}
     for name, (inputs, fn) in STREAMS.items():
-        unit = unit_program(stream(name, inputs, fn), load_macro=True)
-        if not templates_stored(unit):
-            unit = unit_program(stream(name, inputs, fn))
-        out[name] = unit
+        out[name] = unit_program(stream(name, inputs, fn), load_macro=True)
     for name, columns in (("rms_row", ROW), ("rms_head", HEAD)):
         out[name] = row_program(rms(name, columns), 1, ROWS_TILE, COLS_TILE)
     return out

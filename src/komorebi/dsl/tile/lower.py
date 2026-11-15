@@ -17,6 +17,7 @@ from komorebi.dsl.tile.unit import (
     OPS,
     PROGRAMMABLE,
     REPLAY_ENTRIES,
+    SAVED,
     SHIFT_IMM_VC,
     WORK,
     Call,
@@ -46,6 +47,11 @@ STALL_SFPU, WAIT_MATH = 0x100, 0x10
 SET_D, CR_D = 0x4, 0x4
 CC_RESET = (3, 10)  # SFPENCC imm, mod1: condition on, every lane's flag set
 INF_BF16 = 0x7F80
+# The constant registers in the order the layout pass fills them: 12 to 14, then 11
+# (set and restored by the body itself, rule constant_registers' fourth register).
+CONSTANT_REGISTERS = (*PROGRAMMABLE, SAVED)
+SAVED_NAME = f"p{len(PROGRAMMABLE)}"
+NEG_ONE_BF16 = 0xBF80
 # The rules a compute body must obey that no check here covers yet.
 NOT_CHECKED = (
     "interleave: two independent MAD chains interleaved (a speed rule)",
@@ -70,6 +76,9 @@ class Body:
         # {bits: value}: constants loaded once and read again (None: one per read),
         # those of `cacheable`; `loaded`: loads made of each constant
         self.cache, self.cacheable, self.loaded = None, set(), {}
+        # constants of `whole` are loaded once for the whole unit (their values in
+        # `held`, which the layout pass places in the highest work registers)
+        self.whole, self.whole_cache, self.held = set(), {}, set()
 
     def fresh(self):
         self.count += 1
@@ -109,11 +118,16 @@ class Body:
         """`value` (fp32) into a new value: one SFPLOADI when bf16 or fp16 holds it
         exactly, else the low then the high half."""
         bits = struct.unpack("<I", struct.pack("<f", value))[0]
+        if bits in self.whole_cache:
+            return self.whole_cache[bits]
         if self.cache is not None and bits in self.cache:
             return self.cache[bits]
         out = self.fresh()
         self.loaded[bits] = self.loaded.get(bits, 0) + 1
-        if self.cache is not None and bits in self.cacheable:
+        if bits in self.whole:
+            self.whole_cache[bits] = out
+            self.held.add(out)
+        elif self.cache is not None and bits in self.cacheable:
             self.cache[bits] = out
         note = note or f"{value!r}"
         if bits & 0xFFFF == 0:
@@ -565,10 +579,13 @@ def fuse_mad(code):
     return done
 
 
-def constant_registers(code, prog):
+def constant_registers(code, prog, registers=None):
     """Layout: the constants the row code loads (SFPLOADI) move into the free
     programmable registers, most loader words saved first; equal constants share
-    one. Returns what it did."""
+    one. `registers` 4: LReg 11 too, when no code reads its -1.0 (the body sets it
+    and restores it); None: the programmable ones. Returns what it did."""
+    if registers is None or any("neg_one" in x.reads() for x in code):
+        registers = min(registers or len(PROGRAMMABLE), len(PROGRAMMABLE))
     found = {}
     for insn in code:
         if insn.op == "SFPLOADI" and isinstance(insn.args["lreg_ind"], str):
@@ -589,7 +606,7 @@ def constant_registers(code, prog):
     }
     done = []
     for bits in sorted(saved, key=lambda b: -saved[b]):
-        if len(prog) == len(PROGRAMMABLE):
+        if len(prog) >= registers:
             break
         name = f"p{len(prog)}"
         values = by_bits[bits]
@@ -698,12 +715,24 @@ def _bits_of(words):
     return bits
 
 
-def hoist(code, setup):
-    """Schedule: the constant registers' setup (SFPLOADI into L0, SFPCONFIG) moves
-    out of the per-row code into the setup, once per stream."""
-    done = []
+def hoist(code, setup, saved=None):
+    """Schedule: the constant registers' setup (SFPLOADI into L0, SFPCONFIG) moves out
+    of the rows into the setup, once per stream; LReg 11's to the code's start (it is
+    restored at each unit's end), or with `saved` (a dict) to saved["head"], its
+    restore to saved["tail"]."""
+    done, front = [], []
     i = len(code) - 1
     while i >= 0:
+        if code[i].op == "SFPCONFIG" and code[i].args["config_dest"] == SAVED_NAME:
+            j = i
+            while j > 0 and code[j - 1].op == "SFPLOADI":
+                if code[j - 1].args["lreg_ind"] != "L0":
+                    break
+                j -= 1
+            front[:0] = code[j : i + 1]
+            del code[j : i + 1]
+            i = j - 1
+            continue
         if code[i].op == "SFPCONFIG":
             j = i
             while j > 0 and code[j - 1].op == "SFPLOADI":
@@ -715,7 +744,32 @@ def hoist(code, setup):
             del code[j : i + 1]
             i = j
         i -= 1
+    if front and saved is not None:
+        saved["head"], saved["tail"] = front, restore_saved()
+        done.append("LReg 11: set before the rows, -1.0 again after them")
+    elif front:
+        code[:0] = front
+        code += restore_saved()
+        done.append("LReg 11: set first in the unit, -1.0 again at its end")
     return list(reversed(done))
+
+
+def restore_saved():
+    """LReg 11 back to -1.0 (tt-metal's `_restore_lconst_neg1_`), then the SFPNOP an
+    SFPCONFIG of a constant register takes."""
+    return [
+        Insn(
+            "SFPLOADI",
+            {"lreg_ind": "L0", "instr_mod0": 0, "imm16": NEG_ONE_BF16},
+            "-1.0 into LReg 11 again",
+        ),
+        Insn(
+            "SFPCONFIG",
+            {"imm16_math": 0x5555, "config_dest": SAVED, "instr_mod1": 8},
+            "LReg 11 restored",
+        ),
+        Insn("SFPNOP", {}, "hazard config-nop: after SFPCONFIG"),
+    ]
 
 
 def replay(loop):
@@ -743,18 +797,24 @@ def _replay(count, load):
     }
 
 
-def allocate(code, prog, pinned=()):
-    """Layout: each value gets an LReg 0 .. 7 for its live range (a result takes the
-    register of an operand that dies there, else the lowest free one); the fixed
-    constants take 9 / 10 / 11, the programmable ones 12 upward. `pinned` values live
-    to the end of `code` (they are read again by the next row)."""
+def allocate(code, prog, pinned=(), high=()):
+    """Layout: each value an LReg 0 .. 7 for its live range (an operand's that dies
+    there, else the lowest free; `high` values the highest); fixed constants 9 / 10 /
+    11, the programmable 12 up, then 11. `pinned` values live to the end of `code`; a
+    register the code names ("L<n>") is not given to a value live while it is."""
     regs = {name: FIXED[name] for name in FIXED}
-    regs.update({name: PROGRAMMABLE[i] for i, name in enumerate(prog)})
+    regs.update({name: CONSTANT_REGISTERS[i] for i, name in enumerate(prog)})
     last = {}
     for i, insn in enumerate(code):
         for v in insn.reads() + insn.writes():
-            if isinstance(v, str) and v not in regs:
+            if isinstance(v, str) and v not in regs and v[0] != "L":
                 last[v] = len(code) if v in pinned else i
+    named = _named_spans(code)
+
+    def fits(r, i, v):
+        end = last.get(v, i)
+        return all(e < i or s > end for s, e in named.get(r, ()))
+
     free = list(range(WORK))
     for i, insn in enumerate(code):
         dying = [
@@ -764,11 +824,18 @@ def allocate(code, prog, pinned=()):
         ]
         free += [regs[v] for v in dict.fromkeys(dying) if regs.get(v, WORK) < WORK]
         for v in dict.fromkeys(insn.writes()):
+            if isinstance(v, str) and v[0] == "L":
+                continue
             if isinstance(v, str) and v not in regs:
                 taken = [regs[d] for d in dying if regs.get(d, WORK) < WORK]
-                if not taken and not free:
+                taken = [r for r in taken if r in free and fits(r, i, v)]
+                fit = sorted(r for r in free if fits(r, i, v))
+                if not taken and not fit:
                     raise ValueError("more live values than the 8 work registers")
-                regs[v] = taken[0] if taken else min(free)
+                if v in high:
+                    regs[v] = fit[-1] if fit else taken[0]
+                else:
+                    regs[v] = taken[0] if taken else fit[0]
                 free.remove(regs[v])
                 if last.get(v, i) == i:
                     free.append(regs[v])
@@ -787,6 +854,26 @@ def allocate(code, prog, pinned=()):
                 insn.args[arg] = int(value[1:]) if value[0] == "L" else regs[value]
     used = sorted({r for v, r in regs.items() if v not in FIXED and r < WORK})
     return [f"{len(used)} of {WORK} work registers"]
+
+
+def _named_spans(code):
+    """{register: [(first, last)]}: where a register the code names ("L<n>") holds
+    a value, from each write to its last read before the next write."""
+    spans = {}
+    for i, insn in enumerate(code):
+        for v in insn.reads():
+            if isinstance(v, str) and v[0] == "L":
+                r = int(v[1:])
+                if r < WORK and spans.get(r):
+                    spans[r][-1][1] = i
+                elif r < WORK:
+                    spans[r] = [[i, i]]
+        for v in insn.writes():
+            if isinstance(v, str) and v[0] == "L" and int(v[1:]) < WORK:
+                r = int(v[1:])
+                if not (spans.get(r) and spans[r][-1][1] == i):
+                    spans.setdefault(r, []).append([i, i])
+    return {r: [tuple(s) for s in v] for r, v in spans.items()}
 
 
 def check_mad_readers(blocks_):
@@ -838,6 +925,32 @@ def check_config_nop(code):
     return repairs
 
 
+def _check_saved(flat):
+    """LReg 11 in the body's code `flat`: set before its first read, restored to -1.0
+    (SFPLOADI of 0xBF80 into LReg 0, then SFPCONFIG to 11) after its last. Returns the
+    check's text."""
+    sets = [
+        i
+        for i, x in enumerate(flat)
+        if x.op == "SFPCONFIG" and x.args["config_dest"] == SAVED
+    ]
+    if not sets:
+        return "LReg 11 not written"
+    reads = [i for i, x in enumerate(flat) if SAVED in x.reads()]
+    last = sets[-1]
+    loads = [x for x in flat[:last] if x.op == "SFPLOADI" and x.args["lreg_ind"] == 0]
+    restore = (
+        loads
+        and (loads[-1].args["instr_mod0"], loads[-1].args["imm16"]) == (0, NEG_ONE_BF16)
+        and not any(0 in x.writes() for x in flat[flat.index(loads[-1]) + 1 : last])
+    )
+    if not restore or (reads and reads[-1] > last):
+        raise UnitError("LReg 11 is read after its restore, or not restored to -1.0")
+    if reads and len(sets) < 2 or (reads and reads[0] < sets[0]):
+        raise UnitError("LReg 11 is read before the body sets it")
+    return f"LReg 11 set by the body, read {len(reads)} times, restored to -1.0 after"
+
+
 def _checks(unit, row, plan=None):
     """The hazard checks of the math CPU's program (`row`: the per-row loop body;
     `plan`: its load-macro plan, or None)."""
@@ -850,7 +963,7 @@ def _checks(unit, row, plan=None):
             f"repaired: {n} SFPNOP" if n else "ok",
         )
     )
-    n = check_config_nop(math_init)
+    n = check_config_nop(math_init) + check_config_nop(row)
     unit.checks.append(
         Check(
             "config-nop",
@@ -858,6 +971,7 @@ def _checks(unit, row, plan=None):
             f"repaired: {n} SFPNOP" if n else "ok",
         )
     )
+    saved = _check_saved(list(_order(math_tile)))
     written = sorted(
         x.args["config_dest"]
         for x in insns(math_init)
@@ -866,15 +980,16 @@ def _checks(unit, row, plan=None):
     read = sorted({r for x in insns(math_tile) for r in x.reads() if r in PROGRAMMABLE})
     if set(read) - set(written):
         raise UnitError(f"LReg {read} read but not set by the setup")
-    if 11 in written:
-        raise UnitError("LReg 11 is written: its -1.0 restore is not built")
+    if SAVED in written:
+        raise UnitError(
+            "LReg 11 is written by the setup: it is set and restored by the body"
+        )
     unit.clobbers = [f"LReg{r}" for r in written]
     unit.checks.append(
         Check(
             "constants",
             "constant registers set before use, LReg 11 restored to -1.0",
-            f"ok: LReg {written} set by the setup and declared clobbered; "
-            "LReg 11 not written",
+            f"ok: LReg {written} set by the setup and declared clobbered; " + saved,
         )
     )
     depth = 0
@@ -949,6 +1064,103 @@ def _templates(chosen):
     return [f"{k}: {v}" for k, v in chosen.items()]
 
 
+# Address mode the row's last store steps Dst with (rule store_step), when no load
+# macro takes ADDR_MOD_6 (`MACRO_ADDR_MOD`, Dst + 2 after each macro).
+STEP_ADDR_MOD = MACRO_ADDR_MOD
+BLOCKS = FACES * ROWS // 2  # 4-row blocks of a tile (the per-row form's rows)
+
+
+def per_row_prepass(code, addresses):
+    """Rule per_row_prepass: the values of row code `code` made from the per-row
+    operands' loads (at `addresses`) and constants alone, computed once a block in a
+    pass over the operand tile first, stored over it (in all its lanes). Returns (the
+    pass's code or None, its report); `code` then loads the value."""
+    loads = [
+        x for x in code if x.op == "SFPLOAD" and x.args["dest_reg_addr"] in addresses
+    ]
+    consts = {
+        v
+        for x in code
+        if x.op == "SFPLOADI"
+        for v in x.writes()
+        if all(w.op == "SFPLOADI" for w in code if v in w.writes())
+    }
+    fixed = set(FIXED)
+    only = {x.writes()[0]: x for x in loads}  # value -> its load
+    part = []
+    for x in code:
+        if x in loads or x.op in ("SFPLOAD", "SFPSTORE", "SFPLOADI") or x.sets_flags():
+            continue
+        reads = set(x.reads())
+        fits = reads & set(only) and reads <= set(only) | consts | fixed
+        if fits and len(x.writes()) == 1:
+            only[x.writes()[0]] = x
+            part.append(x)
+    if not part:
+        return None, ["nothing: no value of the per-row operands alone"]
+    computed = {x.writes()[0] for x in part}
+    rest = [x for x in code if x not in part and x not in loads]
+    frontier = [v for v in computed if any(v in x.reads() for x in rest)]
+    if len(loads) != 1 or len(frontier) != 1:
+        return None, [
+            "refused: one per-row operand and one value of it read by the rows "
+            f"({len(loads)} operand(s), {len(frontier)} value(s))"
+        ]
+    load, value = loads[0], frontier[0]
+    if any(load.writes()[0] in x.reads() for x in rest):
+        return None, ["refused: the rows read the operand itself too"]
+    needed = {v for x in part for v in x.reads()} & consts
+    setup = [x for x in code if x.op == "SFPLOADI" and set(x.writes()) & needed]
+    for x in part:
+        code.remove(x)
+    for x in setup:
+        if not any(set(x.writes()) & set(y.reads()) for y in code if y not in setup):
+            code.remove(x)
+    operand = dict(load.args)
+    load.args["lreg_ind"] = value
+    load.note = f"{load.note}: the per-row pass's value"
+    address = load.args["dest_reg_addr"]
+    pre = [
+        *[copy.deepcopy(x) for x in setup],
+        Insn("SFPLOAD", operand, "per-row operand"),
+        *part,
+        Insn(
+            "SFPSTORE",
+            {
+                "lreg_ind": value,
+                "instr_mod0": 0,
+                "sfpu_addr_mode": ADDR_MOD,
+                "dest_reg_addr": address,
+            },
+            "the per-row value over the operand",
+        ),
+    ]
+    return pre, [f"{len(part)} instruction(s) and {len(setup)} load(s) a block, once"]
+
+
+def store_step(row, incr):
+    """Rule store_step: the row's closing INCRWC (Dst + `incr`) folded into its last
+    Dst access when that is a store: the store takes STEP_ADDR_MOD (Dst + `incr`).
+    Returns whether it did."""
+    if not row or row[-1].op != "INCRWC" or row[-1].args["rwc_d"] != incr:
+        return False
+    touching = [x for x in row if "dest_reg_addr" in x.args]
+    if not touching or touching[-1].op != "SFPSTORE":
+        return False
+    touching[-1].args["sfpu_addr_mode"] = STEP_ADDR_MOD
+    touching[-1].note = f"{touching[-1].note}, then Dst + {incr}"
+    del row[-1]
+    return True
+
+
+def _step_mode(incr):
+    return Call(
+        "ckernel::addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, "
+        f".dest = {{.incr = {incr}}}}}.set(ADDR_MOD_{STEP_ADDR_MOD})",
+        f"address mode {STEP_ADDR_MOD}: Dst + {incr} after the row's store (3 SETC16)",
+    )
+
+
 def unit_program(ir, dest="fp32", load_macro=False):
     """The unit program of stream kernel `ir` on `dest` (fp32) Dst registers: operand
     k read from Dst tile k (relative to the caller's `dst`), the result stored into
@@ -992,19 +1204,38 @@ def unit_program(ir, dest="fp32", load_macro=False):
     unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
+    pre = None
     if per_row:
         # The even and odd vectors of a block are two independent chains.
         from komorebi.dsl.tile.rows import interleave  # noqa: PLC0415 (rows imports us)
 
         unit.passes.append(Pass("algebra", "drop_copies", drop_copies(body.code)))
         unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
+        trial = copy.deepcopy(body.code)
+        pre, done = per_row_prepass(trial, {TILE * k for k in per_row})
+        if pre is not None:
+            pre_unit = UnitProgram("estimate", dest)
+            pre_unit.tile["math"] = _prepass_loop(pre, {})
+            spent = pre_unit.cost("math")[1]
+            saved = BLOCKS * (len(body.code) - len(trial))
+            done.append(
+                f"{saved} words a tile saved against {spent:.1f} cycles of the pass"
+            )
+            if spent < saved:
+                body.code[:] = trial
+            else:
+                pre = None
+                done.append("kept in the rows (cheaper)")
+        unit.passes.append(Pass("algebra", "per_row_prepass", done))
         moved = interleave(body.code, 0, len(body.code))
         done = [f"{moved} instructions moved in the even and odd chains"]
         unit.passes.append(Pass("schedule", "interleave", done))
     unit.passes.append(Pass("algebra", "negated_zero", negated_zero(body.code)))
-    done = constant_registers(body.code, body.prog)
+    done = constant_registers(body.code, body.prog, len(CONSTANT_REGISTERS))
     unit.passes.append(Pass("layout", "constant_registers", done))
-    unit.passes.append(Pass("schedule", "hoist", hoist(body.code, setup)))
+    saved = {"head": [], "tail": []}
+    unit.passes.append(Pass("schedule", "hoist", hoist(body.code, setup, saved)))
+    allocate(saved["head"] + saved["tail"], body.prog)
     done, held, pinned = resident_constants(body.code, body.prog)
     unit.passes.append(Pass("layout", "resident_constants", done))
     whole = held + body.code
@@ -1023,7 +1254,7 @@ def unit_program(ir, dest="fp32", load_macro=False):
         raise UnitError(f"{ir.name}: a held constant register is overwritten")
     allocate(setup, body.prog)
     unit.constants = {
-        PROGRAMMABLE[i]: value for i, value in enumerate(body.prog.values())
+        CONSTANT_REGISTERS[i]: value for i, value in enumerate(body.prog.values())
     }
     plan = None
     if load_macro and not per_row:
@@ -1045,13 +1276,16 @@ def unit_program(ir, dest="fp32", load_macro=False):
         Insn("SETRWC", {**_setrwc(), "BitMask": 0xF}, "reset the counters"),
         *setup,
     ]
-    if plan is None and per_row:
-        row = [*body.code, Insn("INCRWC", _rwc(rwc_d=4), "next 4-row block")]
-        face = Loop("row", ROWS // 2, row, unroll=True)
-        drained = []
-    elif plan is None:
-        row = [*body.code, Insn("INCRWC", _rwc(rwc_d=2), "next 4 rows")]
-        face = Loop("row", ROWS, row, unroll=True)
+    if plan is None:
+        incr = 4 if per_row else 2
+        note = "next 4-row block" if per_row else "next 4 rows"
+        row = [*body.code, Insn("INCRWC", _rwc(rwc_d=incr), note)]
+        stepped = store_step(row, incr)
+        if stepped:
+            unit.init["math"].append(_step_mode(incr))
+        done = [f"the INCRWC into the last store (Dst + {incr})"] if stepped else []
+        unit.passes.append(Pass("schedule", "store_step", done))
+        face = Loop("row", ROWS // 2 if per_row else ROWS, row, unroll=True)
         drained = []
     else:
         row = macro.rows(plan, MACRO_ADDR_MOD)
@@ -1103,9 +1337,12 @@ def unit_program(ir, dest="fp32", load_macro=False):
             {"stall_res": STALL_SFPU, "wait_res": WAIT_MATH},
             "SFPU waits for the matrix unit",
         ),
+        *saved["head"],
+        *([] if pre is None else _prepass_loop(pre, body.prog, unit)),
         *held,
         Loop("face", FACES, [face, step, Insn(step.op, dict(step.args), step.note)]),
         *drained,
+        *saved["tail"],
         Insn("SETRWC", {**_setrwc(), "BitMask": SET_D}, "Dst counter back to 0"),
         Sync("math", "pack", "tile_regs_commit()", "hands Dst to the pack CPU"),
     ]
@@ -1130,3 +1367,54 @@ def _rwc(**args):
 
 def _setrwc():
     return {"clear_ab_vld": 0, **_rwc(), "BitMask": 0}
+
+
+def _prepass_loop(pre, prog, unit=None):
+    """The per-row pass over the operand tile's 16 blocks (allocated, its constants
+    loaded once before the walk, the step in its store), then Dst back to 0. With
+    `unit`: its init sets the store's address mode and its checks record the pass."""
+    code = copy.deepcopy(pre)
+    consts = [x for x in code if x.op == "SFPLOADI"]
+    allocate(code, prog, pinned={v for x in consts for v in x.writes()})
+    walk = [x for x in code if x.op != "SFPLOADI"]
+    walk.append(Insn("INCRWC", _rwc(rwc_d=4), "next 4-row block"))
+    store_step(walk, 4)
+    if unit is not None:
+        unit.passes.append(
+            Pass(
+                "schedule", "per_row_prepass", [f"{len(walk)} words a block, 16 blocks"]
+            )
+        )
+        n = check_mad_readers([walk])
+        unit.checks.append(
+            Check(
+                "mad-reader (per-row pass)",
+                "SFPNOP between a MAD and a reader not held back",
+                f"repaired: {n} SFPNOP" if n else "ok",
+            )
+        )
+        if not any(
+            isinstance(x, Call) and "dest = {.incr = 4}" in x.text
+            for x in unit.init["math"]
+        ):
+            unit.init["math"].append(_step_mode(4))
+    else:
+        check_mad_readers([walk])
+    step = Insn(
+        "SETRWC",
+        {**_setrwc(), "rwc_cr": CR_D, "rwc_d": 8, "BitMask": SET_D},
+        "Dst + 8 rows",
+    )
+    return [
+        *consts,
+        Loop(
+            "face",
+            FACES,
+            [
+                Loop("row", ROWS // 2, walk, unroll=True),
+                step,
+                Insn(step.op, dict(step.args), step.note),
+            ],
+        ),
+        Insn("SETRWC", {**_setrwc(), "BitMask": SET_D}, "Dst counter back to 0"),
+    ]
