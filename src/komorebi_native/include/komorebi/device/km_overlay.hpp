@@ -66,6 +66,9 @@ namespace km {
     // The dynamic handlers added to the live run, a bit a number: a message of handler
     // n runs overlay n's compute part (message_number(), km_messages.hpp).
     constexpr uint32_t kOverlayMessages = kOverlayHandlers + 8;
+    // The service overlay's own slot (host): its bytes, 0 for none. Then the reader's
+    // slot 0 is the service's alone and its other slots are the programs'.
+    constexpr uint32_t kOverlayServiceSlot = kOverlayMessages + 4;
     // The clock at the last use of each overlay (a word per number): the slot a load
     // replaces holds the least recently used one.
     constexpr uint32_t kOverlayUsed = 512;
@@ -92,7 +95,7 @@ namespace km {
     constexpr uint32_t kRecordBytes = 4 * (kRecordBuffers + 4 * 32);
     constexpr uint32_t kOverlayAreaBytes = kOverlayRecord + kRecordBytes;
     static_assert(
-        kOverlayEpoch < kOverlayMet && kOverlayMessages + 4 <= kOverlayUsed &&
+        kOverlayEpoch < kOverlayMet && kOverlayServiceSlot + 4 <= kOverlayUsed &&
             kOverlayTable % 64 == 0 && KM_CONTROL_BYTES % 64 == 0 &&
             kOverlayRecord % 64 == 0 && kRecordBytes % 64 == 0,
         "the overlay area's lines do not overlap and end before its table"
@@ -179,12 +182,26 @@ namespace km {
         return kOverlaySlotsMax;
     }
 
-    // The slot a load of `part` replaces: an empty one, else the least recently used
-    // one with no call running in it; kOverlaySlotsMax when every slot is running.
-    inline uint32_t overlay_free_slot(uint32_t control, uint32_t part) {
+    // Whether slot `slot` of `part` is the service overlay's own.
+    inline bool overlay_service_slot(uint32_t control, uint32_t part, uint32_t slot) {
+        return (
+            part == kOverlayPartReader && slot == 0 &&
+            overlay_area(control)[kOverlayServiceSlot / 4] != 0
+        );
+    }
+
+    // The slot a load of `number`'s `part` takes: an empty one, else the least recently
+    // used one not running; kOverlaySlotsMax: none. The service's own holds it alone.
+    inline uint32_t overlay_free_slot(
+        uint32_t control, uint32_t part, uint32_t number
+    ) {
         const uint32_t slots = overlay_area(control)[kOverlaySlots + part];
+        const bool own = overlay_service_slot(control, part, 0);
         uint32_t found = kOverlaySlotsMax, oldest = 0;
         for (uint32_t slot = 0; slot < slots && slot < kOverlaySlotsMax; slot++) {
+            if (own && (slot == 0) != (number == kOverlayService)) {
+                continue;
+            }
             volatile tt_l1_ptr uint32_t* record = overlay_record(control, part, slot);
             if (record[kOverlayCalling] != 0) {
                 continue;
@@ -202,11 +219,20 @@ namespace km {
         return found;
     }
 
+    // The slot's address (the host's, in its record) and its bytes.
     inline uint32_t overlay_slot_address(
         uint32_t control, uint32_t part, uint32_t slot
     ) {
+        return overlay_record(control, part, slot)[kOverlayAddress];
+    }
+
+    inline uint32_t overlay_slot_bytes(uint32_t control, uint32_t part, uint32_t slot) {
         volatile tt_l1_ptr uint32_t* area = overlay_area(control);
-        return area[kOverlayBase + part] + slot * area[kOverlaySlotBytes + part];
+        return (
+            overlay_service_slot(control, part, slot)
+                ? area[kOverlayServiceSlot / 4]
+                : area[kOverlaySlotBytes + part]
+        );
     }
 
     // Marks the last use of overlay `number` with the clock (the reader only).
@@ -611,7 +637,7 @@ namespace km {
         bool start_read(uint32_t control, uint32_t part, uint32_t slot) const {
             volatile tt_l1_ptr uint32_t* entry = overlay_entry(control, number_, part);
             const uint32_t bytes = entry[1];
-            if (bytes > overlay_area(control)[kOverlaySlotBytes + part]) {
+            if (bytes > overlay_slot_bytes(control, part, slot)) {
                 return give_up(kGaveOverlay, kWhereOverlayFind);
             }
             overlay_record(control, part, slot)[kOverlayHeld] = 0;
@@ -634,7 +660,7 @@ namespace km {
             if (held != kOverlaySlotsMax) {
                 return held;
             }
-            const uint32_t slot = overlay_free_slot(control, part);
+            const uint32_t slot = overlay_free_slot(control, part, number_);
             if (slot == kOverlaySlotsMax) {
                 give_up(kGaveOverlay, kWhereOverlayFind);
                 return kOverlaySlotsMax;

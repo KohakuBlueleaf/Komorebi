@@ -621,15 +621,17 @@ class Slots:
 
 @dataclass(frozen=True)
 class Built:
-    """A program's overlays built: images by (number, part), slots by part
-    {part: (count, bytes)}, every slot's bytes in L1 per core."""
+    """A program's overlays built: images by (number, part), the programs' slots by
+    part {part: (count, bytes)}, the service overlay's own reader slot (its bytes, 0:
+    none), every slot's bytes in L1 per core."""
 
     images: dict
     slots: dict
+    service: int = 0
 
     @property
     def slot_bytes(self):
-        return sum(count * size for count, size in self.slots.values())
+        return self.service + sum(count * size for count, size in self.slots.values())
 
 
 def build(program, recipes, cache, log=lambda message: None):
@@ -654,36 +656,71 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
         if island
         else (SERVICE_SLOT_MOST, "SERVICE_SLOT_MOST")
     )
-    declared, images, extents, served = {}, {}, {}, {}
+    declared, images, extents, service = {}, {}, {}, 0
     number = constants()["kOverlayService"]
+    own = [overlay for overlay in overlays if overlay.number != number]
     for kernel in KERNELS:
         if declared_slots.reserved(kernel) or any(
-            kernel in overlay.sources for overlay in overlays
+            kernel in overlay.sources for overlay in own
         ):
-            declared[kernel] = declared_slots.of(kernel, overlays)
+            declared[kernel] = declared_slots.of(kernel, own)
+    if len(own) < len(overlays) and "reader" in declared:
+        declared["reader"] = service_beside(*declared["reader"], log)
     for overlay in overlays:
         for kernel, part in overlay.parts():
-            # the service part sizes its slot (at least), whatever was declared
+            # the service part sizes its own slot; a program's part meets its slots
             size = None if overlay.number == number else declared[kernel][1]
             linked = build_part(by_part[part], overlay, kernel, part, cache, size)
             images[overlay.number, part] = linked.image
-            extents.setdefault(part, []).append(linked.extent)
-            if overlay.number == number:
-                served[part] = linked.extent
-                if linked.extent > most:  # the load's L1 table decides
-                    log(
-                        f"the service overlay's {part} part takes {linked.extent:,} "
-                        f"B, over {named} ({most:,} B): a class built with session= "
-                        "reserved less than this load takes"
-                    )
-            log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
+            if overlay.number != number:
+                extents.setdefault(part, []).append(linked.extent)
+                log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
+                continue
+            service = -(-linked.extent // ALIGN) * ALIGN
+            log(f"overlay {overlay.name}: {part} part {len(linked.image)} B, own slot")
+            if linked.extent > most:  # the load's L1 table decides
+                log(
+                    f"the service overlay's {part} part takes {linked.extent:,} "
+                    f"B, over {named} ({most:,} B): a class built with session= "
+                    "reserved less than this load takes"
+                )
     slots = {}
     for kernel, (count, size) in declared.items():
         for part in KERNEL_PARTS[kernel]:
-            largest = -(-max(extents.get(part, [0])) // ALIGN) * ALIGN
-            least = -(-served.get(part, 0) // ALIGN) * ALIGN
-            slots[part] = (count, max(size, least) if size is not None else largest)
-    return Built(images, slots)
+            largest = -(-max(extents.get(part, [ALIGN])) // ALIGN) * ALIGN
+            slots[part] = (count, size if size is not None else largest)
+    return Built(images, slots, service)
+
+
+def service_beside(count, size, log=lambda message: None):
+    """The reader's (count, bytes) of a program beside the service overlay's own slot:
+    a part has kOverlaySlotsMax slots, so at most one fewer than that."""
+    most = constants()["kOverlaySlotsMax"] - 1
+    if count > most:
+        log(f"reader slots: {count} asked, {most} beside the service overlay's own")
+    return min(count, most), size
+
+
+def fitted(built, declared_slots, room, log=lambda message: None):
+    """`built` with the slots of each kernel whose count was not declared lowered, one
+    slot at a time from the largest, until they take at most `room` bytes (or each is
+    at 1): what the L1 left allows."""
+    slots = dict(built.slots)
+
+    def free(part):
+        kernel = next(k for k, parts in KERNEL_PARTS.items() if part in parts)
+        count = declared_slots.count
+        asked = count.get(kernel) if isinstance(count, dict) else count
+        return asked is None and slots[part][0] > 1
+
+    while built.service + sum(c * b for c, b in slots.values()) > room:
+        lowered = [part for part in slots if free(part)]
+        if not lowered:
+            break
+        part = max(lowered, key=lambda each: slots[each][1])
+        slots[part] = (slots[part][0] - 1, slots[part][1])
+        log(f"{part} slots lowered to {slots[part][0]}: the L1 left allows no more")
+    return Built(built.images, slots, built.service)
 
 
 def dram_rows(built, reserve=0):
@@ -710,16 +747,21 @@ def area_words(built, placed, image_address, image_page_bytes, slot_base):
     words = np.zeros(c["kOverlayAreaBytes"] // 4, np.uint32)
     numbers = [number for number, _ in built.images]
     words[c["kOverlayCount"]] = max(numbers) + 1 if numbers else 0
+    words[c["kOverlayServiceSlot"] // 4] = built.service
     at = slot_base
     for index, part in enumerate(PARTS):
         count, size = built.slots.get(part, (0, 0))
-        words[c["kOverlayBase"] + index] = at if count else 0
-        words[c["kOverlaySlots"] + index] = count
+        # the reader's slot 0 is the service overlay's own, when it has one
+        sizes = [size] * count
+        if part == "reader" and built.service:
+            sizes.insert(0, built.service)
+        words[c["kOverlayBase"] + index] = at if sizes else 0
+        words[c["kOverlaySlots"] + index] = len(sizes)
         words[c["kOverlaySlotBytes"] + index] = size
-        for slot in range(count):  # each record's slot address
+        for slot, bytes_ in enumerate(sizes):  # each record's slot address
             record = c["kOverlayRecords"] + 16 * (c["kOverlaySlotsMax"] * index + slot)
-            words[record // 4 + c["kOverlayAddress"]] = at + slot * size
-        at += count * size
+            words[record // 4 + c["kOverlayAddress"]] = at
+            at += bytes_
     for (number, part), (row, size) in placed.items():
         entry = (
             c["kOverlayTable"] + 8 * (c["kOverlayParts"] * number + PARTS.index(part))
