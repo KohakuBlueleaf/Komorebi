@@ -87,7 +87,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   reason (`KMD_REJECT_*`) in the status's auxiliary; the session goes on. Reasons: 1 a handler
   from 240 to 249, which this kernel does not serve (`KM_HANDLER_LOAD`, 240, and
   `KM_HANDLER_COPY`, 245, from the host or a work cluster, and `KMD_HANDLER_INSPECT`,
-  243, from the host excepted, below; 241 and 242 from the host); 2 flag bit 0 set; 3 a
+  243, from the host excepted, below; 241 and 242 from the host); 2 flag bit 0 set, or
+  `KMD_FLAG_DISPATCHER` on no command of the dispatcher's own; 3 a
   group outside
   the grid (`count == 0 || first > cores || count > cores - first`, with no sum that
   could wrap; with `KM_FLAG_QUEUE` only the count is checked); 4 any command after EXIT; 5 a
@@ -283,8 +284,15 @@ These rules are part of the protocol; a host that relies on anything else is wro
   hold the outcome. `KMD_H_ABANDONED` counts the commands in flight (busy slots 0 to 31 in
   `KMD_R_BUSY`, 32 to 63 in the core block's `KMD_H_BUSY_HIGH`) and
   the jobs still queued at the finish: none of them gets its `KM_EVENT_DONE`.
-- **Inspect.** `KMD_HANDLER_INSPECT` (243) from the host with a0 `KMD_INSPECT_MARK` (the
-  host's `KM_HANDLER_GATHER` has the same number, its a0 an aligned tensor word), group
+- **The dispatcher's own commands.** The host's `KMD_HANDLER_INSPECT`, `_RESET`,
+  `_CHECK_UPLOAD`, `_TRAP` and `_STALL` carry the header flag `KMD_FLAG_DISPATCHER` (32),
+  tested in one place of `take()`; their numbers may be served handlers' (243 is also
+  `KM_HANDLER_GATHER`), and without the flag a number goes to the cores. A command with
+  the flag and none of these numbers is rejected (`KMD_REJECT_FLAGS`). Numbers shared by
+  source (`ANSWER` from a work cluster, `DROP` and `POST` from the engine) keep their
+  source test. The host and this image ship in one wheel, so neither meets the other's
+  form from before the flag.
+- **Inspect.** `KMD_HANDLER_INSPECT` (243, with `KMD_FLAG_DISPATCHER`) from the host, group
   `[first, first + count)`, reads each core's state words, the first `KM_LIVE_READ` bytes of its live
   words and, when the live words name a trace in L1, the trace entries of the four
   latest sequences, all from the control block, by aligned 64-bit loads through window

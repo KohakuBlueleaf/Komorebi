@@ -167,6 +167,8 @@ class Run:
         )
         self._flag_exclusive = constants["KM_FLAG_EXCLUSIVE"]
         self._flag_part = constants["KM_FLAG_PART"]
+        # a command to the dispatcher itself (INSPECT, RESET): its flag, not its number
+        self._flag_dispatcher = constants["KMD_FLAG_DISPATCHER"]
         # a group from this first core on names a work cluster's thread
         self._cluster_base = constants["KM_GROUP_CLUSTER_BASE"]
         self._work_clusters = constants["KMD_WORK_CLUSTERS"]
@@ -490,7 +492,10 @@ class Run:
             return False
         self.port.upload(0, blob)
         handle = self._queue_command(
-            self.h["KMD_HANDLER_RESET"], (0, 0), [0, len(blob)]
+            self.h["KMD_HANDLER_RESET"],
+            (0, 0),
+            [0, len(blob)],
+            flags=self._flag_dispatcher,
         )
         self._counts[-1] = 0  # the kernel's own command: no sequence number
         event = self.wait(handle, timeout)
@@ -545,7 +550,10 @@ class Run:
             }
         offset, size = self.recovery["lists"][number]
         handle = self._queue_command(
-            self.h["KMD_HANDLER_RESET"], (core, 1), [offset, size]
+            self.h["KMD_HANDLER_RESET"],
+            (core, 1),
+            [offset, size],
+            flags=self._flag_dispatcher,
         )
         self._counts[-1] = 0  # the kernel's own command: no sequence number
         event = self.wait(handle, timeout)
@@ -570,8 +578,8 @@ class Run:
         and `trace` (the latest commands' entries); `read` False for a core it could
         not reach. inspect_ticks: the X280 timer ticks the read took on core 0."""
         first, count = self._group(group) if group is not None else (0, self.cores)
-        handle = self._queue_command(  # a0 the mark: not the host's GATHER (243 too)
-            self.h["KMD_HANDLER_INSPECT"], (first, count), [self.h["KMD_INSPECT_MARK"]]
+        handle = self._queue_command(
+            self.h["KMD_HANDLER_INSPECT"], (first, count), flags=self._flag_dispatcher
         )
         self._counts[-1] = 0  # the kernel's own command: no sequence number
         self.wait(handle, timeout)

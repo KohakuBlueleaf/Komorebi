@@ -917,8 +917,8 @@ the host. The all-gather from the host moved no page there (2.4 ms on the card, 
 error): its handler number, 243, is also the dispatcher's own inspect, and a
 dispatcher whose cores hold the whole group (each island's on a split card; between two
 cards each island holds half of it) read its cores and answered as an inspect, the
-ranks never running the call. An inspect now carries `KMD_INSPECT_MARK` in its first
-word, which no tensor's aligned word is; the fixed call has not yet run on the card.
+ranks never running the call. The dispatcher's own commands now carry a header flag
+(`KMD_FLAG_DISPATCHER`) and are taken by it, not by their number.
 Four islands were not run. On one card as one island both calls return at once,
 exact: from a kernel the command's own 2.2 µs.
 

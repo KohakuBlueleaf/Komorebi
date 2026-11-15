@@ -115,13 +115,16 @@
 /* Engine to kernel: POST host event {a0 request, a1 status, a2 ticks}. Kernel to
  * engine: RUN {request offset, ticks bytes} of an upload, CANCEL {ticks request}. */
 #define KMD_HANDLER_POST 248u
+/* Flag of the host's commands to the dispatcher itself (INSPECT, RESET, CHECK_UPLOAD,
+ * TRAP, STALL): taken by the flag, not the number, which may be a served handler's. */
+#define KMD_FLAG_DISPATCHER 32u
 /* Engine to kernel: drop its queued jobs of stream tag a0 (the group's first half). */
 #define KMD_HANDLER_DROP 247u
 /* Work cluster to kernel: its thread's answer to command line a0, a1 the word that
  * kmx_program returned; no event. */
 #define KMD_HANDLER_ANSWER 243u
-/* Host to kernel, a0 KMD_INSPECT_MARK (GATHER's a0, an aligned word, never is): read
- * cores [first, first + count), then PONG {ticks}; ANSWER's number, another source. */
+/* Host to kernel, with KMD_FLAG_DISPATCHER: read cores [first, first + count), then
+ * PONG {ticks}. Numbers shared by source (ANSWER / INSPECT, DROP / RESET) keep it. */
 #define KMD_HANDLER_INSPECT 243u
 /* The inspect block's header words, its kinds, and a record's first line's words. */
 #define KMD_INSPECT_MARK 0x50534E49u /* "INSP": the block is complete */
@@ -543,4 +546,12 @@ KMD_STATIC_ASSERT(
 KMD_STATIC_ASSERT((KMD_HOST_DEPTH_MAX & (KMD_HOST_DEPTH_MAX - 1u)) == 0, "power of 2");
 KMD_STATIC_ASSERT(
     KMD_HANDLER_KEPT > KM_HANDLER_USER_MAX, "a kept slot is no handler's"
+);
+KMD_STATIC_ASSERT(
+    KMD_FLAG_DISPATCHER <= 0x80u &&
+        (
+            KMD_FLAG_DISPATCHER &
+            (1u | KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT | KM_FLAG_QUEUE | KM_FLAG_PART)
+        ) == 0,
+    "the dispatcher's flag: one bit of the header's flag byte, no command flag's"
 );

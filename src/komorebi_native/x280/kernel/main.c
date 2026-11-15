@@ -262,6 +262,9 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     const uint32_t group = (uint32_t)line[1], argument = (uint32_t)(line[1] >> 32);
     uint32_t first = group & 0xFFFFu, count = group >> 16;
     const uint32_t queued = handler != KM_HANDLER_EXIT && (flags & KM_FLAG_QUEUE);
+    /* A command to the dispatcher itself: the host's, with KMD_FLAG_DISPATCHER (its
+     * number alone may be a served one's); the only test of the flag. */
+    const uint32_t own = host && (flags & KMD_FLAG_DISPATCHER) != 0;
     if (handler == KM_HANDLER_DEADLINE && argument != 0) {
         ring_consumed(ring);
         ring->t_command = (uint64_t)argument * 50u;
@@ -313,7 +316,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         dispatcher->last_event_mtime = now;
         return KMD_TAKEN;
     }
-    if (host && handler == KMD_HANDLER_RESET && count == KMD_RESET_KEEP) {
+    if (own && handler == KMD_HANDLER_RESET && count == KMD_RESET_KEEP) {
         ring_consumed(ring);
         const uint32_t kept = (
             reset_keep(dispatcher, argument, (uint32_t)(line[2] >> 32))
@@ -323,7 +326,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
     if (
-        host && handler == KMD_HANDLER_RESET && count == 1u &&
+        own && handler == KMD_HANDLER_RESET && count == 1u &&
         !group_outside(dispatcher, first, count)
     ) {
         ring_consumed(ring);
@@ -331,7 +334,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
     if (
-        host && handler == KMD_HANDLER_INSPECT && argument == KMD_INSPECT_MARK &&
+        own && handler == KMD_HANDLER_INSPECT &&
         !group_outside(dispatcher, first, count)
     ) {
         if (dispatcher->inspect.active) {
@@ -376,7 +379,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
 #ifdef KMD_VERIFY_LINES
-    if (host && handler == KMD_HANDLER_CHECK_UPLOAD) {
+    if (own && handler == KMD_HANDLER_CHECK_UPLOAD) {
         ring_consumed(ring);
         upload_check(
             dispatcher, request, argument, (uint32_t)(line[2] >> 32), (uint32_t)line[3]
@@ -384,7 +387,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         dispatcher->last_event_mtime = now;
         return KMD_TAKEN;
     }
-    if (host && handler == KMD_HANDLER_TRAP) {
+    if (own && handler == KMD_HANDLER_TRAP) {
         ring_consumed(ring);
         const uint64_t loaded = *(volatile const uint64_t*)(uintptr_t)argument;
         ring_push(
@@ -394,7 +397,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     }
 #endif
 #ifdef KMD_STALL_DEBUG
-    if (host && handler == KMD_HANDLER_STALL) {
+    if (own && handler == KMD_HANDLER_STALL) {
         ring_consumed(ring);
         ring_push(ring, request, KM_EVENT_PONG, 0);
         ring_flush(ring);
@@ -409,6 +412,13 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
 #endif
+    if (flags & KMD_FLAG_DISPATCHER) { /* none of the dispatcher's own commands */
+        ring_consumed(ring);
+        ring_push(ring, request, KM_EVENT_REJECTED | (KMD_REJECT_FLAGS << 8), 0);
+        dispatcher->last_event_mtime = now;
+        dispatcher->rejected++;
+        return KMD_TAKEN;
+    }
     /* A group or thread on another island: its parts cross (link.h). A command from
      * there, or a split part (KM_FLAG_PART), runs only its part here. */
     if (
