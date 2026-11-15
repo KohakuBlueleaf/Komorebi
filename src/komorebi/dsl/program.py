@@ -353,6 +353,48 @@ def constant_handler(program, method, given):
     )
 
 
+def words_handler(handler, rows, program, where):
+    """A class's handler given command words (`handler.args(...)`, each of `rows` a
+    command's): the handler `program` built for the constant values they carry (plain
+    words: the defaults), all rows one set. Others: `handler` itself."""
+    if not isinstance(handler, front.HandlerMethod | front.ClassHandler):
+        return handler
+    method = handler if isinstance(handler, front.HandlerMethod) else handler.method
+    parameters = front.constant_parameters(method.function)
+    if not parameters:
+        return handler
+    owner = method.owner.__name__ if method.owner else "its class"
+    if isinstance(handler, front.ClassHandler):
+        program = handler.program
+    elif program is None:
+        raise ProgramError(
+            f"{owner}.{method.name}: a handler with constant parameters is named "
+            f"through its program in {where} (program.{method.name}): {where} has no "
+            "run to find the class's program in"
+        )
+    made = getattr(program, "constant_handlers", {})
+    if method.name not in made and any(
+        method is variant for listed in made.values() for _, variant in listed
+    ):
+        return handler  # already the handler built for a set (an island's part)
+    sets = []
+    for row in rows:
+        given = getattr(row, "constants", None) or {}
+        sets.append({name: given.get(name, d) for name, (_, d) in parameters.items()})
+    for index, values in enumerate(sets):
+        if values != sets[0]:
+            asked = [", ".join(f"{k}={v}" for k, v in s.items()) for s in sets]
+            raise ProgramError(
+                f"{owner}.{method.name}: rows 0 and {index} of the words state "
+                f"{asked[0]} and {asked[index]}; {where} runs one handler, so submit "
+                "each set apart"
+            )
+    number, built = constant_handler(program, method, sets[0] if sets else {})
+    if isinstance(handler, front.ClassHandler):
+        return front.ClassHandler(number, program, built)
+    return built
+
+
 def constant_checked(cls, name, kind, value):
     """An override of constant `name` of type `kind` (an int also gives a float)."""
     fits = (

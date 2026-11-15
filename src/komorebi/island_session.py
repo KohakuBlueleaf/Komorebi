@@ -418,6 +418,8 @@ class IslandRun:
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """n commands at once, as Run.submit_many takes them, the groups in flat
         ranks; each island gets its parts in one submit_many. The tickets, a range."""
+        rows = () if args is None else args  # a class's words: their constants' handler
+        handler = self.runs[0]._words_built_for(handler, rows, "submit_many")
         one = _one_command(handler, firsts, counts, args)
         if one is not None:  # one command: submit's Python numbers, not numpy's
             handler, group, words = one

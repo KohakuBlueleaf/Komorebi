@@ -356,6 +356,16 @@ class ClassHandler(Handler):
         return self.method.args(*values, **named)
 
 
+class Words(list):
+    """A call's command words, a list as before, that also carry the constant values
+    the call stated (`constants`, by name); a slice or a concatenation is a plain
+    list and so means the defaults."""
+
+    def __init__(self, words, constants):
+        super().__init__(words)
+        self.constants = dict(constants)
+
+
 class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
@@ -420,7 +430,7 @@ class HandlerMethod:
                     "width"
                 )
             words.append(word_of(self.name, parameter, kind, value))
-        return words
+        return Words(words, self.constants_given(values, named))
 
     def places(self):
         """The names of the parameters after self in order, constant ones too."""

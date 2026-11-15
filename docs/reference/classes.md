@@ -230,8 +230,15 @@ default); each set is a handler of its own in the kernels, named by its values
 (`gate_block8`, `gate_block4`), the first at the handler's number and the others after
 the class's handlers. A submit gives the constant's value in `args` at its place, as
 the other parameters are, or leaves it out for its default; the host runs the handler
-built for those values. A set that was not built is refused, naming the sets that
-were:
+built for those values. The words `program.gate.args(a, b, out, tiles, pattern, 4)`
+gives are a list as before that also carries the values stated, so `submit_many`,
+`Graph.command`, a stream's `submit` and `enqueue`, and a chain's call
+(`kc.Call(program.gate, words, ...)`) run the handler built for them; plain words, and
+a slice or a concatenation of these (a plain list), mean the defaults. The rows of one
+`submit_many` state one set. A graph and a stream have no run to find the class's
+program in: they take such a handler through its program (`program.gate`), and
+`Class.gate` is refused there. A set that was not built is refused, naming the sets
+that were:
 
 ```text
 Gate.gate with size=2: no handler was built for it (built: size=4; size=8); list it at the make, handlers={'gate': [{...}]} (a set is not compiled on first use)

@@ -261,6 +261,12 @@ class Run:
         or checked first (chain.ChainRefused names the call, the tensor, the core).
         `mode`: the program's chain mode (the command's a4), `flags` its a1."""
         report, word = chain_module.build(calls)
+        calls = [  # a class's handler: the one built for its words' constants
+            call._replace(
+                handler=self._words_built_for(call.handler, [call.args], "a chain")
+            )
+            for call in calls
+        ]
         numbers = [self._handler(call.handler) for call in calls]
         for index, (_, field) in enumerate(numbers):
             if field != numbers[0][1]:
@@ -279,7 +285,7 @@ class Run:
         )
         self._unfenced = True
         return chain_module.Chain(
-            calls[0].handler,
+            self.field_handler(*numbers[0]),  # its number: submit makes no words
             (first, end - first),
             mode,
             flags,
@@ -514,6 +520,21 @@ class Run:
             program, method, method.constants_given(args)
         )
         return ClassHandler(number, program, built)
+
+    def _words_built_for(self, handler, rows, where):
+        """A class's handler given command words (submit_many's rows, a chain call's
+        words): the handler built for the constant values they carry (plain words:
+        the defaults), as _built_for. Others: `handler`."""
+        if not isinstance(handler, HandlerMethod | ClassHandler):
+            return handler
+        method = handler if isinstance(handler, HandlerMethod) else handler.method
+        if not front.constant_parameters(method.function):
+            return handler
+        program = None
+        if isinstance(handler, HandlerMethod):
+            program = self.programs[self._handler(handler)[1]]
+        made = importlib.import_module("komorebi.dsl.program")
+        return made.words_handler(handler, rows, program, where)
 
     def _class_form_refused(self, handler, fields):
         """Why `Class.handler` names no program when the run holds several of its
@@ -838,6 +859,8 @@ class Run:
         started = time.perf_counter()
         self._check_alive()
         program_field = 0
+        rows = () if args is None else args  # a class's words: their constants' handler
+        handler = self._words_built_for(handler, rows, "submit_many")
         if isinstance(handler, str | Handler | HandlerMethod):
             handler, program_field = self._handler(handler)
         columns = [np.asarray(handler), np.asarray(firsts), np.asarray(counts)]

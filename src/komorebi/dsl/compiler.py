@@ -334,6 +334,7 @@ def compile_class(cls, plan, tensors, l1=None, constants=None, handlers=None):
             compiled.overlays[method.name] = len(compiled.overlays) + 1
         names = handler_names(method)
         HandlerCompiler(compiled, method, names, plan, tensors).run()
+    listed_words(compiled, methods)
     bind_fields(compiled, plan, l1)
     compiled.compute_options = class_compute(cls, compiled)
     compiled.startup = getattr(cls, "startup_given", None)
@@ -345,6 +346,20 @@ def declared_constants(compiled, cls, constants):
     `compiled` (a symbol's where the plan or the make gives it)."""
     compiled.declared = front.constants_of(cls)
     compiled.class_constants = dict(constants or {})
+
+
+def listed_words(compiled, methods):
+    """A handler whose sets are listed: its sets' words on it too (its parameters but
+    the constants, one for every set), so that `Class.handler.args(...)` gives a
+    call's words before the handler for its constants is picked."""
+    for method in methods:
+        built = [variant for _, variant in compiled.variants.get(method.name, [])]
+        if not built or built[0] is method:
+            continue
+        first = built[0]
+        if all(v.words == first.words and v.widths == first.widths for v in built):
+            method.words, method.widths = first.words, first.widths
+            method.returns = first.returns
 
 
 def handler_variants(compiled, methods, handlers):
