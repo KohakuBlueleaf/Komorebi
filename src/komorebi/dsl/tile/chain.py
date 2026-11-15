@@ -382,6 +382,8 @@ class _Compiler:
             if k in TEMPLATES:
                 t = template(node)
                 self.templates[f"{k} (line {node.line})"] = t.describe(node)
+                if node.attrs.get("exact_at_zero") and t.name != "accurate":
+                    return f.select(args[0] == 0.0, 1.0, t.build(*args))
                 return t.build(*args)
             return _VECTOR[k](*args)
 

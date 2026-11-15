@@ -387,12 +387,14 @@ def _unary(kind, doc):
 
 
 def _transcendental(kind, doc):
-    def fn(x, error=None, over=None):
+    def fn(x, error=None, over=None, exact_at_zero=False):
         attrs = {} if error is None else {"error": float(error)}
         if over is not None:
             if error is None:
                 fail(f"{kind}: an input range is stated with an error")
             attrs["over"] = (float(over[0]), float(over[1]))
+        if exact_at_zero:
+            attrs["exact_at_zero"] = True
         return _op(kind, x, **attrs)
 
     fn.__name__, fn.__doc__ = kind, doc
@@ -402,7 +404,8 @@ def _transcendental(kind, doc):
 exp = _transcendental(
     "exp",
     "e^x on the vector unit; `error`: the relative error the program accepts over "
-    "inputs in `over` (lo, hi), the cheapest template meeting it (default accurate).",
+    "inputs in `over` (lo, hi), the cheapest template meeting it (default accurate); "
+    "`exact_at_zero`: 1 exactly at 0 (a factor that must be none when x is 0).",
 )
 exp2 = _transcendental(
     "exp2",

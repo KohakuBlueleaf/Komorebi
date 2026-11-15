@@ -26,6 +26,7 @@ from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import SLOT, WORD, step_program
+from komorebi.dsl.tile.unit import matrix_cost
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -33,6 +34,7 @@ GENERATED = KERNELS / "generated"
 # rules.hpp's layout.
 CB_A, CB_B, CB_P, CB_OUT, CB_INFO, MAX_UNITS = 0, 1, 2, 16, 24, 32
 CB_SQUARES, CB_SCALE, CB_Y = 3, 4, 5  # the hand norm's
+CB_KV, CB_Q, CB_PROB, CB_ST, CB_ONES = 0, 1, 2, 3, 4  # the attention body's
 NONCE, ERROR, UNITS, BODY, LOOP, SYNC, SYNCS = 0, 1, 2, 64, 128, 192, 16
 TILE_WORDS = 1024
 DESCRIPTOR = (
@@ -90,16 +92,27 @@ BODIES = {
     15: ("softmax", "emitted"),
     16: ("exp", "stated"),
     17: ("softmax", "accurate"),
+    18: ("attn", "hand"),
+    19: ("attn", "emitted"),
 }
 FORMS = ("hand", "emitted", "macro", "stated", "accurate")
-CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax")
+CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax", "attn")
 # Run on the card already, over the same inputs (the tile-front experiment): built
 # and checked here, not run again.
 ALREADY_RUN = {0, 12}
 INPUTS = {
     **{"silu": 1, "add": 2, "scale": 1, "gate": 2, "norm": 1, "exp": 1},
     "softmax": 1,
+    "attn": 1,
 }
+# The per-core attention body (kernels/attention.cpp): one query row of tiles, steps
+# of 3 key tiles (--units steps), head and value dims of 2 tiles.
+HEAD_TILES = VALUE_TILES = 2
+# O / l against float64 (of the row's largest |O|): exp 1.75e-3, TF32 P and V 2^-11.
+ATTN_TOLERANCE = 4e-3
+ATTN_FIDELITY = "HiFi2"  # projects/attention/card.py's
+# Words a step on the matrix unit: 16 MVMUL a tile product a phase (HiFi2: 2).
+ATTN_WORDS = {"score": HEAD_TILES * 3 * 32, "pv": 3 * VALUE_TILES * 32, "sum": 3 * 32}
 
 
 def log(message):
@@ -170,7 +183,9 @@ def softmax_ir(name="softstep", exp=STEP_EXP):
             m_old, l_old = state[0], state[1]
             r = trace.reduce_max(x, exact=True)
             m_new = trace.lagging_max(m_old, r, STEP_LAG)
-            alpha = trace.exp2(m_old - m_new, **exp)
+            alpha = trace.exp2(
+                m_old - m_new, **exp, exact_at_zero=True
+            )  # none if unmoved
             prob = trace.exp2(x - m_new.col(), **exp)
             l_new = alpha * l_old + trace.reduce_sum(prob, exact=True)
             trace.store(ps.tiles[t, :], prob)
@@ -285,10 +300,68 @@ def setting(body):
     }
 
 
+def launch_attn(session, body, data):
+    """The per-core attention body (BODY 18, 19) on core (0, 0) over `data`."""
+    steps = len(data["kv"]) // (3 * (HEAD_TILES + VALUE_TILES))
+    columns = VALUE_TILES + (1 if BODIES[body][1] == "hand" else 0)
+    nonce = secrets.randbits(32) | 1
+    first = data["st_hand"] if BODIES[body][1] == "hand" else data["st"]
+    tensors = [session.tensor(data[k], "uint32") for k in ("kv", "q")]
+    tensors += [session.tensor(first, "uint32"), session.tensor(data["ones"], "uint32")]
+    t_out = session.tensor(np.zeros((columns + 1, TILE_WORDS), np.uint32), "uint32")
+    t_info = session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32")
+    core, page = [(0, 0, 0, 0)], 4 * TILE_WORDS
+    block = 3 * (HEAD_TILES + VALUE_TILES)
+    run = session.launch()
+    for cb, pages in (
+        (CB_KV, 2 * block),
+        (CB_Q, HEAD_TILES),
+        (CB_PROB, 6),
+        (CB_ST, 2),
+        (CB_ONES, 1),
+        (CB_OUT, columns + 1),
+        (CB_INFO, 1),
+    ):
+        run.cb(core, cb, "float32", page, pages * page)
+    accessors = [w for t in tensors for w in t.accessor_args()]
+    words = [t.address for t in tensors] + [steps, block, HEAD_TILES]
+    run.kernel(
+        str(KERNELS / "attn_reader.cpp"), core, 1, accessors, [], [], [(0, 0, words)]
+    )
+    accessors = t_out.accessor_args() + t_info.accessor_args()
+    words = [t_out.address, t_info.address, columns + 1]
+    run.kernel(str(KERNELS / "writer.cpp"), core, 0, accessors, [], [], [(0, 0, words)])
+    defines = {
+        "BODY": body,
+        "HEAD_TILES": HEAD_TILES,
+        "VALUE_TILES": VALUE_TILES,
+        "STEP_THRESHOLD": f"{bits(639.0 + STEP_LAG)}u",
+        "EXP_A": f"{float(np.float32(EXP_A))!r}f",
+    }
+    options = {
+        "math_fidelity": ATTN_FIDELITY,
+        "fp32_dest_acc_en": True,
+        "unpack_to_dest_mode": {CB_ST: "UnpackToDestFp32"},
+    }
+    run.kernel(
+        str(KERNELS / "attention.cpp"),
+        core,
+        2,
+        [],
+        [(k, str(v)) for k, v in defines.items()],
+        [str(GENERATED), str(ATTENTION)],
+        [(0, 0, [nonce, steps])],
+        **km_session.compute_config(options),
+    )
+    return run, t_out, t_info, nonce
+
+
 def launch(session, body, data):
     """One program on core (0, 0) running BODY `body` over `data` (a, b, p: uint32
     words of fp32 tiles); returns (the Launch, the output, the info tensor, nonce)."""
     case, form = BODIES[body]
+    if case == "attn":
+        return launch_attn(session, body, data)
     defines = setting(body)
     unit_tiles = defines["UNIT_TILES"]
     count = len(data["a"]) // unit_tiles
@@ -411,8 +484,114 @@ def state_slot(tile, k):
     return out, spread
 
 
+def attn_inputs(steps, seed):
+    """The query row, the steps' K and V blocks (pages in the hand body's order),
+    the ones tile and the first state of each body, as uint32 words of fp32 tiles."""
+    rng = np.random.default_rng(seed)
+    d = 32 * HEAD_TILES
+    q = rng.standard_normal((32, d)).astype(np.float32)
+    k = rng.standard_normal((96 * steps, d)).astype(np.float32)
+    v = rng.standard_normal((96 * steps, 32 * VALUE_TILES)).astype(np.float32)
+    pages = []
+    for s in range(steps):
+        keys = range(3 * s, 3 * s + 3)
+        pages += [
+            tiles_of(k[32 * j : 32 * j + 32])[h]
+            for h in range(HEAD_TILES)
+            for j in keys
+        ]
+        pages += [
+            tiles_of(v[32 * j : 32 * j + 32])[c]
+            for j in keys
+            for c in range(VALUE_TILES)
+        ]
+    first = state_tile({0: np.full(32, -1e4), 1: np.zeros(32), 2: np.zeros(32)})
+    return {
+        "kv": np.stack(pages).view(np.uint32),
+        "q": tiles_of(q).view(np.uint32),
+        "ones": np.ones((1, TILE_WORDS), np.float32).view(np.uint32),
+        "st": first.view(np.uint32),
+        "st_hand": np.zeros((1, TILE_WORDS), np.uint32),
+        "q64": q.astype(np.float64),
+        "k64": k.astype(np.float64),
+        "v64": v.astype(np.float64),
+    }
+
+
+def attn_reference(data):
+    """float64 softmax(q k^T / sqrt(d)) v of the row, and whether any row's lagging
+    reference moved after the first step (the bodies do not rescale O)."""
+    s = data["q64"] @ data["k64"].T * EXP_SCALE
+    p = np.exp(s - s.max(axis=1, keepdims=True))
+    o = p @ data["v64"] / p.sum(axis=1, keepdims=True)
+    a = s / EXP_SCALE * float(np.float32(EXP_A))
+    first = a[:, :96].max(axis=1)
+    moved = bool((a[:, 96:].max(axis=1, initial=-np.inf) > first + STEP_LAG).any())
+    return o, moved
+
+
+def attn_words(data, form):
+    """The outputs a correct body would give (build mode's made-up results)."""
+    o, _ = attn_reference(data)
+    tiles = list(tiles_of(o.astype(np.float32)))
+    if form == "hand":
+        tiles.append(np.ones(TILE_WORDS, np.float32))
+        tiles.append(np.zeros(TILE_WORDS, np.float32))
+    else:
+        tiles.append(state_tile({0: np.zeros(32), 1: np.ones(32)})[0])
+    return np.stack(tiles).astype(np.float32).view(np.uint32)
+
+
+def attn_estimates(costs):
+    """A step's estimate per unit: the emitted vector step's cost, the matrix unit's
+    words at one a cycle (6 or more Dst blocks rotating) and at 6 (none): the
+    rotation inside the library's own word order is not known (stated)."""
+    out = {"vector emitted": costs["softstep"]}
+    for name, words in ATTN_WORDS.items():
+        rotating = [("MVMUL", i % 8) for i in range(words)]
+        alone = [("MVMUL", 0)] * words
+        out[f"matrix {name}"] = [matrix_cost(rotating), matrix_cost(alone)]
+    return out
+
+
+def check_attn(data, outputs, infos, nonces):
+    """The record of the per-core body: per body its cycles a step (score products,
+    vector step, P V products, the step), O / l against float64, the verdict."""
+    ref, moved = attn_reference(data)
+    rec = {"case": "attn", "tolerance": ATTN_TOLERANCE, "rows_moved_later": moved}
+    for body, info in infos.items():
+        form = BODIES[body][1]
+        got = _cycles(info, nonces[body])
+        steps = min(int(info[UNITS]), MAX_UNITS)
+        for name, at in (("score", 64), ("vector", 256), ("pv", 320), ("step", LOOP)):
+            spans = [int(x) for x in info[at + 1 : at + steps]] or [int(info[at])]
+            got[name] = statistics.median(spans) - got.get("sync_span", 0)
+        out = outputs[body].view(np.float32)
+        o = matrix_of(out[:VALUE_TILES]).astype(np.float64)
+        if form == "hand":
+            l_row = matrix_of(out[VALUE_TILES : VALUE_TILES + 1])[:, 0].astype(float)
+        else:
+            l_row, _ = state_slot(outputs[body][VALUE_TILES], 1)
+        y = o / l_row[:, None]
+        err = np.abs(y - ref).max(axis=1) / np.abs(ref).max(axis=1)
+        got["o_error"], got["not_finite"] = float(err.max()), int(
+            (~np.isfinite(y)).sum()
+        )
+        got["ok"] = (
+            got["nonce_ok"]
+            and int(info[ERROR]) == 0
+            and not got["not_finite"]
+            and got["o_error"] <= ATTN_TOLERANCE
+            and not moved
+        )
+        rec[form] = got
+    return rec
+
+
 def inputs_of(case, count, seed):
     """{a, b, p} uint32 words of fp32 tiles for `count` units and float64 inputs."""
+    if case == "attn":
+        return attn_inputs(count, seed)
     rng = np.random.default_rng(seed)
     one = np.zeros((1, TILE_WORDS), np.float32)
     if case == "softmax":
@@ -621,6 +800,8 @@ def check(case, data, outputs, infos, nonces):
     and of the whole unit, its error against float64 and the verdict."""
     if case == "softmax":
         return check_softmax(data, outputs, infos, nonces)
+    if case == "attn":
+        return check_attn(data, outputs, infos, nonces)
     ref = reference(case, data)
     rec = {"case": case, "tolerance": TOLERANCE[case]}
     hand = None
@@ -674,12 +855,14 @@ def build(args):
             log(f"built {case} {form}: kernel buffer {got.total} of {got.limit} B")
     for case in args.cases:
         data = inputs_of(case, args.units, args.seed)
-        if case != "softmax":
+        if case not in ("softmax", "attn"):
             ref = reference(case, data).astype(np.float32).view(np.uint32)
         outputs, infos, nonces = {}, {}, {}
         for body in bodies_of([case]):
             if case == "softmax":
                 ref = softmax_words(data, BODIES[body][1])
+            if case == "attn":
+                ref = attn_words(data, BODIES[body][1])
             info = np.zeros(TILE_WORDS, np.uint32)
             info[NONCE], info[UNITS] = 7, args.units
             info[SYNC : SYNC + SYNCS] = 10
@@ -706,6 +889,8 @@ def card(args):
             for body in bodies_of([case], card=True):
                 if args.forms and BODIES[body][1] not in args.forms:
                     continue
+                if args.bodies and body not in args.bodies:
+                    continue
                 run, t_out, t_info, nonce = launch(session, body, data)
                 log(f"launch {case} {BODIES[body][1]}")
                 run.run()
@@ -720,6 +905,8 @@ def card(args):
             saved.update({f"{case}_input_{k}": v for k, v in data.items()})
             unit = {"softmax": "softstep"}.get(case, case)
             rec["estimates"] = {k: v for k, v in costs.items() if k.startswith(unit)}
+            if case == "attn":
+                rec["estimates"] = attn_estimates(costs)
             log(json.dumps(rec))
             records.append(rec)
     if args.save:
@@ -743,6 +930,9 @@ def main():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--save", help="card: the outputs and inputs into this .npz file")
     p.add_argument("--forms", nargs="+", help="card: only these forms (hand, ...)")
+    p.add_argument(
+        "--bodies", nargs="+", type=int, help="card: only these BODY numbers"
+    )
     args = p.parse_args()
     if not 1 <= args.units <= MAX_UNITS:
         p.error(f"--units is 1 .. {MAX_UNITS}")
