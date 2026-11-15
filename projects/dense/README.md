@@ -704,24 +704,67 @@ session; every check passed (4.12e-3 in the in form: each partial rounded to bf1
 Y equal on both islands after the all-reduce, nothing crossed in the products.
 
 Output dim sharded (each island its half of N; "of one card" is the two-card call over
-the one-card call):
+the one-card call; "bound by" is the largest term of the slower island):
 
-| M x K x N | Hardware an island | Measured | Of one card | Way in and out | W read: HW + OURS (GB/s) | Reduce in the island / W cast | Y |
-|---|---|---|---|---|---|---|---|
-| 32 x 4096 x 4096 | 33.9 | 53.8 | 0.57 | 2.4 | 33.9 + 7.2 (409) | 9.0 | 1.3 |
-| 32 x 8192 x 8192 | 135.4 | 172.8 | 0.55 | 2.3 | 135.4 + 21.9 (427) | 12.0 | 1.3 |
-| 32 x 5120 x 17408 | 179.8 | 223.1 | 0.54 | 2.4 | 179.8 + 25.8 (433) | 13.1 | 1.9 |
-| 32 x 3840 x 15360 | 119.0 | 152.3 | 0.53 | 1.1 | 119.0 + 16.7 (434) | 13.7 | 1.7 |
-| 32 x 2560 x 9216 | 47.6 | 68.0 | 0.56 | 2.5 | 47.6 + 7.8 (426) | 9.0 | 1.2 |
-| 1024 x 4096 x 4096 | 33.9 / 55.8 | 216.3 | 0.57 | 2.6 | 33.9 + 119.4 (109) | 31.3 (cast) | 16.2 + 4.4 |
-| 1024 x 8192 x 8192 | 135.4 / 223.1 | 734.3 | 0.52 | 2.6 | 135.4 + 441.3 (116) | 108.8 (cast) | 19.5 + 19.8 |
-| 1024 x 5120 x 17408 | 179.8 / 296.3 | 964.2 | 0.52 | 5.3 | 179.8 + 575.8 (118) | 141.7 (cast) | 21.4 + 32.3 |
+| M x K x N | Hardware an island | Measured | Of one card | Way in and out | W read: HW + OURS (GB/s) | Reduce in the island / W cast | Y | Bound by |
+|---|---|---|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | 33.9 | 53.8 | 0.57 | 2.4 | 33.9 + 7.2 (409) | 9.0 | 1.3 | W's read from DRAM |
+| 32 x 8192 x 8192 | 135.4 | 172.8 | 0.55 | 2.3 | 135.4 + 21.9 (427) | 12.0 | 1.3 | W's read from DRAM |
+| 32 x 5120 x 17408 | 179.8 | 223.1 | 0.54 | 2.4 | 179.8 + 25.8 (433) | 13.1 | 1.9 | W's read from DRAM |
+| 32 x 17408 x 5120 | 179.8 | 227.4 | 0.54 | 1.6 | 179.8 + 26.3 (432) | 18.3 | 1.4 | W's read from DRAM |
+| 32 x 3840 x 15360 | 119.0 | 152.3 | 0.53 | 1.1 | 119.0 + 16.7 (434) | 13.7 | 1.7 | W's read from DRAM |
+| 32 x 15360 x 3840 | 119.0 | 152.4 | 0.52 | 2.4 | 119.0 + 9.8 (458) | 19.3 | 1.9 | W's read from DRAM |
+| 32 x 2560 x 9216 | 47.6 | 68.0 | 0.56 | 2.5 | 47.6 + 7.8 (426) | 9.0 | 1.2 | W's read from DRAM |
+| 32 x 9216 x 2560 | 47.6 | 71.0 | 0.57 | 2.4 | 47.6 + 7.4 (429) | 12.3 | 1.3 | W's read from DRAM |
+| 1024 x 4096 x 4096 | 33.9 / 55.8 | 216.3 | 0.57 | 2.6 | 33.9 + 119.4 (109) | 31.3 (cast) | 16.2 + 4.4 | the column senders' W read (OURS) |
+| 1024 x 8192 x 8192 | 135.4 / 223.1 | 734.3 | 0.52 | 2.6 | 135.4 + 441.3 (116) | 108.8 (cast) | 19.5 + 19.8 | the column senders' W read (OURS) |
+| 1024 x 5120 x 17408 | 179.8 / 296.3 | 964.2 | 0.52 | 5.3 | 179.8 + 575.8 (118) | 141.7 (cast) | 21.4 + 32.3 | the column senders' W read (OURS) |
+| 1024 x 17408 x 5120 | 179.8 / 296.3 | 1,006.2 | 0.54 | 3.3 | 179.8 + 620.0 (111) | 163.4 (cast) | 12.7 + 16.4 | the column senders' W read (OURS) |
+| 1024 x 3840 x 15360 | 119.0 / 196.1 | 668.7 | 0.52 | 2.7 | 119.0 + 391.3 (116) | 90.2 (cast) | 24.2 + 32.2 | the column senders' W read (OURS) |
+| 1024 x 15360 x 3840 | 119.0 / 196.1 | 671.3 | 0.52 | 2.7 | 119.0 + 410.8 (111) | 111.2 (cast) | 9.3 + 9.2 | the column senders' W read (OURS) |
+| 1024 x 2560 x 9216 | 47.6 / 78.4 | 288.7 | 0.54 | 2.7 | 47.6 + 155.1 (116) | 36.7 (cast) | 21.3 + 20.5 | the column senders' W read (OURS) |
+| 1024 x 9216 x 2560 | 47.6 / 78.4 | 286.8 | 0.54 | 4.1 | 47.6 + 165.2 (111) | 52.3 (cast) | 7.6 + 3.1 | the column senders' W read (OURS) |
+| 4096 x 5120 x 17408 | 179.8 / 1,185.2 | 1,739.8 | 0.59 | 4.6 | 179.8 + 504.3 (130) | 257.9 (cast), W free 535.0 | 45.1 + 200.0 | the matrix unit: 1,469.4 on the slowest core (HW 1,185.2) |
 
-Each island takes its half of the one-card work in 0.52 to 0.57 of the one-card time:
+Each island takes its half of the one-card work in 0.52 to 0.59 of the one-card time:
 the terms over half the one-card hardware time are the same terms as on one card, each
-about halved (decode: W read under the ceiling 7 to 26 us, the reduce 9 to 14 us;
+about halved (decode: W read under the ceiling 7 to 26 us, the reduce 9 to 19 us;
 prefill: the column senders' read at 109 to 118 GB/s). The islands' plans are an
-island's (118 ranks, 10 columns at prefill where one card has 12).
+island's (118 ranks, 10 columns at prefill where one card has 12). Nothing is left
+unaccounted at decode; at prefill 3.8 to 12.9 us of the writer's span is. At M = 4096
+only 5120 x 17408 ran on two cards: 4096 x 4096, 8192 x 8192 and 17408 x 5120 were
+refused at the load (the bench had counted an island's reader slot at its one-card size,
+so the plan was over the island's L1 budget; fixed, not run again) and the other pairs
+were not run.
+
+**A chain of two layers**, as a model's MLP runs them at decode: layer 1 output dim
+sharded (hidden to mlp, W1 split along N), its Y gathered to a copy on both islands,
+then layer 2 output dim sharded on that copy (mlp to hidden). The gather is the
+collectives' all-gather (`km::all_gather`), called by every rank at the end of layer
+1's kernel, so it is a term of layer 1's call; layer 2 is the down projection above.
+Loop, microseconds a call; the gather term is the stamped crossing on each island
+(from its first rank's start of the gather to its end), Y's half each way:
+
+| Hidden x mlp | Layer 1 alone | Layer 1 with the gather | Gather term, island 0 / 1 (bytes each way, GB/s) | Layer 2 | Chain | Layers alone | Gather's share |
+|---|---|---|---|---|---|---|---|
+| 5120 x 17408 | 226.1 | 252.8 | 27.8 / 26.4 (557 KB, 20.0) | 231.4 | 484.3 | 457.3 | 5.9 % |
+| 3840 x 15360 | 155.6 | 190.4 | 34.5 / 33.7 (492 KB, 14.2) | 156.0 | 346.4 | 311.7 | 11.1 % |
+| 2560 x 9216 | 71.4 | 92.8 | 20.6 / 20.9 (295 KB, 14.3) | 75.6 | 168.3 | 147.7 | 14.0 % |
+
+Every check passed (layer 2 on the gathered Y against the host's product of the two
+layers). The gather's term is the collective's own (its meeting of the island's ranks,
+its leader's one line, its release), not the linear kernel's: it is the collectives'
+to shrink. Before it, the same gather as a separate host call took about 330 us a call
+(island parts 76.9 to 89.7 and 49.6 to 62.7 us, the rest one host round trip): in the
+kernel it is 20.6 to 34.5 us.
+
+**Use the output dim sharded form.** The input dim sharded form below is recorded and
+not taken further: it is exact, but each island makes a partial of the whole M x N
+output, so the whole output must cross the link and be added after the product, and
+that crossing and addition are its whole difference from the output form (at decode
+69 to 149 us on its best path, the addition in the kernels; 165 us and more through the
+all-reduce call). The output form crosses nothing in the product and, chained, crosses
+half of a layer's Y once (the gather above).
 
 Input dim sharded, the product (each island its partial of the whole Y) and then the
 all-reduce of Y (bf16) as a separate term:
@@ -818,17 +861,29 @@ It runs and is exact everywhere it can be placed; it is slow because W (and with
 hints X) crosses the link at 1 to 19 GB/s a call, where the aware kernel's forms cross
 nothing in the product.
 
+**Not measured.** The prefill rows are bound by the column senders' read of W (one
+row of senders, one block in flight). The fix, built and off by default (`--spread
+on`): each rank of a column reads its share of the K rows of each W block into the
+sender's slot, and the sender multicasts the block once all have landed. Its one card
+run did not finish: every writer waited at a port (cause inferred: the ready marker was
+multicast from a word other than the one it landed on; fixed, not run again). Not run
+either: Kohaku-TT at the shapes its recorded tables lack, the one-card M = 4096 rows of
+the 3840 / 15360 and 2560 / 9216 pairs, and the two-card M = 4096 rows named above.
+
 Measured on 2026-11-15 between 06:20 and 07:15, X280 at 1,350 MHz. JSON:
 `results/ceilings-0.json`, `results/linear-shapes-0.json` (one card),
 `results/linear-forms-0x1.json` (two cards, with the all-reduce's twenty calls),
 `results/linear-in-add-0x1.json` (the addition in the kernels, measured at 08:11 and
-08:14),
+08:14), `results/linear-out-rest-0x1.json` (the output form's other shapes) and
+`results/linear-chain-0x1.json` (the chains, with the gather by the host and in the
+kernel; measured between 08:25 and 08:36),
 `results/flat-forms-0x1.json`.
 
 ```
 python projects/dense/linear.py --shapes "32,4096,4096;1024,8192,8192" --cards 0 --account
 python projects/dense/linear.py --shapes "32,4096,4096:out;32,4096,4096:in" --cards 0,1 --account
 python projects/dense/flat.py --m 1024 --k 4096 --n 4096 --cards 0,1 --hints
+python projects/dense/linear.py --shapes "32,5120,17408:chain" --cards 0,1 --gather kernel
 ```
 
 ## Shapes, one card and two, against Kohaku-TT
