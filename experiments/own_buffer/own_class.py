@@ -1,8 +1,6 @@
-"""A body's own buffers, the two kinds the attention pass uses, each checked exactly
-against numpy: `running`, a float32 tile written in place (each core's running sum of
-its tiles, then written out); `delayed`, a FIFO from the pack CPU to the unpack CPU
-(each core's tiles out one step late, its first tile zero). README.md says what the
-own fields lower to.
+"""A body's own buffers, each checked exactly against numpy: `running`, a float32 sum
+written in place behind a token; `delayed`, a FIFO from pack to unpack, one tile late.
+README.md says what the own fields lower to.
 Example: python own_class.py --cores 8 --tiles 40"""
 
 import argparse
