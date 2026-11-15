@@ -996,6 +996,28 @@ wait. SIGKILL: nothing, the card is reset.
 Described in [Host API, `Session`](host.md#session) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
+### A session that follows its kernels
+
+**The hazard.** A session not given `kernel_bytes` opens its card again at its first
+load when the kernels need another kernel buffer, and writes into each tensor again
+what it was given. It keeps the host arrays given to `session.tensor`, `session.write`
+and `tensor.write` by reference until that load, so an array changed in between is
+written as it is then, and bytes written through `tensor.buffer` itself are not
+written again. Where it cannot open the card again (a run already loaded, a session
+on a given device, an island or mesh session), the load is refused.
+
+**The rule.** Until the first load, do not change an array once it is given to the
+session, and write tensors through `session.tensor`, `session.write` or
+`tensor.write`. A session that loads a second, larger program gives `kernel_bytes`
+the size the refusal names.
+
+**The guard.** The refusals: `km.KernelSizeError` (or `km.L1BudgetError` for a
+smaller buffer) naming why and the size that holds the kernels; `km.KomorebiError`
+when a tensor comes back at another address. A changed array or a write through the
+buffer: nothing.
+
+Described in [Host API, the kernel buffer](host.md#the-kernel-buffer).
+
 ### A tensor or a thread's region touched while the kernels run
 
 **The hazard.** A persistent grid never returns until the stop, and the device API waits

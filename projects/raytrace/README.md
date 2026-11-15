@@ -192,17 +192,13 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
 ## Limits
 
 - Kernel text: a program's kernels must fit the session's kernel buffer on a Tensix
-  core, 70,656 bytes unless the session sets `kernel_bytes`; a program that does not
-  fit is rejected before launch with its sizes per thread (`km.KernelSizeError`,
-  [host API](../../docs/reference/host.md#program)). Two remedies: a larger buffer
-  (`Session(kernel_bytes=...)`, taken from the L1 left for circular buffers) or a
-  smaller build of one kernel (`km.Program(..., opt={...})`). The ray tracer's kernels
-  take 85,392 bytes (text per thread: BRISC 26,128, NCRISC 7,160, TRISC0 3,892, TRISC1
-  1,356, TRISC2 46,160; the session logs it at every load), more than the default
-  buffer, so `card.py` opens its session with 87,488 bytes, the smallest multiple of
-  64 that leaves 2 KiB to spare (16,832 bytes of L1 more than the default). With the
-  division, square root, reciprocal and clamped inverse inlined at every use they took
-  more, so these are calls.
+  core, which follows the kernels unless the session sets `kernel_bytes`
+  ([host API](../../docs/reference/host.md#the-kernel-buffer)). The ray tracer's
+  kernels take 85,392 bytes (text per thread: BRISC 26,128, NCRISC 7,160, TRISC0
+  3,892, TRISC1 1,356, TRISC2 46,160; the session logs it at every load), more than the
+  runtime's default 70,656, so the session opens the card again with a buffer that
+  holds them. With the division, square root, reciprocal and clamped inverse inlined
+  at every use they took more, so these are calls.
 - Readback: reading back is slow ([host API](../../docs/reference/host.md#session));
   large results are read in 2 MB chunks with a line per chunk, and the whole frame's
   stage pages (490 MB) are checked on tiles only.

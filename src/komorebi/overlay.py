@@ -10,7 +10,7 @@ import os
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -615,6 +615,7 @@ class Slots:
 
     count: object = None
     bytes: object = None
+    service: object = None  # "own", "shared" or None: the load chooses
 
     def of(self, kernel, overlays):
         """(count, bytes or None) of `kernel` for `overlays` (with a part there)."""
@@ -638,15 +639,19 @@ class Slots:
 
 @dataclass(frozen=True)
 class Built:
-    """A program's overlays built: images by (number, part), slots by part
-    {part: (count, bytes)}, every slot's bytes in L1 per core."""
+    """A program's overlays built: images by (number, part), the programs' slots by
+    part {part: (count, bytes)}, the service overlay's own reader slot (its bytes, 0:
+    it shares the reader's), its part's bytes, why, every slot's bytes in L1 a core."""
 
     images: dict
     slots: dict
+    service: int = 0
+    service_part: int = 0
+    why: str = ""
 
     @property
     def slot_bytes(self):
-        return sum(count * size for count, size in self.slots.values())
+        return self.service + sum(count * size for count, size in self.slots.values())
 
 
 def build(program, recipes, cache, log=lambda message: None):
@@ -671,16 +676,17 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
         if island
         else (SERVICE_SLOT_MOST, "SERVICE_SLOT_MOST")
     )
-    declared, images, extents, served = {}, {}, {}, {}
+    declared, images, extents, service = {}, {}, {}, 0
     number = constants()["kOverlayService"]
+    own = [overlay for overlay in overlays if overlay.number != number]
     for kernel in KERNELS:
         if declared_slots.reserved(kernel) or any(
-            kernel in overlay.sources for overlay in overlays
+            kernel in overlay.sources for overlay in own
         ):
-            declared[kernel] = declared_slots.of(kernel, overlays)
+            declared[kernel] = declared_slots.of(kernel, own)
     for overlay in overlays:
         for kernel, part in overlay.parts():
-            # the service part sizes its slot (at least), whatever was declared
+            # the service part sizes its own slot; a program's part meets its slots
             size = None if overlay.number == number else declared[kernel][1]
             builder = getattr(overlay, "build_part", None)  # a part of several units
             linked = (
@@ -689,23 +695,101 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
                 else build_part(by_part[part], overlay, kernel, part, cache, size)
             )
             images[overlay.number, part] = linked.image
-            extents.setdefault(part, []).append(linked.extent)
-            if overlay.number == number:
-                served[part] = linked.extent
-                if linked.extent > most:  # the load's L1 table decides
-                    log(
-                        f"the service overlay's {part} part takes {linked.extent:,} "
-                        f"B, over {named} ({most:,} B): a class built with session= "
-                        "reserved less than this load takes"
-                    )
-            log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
+            if overlay.number != number:
+                extents.setdefault(part, []).append(linked.extent)
+                log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
+                continue
+            service = -(-linked.extent // ALIGN) * ALIGN
+            log(f"overlay {overlay.name}: {part} part {len(linked.image)} B, own slot")
+            if linked.extent > most:  # the load's L1 table decides
+                log(
+                    f"the service overlay's {part} part takes {linked.extent:,} "
+                    f"B, over {named} ({most:,} B): a class built with session= "
+                    "reserved less than this load takes"
+                )
     slots = {}
     for kernel, (count, size) in declared.items():
         for part in KERNEL_PARTS[kernel]:
-            largest = -(-max(extents.get(part, [0])) // ALIGN) * ALIGN
-            least = -(-served.get(part, 0) // ALIGN) * ALIGN
-            slots[part] = (count, max(size, least) if size is not None else largest)
-    return Built(images, slots)
+            largest = -(-max(extents.get(part, [ALIGN])) // ALIGN) * ALIGN
+            slots[part] = (count, size if size is not None else largest)
+    return Built(images, slots, service, service)
+
+
+def fitted(built, declared_slots, room, log=lambda message: None):
+    """`built` with the slots of each kernel whose count was not declared lowered, one
+    slot at a time from the largest, until they take at most `room` bytes (or each is
+    at 1): what the L1 left allows."""
+    slots = dict(built.slots)
+
+    def free(part):
+        kernel = next(k for k, parts in KERNEL_PARTS.items() if part in parts)
+        count = declared_slots.count
+        asked = count.get(kernel) if isinstance(count, dict) else count
+        return asked is None and slots[part][0] > 1
+
+    while built.service + sum(c * b for c, b in slots.values()) > room:
+        lowered = [part for part in slots if free(part)]
+        if not lowered:
+            break
+        part = max(lowered, key=lambda each: slots[each][1])
+        slots[part] = (slots[part][0] - 1, slots[part][1])
+        log(f"{part} slots lowered to {slots[part][0]}: the L1 left allows no more")
+    return replace(built, slots=slots)
+
+
+def shared(built):
+    """`built` with the service overlay in the reader's slots (as large as its part
+    at least, one at least) instead of a slot of its own."""
+    slots = dict(built.slots)
+    count, size = slots.get("reader", (1, 0))
+    slots["reader"] = (count, max(size, built.service_part))
+    return replace(built, slots=slots, service=0)
+
+
+def held(built, alone):
+    """The program parts `built`'s slots hold at once: its slots' count (a reader slot
+    there only for the service, `alone`, holds none)."""
+    return sum(count for count, _ in built.slots.values()) - alone
+
+
+def choose(built, declared_slots, room, log=lambda message: None):
+    """The service overlay's slot: its own (one more record) or the reader's shared,
+    as `declared_slots.service` says, else as the L1 left (`room`) chooses; each
+    fitted to the room, with why."""
+    if not built.service_part:
+        return fitted(built, declared_slots, room, log)
+    alone = "reader" not in built.slots
+    quiet = lambda message: None  # noqa: E731
+    own = fitted(
+        replace(built, service=built.service_part), declared_slots, room, quiet
+    )
+    common = fitted(shared(built), declared_slots, room, quiet)
+    asked = declared_slots.service
+    if asked not in (None, "own", "shared"):
+        raise ValueError(f"service slot {asked!r}: 'own' or 'shared'")
+    largest = max((size for _, size in built.slots.values()), default=0)
+    if asked is not None:
+        pick, why = asked, "as slots() asks"
+    elif own.slot_bytes <= room and own.slots == built.slots:
+        pick, why = "own", "the L1 left has the room"
+    elif held(common, alone) != held(own, False):
+        more = held(common, alone) > held(own, False)
+        pick = "shared" if more else "own"
+        why = f"it holds {max(held(common, alone), held(own, False))} program slots"
+        why += f", not {min(held(common, alone), held(own, False))}"
+    elif room - common.slot_bytes != room - own.slot_bytes:
+        pick = "shared" if common.slot_bytes < own.slot_bytes else "own"
+        why = f"it leaves {abs(common.slot_bytes - own.slot_bytes):,} B more of L1"
+    else:
+        pick = "own" if built.service_part > largest else "shared"
+        why = "its part is the largest" if pick == "own" else "no slot is larger"
+    chosen = (
+        replace(built, service=built.service_part) if pick == "own" else shared(built)
+    )
+    made = fitted(chosen, declared_slots, room, log)  # its lowering logged
+    log(f"service overlay: {'its own slot' if pick == 'own' else 'the reader slots'}"
+        f" ({why})")  # fmt: skip
+    return replace(made, why=why)
 
 
 def dram_rows(built, reserve=0):
@@ -732,7 +816,11 @@ def area_words(built, placed, image_address, image_page_bytes, slot_base):
     words = np.zeros(c["kOverlayAreaBytes"] // 4, np.uint32)
     numbers = [number for number, _ in built.images]
     words[c["kOverlayCount"]] = max(numbers) + 1 if numbers else 0
+    words[c["kOverlayServiceSlot"] // 4] = built.service
     at = slot_base
+    if built.service:  # its own slot first, its record one more than the reader's
+        words[c["kOverlayServiceRecord"] // 4 + c["kOverlayAddress"]] = at
+        at += built.service
     for index, part in enumerate(PARTS):
         count, size = built.slots.get(part, (0, 0))
         words[c["kOverlayBase"] + index] = at if count else 0
@@ -740,8 +828,8 @@ def area_words(built, placed, image_address, image_page_bytes, slot_base):
         words[c["kOverlaySlotBytes"] + index] = size
         for slot in range(count):  # each record's slot address
             record = c["kOverlayRecords"] + 16 * (c["kOverlaySlotsMax"] * index + slot)
-            words[record // 4 + c["kOverlayAddress"]] = at + slot * size
-        at += count * size
+            words[record // 4 + c["kOverlayAddress"]] = at
+            at += size
     for (number, part), (row, size) in placed.items():
         entry = (
             c["kOverlayTable"] + 8 * (c["kOverlayParts"] * number + PARTS.index(part))

@@ -17,9 +17,6 @@ STARTED = time.monotonic()
 # at M = 1024: the class's symbol, the plan gives the shape's.
 ROWS = 8
 OH = 4
-# The kernel buffer: the five kernels' text is over the default 70,656 B (the dense
-# project's linear kernels take 88 KiB; this class's 90,192 B, 89 KiB).
-KERNEL_BYTES = 89 * 1024
 
 
 def log(message):
@@ -303,7 +300,7 @@ def main():
     )
     args = parser.parse_args()
     reports, ok = [], True
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         log(f"device open, grid {session.grid}; row tiles {args.rows}")
         for k_tiles in args.k_tiles:
             program = made(session, args.rows, k_tiles)
