@@ -5022,9 +5022,7 @@ class HandlerCompiler:
         written, on its CPU (a mover, one compute CPU, or compute's three), the names
         it takes bound before it; `name = km.cxx(..., gives=int)` the word the body
         sets, `gives=km.Tile` the tile it leaves in DST 0 (compute)."""
-        if not call.args or not isinstance(call.args[0], ast.Constant):
-            self.refuse(node, "an inline body is a string", 'write km.cxx("...")')
-        text = textwrap.dedent(call.args[0].value).strip("\n")
+        text = textwrap.dedent(self.body_text(node, call)).strip("\n")
         included = 0  # its first lines that are #include lines: the kernel's top
         lines = text.split("\n")
         while included < len(lines) and lines[included].lstrip().startswith("#include"):
@@ -5120,6 +5118,8 @@ class HandlerCompiler:
             if entry not in self.compiled.body_includes[kernel]:
                 self.compiled.body_includes[kernel].append(entry)
         start = call.args[0].lineno + 1 + included
+        if not isinstance(call.args[0], ast.Constant):  # the module's: the call's line
+            start = node.lineno
         body = f'#line {start} "{self.compiled.source}"\n{text}\n#line RESUME'
         if bound:
             inner = "\n".join("    " + line for line in [*bound, *body.split("\n")])
@@ -5148,6 +5148,30 @@ class HandlerCompiler:
         if mover is None:
             return moves, lines
         return lines, []
+
+    def body_text(self, node, call):
+        """A body's text: a string, a string constant of the class's module, or a sum
+        of them (one text for the bodies of several handlers)."""
+
+        def text_of(part):
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                return part.value
+            if isinstance(part, ast.Name) and isinstance(self.names.get(part.id), str):
+                return self.names[part.id]
+            if isinstance(part, ast.BinOp) and isinstance(part.op, ast.Add):
+                return text_of(part.left) + text_of(part.right)
+            return None
+
+        text = text_of(call.args[0]) if call.args else None
+        if text is None:
+            self.refuse(
+                node,
+                "an inline body is a string, a string constant of the module or a "
+                "sum of them",
+                'write km.cxx("..."), or km.cxx(BODY) with BODY = "..." at module '
+                "level",
+            )
+        return text
 
     def take(self, node, item, where, bound, before, after):
         """A name a body takes on `where` (mover "A" or "B", "compute", or a compute

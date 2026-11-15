@@ -208,7 +208,9 @@ it on its CPU (a walk's state on pack, set up before a loop and read in it). Its
 lines that are `#include` lines go to the top of its kernel for every CPU of it;
 `include=["path"]` puts a header under the body's CPU's `#if` alone (a header only
 the pack CPU compiles). A `#line` before the body points the compiler's messages at
-the Python line.
+the Python line. The text is a string, a string constant of the class's module, or a
+sum of them (`km.cxx(HEADERS + GIVE_UP + "...")`: one body in several handlers); for a
+constant the `#line` is the call's. Any other text is refused at its line.
 
 What a body takes, by where it runs:
 
@@ -880,6 +882,8 @@ the packed text of the five CPUs, of 70,656 B.
 | [linear layer](../../experiments/language/dense_class/README.md), 1024 x 4096 x 4096, the grid form | the same | 90,192 / 69,296 B (mock) | 358.6 / 382.4 us (12 x 8 cores, as the hand's) |
 | [tile rules](../../experiments/language/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
 | [ray tracer's trace pass](../../experiments/language/raytrace_class/README.md) (TRACE, tiny scene, the tree in L1) | the hand program's hit pages word for word: 0 of 18,874,368 words differ (the cycles vector apart), the walk's counts equal on every core; against numpy's trace 658,018 hits, none differs | 48,240 / 85,808 B (mock) | 3,294.9 / 3,259.9 us a command (120 cores, 32,768 packets; the tree loaded once, 23.7 us) |
+| [rasterizer's fill](../../experiments/language/raster_class/README.md) (FILL, tiny scene, the empty tile's planes in L1) | the hand program's frame word for word: 0 of 5,242,880 words differ; the counts equal on every core; the image exact | 44,000 / 32,896 B | 88.34 / 118.90 us a command (120 cores; the planes loaded once, 13.58 us) |
+| [rasterizer's passes](../../experiments/language/raster_class/README.md) (COUNT, HIST, SETUP, tiny scene) | the hand program's counters, histograms and lists word for word (0 of 245,760, 491,520 and 182,272 words differ) | 60,608 / 55,424 B | 85.34 / 87.16, 23.96 / 24.18, 112.92 / 124.34 us, one command each |
 | [tile rules](../../experiments/language/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,248 B (stamped) | the emitted body 687.0 cycles a row of 2 tiles on the math CPU, 677.0 printed, 689.5 in the one-core harness (the first body 771.0, 753.0 printed); the hand norm 3,201.5 |
 | [tile rules](../../experiments/language/tile_rules/as_class/README.md): silu(a @ w1) (a @ w3), two products in the body | float32 against float64: 5.64e-4 (tolerance 2^-7) | 40,800 B (stamped) | the emitted body 1,706 cycles a tile on the math CPU, 1,678.6 printed, BODY 29's 1,707 in the one-core harness; 92.96 us a command (12 cores, 64 tiles a core) |
 
