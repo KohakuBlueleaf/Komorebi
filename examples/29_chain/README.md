@@ -110,6 +110,58 @@ the chain's four records name handlers of both sources (SUM of `sums`, SCALE and
 spread of the runtime's form above, so the dispatcher's switch and the 64-B copy of a
 command for the second source do not show at this size.
 
+## As a class
+
+`as_class/steps_class.py` writes the same three handlers as a `km.Program` class (on
+float32 tiles: SCALE an inline body, ADD a tile function, SUM a tree's `km.reduce`), and
+states the chain without one `kc.Call`: each call's description (its groups, the block
+it writes, what it reads and from which call) comes from its handler's lines.
+
+```python
+class Steps(StepHandlers):
+    @km.chain
+    def steps(self, x, y, z, s, t, factor: int, width: int, tiles: int):
+        self.scale(x, y, factor, width)
+        self.scale(y, z, THREE, width)
+        self.add(z, km.past(y), s, width)  # y: written two calls back
+        self.sum(s, t, tiles)
+
+
+chain = run.chain(program.steps(x, y, z, s, t, bits(5), 2, 16), cores=(0, 8))
+listed = run.chain(
+    [
+        Steps.scale(x, y, bits(5), 2),
+        Steps.scale(y, z, THREE, 2),
+        Steps.add(z, km.past(y), s, 2),
+        Steps.sum(s, t, 16),
+    ],
+    cores=(0, 8),
+)
+```
+
+Both forms give the same records. A class with a `km.chain` method (or made with
+`chain=True`) has the walk in its kernels; `StepHandlers`, the same handlers without
+one, has none of it. The walk costs kernel text: 74,160 B against 58,240 B (BRISC
++4,332, NCRISC +7,880, each TRISC about +1,220), past the default buffer of 70,656 B, so
+the script opens its session with `kernel_bytes=84 * 1024`.
+
+Card 0, 2026-11-16, AICLK 800 MHz, the machine under load (21.7), 200 runs a way, every
+word of y, z, s and t exact after each run below:
+
+| | A command a step | One chain (list) | One chain (method) |
+|---|---:|---:|---:|
+| on the host, us a run | 946.1 | 160.7 | 160.9 |
+| on the card, us a run | 21.25 | 20.86 | 20.88 |
+
+The card's work is float32 tiles on the compute kernel here, not the movers' integer
+loops of `chain_steps.py`, so its times are not comparable to the table above. A
+command a step of the handlers built without the walk took 20.62 us on the card (966.8
+on the host): the walk's checks cost a plain command about 0.16 us (0.63 us over four).
+
+```
+python as_class/steps_class.py      # 8 cores, 2 tiles a core, 200 timed runs a way
+```
+
 ## Over two cards
 
 `islands.py` runs the same program on two cards as two islands (236 ranks, 2 tiles a

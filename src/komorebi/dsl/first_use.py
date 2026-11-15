@@ -26,9 +26,9 @@ KEPT = "first_use.json"
 @dataclass
 class Kept:
     """What a made program keeps for its handlers' first uses: the opted handlers'
-    km.ANY, the make's inputs (plan, tensors, room, constants, listed sets), the
-    load's buffers {index: Buffer} and fields {name: Field}, its build's key, and the
-    sets compiled so far {(handler, set): (folder, variant, seconds, cached)}."""
+    km.ANY, the make's inputs (plan, tensors, room, constants, listed sets), the load's
+    buffers {index: Buffer} and fields {name: Field}, its build's key, the sets compiled
+    so far {(handler, set): (folder, variant, seconds, cached)}, the indices it left."""
 
     opted: dict
     plan: dict
@@ -40,6 +40,7 @@ class Kept:
     fields: dict
     key: str
     made: dict
+    reserved: frozenset = frozenset()
 
 
 def opted(cls, handlers):
@@ -75,7 +76,7 @@ def template(cls, name, sets):
     return {n: default for n, (_, default) in parameters.items()}
 
 
-def reserve(cls, compiled, found, plan, tensors, room, values, sets):
+def reserve(cls, compiled, found, plan, tensors, room, values, sets, reserved=()):
     """The load's buffers of each opted handler's template also sized for the set
     km.ANY(p=n) names (its template with those values): each buffer's pages the
     larger of the two compiles'; refused when the buffers no longer fit `room`."""
@@ -99,7 +100,7 @@ def reserve(cls, compiled, found, plan, tensors, room, values, sets):
                 cls, f"{name}'s {parameter}", kind, value
             )
         other = compiler.compile_class(
-            cls, plan, tensors, room, values, replaced(sets, name, wanted)
+            cls, plan, tensors, room, values, replaced(sets, name, wanted), reserved
         )
         sized = {buffer.index_a: buffer for buffer in other.buffers}
         for buffer in compiled.buffers:
@@ -135,7 +136,7 @@ def kept(program, compiled, found, made_with, built, session, l1, trace):
     names each kernel part's slot bytes (KM_ADDED_HANDLERS: the kernels' path of an
     added handler) and, with a session, refuses at the make a program whose L1 does
     not hold those slots beside its buffers (L1BudgetError, with the bytes)."""
-    plan, tensors, room, values, sets = made_with
+    plan, tensors, room, values, sets, reserved = made_with
     program.first_use = Kept(
         found,
         dict(plan),
@@ -147,6 +148,7 @@ def kept(program, compiled, found, made_with, built, session, l1, trace):
         dict(compiled.fields),
         built.folder.name,
         {},
+        frozenset(reserved),
     )
     program.slots(bytes=SLOT_BYTES)
     if session is not None:
@@ -199,8 +201,23 @@ def handler(run, program, method, wanted):
     sources["writer"] = sources["reader"]
     if (folder / variant.name / "compute.cpp").is_file():
         sources["compute"] = folder / variant.name / "compute.cpp"
-    number = run.addon(name, sources, handler=True, defines=program.defines or None)
+    number = run.addon(name, sources, handler=True, **added_with(program))
     return number, variant
+
+
+def added_with(program):
+    """run.addon's keywords for a set of `program`: its defines; in the runtime's
+    form (form="runtime") also its compile arguments and its args' place, as its own
+    parts are built (the kernel form's added parts take the loaded kernels')."""
+    defines = dict(program.defines)
+    if program.form() != "program":
+        return {"defines": defines or None}
+    if program.args_at:
+        defines["KM_PROGRAM_ARGS_AT"] = str(program.args_at)
+    compile_args = {k: program.kernel_compile_args(k) for k in overlay.KERNELS}
+    if not any(compile_args.values()):
+        return {"defines": defines or None}
+    return {"defines": defines or None, "compile_args": compile_args}
 
 
 def compiled(program, method, wanted):
@@ -288,7 +305,7 @@ def compile_set(program, method, wanted, key):
     cls = type(program)
     sets = replaced(kept_.sets, method.name, wanted)
     result = compiler.compile_class(
-        cls, kept_.plan, kept_.tensors, kept_.room, kept_.values, sets
+        cls, kept_.plan, kept_.tensors, kept_.room, kept_.values, sets, kept_.reserved
     )
     variant = result.variants[method.name][0][1]
     where = f"{cls.__name__}.{variant.name}"

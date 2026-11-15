@@ -73,6 +73,8 @@ __all__ += sorted(_front.exports())
 
 
 def __getattr__(name):
+    if name == "chain":  # the framework's chain, and @km.chain of a class (chain.py)
+        return importlib.import_module("komorebi.chain")
     if name == "Session":
         _env.activate()
         return importlib.import_module("komorebi.session").Session

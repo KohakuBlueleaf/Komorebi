@@ -279,6 +279,7 @@ def addon(
     defines=None,
     timeout=10.0,
     message=False,
+    compile_args=None,
 ):
     """Run.addon: builds overlay `name` from `parts` against the loaded kernels, writes
     it into the load's room and gives every core its table entry; returns its number
@@ -313,6 +314,8 @@ def addon(
         made = overlay.declare(
             name, parts, _number(room, name, handler, number), defines
         )
+    if compile_args:  # a part of a program in the runtime's form: its arguments
+        made = dataclasses.replace(made, compile_args=dict(compile_args))
     log = run.backend.session.log
     builds, build_s, cached = _builds(run, made, log)
     started = time.perf_counter()

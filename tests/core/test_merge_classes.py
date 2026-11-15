@@ -128,5 +128,5 @@ def test_the_pick_and_the_refusals():
     assert merged.spill(sizes_error) and not merged.spill(sizes_error)
     assert "split" not in merged.compiled.overlays  # marked resident
     hand = km.Program("hand", kernels={}, buffers=[], handlers={"a": 1})
-    with pytest.raises(ProgramError, match="a class with a hand program"):
+    with pytest.raises(ProgramError, match="a class in the kernel form merged with"):
         km.merge(made(Sums), hand)
