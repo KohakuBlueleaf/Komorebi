@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 from komorebi.session import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
@@ -254,7 +255,7 @@ def report(args, cores, phases, added, mhz, reset=None):
         "later_us": later,
         "mix_cycles": cycles,
     }
-    line = json.dumps(out, default=float)
+    line = json.dumps(power.clocked(out), default=float)
     print(line, flush=True)
     if args.json:
         Path(args.json).write_text(line + "\n")

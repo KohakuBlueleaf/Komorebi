@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import formats
+from komorebi import formats, power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "reduce.h", known=km.abi.headers().constants)
@@ -132,7 +132,7 @@ def main():
         and set(report["kernel_errors"]) == {"none"}
     )
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

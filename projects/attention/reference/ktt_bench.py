@@ -165,7 +165,7 @@ def main():
         if name.startswith("attention")
     }
     report["load_avg"] = os.getloadavg()[0]
-    print(json.dumps(report, default=str), flush=True)
+    print(json.dumps(power.clocked(report), default=str), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report, default=str))
 

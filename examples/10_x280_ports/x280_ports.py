@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 from komorebi.session import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
@@ -247,7 +248,7 @@ def pull_main(args):
         result.ran and result.code == 0 and result.error == "none"
         for result in results.values()
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 
@@ -327,7 +328,7 @@ def main():
         and report["rounds_done"] == args.rounds
         and report["exact"]
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

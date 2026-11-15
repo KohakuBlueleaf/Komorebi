@@ -23,7 +23,7 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, overlay  # noqa: E402
+from komorebi import abi, overlay, power  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
@@ -94,7 +94,9 @@ def main():
                 args.count or args.counters + 1, 4 << 30, 4
             )
     except ValueError as error:
-        print(json.dumps({"ok": False, "rejected": str(error)}), flush=True)
+        print(
+            json.dumps(power.clocked({"ok": False, "rejected": str(error)})), flush=True
+        )
         sys.exit(1)
     runs = []
     with km.Session(log=log) as session:
@@ -120,7 +122,11 @@ def main():
                 "runs": len(timed),
             }
     result = {"ok": ok, "summary": summary, "runs": runs}
-    print(json.dumps(result | {"wall_s": round(time.monotonic() - STARTED, 1)}))
+    print(
+        json.dumps(
+            power.clocked(result | {"wall_s": round(time.monotonic() - STARTED, 1)})
+        )
+    )
     sys.exit(0 if ok else 1)
 
 

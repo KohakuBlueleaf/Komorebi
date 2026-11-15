@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import dram, formats
+from komorebi import dram, formats, power
 from komorebi.layout import partition
 
 HERE = Path(__file__).resolve().parent
@@ -156,7 +156,7 @@ def main():
         log("device open")
         report.update(run(session, args, generator))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

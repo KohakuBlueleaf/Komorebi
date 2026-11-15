@@ -23,6 +23,7 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi import power  # noqa: E402
 
 FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
@@ -216,7 +217,7 @@ def main():
         and report["events"] == ["done"] * len(report["islands"])
         and report.get("kernel_errors") == ["none"] * len(report["islands"])
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

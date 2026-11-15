@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 
 HERE = Path(__file__).resolve().parent
 RUNTIME = HERE.parents[1] / "src" / "komorebi_native" / "kernels"
@@ -178,7 +179,7 @@ def main():
         and out["rejected"] == 0
         and sum(end[0] for end in got) == args.cores * args.seeds
     )
-    print(json.dumps(out), flush=True)
+    print(json.dumps(power.clocked(out)), flush=True)
     sys.exit(0 if out["ok"] else 1)
 
 

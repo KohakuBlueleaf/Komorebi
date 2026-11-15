@@ -260,7 +260,7 @@ def main():
     )
     report["aiclk_after_mhz"] = aiclk_mhz(card_index)
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

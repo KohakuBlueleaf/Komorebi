@@ -12,6 +12,7 @@ import numpy as np
 from swiglu_class import SwiGLU, errors, inputs, tensors_of, wanted
 
 import komorebi as km
+from komorebi import power
 
 STARTED = time.monotonic()
 
@@ -25,15 +26,6 @@ class DirectSwiGLU(SwiGLU):
     def forward_direct(self, x, w1, w3, w2, hidden, y):
         self.up(x, w1, w3, hidden, cores=(0, 12))
         self.down(km.direct(hidden), w2, y, cores=(0, 4))  # up's blocks into L1
-
-
-def aiclk():
-    """The card's AI clock in MHz as the driver reports it (None where it is not)."""
-    try:
-        with open("/sys/class/tenstorrent/tenstorrent!0/tt_aiclk") as f:
-            return int(f.read().split()[0])
-    except (OSError, ValueError, IndexError):
-        return None
 
 
 def log(message):
@@ -100,7 +92,6 @@ def main():
     args = parse()
     data = inputs()
     result = {"shape": [32, 1024, 3072], "cores": {"up": 12, "down": 4}}
-    result["aiclk_mhz_before"] = aiclk()
     with km.Session(log=log) as session:
         t = tensors_of(session, data, empty=False)
         program = DirectSwiGLU(log=log, session=session, **t)
@@ -114,7 +105,7 @@ def main():
         if all(e == "none" for e in kernels) and np.array_equal(y_dram, y_direct):
             times, error_timed = timed(session, program, t, args)
             kernels.append(error_timed)
-        result["aiclk_mhz_after"] = aiclk()
+        power.clocked(result)  # in the session: the clock the times were taken at
     _, _, want_y = wanted(data, hidden_dram)
     result.update(
         {
@@ -134,7 +125,7 @@ def main():
         and times is not None
     )
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     return 0 if result["ok"] else 1
 
 

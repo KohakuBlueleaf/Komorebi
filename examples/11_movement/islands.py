@@ -12,6 +12,7 @@ import numpy as np
 from movement import pages_of, program
 
 import komorebi as km
+from komorebi import power
 
 STARTED = time.monotonic()
 
@@ -102,7 +103,7 @@ def main():
         log(f"output read back: {report['pages_wrong']} pages differ")
     report["exact"] = report["pages_wrong"] == 0
     report["ok"] = report["exact"] and report["kernel_errors"] == ["none"] * len(cards)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

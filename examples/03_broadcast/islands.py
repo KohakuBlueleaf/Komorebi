@@ -12,7 +12,7 @@ import numpy as np
 from broadcast import BROADCAST_FIELDS, COLUMN, CONSTANTS, KERNELS, ROW, TILE
 
 import komorebi as km
-from komorebi import layout
+from komorebi import layout, power
 
 STARTED = time.monotonic()
 
@@ -282,7 +282,7 @@ def main():
         }
     report["ok"] = all(case["ok"] for case in report["cases"].values())
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 
