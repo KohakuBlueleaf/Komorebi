@@ -166,6 +166,10 @@ enum {
     DC_STEPS
 };
 
+/* The chain thread's parts of a layer: its records written and flushed, the submit,
+ * the wait (the command's event within it). */
+enum { DC_THREAD_RECORDS, DC_THREAD_SUBMIT, DC_THREAD_WAIT, DC_THREADS };
+
 /* Region `stats`, DC_STATS_WORDS a job: status, done, ticks, then per step the ticks
  * summed, the most, the least; the overlapped span. 64-bit counts: low, high. */
 enum {
@@ -177,6 +181,7 @@ enum {
     DC_ST_STEP_WORDS = 4,
     DC_ST_SPAN_LOW = 48, /* overlapped: q's submit to o's event, summed (low, high) */
     DC_ST_SPAN_HIGH = 49,
+    DC_ST_THREAD = 50, /* the chain's thread: DC_THREADS sums (low, high) of ticks */
     DC_STATS_WORDS = 64,
     DC_STATS_SLOTS = 64 /* a job each: the checks and 2 x 6 cases at 3 lengths */
 };

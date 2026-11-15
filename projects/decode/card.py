@@ -119,9 +119,11 @@ class Decode:
         context=4096,
         bodies=DEFAULT_BODIES,
         chain=True,
+        stamps=False,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.chain = chain
+        self.stamps = stamps and chain  # SPLIT_CHAIN_STAMPS: chain_stamps() reads them
         if chain and trace:  # its words take the trace buffer's index (chain.h)
             raise ValueError("the chain's program runs untraced (trace=0)")
         self.bodies = tuple(bodies)
@@ -151,6 +153,8 @@ class Decode:
         }
         self.tensors["constants"] = dense_card.bf16_tensor(session, md.constants())
         self.tensors["attend"] = dense_card.bf16_tensor(session, md.attend_constants())
+        if self.stamps:
+            self.stamp_tensor = dense_card.prof_tensor(session, self.cores())
         if layers > D["DC_QK_LAYERS"]:
             raise ValueError(
                 f"{layers} layers: the qk tensor holds {D['DC_QK_LAYERS']}"
@@ -202,7 +206,10 @@ class Decode:
             kernels=dense_card.SPLIT_KERNELS,
             buffers=buffers(plans[0], self.keys_most, self.bodies, self.chain),
             args=lambda core: (table, table, table),
-            defines={"SPLIT_CHAIN": 1} if self.chain else {},
+            defines=(
+                ({"SPLIT_CHAIN": 1} if self.chain else {})
+                | ({"SPLIT_CHAIN_STAMPS": 1} if self.stamps else {})
+            ),
             compile_args={"reader": tile_args * 2, "writer": tile_args * 3},
             compute={
                 "math_fidelity": "HiFi2",
@@ -333,6 +340,24 @@ class Decode:
             raise km.KomorebiError(f"attend: {event}")
         return event
 
+    def cores(self):
+        """The cores the layer's commands take at most (attend's, o's)."""
+        return self.attend_plan.s * self.attend_plan.groups()
+
+    def chain_stamps(self, timeout=5.0):
+        """Every core's chain stamps since the last read (chain.h), then zeroed:
+        [cores, kernels, records, words] uint32 sums of AICLK cycles."""
+        tensor, cores = self.stamp_tensor, self.cores()
+        args = [tensor.address, 0, 0, 0, CHAIN["kChainStampsMode"], 0, 0, 0, 0, 0]
+        handle = self.run.submit("split", (0, cores), args, exclusive=True)
+        event = self.run.wait(handle, timeout=timeout)
+        if event.kind != "done":
+            raise km.KomorebiError(f"chain stamps: {event}")
+        (pages,) = self.session.read(tensor)
+        shape = (CHAIN["kChainStampKernels"], CHAIN["kChainStampRecords"])
+        words = pages.reshape(-1).view(np.uint32).reshape(cores, -1)
+        return words[:, : CHAIN["kChainStampBytes"] // 4].reshape(cores, *shape, -1)
+
     def write_layer(self, layer, weights):
         """Layer `layer`'s weights (layer_weights(): {name: (pages, values)}) into DRAM
         through the host channel, as the card's products take them: seconds taken."""
@@ -434,6 +459,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
+THREAD_PARTS = ("records", "submit", "wait")  # DC_THREAD_*: the chain's thread
 STEPS = ("qkv", "q", "k", "v", "attend", "o", "gate_up", "down", "chain")  # DC_STEP_*
 
 
@@ -453,6 +479,11 @@ def decode_slot(words):
         )
         / TICKS_PER_MICROSECOND,
     }
+    out["thread"] = {}
+    for part, name in enumerate(THREAD_PARTS):
+        at = D["DC_ST_THREAD"] + 2 * part
+        ticks = int(words[at]) | int(words[at + 1]) << 32
+        out["thread"][name] = ticks / TICKS_PER_MICROSECOND
     for step, name in enumerate(STEPS):
         at = D["DC_ST_STEPS"] + D["DC_ST_STEP_WORDS"] * step
         ticks = int(words[at]) | int(words[at + 1]) << 32

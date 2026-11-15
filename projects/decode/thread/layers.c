@@ -29,8 +29,10 @@ typedef struct {
     uint32_t index; /* the layer's number: its head norms' weights in the qk tensor */
     uint32_t rows;  /* the tokens a step: a3's DC_ROWS field of every command */
     uint64_t span_ticks; /* q's submit to o's event, summed over the layers */
-    uint32_t chain;      /* the layer as one command: the cores go on by themselves */
-    uint32_t records;    /* the chain's records: its first steps */
+    uint64_t
+        thread_ticks[DC_THREADS]; /* the chain's: records, submit, wait (decode.h) */
+    uint32_t chain;   /* the layer as one command: the cores go on by themselves */
+    uint32_t records; /* the chain's records: its first steps */
 } job_t;
 
 /* Overlapped, q, k, v and o alternate the sum's two sets: k and o the second. */
@@ -263,6 +265,7 @@ static int chain_sends(const job_t* job, uint32_t step) {
 /* The layer as one command: its records (chain.h) into region 3, then one SPLIT in
  * the chain's mode on every core of the records, waited for once. */
 static int run_chain(job_t* job) {
+    const uint64_t started = kmx_time();
     uint64_t bytes = 0;
     uint32_t* records = (uint32_t*)kmx_region(3, &bytes);
     const uint32_t* words = job->words;
@@ -311,7 +314,7 @@ static int run_chain(job_t* job) {
         const uint32_t width = (
             step == DC_STEP_GATE_UP && !job->bare ? words[DC_WORD_GATE_TILES] : 0u
         );
-        record[kChainInfo] = flags | needs << 8 | width << 16;
+        record[kChainInfo] = flags | needs << 8 | width << 16 | i << 24;
         for (uint32_t range = 0u; range < kChainRangeCount; range++) {
             record[kChainRanges + range] = (
                 step == DC_STEP_ATTEND ? words[DC_WORD_ATTEND_NEEDS + range] : 0u
@@ -322,6 +325,8 @@ static int run_chain(job_t* job) {
         cores = (command.group >> 16) > cores ? command.group >> 16 : cores;
     }
     kmx_flush(3);
+    const uint64_t written = kmx_time();
+    job->thread_ticks[DC_THREAD_RECORDS] += written - started;
     kmx_command(&chain, 0u, words[DC_WORD_SPLIT], 0u, cores);
     chain.hdr |= words[DC_WORD_EXCLUSIVE] << 8;
     if (kmx_block(&chain, 3, 0u, kChainRecordBytes) != KMX_OK) {
@@ -334,7 +339,13 @@ static int run_chain(job_t* job) {
     while (status == KMX_FULL && kmx_time() < deadline && !kmx_stop_requested()) {
         status = kmx_submit(&chain, &handle);
     }
-    return status != KMX_OK ? status : wait_step(job, DC_STEP_CHAIN, handle);
+    const uint64_t submitted = kmx_time();
+    job->thread_ticks[DC_THREAD_SUBMIT] += submitted - written;
+    if (status == KMX_OK) {
+        status = wait_step(job, DC_STEP_CHAIN, handle);
+    }
+    job->thread_ticks[DC_THREAD_WAIT] += kmx_time() - submitted;
+    return status;
 }
 
 /* LAYERS: a0 steps, a1 layers, a2 stats slot, a3 first layer, a4 bits, a5 the first
@@ -374,6 +385,9 @@ static uint32_t layers(const km_command_t* command) {
     );
     job.rows = command->a6;
     job.span_ticks = 0ull;
+    for (uint32_t part = 0u; part < DC_THREADS; part++) {
+        job.thread_ticks[part] = 0ull;
+    }
     for (uint32_t step = 0; step < DC_STEPS; step++) {
         job.step_ticks[step] = 0ull;
         job.step_most[step] = 0u;
@@ -417,6 +431,10 @@ static uint32_t layers(const km_command_t* command) {
     }
     slot[DC_ST_SPAN_LOW] = (uint32_t)job.span_ticks;
     slot[DC_ST_SPAN_HIGH] = (uint32_t)(job.span_ticks >> 32);
+    for (uint32_t part = 0u; part < DC_THREADS; part++) {
+        slot[DC_ST_THREAD + 2u * part] = (uint32_t)job.thread_ticks[part];
+        slot[DC_ST_THREAD + 2u * part + 1u] = (uint32_t)(job.thread_ticks[part] >> 32);
+    }
     kmx_flush(2);
     return status == KMX_OK ? (uint32_t)ticks : 0xFFFFFFF0u | (uint32_t)status;
 }
