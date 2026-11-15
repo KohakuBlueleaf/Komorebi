@@ -96,7 +96,8 @@ def test_a_word_in_a_tile_expression_is_refused_at_its_line():
     with pytest.raises(ProgramError) as e:
         unit_of(Worded, "a")
     assert "`results.push(x * scale)`" in str(e.value)
-    assert "`scale` (int) is none of them" in str(e.value)
+    assert "`scale` is an int word" in str(e.value)
+    assert "annotate it `scale: float`" in str(e.value)
 
 
 def one(expression):
