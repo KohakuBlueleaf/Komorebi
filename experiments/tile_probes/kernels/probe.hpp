@@ -21,7 +21,8 @@ namespace probe {
     constexpr uint32_t kFpu = 11;     // matrix-unit issue cost, K blocks in rotation
     constexpr uint32_t kIcache = 12;  // loop bodies around the instruction cache size
     constexpr uint32_t kSfpi = 13;    // what the SFPI compiler emits
-    constexpr uint32_t kRound = 14;   // ties of the matrix unit and the packer
+    constexpr uint32_t kRound = 14;   // ties of the matrix unit
+    constexpr uint32_t kPackRound = 15;  // ties of the packer
 
     // Output words. kNonce is written last: the host sees a finished run by it.
     constexpr uint32_t kNonce = 0, kError = 1, kNumTimes = 2;

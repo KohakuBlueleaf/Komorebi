@@ -1,0 +1,44 @@
+{
+ "m": 4096,
+ "k": 9216,
+ "n": 2560,
+ "cards": [
+  0
+ ],
+ "variant": "default",
+ "kohakutt": "ac81ff2",
+ "env": {
+  "KTT_GEMM": null,
+  "KTT_OWN_MATMUL_MIN_ROWS": null
+ },
+ "placements": null,
+ "check": {
+  "max_rel": 0.005866582741979163,
+  "rms_rel": 0.003965535318240278
+ },
+ "synced_microseconds": [
+  1182.5870005850447,
+  963.4729995013913,
+  970.8540001156507
+ ],
+ "synced_microseconds_median": 970.8540001156507,
+ "loop": {
+  "reps": 515,
+  "microseconds_per_call": 875.7119106783789,
+  "power": {
+   "0": {
+    "mean_w": null,
+    "peak_w": null,
+    "mean_temp_c": null
+   }
+  },
+  "aiclk_mhz": {
+   "0": [
+    1318,
+    1344,
+    1350
+   ]
+  }
+ },
+ "load_avg": 4.85791015625
+}
