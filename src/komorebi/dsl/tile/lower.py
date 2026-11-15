@@ -44,8 +44,8 @@ BANDS = 4  # bands of 4 rows a face (rule band: a body runs the bands of live ro
 TILE = 64  # Dst address units of a tile in either Dst: 4 faces of 16 rows
 # SFPLOAD / SFPSTORE's instr_mod0 by Dst: its own format (fp32), FP16A (a 16-bit Dst)
 DEST_MODES = {"fp32": 0, "fp16a": 1}
-# Operand tiles a whole-tile stream body reads (Dst tiles 0 ..).
-OPERANDS = 3
+# Operand tiles a whole-tile stream body reads: Dst tiles 0 .. 3 (half the fp32 Dst).
+OPERANDS = 4
 # The readers of a MAD-class result that the unit does not hold back (rule
 # mad-reader: the ISA's SFPMAD page; SFPGT, SFPLE from tt-metal's ckernel_sfpu_recip.h).
 NOT_HELD = ("SFPIADD", "SFPSHFT", "SFPAND", "SFPOR", "SFPSWAP", "SFPGT", "SFPLE")
@@ -1328,6 +1328,8 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
     root = ir.stores[0].value
     if root.kind == "matmul":
         return _product_alone(ir, root, fidelity, band)
+    if chain.prev is not None:  # more blocks than the chain's slots: run as stages
+        fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     leaves = [
         (k, leaf.source)
         for k, leaf in enumerate(chain.operands)
