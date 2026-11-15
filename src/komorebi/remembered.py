@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from komorebi import _env, kernel_buffer, native
+from komorebi import _env, kernel_buffer, native, prebuild
 from komorebi.program import Program
 
 FILE = "kernel_buffer.json"
@@ -55,7 +55,8 @@ def program_key(program, shape):
 
 
 def _path():
-    return native.cache_directory() / FILE
+    real = native.cache_directory() / FILE
+    return prebuild.memory(real) or real
 
 
 _unread = []  # the file was found unreadable once (logged once)
@@ -78,7 +79,10 @@ def read(log=None):
 
 
 def write(memory):
-    """Writes the maps (a whole new file, renamed over the old one)."""
+    """Writes the maps (a whole new file, renamed over the old one); a prebuild
+    writes its own copy (prebuild.memory), never the card's file."""
+    if prebuild.active() and prebuild.memory(native.cache_directory() / FILE) is None:
+        return
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{FILE}.{os.getpid()}")

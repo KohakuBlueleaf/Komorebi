@@ -12,7 +12,16 @@ import time
 
 import numpy as np
 
-from komorebi import abi, dram, formats, islands, kernel_buffer, native, remembered
+from komorebi import (
+    abi,
+    dram,
+    formats,
+    islands,
+    kernel_buffer,
+    native,
+    prebuild,
+    remembered,
+)
 from komorebi import chain as chain_module
 from komorebi import channel as channel_module
 from komorebi import programs as programs_module
@@ -1080,7 +1089,8 @@ class IslandSession:
                 raise KomorebiError(
                     f"the mesh's chips {self.chips} are not the cards {listed}"
                 )
-            self.mesh.open_x280()
+            if not prebuild.active():  # a mock has no X280
+                self.mesh.open_x280()
             self.log(f"X280 runtime open over the mesh (islands: chips {self.chips})")
             self.sessions = tuple(
                 session_module.Session(
@@ -1586,6 +1596,7 @@ class IslandSession:
                     }
             plans = self._links(programs)
             tables = self._tables_for_load()
+            built = False  # a prebuild: every island's built, then it stops
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
                 try:
                     # one island: the card's run as it is without islands
@@ -1599,8 +1610,12 @@ class IslandSession:
                             **options,
                         )
                     )
+                except prebuild.Stopped:
+                    built = True
                 except KomorebiError as error:
                     raise _named(error, island) from None
+            if built:
+                raise prebuild.Stopped()
             self._check_links(runs, plans)
         except (KernelSizeError, L1BudgetError) as error:
             for run in runs:

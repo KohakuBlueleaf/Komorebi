@@ -940,6 +940,30 @@ division and square root in [`divsqrt.hpp`](../../projects/raytrace/kernels/divs
 `KMR_INSN_CHECK=0` turns the check off, for a kernel that never executes the code
 found.
 
+### Building with no card
+
+`kmr prebuild script.py [args]` (or `komorebi.prebuild.run(script, args, cards)`)
+runs the script in a new process against a mock device: one P150, or with
+`--cards 0,1` two P150 cards in a mesh joined by ports 4 to 7 (the mock clusters
+ship in the package; `--cluster` names another). Its first load builds everything
+the card's load would and stops before the launch: the kernels, the overlay parts,
+the host transfer kernel when the script writes a tensor before it, and on two cards
+each island's kernels and the link cores' kernels. The build cache is the card's, so
+a card run of the script that follows compiles nothing. Every load, on a card or not,
+logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
+`compiled:` line with the defines of each kernel it had to compile.
+
+- It stops at the first load: a script that loads again after using a run gets its
+  later loads built on the card. Going on would take a mock run whose submits and
+  waits return at once and whose reads give zeros (a script that checks its results
+  then fails).
+- The remembered kernel buffers are read, so the mock opens as the card's next run
+  would, and never written: the prebuild keeps its sizes in a copy of its own. A load
+  refused by size (an island session cannot open its card again) is built a second
+  time at the size the card's next run opens at.
+- The mock cards have two Tensix columns harvested, as a P150 has; a card whose
+  grid differs needs its own cluster descriptor (`--cluster`).
+
 ## Rules the host keeps
 
 - The host never reads or writes a core's memory while the program runs, with one

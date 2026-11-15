@@ -5,7 +5,7 @@ import platform
 import sys
 from pathlib import Path
 
-from komorebi import __version__, _env, build, power
+from komorebi import __version__, _env, build, power, prebuild
 
 try:
     from komorebi_runtime import prepare
@@ -148,7 +148,13 @@ def main(argv=None):
     sampler.add_argument("--seconds", type=float, default=10.0)
     sampler.add_argument("--period", type=float, default=power.DEFAULT_PERIOD_S)
 
+    prebuild.add_arguments(
+        sub.add_parser(prebuild.COMMAND, help="build a script's programs with no card")
+    )
+
     args = parser.parse_args(argv)
+    if args.command == prebuild.COMMAND:
+        return prebuild.run_cli(args)
     if args.command == "power":
         return power.run_cli(args, sys.stdout)
     if args.command == "doctor":
