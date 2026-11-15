@@ -693,8 +693,12 @@ def chain_calls(run, calls, group, prefetch=True):
     names = {}
     for index, call in enumerate(calls):
         if isinstance(call, kc.Call):
-            described.append(call)
-            continue
+            raise kc.ChainRefused(
+                f"call {index} ({call.name or call.handler}): a chain.Call among a "
+                "class's handler calls; its tensors are names the class's calls do not "
+                "share, so no input or prefetch between them can be checked (state "
+                "every call one way)"
+            )
         if not isinstance(call, front.HandlerCall):
             raise kc.ChainRefused(
                 f"call {index}: {call!r} is neither a call of a class's handler nor a "
@@ -708,18 +712,11 @@ def chain_calls(run, calls, group, prefetch=True):
                     id(tensor), f"{place} ({getattr(tensor, 'address', 0):#x})"
                 )
         described.append(one)
-    written = {
-        id(one.output)
-        for one in described
-        if isinstance(one, Described) and one.output is not None
-    }
-    out = []
-    for index, one in enumerate(described):
-        if isinstance(one, kc.Call):
-            out.append(one)
-            continue
-        out.append(placed(described, index, one, names, written, prefetch))
-    return out
+    written = {id(one.output) for one in described if one.output is not None}
+    return [
+        placed(described, index, one, names, written, prefetch)
+        for index, one in enumerate(described)
+    ]
 
 
 def placed(described, index, one, names, written, prefetch):
@@ -727,18 +724,14 @@ def placed(described, index, one, names, written, prefetch):
     reads earlier (km.past, proven by the framework) or outside."""
     label = f"call {index} ({one.name})"
     before = described[index - 1] if index else None
-    before_output = getattr(before, "output", None) if before is not None else None
-    if isinstance(before, kc.Call):
-        before_output = None
+    before_output = before.output if before is not None else None
     call_input, k, ranges, reads, direct = None, None, (), [], None
     for key, (tensor, read_k, read_ranges, read_lines) in one.reads.items():
         name = tensor_name(tensor, names)
         writers = [
             at
             for at in range(index)
-            if isinstance(described[at], Described)
-            and described[at].output is not None
-            and id(described[at].output) == key
+            if described[at].output is not None and id(described[at].output) == key
         ]
         mark = one.marks.get(key)
         for line, stated in read_lines:

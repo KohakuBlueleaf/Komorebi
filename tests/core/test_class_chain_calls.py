@@ -115,3 +115,13 @@ def test_a_program_made_without_the_walk_is_refused():
     )
     with pytest.raises(kc.ChainRefused, match=why):
         run.chain([Handlers.scale(given["x"], given["y"], 1, WIDTH)])
+
+
+def test_a_written_call_among_a_classs_calls_is_refused():
+    given = tensors()
+    written = kc.Call("scale", (0,), (0, CORES), 1, WIDTH, "y", name="scale x")
+    calls = [written, *host_list(given)[1:2]]
+    with pytest.raises(
+        kc.ChainRefused, match=r"call 0 \(scale x\): a chain.Call among"
+    ):
+        chained(calls)
