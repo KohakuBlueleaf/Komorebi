@@ -47,14 +47,6 @@ one program.
 | Execution control | A dispatcher on one X280 cluster submits the commands and runs streams and graphs of them on the card. C threads on the other three X280 clusters run the irregular part of a program. |
 | More than one card | Each card is an **island** with its own grid and dispatcher. Ranks stay flat across islands, the host places each tensor by a hint, and commands, pages, parts of a page, messages and the parts of a reduce or a broadcast cross the links between the cards. The kernels of a program written for one card run on two unchanged ([islands](docs/concepts/islands.md)). |
 
-What is not there in code placement: the dynamic handlers of two programs in one run; a
-message with a body in a run that has X280 cores as ranks (a message carries a
-[body](examples/23_message_body/README.md) between Tensix cores, and X280 cores are
-[ranks](examples/24_thread_rank/README.md) of a run whose messages are one line); a switch of program in a run where every
-core holds every program; a load issued by a cast or a pull (the host issues
-`run.load`, an X280 thread `kmx_load`); a switch of a dynamic program; and what the old
-program kept in its buffers, which a switch loses.
-
 **Status: early development; 0.2.0 is the second release, for one card model.** Everything
 below runs on one P150A, from the two wheels on PyPI or from a clone against a tt-metal
 source tree; two P150As as two islands run from a clone. It has run on no other hardware.
@@ -79,42 +71,47 @@ New in 0.2.0:
 - **The X280 clusters at 1,350 MHz** by default (1,000 before), and a mover's NoC as a
   field of the program.
 
+On `main`, after 0.2.0:
+
+- **Kernels as Python classes.** A class's handlers are compiled into the kernels, and
+  its tile functions into the vector and matrix units' instructions
+  ([below](#a-kernel-as-a-python-class)); experimental.
+- **All-gather and all-reduce across islands**, as calls from a kernel and from the
+  host ([27_islands_gather](examples/27_islands_gather/),
+  [28_islands_reduce](examples/28_islands_reduce/)).
+- **A whole LLM decode as one program**: Qwen3-1.7B at 128 tokens a second on one card
+  ([decode](projects/decode/README.md)).
+
 ## At a glance
 
-One P150A, 2026-11-13 and 2026-11-14; every number is a row of [Measured](#measured), from the
-program's page and its committed results.
+Whole programs on the card, each checked against a reference. These are a few rows of
+[Measured](docs/measured.md), which has every table, its conditions and where the time
+goes.
 
-| Program | Shape | Komorebi | Reference | Reference / Komorebi |
-|---|---|---|---|---|
-| Matrix product | 128 x 896 x 128 | 6.0 µs | Kohaku-TT, same card: 28.7 µs | 4.75 |
-| Matrix product | 8192 cubed | 8608.3 µs | Kohaku-TT, same card: 11797.6 µs | 1.37 |
-| Matrix product | 16,384 cubed | 87944.5 µs | Kohaku-TT, same card: 75522.5 µs | 0.86 |
-| SwiGLU | 256 x 256 x 512 | 42.6 µs | Kohaku-TT, same card: 181.6 µs | 4.26 |
-| SwiGLU | 16,384 x 384 x 384 | 161.7 µs | Kohaku-TT, same card: 458.1 µs | 2.83 |
-| Attention | 2 x 8 x 1024 x 128, 2 K / V heads | 149.9 µs | Kohaku-TT, same card: 261.8 µs | 1.75 |
-| Attention | 1 x 8 x 1024 x 64, causal | 58.1 µs | Kohaku-TT, same card: 53.7 µs | 0.92 |
-| Rasterizer, whole frame | 10^6 triangles, 1024 x 1024 | 6.34 ms | CUDA on a V100: 4.42 ms | 0.70 |
-| Ray tracer, whole frame | Sponza close, 1024 x 1024 | 359.86 ms | CUDA on a V100: 102.00 ms | 0.28 |
+| Program | What ran | On the card | Beside it |
+|---|---|---|---|
+| LLM decode: Qwen3-1.7B in bfloat16, its own weights | a token through all 28 layers, one card | **128 tokens a second** at 256 cached tokens, 113 at 4,096 | the weights are read at 73 % of the card's DRAM ceiling; 16 of 16 greedy tokens are torch's |
+| Linear layer at a decode step | 32 x 5120 x 17408, two cards | 223.1 µs | one card: 409.4 µs; the weight is read at 799 GB/s over the two cards |
+| Matrix product | 8192 cubed | 8.61 ms | Kohaku-TT, same card: 11.80 ms |
+| SwiGLU | 256 x 256 x 512 | 42.6 µs | Kohaku-TT, same card: 181.6 µs |
+| Attention | 2 x 8 x 1024 x 128, 2 K / V heads | 149.9 µs | Kohaku-TT, same card: 261.8 µs |
+| Rasterizer, whole frame | 10^6 triangles, 1024 x 1024 | 6.34 ms | CUDA on a V100: 4.42 ms |
+| Ray tracer, whole frame | Sponza close, 1024 x 1024 | 359.9 ms | CUDA on a V100: 102.0 ms |
 
-Two P150A joined by four links, 2026-11-15: a linear layer `Y = X W` in bfloat16, single
-calls, from the [dense page](projects/dense/README.md#a-linear-layer-on-one-card-and-two).
-"Speed-up" is one card's time over two cards'. M = 32 is a decode step (one tile row),
-M = 1024 prefill. The output-dim-sharded rows are calls back to back, Kohaku-TT in the
-same form beside them with its own speed-up; the gathered rows are single calls.
+Against Kohaku-TT on the same card the neural programs are level or ahead on most
+shapes and behind on a few (16,384 cubed at 0.86 of its speed, causal attention at
+0.92). The rasterizer and the ray tracer run whole frames on the card: the rasterizer
+bit-exact against numpy at 0.4 to 0.9 of a V100's speed from 10^5 triangles up, the
+ray tracer at 0.35 of it or less.
 
-| Linear layer | M x K x N | One card | Two cards | Speed-up | Kohaku-TT, two cards, same form |
-|---|---|---|---|---|---|
-| Output dim sharded, one copy of W | 32 x 8192 x 8192 | 306.8 µs | 176.7 µs | 1.74 | 155.5 µs (1.95) |
-| Output dim sharded, one copy of W | 32 x 5120 x 17408 | 399.6 µs | 227.0 µs | 1.76 | 204.3 µs (1.96) |
-| Output dim sharded, one copy of W | 1024 x 8192 x 8192 | 698.8 µs | 380.6 µs | 1.84 | 382.7 µs (1.86) |
-| Output dim sharded, one copy of W | 4096 x 5120 x 17408 | 2,958.6 µs | 1,637.3 µs | 1.81 | 2,665.6 µs (2.32) |
-| W gathered on both cards | 8192 x 8192 x 8192 | 4,488.1 µs | 2,357.6 µs | 1.90 | 2,482.8 µs (1.83) |
-| W gathered on both cards | 16,384 x 16,384 x 16,384 | 34,544.8 µs | 17,731.5 µs | 1.95 | 17,067.8 µs (1.90) |
+<img src="docs/images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="docs/images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
-Above 1, Komorebi takes less time. The neural workloads are on parallel with or ahead of
-Kohaku-TT on most shapes; the rasterizer and the ray tracer run whole frames on the
-card, bit-exact against numpy, today at 0.4 to 0.9 of the V100's speed from 10^5
-triangles up (the rasterizer) and a third or less (the ray tracer).
+*Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
+are rasterized, both bit-exact against numpy: Sponza overview (3.80 ms a frame) and
+Bistro interior overview (6.50 ms). The last two are ray traced: Sponza close (359.86
+ms a frame) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
+Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
+(Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
 
 ## A kernel
 
@@ -227,7 +224,7 @@ Code that is not in the kernels is an [overlay](docs/reference/overlays.md), loa
 into a slot of a core's L1 while the run lives. Every example is a page under
 [examples](examples/README.md), with what it measured.
 
-### The same gate as a class
+## A kernel as a Python class
 
 The gate above is two C++ kernels, a header, three buffer pairs and compile arguments.
 The same program can be written as one Python class (experimental, on `main` after
@@ -275,17 +272,63 @@ words = (a, b, out, tiles, km.Pattern("AAAB"))
 run.wait(run.submit(Gate.gate, (0, 120), args=words))
 ```
 
-On the card the class gives the hand program's result (0 values of 786,432 outside its
-bound) in 83.7 µs a command against the hand's 76.2 (bfloat16, 12 cores, 64 tiles a
-core), with 37,632 B of kernel text against 38,640. The emitted arithmetic takes 1,597
-cycles a tile against 1,901.5 for the hand-written body. Nine of the examples have a
-class beside the hand program (`as_class/` in each), and so have a linear layer and
-the ray tracer's trace pass under [experiments](experiments/README.md); each README
-gives the class's result, time and kernel text beside the hand's. What a handler's
-lines may be is in [classes](docs/reference/classes.md), what a tile function may
-contain in [tile functions](docs/reference/tile.md). A program whose movers walk a
-table of jobs (attention, the rasterizer, the decode chain) is still written as C++
-kernels.
+A class can also keep a field in each core's L1, multiply in the matrix unit, and add
+up what a group of cores made. This handler is a linear layer at a decode step, `Y = X
+W` for one tile row of X: a group of 14 cores makes 16 columns of Y, each core from a
+fourteenth of K, and the group's parts are added up a tree to its first core, which
+writes them. Reduced from
+[dense_class](experiments/language/dense_class/README.md):
+
+```python
+K_TILES = 128  # K = 4096
+SPLIT = 14  # cores a group, each a fourteenth of K
+WIDTH = 16  # a group's columns of Y, in tiles
+CHUNK = 2  # K tiles a block
+
+
+class Linear(km.Program):
+    sums: km.L1[km.fp32, 1, WIDTH, 32, 32]  # a field in each core's L1
+
+    @km.tile_function(fidelity="HiFi2")
+    def project(x, w):
+        return x @ w  # the matrix unit
+
+    @km.handler
+    def split(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        share = self.rank % SPLIT  # this core's part of K
+        first = self.rank // SPLIT * WIDTH  # its group's columns of Y
+        k0 = share * K_TILES // SPLIT
+        k1 = (share + 1) * K_TILES // SPLIT
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, k0:k1], block=CHUNK),
+            km.Stream(w.tiles[k0:k1, first : first + WIDTH], block=CHUNK * WIDTH),
+        ):
+            self.sums += self.project(xb, wb)
+        whole = km.reduce(self.sums, form="tree", group=SPLIT)
+        if self.rank == self.leader:  # the group's first core
+            y.tiles[0:1, first : first + WIDTH].write(whole)
+```
+
+On the card each class gives the hand program's result. The time of a command, the
+class beside the C++ kernels written by hand:
+
+| Program | As a class | By hand |
+|---|---|---|
+| The gate, 12 cores, 64 tiles a core ([22_gate](examples/22_gate/as_class/README.md)) | 83.7 µs | 76.2 µs |
+| Linear layer, 32 x 4096 x 4096, the handler above ([dense_class](experiments/language/dense_class/README.md)) | 94.2 µs | 92.4 µs |
+| Linear layer, 1024 x 4096 x 4096, casts along rows and down columns | 358.6 µs | 382.4 µs |
+| The ray tracer's trace pass ([raytrace_class](experiments/language/raytrace_class/README.md)) | 3,294.9 µs | 3,259.9 µs |
+
+The gate's emitted arithmetic takes 1,597 cycles a tile against 1,901.5 for the
+hand-written body, in 37,632 B of kernel text against 38,640. Nine of the examples have
+a class beside the hand program (`as_class/` in each); each README gives the class's
+result, time and kernel text beside the hand's. What a handler's lines may be is in
+[classes](docs/reference/classes.md), what a tile function may contain in
+[tile functions](docs/reference/tile.md).
+
+Not written as classes yet, and in work: a program whose movers walk a table of jobs
+(attention, the rasterizer), and a chain of kernels (the decode,
+[below](#a-core-goes-on-to-the-next-kernel-by-itself)).
 
 ## The programming model
 
@@ -337,7 +380,8 @@ naming it ([18_thread_split](examples/18_thread_split/)), `run.load` making a gr
 another program ([16_two_programs](examples/16_two_programs/)). The cycles in the figure
 are those of [the overlay costs](docs/reference/overlays.md#costs) and of
 [a group switching program](docs/reference/overlays.md#a-group-switches-program); the
-numbers measured on one card are [below](#code-placement).
+numbers measured on one card are in
+[Measured](docs/measured.md#code-placement).
 
 ### Groups and commands in time
 
@@ -356,6 +400,29 @@ the grid between two programs every round
 ([19_thread_programs](examples/19_thread_programs/)); in the third a group's leader
 casts which overlay every core runs next
 ([17_leader_overlay](examples/17_leader_overlay/)).
+
+### A core goes on to the next kernel by itself
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/chain-dark.svg">
+  <img src="docs/images/chain-light.svg" width="830" alt="Two timelines of one decoder layer, five kernels in a fixed order: qkv, attend, o, gate_up and down. First, a command a step, on three rows (the X280 thread, a core's movers, a core's compute): for each kernel the thread submits a command, the movers read that kernel's weights, compute runs, and an event goes back to the thread before the next command; the thread stands between every two kernels. Second, a chain, one command for the layer, with a fourth row for the cores that write a kernel's input (the roots before): the thread submits once; the compute bars of the five kernels follow one another with no thread between them; the movers read each kernel's weights while the kernel before still computes; at each boundary a mark goes from the roots before to the core, which then starts the next kernel; one event goes back at the end. A note gives the decode project's measurement for Qwen3-1.7B in bfloat16 on one card at 4,096 cached tokens: 410 microseconds a layer with a command a step, 315 with the whole token as one chain, 87 and 113 tokens a second; time in the figure is schematic.">
+</picture>
+
+A command is one kernel's work, and between two commands somebody decides the next:
+the host, the dispatcher, a thread. When the next step is already known, that way back
+is only cost. In the [decode project](projects/decode/README.md) a token is 140 kernels
+in a fixed order, five a layer, so the program keeps a **record** for each in DRAM: the
+command's words, its cores, and the next record's address. One command starts the
+token. A core that finishes its part goes on to the next record by itself, and starts
+on it once the cores that write its input have **marked** it written. While it waits
+it already reads the next kernel's weights, so DRAM keeps reading through every
+boundary.
+
+With a command a step a layer takes 410 µs at 4,096 cached tokens; as one chain it
+takes 315 µs, of which 245 is the hardware's own (the weights and the cache at the DRAM
+ceiling, attention's products): 87 and 113 tokens a second. Today the chain is the
+decode project's own kernels. A framework call that gives any program the same chain,
+and the class lines that state one, are in work.
 
 ### One program on the grid
 
@@ -428,249 +495,42 @@ counts what crossed (`run.crossings()`), so a program can be placed to cross les
 
 ## Measured
 
-Whole programs on one P150A, every row from the program's page and its committed
-results, all dated 2026-11-13: AICLK 1,350 MHz nominal (the card lowers it under its
-power limit in the long matrix loops; each page gives the clock it sampled) and the
-X280 at the session's 1,000 MHz. Power is the whole card's mean over the loop.
+Every table, with its conditions, the card's power and where the time goes, is on one
+page: [Measured](docs/measured.md). In short, on one P150A unless said:
 
-### Rasterizer and ray tracer: whole frames
+- **LLM decode** ([decode](projects/decode/README.md)). Qwen3-1.7B in bfloat16, a token
+  through 28 layers as one command: 315.2, 287.1 and 278.6 µs a layer at 4,096, 1,024
+  and 256 cached tokens, 113.3 to 128.2 tokens a second. At 4,096, 244.6 µs of a layer
+  is the hardware's floor (the weights and the cache read at the DRAM ceiling of 495.6
+  GB/s, attention's products); the page accounts for the other 70.6 term by term.
+- **Matrix product, SwiGLU and attention**, against Kohaku-TT on the same card
+  ([dense](projects/dense/README.md#results), [SwiGLU](projects/dense/SWIGLU.md#results),
+  [attention](projects/attention/README.md#time-and-power)). Kohaku-TT's time over
+  ours: matrix product 0.86 to 4.75 over seven shapes, SwiGLU 2.49 to 4.26 over four,
+  attention 0.92 to 1.75 over five. From 4096 cubed up both are bound by the card's
+  power limit.
+- **Two cards**
+  ([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two),
+  [islands](docs/reference/islands.md)). A linear layer with the weight sharded along
+  the output dimension takes 0.54 to 0.59 of one card's time, at a decode step and at
+  prefill; with the weight gathered on both cards, 8192 and 16,384 cubed take half of
+  one card's time (1.90 and 1.95 times faster). Beside Kohaku-TT in the same form on
+  the same two cards, ours takes 1.03 to 1.31 of its time at a decode step. Kernels
+  put pages across the links at 72.5 GB/s each way; a message crosses in 4.7 µs.
+- **Rasterizer** ([raster](projects/raster/README.md)). Whole frames of 1024 x 1024,
+  bit-exact against numpy: a settled frame takes 0.95 to 6.5 ms from 398 to 10^6
+  triangles, 0.26 to 0.92 of a V100's speed. Its fill pass alone is ahead of the
+  V100's fill stage (10^6 triangles: 2.1 against 3.3 ms).
+- **Ray tracer** ([raytrace](projects/raytrace/README.md)). Whole frames of 1024 x
+  1024, ray generation, four traces and shading as eight commands: 22 to 597 ms, 0.06
+  to 0.35 of a V100's speed. The traces are 67 to 97 % of the frame.
+- **Code placement** ([overlays](docs/reference/overlays.md#costs)). A core loads a
+  reader part in 0.88 µs and finds a held one in 0.07 µs. A group changes program in
+  2.3 to 2.6 µs on the cores; the call takes 6.2 µs from an X280 thread (`kmx_load`)
+  against 134.9 µs from the host (`run.load` and its wait).
 
-Both programs run the whole frame on the card, 1024 x 1024, and both are far below
-half of a V100's speed today. The V100 and C++ columns are the reference's whole
-frame (the same algorithm in CUDA on one idle Tesla V100 32 GB, and in C++ on a shared
-96-thread AMD EPYC 7K62); none of the three counts the scene's upload or the image's
-read-back.
-
-The **rasterizer**: the passes and the counting run on the 120 cores, the serial rest of
-the middle pass between them on a thread on the X280 work cluster; the image is bit-exact
-against numpy. Median of 5 loads, each about 1 s of frames; card 1
-([raster](projects/raster/README.md#the-frame-on-the-work-clusters-thread), results in
-`projects/raster/results/`,
-[reference](projects/raster/reference/README.md#timings-and-power)):
-
-| Scene | Triangles | Frame | Card frame, ms | of which the X280 step | Card W | C++ 96 threads, ms | V100, ms | V100 / card |
-|---|---|---|---|---|---|---|---|---|
-| tiny | 398 | first | 0.987 | 0.436 | 61.9 | 2.66 | 0.29 | 0.29 |
-| tiny | 398 | settled | 0.987 | 0.436 | 63.4 | 2.66 | 0.29 | 0.29 |
-| 10^4 | 11,994 | first | 0.982 | 0.440 | 67.0 | 3.32 | 0.25 | 0.25 |
-| 10^4 | 11,994 | settled | 0.952 | 0.453 | 65.8 | 3.32 | 0.25 | 0.26 |
-| 10^5 | 102,308 | first | 2.050 | 0.753 | 68.0 | 4.08 | 0.79 | 0.39 |
-| 10^5 | 102,308 | settled | 1.967 | 0.772 | 68.2 | 4.08 | 0.79 | 0.40 |
-| 10^6 | 997,806 | first | 6.894 | 0.807 | 68.9 | 17.87 | 4.42 | 0.64 |
-| 10^6 | 997,806 | settled | 6.339 | 0.823 | 70.2 | 17.87 | 4.42 | 0.70 |
-| Sponza, overview | 262,266 | first | 5.770 | 0.457 | 68.8 | 7.88 | 2.31 | 0.40 |
-| Sponza, overview | 262,266 | settled | 3.795 | 0.466 | 71.6 | 7.88 | 2.31 | 0.61 |
-| Bistro interior, overview | 1,020,903 | first | 8.762 | 0.736 | 66.9 | 14.10 | 5.99 | 0.68 |
-| Bistro interior, overview | 1,020,903 | settled | 6.503 | 0.753 | 69.4 | 14.10 | 5.99 | 0.92 |
-
-"First" is a scene's first frame, with COUNT's and SETUP's ranges cut into equal
-parts: what a single image costs. "Settled" is a later frame of the same camera, whose
-ranges are cut by the frame before's predicted costs. Where the time goes (settled
-frame): at 10^6 FILL 2.1 ms, SETUP 1.9 ms, COUNT 1.1 ms and the X280 step 0.8 ms; on
-Bistro SETUP and FILL 2.1 ms each and COUNT 1.3 ms. The fill alone is ahead of the
-V100's fill stage (10^6: 2.1 against 3.3 ms; Bistro: 2.1 against 5.6 ms).
-
-The **ray tracer**: ray generation, four traces and shading are eight commands on the
-120 cores; trees larger than L1 are read from DRAM as treelets. Card 1. A cold frame
-has no history and is submitted by the host. A warm frame is the second or third of the
-same camera, submitted by a thread on the X280. Before each trace the thread cuts the
-rays into the cores' ranges by the frame before's costs; its plan time counts in the frame
-([raytrace](projects/raytrace/README.md#the-frame-planned-on-the-x280)):
-
-| Scene | Frame | Card frame, ms | of which the X280 plan | Card W | C++ all threads, ms | V100, ms | V100 / card | Pixels differing from numpy |
-|---|---|---|---|---|---|---|---|---|
-| tiny (tree in L1) | cold and warm | 22.24 | - | 68.0 | 20.59 | 2.59 | 0.12 | 0 |
-| 10^4 | cold | 57.91 | - | 63.0 | 26.44 | 4.16 | 0.07 | 0 |
-| 10^4 | warm | 70.63 | 5.27 | 61.0 | 26.44 | 4.16 | 0.06 | 0 |
-| 10^5 | cold | 81.51 | - | 63.0 | 35.47 | 6.57 | 0.08 | 0 |
-| 10^5 | warm | 93.01 | 5.34 | 66.9 | 35.47 | 6.57 | 0.07 | 0 |
-| 10^6 | cold | 154.21 | - | 63.0 | 53.66 | 11.61 | 0.08 | 1 |
-| 10^6 | warm | 192.50 | 5.32 | 70.4 | 53.66 | 11.61 | 0.06 | 1 |
-| Sponza, close | cold | 359.86 | - | 63.0 | 264.78 | 102.00 | 0.28 | 244 |
-| Sponza, close | warm | 323.38 | 3.64 | 71.0 | 264.78 | 102.00 | 0.32 | 244 |
-| Sponza, overview | cold | 348.53 | - | 69.2 | 230.36 | 95.52 | 0.27 | 234 |
-| Sponza, overview | warm | 313.63 | 4.14 | 68.2 | 230.36 | 95.52 | 0.30 | 234 |
-| Bistro interior, close | cold | 596.97 | - | 61.0 | 401.87 | 211.42 | 0.35 | 2 |
-| Bistro interior, close | warm | 596.86 | 4.35 | 70.0 | 401.87 | 211.42 | 0.35 | 3 |
-| Bistro interior, overview | cold | 523.72 | - | 73.1 | 336.80 | 153.94 | 0.29 | 2 |
-| Bistro interior, overview | warm | 477.48 | 4.57 | 70.5 | 336.80 | 153.94 | 0.32 | 2 |
-
-Where the time goes: the four traces take 67 % (10^4) to 97 % (Bistro) of the frame,
-the bounce trace alone 36 to 59 %; each core sorts its bounce and second-shadow rays
-(about 15 ms a frame) and reads the treelets its rays need from DRAM. In the traces,
-box tests on packets with few live broadcasts come first (61 % on Sponza's overview), then
-the wait for each command's slowest core. The differing pixels are ties between two
-triangles at the same float32 distance, but for one or two on each Bistro view. The
-plan by the frame before takes 35 to 46 ms off Sponza and Bistro's overview, nothing off
-Bistro's close view, and costs 12 to 38 ms on 10^4 to 10^6: it cuts the traces into up
-to 8 commands, and the cores read more treelets.
-
-<img src="docs/images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="docs/images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
-
-*Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
-are rasterized, both bit-exact against numpy: Sponza overview (3.80 ms a settled frame
-above) and Bistro interior overview (6.50 ms). The last two are ray traced: Sponza close
-(359.86 ms a frame above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
-Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
-(Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
-
-### Matrix product, attention and SwiGLU against Kohaku-TT
-
-The same card, ours and Kohaku-TT (at ac81ff2) one after the other in one session;
-bf16 operands, fp32 accumulation; time per call in a loop of calls, uploads and
-read-back outside it. "Kohaku-TT / ours" above 1 means ours is faster.
-Ours was measured again on 2026-11-14 with the programs' own bench scripts (best of three
-runs); a row that moved by less than 3 % keeps its value of 2026-11-13, and Kohaku-TT's
-columns were not run again. Replaced: four matrix product rows, three attention rows
-and the one SwiGLU cell in [its page](projects/dense/SWIGLU.md#results) that moved.
-
-[Matrix product](projects/dense/README.md#results), HiFi2, Kohaku-TT's fastest of its
-three routes (`results/<preset>-ours.json`, `-ktt-<route>.json`):
-
-| M x K x N | Ours, µs | W | Kohaku-TT, µs | W | Kohaku-TT / ours |
-|---|---|---|---|---|---|
-| 128 x 896 x 128 | 6.0 | 71 | 28.7 | 63 | 4.75 |
-| 16,384 x 384 x 384 | 61.2 | 130 | 94.1 | 116 | 1.54 |
-| 16,384 x 1024 x 1024 | 393.5 | 128 | 389.9 | 136 | 0.99 |
-| 4096 cubed | 958.3 | 138 | 957.0 | 151 | 1.00 |
-| 8192 cubed | 8608.3 | 141 | 11797.6 | 139 | 1.37 |
-| 16,384 cubed | 87944.5 | 137 | 75522.5 | 142 | 0.86 |
-| 32 x 4096 x 4096, K split | 92.4 | 83 | 81.0 | 91 | 0.88 |
-
-From 4096 cubed up both sides are bound by the card's power limit in a loop (ours ran
-in a slower mode in most loops of 4096 and 8192 cubed on 2026-11-14, see the
-[page](projects/dense/README.md#results); the table shows the fastest run); the last row
-is the K split of the [page](projects/dense/README.md#the-k-split) (14,1,16,5 tree, groups
-of 16 cores to an output block), bound by reading W from DRAM: 363 GB/s in the call
-against Kohaku-TT's 414.
-
-[Attention](projects/attention/README.md#time-and-power), K and V multicast down broadcasts of
-cores, the same compute body as Kohaku-TT's flash kernel
-(`results/ours-<preset>.json`, `ktt-<preset>.json`):
-
-| B x H x S x D | Ours, µs | W | Kohaku-TT, µs | W | Kohaku-TT / ours |
-|---|---|---|---|---|---|
-| 1 x 32 x 4096 x 64 | 2675.3 | 138 | 2918.5 | 135 | 1.09 |
-| 1 x 24 x 4096 x 128 | 2328.3 | 144 | 3001.8 | 132 | 1.29 |
-| 8 x 16 x 256 x 64 | 76.7 | 123 | 80.7 | 110 | 1.05 |
-| 1 x 8 x 1024 x 64, causal | 58.1 | 103 | 53.7 | 99 | 0.92 |
-| 2 x 8 x 1024 x 128, 2 K / V heads | 149.9 | 136 | 261.8 | 105 | 1.75 |
-
-The causal row is behind per call (58.1 against 53.7) and ahead per pass (48.3): the cost of a command.
-
-[SwiGLU](projects/dense/SWIGLU.md#results), `silu(x W1) * (x W3)` then `W2`, HiFi2,
-ours in its faster form (`results/swiglu-<preset>-<form>-hifi2.json`, `-ktt-<route>.json`):
-
-| M x D x H | Ours, µs | W | Kohaku-TT, µs | W | Kohaku-TT / ours |
-|---|---|---|---|---|---|
-| 256 x 256 x 512 | 42.6 | 76 | 181.6 | 73 | 4.26 |
-| 4096 x 256 x 512 | 73.7 | 114 | 183.5 | 95 | 2.49 |
-| 16,384 x 256 x 512 | 180.2 | 137 | 542.1 | 109 | 3.01 |
-| 16,384 x 384 x 384 | 161.7 | 142 | 458.1 | 108 | 2.83 |
-
-### Two cards as one program
-
-Two P150A joined by four Ethernet links, one session, 2026-11-14 and 2026-11-15; each
-number from the page it links.
-
-A linear layer `Y = X W`, bfloat16 with fp32 accumulation, cubes from 128 to 16,384,
-the same script and kernels on one card and on two
-([dense](projects/dense/README.md#one-card-and-two-128-to-16384-cubed)); median single
-call in microseconds, "x" one card's time over two cards':
-
-| Cube | One card | Two cards, W gathered | x | Kohaku-TT: one card / two cards (W gathered) |
-|---|---|---|---|---|
-| 128 | 7.2 | 7.6 | 0.95 |  |
-| 256 | 11.6 | 10.0 | 1.16 |  |
-| 512 | 15.9 | 19.8 | 0.80 |  |
-| 1024 | 43.8 | 40.6 | 1.08 |  |
-| 2048 | 167.1 | 125.4 | 1.33 |  |
-| 4096 | 655.0 | 420.7 | 1.56 | 819.8 / 487.3 |
-| 8192 | 4,488.1 | 2,357.6 | 1.90 | 4,549.5 / 2,482.8 |
-| 16,384 | 34,544.8 | 17,731.5 | 1.95 | 32,489.3 / 17,067.8 |
-
-With the weight gathered on both cards nothing crosses in a call, and two cards take
-half of one card's time from 8192 up, as Kohaku-TT's default two-card form does.
-
-With one copy of the weight, the form to use is the **output dimension sharded** one: W
-and Y split along N, the activation on both cards. Each card runs the one-card kernel
-on its half of N and nothing crosses in the call
-([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two)). Shapes of
-models' layers, M = 32 a decode step and M = 1024 or 4096 prefill, microseconds a call.
-"Hardware" is what one card needs for its half at its measured ceilings (DRAM read
-495.6 GB/s, 4.70e9 tile products a second), whichever is longer:
-
-| M x K x N | One card | Two cards | Of one card | Hardware, a card | Where the rest goes, on the slower card |
-|---|---|---|---|---|---|
-| 32 x 4096 x 4096 | 94.0 | 53.8 | 0.57 | 33.9 | W read under the ceiling 7.2, the sum inside a group 9.0, way in and out 2.4 |
-| 32 x 8192 x 8192 | 312.3 | 172.8 | 0.55 | 135.4 | read 21.9, sum 12.0, way in and out 2.3 |
-| 32 x 5120 x 17408 | 409.4 | 223.1 | 0.54 | 179.8 | read 25.8, sum 13.1, way in and out 2.4 |
-| 32 x 17408 x 5120 | 422.4 | 227.4 | 0.54 | 179.8 | read 26.3, sum 18.3, way in and out 1.6 |
-| 1024 x 8192 x 8192 | 698.8 | 380.6 | 0.54 | 223.1 | W crosses a column twice: read by the column's cores into its sender, then cast down the column |
-| 1024 x 5120 x 17408 | 961.5 | 518.8 | 0.54 | 296.3 | the same: 247.8 into the sender, 173.2 the cast |
-| 4096 x 5120 x 17408 | 2,960.2 | 1,739.8 | 0.59 | 1,185.2 | the matrix unit, 1,469.4 on the slowest core |
-
-At a decode step the call is the weight's read: 32 x 5120 x 17408 in 223.1 µs is 799
-GB/s over the two cards. At M = 1024 the weight's read is spread over each column's
-cores (one row of cores read it before, at a quarter of the ceiling: 1,408.0 µs on one
-card then, 698.8 now, calls back to back); what is left is the kernel's own, the weight
-crossing a column twice. A chain of two such layers
-(hidden to mlp to hidden) gathers the first layer's output to both cards with
-`km::all_gather` inside its kernel, 20.6 to 34.5 µs a call and 5.9 to 14.0 % of the
-chain. The all-gather and all-reduce calls are on `main`, after 0.2.0.
-
-The **input dimension sharded** form (X and W split along K, each card a partial of the
-whole output, one addition across the cards) is exact and recorded on the same page. It
-has to move the whole output across a link and add it, 69 to 149 µs at a decode step,
-so it is not the form to use on this hardware.
-
-Beside Kohaku-TT in the same form on the same two cards, 24 shapes
-([table](projects/dense/README.md#the-terms-where-ours-was-slower-one-by-one)): at a
-decode step ours takes 1.03 to 1.31 of its time on two cards and 0.94 to 1.12 on one.
-Kohaku-TT's own form (every core all of K for its columns, no sum) is a second plan of
-the same kernel, with the weight on both movers and the casts on its NoCs, and the
-kernel takes it where it is faster: that brought one card level. On two cards what is
-left is the tail after the products (the sum, the output, the islands' add: about
-10 µs) and the weight's rate at the last core to finish; under the other plan it is the
-sum inside a group and a second read of the activation. At prefill ours takes 0.61 to
-0.99 of its time where a card's half of N is wide (4096 x 5120 x 17408: 1,637.3
-against 2,665.6 µs) and 1.02 to 1.56 where it is narrow (4096 x 9216 x 2560: 681.5
-against 436.8 µs): there the time is the step of a broadcast, a hand-over into the
-sending core and then its cast. Each of these terms is the kernel's own, not the
-links' or the model's.
-
-What crosses a link, and what it costs ([islands](docs/reference/islands.md)):
-
-| What | Measured |
-|---|---|
-| A command to a group over both cards | 7.46 µs split by the host, 10.89 µs sent across by a thread's dispatcher |
-| A message forwarded to a rank of the other card | 4.7 µs a crossing in a run of round trips |
-| A reduce over both cards | a sum over 238 ranks in 172.6 µs against 162.8 µs on one card of 119 |
-| Pages put by kernels, both cards at once | 512 MiB each way in 7.41 ms, 72.5 GB/s each way |
-| Pages read by kernels | 512 MiB in 11.1 to 13.2 ms, 40.6 to 48.3 GB/s |
-| Part of a page, written (`km::put_bytes`) | 65,536 keys placed in the other card's DRAM in 5.99 ms |
-| Part of a page, read (`km::read_bytes`) | a range every 1.70 to 1.95 µs |
-| A thread's `kmx_fetch` of a tensor the other card holds | 64 MiB in 1.13 ms, 59.5 GB/s |
-| The session's own copy across (`session.cross`) | 512 MiB in 5.35 ms, 100.4 GB/s |
-
-### Code placement
-
-Overlays, programs in one run and handlers loaded where they are needed, each number
-from the page it links (the runs are on those pages; none was measured again for this
-table). One P150A, AICLK 1,350 MHz.
-
-| What | Number | Page |
-|---|---|---|
-| A held overlay called, against the same code compiled in | from a leader's cast to the last call done, 1.19 to 1.31 µs held against 1.00 to 1.13 µs compiled in, on a row, a column and the grid | [17_leader_overlay](examples/17_leader_overlay/README.md#measured) |
-| A load | `load()` of a reader part 0.88 µs; of a reader and compute parts, meeting, 1.82 to 1.88 µs; held, 0.07 µs | [17_leader_overlay](examples/17_leader_overlay/README.md#measured) |
-| A group changes program (`run.load`) | 2.3 to 2.6 µs (3,124 to 3,360 cycles), on 1 core and on 120 | [16_two_programs](examples/16_two_programs/README.md#numbers) |
-| A group changes program from an X280 thread (`kmx_load`) | 6.2 µs from issue to done in the thread, against 134.9 µs for `run.load` and its wait from the host; 40 rounds of a load and two commands on 120 cores in 1,825 µs against 16,950 µs host-fed | [21_thread_load](examples/21_thread_load/README.md#numbers) |
-| A command to an X280 thread | 133.0 µs from the host one at a time against 132.6 µs for a grid command; in a graph on the X280, a round with the thread's command 19.3 µs against 11.2 µs with a second grid command | [13_thread_commands](examples/13_thread_commands/README.md#numbers) |
-| A message through handlers as parts | 10^6 messages on 120 cores in 10.76 ms with a slot for each handler against 10.83 ms with the handlers compiled in (94.2 and 93.6 million messages a second); 11.40 ms with one slot | [20_message_overlays](examples/20_message_overlays/README.md#measured) |
-| A thread splits the grid between two programs | 24 rounds in 974 µs on 12 cores and 1,023 µs on 120, against 1,001 and 1,070 µs for the best fixed split and 7,378 and 7,521 µs with the host feeding it | [19_thread_programs](examples/19_thread_programs/README.md#numbers) |
-
-The examples' own timings (commands per microsecond, broadcasts, forwards, streams, graphs and
-threads) are in each [example's README](examples/README.md).
+The examples' own timings (commands per microsecond, broadcasts, forwards, streams,
+graphs and threads) are in each [example's README](examples/README.md).
 
 ## Install
 
@@ -741,7 +601,7 @@ experiments/                   hardware and design probes (see its README)
 reference/                     CPU, C++ and CUDA references the programs are checked against
 tests/core/  tests/projects/   tests with no card: the framework; the programs
 tests/hardware/                card tests (KMR_CARD=1)
-docs/                          concepts, references, install, development
+docs/                          concepts, references, measured, install, development
 ```
 
 ## Sizes a program works within
@@ -815,8 +675,8 @@ program has to be written around is under
 8. **A language above the kernels.** A Python layer that writes the kernels from
    classes and compiles tile arithmetic is on `main`, after 0.2.0
    ([classes](docs/reference/classes.md), [tile functions](docs/reference/tile.md)).
-   A program whose compute side keeps buffers of its own, or whose movers walk a
-   table of jobs, is still written as C++ kernels.
+   A program whose movers walk a table of jobs, or whose cores go from one kernel
+   to the next by themselves, is still written as C++ kernels.
 9. **Loading TT-NN's kernels.** A TT-NN operation is a tt-metal program, which is what
    a program loaded as overlays is; nothing loads an operation's kernels as they are.
 10. **Starting without tt-metal's launch.** The session opens the card in slow dispatch
@@ -843,6 +703,8 @@ Komorebi has run on Blackhole P150A cards, one and two together, and on no other
 | [islands](docs/concepts/islands.md), [recovery](docs/guides/recovery.md) | two cards as one session; a command that does not return |
 | [X280 threads](docs/threads.md) | C on a work cluster with kmx |
 | [host API](docs/reference/host.md) | `Program`, `Session`, `Run`, errors, builds |
+| [classes](docs/reference/classes.md), [tile functions](docs/reference/tile.md) | kernels written as Python classes; arithmetic compiled for the vector and matrix units |
+| [measured](docs/measured.md) | every program's tables, with conditions and where the time goes |
 | [examples](examples/README.md), [projects](projects/README.md) | runnable examples; the five programs and their results |
 | [install](docs/install.md), [development](docs/development.md) | building from a clone; layout, checks, conventions |
 

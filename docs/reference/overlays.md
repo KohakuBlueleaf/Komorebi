@@ -356,6 +356,19 @@ The service overlay of every run serves it, so it needs no program field: the
 dispatcher does not check which program its cores hold. A failed bound gives up with
 where `copy`.
 
+## Not in this version
+
+- The dynamic handlers of two programs in one run.
+- A message with a body in a run that has X280 cores as ranks: a message carries a
+  [body](../../examples/23_message_body/README.md) between Tensix cores, and X280
+  cores are [ranks](../../examples/24_thread_rank/README.md) of a run whose messages
+  are one line.
+- A switch of program in a run where every core holds every program.
+- A load issued by a cast or a pull: the host issues `run.load`, an X280 thread
+  `kmx_load`.
+- A switch of a dynamic program.
+- What the old program kept in its buffers, which a switch loses.
+
 The experiments these numbers stand beside are
 [overlay_costs](../../experiments/code/overlay_costs/README.md),
 [overlay_probe](../../experiments/code/overlay_probe/README.md) and

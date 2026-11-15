@@ -146,6 +146,7 @@ nav:
       - examples/26_islands_sum/README.md
       - examples/27_islands_gather/README.md
       - examples/28_islands_reduce/README.md
+  - Measured: measured.md
   - Releases:
       - releases/0.2.0.md
       - releases/0.1.0.md

@@ -1,10 +1,11 @@
-"""Draws the five figures of the programming model, each from one description, as
+"""Draws the six figures of the programming model, each from one description, as
 docs/images/<name>-{light,dark}.svg: card ("The card as Komorebi runs it": the tile
 grid with every way cores talk drawn once), breakpoints ("A thread has a program
 counter and a place": six ways cores talk, each on a piece of the grid with the lines
 of the example that does it), placement ("Code goes where the work is": overlays),
-groups ("Groups and commands in time": three timelines) and mapcollect ("One program
-on the grid": a command to a core group, then the thread split).
+groups ("Groups and commands in time": three timelines), mapcollect ("One program
+on the grid": a command to a core group, then the thread split) and chain ("A core
+goes on to the next kernel by itself": a command a step beside one chain).
 
 usage: python docs/images/patterns.py [output folder]    (needs Pillow; Noto Sans, if
 it is installed, measures the labels)
@@ -2040,6 +2041,91 @@ def figure_mapcollect(theme):
     return s.finish(int(end + 2))
 
 
+# ---------------------------------------------------------------------------
+# Figure 6: a core goes on to the next kernel by itself (the chain).
+# ---------------------------------------------------------------------------
+
+KERNELS = ["qkv", "attend", "o", "gate_up", "down"]
+
+
+def panel_step(s, y):
+    """A command a step: the thread between every two kernels."""
+    c = s.c
+    names = ["X280 thread", "a core's movers", "a core's compute"]
+    lanes = Lanes(s, y + 52, names, BOX_X + 176, pitch=26)
+    end = lanes.axis()
+    height = end + 34 - y
+    panel_frame(s, y, height, "a command a step", "projects/decode", "a")
+    for k, kernel in enumerate(KERNELS):
+        start = 5 + 19 * k
+        lanes.bar(names[0], start - 4.5, start - 0.5, "", "w")
+        lanes.hop(names[0], names[2], start, "a", sw=1.8)
+        lanes.bar(names[1], start + 0.5, start + 9.5, "W", "y")
+        lanes.bar(names[2], start + 2, start + 13, kernel, "a")
+        lanes.hop(names[2], names[0], start + 13.6, "g", sw=1.8)
+    s.text(
+        BOX_X + 14,
+        end + 22,
+        "Every kernel waits for the thread: the answer goes up, the next command "
+        "comes down, and only then does a core start reading its weight.",
+        12,
+        c["mute"],
+    )
+    return height
+
+
+def panel_chain(s, y):
+    """One command: each core takes its next kernel from a record, on a mark."""
+    c = s.c
+    names = ["X280 thread", "a core's movers", "a core's compute", "the roots before"]
+    lanes = Lanes(s, y + 52, names, BOX_X + 176, pitch=26)
+    end = lanes.axis()
+    height = end + 52 - y
+    panel_frame(s, y, height, "a chain: one command for the layer", "", "b")
+    lanes.bar(names[0], 0.5, 4.5, "", "w")
+    lanes.hop(names[0], names[2], 5, "a", sw=1.8)
+    for k, kernel in enumerate(KERNELS):
+        start = 5 + 14.5 * k
+        early = start if k == 0 else start - 7
+        lanes.bar(names[1], early + 0.5, early + (7 if k == 0 else 10.5), "W", "y")
+        lanes.bar(names[2], start + 1, start + 14, kernel, "a")
+        if k:
+            lanes.bar(names[3], start - 2.4, start + 0.2, "", "b")
+            lanes.hop(names[3], names[2], start + 0.6, "b", sw=1.8)
+    lanes.hop(names[2], names[0], 5 + 14.5 * len(KERNELS) + 0.4, "g", sw=1.8)
+    notes = [
+        "A core reads its next record when its kernel ends. The roots of the kernel "
+        "before mark the cores that read what they wrote;",
+        "while a core waits for its mark it already reads the weight of its next "
+        "kernel. The thread is asked once.",
+    ]
+    for i, line in enumerate(notes):
+        s.text(BOX_X + 14, end + 22 + 18 * i, line, 12, c["mute"])
+        check(BOX_X + 14 + width(line), LIMIT, line)
+    return height
+
+
+def figure_chain(theme):
+    s = Svg(theme, "A core goes on to the next kernel by itself", markers="abwyg")
+    bottom = stack(s, [panel_step, panel_chain])
+    items = [
+        ("decide", "the thread works"),
+        ("a", "a command submitted"),
+        ("g", "an event back"),
+        ("group", "a kernel computes"),
+        ("part", "a weight read from DRAM"),
+        ("b", "a mark: your input is written"),
+    ]
+    note = (
+        "Measured in the decode project (Qwen3-1.7B in bfloat16, one card, 4,096 "
+        "cached tokens): 410 µs a layer a command a step,",
+        "315 µs with the whole token as one chain: 87 and 113 tokens a second. "
+        "Time in the figure is schematic.",
+    )
+    end = key_row(s, bottom + 2, items, note)
+    return s.finish(int(end + 2))
+
+
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "docs" / "images"
     out.mkdir(parents=True, exist_ok=True)
@@ -2049,6 +2135,7 @@ def main():
         "placement": figure_placement,
         "groups": figure_groups,
         "mapcollect": figure_mapcollect,
+        "chain": figure_chain,
     }
     for theme in THEMES:
         for name, draw in figures.items():
