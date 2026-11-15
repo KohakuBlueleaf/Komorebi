@@ -114,6 +114,7 @@ nav:
       - reference/threads.md
       - reference/overlays.md
       - reference/islands.md
+      - reference/classes.md
   - Examples:
       - examples/README.md
       - examples/01_mapcollect/README.md
