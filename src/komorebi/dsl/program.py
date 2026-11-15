@@ -1787,9 +1787,8 @@ def statement_starts(source):
 def chain_reads(compiled):
     """handler -> {statement line: (the bits of the tensors it reads, prefetch=)}: a
     tensor's bit its place among the handler's tensor parameters."""
-    starts = statement_starts(compiled.source)
-    prefetch = chain_prefetch(compiled.source)
-    reads = body_reads(compiled, starts)
+    files = handler_files(compiled)
+    reads = body_reads(compiled, files)
     for move in compiled.moves:
         if move.how not in READ_MOVES:
             continue
@@ -1798,6 +1797,7 @@ def chain_reads(compiled):
             tensors = [word for word, kind in words if kind == "tensor"]
             if name != move.handler or move.tensor not in tensors:
                 continue
+            starts, prefetch = files[name]
             line = starts.get(move.line, move.line)
             bits, stated = reads.setdefault(name, {}).get(line, (0, None))
             bits |= 1 << tensors.index(move.tensor)
@@ -1807,17 +1807,34 @@ def chain_reads(compiled):
     return reads
 
 
-def body_reads(compiled, starts):
+def handler_files(compiled):
+    """handler -> (statement_starts, chain_prefetch) of the file its lines are in: the
+    class's, or in a merged build each class's own (compiled.handler_sources)."""
+    sources = getattr(compiled, "handler_sources", {})
+    parsed = {}
+    for name in compiled.handlers:
+        source = sources.get(name, compiled.source)
+        if source not in parsed:
+            parsed[source] = (statement_starts(source), chain_prefetch(source))
+    return {n: parsed[sources.get(n, compiled.source)] for n in compiled.handlers}
+
+
+def body_reads(compiled, files):
     """handler -> {line: (all bits, False)} of each inline body that takes a tensor:
     what it reads is its own C++, so its record's input is waited for before it."""
-    tree = ast.parse(Path(compiled.source).read_text())
-    functions = {
-        node.lineno: node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-    }
+    sources = getattr(compiled, "handler_sources", {})
+    trees = {}
     reads = {}
     for name in compiled.handlers:
+        starts = files[name][0]
+        source = sources.get(name, compiled.source)
+        if source not in trees:
+            trees[source] = {
+                node.lineno: node
+                for node in ast.walk(ast.parse(Path(source).read_text()))
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            }
+        functions = trees[source]
         tensors = {word for word, kind in compiled.words[name] if kind == "tensor"}
         function = functions.get(compiled.lines[name])
         for node in ast.walk(function) if function is not None else ():

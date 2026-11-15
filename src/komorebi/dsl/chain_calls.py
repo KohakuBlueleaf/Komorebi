@@ -471,7 +471,7 @@ def describe(run, call, group):
     program = getattr(call.handler, "program", None)
     if program is None:
         program = run.programs[run._handler(call.handler)[1]]
-    handler, method = call.handler, call.method
+    handler, method = merged_call(program, call.handler, call.method)
     if front.constant_parameters(method.function):  # the handler built for them
         made = compiler_program()
         given_constants = method.constants_given(values, named)
@@ -514,6 +514,18 @@ def describe(run, call, group):
             )
         described.marks[key] = how
     return described
+
+
+def merged_call(program, handler, method):
+    """(handler, method) of a call: a merged class's (komorebi.dsl.merged) copy of a
+    handler named through one of its classes (Scales.scale), its words the merged
+    program's; else as given."""
+    if getattr(program, "merged_sources", None) is None:
+        return handler, method
+    if not isinstance(handler, front.HandlerMethod):
+        return handler, method
+    mine = program.handler(handler)
+    return mine, mine.method
 
 
 def derived(method, lines, given, program, group, label):

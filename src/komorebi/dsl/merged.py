@@ -4,6 +4,7 @@ constants, plan and tensors; the handlers are numbered over the classes and comp
 together (compiler.compile_merged); a handler is the unit that may be an overlay."""
 
 import copy
+import inspect
 
 from komorebi import program as km_program
 from komorebi.dsl import compiler, front
@@ -42,6 +43,8 @@ class MergedClass(km_program.Program):
             for index, source in enumerate(self.merged_sources):
                 owner = handler.owner
                 if isinstance(source, type) and owner and issubclass(source, owner):
+                    return self._handler_of(index, handler.name)
+                if owner and isinstance(source, owner):  # a made program's (km.merge)
                     return self._handler_of(index, handler.name)
             raise ValueError(f"{handler.name}: not a handler of {self.name}'s classes")
         if isinstance(handler, Handler) and handler.program is not self:
@@ -219,6 +222,8 @@ def merge_made(programs, name=None, overlay=(), resident=(), session=None, l1=No
         for program in programs
     ]
     merged = MergedClass.__new__(MergedClass)
+    # the chain's walk when a source was made with it
+    merged.chain_wanted = any(getattr(p, "chain_handler", 0) for p in programs)
     first = programs[0].make_given
     start(
         merged,
@@ -290,7 +295,8 @@ class Shared:
 
 def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None,
                session=None, trace=0, defines=None, handlers=None,
-               broadcast_wait=False, overlay=(), resident=(), **given):  # fmt: skip
+               broadcast_wait=False, overlay=(), resident=(), chain=False,
+               **given):  # fmt: skip
     """Makes a class merging classes: the make's keywords as one class's (a constant
     to each class that declares it; a constant two classes declare differently is
     refused naming both), then the classes compiled as one program."""
@@ -341,6 +347,7 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
                 },  # fmt: skip
             )
         )
+    self.chain_wanted = chain  # the chain's walk (km.chain methods give it too)
     start(self, sources, cls.__name__, overlay, resident, session, l1, trace, log)
 
 
@@ -477,6 +484,8 @@ def build(self):
     ]
     compiled, tensors = compiler.compile_merged(self.cname, parts, room)
     self.compiled = compiled
+    compiled.handler_sources = handler_sources(self, compiled)
+    walked = made.chain_made(self, type(self), compiled, self.chain_wanted)
     defines, rect, nocs = {}, None, None
     for source in sources:
         for key, value in (source.given.get("defines") or {}).items():
@@ -508,6 +517,8 @@ def build(self):
         for key, value in source.given["constants"].items()
     }
     keyed["overlays"] = sorted(compiled.overlays)
+    if walked:
+        keyed[spelling("chain")] = True
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}
     key = made.sources_key(plan, tensors, solved, depth, rect, nocs, wait, keyed)
     built = made.write(None, compiled, room, key)
@@ -576,6 +587,17 @@ def build(self):
         self.slots()
     if session is not None:
         made.l1_checked(self, session, l1, trace, log)
+
+
+def handler_sources(self, compiled):
+    """handler -> the file of its class's lines (a chain's waits read each handler's
+    statements in its own file)."""
+    numbers = {number: name for name, number in compiled.handlers.items()}
+    return {
+        numbers[method.number]: inspect.getsourcefile(method.function)
+        for method in self.methods.values()
+        if method.number in numbers
+    }
 
 
 def set_overlays_built(self, built):

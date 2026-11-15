@@ -1393,8 +1393,20 @@ differ; a define or the rectangle given two values; a merged program as a source
 class in the kernel form with a hand program, and `form=` or `beside=` at the make of a
 class merging classes (it is built in the kernel form). Classes made with
 `form="runtime"` merge with each other and with hand programs, in the runtime's form
-([Programs merged into one](host.md#programs-merged-into-one)). A chain over handlers
-of several classes is not built: a class has no chain on this version.
+([Programs merged into one](host.md#programs-merged-into-one)).
+
+A chain runs over a merged class's handlers as over one class's
+([Chains](#chains)). `class Layer(Scale, Rest)` gets the chain's walk from a `km.chain`
+method of its own or of a class it merges, or from `chain=True` at its make;
+`km.merge(a, b)` of made programs gets it when a source was made with it. A chain's call
+names a handler through the merged class (`Layer.scale`, `program.steps(...)`) or
+through the class that declares it (`Scale.scale`), which the merged program's own copy
+then stands for. Each handler's chain waits are read from its own class's file. Example
+29's steps split over two classes and merged both ways ran on the card with the
+unmerged class's words (list and method, factors 5 and 7, 0 wrong) and its time a chain
+(21.48 / 20.94 us merged as a class, 21.18 / 21.02 by km.merge, 21.44 / 20.86 unmerged).
+A merged program in the runtime's form has no walk (a class's walk is in its own
+kernels).
 
 ## Dynamic handlers and messages
 
