@@ -75,3 +75,47 @@ command; hidden and y equal word for word to the resident chain's in every form:
 ```
 python examples/31_swiglu/swiglu_overlays.py             # resident, default slots, 1 slot
 ```
+
+## the hidden sent direct
+
+`swiglu_direct.py` lets `down` take the hidden direct, and adds a chain that sends it:
+
+```python
+class DirectSwiGLU(SwiGLU):
+    down = km.handler(direct=("hidden",))(SwiGLU.down.function)
+
+    @km.chain
+    def forward_direct(self, x, w1, w3, w2, hidden, y):
+        self.up(x, w1, w3, hidden, cores=(0, 12))
+        self.down(km.direct(hidden), w2, y, cores=(0, 4))  # up's blocks into L1
+```
+
+Each of `up`'s 12 roots keeps its 8 tiles of the hidden in its write buffer and writes
+them into the landing area of each of `down`'s 4 cores: 16 KiB a reader, 64 KiB a
+root. It marks those cores once its own writes are acknowledged. A `down` core reads
+the hidden from its area (a local copy into its stream buffer), not from DRAM. The
+same class runs the plain `forward` chain through DRAM. The hidden has no DRAM copy
+after the direct chain, so `hidden.read()` then raises, naming `up`'s call.
+
+Card 0, 2026-11-16, one job. Each chain was run once after its own load, and y was
+equal word for word in both. Then both chains ran in turn in one load, 50 timed each
+after a first command. The AICLK was 800 MHz before the job and 1,350 MHz after it.
+The two chains alternated, so they compare with each other, not with the table above.
+
+| The chain | us on the card |
+|---|---:|
+| through DRAM | 105.93 |
+| the hidden direct | 110.86 |
+
+- The direct chain is slower by 4.93 us. `down` is bound by its W2 reads (96 x 8
+  tiles, 1.5 MiB a core), which start ahead of the hidden's marks in both chains. Its
+  192 KiB of hidden a core, read from DRAM in the plain chain, overlapped with those
+  reads. In the direct chain, each root's 64 KiB send has to be acknowledged before it
+  marks. That puts 12 roots' sends into 4 cores' L1 on the path before `down` can use
+  the hidden.
+- Not measured, expected: a direct input gains where the reader's DRAM read of its
+  input is on that path and the roots' sends are short (a small input to few readers).
+
+```
+python examples/31_swiglu/swiglu_direct.py               # both chains, every word of y
+```

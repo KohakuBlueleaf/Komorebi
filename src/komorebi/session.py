@@ -975,6 +975,7 @@ class Session:
         (host.md, "Reads"); while a run runs, only what no kernel writes any more."""
         if (first or pages is not None or out is not None) and len(tensors) != 1:
             raise ValueError("a page range, or rows to fill, is read from one tensor")
+        tensor_module.in_dram(*tensors)
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way(tensors, first, pages)
         if way is None:

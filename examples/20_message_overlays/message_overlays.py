@@ -119,7 +119,7 @@ def run_once(session, args):
         args=lambda core: ([], [], [results.address]),  # the handlers' state in L1
         handlers=KERNELS / "handlers.h",
     ).dynamic(*loaded, parts=KERNELS, **options(args))
-    program.slots(count=args.slots)
+    program.slots(count=args.slots, bytes={} if args.addon else None)  # addon: path
     # --8<-- [end:program]
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     if args.addon:  # messages of handler 3 run the part added here, as overlay 3

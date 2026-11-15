@@ -1,5 +1,6 @@
 """The chain on the host: a call's description as records, the earlier input's proof,
-the direct input's checks, and each refusal with the call, tensor and core it names."""
+the direct input's checks (a core's share from one root or several), and each refusal
+with the call, tensor and core it names."""
 
 import numpy as np
 import pytest
@@ -94,8 +95,10 @@ def test_a_direct_input_is_checked_and_reported():
     calls[3] = calls[3]._replace(direct=kc.Direct(1, 4096))
     assert kc.check_direct(calls) == {3: [(4096, 1)] * 8}
     calls[3] = calls[3]._replace(direct=kc.Direct(1, 4096), size=4, k=(0, 8))
-    with pytest.raises(kc.ChainRefused, match="core 0 reads s tiles 0 to 1, from 2"):
+    with pytest.raises(kc.ChainRefused, match="core 0 reads 2 tiles of s; its arrival"):
         kc.check_direct(calls)
+    calls[3] = calls[3]._replace(direct=kc.Direct(2, 4096))  # two roots a core
+    assert kc.check_direct(calls) == {3: [(8192, 2)] * 8}
     calls[3] = calls[3]._replace(k=None, ranges=(kc.Range(0),))
     with pytest.raises(kc.ChainRefused, match="read by a share of K"):
         kc.check_direct(calls)

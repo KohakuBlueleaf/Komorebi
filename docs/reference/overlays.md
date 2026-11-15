@@ -436,8 +436,19 @@ and later commands find them held. In the runtime's form the define is given to 
 runtime's kernels when every program of the load names slot bytes (the gate class in a
 list of two: 30,416 B of kernel text without it, 33,088 B with it). Without that define
 the kernels have no such path and cost nothing. It costs 2,560 B of kernel text on the decode program (148 B on the
-reader, 844 B on the writer, 484 to 544 B on each compute core), and an added handler
-is refused there. A load that names slot bytes for a kernel gives that kernel slots
+reader, 844 B on the writer, 484 to 544 B on each compute core).
+
+**The path is compiled only when asked.** What asks is `Program.slots(bytes=...)` (an
+int, a `{kernel: n}`, or `bytes={}` for the default sizes), a class's `km.ANY` among a
+handler's sets, or the define itself in a program's `defines`; `session.load(reserve=)`
+only sets the DRAM room aside and does not ask. Without it the loop's check of the
+handler mask, the load of an added handler's overlay and the service overlay's entry
+command are left out of the kernels: Linear is 1,520 B smaller (90,304 B of 91,136), the
+gate class 448 B, the attention class 448 B, 01_mapcollect 544 B, and the service
+overlay's reader slot 448 B (8,640 B instead of 9,088 B, a slot on each core: 1,792 B of
+L1 on the decode program's four). A program that asks is built as before, byte for
+byte. `run.addon` of any kind, an overlay as well as a handler, on a run whose
+program did not ask is refused before any command, by name. A load that names slot bytes for a kernel gives that kernel slots
 even when no overlay of the load has a part there.
 
 **Every way names it.** An added overlay is named by every way an overlay of the load
@@ -471,7 +482,7 @@ the card:
 | a part on a kernel without slots | `Program.slots(bytes={kernel: n})` |
 | a part larger than its slot, or one the instruction check or the part checks refuse | the part, its bytes and the slot's |
 | the room is short | the bytes the parts take and the bytes left |
-| a handler in a load without `KM_ADDED_HANDLERS` | `Program.slots(bytes=...)` |
+| an overlay, a handler or a dynamic handler in a load without `KM_ADDED_HANDLERS` | `Program.slots(bytes=...)`, or `km.ANY` |
 | a dynamic handler in a run with no handlers as parts, outside 1 to 16, or one the run has | the number |
 
 **Costs**, one Blackhole card at AICLK 1,350 MHz, 120 cores
