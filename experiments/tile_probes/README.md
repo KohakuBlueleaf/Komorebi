@@ -15,7 +15,14 @@ that keeps 32 rays in the 32 lanes of the vector unit (SFPU) and a small tree in
 5. the speed of a compute RISC-V core on its own, alone and three at once;
 6. one full walk of a 255-node box tree for 32 to 1024 rays, in a ray-first and a
    node-first form;
-7. one 64-byte NoC read submitted by a compute RISC-V core from another tile's L1.
+7. one 64-byte NoC read submitted by a compute RISC-V core from another tile's L1;
+8. what the cost model of a tile compiler needs and the sources leave open: the cost of
+   pushing one Tensix instruction word, replay and MOP loops against pushing, a
+   load-macro chain against the same work one instruction at a time, the code the SFPI
+   compiler emits, which numbering of `SFPCONFIG`'s combine modes the hardware uses, and
+   loop bodies around 512 bytes on a compute core (probes 8 to 10, 12, 13). Two more
+   probes, the matrix unit's issue cost (11) and its ties rule (14), are in the tree but
+   have no result: see section 8.
 
 Every result value is checked against a CPU reference by the driver.
 
@@ -32,6 +39,9 @@ dispatch:
 | RISC-V loop probe 5, run by the TRISCs selected in a mask | `kernels/rv.hpp` |
 | tree walk probe 6, run by the pack thread | `kernels/walk.hpp` |
 | NoC read probe 7, run by the pack thread | `kernels/nocread.hpp` |
+| instruction-cost probes 8 to 10 and 13, run by the pack thread | `kernels/costs.hpp` |
+| matrix-unit probes 11 and 14 (unpack, math and pack threads) | `kernels/fpu.hpp` |
+| loop-size probe 12, run by the TRISCs selected in a mask | `kernels/icache.hpp` |
 | writer (RISCV_0): CB 16 to DRAM once compute pushed it | `kernels/writer.cpp` |
 | shared layout of the input and output words | `kernels/probe.hpp` |
 | driver: builds the program, runs it, checks against the CPU reference | `probes.py` |
@@ -79,7 +89,13 @@ export HANGWATCH=<hang watcher> LOCK_DIR=<lock directory> CARD=0
 ./run.sh riscv-1 riscv --mask 7 --n 100000 --n-float 10000
 ./run.sh walk-1 walk --rays 256 --ray-set camera --form b   # --form a --copy scalar
 ./run.sh nocread-1 nocread
+./run.sh costs-1 sfpi,push,macro,sfpcfg --k 5   # one session, one JSON line each
+./run.sh icache-1 icache --mask 2 --icache-passes 1000
 ```
+
+A comma list of probes runs in one session and stops at the first one that does not
+finish cleanly. Probes 11 (`fpu`) and 14 (`ties`) are refused unless
+`--allow-unproven` is given (section 8).
 
 Without the hang watcher: `python probes.py <probe> [options]` with tt-metal's Python
 environment and `TT_METAL_SLOW_DISPATCH_MODE=1`. Each run prints one JSON line;
@@ -88,9 +104,9 @@ reports its count of wrong values. Variant 2 sets `ComputeConfig.enable_trisc2_r
 
 ## Results
 
-tt-metal v0.81.1, one Blackhole card, AICLK 1350 MHz. Each number is the median over
-the in-kernel repetitions of three separate runs; the three runs agreed to within the
-min/max given. Host load average 2.4 to 12 during the runs.
+tt-metal v0.81.1, one Blackhole card, AICLK 1350 MHz. In sections 1 to 7 each number
+is the median over the in-kernel repetitions of three separate runs; the three runs
+agreed to within the min/max given. Host load average 2.4 to 12 during the runs.
 
 ### 1. Predication
 
@@ -351,6 +367,95 @@ The kernel finished normally and a smoke run on the same card right after was cl
 The 209 cycles is one sample, for neighbouring tiles, with an idle NoC; the counter is
 shared by the core's data-movement firmware, so this only works while the
 data-movement kernels submit no reads on that NoC.
+
+### 8. Instruction costs for a tile compiler
+
+One run of each probe (tt-metal v0.81.1, AICLK 1350 MHz before and after every run, so
+one cycle is 0.741 ns; host load average 2.1). A span is taken between two
+`tensix_sync()` calls; the empty span costs 10 cycles in every repetition and is
+subtracted. Each figure is the median of 5 in-kernel repetitions, which agreed to
+within 0.5 %. Every value the instructions computed was checked (none wrong).
+
+**Pushing an instruction word** (probe 8, the pack thread, 4096 `SFPLOADI` a span):
+
+| how the word reaches the instruction buffer | cycles a word |
+|---|---|
+| `TTI_` form (encoded into the core's instruction stream), loop of 16 | 1.128 |
+| the same, loop of 64 | 1.035 |
+| a constant word stored by the core (`instrn_buffer[0] = w`), loop of 16 / 64 | 1.131 / 1.036 |
+| a word built at run time (add, mask to 16 bits, add, store) | 4.14 |
+| a word loaded from a 64-word table in L1, then stored | 9.37 |
+
+A store of a ready word costs what the `TTI_` form costs, one cycle; the difference
+between the loops of 16 and 64 is the loop's own two instructions. A word that is built
+or loaded costs the core instructions that make it.
+
+**Replay and MOP against pushing** (probe 8, a body of 16 `SFPMAD` on 4 registers,
+4096 in a span):
+
+| form | cycles a `SFPMAD` |
+|---|---|
+| pushed by the core (`TTI_`, loop of 16) | 1.128 |
+| `REPLAY` of the 16 recorded, pushed 256 times | 1.004 |
+| `REPLAY` of 4, pushed 1024 times | 1.004 |
+| MOP over the `REPLAY` of 16, or of 4 | 1.002 |
+| MOP of two `SFPMAD` (loop op 0 and loop op 1) | 1.002 |
+
+The vector unit takes one `SFPMAD` a cycle (the 2-cycle result latency is hidden by
+four registers in rotation), so replay or a MOP saves only the core's loop overhead,
+11 % against a loop of 16.
+
+**Load-macro chain** (probe 9, 64 vectors of `Dst`, each `x = 1 x 1 + x` loaded,
+computed and stored back, 1024 rows a span):
+
+| form | cycles a row |
+|---|---|
+| `SFPLOAD`, `SFPMAD`, `SFPSTORE` for one row at a time (replay of 3) | 4.03 |
+| four rows interleaved (replay of 12: 4 loads, 4 MADs, 4 stores) | 3.04 |
+| one `SFPLOADMACRO` a row (template `SFPMAD` at delay 0, store at delay 2) | 1.046 |
+
+One row at a time stalls a cycle on the MAD result; interleaving reaches one
+instruction a cycle; the macro does the load, the MAD and the store of a row in one
+issue slot, three times the best plain form.
+
+**What SFPI emits** (probe 13; read from the compiled pack-thread kernel, `-O3`; each
+function also has one `SFPLOAD` per input and one `SFPSTORE`):
+
+| C++ (`sfpi::vFloat`) | vector instructions between the loads and the store |
+|---|---|
+| `a * b + c` | 1: `SFPMAD` |
+| `a - b` | 1: `SFPADD` with its negate mode |
+| `a * 1.5f + 0.25f` | 3: two `SFPLOADI` (the constants, as bfloat16) and `SFPMAD` |
+| `v_if (a < b) { r = c; } v_endif;` | 3: `SFPGT` (sets the lane flags), `SFPMOV`, `SFPENCC` |
+
+All four gave the C++ values on all 32 lanes on the card.
+
+**`SFPCONFIG` combine modes** (probe 10): starting from `0x0F0` in the macro control
+register, writing `0x0CC` with mode 2 gave `0x0FC`, mode 4 `0x0C0`, mode 6 `0x03C`; the
+lane configuration register gave `0x0001` mode 2 `0x0100` = `0x0101` and `0x0101` mode 4
+`0x0001` = `0x0001`. So mode 2 is OR, 4 is AND, 6 is XOR. SFPI's names
+`SFPCONFIG_MOD1_AND` (2) and `SFPCONFIG_MOD1_OR` (4) say the opposite; use the numbers.
+Both registers were saved before and read back equal after the probe restored them.
+
+**Loop bodies around 512 bytes** (probe 12, the math core, TRISC1): a body of N
+dependent adds plus a decrement and a branch, aligned to 64 bytes, one warm-up pass,
+then 1000 timed passes:
+
+| body bytes | 264 | 488 | 504 | 512 | 520 | 552 | 776 | 1032 | 1928 | 2088 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| cycles a pass | 66.0 | 122.0 | 126.0 | 128.0 | 130.0 | 138.0 | 194.0 | 258.0 | 482.0 | 522.0 |
+
+N + 2 cycles a pass at every size: one instruction a cycle, and no step at 512 bytes or
+anywhere up to 2088 bytes for straight-line code.
+
+**Not measured.** The matrix-unit probe (11: `MVMUL` per fidelity phase, the
+elementwise instructions, the pools and the moves between `Dst` and the source
+registers, with 1 to 8 `Dst` blocks in rotation for the read-after-write stall)
+stopped the card in its only run: the program never finished, and the card had to be
+reset. The ties probe (14: exact halves through `MVMUL` and the packer, with and
+without stochastic rounding) shares its path (unpack to both source registers, then
+the matrix unit on the math thread) and was not run. Both are refused by the driver
+unless `--allow-unproven` is given.
 
 ## Limits
 
