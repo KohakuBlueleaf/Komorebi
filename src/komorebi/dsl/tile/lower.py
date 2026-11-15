@@ -316,10 +316,12 @@ def rsqrt(b, x):
 def flash_exp2(b, u):
     """2^(u - 639) as Kohaku-TT's flash softmax computes it (sfpu.flash_exp2): u
     clamped to 512 from below, its bits << 9 give the exponent and the fraction f,
-    a degree-2 polynomial of 1.f gives the mantissa."""
+    a degree-2 polynomial of 1.f gives the mantissa. The swap's VD is a copy of 512:
+    with the back door open a VD of 12 or more stores a template and runs nothing."""
     floor = b.register_const(sfpu.FLASH_FLOOR)
     c = b.op("SFPMOV", "u (clamped in place)", lreg_c=u)
-    b.op("SFPSWAP", "max(u, 512)", lreg_src_c=c, lreg_dest=floor, instr_mod1=1)
+    low = b.op("SFPMOV", "512 (the swap's VD takes the smaller)", lreg_c=floor)
+    b.op("SFPSWAP", "max(u, 512)", lreg_src_c=c, lreg_dest=low, instr_mod1=1)
     e = b.op("SFPSHFT", "bits << 9", imm12_math=9, lreg_c=c, instr_mod1=SHIFT_IMM_VC)
     m = b.op("SFPSETEXP", "1.f", imm12_math=127, lreg_c=e, instr_mod1=1)
     p = b.mad(m, b.const(sfpu.FLASH_B2), b.const(sfpu.FLASH_B1), "B2 m + B1")
@@ -836,7 +838,9 @@ def allocate(code, prog, pinned=(), high=()):
                 taken = [r for r in taken if r in free and fits(r, i, v)]
                 fit = sorted(r for r in free if fits(r, i, v))
                 if not taken and not fit:
-                    raise ValueError("more live values than the 8 work registers")
+                    raise UnitError(
+                        "komorebi.dsl.tile: more live values than the 8 work registers"
+                    )
                 if v in high:
                     regs[v] = fit[-1] if fit else taken[0]
                 else:

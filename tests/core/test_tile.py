@@ -10,6 +10,7 @@ import pytest
 
 from komorebi.dsl.tile import UnitError, emit, row_operand, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
+from komorebi.dsl.tile.lower import allocate
 from komorebi.dsl.tile.macro import macro_setup, max_macro
 from komorebi.dsl.tile.matrix import block_cost, product_program, tile_products
 from komorebi.dsl.tile.rows import row_program
@@ -253,7 +254,10 @@ def _macro_unit(templates, code):
 def test_header_refuses_a_template_the_tile_overwrites_or_never_stores():
     code = _max_code()
     templates, _ = max_macro(code)
-    emit(_macro_unit(templates, code))
+    emit(_macro_unit(templates, code[:-1]))
+    # the back door open, a clamp against LReg 12 stores template 0 and runs nothing
+    with pytest.raises(UnitError, match="has VD 12: with the back door open"):
+        emit(_macro_unit(templates, code))
     clobbered = [*code[:-1], _swap(0, 13)]  # the clamp now writes template 1
     with pytest.raises(UnitError, match="writes VD 13 in the tile's code"):
         emit(_macro_unit(templates, clobbered))
@@ -336,3 +340,62 @@ def test_product_in_a_trace_is_one_body():
 def test_product_refusals(fn, refusal):
     with pytest.raises(PlanError, match=re.escape(refusal)):
         stream("refused", 3, fn)
+
+
+def test_flash_clamp_runs_with_the_back_door_open():
+    unit = stream("e2", 1, lambda a: trace.exp2(a, error=2e-3, over=(-math.inf, 0.0)))
+    words = [x for x in insns(unit.tile["math"]) if x.op.startswith("SFP")]
+    held = [x.args.get("lreg_dest", x.args.get("lreg_ind")) for x in words]
+    assert max(v for v in held if v is not None) < 12
+    clamp = [i for i, x in enumerate(words) if x.note == "max(u, 512)"]
+    assert clamp and all(words[i - 1].args["lreg_c"] == 12 for i in clamp)
+    emit(unit)
+    checks = {c.rule: c.verdict for c in unit.checks}
+    assert checks["back-door"].startswith("ok")
+
+
+def _col(fn):
+    a, s, y = (TensorParam(n, n == "y", F32) for n in "asy")
+    ir = KernelIR("col", [a, s, y], [], {})
+    with trace.Tracer(ir):
+        pa, ps, py = (trace.TensorProxy(t) for t in (a, s, y))
+        for t in trace.grid(trace.num_tiles(pa)):
+            x, rows = trace.load(pa.tiles[t]), trace.load(ps.tiles[t])
+            trace.store(py.tiles[t], fn(x, rows.col()))
+    return unit_program(ir)
+
+
+@pytest.mark.parametrize(
+    "fn",
+    [lambda a, s: a * trace.rsqrt(s), lambda a, s: trace.sigmoid(a + s)],
+)
+def test_per_row_path_keeps_each_constant_register_load(fn):
+    assert {0, "L0"} <= set(Insn("SFPCONFIG", _config(12, 0)).reads())
+    assert not Insn("SFPCONFIG", _config(15, 1)).reads()  # Imm16 is the value
+    unit = _col(fn)
+    loaded = 0
+    for x in insns(unit.init["math"]):
+        if x.op == "SFPLOADI" and x.args["lreg_ind"] == 0:
+            loaded += 1
+        elif x.op == "SFPCONFIG" and 11 <= x.args["config_dest"] <= 14:
+            assert loaded, f"LReg {x.args['config_dest']} takes a stale LReg 0"
+            loaded = 0
+
+
+def _config(vd, mod):
+    return {"imm16_math": 0, "config_dest": vd, "instr_mod1": mod}
+
+
+def test_too_many_live_values_is_a_unit_error():
+    code = [
+        Insn("SFPLOADI", {"lreg_ind": f"v{k}", "instr_mod0": 0, "imm16": k})
+        for k in range(9)
+    ]
+    code += [_store(f"v{k}") for k in range(9)]
+    with pytest.raises(UnitError, match="komorebi.dsl.tile: more live values"):
+        allocate(code, {})
+
+
+def _store(value):
+    args = {"lreg_ind": value, "instr_mod0": 0, "sfpu_addr_mode": 7, "dest_reg_addr": 0}
+    return Insn("SFPSTORE", args, "")

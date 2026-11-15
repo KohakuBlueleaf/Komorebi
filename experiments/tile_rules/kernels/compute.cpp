@@ -44,8 +44,14 @@
 #include "gate_band.hpp"
 #elif BODY == 26
 #include "norm_band.hpp"
+#elif BODY == 32
+#include "exp2_flash.hpp"
+#elif BODY == 33
+#include "rsqrt_col.hpp"
+#elif BODY == 34
+#include "sigmoid_col.hpp"
 #endif
-#if (BODY == 12 || BODY == 14) && defined(TRISC_MATH)
+#if (BODY == 12 || BODY == 14 || BODY == 31) && defined(TRISC_MATH)
 #include "sfpu.hpp"  // projects/attention/kernels
 #endif
 
@@ -197,7 +203,7 @@ namespace {
         MATH((km_tile::gate_init()));
 #elif BODY == 11
         MATH((km_tile::norm_init()));
-#elif BODY == 12
+#elif BODY == 12 || BODY == 31
         MATH((flash::init(EXP_A)));
         MATH((flash::addr_init()));
 #elif BODY == 13
@@ -218,6 +224,12 @@ namespace {
         MATH((km_tile::gate_band_init()));
 #elif BODY == 26
         MATH((km_tile::norm_band_init()));
+#elif BODY == 32
+        MATH((km_tile::exp2_flash_init()));
+#elif BODY == 33
+        MATH((km_tile::rsqrt_col_init()));
+#elif BODY == 34
+        MATH((km_tile::sigmoid_col_init()));
 #endif
     }
 
@@ -250,7 +262,7 @@ namespace {
         MATH((km_tile::gate(0)));
 #elif BODY == 11
         MATH((km_tile::norm(0)));
-#elif BODY == 12
+#elif BODY == 12 || BODY == 31
         // The attention project's exponent step for one score tile (Dst 0), its row
         // state in Dst 3, on the math CPU (the project issues it from the pack CPU).
         MATH(
@@ -290,6 +302,12 @@ namespace {
         MATH((km_tile::gate_band(0, rows)));
 #elif BODY == 26
         MATH((km_tile::norm_band(0, rows)));
+#elif BODY == 32
+        MATH((km_tile::exp2_flash(0)));
+#elif BODY == 33
+        MATH((km_tile::rsqrt_col(0)));
+#elif BODY == 34
+        MATH((km_tile::sigmoid_col(0)));
 #endif
     }
 
@@ -382,7 +400,7 @@ void kernel_main() {
 #endif
         PACK(info[rules::kLoop + u] = rules::wall() - started);
     }
-#if BODY == 12 || BODY == 14
+#if BODY == 12 || BODY == 14 || BODY == 31
     MATH((flash::restore_constants()));
 #endif
     MATH(asm volatile("fence" :: : "memory"); info[rules::kMathDone] = nonce);
