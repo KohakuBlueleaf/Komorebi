@@ -10,25 +10,34 @@ import sys
 from pathlib import Path
 
 from komorebi import _env, kernel_buffer, native
+from komorebi.program import Program
 
 FILE = "kernel_buffer.json"
 
 
 def script_key(shape):
     """The running script: its resolved path and the session's `shape` ("card",
-    "islands 2"), or None for code with no file (python -c, a notebook)."""
-    main = sys.modules.get("__main__")
-    path = getattr(main, "__file__", None)
-    return None if path is None else f"{Path(path).resolve()}|{shape}"
+    "islands 2"); None for code with no file (python -c, a notebook) and for a runner
+    installed in Python's prefix (pytest), whose entry every run of it would share."""
+    path = getattr(sys.modules.get("__main__"), "__file__", None)
+    if path is None:
+        return None
+    path = Path(path).resolve()
+    prefixes = {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}
+    if any(path.is_relative_to(prefix) for prefix in prefixes):
+        return None
+    return f"{path}|{shape}"
 
 
 def program_key(program, shape):
     """A program's key: its kernels' source bytes, defines and compile args, the
     package's native kernels, the session's `shape`."""
+    if not isinstance(program, Program):  # a list or plan: the script's entry alone
+        return None
     digest = hashlib.sha256(f"{program.name}|{shape}".encode())
     try:
         sources = program.sources()
-    except Exception:  # noqa: BLE001  (a plan or a list: no sources of its own)
+    except Exception:  # noqa: BLE001  (no sources of its own)
         return None
     for kernel, path in sorted(sources.items(), key=lambda item: str(item[0])):
         digest.update(f"{kernel}|".encode() + Path(path).read_bytes())
@@ -92,7 +101,10 @@ class Memory:
             self.size = kernel_buffer.need(self.size - kernel_buffer.MARGIN)
             log(f"kernel buffer {self.size:,} B at the open ({why})")
         elif self.script is None:
-            log(f"kernel buffer: {default} at the open (no script file: none kept)")
+            log(
+                f"kernel buffer: {default} at the open (no script file, or a runner "
+                "such as pytest: none kept)"
+            )
         else:
             log(f"kernel buffer: {default} at the open (nothing remembered)")
 
