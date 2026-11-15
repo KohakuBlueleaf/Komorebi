@@ -2327,8 +2327,10 @@ class _Backend:
     def describe(self, *args, **options):
         """_describe's descriptor with the slots' buffer declared first, its size
         set once the overlays are built (_slot_buffer): what is built is launched."""
+        self.link_cb = None
         launch = self._describe(*args, **options)
-        self.slot_index = slot_index(self.cb_indices)
+        link_cb = set() if self.link_cb is None else {self.link_cb}  # the link cores'
+        self.slot_index = slot_index(self.cb_indices | link_cb)
         launch.cb(self._slot_cores(), self.slot_index, "uint32", 64, 64, first=True)
         return launch
 
@@ -2581,6 +2583,7 @@ class _Backend:
             )
         size = h["KM_QUEUE_BYTES"] + 2 * chunk
         launch.cb(rects, index, "uint32", size, size)
+        self.link_cb = index
         return [("KM_LINK_QUEUE", "1")]
 
     def _link_chunk(self, program, cores, apart=0):
@@ -2783,10 +2786,11 @@ class _Backend:
         """Every core's slots as the launch's first circular buffer, at the L1 base,
         so they lie below 1 MB and the buffers above them; returns their address."""
         base = L1_BYTES - self.session.l1()[1]
-        address, size, index = slot_area(
+        address, size, _ = slot_area(
             base, slot_bytes, self.cb_indices, self.session.slow_code
         )
-        descriptor.resize_cb(index, size, size)  # declared by describe
+        index = self.slot_index  # declared by describe
+        descriptor.resize_cb(index, size, size)
         # a switch's buffers of every program field move up with the rest
         if getattr(self, "switch_layouts", None):
             for layout in self.switch_layouts.values():
