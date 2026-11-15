@@ -262,8 +262,36 @@ namespace km {
 
     // Halves this mover filled and drained in this load, one bit per buffer index: a
     // half whose roles change gives up (compute's page counts would no longer agree).
+#if defined(KM_OVERLAY_PART)
+    // A part: the kernel's words (linked to its symbols) if it moves, else its own.
+    [[gnu::weak]] extern uint32_t move_filled;
+    [[gnu::weak]] extern uint32_t move_drained;
+
+    inline uint32_t& move_roles(uint32_t* kernel, uint32_t& own) {
+        return kernel != nullptr ? *kernel : own;
+    }
+
+    inline uint32_t& move_filled_word() {
+        static uint32_t own = 0;
+        return move_roles(&move_filled, own);
+    }
+
+    inline uint32_t& move_drained_word() {
+        static uint32_t own = 0;
+        return move_roles(&move_drained, own);
+    }
+#else
     inline uint32_t move_filled = 0;
     inline uint32_t move_drained = 0;
+
+    inline uint32_t& move_filled_word() {
+        return move_filled;
+    }
+
+    inline uint32_t& move_drained_word() {
+        return move_drained;
+    }
+#endif
 
     // Where a mover is in a stream: the next block, that block's index in its
     // repetition, its position in the pattern and its first page.
@@ -513,12 +541,14 @@ namespace km {
             ...
         );
         // A half keeps the roles it had in this mover's first move of the load.
-        const uint32_t known = (filled | drained) & (move_filled | move_drained);
+        uint32_t& kept_filled = move_filled_word();
+        uint32_t& kept_drained = move_drained_word();
+        const uint32_t known = (filled | drained) & (kept_filled | kept_drained);
         fine = (
-            fine && (known & ((filled ^ move_filled) | (drained ^ move_drained))) == 0
+            fine && (known & ((filled ^ kept_filled) | (drained ^ kept_drained))) == 0
         );
-        move_filled |= filled;
-        move_drained |= drained;
+        kept_filled |= filled;
+        kept_drained |= drained;
         if (!fine) {
             core.gave_up(kStMover, kGaveBadItem, kWhereData, 0, 0);
             return false;
