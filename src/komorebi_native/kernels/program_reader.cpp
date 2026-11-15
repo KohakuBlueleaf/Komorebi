@@ -5,9 +5,15 @@
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_overlay.hpp"
 #include "komorebi/device/km_worker.hpp"
+#if defined(KM_PROGRAM_CHAIN)
+#include "komorebi/device/km_chain.hpp"
+#endif
 
 void kernel_main() {
     km::Reader reader;
+#if defined(KM_PROGRAM_CHAIN)
+    km::chain_start();  // a program here runs chains: its words zero before any command
+#endif
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) == KM_HANDLER_LOAD) {
             if (!km::program_switch(reader, command)) {

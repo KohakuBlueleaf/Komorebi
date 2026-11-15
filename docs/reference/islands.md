@@ -508,7 +508,9 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   whatever order its pages landed: the pages to the asker's port, then the line's
   number into the asker's own words. The call waits on its port, bounded, so `from` is
   free when it returns; a miss gives the command up at `ask` with the island in the
-  word's top byte.
+  word's top byte. A putting core that gives up after it reserved ring slots leaves
+  them unfilled: the ring sends in order, so it stays stopped there until the cores'
+  recovery or the next load.
 - An ask or put line may name the asker's DRAM instead of its L1 (`KM_ASK_DRAM`: an
   interleaved buffer, or one bank's range, from page `KM_ASK_DRAM_FIRST`): the far
   page CPUs push a get's pages straight into it, or read a put's from it.

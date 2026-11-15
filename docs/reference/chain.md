@@ -37,7 +37,7 @@ A program runs chains with three things of its own; the rest is the framework's.
 | What | Where |
 |---|---|
 | a chain mode: a value of a4 that its handler takes as "this command is a chain" | the program's header; `run.chain(calls, mode)` |
-| buffer index 31, one page of at least 1,808 bytes: the chain's words and two record slots on each core | the program's buffers; it is the runtime's trace buffer's index, so a chain's program runs untraced |
+| buffer index 32 (`kChainBuffer`), one page of at least 1,808 bytes: the chain's words and two record slots on each core | the program's buffers; the index is the runtime's, kept for the chain, so a chain's program is traced as any program |
 | in each kernel, the chain command handed to the framework's walk, and in the step, the wait for its input and the marks after its output | the kernels (below) |
 
 Each record names its handler, one of the chain's program: a core goes from one
@@ -199,14 +199,17 @@ The decode project, a whole token of 28 layers (140 records) as one chain on 120
 10 tokens: 314.9 / 287.0 / 278.5 us a layer at T 4096 / 1024 / 256 on the framework's
 chain, within the spread of its own chain before (315.0 to 315.2, 287.1 to 288.2, 278.6
 to 279.9), the token equal to a command a step at 2 and 28 layers, the real prompt's 16
-tokens equal to the reference. The chain's words take one page of buffer 31 on each
-core.
+tokens equal to the reference. The chain's words take one page of buffer 32 on each
+core; the index past 31 adds one buffer's 16 bytes to the kernel config, nothing to a
+kernel's text.
 
 | Decode, 28 layers, 10 tokens | T 4096 | T 1024 | T 256 | kernels (of 86,016 B) |
 |---|---:|---:|---:|---:|
 | its own chain before the move, us a layer | 315.2 | 287.1 | 278.6 | 85,488 |
 | the framework's chain, one handler a chain | 314.9 | 287.0 | 278.5 | 85,568 |
 | the framework's chain, a record names its handler | 315.2 | 286.9 | 278.7 | 85,856 |
+| the chain's words on buffer 32, untraced | 315.1 | 287.1 | 278.5 | 85,872 |
+| the chain's words on buffer 32, traced (512 commands a core) | 315.3 | 286.8 | 278.7 | 85,872 |
 
 A record naming its handler costs decode nothing measurable (the last two rows differ
 by +0.3 / -0.1 / +0.2 us, inside the run-to-run spread) and 288 bytes of kernel code:
@@ -215,7 +218,8 @@ record's command or its next address is read, in all five kernels. With the chai
 stamps compiled in (`KM_CHAIN_STAMPS`) the decode kernels are 90,240 bytes, 128 over
 88 K (90,112), so the stamped build alone takes a 92 K kernel buffer (94,208 B); its
 L1 still fits with the plans of T 4096 to 256, 112 bytes left. The plain build keeps
-84 K.
+84 K. Traced (`trace=512`, 8,192 bytes of buffer 31 a core), the plain build's L1 fits
+with 112 bytes left; `run.trace()` after the stop holds each core's commands.
 
 ## A handler as an overlay
 
@@ -226,5 +230,73 @@ when the slot holds it). A record cannot name a handler of a program placed as a
 overlay ([a program as an overlay](overlays.md#a-program-as-an-overlay)) other than
 the chain's own: the record's command keeps the chain command's program field, and the
 walk runs inside one program's kernels, so the runtime's load of another program
-between two records does not happen. Whether a program in the runtime's form runs a
-chain at all has not been tried.
+between two records does not happen.
+
+## In the runtime's form
+
+A program in the runtime's form ([a program as an overlay](overlays.md#a-program-as-an-overlay))
+runs chains as one of the kernel form does: its parts call the same device calls
+(`km::chain_reader`, `chain_writer`, `chain_compute`, the marks and the credits) from
+`km_program`, and the walk of a chain command runs inside the one call of the part.
+The runtime's reader zeroes the chain's words once before its first command
+(`km::chain_start`) when a program of the run declares buffer 32; a part does not call
+it. The chain's stamps (`KM_CHAIN_STAMPS`) are not compiled into parts.
+
+Example 29 runs both forms (`--form runtime`: `kernels/runtime/`, parts that call the
+kernel form's step functions), 200 runs a way, one Blackhole p150a, 2026-11-16:
+
+| Example 29 | kernel form | runtime's form |
+|---|---:|---:|
+| on the host, us a run: a command a step / one chain | 704.5 / 266.9 | 838.9 / 302.8 |
+| on the card, us a run: a command a step / one chain | 130.6 / 126.1 | 131.5 / 126.7 |
+| every word of y, z, s, t | exact | exact |
+
+The card's time is the same in both forms within 1 us. The host's is about 34 us a
+command more in the runtime's form; the chain still removes three of its four round trips.
+
+A run whose groups switch program (`run.load(program, group=)`) sets up buffers 0 to 31
+only, so it refuses a program that declares buffer 32: a chain runs in a run whose
+cores hold their programs from the start.
+
+## Over islands: not built
+
+A chain runs on one island. Over two, most of what a chain moves already crosses with
+the existing calls; its marks and credits do not:
+
+| What crosses | How | Cost, by the [islands' measurements](islands.md#measured) |
+|---|---|---|
+| the chain command | one ticket, a part an island | 2.41 us a command over 240 ranks against 1.195 on one island |
+| the records | do not cross: each island's DRAM holds its copy, at one address for both parts (the command's a7 is one word) | none on the card; a block on each island at the same address on the host (not built) |
+| a record's input through the page calls | `km::read_pages` and `km::write_pages` ask or put what the other island holds | an ask line answered in 1.7 to 1.95 us at the far island; a put line of one page out and confirmed in 5.1 us |
+| a tree's parts (`sends`) | the port's emit takes the relay (`relay_put`) for a rank of the other island | example 26: 165.9 us a round on two cards, 158.0 on one |
+| the marks and the credits | none: each is an atomic add into a word of buffer 32 on the target core, which a rank of the other island has no NoC place for | |
+
+The relay writes bytes into a far core's L1 and adds 1 to one of its ports only. The
+chain counts four things a core waits for (marks and credits, a word for each record
+parity), so a chain over islands needs either a relay ask that adds 1 to an L1 word it
+names (a change to the link cores' service) or four port slots of the runtime's for the
+chain (64 bytes more of every core's control block). Neither is built.
+
+## A record of another program's handler: what it would need
+
+Not built; a record names a handler of the chain's own program only. To name one of
+another program held by the same cores (a run loaded with a list):
+
+- **The record.** A program field per record: the 16 words have no free bits (the
+  info word is full, the group word and the range words too, the next word's low bits
+  are the stamp row), so the record grows to 32 words or the stamp row gives up bits.
+  `run.chain` would take calls of several programs, check that every core of each
+  call holds its program, and keep refusing a run whose groups switch program.
+- **The walk.** In the runtime's form the walk runs inside one program's part, and the
+  runtime's kernels load a program's part per command, not per record (a part loading
+  another program's part has not been tried). The walk would move into the
+  runtime's three kernels (`program_reader.cpp`, `program_writer.cpp`,
+  `program_compute.cpp`): for each record, load the part of the record's program on
+  every kernel of the core (as a command to that program does) and call it with the
+  record's command. The marks, the credits and the record slots stay as they are.
+- **The buffers.** Both programs' buffers in the run's one layout, as a list's
+  programs already share it (an index two programs declare differently is refused);
+  buffer 32 once for both.
+- **The cost.** A record whose program the slots hold: a load of 72 cycles a part; one
+  they do not hold: the five parts loaded, 2,919 cycles on one core and 3,971 on 120
+  ([a program as an overlay](overlays.md#a-program-as-an-overlay)).

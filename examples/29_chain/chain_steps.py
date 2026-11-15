@@ -31,14 +31,20 @@ def parse():
     parser.add_argument("--width", type=int, default=2, help="tiles a core")
     parser.add_argument("--runs", type=int, default=200, help="timed runs each way")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--form",
+        choices=["kernel", "runtime"],
+        default="kernel",
+        help="the program's form: its own kernels, or parts the runtime's kernels call",
+    )
     return parser.parse_args()
 
 
-def program(tiles):
+def program(tiles, form="kernel"):
     page = C["kTileBytes"]
     return km.Program(
         "chain_steps",
-        kernels=KERNELS,
+        kernels=KERNELS if form == "kernel" else KERNELS / "runtime",
         buffers=[
             km.Buffer(C["kCbIn"], "uint32", page, 1),
             km.Buffer(C["kCbOther"], "uint32", page, 1),
@@ -150,6 +156,7 @@ def main():
     tiles = args.cores * args.width
     x = generator.integers(-50, 51, (tiles, WORDS)).astype(np.int32)
     result = {"cores": args.cores, "width": args.width, "tiles": tiles}
+    result["form"] = args.form
     with km.Session(log=log) as session:
         tensors = {"x": session.tensor(x, "int32")}
         for name, rows in (("y", tiles), ("z", tiles), ("s", tiles), ("t", 1)):
@@ -162,7 +169,7 @@ def main():
             result["refused"] = None
         except kc.ChainRefused as error:
             result["refused"] = str(error)
-        run = session.load(program(tensors["x"]), wait=0.5, deadline=0.5)
+        run = session.load(program(tensors["x"], args.form), wait=0.5, deadline=0.5)
         chain = run.chain(steps, C["kChainMode"])
         log(f"loaded; the chain's records written ({len(steps)})")
         checks = {}

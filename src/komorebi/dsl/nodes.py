@@ -113,15 +113,17 @@ def drop_glue(nodes, kept):
 
 def render(nodes, depth):
     """The lines of the tree at `depth` indents; consecutive nodes of one mover go
-    under one #if (mover A: COMPILE_FOR_BRISC), A then B under #if and #else."""
-    lines, current = [], None
+    under one #if (mover A: COMPILE_FOR_BRISC), A then B under #if and #else; a
+    third run (A, B, A) opens a new #if."""
+    lines, current, flipped = [], None, False
     for node in nodes:
         mover = node.mover
         if mover != current:
-            if current is not None and mover is not None:
+            if current is not None and mover is not None and not flipped:
                 lines.append(
                     "#else  // mover B" if mover == "B" else "#else  // mover A"
                 )
+                flipped = True
             else:
                 if current is not None:
                     lines.append("#endif")
@@ -129,6 +131,7 @@ def render(nodes, depth):
                     lines.append("#if defined(COMPILE_FOR_BRISC)  // mover A")
                 elif mover == "B":
                     lines.append("#if !defined(COMPILE_FOR_BRISC)  // mover B")
+                flipped = False
             current = mover
         lines += render_node(node, depth)
     if current is not None:

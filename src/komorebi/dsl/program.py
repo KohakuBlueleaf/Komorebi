@@ -100,12 +100,13 @@ def make(
     session=None,
     trace=0,
     defines=None,
+    broadcast_wait=True,
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
     by name; `session` (its L1 table checked, l1_checked; `trace` the load's) or `l1`
     (Session.l1()[1]); with broadcasts `rect` (x, y, columns, rows; the grid if not
-    given) and `nocs`; `defines` the kernels' defines over the class's."""
+    given) and `nocs`; `defines` over the class's; `broadcast_wait` a Program's."""
     cls = type(self)
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
@@ -120,11 +121,12 @@ def make(
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
     self.reduce_groups = compiled.reduce_groups
+    self.port_handlers = set(compiled.port_handlers)
     if compiled.rectangle:
         program_args = rectangle_of(self, compiled)
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
-    key = sources_key(plan, tensors, room, depth, rect, nocs)
+    key = sources_key(plan, tensors, room, depth, rect, nocs, broadcast_wait)
     built = write(cls, compiled, room, key)
     for line in built.report:
         log(line)
@@ -174,6 +176,7 @@ def make(
         defines=defines,
         depth=depth,
         handlers=built.folder / header_name(compiled),
+        broadcast_wait=broadcast_wait,
     )
     self.built = built
     self.log = log
@@ -182,7 +185,7 @@ def make(
         sources["writer"] = sources["reader"]
         if f"{name}/compute.cpp" in built.files:
             sources["compute"] = built.folder / name / "compute.cpp"
-        self.overlay(name, sources, defines=defines or None)
+        self.overlay(name, sources, defines=self.defines or None)
     if compiled.overlays:
         self.slots()
     if session is not None:
@@ -469,10 +472,13 @@ def camel(name):
     return "".join(part.capitalize() for part in name.split("_"))
 
 
-def sources_key(plan, tensors, room, depth, rect, nocs):
+def sources_key(plan, tensors, room, depth, rect, nocs, wait=True):
     """A short hash of what a class is made with that changes its generated sources:
-    the plan, each tensor's format, page and shape, and the make's options."""
+    the plan, each tensor's format, page and shape, and the make's options (a
+    broadcast_wait of False too; True keeps the key it had before the option)."""
     made = [sorted(plan.items()), room, depth, rect, nocs]
+    if not wait:
+        made.append("broadcast_wait=False")
     for name, tensor in sorted(tensors.items()):
         made.append((name, tensor.dtype, tensor.page_bytes, tuple(tensor.shape)))
         made.append(getattr(tensor, "layout", None))
@@ -684,7 +690,15 @@ def tensor_aliases(compiled):
             f"using {camel(name)} [[maybe_unused]] = km::Tensor<{offset}>;  // {name}"
         )
         previous = camel(name)
-    return lines
+    return lines + region_aliases(compiled)
+
+
+def region_aliases(compiled):
+    """A region parameter's type: a thread's region in its pages (km_region.hpp)."""
+    pages = f"km::RegionPages<{compiler.REGION_PAGE}>"
+    return [
+        f"using {camel(name)} [[maybe_unused]] = {pages};" for name in compiled.regions
+    ]
 
 
 def cases(compiled, nodes_of, ending, depth, kernel):
@@ -781,6 +795,8 @@ def movement_includes(compiled):
         lines.append('#include "komorebi/device/km_broadcast.hpp"')
     if compiled.overlays:
         lines.append('#include "komorebi/device/km_overlay.hpp"')
+    if compiled.regions:
+        lines.append('#include "komorebi/device/km_region.hpp"')
     return lines + compiled.body_includes["movement"]
 
 

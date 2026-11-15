@@ -25,6 +25,7 @@ from komorebi import (
     _env,
     abi,
     added,
+    chain,
     dram,
     formats,
     insn_check,
@@ -2571,6 +2572,8 @@ class _Backend:
                 ("KM_PROGRAM_CB_OUT", str(cb_out)),
                 *queue,
             ]
+            if any(b.index == chain.words()["kChainBuffer"] for b in buffers):
+                defines.append(("KM_PROGRAM_CHAIN", "1"))  # the reader zeroes its words
             if placed.switch:  # the kernels do not depend on the group's buffers
                 defines = [
                     ("KM_PROGRAM_GROUP", str(number)),

@@ -255,11 +255,26 @@ namespace km {
             if (kind == kWireWrite) {
                 return true;
             }
-            // a count or a word after the writes before it, as a router keeps them
-            uint32_t polls = 0;
-            while (!ncrisc_noc_nonposted_writes_flushed(noc_index)) {
-                if (++polls > kWireFlushPolls) {
+            // a count or a word after the writes before it, as a router keeps them;
+            // once the links are open the wait is the core's (limit, stop flag)
+            const auto flushed = [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            };
+            if (forward_held.control != 0) {
+                if (poll_stop(
+                    l1(forward_held.control + KM_CONTROL_STOP),
+                    flushed,
+                    forward_held.limit,
+                    0
+                ) != kGaveNone) {
                     return false;
+                }
+            } else {
+                uint32_t polls = 0;
+                while (!flushed()) {
+                    if (++polls > kWireFlushPolls) {
+                        return false;
+                    }
                 }
             }
             if (kind == kWireCounted) {
