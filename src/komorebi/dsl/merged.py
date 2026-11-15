@@ -493,7 +493,8 @@ def build(self):
         for key, value in source.given["constants"].items()
     }
     keyed["overlays"] = sorted(compiled.overlays)
-    key = made.sources_key(plan, tensors, room, depth, rect, nocs, wait, keyed)
+    solved = {n: v for n, v in compiled.constants.items() if n not in plan}
+    key = made.sources_key(plan, tensors, solved, depth, rect, nocs, wait, keyed)
     built = made.write(None, compiled, room, key)
     for line in self.report():
         log(line)
