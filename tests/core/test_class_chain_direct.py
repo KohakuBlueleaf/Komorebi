@@ -4,11 +4,23 @@ sends its block's part to every core whose share meets it, the tensor then refus
 host read and to a later call of the chain (no card)."""
 
 import pytest
-from chain_fixture import CORES, TILES, WIDTH, Steps, bits, made, run_of, tensors
+from chain_fixture import (
+    CORES,
+    TILES,
+    WIDTH,
+    Handlers,
+    Steps,
+    bits,
+    made,
+    quiet,
+    run_of,
+    tensors,
+)
 
 import komorebi as km
 from komorebi import chain as kc
 from komorebi import tensor as tensor_module
+from komorebi.errors import ProgramError
 
 GIVEN = tensors()
 X, Y, Z, S, T = (GIVEN[name] for name in "xyzst")
@@ -86,3 +98,32 @@ def test_a_k_share_from_several_roots_is_sent_by_each_and_not_read_from_dram():
             ],
             cores=(0, CORES),
         )
+
+
+def test_the_landing_area_is_taken_from_the_room_at_the_make():
+    area = TILES * 4096  # s's 16 tiles
+    with pytest.raises(ProgramError, match=rf"landing area takes {area:,} B .* sum.s"):
+        DirectSum(l1=area - 1, log=quiet, a=X, b=X, out=Y, s=S, t=T)
+    made_ = DirectSum(l1=1 << 20, log=quiet, a=X, b=X, out=Y, s=S, t=T)
+    assert f"of {1 << 20} B left for buffers" in "\n".join(made_.built.report)
+
+
+class Adds(km.Program):
+    add = km.handler(Handlers.add.function)
+
+
+class Sums(km.Program):
+    sum = km.handler(direct=("s",))(Handlers.sum.function)
+
+
+class AddSum(Adds, Sums):
+    """Two classes merged, the second's sum declaring s direct."""
+
+
+def test_a_merged_class_gets_the_landing_area_and_sends_direct():
+    program = AddSum(l1=1 << 20, log=quiet, a=X, b=X, out=Y, s=S, t=T, chain=True)
+    assert program.direct_area == (TILES, 4096, [("sum", "s")])
+    chain = run_of(program).chain(
+        [Adds.add(X, Y, S, WIDTH), Sums.sum(km.direct(S), T, TILES)], cores=(0, CORES)
+    )
+    assert chain.report == {1: [(WIDTH * 4096, 1)] * CORES}

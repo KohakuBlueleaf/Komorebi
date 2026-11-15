@@ -154,6 +154,8 @@ def make(
     else:
         room = l1
     reserved = beside_indices(cls.__name__, beside)
+    given_room = room  # the class's buffers get it less a direct input's landing area
+    room = direct_room(cls, compiler.handler_methods(cls), tensors, chain, room)
     compiled = compiler.compile_class(cls, plan, tensors, room, values, sets, reserved)
     if found:
         first_use.reserve(
@@ -200,7 +202,7 @@ def make(
     base = class_thread.header_text(
         class_thread.class_parts(self, compiled, tensors, found)
     )
-    built = write(cls, compiled, room, key, form, thread=base)
+    built = write(cls, compiled, given_room, key, form, thread=base)
     for line in built.report:
         log(line)
     if defines:
@@ -1836,16 +1838,19 @@ def chain_methods(cls):
     }
 
 
-def chain_made(program, cls, compiled, chain, tensors=None):
+def chain_made(program, cls, compiled, chain, tensors=None, handlers=None):
     """The chain's walk when `chain` or the class has a km.chain method (its lines
     checked here, refused at their line); on `program`: its handler (0: none) and
-    its direct input's landing area (None: none)."""
+    its direct input's landing area (None: none); `handlers` its methods by name (a
+    merged class's copies; None: the class's)."""
     methods = chain_methods(cls)
     for method in methods.values():
         front.chain_calls_module().checked(cls, method)
     if chain or methods:
         chain_prepared(cls, compiled)
-        direct_prepared(cls, compiled, tensors or {})
+        if handlers is None:
+            handlers = {m.name: m for m in compiler.handler_methods(cls)}
+        direct_prepared(cls, compiled, tensors or {}, handlers)
     program.chain_handler = compiled.chain
     program.direct_area = getattr(compiled, "direct_area", None)
     return bool(compiled.chain)
@@ -1854,13 +1859,43 @@ def chain_made(program, cls, compiled, chain, tensors=None):
 DIRECT_FIRST = 33  # the landing area's buffer: the first index free from here
 
 
-def direct_prepared(cls, compiled, tensors):
+def direct_declared(methods, tensors):
+    """{(handler, parameter): its example tensor} of each direct-declared parameter
+    the make gives a tensor for."""
+    return {
+        (method.name, place): tensors[place]
+        for method in methods
+        for place in getattr(method, "direct", ())
+        if place in tensors
+    }
+
+
+def direct_room(cls, methods, tensors, chain, room):
+    """The L1 left for the class's buffers once a chain build's landing area is
+    taken (`room` unchanged without one, or without a room given); refused with the
+    numbers when the area alone does not fit."""
+    if room is None or not (chain or chain_methods(cls)):
+        return room
+    declared = direct_declared(methods, tensors)
+    area = max((t.pages * t.page_bytes for t in declared.values()), default=0)
+    if area > room:
+        raise ProgramError(
+            f"{cls.__name__}: the direct inputs' landing area takes {area:,} B "
+            f"(for {', '.join(f'{h}.{p}' for h, p in sorted(declared))}) and "
+            f"{room:,} B are left for buffers; give a smaller tensor at the make or "
+            "drop direct="
+        )
+    return room - area
+
+
+def direct_prepared(cls, compiled, tensors, handlers):
     """A chain build of a class whose handlers declare direct inputs: one landing
-    area (buffer kDirectArea) the size of the largest such tensor given at the make,
-    its tiles' bytes the same for each; an overlay handler's direct input refused."""
+    area (buffer kDirectArea) the size of the largest such tensor given at the make
+    (its bytes taken out of the room before the compile, direct_room), its tiles'
+    bytes the same for each; an overlay handler's direct input refused."""
     declared = {}
     for name in compiled.handlers:
-        method = getattr(cls, name, None)
+        method = handlers.get(name)
         for place in getattr(method, "direct", ()):
             if name in compiled.overlays:
                 raise ProgramError(
@@ -2136,8 +2171,12 @@ DIRECT_HELPERS = """
     uint32_t km_kept_buffer = 0, km_kept_pages = 0, km_kept_source = 0;
     bool km_kept_pending = false, km_kept_pieces = false;
 
+    // The record km_direct_next answered for (its tag) and the answer, until its end.
+    uint32_t km_direct_tag = 0;
+    bool km_direct_known = false, km_direct_is = false;
+
     // Whether the next record takes this record's output direct (false outside a
-    // chain). False: gave up (recorded).
+    // chain), read once a record. False: gave up (recorded).
     __attribute__((noinline)) bool km_direct_next(
         km::Movement& movement, bool& direct
     ) {
@@ -2146,12 +2185,19 @@ DIRECT_HELPERS = """
             return true;
         }
         const uint32_t tag = km::chain_now.tag_base + km::chain_now.record + 1;
+        if (km_direct_known && km_direct_tag == tag) {
+            direct = km_direct_is;
+            return true;
+        }
         if (!km::chain_reached(movement, km::kChainReady, tag, km::kStWriter)) {
             return false;
         }
         uint32_t next[kChainWords];
         km::chain_copy(tag, next);
         direct = (next[kChainInfo] & kChainDataMark) != 0;
+        km_direct_tag = tag;
+        km_direct_known = true;
+        km_direct_is = direct;
         return true;
     }
 
@@ -2192,6 +2238,7 @@ DIRECT_HELPERS = """
         }
         km_kept_buffer = km_kept_pages = km_kept_source = 0;
         km_kept_pending = km_kept_pieces = false;
+        km_direct_known = false;  // the record's end: the next one asks again
     }
 
     // This core's landing area in a direct record (base 0: read DRAM).
