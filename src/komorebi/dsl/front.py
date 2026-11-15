@@ -164,6 +164,30 @@ class Message:
 MESSAGE_WORDS = 16  # a message of 64 bytes, the runtime's default
 
 
+class Entry:
+    """`class Job(km.Entry)` with int annotations: an entry of a page's table of words
+    (`pages.entries(Job, ...)`), its named words 0, 1, ... in order."""
+
+    words = {}  # name -> its word in the entry
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        names = list(inspect.get_annotations(cls))
+        if not names or not all(
+            inspect.get_annotations(cls)[name] is int for name in names
+        ):
+            raise ProgramError(
+                f"{cls.__name__}: an entry's words are ints, one at least"
+            )
+        cls.words = {name: word for word, name in enumerate(names)}
+
+    def __init__(self, **words):
+        raise ProgramError(
+            f"km.{spelling('entry')} is read by the compiler from a handler's lines; "
+            "Python never makes one"
+        )
+
+
 class ClassHandler(Handler):
     """A handler of a program made from a class: a Handler (its number and program)
     whose `args(...)` gives the command words of a call."""
@@ -356,6 +380,7 @@ def exports():
         "handler": handler,
         "tile_function": tile_function,
         "message": Message,
+        "entry": Entry,
         "field": L1,
         "symbol": symbol,
         "own": own,

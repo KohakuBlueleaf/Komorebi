@@ -591,6 +591,10 @@ def header(compiled):
         lines += [f"// {cls}: a message's words (word 0 the runtime's mark)."]
         for word, index in words.items():
             lines.append(f"constexpr uint32_t k{cls}{camel(word)} = {index};")
+    for cls, words in compiled.entries.items():
+        lines += ["", f"// {cls}: an entry's words in a table of entries."]
+        for word, index in words.items():
+            lines.append(f"constexpr uint32_t k{cls}{camel(word)} = {index};")
     for buffer in compiled.buffers:
         lines.append("")
         lines.append(f"// {buffer.what}")

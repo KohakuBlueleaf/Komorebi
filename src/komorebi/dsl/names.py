@@ -76,6 +76,26 @@ NAMES = {
         "forward", "self.forward(rank, message): the message, on to rank", "forward"
     ),
     "consume": Name("consume", "self.consume(): the message, ended here", "consume"),
+    # a page's words as a table (every CPU of the handler)
+    "entry": Name(
+        "Entry",
+        "class Job(km.Entry): an entry's named words (int annotations), 0, 1, ...",
+        None,
+    ),
+    "entries": Name(
+        "entries",
+        "pages.entries(Job, first=, size=, count=): a page's words as a table of "
+        "entries, read on every CPU of the handler",
+        None,
+    ),
+    "entries_first": Name("first", "entries(first=w): the first entry's word", None),
+    "entries_size": Name("size", "entries(size=n): the words an entry", None),
+    "entries_count": Name(
+        "count", "entries(count=w): the word that holds the entries' count", None
+    ),
+    "entries_fixed": Name(
+        "fixed", "entries(fixed=n): n entries, known at build (no count word)", None
+    ),
     # moves
     "stream": Name("Stream", "km.Stream(pages, block=, pattern=): a stream", "stream"),
     "write_stream": Name("write", "km.Stream(..., write=True): a write stream", None),

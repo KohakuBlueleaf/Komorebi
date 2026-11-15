@@ -1,4 +1,5 @@
-"""The class's defines, bodies at a kernel's start and end and compute's start-up: what
+"""The class lines of a page's words as a table (entries), the class's defines, bodies
+at a kernel's start and end, compute's start-up, and a write stream a body fills: what
 each lowers to and each refusal (no card)."""
 
 from pathlib import Path
@@ -47,6 +48,154 @@ def texts(cls, handler, **tensors):
         "\n".join(render(prune(compiled.movement[handler]), 0)),
         "\n".join(render(prune(compiled.compute[handler]), 0)),
     )
+
+
+class Job(km.Entry):
+    first: int
+    count: int
+    target: int
+
+
+class Walked(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor, source: km.Tensor, target: km.Tensor):
+        for job in tables.pages(self.rank, 1).entries(Job, first=8, size=4, count=0):
+            out = km.Stream(target.pages(job.target, job.count), write=True)
+            for tile in km.Stream(source.pages(job.first, job.count)):
+                out.push(tile)
+
+
+def test_entries_are_read_on_every_cpu_and_walked_alike():
+    movement, compute = texts(
+        Walked, "walk", tables=words(), source=tensor("bfloat16"),
+        target=tensor("bfloat16"),
+    )  # fmt: skip
+    # mover A reads the page and hands it to compute; mover B reads its own
+    assert "movement.reserve(kEntries0, 1)" in movement
+    assert "cb_push_back(kEntries0, 1);" in movement
+    assert "get_write_ptr(kEntries0B)" in movement
+    # the count (word 0), refused past the page's 254 entries of 4 words from word 8
+    assert "km_entries0[0] <= 254 ? km_entries0[0] : 0" in movement
+    loop = "for (uint32_t km_job_at = 0; km_job_at < km_entries0_count; km_job_at++)"
+    assert loop in movement
+    assert "job = km_entries0 + 8 + 4 * km_job_at;" in movement
+    assert "km_job_target = job[kJobTarget];" in movement
+    assert "km_job_target, km_job_count, kWrite0Block" in movement
+    # compute takes the page as pushed, walks it, frees it after the loop
+    assert "compute.wait_front(kEntries0, 1)" in compute
+    assert "km::l1(get_tile_address(kEntries0, 0));" in compute
+    assert "km_ok && km_job_at < km_entries0_count" in compute
+    assert compute.rstrip().endswith("cb_pop_front(kEntries0, 1);")
+
+
+class Spanned(km.Program):
+    @km.handler
+    def walk(self, directory: km.Tensor, source: km.Tensor):
+        for span in directory.pages(self.rank, 1).entries(Job, size=3, fixed=1):
+            km.Stream(source.pages(span.first, span.count)).drain()
+
+
+def test_one_entry_known_at_build_is_a_block_of_no_loop():
+    movement, compute = texts(
+        Spanned, "walk", directory=words(), source=tensor("bfloat16")
+    )
+    assert "km_span_at" not in movement + compute
+    assert "span = km_entries0 + 0;" in movement
+    assert "km_entries0_count" not in movement
+
+
+class Named(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor, source: km.Tensor, first: int, count: int):
+        jobs = tables.pages(self.rank, 1).entries(Job, first=8, size=4, count=0)
+        end = first + count + (count == 0) * jobs.count
+        for job in jobs[first:end]:
+            km.cxx("total += job_count;", takes=[job], on="pack")
+
+
+def test_a_named_table_is_sliced_as_python_slices_and_bodies_take_its_words():
+    movement, compute = texts(Named, "walk", tables=words(), source=tensor("bfloat16"))
+    assert "(first < km_entries0_count ? first : km_entries0_count)" in compute
+    assert "(end < km_entries0_count ? end : km_entries0_count)" in compute
+    assert "const uint32_t job_count = km_job_count;" in compute
+    assert "end = ((first + count) + ((count == 0) * km_entries0_count));" in compute
+    assert compute.rstrip().endswith("cb_pop_front(kEntries0, 1);")
+
+
+class Unclassed(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor):
+        for _ in tables.pages(self.rank, 1).entries(first=8, size=4, count=0):
+            pass
+
+
+class Both(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor):
+        for _ in tables.pages(0, 1).entries(Job, size=4, count=0, fixed=1):
+            pass
+
+
+class Inside(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor):
+        for _ in tables.pages(0, 1).entries(Job, first=8, size=4, count=9):
+            pass
+
+
+class Unknown(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor, source: km.Tensor):
+        for job in tables.pages(0, 1).entries(Job, size=4, fixed=1):
+            km.Stream(source.pages(job.start, 1)).drain()
+
+
+class Nested(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor, rounds: int):
+        for _ in range(rounds):
+            jobs = tables.pages(0, 1).entries(Job, size=4, fixed=1)
+            km.cxx("use(jobs_count);", takes=[jobs])
+
+
+class Stepped(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor):
+        jobs = tables.pages(0, 1).entries(Job, first=8, size=4, count=0)
+        for _ in jobs[0:4:2]:
+            pass
+
+
+class Small(km.Program):
+    @km.handler
+    def walk(self, tables: km.Tensor):
+        for _ in tables.pages(0, 1).entries(Job, size=2, fixed=1):
+            pass
+
+
+@pytest.mark.parametrize(
+    "cls, text, why",
+    [
+        (Unclassed, "entries(first=8, size=4, count=0)", "entries name their class"),
+        (Both, "count=0, fixed=1", "either the word of their count"),
+        (Inside, "count=9", "the count's word 9 is not a word of the page before"),
+        (Unknown, "job.start", "job, a Job, has no word start"),
+        (Nested, "jobs = tables.pages(0, 1)", "a named table is read at the handler"),
+        (Stepped, "jobs[0:4:2]", "a slice of its entries, with no step"),
+        (Small, "entries(Job, size=2, fixed=1)", "Job names 3 words, and an entry"),
+    ],
+)
+def test_entries_refusals_name_the_line(cls, text, why):
+    line = line_of(text)
+    with pytest.raises(Refused, match=rf"^{cls.__name__}.walk, line {line}, .*{why}"):
+        compile_class(cls, {}, {"tables": words(), "source": tensor("bfloat16")})
+
+
+def test_an_entry_class_is_ints():
+    with pytest.raises(ProgramError, match="an entry's words are ints"):
+
+        class Bad(km.Entry):
+            name: str
 
 
 class Defined(km.Program, defines={"SCALE": 3, "MODE": "fast"}):
@@ -123,3 +272,38 @@ def test_start_and_end_refusals():
         compile_class(StartAt, {}, {"source": tensor("bfloat16")})
     with pytest.raises(ProgramError, match="a source order is of two inputs"):
         km.Startup("a", "out", order="reverse")
+
+
+class Fed(km.Program):
+    @km.handler
+    def rows(self, source: km.Tensor, target: km.Tensor, rows: int):
+        out = km.Stream(target.pages(0, rows), write=True)
+        for row in range(rows):
+            km.cxx("pack_row(out_buffer, out, row);", takes=[out, row])
+
+
+class FedMoving(km.Program):
+    @km.handler
+    def rows(self, source: km.Tensor, target: km.Tensor, rows: int):
+        out = km.Stream(target.pages(0, rows), write=True)
+        for row in range(rows):
+            km.Stream(source.pages(row, 1)).drain()
+            km.cxx("pack_row(out_buffer, out, row);", takes=[out, row])
+
+
+def test_a_write_stream_a_loops_bodies_fill():
+    movement, compute = texts(
+        Fed, "rows", source=tensor("bfloat16"), target=tensor("bfloat16")
+    )
+    assert "uint32_t km_fed_out = 0;" in compute
+    assert "km::block_half(kWrite0, kWrite0Pattern, km_fed_out);" in compute
+    assert "const bool km_room_out = compute.reserve_back(km_out_out" in compute
+    assert "const uint32_t out_buffer = km_out_out;" in compute
+    assert "km_fed_out++;" in compute
+    # the movers move the whole stream once, after the loop
+    assert "for (uint32_t row" not in movement
+    assert "movement.move(km_write0)" in movement
+    with pytest.raises(Refused, match="feed it in a loop of compute's lines alone"):
+        compile_class(
+            FedMoving, {}, {"source": tensor("bfloat16"), "target": tensor("bfloat16")}
+        )
