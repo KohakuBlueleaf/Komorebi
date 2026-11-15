@@ -81,6 +81,32 @@ class GateTimed(km.Program):
             results.push(silu_gate(x, g))
 
 
+class GateBlocks(km.Program):
+    """Gate's handler with its block a constant parameter: each block the make lists
+    (handlers={"gate": [{"block": 8}, {"block": 4}]}) a handler of its own, the
+    submit's value at its place picking it."""
+
+    @km.handler
+    def gate(
+        self,
+        a: km.Tensor,
+        b: km.Tensor,
+        out: km.Tensor,
+        tiles: int,
+        pattern: km.Pattern,
+        block: km.constant[int] = 8,
+    ):
+        first = self.rank * tiles
+        results = km.Stream(
+            out.pages(first, tiles), write=True, block=block, pattern=pattern
+        )
+        for x, g in zip(
+            km.Stream(a.pages(first, tiles), block=block, pattern=pattern),
+            km.Stream(b.pages(first, tiles), block=block, pattern=pattern),
+        ):
+            results.push(silu_gate(x, g))
+
+
 def values(rng, pages, dtype):
     """(the raw pages, their values in float64) of `pages` tiles: bfloat16 normal
     numbers as the hand program makes them, or float32 normal numbers times 8."""
@@ -172,6 +198,38 @@ def run_class(session, args, cores, dtype, timed):
     return record
 
 
+def run_blocks(session, args, cores, blocks):
+    """GateBlocks made with each of `blocks` listed (bfloat16), one load; a command
+    a block, its output cleared before and judged after, as run_class's."""
+    pages = cores * args.tiles
+    rng = np.random.default_rng(args.seed)
+    a_raw, a_values = values(rng, pages, "bfloat16")
+    b_raw, b_values = values(rng, pages, "bfloat16")
+    a, b, out = (session.empty((pages, 1024), "bfloat16") for _ in range(3))
+    for tensor, raw in ((a, a_raw), (b, b_raw)):
+        session.write(tensor, raw.view(np.uint8).reshape(pages, -1))
+    listed = [{"block": block} for block in blocks]
+    program = GateBlocks(a=a, b=b, out=out, log=hand.log, handlers={"gate": listed})
+    run = session.load(program)
+    records = {}
+    try:
+        for block in blocks:
+            session.write(out, np.zeros((pages, 2048), np.uint8))
+            words = (a, b, out, args.tiles, args.pattern, block)
+            event = run.wait(run.submit(program.gate, (0, cores), args=words), 30.0)
+            hand.log(f"GateBlocks block {block}: {event}")
+            record = {"kernel_text": program.sizes.text, "event": event.kind}
+            record["microseconds"] = event.microseconds
+            record |= compared(
+                session, out, hand.reference(a_values, b_values), "bfloat16"
+            )
+            records[f"block {block}"] = record
+    finally:
+        run.stop()
+        hand.log("GateBlocks: run stopped")
+    return records
+
+
 def run_hand(session, args, cores):
     """../gate.py's program and command in this session, from the same seed."""
     pages = cores * args.tiles
@@ -208,11 +266,20 @@ def main():
         default=["bfloat16", "float32"],
         help="the class's tensors, each with Gate and GateTimed",
     )
+    parser.add_argument(
+        "--blocks",
+        type=int,
+        nargs="*",
+        default=[],
+        help="GateBlocks with these blocks listed (bfloat16), a command each",
+    )
     args = parser.parse_args()
     args.pattern = km.Pattern(args.pattern)
     block = Gate.BLOCK.default
     if args.tiles % block or not block <= args.tiles <= 256 - SPANS_FIRST:
         parser.error(f"--tiles is a multiple of {block} up to {256 - SPANS_FIRST}")
+    if any(block < 1 or args.tiles % block for block in args.blocks):
+        parser.error("each of --blocks divides --tiles")
     report = {"runs": {}}
     with km.Session(log=hand.log) as session:
         cores = args.cores or session.grid[0] * session.grid[1]
@@ -223,6 +290,9 @@ def main():
             for timed in (False, True):
                 record = run_class(session, args, cores, dtype, timed)
                 report["runs"][f"{'timed ' if timed else ''}class {dtype}"] = record
+        if args.blocks:
+            for name, record in run_blocks(session, args, cores, args.blocks).items():
+                report["runs"][f"class bfloat16 {name}"] = record
     ok = True
     for name, record in report["runs"].items():
         ok &= record["event"] == "done" and record["wrong"] == 0
