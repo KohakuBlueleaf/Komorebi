@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "kmx.h"
+#include "kmx_chain.h"
 #include "chain.h"
 #include "decode.h"
 
@@ -275,11 +276,9 @@ static uint32_t token_form[6] = {0u, 0u, 0u, 0u, TOKEN_NONE, 0u};
 /* The records (chain.h) of `count` layers from the job's into region 3, each layer's
  * last naming the next layer's first; `token`: the position from the command's a0. */
 static int chain_write(job_t* job, uint32_t count, int token) {
-    uint64_t bytes = 0;
-    uint32_t* records = (uint32_t*)kmx_region(3, &bytes);
     const uint32_t* words = job->words;
     const uint32_t steps = job->records, total = steps * count;
-    if (records == 0 || total > kChainRecordsMax || bytes < total * kChainRecordBytes) {
+    if (total > kChainRecordsMax) {
         return KMX_BAD;
     }
     const uint32_t* layer = job->layer;
@@ -288,37 +287,18 @@ static int chain_write(job_t* job, uint32_t count, int token) {
         job->position = 0u;
     }
     km_command_t command;
-    km_command_t chain;
     uint32_t address = 0u;
     job->cores = 0u;
     for (uint32_t g = total; g-- > 0u;) { /* last first: each knows the next */
         const uint32_t i = g % steps, step = chain_steps[i];
-        uint32_t* record = records + kChainWords * g;
         job->layer = layer + DC_LAYER_WORDS * (g / steps);
         job->index = index + g / steps;
         step_command(job, step, &command);
-        if (
-            kmx_block(&chain, 3, (uint64_t)g * kChainRecordBytes, kChainRecordBytes) !=
-            KMX_OK
-        ) {
-            return KMX_BAD;
-        }
-        const uint32_t arguments[10] = {
-            command.a0,
-            command.a1,
-            command.a2,
-            command.a3,
-            command.a4,
-            command.a5,
-            command.a6,
-            command.a7,
-            command.a8,
-            command.a9
-        };
-        for (uint32_t word = 0u; word < 10u; word++) {
-            record[kChainArguments + word] = arguments[word];
-        }
-        record[kChainGroup] = command.group;
+        kmx_chain_call call; /* field by field: no memset */
+        call.command = &command;
+        call.word = call.by_ranges = call.k_base = call.k_tiles = 0u;
+        call.ranges[0] = call.ranges[1] = call.ranges[2] = 0u;
+        call.size = call.width = call.row = 0u;
         uint32_t flags = 0u;
         if (g > 0u && chain_writes(job, chain_steps[(g - 1u) % steps])) {
             flags |= kChainMarked;
@@ -332,25 +312,23 @@ static int chain_write(job_t* job, uint32_t count, int token) {
         if (chain_sends(job, step)) {
             flags |= kChainSends;
         }
+        call.flags = flags;
         if (token && (step == DC_STEP_QKV || step == DC_STEP_ATTEND)) {
-            flags |= 15u << kChainTokenShift; /* a9: qkv's (the op's) and attend's */
+            call.word = 15u; /* a9: qkv's (the op's) and attend's */
         }
-        const uint32_t needs = (
-            step == DC_STEP_ATTEND ? kChainNeedsRanges : kChainNeedsK
-        );
-        const uint32_t width = (
+        call.by_ranges = step == DC_STEP_ATTEND;
+        for (uint32_t range = 0u; call.by_ranges && range < kChainRangeCount; range++) {
+            call.ranges[range] = words[DC_WORD_ATTEND_NEEDS + range];
+        }
+        /* the group's size and K range: the plan's (the program reads them) */
+        call.width = (
             step == DC_STEP_GATE_UP && !job->bare ? words[DC_WORD_GATE_TILES] : 0u
         );
         /* stamp row: the step's; the token's last record its own (bench.py folds it) */
-        const uint32_t row = count > 1u && g == total - 1u ? DC_CHAIN_LAST_ROW : i;
-        record[kChainInfo] = flags | needs << 8 | width << 16 | row << 24;
-        for (uint32_t range = 0u; range < kChainRangeCount; range++) {
-            record[kChainRanges + range] = (
-                step == DC_STEP_ATTEND ? words[DC_WORD_ATTEND_NEEDS + range] : 0u
-            );
+        call.row = count > 1u && g == total - 1u ? DC_CHAIN_LAST_ROW : i;
+        if (kmx_chain_record(3, g, &call, address, &address) != KMX_OK) {
+            return KMX_BAD;
         }
-        record[kChainNext] = address;
-        address = chain.a7;
         job->cores = (
             (command.group >> 16) > job->cores ? command.group >> 16 : job->cores
         );
@@ -368,16 +346,15 @@ static int chain_run(job_t* job, uint32_t a0) {
     const uint32_t* words = job->words;
     km_command_t chain;
     const uint64_t written = kmx_time();
-    kmx_command(&chain, 0u, words[DC_WORD_SPLIT], 0u, job->cores);
-    chain.hdr |= words[DC_WORD_EXCLUSIVE] << 8;
-    if (kmx_block(&chain, 3, 0u, kChainRecordBytes) != KMX_OK) {
-        return KMX_BAD;
-    }
-    chain.a0 = a0;
-    chain.a1 = (
+    const uint32_t flags = (
         (job->ahead_off ? kChainAheadOff : 0u) | (job->data_dram ? kChainDataDram : 0u)
     );
-    chain.a4 = kChainMode;
+    if (kmx_chain_command(
+        &chain, 3, words[DC_WORD_SPLIT], job->cores, kChainMode, a0, flags
+    ) != KMX_OK) {
+        return KMX_BAD;
+    }
+    chain.hdr |= words[DC_WORD_EXCLUSIVE] << 8;
     uint32_t handle = 0u;
     uint64_t deadline = kmx_time() + WAIT_TICKS;
     int status = kmx_submit(&chain, &handle);
