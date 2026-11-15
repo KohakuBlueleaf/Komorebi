@@ -3,6 +3,7 @@ program in the build cache; the open at that size; grown during a run, set at cl
 
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,7 @@ from komorebi import remembered
 
 @pytest.fixture
 def cache(tmp_path, monkeypatch):
-    monkeypatch.setenv("KMR_CACHE", str(tmp_path))
+    monkeypatch.setattr(remembered, "_path", lambda: tmp_path / remembered.FILE)
     main = types.ModuleType("__main__")
     main.__file__ = str(tmp_path / "script.py")
     monkeypatch.setitem(sys.modules, "__main__", main)
@@ -54,3 +55,18 @@ def test_code_without_a_file_keeps_nothing(cache, monkeypatch):
     assert made.script is None and "no script file" in said[0]
     made.wanted(92496)
     assert remembered.read()["scripts"] == {}
+
+
+def test_a_load_of_several_programs_keeps_the_scripts_entry(cache):
+    made = remembered.Memory(lambda message: None)
+    made.loaded([object(), object()], 70096)  # an island session's list
+    assert remembered.read() == {"programs": {}, "scripts": {made.script: 71168}}
+
+
+def test_a_runner_in_pythons_prefix_keeps_nothing(cache, monkeypatch):
+    main = types.ModuleType("__main__")
+    main.__file__ = str(Path(sys.prefix) / "lib" / "pytest" / "__main__.py")
+    monkeypatch.setitem(sys.modules, "__main__", main)
+    said = []
+    assert remembered.Memory(said.append).script is None
+    assert "a runner such as pytest: none kept" in said[0]
