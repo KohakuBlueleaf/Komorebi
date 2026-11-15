@@ -8,6 +8,7 @@
 void kernel_main() {
     km::Reader reader;
     const uint32_t fold = get_write_ptr(kCbFold);
+    km::coll_stamps_in(get_write_ptr(kCbStamps));  // with KM_COLL_STAMPS
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) == kHandlerGather) {
             km::all_gather(reader, command, command.a0, command.a1, command.a2);

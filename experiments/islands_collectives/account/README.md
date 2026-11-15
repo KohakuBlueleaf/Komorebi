@@ -14,8 +14,14 @@ python account.py --calls nop,gather --sizes 2     # and a NOP command beside th
 
 Copies of up to 256 pages are read back whole; larger ones by sample (the first,
 middle and last 8 pages of every island's share, on every island). `--stamps` builds
-the calls with their step stamps (`KM_COLL_STAMPS`, where the device code has them)
-and adds each island's steps to the row.
+the calls with their step stamps (`KM_COLL_STAMPS`: each rank's wall clock at each
+step, written at the call's return to its page of a copy tensor) and adds each
+island's steps, from its first rank's entry, to the row. A NoC write reads L1 only, and
+a kernel's statics are the core's own local memory: so the service overlay keeps the
+stamps in its slot, and a kernel gives the calls 128 bytes of its L1
+(`km::coll_stamps_in`, here the buffer `kCbStamps`). The stamps of the host's form
+were run (the account in `docs/reference/islands.md`); those of the kernel form were
+not yet run.
 
 ## Results
 

@@ -169,7 +169,7 @@ def main():
     generator = np.random.default_rng(1)
     with km.Session(**opened, log=log) as session:
         ranks, islands = session.ranks, len(session.sessions)
-        made = {}
+        made, stamps = {}, None
         for pages in sizes:  # every tensor before the load
             zeros = np.zeros((pages * TILE, TILE), np.float32)
             made[pages] = (
@@ -178,9 +178,10 @@ def main():
                     np.concatenate([zeros, zeros]), "float32", "tile", copy=True
                 ),
             )
-        stamps = session.tensor(
-            np.zeros((ranks, STAMPS), np.uint32), "uint32", copy=True
-        )
+            if stamps is None:  # the third tensor: one stamped build for any sizes
+                stamps = session.tensor(
+                    np.zeros((ranks, STAMPS), np.uint32), "uint32", copy=True
+                )
         defines = {"KM_COLL_STAMPS": stamps.address} if args.stamps else {}
         program = km.Program(
             "collectives_account",
@@ -189,7 +190,10 @@ def main():
                 km.Buffer(
                     CONSTANTS["kCbFold"], "uint32", CONSTANTS["kFoldBytes"],
                     CONSTANTS["kFoldPages"],
-                )
+                ),
+                km.Buffer(
+                    CONSTANTS["kCbStamps"], "uint32", CONSTANTS["kStampsBytes"], 1
+                ),
             ],  # fmt: skip
             handlers=KERNELS / "account.h",
             defines=defines,

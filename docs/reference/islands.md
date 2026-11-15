@@ -873,24 +873,33 @@ island adds half the tensor over its 118 ranks, about 90 cycles a float32 word w
 its DRAM reads and writes), are the rest: the adds in integer arithmetic on the
 movers are the reduce's largest term, and ours.
 
-Where the time goes, all-gather of 1 MiB (62.9 µs on the card):
+Where the time goes, from the calls' step stamps (`--stamps` of the account
+experiment: each rank's wall clock at each step of the call, compiled in on request),
+the host's form, two cards, the median of 3 calls (43.2, 52.3, 124.3 and 210.4 µs),
+microseconds of the island that finishes last, each column summing to the call:
 
-| Term | µs | Kind |
-|---|---|---|
-| the command over two islands (a NOP on 240 ranks, below) | 2.4 | ours |
-| one put line across and its confirmation, 4 KiB (a separate measurement) | 7.7 | hardware: line latency; ours: the line's steps |
-| 508 KiB more each way, both ways at once | 9.2 | at least the links' rate; part overlaps the fixed terms |
-| the meeting of 117 ranks, the leader's waits, its release | not measured | ours |
-| unaccounted | 43.6 | |
+| Term | Gather, 2 pages | Gather, 1 MiB | Reduce, 2 pages | Reduce, 1 MiB | Kind |
+|---|---|---|---|---|---|
+| the command around the ranks | 2.5 | 2.5 | 2.4 | 2.5 | ours |
+| the ranks' entries and their meeting | 1.4 | 1.4 | 1.4 | 1.4 | ours |
+| the leader's put lines out | 2.0 | 2.0 | 2.2 | 2.2 | ours: the line's steps |
+| waiting for the other island's share (the reduce: its partial) | 32.4 | 41.9 | 34.9 | 43.5 | about 28 ours (the other island starts later); the rest its line |
+| the team let go to add | | | 4.4 | 4.4 | ours |
+| the adds | | | 69.4 | 137.8 | ours: about 90 cycles a float32 word, in integer code on the reader |
+| waiting for the other island's sums, own lines confirmed | 0.1 | 0.2 | 5.1 | 14.3 | hardware and the line's steps |
+| the release of the island's 117 other ranks | 4.4 | 4.4 | 4.4 | 4.4 | ours |
 
-The bytes add 9.2 µs: the fixed part dominates and is ours (the meetings, the waits
-between steps). All-reduce of 1 MiB (222.1 µs) adds to the gather's terms a second
-crossing and the adds: 87.5 µs over 2 pages, of which the adds on the movers in
-integer arithmetic (about 1,100 words a rank, two reads and a write of DRAM a page) are
-the likely larger part (ours: the vector unit adds a tile in far fewer cycles); not
-separated by a measurement. On the host every call costs about 270 µs more than on the
-card: the host's submit and wait (ours). On one card split into three islands in a
-line, 1 MiB: all-gather from a kernel 158.7 µs on the card, exact; all-reduce 978 µs,
+What crosses is a small part: a put line of one page goes out and is confirmed in
+5.1 µs, one of 128 pages (512 KiB) in 15.0 µs, of which about 5 µs is the links' rate
+(101 GB/s each way) and the rest the line's pushes, one line at 53 GB/s. The largest
+terms are ours: the second island's command starts about 28 µs after the first's (the
+other island waits 0.2 µs for the share), the adds of the reduce, the release and the
+go (117 atomics each). The adds take ceil(pages of the share / ranks) pages on the
+slowest rank: 1 page at 2 pages, 2 at 1 MiB. The first call of a run costs about
+15 µs more (the service overlay's first load on every rank).
+
+On the host every call costs about 270 µs more than on the card: the host's submit and
+wait (ours). On one card split into three islands in a line, 1 MiB: all-gather from a kernel 158.7 µs on the card, exact; all-reduce 978 µs,
 exact from a kernel and from the host. The all-gather from the host was not exact
 there (2454 µs on the card): open. Four islands were not run. On one card as one
 island both calls return at once, exact: from a kernel the command's own 2.2 µs.

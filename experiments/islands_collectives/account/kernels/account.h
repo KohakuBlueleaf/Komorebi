@@ -11,3 +11,5 @@ constexpr uint32_t kHandlerReduce = 2;
 constexpr uint32_t kCbFold = 0;  // the folds' L1
 constexpr uint32_t kFoldPages = 8;
 constexpr uint32_t kFoldBytes = 4096;
+constexpr uint32_t kCbStamps = 1;  // the call's stamps' L1 (km::coll_stamps_in)
+constexpr uint32_t kStampsBytes = 128;
