@@ -127,12 +127,27 @@ def test_a_class_beside_the_added_one_takes_it_and_the_refusals_name_each_cause(
         added_program.add(run_of(loaded, switch=False), other)
 
 
-def test_per_core_args_and_overlays_of_its_own_are_refused():
+def test_per_core_args_go_in_a_row_a_core_and_word_fields_and_overlays_are_refused():
     other = project(form="runtime")
     loaded = twice(form="runtime", beside=other)
-    other.args = lambda core: ([core], [], [])
-    assert "per-core args" in added_program.refused(run_of(loaded), other)
+    other.args = lambda core: ([core, 7], [core + 100], [2 * core, 3, 4])
+    assert "named with Program.ahead" in added_program.refused(run_of(loaded), other)
+    built = run_of(loaded, backend=backend(switch_args=True))
+    assert added_program.refused(built, other) == ""
+    rows, row_bytes = added_program.args_defines(other, 3)
+    assert rows[2] == [2, 7, 102, 4, 3, 4] and row_bytes == programs.CB_ALIGN
+    c = overlay.constants()
+    at = c["kOverlayArea"] + c["kOverlayRecord"] + 4 * c["kRecordArgsL1"]
+    assert other.defines["KM_ARGS_L1"] == str(at)
+    assert (other.defines["KM_ARGS_WRITER"], other.defines["KM_ARGS_COMPUTE"]) == (
+        "2",
+        "3",
+    )
     other.args = None
+    assert added_program.args_defines(other, 3) == ([], 0)
+    other.word_fields = {"counts": 1}
+    assert "word fields" in added_program.refused(run_of(loaded), other)
+    other.word_fields = {}
     other.overlays = {"extra": object()}
     assert "overlays of its own" in added_program.refused(run_of(loaded), other)
 
@@ -179,12 +194,13 @@ def test_a_class_named_ahead_takes_the_next_field_and_sizes_the_area():
     assert added_program.ahead_programs(placed) == [other]
     assert other.program_field == 1
     made = backend(switch_shift=0)
+    made.session = SimpleNamespace(_hand_nocs=lambda program: None)
     end = added_program.layout_of(made, other)[1]
     reserve = added_program.pad_reserve(made, placed, 0x20000)
     assert reserve >= end + programs.CB_ALIGN
     assert made.switch_pad not in {b.index for b in [*loaded.buffers, *other.buffers]}
-    assert made.switch_loaded == 1
-    made.session = SimpleNamespace(_module=native_module())
+    assert made.switch_loaded == 1 and made.switch_args is False
+    made.session._module = native_module()
     (part,) = added_program.ahead_overlays(made, placed, 0, {})
     assert part.number == overlay.constants()["kOverlayService"] - 2
     assert part.recipes == {} and part.name == "project"

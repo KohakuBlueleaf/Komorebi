@@ -276,7 +276,12 @@ load's L1 table leaves free less 64 KiB (kept for L1 tensors made while the run 
 live); `session.load(..., buffers=N)` makes the area N bytes from the runtime's buffers
 (0: the largest program's). Its parts go in the load's slots, which cannot grow under a
 live run: `gate.ahead(project)` before the load sizes them by its parts and builds them,
-so the add takes milliseconds; else `Program.slots(bytes=)`. A thread reaches it with `kmx_load`
+so the add takes milliseconds; else `Program.slots(bytes=)`. Its per-core args (a
+rectangle, a broadcast, `self.x`) go in a DRAM table, one row per core, which its load
+command copies into the switch area; nothing of it is reserved at the launch, and
+the load's kernels hold that copy only when such a class is named with `ahead` before
+the load
+([classes](classes.md#another-class-added-to-a-live-run), item 6). A thread reaches it with `kmx_load`
 and its handler with the words `run.thread_words(handler, args)` gives
 ([threads](threads.md#a-class-added-to-the-live-run)). The refusals:
 [classes](classes.md#another-class-added-to-a-live-run).

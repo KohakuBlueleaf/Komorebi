@@ -94,6 +94,11 @@ namespace km {
     constexpr uint32_t kRecordMask = 0;
     constexpr uint32_t kRecordField = 1;
     constexpr uint32_t kRecordTable = 2;
+    // An added class's per-core args (komorebi.added_program): its row table's address
+    // (0: none; core c's row is page c), a row's bytes, and the row's L1 place.
+    constexpr uint32_t kRecordArgs = 12;
+    constexpr uint32_t kRecordArgsBytes = 13;
+    constexpr uint32_t kRecordArgsL1 = 14;
     constexpr uint32_t kRecordBuffers = 16;
     constexpr uint32_t kRecordBytes = 4 * (kRecordBuffers + 4 * 32);
     constexpr uint32_t kOverlayAreaBytes = kOverlayRecord + kRecordBytes;
@@ -425,6 +430,9 @@ namespace km {
             limit,
             0
         );
+#if defined(KM_ADDED_ARGS)
+        invalidate_l1_cache();  // an added class's row, written by the reader's read
+#endif
         if (code != kGaveNone) {
             const uint32_t word = follower == 0 ? kStWriter : kStCompute;
             command_gave_up(control, word, code, kWhereProgramSwitch, 0, sequence);
@@ -504,6 +512,23 @@ namespace km {
         if (!reader.flushed(kFlushReads, kStReader) && code == kGaveNone) {
             code = kGaveStop;  // recorded by flushed: the tile stops
         }
+#if defined(KM_ADDED_ARGS)  // a class named ahead has per-core args (added_program)
+        // An added class's row, landed before the go below: the four other CPUs park
+        // until the go (program_follow), so none runs the class's next command before.
+        if (code == kGaveNone && record[kRecordArgs] != 0) {
+            const uint32_t me = reader.args().me, bytes = record[kRecordArgsBytes];
+            noc_async_read(
+                get_noc_addr_from_bank_id<true>(
+                    me % kOverlayBanks, record[kRecordArgs] + me / kOverlayBanks * bytes
+                ),
+                record[kRecordArgsL1],
+                bytes
+            );
+            if (!reader.flushed(kFlushReads, kStReader)) {
+                code = kGaveStop;
+            }
+        }
+#endif
         const uint32_t mask = record[kRecordMask], both = mask | line[kSwitchMask];
         if (code == kGaveNone && record[kRecordField] != field) {
             code = kGaveOverlay;
