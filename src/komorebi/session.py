@@ -651,6 +651,7 @@ class Session:
         self._default_clock = pll_mhz is None  # may fall back to X280_FALLBACK_MHZ
         self.tree = tree
         self.log = log or (lambda message: None)
+        self.log_given = log is not None  # without one, a reopen is printed to stderr
         self.grid_timeout = grid_timeout
         self.kernel_bytes = kernel_bytes  # None: the runtime's, then the kernels'
         self._kept = kernel_buffer.Kept()  # the tensors made before the first load
