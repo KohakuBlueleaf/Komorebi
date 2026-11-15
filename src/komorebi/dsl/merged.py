@@ -6,7 +6,7 @@ together (compiler.compile_merged); a handler is the unit that may be an overlay
 import copy
 
 from komorebi import program as km_program
-from komorebi.dsl import compiler, front
+from komorebi.dsl import class_thread, compiler, front
 from komorebi.dsl import program as made
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.dsl.names import spelling
@@ -565,6 +565,7 @@ def build(self):
         broadcast_wait=wait,
     )
     self.built = built
+    class_thread.merged(self, compiled, tensors)
     self.built_handlers = list(compiled.handlers)
     for key, method in getattr(type(self), "merged_methods", {}).items():
         mine = self.methods[key]  # the class's handler gives a call's words too
@@ -596,3 +597,4 @@ def set_overlays_built(self, built):
 
 
 MergedClass.overlays_built = property(made.overlays_built, set_overlays_built)
+MergedClass.thread = class_thread.added  # its header written, its C built

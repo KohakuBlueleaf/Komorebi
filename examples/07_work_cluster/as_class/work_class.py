@@ -1,6 +1,6 @@
 """Work cluster written as a class: STEP and SUM of ../kernels as two handlers of a
-class, an X280 thread submitting them by the class's generated C header (thread/
-driver.c with ../decide.c), checked against ../work_cluster.py's numpy replay;
+class whose X280 thread (thread/driver.c with ../decide.c) fills their commands by
+the class's generated C header, checked against ../work_cluster.py's numpy replay;
 beside its own thread path with --beside. See README.md.
 """
 
@@ -22,7 +22,14 @@ import work_cluster as hand  # noqa: E402  (the hand program, its replay and pat
 
 class WorkCluster(km.Program):
     """step: each core of the group adds `round` and its page to its word. sum: the
-    leader adds the words of `cores` pages from `first`, the command's result."""
+    leader adds the words of `cores` pages from `first`, the command's result. Its
+    thread, built at the make, records each round's group in `groups`."""
+
+    MAX_ROUNDS = km.constant(1000)
+    groups = km.region(4 * MAX_ROUNDS)
+    thread = km.x280_thread(
+        "thread/driver.c", "../decide.c", cluster=1, includes=[".."], deadline=10.0
+    )
 
     @km.handler
     def step(self, state: km.Tensor, round: int, first: int):
@@ -42,17 +49,11 @@ class WorkCluster(km.Program):
 
 
 def made(state, words):
-    """The class made with the state tensor, its thread on cluster 1 with `words`."""
-    program = WorkCluster(state=state, log=hand.log)
-    program.thread(
-        cluster=1,
-        sources=[HERE / "thread" / "driver.c", hand.HERE / "decide.c"],
-        includes=[hand.HERE, program.built.folder],
-        regions={"groups": 4 * words[4]},
-        words=words,
-        deadline=10.0,
+    """The class made with the state tensor, its thread's words `words` (the state's
+    address is the load's word, not one of them)."""
+    return WorkCluster(
+        state=state, MAX_ROUNDS=words[4], thread_words=words, log=hand.log
     )
-    return program
 
 
 def run_class(args, words, want):
@@ -60,7 +61,6 @@ def run_class(args, words, want):
     loop's time on the thread, checked against the replay."""
     with km.Session(log=hand.log) as session:
         state = hand.state_tensor(session, args.cores)
-        words = [state.address, *words[1:]]
         program = made(state, words)
         run = session.load(program, deadline=1.0, thread="card")
         results = run.thread_results(timeout=15.0)

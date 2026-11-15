@@ -2,12 +2,16 @@
 
 `STEP` and `SUM` of [../kernels](../kernels) as two handlers of a class deriving
 `km.Program` ([Programs written as classes](../../../docs/reference/classes.md#x280-threads),
-experimental), driven by an X280 thread on cluster 1. Made, the class is compiled into
-an ordinary program's files under `build/workcluster-<hash>/` beside the script, with
-`workcluster_thread.h`: each handler's number and the place of each of its command
-words. The thread ([thread/driver.c](thread/driver.c)) runs [../decide.c](../decide.c)
-as the hand program's thread does and places each command's words by that header
-before `kmx_submit`; it waits for each with `kmx_wait`.
+experimental), driven by an X280 thread on cluster 1 that the class declares:
+`groups = km.region(4 * MAX_ROUNDS)` and `thread = km.x280_thread("thread/driver.c",
+"../decide.c", cluster=1, ...)`. Made, the class is compiled into an ordinary
+program's files under `build/workcluster-<hash>/` beside the script, with
+`workcluster_thread.h`, and its thread is built then with that header. The thread
+([thread/driver.c](thread/driver.c)) runs [../decide.c](../decide.c) as the hand
+program's thread does. It fills each command with the header's function for its
+handler (`workcluster_step`, `workcluster_sum`: the state's address is the load's
+word, not one of the thread's), submits it with `kmx_submit` and waits for it with
+`kmx_wait`.
 
 ```bash
 python work_class.py              # the class's thread
@@ -27,5 +31,6 @@ code, the rounds, the sum, the trail and every round's group against
 
 Measured on one Blackhole card (`--beside`, the defaults: 119 cores, 30 a STEP, limit
 1,000,000): both the same as numpy: 204 rounds, sum 1,004,917, every state word. The
-loop on the thread: 10.55 ms against the hand program's 10.75 ms (408 commands, two
-submitted and waited for in turn each round). Kernel text 21,200 B against 21,424 B.
+loop on the thread, its commands filled by the header's functions: 10.21 ms against
+the hand program's 10.74 ms (408 commands, two submitted and waited for in turn each
+round). The class's kernel text 20,836 B.
