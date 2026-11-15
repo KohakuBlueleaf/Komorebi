@@ -71,6 +71,22 @@ namespace km {
         return me >= first && me - first < (record[kChainGroup] >> 16);
     }
 
+    // A record's step: `product`, or in a merged program (km.merge) the merged
+    // program's own handler table, which takes the record to its source.
+    template <typename Kernel, typename Product>
+    inline auto chain_product(
+        Kernel& kernel, Product& product, const km_command_t& record
+    ) {
+#if defined(KM_MERGED_SOURCE)
+        extern bool merged_record(Kernel&, const km_command_t&);  // the dispatcher's
+        (void)product;
+        return merged_record(kernel, record);
+#else
+        (void)kernel;
+        return product(record);
+#endif
+    }
+
 }  // namespace km
 
 #if defined(KM_CHAIN_STAMPS) && !defined(KM_OVERLAY_PART)
@@ -517,7 +533,7 @@ namespace km {
             if (chain_member(words, reader.me())) {
                 KM_CHAIN_STAMP(chain_stamp_take(chain_address(0), 0, words));
                 KM_CHAIN_STAMP(chain_stamp_add(kChainStampLast, fetched));
-                product(chain_command(command, words));
+                chain_product(reader, product, chain_command(command, words));
                 KM_CHAIN_STAMP(chain_stamp(kChainStampDone));
                 KM_CHAIN_STAMP(chain_stamp_row = 0);
             }
@@ -720,7 +736,7 @@ namespace km {
                 const km_command_t one = chain_command(command, words);
                 KM_CHAIN_STAMP(chain_stamp_take(chain_address(0), 1, words));
                 chain_credits(shape, writer, one);
-                ok = product(one);
+                ok = chain_product(writer, product, one);
                 KM_CHAIN_STAMP(chain_stamp_row = 0);
                 invalidate_l1_cache();
                 if (*chain_word(kChainCreditDue) != 0) {  // no emit came: credit kept
@@ -851,7 +867,7 @@ namespace km {
             }
             if (chain_member(words, compute.me())) {
                 KM_CHAIN_STAMP(PACK((chain_stamp_take(stamps, 2, words))));
-                product(chain_command(command, words));
+                chain_product(compute, product, chain_command(command, words));
                 KM_CHAIN_STAMP(PACK((chain_stamp_row = 0)));
             }
             if (chain_next_address(words) == 0) {

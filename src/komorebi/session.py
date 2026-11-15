@@ -2803,33 +2803,42 @@ class _Backend:
                     }
                 )
             held = [placed.programs[index] for index in group.programs]
-            made = overlay.build_overlays(
-                [
-                    *(
-                        programs.program_overlay(program, switch=placed.switch)
-                        for program in held
-                    ),
-                    overlay.service(),
-                ],
-                declared,
-                recipes,
-                native.cache_directory() / "overlays",
-                session.log,
-            )
+            fits = False
+            while not fits:  # a merged program over L1 places a source as an overlay
+                declared = placed.programs[0].overlay_slots
+                made = overlay.build_overlays(
+                    [
+                        *(
+                            part
+                            for program in held
+                            for part in programs.program_overlays(
+                                program, placed.switch, len(placed.programs) == 1
+                            )
+                        ),
+                        overlay.service(),
+                    ],
+                    declared,
+                    recipes,
+                    native.cache_directory() / "overlays",
+                    session.log,
+                )
+                buffers = sum(
+                    buffer.page_bytes * buffer.pages
+                    for buffer in self.group_buffers[number]
+                )
+                rows = session.l1_rows(
+                    placed.programs[0], self.trace_cap, placed, buffers=buffers
+                )
+                rows[2:2] = slot_rows(made.slots)
+                table, fits = overlay.budget(session.l1()[1], rows)
+                names = ", ".join(program.name for program in held)
+                session.log(f"L1 budget of a core of {names}:\n{table}")
+                spills = [p.spill for p in held if hasattr(p, "spill")]
+                if not fits and not any(spill(session.log) for spill in spills):
+                    break
             for program in held:
                 program.overlays_built = made
             built.append(made)
-            buffers = sum(
-                buffer.page_bytes * buffer.pages
-                for buffer in self.group_buffers[number]
-            )
-            rows = session.l1_rows(
-                placed.programs[0], self.trace_cap, placed, buffers=buffers
-            )
-            rows[2:2] = slot_rows(made.slots)
-            table, fits = overlay.budget(session.l1()[1], rows)
-            names = ", ".join(program.name for program in held)
-            session.log(f"L1 budget of a core of {names}:\n{table}")
             if not fits:
                 raise L1BudgetError(names, table, self._held_bytes())
         images, stored = {}, []

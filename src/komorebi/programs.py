@@ -251,6 +251,15 @@ def program_overlay(program, switch=False):
     )
 
 
+def program_overlays(program, switch=False, alone=True):
+    """The overlays that hold `program`: its own (program_overlay), or a merged
+    program's part and the sources it places as overlays (komorebi.merge)."""
+    parts = getattr(program, "part_overlays", None)
+    if parts is not None:
+        return parts(switch, alone)
+    return [program_overlay(program, switch)]
+
+
 def rectangles(first, count, row):
     """Cores [first, first + count) in row-major order as at most three rectangles
     (x0, y0, x1, y1) of a grid `row` cores wide."""

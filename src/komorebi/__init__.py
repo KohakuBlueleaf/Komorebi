@@ -29,6 +29,7 @@ from komorebi.errors import (
     ThreadFailed,
     WaitTimeout,
 )
+from komorebi.merge import merge
 from komorebi.movement import Pattern
 from komorebi.overlay import OverlayError
 from komorebi.program import Buffer, BufferPair, Handler, KernelSizes, Program
@@ -52,6 +53,7 @@ __all__ = [
     "KomorebiError",
     "L1BudgetError",
     "L1LayoutError",
+    "merge",
     "OverlayError",
     "Pattern",
     "Program",
