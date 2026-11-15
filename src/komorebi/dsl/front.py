@@ -195,6 +195,22 @@ class ConstantSpelling:
         return ConstantParameter(kind)
 
 
+class FirstUse:
+    """`km.ANY` in a make's handlers=: any set of the handler's constant parameters
+    is taken at submit, a set not built compiled then (komorebi.dsl.first_use);
+    `km.ANY(p=n)`: the load's buffers also sized for the set with p=n (`reserve`)."""
+
+    def __init__(self, reserve=None):
+        self.reserve = dict(reserve or {})
+
+    def __call__(self, **reserve):
+        return FirstUse(reserve)
+
+    def __repr__(self):
+        given = ", ".join(f"{k}={v!r}" for k, v in self.reserve.items())
+        return f"km.{spelling('first_use')}" + (f"({given})" if given else "")
+
+
 def constants_of(cls):
     """The constants declared on `cls` and its parents by name, a subclass's over
     its parent's; a name a parent declared rebound to a plain value is refused."""
@@ -596,6 +612,7 @@ def exports():
         "field": L1,
         "symbol": symbol,
         "constant": ConstantSpelling(),
+        "first_use": FirstUse(),
         "own": own,
         "tile_value": Tile,
         "startup": Startup,
