@@ -70,14 +70,23 @@ def every_copy_whole(session, tensor, whole):
     )
 
 
+def card_us(events):
+    """A command's time on the card, submit to done, its slowest island (None: no
+    command, one island)."""
+    return None if events is None else max(event.microseconds for event in events)
+
+
 def timed(rounds, call):
-    """The median microseconds of `call` over `rounds`."""
-    times = []
+    """The median microseconds of `call` over `rounds`: on the host, from the call to
+    its return, and on the card (card_us)."""
+    host, card = [], []
     for _ in range(rounds):
         start = time.perf_counter()
-        call()
-        times.append((time.perf_counter() - start) * 1e6)
-    return round(float(np.median(times)), 2)
+        events = call()
+        host.append((time.perf_counter() - start) * 1e6)
+        card.append(card_us(events))
+    on_card = None if None in card else round(float(np.median(card)), 2)
+    return round(float(np.median(host)), 2), on_card
 
 
 def main():
@@ -100,18 +109,19 @@ def main():
         words = [tensor.address, 0, args.pages]
 
         def from_a_kernel():  # GATHER on every rank: each makes the call
-            run.wait(run.submit("gather", (0, ranks), words))
+            return run.wait(run.submit("gather", (0, ranks), words))
 
         def from_the_host():
-            run.all_gather(tensor)
+            return run.all_gather(tensor)
 
         for name, call in (("kernel", from_a_kernel), ("host", from_the_host)):
             write_shares(session, tensor, whole)
             call()
             report[f"{name}_exact"] = every_copy_whole(session, tensor, whole)
-            report[f"{name}_us"] = timed(args.rounds, call)
-            us, exact = report[f"{name}_us"], report[f"{name}_exact"]
-            log(f"from the {name}: {us} us, exact {exact}")
+            us, on_card = timed(args.rounds, call)
+            report[f"{name}_us"], report[f"{name}_card_us"] = us, on_card
+            exact = report[f"{name}_exact"]
+            log(f"from the {name}: {us} us ({on_card} on the card), exact {exact}")
         report["kernel_errors"] = [r["error_name"] for r in run.stop()]
     report["ok"] = (
         report["kernel_exact"]

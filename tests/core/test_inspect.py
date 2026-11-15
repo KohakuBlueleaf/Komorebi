@@ -38,7 +38,7 @@ def test_the_live_words_and_the_abort_words_lie_in_the_control_block():
     slots = CONSTANTS["KM_RING_SLOTS"]
     abort, live = CONSTANTS["KM_CONTROL_ABORT"], CONSTANTS["KM_CONTROL_LIVE"]
     assert live == abort + 4 * slots and abort % 64 == 0
-    assert live + CONSTANTS["KM_LIVE_BYTES"] == CONSTANTS["KM_CONTROL_BYTES"]
+    assert live + CONSTANTS["KM_LIVE_BYTES"] == CONSTANTS["KM_CONTROL_ISLANDS"]
     assert CONSTANTS["kLvTrace"] == CONSTANTS["KM_LIVE_TRACE"]
     assert CONSTANTS["kLvTraceCap"] == CONSTANTS["KM_LIVE_TRACE_CAP"]
     assert 4 * (CONSTANTS["kLvTraceCap"] + 1) <= CONSTANTS["KM_LIVE_READ"]
@@ -69,7 +69,7 @@ def test_a_block_without_its_mark_is_incomplete_and_an_unread_core_is_named():
     assert not decoded["complete"] and decoded["kind"] == "host"
     assert decoded["first"] == 3 and decoded["count"] == 2
     assert decoded["cores"][0]["read"] and decoded["cores"][0]["magic_ok"]
-    assert decoded["cores"][1] == {"core": 4, "read": False}
+    assert decoded["cores"][1] == {"core": 4, "read": False, "reset": False}
 
 
 def test_inspect_names_the_wait_of_the_cores_that_wait_and_none_elsewhere():

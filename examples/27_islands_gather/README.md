@@ -40,12 +40,31 @@ python gather.py               # cards 0 and 1
 python gather.py --cards 0     # one card: one island
 ```
 
-Blackhole p150a cards, AICLK 1350 MHz, 256 float32 tiles (1 MiB), each card writing
-half of it, the median of 10 rounds:
+Blackhole p150a cards, AICLK 1350 MHz, float32 tiles, each island writing its share,
+the median of 10 rounds (5 on the split card); on the card: the command from submit to
+done on its slowest island; on the host: from the call to its return:
 
-| Cards | From a kernel | From the host | Every copy |
-|---|---|---|---|
-| 0 and 1 | 351.7 µs | 342.8 µs | exact |
+| Cards | Pages | From a kernel, on the card | From the host, on the card | On the host | Every copy |
+|---|---|---|---|---|---|
+| 0 and 1 | 256 (1 MiB) | 62.9 µs | 62.8 µs | 326.6 µs | exact |
+| 0 and 1 | 2 | 53.7 µs | 53.7 µs | 322.9 µs | exact |
+| 0 split in 3 (`--islands 3`) | 256 | 158.7 µs | 2454.4 µs | 2824.3 µs | exact from a kernel; from the host not exact (open) |
+| 0 (one island) | 256 | 2.2 µs | no command | 0.8 µs | exact |
+
+Most of a call is fixed: 254 more pages add 9.2 µs. On the host each call costs about
+270 µs more than on the card (the host's submit and wait). On one island the call
+returns at once: from a kernel the time is the command's own, and `run.all_gather`
+sends nothing.
+
+## Output
+
+Two cards, then one (`python gather.py`, `python gather.py --cards 0`), the last line
+of each run:
+
+```
+{"cards": [0, 1], "pages": 256, "bytes": 1048576, "islands": 2, "kernel_exact": true, "kernel_us": 330.95, "kernel_card_us": 62.87, "host_exact": true, "host_us": 326.59, "host_card_us": 62.76, "kernel_errors": ["none", "none"], "ok": true, "wall_s": 10.6}
+{"cards": [0], "pages": 256, "bytes": 1048576, "islands": 1, "kernel_exact": true, "kernel_us": 381.62, "kernel_card_us": 2.18, "host_exact": true, "host_us": 0.83, "host_card_us": null, "kernel_errors": ["none"], "ok": true, "wall_s": 16.2}
+```
 
 ## Files
 

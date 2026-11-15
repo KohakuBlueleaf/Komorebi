@@ -60,7 +60,9 @@ def test_the_control_block_follows_the_slot_count():
     )
     assert CONSTANTS["KM_CONTROL_BLOCK"] + 2 * area == CONSTANTS["KM_CONTROL_ABORT"]
     assert CONSTANTS["KM_CONTROL_LIVE"] == CONSTANTS["KM_CONTROL_ABORT"] + 4 * slots
-    ring = CONSTANTS["KM_CONTROL_LIVE"] + CONSTANTS["KM_LIVE_BYTES"]
+    islands = CONSTANTS["KM_CONTROL_LIVE"] + CONSTANTS["KM_LIVE_BYTES"]
+    assert islands == CONSTANTS["KM_CONTROL_ISLANDS"]
+    ring = islands + CONSTANTS["KM_ISLANDS_BYTES"]
     assert ring == CONSTANTS["KM_CONTROL_RING"]
     assert ring + 64 * slots == CONSTANTS["KM_CONTROL_BYTES"]
     assert CONSTANTS["KM_CONTROL_BLOCK"] % 64 == 0

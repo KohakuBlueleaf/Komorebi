@@ -100,26 +100,31 @@ def main():
         words = [tensor.address, 0, args.pages, scratch.address, SUM[args.dtype]]
 
         def from_a_kernel():  # REDUCE on every rank: each makes the call
-            run.wait(run.submit("reduce", (0, ranks), words))
+            return run.wait(run.submit("reduce", (0, ranks), words))
 
         def from_the_host():
-            run.all_reduce(tensor, scratch)
+            return run.all_reduce(tensor, scratch)
 
         for name, call in (("kernel", from_a_kernel), ("host", from_the_host)):
-            times, exact = [], True
+            times, card, exact = [], [], True
             for _ in range(args.rounds):  # the partials written again each round
                 for island, partial in enumerate(partials):
                     write_copy(session, tensor, island, partial)
                 start = time.perf_counter()
-                call()
+                events = call()
                 times.append((time.perf_counter() - start) * 1e6)
+                # on the card, submit to done, the slowest island (one island: none)
+                if events is not None:
+                    card.append(max(event.microseconds for event in events))
                 exact &= all(
                     np.array_equal(read_copy(session, tensor, island), want)
                     for island in range(islands)
                 )
             report[f"{name}_exact"] = bool(exact)
-            report[f"{name}_us"] = round(float(np.median(times)), 2)
-            log(f"from the {name}: {report[f'{name}_us']} us, exact {exact}")
+            us = round(float(np.median(times)), 2)
+            on_card = round(float(np.median(card)), 2) if card else None
+            report[f"{name}_us"], report[f"{name}_card_us"] = us, on_card
+            log(f"from the {name}: {us} us ({on_card} on the card), exact {exact}")
         report["kernel_errors"] = [r["error_name"] for r in run.stop()]
     report["ok"] = (
         report["kernel_exact"]

@@ -5,8 +5,7 @@ A tool for hunting defects in the Tensix runtime without a card. The headers in
 `examples/01_mapcollect` are compiled unchanged against `stub/`, a stand-in for the
 tt-metal calls they use, and run as host threads on a simulated grid. The scenarios
 force failure paths on that grid and check what the kernels do. The harness is run by
-hand. Seven of its scenarios pin known behaviour in
-`tests/core/test_runtime_harness.py`.
+hand.
 
 | file | what it holds |
 |---|---|

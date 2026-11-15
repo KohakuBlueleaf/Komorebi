@@ -1589,9 +1589,16 @@ namespace {
             return out;
         }
 
-        // The dispatcher's reset of core (x, y) (KMD_HANDLER_RESET): reset_core's
-        // writes as a write list of km_dispatch.h, in whole 64-byte lines.
-        nb::bytes reset_list(uint32_t x, uint32_t y, bool every) {
+        // The dispatcher's reset of core (x, y): reset_core's writes as a list of
+        // km_dispatch.h; `ready` (not 0) zeroed, then waited for (& mask == value).
+        nb::bytes reset_list(
+            uint32_t x,
+            uint32_t y,
+            bool every,
+            uint32_t ready,
+            uint32_t ready_mask,
+            uint32_t ready_value
+        ) {
             namespace tm = tt::tt_metal;
             if (!workload_) {
                 throw std::runtime_error("reset_list: the program was not launched");
@@ -1638,6 +1645,10 @@ namespace {
             };
 
             entry(KMD_RESET_ASSERT, 0, 0, 0);
+            if (ready != 0) {  // the last run's word no longer reads as ready
+                const uint32_t cleared = 0;
+                write(ready, &cleared, 4);
+            }
             auto& builds = (
                 tm::BuildEnvManager::get_instance(tm::extract_context_id(dev))
             );
@@ -1834,6 +1845,9 @@ namespace {
                 group->go_msg.data(),
                 group->go_msg.size()
             );
+            if (ready != 0) {  // the kernels started: nothing is put in the core early
+                entry(KMD_RESET_WAIT, ready, ready_mask, ready_value);
+            }
             entry(KMD_RESET_END, 0, 0, 0);
             list.resize((list.size() + 15) / 16 * 16, 0);
             return (
@@ -3123,7 +3137,10 @@ NB_MODULE(_km_host, m) {
             &Launch::reset_list,
             nb::arg("x"),
             nb::arg("y"),
-            nb::arg("every") = false
+            nb::arg("every") = false,
+            nb::arg("ready") = 0,
+            nb::arg("ready_mask") = 0,
+            nb::arg("ready_value") = 0
         );
     m.def(
         "write_l1",

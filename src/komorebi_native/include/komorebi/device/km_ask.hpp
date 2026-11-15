@@ -2397,6 +2397,122 @@ namespace km {
     // km::all_gather and km::all_reduce: every rank of the command calls one; the first
     // of an island's ranks posts the lines along the line of islands, all share a fold.
 
+    // The collectives' wall clocks (KM_COLL_STAMPS: a copy's reference word, a 128-byte
+    // page a flat rank, written at the return); compiled out by default.
+    enum CollStamp : uint32_t {
+        kCsEntry,
+        kCsMet,
+        kCsPosted,
+        kCsArrived,
+        kCsConfirmed,
+        kCsReleased,
+        kCsLeftArrived,
+        kCsLeftGo,
+        kCsLeftFolded,
+        kCsLeftPassed,
+        kCsRightArrived,
+        kCsRightGo,
+        kCsRightFolded,
+        kCsRightPassed,
+        kCsKeptGo,
+        kCsKeptFolded,
+        kCsKeptMet,
+        kCsReadCycles = 20,  // sums over this call's folds: waits for the reads,
+        kCsAddCycles,        // the adds, waits for the writes, the words added
+        kCsWriteCycles,
+        kCsAddWords,
+        kCsStamps = 32
+    };
+#if defined(KM_COLL_STAMPS)
+#if defined(KM_OVERLAY_PART)
+    // an overlay's statics are linked into its slot, in L1
+    inline volatile tt_l1_ptr uint32_t* coll_words() {
+        alignas(16) static uint32_t part[kCsStamps];
+        return part;
+    }
+
+    inline void coll_stamps_in(uint32_t) {
+    }
+#else
+    // a kernel's statics are the core's local memory, which the NoC cannot read: its
+    // stamps are kept in 4 * kCsStamps bytes of L1 the program gives (coll_stamps_in)
+    inline volatile tt_l1_ptr uint32_t*& coll_place() {
+        static volatile tt_l1_ptr uint32_t* place = nullptr;
+        return place;
+    }
+
+    inline volatile tt_l1_ptr uint32_t* coll_words() {
+        return coll_place();
+    }
+
+    // The kernel's stamps at L1 `l1` (16-byte aligned, below the end of L1); else none.
+    inline void coll_stamps_in(uint32_t l1) {
+        const bool fits = l1 != 0 && l1 % 16 == 0 && l1 + 4 * kCsStamps <= MEM_L1_SIZE;
+        coll_place() = fits ? reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1)
+                            : nullptr;
+    }
+#endif
+
+    inline void coll_stamp(uint32_t step) {
+        if (coll_words() != nullptr) {
+            coll_words()[step] = wall();
+        }
+    }
+
+    inline void coll_count(uint32_t step, uint32_t amount) {
+        if (coll_words() != nullptr) {
+            coll_words()[step] += amount;
+        }
+    }
+
+    inline void coll_begin() {
+        for (uint32_t w = 0; coll_words() != nullptr && w < kCsStamps; w++) {
+            coll_words()[w] = 0;
+        }
+        coll_stamp(kCsEntry);
+    }
+
+    // This rank's stamps into its page of KM_COLL_STAMPS on its island, waited for.
+    template <typename Kernel>
+    inline void coll_stamps_out(const Kernel& core) {
+        const uint32_t here = islands_at(core.args().control).here();
+        const PageAt at = gather_place(KM_COLL_STAMPS, core.me(), here);
+        const uint32_t words = reinterpret_cast<uint32_t>(coll_words());
+        // a NoC write's source is L1 only (a kernel's statics are its local memory)
+        if (at.address == 0 || words == 0 || words + 4 * kCsStamps > MEM_L1_SIZE) {
+            return;
+        }
+        noc_async_write(
+            words,
+            pages_dram(KM_PAGES_DRAM, at.address, 4 * kCsStamps, at.index),
+            4 * kCsStamps
+        );
+        core.poll_at(
+            kWhereAsk,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            core.args().wait_limit
+        );
+    }
+#else
+    inline void coll_stamp(uint32_t) {
+    }
+
+    inline void coll_count(uint32_t, uint32_t) {
+    }
+
+    inline void coll_begin() {
+    }
+
+    inline void coll_stamps_in(uint32_t) {
+    }
+
+    template <typename Kernel>
+    inline void coll_stamps_out(const Kernel&) {
+    }
+#endif
+
     // This island's ranks of `command`: the leader's flat rank, how many, this core's
     // place among them (from its flat rank `me`).
     struct Team {
@@ -2422,10 +2538,13 @@ namespace km {
     }
 
     // One more meeting on flat rank `rank` of this island (word KM_PORT_MET of its
-    // KM_PORT_LEFT slot), then this CPU's atomics flushed (bounded). False: gave up.
+    // KM_PORT_LEFT slot); `flush`: then this CPU's atomics flushed. False: gave up.
     template <typename Kernel>
     inline bool team_add(
-        const Kernel& core, const km_command_t& command, uint32_t rank
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t rank,
+        bool flush = true
     ) {
         noc_semaphore_inc(
             core.core_noc(
@@ -2435,7 +2554,7 @@ namespace km {
             ),
             1
         );
-        return coll_flushed(core, command);
+        return !flush || coll_flushed(core, command);
     }
 
     // Waits (bounded) for `meetings` more on this core's meeting word, then takes them
@@ -2464,8 +2583,8 @@ namespace km {
         return team_met(core, command, t.size - 1);
     }
 
-    // The leader lets the team go: one meeting on each other rank, which waits for it.
-    // False: gave up.
+    // The leader lets the team go: one meeting on each other rank, which waits for it;
+    // the atomics flushed once, after all. False: gave up.
     template <typename Kernel>
     inline bool team_go(
         const Kernel& core, const km_command_t& command, const Team& t
@@ -2474,11 +2593,9 @@ namespace km {
             return team_met(core, command, 1);
         }
         for (uint32_t k = 1; k < t.size; k++) {
-            if (!team_add(core, command, t.leader + k)) {
-                return false;
-            }
+            team_add(core, command, t.leader + k, false);
         }
-        return true;
+        return coll_flushed(core, command);
     }
 
     // What km::all_reduce adds: 32-bit integers (modulo 2^32), float32, or two
@@ -2614,6 +2731,7 @@ namespace km {
                 noc_async_read(at(a, a_first + q + i), buffer + i * bytes, bytes);
                 noc_async_read(at(b, b_first + q + i), buffer + (n + i) * bytes, bytes);
             }
+            uint32_t clock = wall();
             uint32_t code = core.poll_at(
                 kWhereAsk,
                 [] {
@@ -2624,15 +2742,20 @@ namespace km {
             if (code != kGaveNone) {
                 return coll_gave_up(core, command, code);
             }
+            coll_count(kCsReadCycles, wall() - clock);
+            clock = wall();
             invalidate_l1_cache();
             volatile tt_l1_ptr uint32_t* x = l1(buffer);
             const volatile tt_l1_ptr uint32_t* y = l1(buffer + n * bytes);
             for (uint32_t w = 0; w < n * bytes / 4; w++) {
                 x[w] = sum_word(kind, x[w], y[w]);
             }
+            coll_count(kCsAddCycles, wall() - clock);
+            coll_count(kCsAddWords, n * bytes / 4);
             for (uint32_t i = 0; i < n; i++) {
                 noc_async_write(buffer + i * bytes, at(to, to_first + q + i), bytes);
             }
+            clock = wall();
             code = core.poll_at(
                 kWhereAsk,
                 [] {
@@ -2643,6 +2766,7 @@ namespace km {
             if (code != kGaveNone) {
                 return coll_gave_up(core, command, code);
             }
+            coll_count(kCsWriteCycles, wall() - clock);
             k += n;
         }
         return true;
@@ -2684,6 +2808,7 @@ namespace km {
         ) {
             return false;
         }
+        coll_stamp(kCsPosted);
         for (uint32_t r = 1; r < n; r++) {
             if (i >= r) {  // share i - r from the left, on to the right
                 const uint32_t c = i - r;
@@ -2704,7 +2829,12 @@ namespace km {
                 }
             }
         }
-        return gather_wait(core, command, posted);
+        coll_stamp(kCsArrived);
+        if (!gather_wait(core, command, posted)) {
+            return false;
+        }
+        coll_stamp(kCsConfirmed);
+        return true;
     }
 
     // All-gather of pages first .. + pages - 1 of the copy `tensor`, island c's share
@@ -2722,15 +2852,25 @@ namespace km {
         if (view.count() < 2) {
             return true;
         }
+        coll_begin();
         const Team t = team_of(view, command, core.me());
         Gather posted = {};
-        return (
-            team_meet(core, command, t) &&
+        if (!team_meet(core, command, t)) {
+            return false;
+        }
+        coll_stamp(kCsMet);
+        if (
             (
-                t.index != 0 || gather_line(core, command, tensor, first, pages, posted)
-            ) &&
-            team_go(core, command, t)
-        );
+                t.index == 0 &&
+                !gather_line(core, command, tensor, first, pages, posted)
+            ) ||
+            !team_go(core, command, t)
+        ) {
+            return false;
+        }
+        coll_stamp(kCsReleased);
+        coll_stamps_out(core);
+        return true;
 #else
         static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
         static_cast<void>(first), static_cast<void>(pages);
@@ -2758,6 +2898,7 @@ namespace km {
         if (n < 2) {
             return true;
         }
+        coll_begin();
         const Team t = team_of(view, command, core.me());
         const bool lead = t.index == 0;
         const Partition mine = partition(pages, i, n);
@@ -2792,6 +2933,7 @@ namespace km {
         if (!team_meet(core, command, t)) {
             return false;
         }
+        coll_stamp(kCsMet);
         // the ends start the two sweeps from their partials
         if (
             lead && i == 0 &&
@@ -2811,24 +2953,31 @@ namespace km {
             if (lead && !gathered(core, command, KM_PORT_LEFT, pages - mine.start)) {
                 return false;
             }
+            coll_stamp(kCsLeftArrived);
             if (i + 1 < n) {
+                if (!team_go(core, command, t)) {
+                    return false;
+                }
+                coll_stamp(kCsLeftGo);
+                if (!team_fold(
+                    core,
+                    command,
+                    t,
+                    kind,
+                    scratch,
+                    after,
+                    scratch,
+                    after,
+                    tensor,
+                    first + after,
+                    pages - after,
+                    buffer,
+                    room
+                )) {
+                    return false;
+                }
+                coll_stamp(kCsLeftFolded);
                 if (
-                    !team_go(core, command, t) ||
-                    !team_fold(
-                        core,
-                        command,
-                        t,
-                        kind,
-                        scratch,
-                        after,
-                        scratch,
-                        after,
-                        tensor,
-                        first + after,
-                        pages - after,
-                        buffer,
-                        room
-                    ) ||
                     !team_meet(core, command, t) ||
                     (
                         lead &&
@@ -2839,6 +2988,7 @@ namespace km {
                 ) {
                     return false;
                 }
+                coll_stamp(kCsLeftPassed);
             }
         }
         // from the right: the sums of the shares up to this one's; those before it
@@ -2847,24 +2997,31 @@ namespace km {
             if (lead && !gathered(core, command, KM_PORT_RIGHT, after)) {
                 return false;
             }
+            coll_stamp(kCsRightArrived);
             if (i > 0) {
+                if (!team_go(core, command, t)) {
+                    return false;
+                }
+                coll_stamp(kCsRightGo);
+                if (!team_fold(
+                    core,
+                    command,
+                    t,
+                    kind,
+                    scratch,
+                    pages,
+                    scratch,
+                    pages,
+                    tensor,
+                    first,
+                    mine.start,
+                    buffer,
+                    room
+                )) {
+                    return false;
+                }
+                coll_stamp(kCsRightFolded);
                 if (
-                    !team_go(core, command, t) ||
-                    !team_fold(
-                        core,
-                        command,
-                        t,
-                        kind,
-                        scratch,
-                        pages,
-                        scratch,
-                        pages,
-                        tensor,
-                        first,
-                        mine.start,
-                        buffer,
-                        room
-                    ) ||
                     !team_meet(core, command, t) ||
                     (
                         lead &&
@@ -2875,11 +3032,15 @@ namespace km {
                 ) {
                     return false;
                 }
+                coll_stamp(kCsRightPassed);
             }
         }
         // this island's share: its partial plus the sums from both sides
+        if (!team_go(core, command, t)) {
+            return false;
+        }
+        coll_stamp(kCsKeptGo);
         if (
-            !team_go(core, command, t) ||
             (
                 i > 0 &&
                 !team_fold(
@@ -2915,15 +3076,24 @@ namespace km {
                     buffer,
                     room
                 )
-            ) ||
-            !team_meet(core, command, t)
+            )
         ) {
             return false;
         }
-        return (
-            (!lead || gather_line(core, command, tensor, first, pages, posted)) &&
-            team_go(core, command, t)
-        );
+        coll_stamp(kCsKeptFolded);
+        if (!team_meet(core, command, t)) {
+            return false;
+        }
+        coll_stamp(kCsKeptMet);
+        if (
+            (lead && !gather_line(core, command, tensor, first, pages, posted)) ||
+            !team_go(core, command, t)
+        ) {
+            return false;
+        }
+        coll_stamp(kCsReleased);
+        coll_stamps_out(core);
+        return true;
 #else
         static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
         static_cast<void>(first), static_cast<void>(pages), static_cast<void>(scratch);
