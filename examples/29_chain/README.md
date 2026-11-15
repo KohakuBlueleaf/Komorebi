@@ -143,8 +143,8 @@ listed = run.chain(
 Both forms give the same records. A class with a `km.chain` method (or made with
 `chain=True`) has the walk in its kernels; `StepHandlers`, the same handlers without
 one, has none of it. The walk costs kernel text: 74,160 B against 58,240 B (BRISC
-+4,332, NCRISC +7,880, each TRISC about +1,220), past the default buffer of 70,656 B, so
-the script opens its session with `kernel_bytes=84 * 1024`.
++4,332, NCRISC +7,880, each TRISC about +1,220), past the default buffer of 70,656 B, which
+the session follows (it opens the card again at the first load).
 
 Card 0, 2026-11-16, AICLK 800 MHz, the machine under load (21.7), 200 runs a way, every
 word of y, z, s and t exact after each run below:

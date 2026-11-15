@@ -1,0 +1,293 @@
+"""A class added to a live run (run.addon(program)): the refusals by name, the switch
+area's size (grown into the L1 the load leaves, or buffers=), a class named ahead
+(Program.ahead(program)) sizing the area and taking the next field (no card)."""
+
+import dataclasses
+import re
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from test_class_handler_constants import grid, quiet
+
+import komorebi as km
+from komorebi import added, added_program, formats, native, overlay, programs, thread
+from komorebi.build import BuildError
+from komorebi.errors import ProgramError
+
+
+def native_module():
+    """The native module, or the test skipped where no tt-metal tree is named."""
+    try:
+        return native.load_module()
+    except BuildError as error:
+        pytest.skip(str(error))
+
+
+@km.tile_function
+def doubled(a):
+    return a + a
+
+
+class Twice(km.Program):
+    """The loaded class: each core's tile of a, doubled, into out."""
+
+    @km.handler
+    def twice(self, a: km.Tensor, out: km.Tensor):
+        results = km.Stream(out.pages(self.rank, 1), write=True, block=1)
+        for x in km.Stream(a.pages(self.rank, 1), block=1):
+            results.push(doubled(x))
+
+
+class Project(km.Program):
+    """The added class: a row of tiles of x times w, summed in an fp32 field."""
+
+    sums: km.L1[km.fp32, 1, 4, 32, 32]
+
+    @km.tile_function
+    def project(x, w):
+        return x @ w
+
+    @km.handler
+    def rows(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        r = self.rank
+        for xb, wb in zip(
+            km.Stream(x.tiles[r : r + 1, 0:4], block=4),
+            km.Stream(w.tiles[0:4, 0:4], block=16),
+        ):
+            self.sums += self.project(xb, wb)
+        y.tiles[r : r + 1, 0:4].write(self.sums)
+
+
+class Low(Twice, compute={"math_fidelity": "LoFi"}):
+    """The loaded class at another fidelity."""
+
+
+def low(**given):
+    return Low(l1=1 << 20, log=quiet, a=grid(2, 1), out=grid(2, 1), **given)
+
+
+def project(**given):
+    return Project(l1=1 << 20, log=quiet, x=grid(2, 4), w=grid(4, 4), y=grid(2, 4),
+                   **given)  # fmt: skip
+
+
+def twice(**given):
+    return Twice(l1=1 << 20, log=quiet, a=grid(2, 1), out=grid(2, 1), **given)
+
+
+def backend(**given):
+    cbs = [(29, "uint32", 64, 1), (30, "uint32", 64, 1)]
+    values = {
+        "switch_start": 0x20000,
+        "switch_shift": 0x4000,
+        "switch_base": 0x1F000,
+        "switch_reserve": 0x40000,
+        "slot_index": 28,
+        "trace_cap": 0,
+        "island": None,
+        "_runtime_cbs": lambda: cbs,
+    }
+    return SimpleNamespace(**(values | given))
+
+
+def run_of(loaded, switch=True, **given):
+    fields = {
+        "programs": [loaded],
+        "_switch": {"records": {0: 0x1000}} if switch else None,
+        "island_ranks": 120,
+        "cores": 120,
+        "_holds": [np.ones(120, bool)],
+        "backend": backend(),
+    }
+    return SimpleNamespace(**(fields | given))
+
+
+def test_a_class_beside_the_added_one_takes_it_and_the_refusals_name_each_cause():
+    other = project(form="runtime")
+    loaded = twice(form="runtime", beside=other)
+    assert added_program.refused(run_of(loaded), other) == ""
+    cases = [
+        (run_of(loaded), project(), r"made in the runtime's form"),
+        (run_of(loaded, switch=False), other, r"not loaded as a dict"),
+        (
+            run_of(low(form="runtime")),
+            other,
+            r"compute option math_fidelity is HiFi4 and the loaded kernels. LoFi",
+        ),
+        (run_of(loaded, island_ranks=118), other, r"an island run"),
+        (run_of(loaded, backend=backend(trace_cap=8)), other, r"a traced run"),
+        (run_of(loaded, backend=backend(slot_index=0)), other, r"buffer indices \[0\]"),
+        (run_of(loaded, programs=[loaded, other]), other, r"of this run already"),
+    ]
+    for run, program, why in cases:
+        assert re.search(why, added_program.refused(run, program))
+    with pytest.raises(added.AddError, match=r"not loaded as a dict"):
+        added_program.add(run_of(loaded, switch=False), other)
+
+
+def test_per_core_args_and_overlays_of_its_own_are_refused():
+    other = project(form="runtime")
+    loaded = twice(form="runtime", beside=other)
+    other.args = lambda core: ([core], [], [])
+    assert "per-core args" in added_program.refused(run_of(loaded), other)
+    other.args = None
+    other.overlays = {"extra": object()}
+    assert "overlays of its own" in added_program.refused(run_of(loaded), other)
+
+
+class Descriptor:
+    def __init__(self):
+        self.grown = []
+
+    def grow_cb(self, index, extra):
+        self.grown.append((index, extra))
+
+
+def area(given, rows, free=900_000):
+    made = backend(added_buffers=given, switch_pad=7, switch_reserve=0x3000)
+    made.session = SimpleNamespace(l1=lambda: (0, free), log=quiet)
+    descriptor = Descriptor()
+    added_program.grow_area(made, descriptor, rows, None)
+    return made, descriptor
+
+
+def test_the_switch_area_grows_into_what_the_load_leaves_or_to_buffers():
+    rows = [("circular buffers", 0x3000), ("slots", 100_000)]
+    made, descriptor = area(None, rows)
+    left = 900_000 - 0x3000 - 100_000
+    extra = (left - added_program.KEEP) // programs.CB_ALIGN * programs.CB_ALIGN
+    assert descriptor.grown == [(7, extra)]
+    assert made.switch_reserve == 0x3000 + extra == rows[0][1]
+    have = 0x1F000 + 0x3000 - 0x20000
+    made, descriptor = area(have + 1000, [("circular buffers", 0x3000)])
+    assert descriptor.grown == [(7, 1024)]
+    assert area(0, [("circular buffers", 0x3000)])[1].grown == []
+    with pytest.raises(ProgramError, match=r"buffers=10,000,000: .* would take"):
+        area(10_000_000, [("circular buffers", 0x3000)])
+    with pytest.raises(ValueError, match=r"buffers=-1"):
+        added_program.buffers_given(-1)
+
+
+def test_a_class_named_ahead_takes_the_next_field_and_sizes_the_area():
+    other = project(form="runtime")
+    loaded = twice(form="runtime", beside=other).ahead(other)
+    with pytest.raises(ProgramError, match=r"a class ahead takes nothing more"):
+        loaded.ahead(other, {"reader": "x.cpp"})
+    placed = programs.plan({loaded: (0, 60)}, 120)
+    assert added_program.ahead_programs(placed) == [other]
+    assert other.program_field == 1
+    made = backend(switch_shift=0)
+    end = added_program.layout_of(made, other)[1]
+    reserve = added_program.pad_reserve(made, placed, 0x20000)
+    assert reserve >= end + programs.CB_ALIGN
+    assert made.switch_pad not in {b.index for b in [*loaded.buffers, *other.buffers]}
+    assert made.switch_loaded == 1
+    made.session = SimpleNamespace(_module=native_module())
+    (part,) = added_program.ahead_overlays(made, placed, 0, {})
+    assert part.number == overlay.constants()["kOverlayService"] - 2
+    assert part.recipes == {} and part.name == "project"
+    assert added_program.ahead_overlays(made, placed, 1, {}) == []
+    assert added_program.refused(run_of(loaded), other) == ""
+
+
+@dataclasses.dataclass(frozen=True)
+class Recipe:
+    includes: tuple
+    elf: Path = Path("kernel.elf")
+
+
+def descriptors_text(tables, sizes):
+    """A descriptors file as tt-metal's build writes one: each table on its line."""
+    lines = []
+    for name, values in [*tables.items(), *sizes.items()]:
+        joined = ",".join(str(value) for value in values)
+        lines.append(f"constexpr uint8_t {name}[64] = {{\n    {joined}\n}};")
+    return "\n".join(lines) + "\n"
+
+
+def test_the_added_class_s_parts_get_its_formats_in_a_copy_of_the_tables(tmp_path):
+    other = project(form="runtime")
+    loaded = twice(form="runtime")
+    module = native_module()
+    run = run_of(loaded)
+    run.backend.session = SimpleNamespace(_module=module)
+    run.backend.switch_pad, run.backend.switch_loaded = 27, 1
+    names, modes = added_program._loaded_formats(run)
+    fp32 = bool(loaded.compute.get("fp32_dest_acc_en"))
+    listed = [modes.get(index, "Default") for index in range(64)]
+    base = dict(zip(added_program.TABLES, module.format_tables(names, fp32, listed)))
+    sizes = {name: [1088] * 64 for name in added_program.SIZES}
+    (tmp_path / "chlkc_descriptors.h").write_text(descriptors_text(base, sizes))
+    (tmp_path / "trisc0").mkdir()
+    recipe = Recipe(("-I..",), tmp_path / "trisc0" / "kernel.elf")
+    made = added_program.own_recipes(run, other, {"unpack": recipe})["unpack"]
+    folder = Path(made.includes[0][2:])
+    assert made.includes[1:] == recipe.includes and folder != tmp_path
+    text = (folder / "chlkc_descriptors.h").read_text()
+    for buffer in other.buffers:
+        size = added_program._table(text, "unpack_tile_size")[buffer.index]
+        assert size == formats.tile_bytes(buffer.format)
+        assert added_program._table(text, "unpack_src_format")[buffer.index] != 255
+    fp32_field = [b.index for b in other.buffers if b.format == "float32"]
+    assert fp32_field and all(
+        added_program._table(text, "unpack_dst_format")[index] == 0  # Float32 in Dst
+        for index in fp32_field
+    )
+    kept = [i for i in range(64) if i not in {b.index for b in other.buffers}]
+    for name in added_program.TABLES:
+        assert [added_program._table(text, name)[i] for i in kept] == [
+            base[name][i] for i in kept
+        ]
+    wrong = dict(base, unpack_dst_format=[7] * 64)
+    (tmp_path / "chlkc_descriptors.h").write_text(descriptors_text(wrong, sizes))
+    with pytest.raises(added.AddError, match=r"unpack_dst_format .* is not the one"):
+        added_program.own_recipes(run, other, {"unpack": recipe})
+
+
+def test_the_load_reserves_a_record_row_for_every_field_an_added_class_may_take():
+    other = project(form="runtime")
+    placed = programs.plan({twice(form="runtime", beside=other): (0, 60)}, 120)
+    service = overlay.constants()["kOverlayService"]
+    assert added_program.spare_fields(placed) == range(1, service - 1)
+    switch = {"records": {0: 0x100}, "spare": {1: (0x140, 1), 2: (0x180, 2)}}
+    switch["refused"] = None
+    assert thread.load_records(switch) == (0x100, 0x40, 1)
+    switch["records"][1] = switch["spare"].pop(1)[0]  # the add's row
+    assert thread.load_records(switch) == (0x100, 0x40, 2)
+
+
+def test_an_added_field_past_the_reserved_rows_is_refused():
+    other = project(form="runtime")
+    run = run_of(twice(form="runtime", beside=other))
+    run._switch["spare"], run._check_alive = {}, lambda: None
+    with pytest.raises(added.AddError, match=r"field 1 is past the record rows"):
+        added_program.add(run, other)
+
+
+class Port:
+    def __init__(self):
+        self.writes = []
+
+    def work_write(self, cluster, offset, data):
+        self.writes.append((cluster, offset, bytes(data)))
+
+
+def test_an_add_raises_the_count_a_live_thread_s_kmx_load_reads():
+    ring = thread.RingPlacement(1, 2, 3, 4, 8, 16)
+    port = Port()
+    live = SimpleNamespace(
+        records=(0x100, 0x40, 1), ring=ring, buffer=0, on_card=True, running=True,
+        port=port, thread=SimpleNamespace(cluster=1),
+    )  # fmt: skip
+    switch = {
+        "records": {0: 0x100, 1: 0x140},
+        "spare": {2: (0x180, 2)},
+        "refused": None,
+    }
+    thread.ThreadRun.write_records(live, switch)
+    ((cluster, offset, line),) = port.writes
+    assert (cluster, offset) == (1, thread.layout()["KMX_LIM_RING"])
+    assert line == thread.ring_line(ring, 0, (0x100, 0x40, 2))
+    assert np.frombuffer(line[-12:], np.uint32).tolist() == [0x100, 0x40, 2]

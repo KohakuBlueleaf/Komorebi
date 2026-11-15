@@ -17,7 +17,6 @@ import numpy as np  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi import power  # noqa: E402
 from komorebi.session import visible_card  # noqa: E402
-from projects.decode import card  # noqa: E402
 from projects.decode import model as md  # noqa: E402
 from projects.dense import bench as dense_bench  # noqa: E402
 from projects.nn import nn  # noqa: E402
@@ -288,7 +287,7 @@ def main():
     report = {"model": model.name, "layers": layers, "tokens": args.tokens}
     index = visible_card()
     results, ok = [], True
-    with km.Session(log=log, kernel_bytes=card.CHAIN_KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:  # its kernel buffer follows the kernels
         decode = nn.Decode(session, model, layers, 2.0, log)
         executor = nn.Executor(session, decode.run)
         log(f"loaded: the list at bank {executor.bank} {executor.base:#x}")

@@ -199,3 +199,37 @@ def test_what_was_written_is_kept_by_reference_and_written_again():
     assert len(tensor.kept) == 1  # not kept twice
     kept.stop()
     assert tensor.kept is None and kept.history is None
+
+
+class Card:
+    """A session for kernel_buffer.reopen: its buffer, a log, no tensors kept."""
+
+    def __init__(self, log):
+        self._kept, self.buffer, self.lines = kernel_buffer.Kept(), 70656, []
+        self.log_given = log
+        self.log = self.lines.append
+
+    def l1(self):
+        return self.buffer, 0
+
+    def _close_device(self):
+        pass
+
+    def open(self):
+        self.buffer = 93248
+
+
+@pytest.mark.parametrize("log", [True, False])
+def test_a_reopen_is_printed_once_without_a_log(log, capsys):
+    card = Card(log)
+    kernel_buffer.reopen(card, 93248, 0, "the kernels take 92,224 B")
+    printed = capsys.readouterr().err.splitlines()
+    assert len(card.lines) == 2
+    assert (
+        printed == []
+        if log
+        else (
+            len(printed) == 1
+            and printed[0].startswith("komorebi: kernel buffer 70,656 ->")
+        )
+    )

@@ -34,9 +34,6 @@ DEFAULT_BODIES = ()
 # The layer as one command: each core goes on to the next product by itself (stage 6;
 # the split's SPLIT_CHAIN), its records written by the thread; off: a command a step.
 CHAIN = abi.constants(abi.headers().chain, dense_card.SPLIT_KERNELS / "chain.h")
-# The kernel buffer with the chain: its code (with the next W early) is over 80 K, the
-# runtime's own 70,656; stamped, 92 K. Its L1 is from what no buffer uses.
-CHAIN_KERNEL_BYTES, STAMPED_KERNEL_BYTES = 84 * 1024, 92 * 1024
 # The chain's records (LAYERS' a4 bits 12 on, in this order) whose input the roots
 # before send into their cores' L1 (stage 8): one, or a pair whose areas never overlap.
 DATA_STEPS = ("qkv", "attend", "o", "gate_up", "down")

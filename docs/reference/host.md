@@ -89,6 +89,22 @@ one line. The only limit a program meets is a core's L1; inside it the buffer is
   160 KiB). A merged class that does not fit places its largest handler as an overlay
   only after such a refusal: a session that follows its kernels gives them the room
   first.
+- **What the session already holds.** A load's L1 budget table has a row "L1 held by
+  the session": the L1 top down to the session's lowest L1 buffer (its L1 tensors, a
+  run not stopped), less what an island session keeps. A table that does not fit with
+  it raises `km.L1BudgetError` before the launch, saying to free those tensors or to
+  load the program of most L1 first. A stopped run gives its L1 back (its host transfer
+  buffer, control blocks and trace, all read back), so a second program loads after it.
+- **Remembered** (no `kernel_bytes`). Each load keeps the buffer its kernels needed in
+  the build cache's `kernel_buffer.json`: by program (its kernels' sources, defines and
+  compile arguments) and by script (the running file and the session's shape), the
+  script's entry grown at each load and set at close to that run's largest. The next
+  run of the script opens at it, or at `Session(expect=program)`'s entry for a made
+  hand program, and the log's first line says which size and why. A class is made on
+  its session, so its hint is the script's entry. A stale entry costs one reopen (one
+  card), or, on islands, which open at 160 KiB when nothing is remembered, the refusal
+  with the size, written so the next run opens right; a file that cannot be read is no
+  entry (logged once), and code with no file (`python -c`) keeps none.
 
 Lowering the reader and writer to `"Os"` (and the compute kernel only when that is not
 enough, since its hot loops are what `O3` is for) makes the kernels smaller in either
@@ -238,6 +254,30 @@ commands for `program`.
   program is refused by the dispatcher (reason 13, `CommandRejected` naming
   `program`), which sees every load from every source. Set it `True` for a run whose
   thread never loads.
+
+#### A class added to a live run
+
+```python
+run = session.load({gate: (0, 60)})  # cores 60 to 119 hold nothing
+project = Project(x=x, w=w, y=y, form="runtime", beside=gate, session=session)
+field = run.addon(project)  # its program field
+run.wait(run.load(project, (60, 60)), 30.0)
+run.submit(Project.rows, (60, 60), args=(x, w, y))
+```
+
+`run.addon(program)` with a class made in the runtime's form adds it to a run loaded with
+a dict as one more program (its program field, after the loaded ones): its parts built
+against the loaded kernels with its own buffers' format tables, written into the room
+the load reserved, its record written to DRAM. Nothing is written to the cores until a
+`run.load` of it. Its buffers lie in the switch area, which by default takes what the
+load's L1 table leaves free less 64 KiB (kept for L1 tensors made while the run is
+live); `session.load(..., buffers=N)` makes the area N bytes from the runtime's buffers
+(0: the largest program's). Its parts go in the load's slots, which cannot grow under a
+live run: `gate.ahead(project)` before the load sizes them by its parts and builds them,
+so the add takes milliseconds; else `Program.slots(bytes=)`. A thread reaches it with `kmx_load`
+and its handler with the words `run.thread_words(handler, args)` gives
+([threads](threads.md#a-class-added-to-the-live-run)). The refusals:
+[classes](classes.md#another-class-added-to-a-live-run).
 
 The session sends each group a load of its own program before `session.load` returns
 (the compute cores' hardware start-up on that program's formats). What it costs: the
@@ -416,7 +456,7 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`, or
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=0.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
 image=None, thread="card", island=None, link=None, tensors=0, recover=True,
-reserve=262144)` returns a `Run`:
+reserve=262144, buffers=None)` returns a `Run`:
 
 1. finds or builds the dispatcher image and the native module (see below), and
    checks that the image is there and X280 cluster 0 is idle (else `km.StartError`);
@@ -446,6 +486,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `settle_microseconds` | the host's pause between a fence and its next store into the card |
 | `thread` | for a program with an X280 thread: `"card"` builds and starts it after READY, `"host"` runs its `host_fallback` instead |
 | `recover` | hand the dispatcher every core's reset list at load, so that a give-up resets and loads again each core that did not leave the command (default True). It costs the load about 4 ms and 68,864 bytes of the upload region for the map/collect example (the list grows with the kernels and their arguments). One list a group of cores with the same kernels (several programs: each core the list of its program); on islands each island's own, link cores left out. Not done for program switches, nor for a program with semaphores: `run.recovery_refused` says why |
+| `buffers` | a run loaded with a dict: bytes of its switch area for the buffers of classes added live (`run.addon(program)`), from the runtime's buffers; None (the default) takes what the L1 table leaves free less 64 KiB, 0 the largest program's layout |
 | `reserve` | bytes of room for code added to the live run (`Run.add`), after the overlays' parts in their DRAM tensor (each part is stored in every bank; default 256 KiB). 0 reserves none, and a load over islands reserves none ([code added to a live run](overlays.md#code-added-to-a-live-run)) |
 | `island` | `(graph, i)`: this card is island `i` of a `komorebi.islands.Graph` whose island `i` has every core a rank in core order. Every core's island area holds island `i`'s header and table, the dispatcher gets `i`'s first rank and count (`kmd_args.island`), and the run's groups are flat ranks of the whole graph (`Run.ranks`); a group's part on this card runs ([islands](runtime.md#islands)) |
 | `link`, `tensors` | an island's own: its `LinkPlan` (the link core and link area its commands across ride; needs `island`) and the L1 address of the tensor table its cores hold. The island sessions pass them; a program on one card never does |
@@ -818,7 +859,7 @@ All derive from `km.KomorebiError`.
 |---|---|---|
 | `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
-| `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core |
+| `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core; `taken`: the bytes of its row "L1 held by the session" |
 | `L1LayoutError` | programs that share cores declare one buffer index two ways; an `L1BudgetError` | `table` |
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
 | `SlowCodeError` | the overlay slots, which sit just above the kernel buffer, would end above 1 MB of L1 (a kernel buffer near 1 MB); a `ProgramError`, raised before anything is launched. `Session(slow_code=True)` loads it anyway | `end`: the slots' end in L1 |

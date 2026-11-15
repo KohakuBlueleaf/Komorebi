@@ -514,6 +514,17 @@ found the five built (0.06 s), the first use's add took 56.8 ms (cached), and th
 command ran 0 wrong on 120 cores. A load that reserved no room builds none; a set of a
 handler without `km.ANY` is refused (a listed set is built with the program).
 
+### Another class
+
+`run.addon(program)` adds a class made in the runtime's form to a run loaded with a dict
+as one more program ([host](host.md#a-class-added-to-a-live-run)). Its parts are built
+against group 0's recipes (a switch run's groups share one build), each with a copy of
+the kernel build's `chlkc_descriptors.h` whose format tables hold the class's buffers,
+first among the includes; the part's index in the cache records that copy, and the add
+checks it. Its parts and its record go into the reserved room. A class named with
+`Program.ahead(other)` is built with group 0's overlays at the load, so the slots fit
+its parts and the add finds them in the cache.
+
 ### Several programs with overlays
 
 Programs in the runtime's form ([host](host.md#several-programs-in-one-run)) may each
