@@ -142,11 +142,26 @@ builds the **turned** product: it computes (X W)^T = W^T X^T, so
 
 A block-float W stored with transposed tiles shares an exponent along 16 rows of W's
 column instead of 16 columns of its row; "W stored" in the table below is each layout's
-own loss. The turn is built for the three product forms of a class: the field product,
-the stream product into `Dst` and the field sums. A product of two broadcasts' blocks
-refuses a turned marker, and a tile function the tile compiler traces is refused when
-it holds a marker ("km.srcb marks an operand of a tile function `return a @ b` that a
-handler's product line adds").
+own loss. The turn is built for the four product forms of a class: the field product,
+the stream product into `Dst`, the field sums and the product of two broadcasts' blocks
+(W's tiles of the block's columns into SrcB, each row of X's subblock read transposed,
+the subblock's `Dst` turned back before its pack; the W the build checks is the tensor
+the block casts).
+
+A tile function the tile compiler traces (vector code with its products, as
+`km.silu(a @ w1) * (a @ w3)`) takes a plain marker (`km.srcb(a) @ w1`), which moves
+nothing, and refuses a turning one at the call's line: its vector code runs on the
+products in `Dst` within one body, where a turned product would leave (A W)^T, and the
+transpose back is a library call between the body's words. Write that product as a
+tile function `return a @ km.srcb(w)` of its own.
+
+The command is checked too: a command's tensor that a product reads as W (by the
+handler's parameter) is refused at submit when its `transposed_tiles` differs from the
+product's placement, naming the tensor and the product's line:
+
+```text
+apply: tensor w is not stored with its tiles transposed, and Sums.apply, line 153: self.sums += self.turned(xb, wb) reads it as W of a turned product; write it with session.tensor(..., transposed_tiles=True)
+```
 
 The build prints both placements of every product with the bits each operand keeps,
 whether or not it is marked:
@@ -199,8 +214,7 @@ placement: it prints both, and the marker is the program's choice.
   class format names it.
 - **A choice of placement by the build.** The build prints both placements' bits; it
   does not pick one.
-- **A turned product of two broadcasts' blocks**, and markers in a tile function the
-  tile compiler traces.
+- **A turned product in a tile function the tile compiler traces** (above).
 - **A fidelity a product.** One a compute kernel (above).
 - **The A family in a tile function**, which runs on an fp32 `Dst`.
 - **The card's packer on the host.** `formats.bfp_encode` is tt-metal's encode, not the

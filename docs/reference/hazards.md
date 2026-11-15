@@ -559,8 +559,10 @@ product, and a W stored transposed under an unmarked product too.
 
 **The guard.** Refused at the build: the class names the product's line and the tensor
 ("the product is turned and tensor w is not stored with its tiles transposed", or the
-plain one's "is stored"). The check is of the example tensors the class is made with; a
-command given another tensor than the one made with is the programmer's.
+plain one's "is stored"), from the example tensors the class is made with; and refused
+at each submit, from the command's tensor at that parameter ("tensor w is not stored
+with its tiles transposed, and ... reads it as W of a turned product"). A W a
+command reaches other than as a tensor argument is the programmer's.
 
 Described in [Tile formats, placement](formats.md#placement).
 
