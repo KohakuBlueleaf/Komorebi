@@ -986,6 +986,16 @@ class IslandSession:
         if visible is not None and visible != listed:
             raise ValueError(f"cards {listed} are not the visible ones ({visible})")
         os.environ["TT_VISIBLE_DEVICES"] = listed
+        try:
+            self._open_mesh(listed)
+        except BaseException:
+            if visible is None:  # set by this open: unset again when it fails
+                os.environ.pop("TT_VISIBLE_DEVICES", None)
+            raise
+
+    def _open_mesh(self, listed):
+        """open() over two or more cards, TT_VISIBLE_DEVICES set: the mesh, the X280
+        runtime and a Session on each island's device."""
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
         if session_module.exit_timeout(os.environ, self.log) == 0:
             self.log(
