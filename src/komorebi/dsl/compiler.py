@@ -213,8 +213,8 @@ class Compiled:
     # overlay handler -> its overlay number; broadcast handler -> its km.Broadcast
     overlays: dict = field(default_factory=dict)
     broadcast_lines: dict = field(default_factory=dict)
-    # mover -> (the handler whose broadcast runs on it, the broadcast's line): a core
-    # holds one broadcast's arguments a mover, which every handler of the class reads
+    # mover -> [(handler, its broadcast's line)] in the class's order: a core holds
+    # each one's arguments after the last's (kArgBroadcast + kBroadcastArgs i)
     mover_broadcasts: dict = field(default_factory=dict)
     # handler -> (the size of its reduce's groups, the reduce's line)
     reduce_groups: dict = field(default_factory=dict)
@@ -6968,7 +6968,7 @@ class HandlerCompiler:
                 "make one broadcast a mover: give the other mover=",
             )
         self.movers[mover] = name
-        self.class_mover(node, mover)
+        index = self.class_mover(node, mover)
         self.compiled.broadcast_lines.setdefault(
             self.method.name, f"line {node.lineno}, `{self.text(node)}`"
         )
@@ -6978,11 +6978,13 @@ class HandlerCompiler:
         self.scope[name] = Value(
             "broadcast", name, mover=mover, window=window, pattern=along, length=length
         )
+        self.scope[name].index = index  # its arguments' place among its mover's
         unread = placed.get(spelling("broadcast_unread"))
         if unread is not None:  # a word of the handler: its C++, the names it reads
             self.scope[name].unread = (self.integer(unread), self.uses(unread))
+        arg = "kArgBroadcast" + (f" + km::kBroadcastArgs * {index}" if index else "")
         movement = Line(
-            f"km::Broadcast {name}(movement, command, kArgBroadcast);\n"
+            f"km::Broadcast {name}(movement, command, {arg});\n"
             f"if (!{name}.ok()) {{\n    return false;\n}}\n"
             f"if (!{name}.included()) {{\n    return true;\n}}",
             mover=mover,
@@ -7002,23 +7004,27 @@ class HandlerCompiler:
         return [movement, counted[0]], [counted[1]]
 
     def class_mover(self, node, mover):
-        """A broadcast on a mover no other handler's broadcast runs on: a core holds
-        one broadcast's arguments a mover (its buffer, its number), fixed at the load
-        and read by every handler; two handlers' broadcasts on one mover would each
-        run with the last one's."""
+        """The place of this handler's broadcast among its mover's in the class: a
+        core holds each one's arguments after the last's. A core has KM_BROADCASTS
+        broadcast areas (a broadcast's number picks one): a class past them is
+        refused, naming the broadcasts it has."""
         line = f"line {node.lineno}, `{self.text(node)}`"
-        handler, held = self.compiled.mover_broadcasts.setdefault(
-            mover, (self.method.name, line)
-        )
-        if handler != self.method.name:
-            other = "A" if mover == "B" else "B"
+        held = self.compiled.mover_broadcasts.setdefault(mover, [])
+        for index, (handler, _) in enumerate(held):
+            if handler == self.method.name:  # the handler made again (a variant)
+                return index
+        areas = abi.headers()["KM_BROADCASTS"]
+        others = [b for each in self.compiled.mover_broadcasts.values() for b in each]
+        if len(others) >= areas:
+            named = "; ".join(f"{h}, {at}" for h, at in others)
             self.refuse(
                 node,
-                f"{handler} runs a broadcast on mover {mover} ({held}); a core holds "
-                f"one broadcast's arguments a mover, which every handler of the class "
-                f"reads, so both would run with the last one's",
-                f'give one of them mover="{other}", or make each its own class',
+                f"the class runs {len(others)} broadcasts already ({named}); a core "
+                f"has {areas} broadcast areas, one a broadcast of the class",
+                "make this handler's broadcast in a class of its own",
             )
+        held.append((self.method.name, line))
+        return len(held) - 1
 
     def broadcast_place(self, node, along, placed):
         """A broadcast's mover and band: `mover="A"` (NoC 0: a column's sender at its
@@ -7112,6 +7118,7 @@ class HandlerCompiler:
                     broadcast.window,
                     broadcast.mover,
                     broadcast.length,
+                    broadcast.index,
                 )
             )
             if dtype == "float32":

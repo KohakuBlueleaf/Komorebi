@@ -499,7 +499,7 @@ class Banded(km.Program):
 def test_a_broadcast_on_a_chosen_mover_in_bands_counted_over_its_loops_or_unread():
     compiled = compile_class(Banded, {}, {"k": grid("bfloat16", 8, 2),
                                           "v": grid("bfloat16", 8, 2)})  # fmt: skip
-    assert compiled.broadcasts[0][3:] == ("A", 2)  # mover A, bands of 2 cores
+    assert compiled.broadcasts[0][3:] == ("A", 2, 0)  # mover A, bands of 2, its first
     movement = "\n".join(render(prune(compiled.movement["copy"]), 0))
     compute = "\n".join(render(prune(compiled.compute["copy"]), 0))
     assert "uint32_t km_blocks_down = 0;\n#else  // mover B\n" in movement

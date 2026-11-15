@@ -1,7 +1,7 @@
-"""A class's broadcasts a mover (no card): a core holds one broadcast's arguments a
-mover, read by every handler, so two handlers' broadcasts on one mover are refused at
-the make, naming both handlers, the mover and the lines; on two movers each is its
-own (two buffers, two numbers: two handlers' arguments are never one set)."""
+"""A class's broadcasts (no card): two handlers' on one mover each read their own
+arguments, the second's after the first's (kArgBroadcast + kBroadcastArgs), each a
+buffer and number; on two movers each its mover's first; a third broadcast, past a
+core's KM_BROADCASTS areas, refused at the make naming the class's broadcasts."""
 
 from pathlib import Path
 
@@ -9,7 +9,7 @@ import pytest
 from chain_fixture import Pages, quiet
 
 import komorebi as km
-from komorebi import formats
+from komorebi import abi, formats, layout
 from komorebi.errors import ProgramError
 from komorebi.tensor import Tensor
 
@@ -86,20 +86,58 @@ class TwoMovers(km.Program):
         y.pages(self.rank * N, N).write(acc)
 
 
+class Three(OneMover):
+    @km.handler
+    def third(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        row = km.Broadcast(self, along="row", window=1)
+        if row.sender():  # noqa: SIM108 (the compiler's form)
+            ws = row.cast(w.tiles[0:K, 0:N].read())
+        else:
+            ws = row.arrive()
+        acc = km.tile.zeros(km.fp32, N)
+        for xb in km.Stream(x.tiles[self.y : self.y + 1, 0:K], block=2, pattern="B"):
+            acc += project(xb, ws)
+        y.pages(self.rank * N, N).write(acc)
+
+
 def made(cls):
     return cls(l1=1 << 20, log=quiet, rect=(0, 0, 2, 4), **tensors())
 
 
-def test_two_handlers_broadcasts_on_one_mover_are_refused_by_name():
+def nocs():
+    """A 2 x 4 grid's NoC words (made up: x + 1, y + 2), for the arguments' layout."""
+    order = layout.core_order((2, 4))
+    words = [(x + 1) | (y + 2) << 16 for x, y in order]
+    return layout.nocs((2, 4), words, words)
+
+
+def test_two_handlers_broadcasts_on_one_mover_read_their_own_arguments():
+    program = made(OneMover)
+    movement = (Path(program.built.folder) / "movement.cpp").read_text()
+    assert "km::Broadcast column(movement, command, kArgBroadcast);" in movement
+    assert (
+        "km::Broadcast column(movement, command, kArgBroadcast + km::kBroadcastArgs "
+        "* 1);"
+    ) in movement
+    program.rectangle["nocs"] = nocs()  # what Session.load hands over
+    fields = len(abi.struct_fields(abi.headers().device[-1], "BroadcastArgs"))
+    mover_a, mover_b, common = program.args(0)
+    assert len(mover_a) == len(common) and len(mover_b) == len(common) + 2 * fields
+    first, second = mover_b[len(common) :][:fields], mover_b[len(common) + fields :]
+    assert first[0] == 0 and second[0] == 1  # each its own number (control area)
+    assert first[8] != second[8]  # and its own buffer
+
+
+def test_a_third_broadcast_is_refused_naming_the_others():
     with pytest.raises(
         ProgramError,
         match=(
-            r"second, line \d+, `column = km\.Broadcast.*`: first runs a broadcast "
-            r"on mover B \(line \d+, `column = km\.Broadcast.*`\); .*so both would "
-            r"run with the last one's; give one of them mover=\"A\""
+            r"third, line \d+, `row = km\.Broadcast.*`: the class runs 2 broadcasts "
+            r"already \(first, line \d+, .*; second, line \d+, .*\); a core has 2 "
+            r"broadcast areas"
         ),
     ):
-        made(OneMover)
+        made(Three)
 
 
 def test_on_two_movers_each_broadcast_is_its_own():
