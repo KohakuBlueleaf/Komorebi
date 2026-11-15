@@ -57,13 +57,24 @@ the load is refused with the bytes.
 
 ## On the card
 
-Not measured in this version. The first run loaded the gate alone, then Linear alone,
-whose launch tt-metal refused: "Statically allocated circular buffers ... clash with L1
-buffers ... L1 buffer allocated at 1423872 and static circular buffer region ends at
-1464448", though Linear's L1 table fits; after the gate's load, whose host transfer
-buffer is 82,000 B against Linear's 32,848, an L1 buffer stays where Linear's buffers
-reach. The script now loads Linear first. The second run hung in the script itself (a
-tensor read while the run was live); it reads after the run stops now.
+Card 1, a Blackhole p150a, 2026-11-16, seed 1, `--beside`: Linear alone, then merged,
+then the gate alone, in one session; three timed commands a handler, the median.
 
-The numbers to set beside, from each program's own page: the gate class in bfloat16 at
-`BLOCK = 8`, 83.70 us; Linear's K split, 94.2 us.
+| Handler | Check | Alone, us | Merged, us |
+|---|---|---:|---:|
+| gate (12 cores, 64 tiles, `BLOCK = 2`) | 0 of 786,432 wrong, 3.89e-3 largest relative | 80.54 | 80.84 |
+| Linear's split (112 cores), exact | 0 wrong | 94.68 | 94.72 |
+| Linear's split, random values | RMS 4.38e-3 | 93.70 | 93.86 |
+| Linear's gate (64 cores) | RMS 1.64e-3, SwiGLU 8.03e-3 | 7.30 | 7.74 |
+
+Every handler is exact (or within its bound) merged as alone, with the same errors to
+the last digit. Merged, a command costs 0.04 to 0.4 us more, the gate's 0.4 %. The load
+printed the four handlers resident, in the kernels. Beside each program's own page:
+the gate class at `BLOCK = 8`, 83.70 us; Linear's K split, 94.2 us.
+
+A first run loaded the gate alone, then Linear alone, whose launch tt-metal refused:
+"Statically allocated circular buffers ... clash with L1 buffers ... L1 buffer
+allocated at 1423872 and static circular buffer region ends at 1464448", though
+Linear's L1 table fits; after the gate's load, whose host transfer buffer is 82,000 B
+against Linear's 32,848, an L1 buffer stays where Linear's buffers reach. So the
+script loads Linear first.

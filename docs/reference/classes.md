@@ -1253,9 +1253,10 @@ each class, a constant to each class that declares it.
   the bytes. At every load the session prints where each handler's code lives,
   resident ones too.
 
-Measured on a mock device (the build; the card run is not in this version):
-[merged_class](../../experiments/language/merged_class/README.md), the gate class
-(`BLOCK = 2`) and Linear: the kernels 98,656 B (Linear's alone 92,304, the gate's
+Measured: [merged_class](../../experiments/language/merged_class/README.md), the gate
+class (`BLOCK = 2`) and Linear merged, on one card: every handler exact or within its
+bound as alone; the gate 80.84 us against 80.54 alone, Linear's split 93.86 against
+93.70, its gate 7.74 against 7.30. The kernels 98,656 B (Linear's alone 92,304, the gate's
 38,064), so a kernel buffer of 97 KiB; at 91 KiB the load's pick moved `split`, then
 `linear_gate`, then `gate_gate`, and the overlay builder refused each part (a stream's
 handler keeps its own copy of `km::move_filled` and `km::move_drained`), so all four
