@@ -34,9 +34,14 @@ L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
 # on islands the reader's slot holds the larger service overlay (the collectives')
 L1_RUNTIME_ISLANDS = 17_024 + 40_256
-# The kernel buffer the linear kernels' code takes: one card up to 72 K; an island of
-# two cards up to 106 K; the kernels' addition or gather up to 118,000 B (mock builds).
-KERNEL_BYTES = {"one": 88 * 1024, "two": 108 * 1024, "add": 116 * 1024}
+# The kernel buffer the linear kernels' code takes: one card 72 K, two 106 K, the
+# addition or gather 118,000 B (mock builds); two-card decode 114,672 B (the cards).
+KERNEL_BYTES = {
+    "one": 88 * 1024,
+    "two": 108 * 1024,
+    "add": 116 * 1024,
+    "decode": 116 * 1024,
+}
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
 SUBBLOCK = None
@@ -50,18 +55,23 @@ VALID_SENT = False
 ACCOUNT = False
 # the K-split plan's reduce inside a group (--reduce)
 SPLIT_REDUCE = "tree"
+# the K-split plan's chunks: their movers (--pattern; ABABAABA: 5 of 8 on mover A,
+# Kohaku-TT's decode kernel's share) and the K chunks mover A's half holds (B's: 2)
+SPLIT_PATTERN = "AB"
+SPLIT_DEPTH = {"AB": 2, "AAAB": 3, "ABABAABA": 3}
 # input dim sharded: the addition across in the kernels (kernel) or the all-reduce of Y
 # after the product (reduce) (--add)
 ADD = "kernel"
 # output dim sharded into a copy of Y: the kernels' all-gather at the call's end
 # (kernel) or the host's after it (host) (--gather)
 GATHER = "kernel"
-# the grid plan: W's read spread over the column broadcast's ranks (--spread): "auto"
-# where the column's sender reading each block alone bounds a step (spreads())
+# the grid plan: W's read spread over the column broadcast's ranks (--spread), and X's
+# over the row's (--xspread): "auto" where the plan's model (k_block_ns) says it wins
 SPREAD = "auto"
-# the sender alone reads a W tile in 199 ns, a rank makes a tile product in 25.5 ns:
-# that read bounds a step below 7.8 tile rows of block height (bm)
-SPREAD_HEIGHT_MOST = 7
+X_SPREAD = "auto"
+# the island grid's panels (first, last column; layout.panels): a row broadcast lies in
+# one, so an X block is shared by the ranks of the row's part in a panel
+PANELS = None
 # The account's words (kernels/linear/linear.h kAcWFree ..), by name: cycles, but the
 # tiles and products (counts) and the ends and start (wall clocks)
 ACCOUNT_WORDS = (
@@ -86,6 +96,13 @@ SPLIT_ACCOUNT_WORDS = (
     ("reduce", "kAcKReduce"),
     ("y_write", "kAcKWrite"),
     ("reader_all", "kAcKReaderReduce"),
+)
+# and its wall clocks: compute's own part packed, each round's part taken and added;
+# the writer's part to send in hand
+SPLIT_ACCOUNT_CLOCKS = (("own", L["kAcKOwn"]), ("held", L["kAcKHeld"])) + tuple(
+    (f"{name}{step}", L[word] + step)
+    for name, word in (("taken", "kAcKTaken"), ("added", "kAcKAdded"))
+    for step in range(L["kKRounds"])
 )
 ACCOUNT_CLOCKS = (
     ("reader_end", "kAcReaderEnd"),
@@ -177,31 +194,91 @@ def extra_buffers(plan):
     """The linear kernels' buffers past the grid plan's: a partial's subblocks added
     (LINEAR_ADD), the token and its slot, T's row."""
     subblock = plan.sh * plan.sw
-    return [
-        (L["kCbSent"], "bfloat16", L["kBf16Bytes"], 2 * subblock),
-        (L["kCbToken"], "uint32", L["kSignalBytes"], 1),
-        (L["kCbArrive"], "uint32", L["kSignalBytes"], 1),
-        (L["kCbStamp"], "uint32", L["kStampBytes"], 1),
-    ] + (
-        # a receiver's K rows of a W block (W's read spread over the column)
-        [(L["kCbWSlice"], "bfloat16", L["kBf16Bytes"], slice_pages(plan))]
-        if spreads(plan)
-        else []
+    return (
+        [
+            (L["kCbSent"], "bfloat16", L["kBf16Bytes"], 2 * subblock),
+            (L["kCbToken"], "uint32", L["kSignalBytes"], 1),
+            (L["kCbArrive"], "uint32", L["kSignalBytes"], 1),
+            (L["kCbStamp"], "uint32", L["kStampBytes"], 1),
+        ]
+        + (
+            # a receiver's K rows of a W block (W's read spread over the column)
+            [(L["kCbWSlice"], "bfloat16", L["kBf16Bytes"], slice_pages(plan))]
+            if spreads(plan)
+            else []
+        )
+        + (
+            # a receiver's tiles of an X block (X's read spread over the row)
+            [(L["kCbXSlice"], "bfloat16", L["kBf16Bytes"], x_slice_pages(plan))]
+            if x_spreads(plan)
+            else []
+        )
     )
 
 
 def spreads(plan):
-    """Whether W's read is spread over the column's ranks (--spread): the 2d layout,
-    a column broadcast of more than one rank; "auto" also blocks of at most
-    SPREAD_HEIGHT_MOST tile rows and at least two K tiles (rows to share)."""
-    if SPREAD == "off" or plan.layout != "2d" or plan.rows < 2:
-        return False
-    return SPREAD == "on" or (plan.bm <= SPREAD_HEIGHT_MOST and plan.kb >= 2)
+    """Whether W's read is spread over the column's ranks (the plan's, by
+    with_spreads)."""
+    return plan.w_spread
+
+
+def spread_choices(mode, allowed):
+    """The settings of one spread the planner tries: --spread / --xspread `mode`, and
+    whether the plan has ranks to share it."""
+    if not allowed or mode == "off":
+        return (False,)
+    return (True,) if mode == "on" else (False, True)
+
+
+def with_spreads(plans, budget):
+    """`plans` (one program's pieces) with the spreads the model (plan_ns, the slowest
+    piece) prices lowest with every piece inside `budget`, the same in every piece (the
+    program's buffers and defines are one); no spread on a tie, None when none fits. A
+    spread needs the 2d layout, a broadcast of more than one rank and tiles to share."""
+    two = all(plan.layout == "2d" for plan in plans)
+    w_ok = two and all(plan.rows > 1 and plan.kb > 1 for plan in plans)
+    x_ok = two and all(plan.cols > 1 and plan.bm * plan.kb > 1 for plan in plans)
+    best = None
+    for w_spread in spread_choices(SPREAD, w_ok):
+        for x_spread in spread_choices(X_SPREAD, x_ok):
+            options = [
+                dataclasses.replace(plan, w_spread=w_spread, x_spread=x_spread)
+                for plan in plans
+            ]
+            if any(o.l1_bytes() + extra_bytes(o) > budget for o in options):
+                continue
+            cost = max(plan_ns(option) for option in options)
+            if best is None or cost < best[0]:
+                best = (cost, options)
+    return None if best is None else best[1]
 
 
 def slice_pages(plan):
     """A column rank's K rows of a W block, the most: K block / ranks, bn wide."""
     return pl.cdiv(plan.kb, plan.rows) * plan.bn
+
+
+def x_spreads(plan):
+    """Whether X's read is spread over the row's ranks (the plan's, by
+    with_spreads)."""
+    return plan.x_spread
+
+
+def x_slice_pages(plan):
+    """A row rank's tiles of an X block, the most: bm x K block / the ranks of the
+    fewest a row broadcast has (a rect from the grid's first column, cut by PANELS)."""
+    return pl.cdiv(plan.bm * plan.kb, row_ranks_least(plan))
+
+
+def row_ranks_least(plan):
+    if PANELS is None:
+        return plan.cols
+    parts = [
+        min(last, plan.cols - 1) - first + 1
+        for first, last in PANELS
+        if first < plan.cols
+    ]
+    return min(parts)
 
 
 def extra_bytes(plan):
@@ -236,22 +313,35 @@ REDUCED_CALLS = 20
 
 
 def split_buffers(plan, adds=False):
-    """(index, format, page bytes, pages) of the K-split plan's buffers (two chunks a
-    mover; `adds`: both partials of a block), T's slot last."""
+    """(index, format, page bytes, pages) of the K-split plan's buffers (mover A's
+    chunks the plan's depth, mover B's two; `adds`: both partials of a block), T's
+    slot last. The whole-K plan: X whole in kCbKX, W all in mover A's half."""
     block_tiles = plan.oh * plan.ow
+    x_chunk, w_chunk = plan.oh * plan.kc, plan.kc * plan.ow
     both = (
         [(L["kCbKAdd"], "bfloat16", L["kBf16Bytes"], 2 * block_tiles)] if adds else []
     )
+    if plan.cast:  # X's halves unused: a page each; W's of mover B: one chunk
+        x_whole = pl.cdiv(plan.kt, plan.kc) * x_chunk
+        both += [(L["kCbKX"], "bfloat16", L["kBf16Bytes"], x_whole)]
+    x_halves = (1, 1) if plan.cast else (plan.depth * x_chunk, 2 * x_chunk)
+    w_b = (1 if plan.cast else 2) * w_chunk  # a half holds whole chunks (km::move)
     return both + [
-        (L["kCbKa"], "bfloat16", L["kBf16Bytes"], 2 * plan.oh * plan.kc),
-        (L["kCbKaB"], "bfloat16", L["kBf16Bytes"], 2 * plan.oh * plan.kc),
-        (L["kCbKw"], "bfloat16", L["kBf16Bytes"], 2 * plan.kc * plan.ow),
-        (L["kCbKwB"], "bfloat16", L["kBf16Bytes"], 2 * plan.kc * plan.ow),
+        (L["kCbKa"], "bfloat16", L["kBf16Bytes"], x_halves[0]),
+        (L["kCbKaB"], "bfloat16", L["kBf16Bytes"], x_halves[1]),
+        (L["kCbKw"], "bfloat16", L["kBf16Bytes"], plan.depth * w_chunk),
+        (L["kCbKwB"], "bfloat16", L["kBf16Bytes"], w_b),
         (L["kCbKArrive"], "float32", L["kPartBytes"], plan.arrive_pages()),
         (L["kCbKSum"], "float32", L["kPartBytes"], block_tiles),
         (L["kCbKOut"], "bfloat16", L["kBf16Bytes"], block_tiles),
         (L["kCbStamp"], "uint32", L["kStampBytes"], 1),
     ]
+
+
+def pattern_word(letters):
+    """A km::Pattern word: the length, and from bit 8 a bit set where mover B moves."""
+    owners = sum(1 << at for at, letter in enumerate(letters) if letter == "B")
+    return len(letters) | owners << 8
 
 
 def split_ns(plan, ranks):
@@ -276,7 +366,19 @@ def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget, adds=False):
             continue
         chunk = max(1, min(pl.cdiv(k_tiles, size), SPLIT_CHUNK_PAGES // width))
         sh, sw = pl.subblock(m_tiles, width)
-        plan = pl.Split(m_tiles, k_tiles, n_tiles, size, m_tiles, width, chunk, sh, sw)
+        plan = pl.Split(
+            m_tiles,
+            k_tiles,
+            n_tiles,
+            size,
+            m_tiles,
+            width,
+            chunk,
+            sh,
+            sw,
+            pattern=SPLIT_PATTERN,
+            depth=SPLIT_DEPTH[SPLIT_PATTERN],
+        )
         buffers = split_buffers(plan, adds)
         if sum(page * pages for _, _, page, pages in buffers) > budget:
             continue
@@ -284,6 +386,124 @@ def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget, adds=False):
         if best is None or cost < best[0]:
             best = (cost, plan)
     return None if best is None else best[1]
+
+
+# The whole-K plan (S 1, kKsXCast; Kohaku-TT's form): a core all of K for its columns;
+# X cast once a panel by its first core's writer (NoC 1), W all on the reader (NoC 0).
+CAST_X_TILES = 32  # X's tiles a multicast (Kohaku-TT's)
+CAST_W_PAGES = (32, 16, 8)  # W's pages a chunk (32: Kohaku-TT's 64 KB blocks)
+CAST_DEPTHS = (4, 3, 2)  # W's chunks a half: the most bytes in flight that fit
+# The two plans' tails (ns, the account's clocks): a hop of the tree (fixed, fp32 at
+# 80 GB/s, the combine a tile), the root's pack and Y; the whole-K plan's first cast.
+HOP_NS = 1_350
+HOP_BYTES_PER_S = 80e9
+COMBINE_TILE_NS = 100
+ROOT_NS = 1_000
+ROOT_TILE_NS = 170
+CAST_FIRST_NS = 3_000
+# The reads' rates fitted to the 16 decode loops (15 picks right): the split's W and X
+# again; the whole-K plan's W by (islands, ow 1 or wider); see the README.
+SPLIT_READ_BYTES_PER_S = {1: 470e9, 2: 470e9}
+CAST_READ_BYTES_PER_S = {(1, 1): 340e9, (1, 2): 405e9, (2, 1): 310e9, (2, 2): 380e9}
+# the decode plan (--decode): "priced" the cheaper of the two by their terms, or one
+DECODE = "priced"
+
+
+def root_ns(plan):
+    """The root's term: its sum packed to bf16 and written to Y."""
+    return ROOT_NS + plan.oh * plan.ow * ROOT_TILE_NS
+
+
+def split_terms_ns(plan, islands=1):
+    """The K-split plan's time by its terms: every rank's W and its group's X again at
+    the rate measured, the tree's rounds, the root."""
+    tiles = pl.cdiv(plan.kt, plan.s) * (plan.ow + plan.oh)
+    read = tiles * L["kBf16Bytes"] * plan.cores() / SPLIT_READ_BYTES_PER_S[islands]
+    rounds = max(1, plan.s - 1).bit_length() if plan.s > 1 else 0
+    part = plan.oh * plan.ow
+    hop = (
+        HOP_NS + 1e9 * part * L["kPartBytes"] / HOP_BYTES_PER_S + part * COMBINE_TILE_NS
+    )
+    return 1e9 * read + rounds * hop + root_ns(plan)
+
+
+def cast_ns(plan, islands=1):
+    """The whole-K plan's time by its terms: W at the rate measured for its width, the
+    first multicast before the first product, the core's sum packed and written."""
+    rate = CAST_READ_BYTES_PER_S[islands, min(plan.ow, 2)]
+    read = plan.kt * plan.ow * L["kBf16Bytes"] * plan.cores() / rate
+    return 1e9 * read + CAST_FIRST_NS + root_ns(plan)
+
+
+def cast_rects(nocs, used, ranks):
+    """The whole-K plan's multicasts over the first `used` cores, a panel's columns
+    to its last used row each: (sender, its cores, its used cores, start, end: the
+    translated corners as x | y << 16, high first for NoC 1); None where a rect holds a
+    core of no rank or is no NoC0 box with its translated corners at the box's."""
+    columns, rows = nocs.grid
+    rects = []
+    for first, last in nocs.panels:
+        cores = [y * columns + x for y in range(rows) for x in range(first, last + 1)]
+        mine = [core for core in cores if core < used]
+        if not mine:
+            continue
+        bottom = max(core // columns for core in mine)
+        cores = [core for core in cores if core // columns <= bottom]
+        if max(cores) >= ranks:
+            return None
+        places = [(core % columns, core // columns) for core in cores]
+        points = {nocs.noc0[place] for place in places}
+        xs, ys = [x for x, _ in points], [y for _, y in points]
+        box = (max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1)
+        if len(points) != len(places) or box != len(places):
+            return None
+        noc0 = {nocs.noc_xy[place]: nocs.noc0[place] for place in places}
+        low = (min(x for x, _ in noc0), min(y for _, y in noc0))
+        high = (max(x for x, _ in noc0), max(y for _, y in noc0))
+        if (noc0.get(low), noc0.get(high)) != ((min(xs), min(ys)), (max(xs), max(ys))):
+            return None
+        start, end = high[0] | high[1] << 16, low[0] | low[1] << 16
+        rects.append((cores[0], cores, mine, start, end))
+    return rects
+
+
+def cast_choice(m_tiles, k_tiles, n_tiles, ranks, budget, nocs, adds=False):
+    """The whole-K plan on the most of the first `ranks` ranks inside `budget` (the
+    narrowest block, then the most W bytes in flight), its multicasts; or
+    None where none fits (X whole and W's halves in L1, the rects)."""
+    best = None
+    for width in range(1, n_tiles + 1):
+        used = pl.cdiv(n_tiles, width)
+        if used > ranks:
+            continue
+        rects = cast_rects(nocs, used, ranks)
+        if rects is None:
+            continue
+        sh, sw = pl.subblock(m_tiles, width)
+        for pages in CAST_W_PAGES:
+            chunk = max(1, min(k_tiles, pages // width))
+            for depth in CAST_DEPTHS:
+                plan = pl.Split(
+                    m_tiles,
+                    k_tiles,
+                    n_tiles,
+                    1,
+                    m_tiles,
+                    width,
+                    chunk,
+                    sh,
+                    sw,
+                    pattern="A",
+                    depth=depth,
+                    cast=True,
+                )
+                buffers = split_buffers(plan, adds)
+                if sum(page * count for _, _, page, count in buffers) > budget:
+                    continue
+                cost = (width, -depth * chunk, -chunk)
+                if best is None or cost < best[0]:
+                    best = (cost, plan, rects)
+    return None if best is None else best[1:]
 
 
 def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget):
@@ -300,7 +520,7 @@ def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget):
             over = plan.l1_bytes() + extra_bytes(plan) - budget
             if over <= 0:
                 if plan.group(grid)[1] <= ranks:
-                    return plan
+                    return with_spreads([plan], budget)[0]
                 break
             room -= over
     return None
@@ -340,18 +560,36 @@ PRODUCT_NS = 24.5
 SUBBLOCK_NS = 51
 FEED_BLOCK_NS = 4_750
 FEED_TILE_NS = 203
+# A spread block's feed: the ranks' tiles into the sender, then its cast; fitted to the
+# rows a spread bounds, W's (13 rows) and X's (5; the row's hand-over is the slower)
+SPREAD_BLOCK_NS = {"w": 3_250, "x": 0}
+SPREAD_TILE_NS = {"w": 116, "x": 180}
 
 
-def k_block_ns(bm, bn, kb):
+def k_block_ns(bm, bn, kb, x_spread=False, w_spread=False):
+    """The larger of a K block's compute and its two feeds (X's bm x kb tiles, W's kb x
+    bn), each read by its sender alone or spread."""
     sh, sw = pl.subblock(bm, bn)
     compute = bm * bn * kb * PRODUCT_NS + bm * bn // (sh * sw) * SUBBLOCK_NS
-    feed = FEED_BLOCK_NS + max(bm, bn) * kb * FEED_TILE_NS
-    return max(compute, feed)
+    feeds = [
+        (
+            SPREAD_BLOCK_NS[name] + tiles * SPREAD_TILE_NS[name]
+            if spread
+            else FEED_BLOCK_NS + tiles * FEED_TILE_NS
+        )
+        for name, tiles, spread in (("x", bm * kb, x_spread), ("w", kb * bn, w_spread))
+    ]
+    return max(compute, *feeds)
 
 
 def plan_ns(plan):
     """A core's time for its blocks of `plan` by k_block_ns."""
-    return plan.nbh * plan.nbw * plan.nk * k_block_ns(plan.bm, plan.bn, plan.kb)
+    return (
+        plan.nbh
+        * plan.nbw
+        * plan.nk
+        * k_block_ns(plan.bm, plan.bn, plan.kb, plan.x_spread, plan.w_spread)
+    )
 
 
 def piece_plan(m_tiles, k_tiles, n_tiles, rect_size, block):
@@ -428,11 +666,14 @@ def island_pieces(m_tiles, k_tiles, n_tiles, grid, ranks, budget, kb):
                     for pieces in split_pieces(
                         form, a, b, m_tiles, k_tiles, n_tiles, (bm, bn, k_block)
                     ):
-                        if any(  # the pieces' own buffers, not the probe's
-                            p.plan.l1_bytes() + extra_bytes(p.plan) > budget
-                            for p in pieces
-                        ):
+                        # the pieces' own buffers, not the probe's
+                        plans = with_spreads([p.plan for p in pieces], budget)
+                        if plans is None:
                             continue
+                        pieces = [
+                            dataclasses.replace(p, plan=plan)
+                            for p, plan in zip(pieces, plans, strict=True)
+                        ]
                         cost = (
                             max(plan_ns(p.plan) for p in pieces),
                             -bm * bn,
@@ -587,6 +828,8 @@ class Linear:
         ranks = counts.pop()
         self.islands = len(graph.islands)
         self.nocs = session.sessions[0].nocs()
+        global PANELS
+        PANELS = list(self.nocs.panels)
         self.n_tiles = n_tiles
         self.k_parts = k_spans(tensors["w"].placement, k_tiles)
         self.w_columns = w_column_spans(tensors["w"].placement, n_tiles)
@@ -633,11 +876,27 @@ class Linear:
                 raise SystemExit(f"--columns {COLUMNS}: one island, 1 to {grid[0]}")
             grid, planned = (COLUMNS, grid[1]), COLUMNS * grid[1]
         # a few rows: the K-split plan
-        self.split = None
+        self.split, self.casts, self.priced = None, None, {}
         if part_m <= SPLIT_ROWS and COLUMNS is None:
             self.split = split_choice(
                 part_m, part_k, part_n, planned, self.budget, self.adds
             )
+            whole = cast_choice(
+                part_m, part_k, part_n, planned, self.budget, self.nocs, self.adds
+            )
+            # the cheaper by their terms (us), or the one --decode names
+            if self.split is not None:
+                self.priced["split"] = split_terms_ns(self.split, self.islands) / 1e3
+            if whole is not None:
+                self.priced["whole"] = cast_ns(whole[0], self.islands) / 1e3
+            pick = DECODE
+            if pick == "priced" and self.priced:
+                pick = min(self.priced, key=self.priced.get)
+            if pick == "whole":
+                if whole is None:
+                    raise SystemExit(f"no whole-K plan fits: {dimensions}")
+                self.split, self.casts = whole
+            log(f"decode plans priced (us) {self.priced}: {pick}")
         self.pieces = (
             []
             if self.split is not None
@@ -705,6 +964,19 @@ class Linear:
         every CPU, X and W read on both movers, Y and T by the writer."""
         plan = self.split
         words = [0] * L["kKsWords"]
+        cores = {}  # the whole-K plan: each core's multicast words
+        for sender, rect, mine, start, end in self.casts or []:
+            common = {"kKsXCast": 1, "kKsXStart": start, "kKsXEnd": end}
+            common["kKsXChunks"] = max(1, CAST_X_TILES // (plan.oh * plan.kc))
+            for core in rect:
+                cores[core] = dict(common)
+                if core in mine:
+                    cores[core] |= {"kKsXRole": L["kKXReceiver"], "kKsXSender": sender}
+            cores[sender] = common | {
+                "kKsXRole": L["kKXSender"],
+                "kKsXWaits": len(mine) - 1,
+                "kKsXDests": len(rect) - 1,
+            }
         for name, value in (
             ("kKsS", plan.s),
             ("kKsOh", plan.oh),
@@ -717,15 +989,23 @@ class Linear:
             ("kKsForm", pl.REDUCE_FORMS[SPLIT_REDUCE]),
             ("kKsMt", plan.mt if self.islands == 1 else self.m_tiles),
             ("kKsSetPages", self.set_pages() if self.adds else 0),
+            ("kKsPattern", pattern_word(plan.pattern)),
         ):
             words[L[name]] = value
+
+        def mine(core):
+            own = list(words)
+            for name, value in cores.get(core, {}).items():
+                own[L[name]] = value
+            return own
+
         fp32 = "UnpackToDestFp32"
         x, w, y = (tensors[name] for name in "xwy")
         return km.Program(
             "dense_linear",
             kernels=KERNELS,
             buffers=[km.Buffer(*buffer) for buffer in split_buffers(plan, self.adds)],
-            args=lambda core: (words, words, words),
+            args=lambda core: (mine(core),) * 3,
             compile_args={
                 "reader": x.tensor_args() + w.tensor_args(),
                 "writer": y.tensor_args()
@@ -786,6 +1066,11 @@ class Linear:
                 if any(spreads(p.plan) for p in self.pieces)
                 else {}
             )
+            | (
+                {"LINEAR_XSPREAD": 1}
+                if any(x_spreads(p.plan) for p in self.pieces)
+                else {}
+            )
             | ({"LINEAR_VALID_SENT": 1} if VALID_SENT else {})
             | ({"LINEAR_ACCOUNT": 1} if ACCOUNT else {}),
         )
@@ -815,7 +1100,9 @@ class Linear:
             ran = words[words[:, L["kStampEnd"]] != 0]
             account = {}
             names = SPLIT_ACCOUNT_WORDS if self.split is not None else ACCOUNT_WORDS
-            clocks = () if self.split is not None else ACCOUNT_CLOCKS
+            clocks = SPLIT_ACCOUNT_CLOCKS if self.split is not None else ACCOUNT_CLOCKS
+            clocks = [(name, L[w] if isinstance(w, str) else w) for name, w in clocks]
+            names = [(name, L[w]) for name, w in names]
             if ACCOUNT and len(ran):  # the slowest core's phases, and each one's most
                 span = (ran[:, L["kStampEnd"]] - ran[:, L["kStampStart"]]) % 2**32
                 slow = int(np.argmax(span))
@@ -823,14 +1110,20 @@ class Linear:
                 account = {
                     "core": slow,
                     "span": int(span[slow]),
-                    "slowest": {name: int(ran[slow, L[w]]) for name, w in names}
+                    "slowest": {name: int(ran[slow, w]) for name, w in names}
+                    | {name: int((ran[slow, w] - start) % 2**32) for name, w in clocks},
+                    "most": {name: int(ran[:, w].max()) for name, w in names},
+                    # every core's, in core order (the spread of each phase), and its
+                    # clocks from its own start (-1: not stamped)
+                    "cores": {name: ran[:, w].tolist() for name, w in names}
                     | {
-                        name: int((ran[slow, L[w]] - start) % 2**32)
+                        name: np.where(
+                            ran[:, w] == 0,
+                            -1,
+                            (ran[:, w] - ran[:, L["kStampStart"]]) % 2**32,
+                        ).tolist()
                         for name, w in clocks
                     },
-                    "most": {name: int(ran[:, L[w]].max()) for name, w in names},
-                    # every core's, in core order (the spread of each phase)
-                    "cores": {name: ran[:, L[w]].tolist() for name, w in names},
                 }
             # the cores that stamped a crossing: the K split's first ranks (every rank
             # with the gather), the grid's ranks with blocks
@@ -972,7 +1265,16 @@ class Linear:
         return kept[1]
 
     def describe(self):
-        """Each piece: its rect on the island's grid, first row and column, bands."""
+        """Each piece: its rect on the island's grid, first row and column, bands; the
+        decode plans' prices and the whole-K plan's multicasts."""
+        if self.split is not None:
+            return {
+                "priced_us": self.priced,
+                "casts": [
+                    {"sender": sender, "cores": len(rect), "used": len(used)}
+                    for sender, rect, used, _, _ in self.casts or []
+                ],
+            }
         return [
             {
                 "rect": piece.rect(self.nocs.grid),
@@ -1264,6 +1566,24 @@ def main():
         help="the K-split plan's reduce in a group",
     )
     parser.add_argument(
+        "--pattern",
+        choices=list(SPLIT_DEPTH),
+        default="AB",
+        help="the K-split plan's chunks: their movers (mover A's half 3 deep but AB's)",
+    )
+    parser.add_argument(
+        "--decode",
+        choices=["priced", "split", "whole"],
+        default="priced",
+        help="a few rows: the K-split or the whole-K plan, or the cheaper by its terms",
+    )
+    parser.add_argument(
+        "--cast-depth",
+        type=int,
+        default=None,
+        help="the whole-K plan: W's chunks in flight on its mover, this depth alone",
+    )
+    parser.add_argument(
         "--add",
         choices=["kernel", "reduce"],
         default="kernel",
@@ -1282,7 +1602,14 @@ def main():
         choices=["auto", "on", "off"],
         default="auto",
         help="the grid plan: W's read spread over the column's ranks (auto: where the "
-        "sender's read bounds a step), or the column's sender reads it all",
+        "plan's model prices it lower), or the column's sender reads it all",
+    )
+    parser.add_argument(
+        "--xspread",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="the grid plan: X's read spread over the row's ranks (auto: where the "
+        "plan's model prices it lower), or the row's sender reads it all",
     )
     parser.add_argument(
         "--shapes",
@@ -1307,10 +1634,14 @@ def main():
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
     global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD, GATHER
-    global SPREAD
+    global SPREAD, X_SPREAD, SPLIT_PATTERN, DECODE, CAST_DEPTHS
+    SPLIT_PATTERN, DECODE = args.pattern, args.decode
+    if args.cast_depth:
+        CAST_DEPTHS = (args.cast_depth,)
     ACCOUNT, SPLIT_REDUCE, ADD = args.account, args.reduce, args.add
     GATHER = args.gather
     SPREAD = args.spread
+    X_SPREAD = args.xspread
     NOCS = tuple(int(value) for value in args.nocs.split(","))
     VALID_SENT = args.valid == "sent"
     if args.subblock:
@@ -1339,9 +1670,10 @@ def main():
         or GATHER == "kernel"
         and any(p == "chain" for _, p in products)
     )
-    kernel_bytes = (
-        args.kernel_bytes or KERNEL_BYTES["add" if adds else "two" if two else "one"]
-    )
+    kernel_bytes = KERNEL_BYTES["add" if adds else "two" if two else "one"]
+    if two and any(dims[0] <= SPLIT_ROWS * pl.TILE for dims, _ in products):
+        kernel_bytes = max(kernel_bytes, KERNEL_BYTES["decode"])
+    kernel_bytes = args.kernel_bytes or kernel_bytes
     options = {"links": args.links, "kernel_bytes": kernel_bytes}
     options = {key: value for key, value in options.items() if value}
     reports = []

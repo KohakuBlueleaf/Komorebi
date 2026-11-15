@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from komorebi import abi
 from komorebi.dsl.names import NAMES, spelling
+from komorebi.dsl.tile import trace
 from komorebi.errors import ProgramError
 from komorebi.movement import Pattern
 from komorebi.program import Handler
@@ -219,6 +220,35 @@ def handler(function=None, *, overlay=False, stamps=None):
     return HandlerMethod(function, overlay, stamps)
 
 
+class TileFunction:
+    """A function decorated with `km.tile_function`: tile arithmetic the tile
+    compiler traces and emits for compute when a handler calls it on a stream's
+    tiles; `tolerance` its stated bound against float64 (printed at the build)."""
+
+    def __init__(self, function, tolerance=None):
+        self.function = function
+        self.tolerance = tolerance
+        self.name = function.__name__
+
+    def __get__(self, program, owner=None):
+        return self
+
+    def __call__(self, *args, **kwargs):
+        raise ProgramError(
+            f"{self.name} is a tile function: a handler calls it on a stream's "
+            "tiles, and the compiler emits it for compute"
+        )
+
+
+def tile_function(function=None, *, tolerance=None):
+    """Makes a function of tiles a tile function: called from a handler on the tiles
+    of its streams, traced and emitted for compute by the tile compiler;
+    `tolerance`: its stated largest relative error against float64."""
+    if function is None:
+        return lambda function: TileFunction(function, tolerance)
+    return TileFunction(function, tolerance)
+
+
 def line_only(kind):
     """A call that is a line of a handler, read by the compiler."""
 
@@ -241,10 +271,17 @@ class TileNamespace:
         raise AttributeError(f"km.{spelling('tile')} has no {name!r}")
 
 
+def tile_math(kind):
+    """The tile compiler's trace function a km. name of a tile function's arithmetic
+    resolves to."""
+    return getattr(trace, NAMES[kind].released.removeprefix("trace."))
+
+
 def exports():
     """The module-level names of `komorebi` for programs written as classes."""
     made = {
         "handler": handler,
+        "tile_function": tile_function,
         "message": Message,
         "field": L1,
         "symbol": symbol,
@@ -256,5 +293,6 @@ def exports():
         "cxx": line_only("cxx"),
         "tile": TileNamespace(),
         **{kind: FORMATS[kind] for kind in FORMATS},
+        **{kind: tile_math(kind) for kind in NAMES if kind.startswith("math_")},
     }
     return {NAMES[kind].spelling: value for kind, value in made.items()}

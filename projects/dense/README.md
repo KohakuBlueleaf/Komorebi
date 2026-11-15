@@ -1041,6 +1041,299 @@ card set (its `compare/ktt_shapes.py` point, one session for many shapes), cards
 0, 1; JSON in `results/shape-<M>x<K>x<N>-ktt-<0|0x1>-<default|colwise>.json`. The
 4096 cubed and 32 x 4096 x 4096 one-card points are the ones recorded above.
 
+### The terms where ours was slower, one by one
+
+The terms of the list above, taken in the order of what they cost. Loops are in
+microseconds a call; every point is exact (relative RMS 3.96e-3 to 3.97e-3).
+
+**X's read by the row senders.** In this form at narrow N, Kohaku-TT calls TT-NN's
+`minimal_matmul`. Its grid puts one row of injector cores on X. Each injector reads its
+block of X alone, gives it to its own compute first, then unicasts it down its column,
+store and forward. So Kohaku-TT also has one reader a line of cores, and the line moves
+the same tiles as ours. Ours had one row sender per row and panel, reading its block
+alone and then multicasting it to the row. The island's 20 senders read 76.7 MB in
+749 us at 4096 x 9216 x 2560. That is 102 GB/s for the island: the senders share NoC
+links, and they finish in the order of their row.
+
+X's read now spreads over the row's ranks (`--xspread`, `auto` by default), as W's does
+over the column. Each rank reads its share of the block into a slice buffer ahead. When
+the sender has reserved the slot, it marks the row's ready port. The ranks write their
+tiles into the slot and count themselves at the sender's port, and the sender then
+multicasts the block. The slice is sized for the fewest ranks a panel leaves a row
+(4 of 10). The row sender's X, slower island, before and after:
+
+| M x K x N | Cards | Loop: before / after | The sender's X read: before / after (its hand-over now) | Its cast: before / after | Kohaku-TT |
+|---|---|---|---|---|---|
+| 4096 x 9216 x 2560 | 2 | 949.2 / 681.5 | 761 / 426 | 166 / 335 | 436.8 |
+| 4096 x 15360 x 3840 | 2 | 1,603.5 / 1,374.7 | 1,137 / 1,019 | 293 / 570 | 1,009.9 |
+| 4096 x 17408 x 5120 | 2 | 1,834.9 / 1,576.4 | 1,323 / 1,120 | 343 / 632 | 1,542.2 |
+| 4096 x 4096 x 4096 | 2 | 455.9 / 430.8 | 274 / 264 | 81 / 146 | 412.9 |
+| 1024 x 9216 x 2560 | 2 | 238.1 / 191.9 | 176 / 116 | 60 / 103 | 153.4 |
+| 1024 x 15360 x 3840 | 2 | 442.8 / 399.8 | 318 / 285 | 107 / 229 | 328.9 |
+| 1024 x 17408 x 5120 | 2 | 549.6 / 503.6 | 419 / 349 | 126 / 295 | 485.5 |
+| 4096 x 9216 x 2560 | 1 | 978.3 / 885.7 | 704 / 592 | 176 / 328 | 875.7 |
+| 1024 x 9216 x 2560 | 1 | 284.1 / 273.3 | 175 / 166 | 62 / 115 | 271.2 |
+
+What is left of X's term is the row's step, and it is OURS. The ranks' tiles go into
+the sender's slot, and the whole block then goes back out along the row, one after the
+other. A step costs about 26 us at 156 tiles, 180 ns a tile, more than W's (W: 3.25 us
+and 116 ns a tile). The last paragraph of this section says what would cut it.
+
+**The planner prices the spreads.** Before, the plan's model had no spread. At 1024 x
+2560 x 9216 on two cards it took a plan that was 6,416 B over L1 once spread, and that
+plan fell back to the lone read. Now the model prices a K block as the largest of
+compute, X's feed and W's feed. A feed is lone (4.75 us and 203 ns a tile), or spread
+(W: 3.25 us and 116 ns a tile, fitted to 13 W-bound rows; X: 180 ns a tile, fitted to 5
+X-bound rows). Each candidate plan is priced with every setting of `--spread` and
+`--xspread` that it allows, each with its slices' L1, and the cheapest is kept (no
+spread on a tie). Every piece of a plan takes the same setting, because one program has
+one set of buffers. Against the 52 measured grid rows the model's ratio is 0.75 to 1.39.
+The high end is the short-K shapes (K = 2560: 1.31 to 1.39), because the model has no
+fill or tail for a call. The rows the planner now picks differently:
+
+| M x K x N | Cards | Plan before / after (block, K block, spreads) | Loop: before / after | Kohaku-TT |
+|---|---|---|---|---|
+| 1024 x 2560 x 9216 | 2 | 8 x 12, 10, none / 5 x 12, 14, W | 309.1 / 193.3 | 159.2 |
+| 1024 x 4096 x 4096 | 2 | 6 x 6, 16, W / 4 x 6, 16, W and X | 162.3 / 126.3 | 110.3 |
+| 4096 x 8192 x 8192 | 2 | 16 x 11, 5, none / 8 x 11, 8, W | 1,321.9 / 1,295.0 | 1,428.0 |
+| 4096 x 5120 x 17408 | 2 | 15 x 12, 4, none / 7 x 8, 10, W and X | 1,762.9 / 1,637.3 | 2,665.6 |
+| 4096 x 3840 x 15360 | 2 | 13 x 12, 6, none / 13 x 8, 8, X | 1,174.4 / 1,156.9 | 1,758.5 |
+| 4096 x 15360 x 3840 | 2 | 13 x 8, 10, none / 14 x 6, 10, X | 1,603.5 / 1,159.3 | 1,009.9 |
+| 4096 x 17408 x 5120 | 2 | 13 x 8, 10, none / 13 x 8, 8, X | 1,834.9 / 1,572.6 | 1,542.2 |
+| 4096 x 8192 x 8192 | 1 | 13 x 12, 6, none / 13 x 8, 8, X | 2,312.7 / 2,283.4 | 2,371.3 |
+| 4096 x 5120 x 17408 | 1 | 13 x 12, 6, none / 13 x 8, 10, X | 3,011.7 / 2,958.6 | 6,192.8 |
+| 4096 x 3840 x 15360 | 1 | 14 x 10, 6, none / 13 x 8, 10, X | 2,166.3 / 1,950.1 | 3,613.6 |
+| 4096 x 2560 x 9216 | 2 | 15 x 12, 4, none / 8 x 12, 10, W | 528.8 / 526.1 | 537.0 |
+| 4096 x 2560 x 9216 | 1 | 13 x 12, 5, none / 13 x 8, 10, X | 893.5 / 870.0 | 1,035.9 |
+
+The plans of the X spread's rows above are the planner's picks too. A first fit, with
+one spread constant for both feeds, took 4096 x 2560 x 9216 on two cards to 8 x 6
+blocks with both spreads, at 617.2 us against 522.5. After the refit, with X's own
+constants, it keeps W's spread there (526.1).
+
+**Decode: the group's reduce.** Kohaku-TT's decode kernel (`ktt_gemv`, tried first for
+few rows) has no reduce at all. Its output columns are spread over the grid, one core a
+column up to the grid. Each core takes all of K for its columns and sums it in fp32 Dst.
+x is multicast once a panel by one sender. Each core reads its W in blocks of at most
+64 KB, up to 4 in flight on each mover, in K order. Its NoC 0 and NoC 1 share the blocks
+5 : 3, spread evenly. Ours is the K split: groups of S ranks, a block of ow columns a
+group, each rank K/S. That form has two terms Kohaku-TT has not: every group reads its
+X share again (1/ow of W's bytes, 12.5% at ow 8), and the parts are summed by a tree of
+ceil(log2 S) rounds into the group's first rank.
+
+With `--account`, compute and the writer now stamp wall clocks: compute's own part
+packed, each round's part taken and added, and the writer holding its part. Every
+core's clocks are in the JSON. The tail, from a group's last own part to its Y written,
+is 8 to 15 us. It is the rounds on the critical path, each a hop, then the root's own
+end. The hop's steps are medians over all hops of a shape:
+
+| Step | ow 8 to 9 | ow 12 to 13 | ow 23 |
+|---|---|---|---|
+| The part packed, to the writer holding it | 0.52 to 0.63 | 0.58 to 0.59 | 0.54 |
+| Held, to landed (written, acknowledged, counted) | 1.10 to 1.21 | 1.37 to 1.45 | 1.95 to 2.08 |
+| Landed, to the parent's compute taking it | 0.05 to 0.11 | 0.08 to 0.11 | 0.08 to 0.15 |
+| Taken, to added (the combine) | 0.80 to 0.87 | 1.17 to 1.22 | 2.20 |
+| The root: its sum in bf16, to the writer | 1.31 to 1.55 | 1.73 to 1.82 | 2.66 to 2.90 |
+| The root: Y written | 0.46 to 1.46 | 1.61 to 2.09 | 0.94 to 1.17 |
+
+At two cards 32 x 4096 x 4096 (S 14, ow 8) the tail is 10.4 us of 58.1: three to four
+hops of 2.6 us, then 1.3 and 1.2 at the root. The combine and its pack take 1.4 us of a
+hop. They are the packer's fp32 L1 accumulation, about 100 ns a tile: four tiles
+through Dst at once in place of one changed nothing (58.8, 227.1 and 156.9 against
+58.1, 226.8 and 156.2), so that change was taken out again. The send takes 1.2 us: about
+0.8 us fixed, because the part is acknowledged before it is counted, plus the bytes at
+about 80 GB/s. The root's lap that the earlier tables called the reduce (31 us here,
+47.2 at ow 23) is mostly the root waiting for its own group's reads. The own parts end
+19 to 44 us apart at 4096 x 4096 and 153 to 399 at ow 23, in the order of the cores'
+place.
+
+What is left: the tree, all OURS, at log2 S hops of 2.6 us. Inside the K split it would
+go only with another reduce form. One is a reduce-scatter inside the group (each rank
+sums and writes its own Y tiles), about 3 us of the 10.4. The other is Kohaku-TT's form,
+with no split of K and X multicast, which removes the tree and X's second read alike. It
+is now one more plan, below.
+
+**Decode: the read under the ceiling.** The chunks' movers are now a plan word
+(`--pattern`, AB by default). AAAB holds three chunks in mover A's half, as the decode
+project's. ABABAABA is Kohaku-TT's 5 : 3. Loops:
+
+| M x K x N | Cards | AB | AAAB | ABABAABA |
+|---|---|---|---|---|
+| 32 x 4096 x 4096 | 2 | 58.1 | 59.9 | 58.1 |
+| 32 x 5120 x 17408 | 2 | 226.8 | 228.6 | 222.8 |
+| 32 x 4096 x 4096 | 1 | 95.5 | 96.2 | 94.9 |
+| 32 x 5120 x 17408 | 1 | 413.6 | 415.7 | 415.7 |
+| 32 x 8192 x 8192 | 2 | 176.1 | | 178.9 |
+| 32 x 17408 x 5120 | 2 | 231.4 | | 232.3 |
+| 32 x 3840 x 15360 | 2 | 156.5 | | 155.8 |
+| 32 x 2560 x 9216 | 2 | 71.8 | | 73.6 |
+| 32 x 9216 x 2560 | 2 | 75.6 | | 78.2 |
+
+AAAB never wins on these plans (112 to 120 cores, where AB is already near its rate).
+ABABAABA wins on one shape of nine (4.0 us) and loses up to 2.8 on others, so the
+plans stay on AB. The read itself is near the ceiling on the bytes it moves. At two
+cards 32 x 4096 x 4096 the own parts end at 43 to 44 us: W at 495.6 GB/s is 33.9
+(HARDWARE), X read again by every group is 4.2 (OURS, the form), and the rest is about
+5. The last five rows of the table above ran with the four-tile combine as well; it did
+not change the combine.
+
+**Decode: Kohaku-TT's form, as one more plan.** The whole-K plan is the K split with
+groups of one core and X cast. Each used core takes all of K for its ow columns, so there
+is no reduce and no second read of X. The used cores are the island's first cores. In
+each panel, its columns down to the last row it uses form one multicast rectangle (all
+its cores ranks, a box on NoC 0). The rectangle's first core is the sender. Its writer
+reads X in chunks of 32 tiles into its own buffer, once every used core of the
+rectangle has said its buffer is free. It casts each chunk to the rectangle on NoC 1 and
+marks the count in every core's port. A receiver's writer takes each chunk once it is
+marked. Every core's reader moves all of its W, in chunks of up to 64 KB, 4 deep. X stays
+whole in L1: 256 KB at K = 4096, 1.1 MB at K = 17408. The plan fits at all 16 decode
+shapes (L1 a core 0.5 to 1.34 MB). It does not fit when X whole leaves too little room
+for W's chunks, above about K = 19,000 at M = 32 or K = 9,500 at M = 64; there the K
+split stays. Its kernels need 114,672 B on two cards, so a two-card session with a
+decode shape opens a 116 K kernel buffer. The cast's addresses lie below the L1's end.
+The picker prices both plans and keeps the cheaper, with no flag (`--decode` forces
+one). Loops:
+
+| M x K x N | Cards | K split | Whole K | Kohaku-TT | Whole K: W's read, its last core (GB/s) | X's cast to its last core |
+|---|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | 1 | 95.3 | **86.8** | 81.0 | 78.5 (427) | 30.3 |
+| 32 x 8192 x 8192 | 1 | **314.7** | 343.3 | 302.7 | 333.5 (402) | 65.1 |
+| 32 x 5120 x 17408 | 1 | **412.3** | 435.8 | 400.4 | 436.5 (408) | 68.5 |
+| 32 x 17408 x 5120 | 1 | **425.3** | 434.5 | 414.7 | 420.8 (424) | 119.1 |
+| 32 x 3840 x 15360 | 1 | **293.2** | 288.6 | 273.4 | 281.0 (420) | 31.3 |
+| 32 x 15360 x 3840 | 1 | **294.9** | 360.8 | 262.9 | 340.9 (346) | 121.0 |
+| 32 x 2560 x 9216 | 1 | 124.9 | **124.7** | 108.2 | 118.6 (398) | 23.5 |
+| 32 x 9216 x 2560 | 1 | **127.0** | 152.0 | 128.6 | 142.2 (332) | 61.7 |
+| 32 x 4096 x 4096 | 2 | **58.0** | 64.7 | 44.7 | 54.7 (307) | 33.2 |
+| 32 x 8192 x 8192 | 2 | **176.1** | 182.9 | 155.5 | 175.6 (382) | 62.1 |
+| 32 x 5120 x 17408 | 2 | **227.0** | 261.5 | 204.3 | 240.5 (371) | 35.9 |
+| 32 x 17408 x 5120 | 2 | **231.4** | 279.9 | 224.7 | 269.6 (331) | 124.6 |
+| 32 x 3840 x 15360 | 2 | **156.5** | 169.5 | 134.3 | 156.0 (378) | 42.9 |
+| 32 x 15360 x 3840 | 2 | **156.0** | 183.6 | 145.6 | 167.2 (353) | 126.8 |
+| 32 x 2560 x 9216 | 2 | 71.8 | **70.8** | 54.1 | 60.0 (393) | 27.4 |
+| 32 x 9216 x 2560 | 2 | **75.6** | 87.8 | 64.9 | 69.4 (340) | 67.2 |
+
+The bold loop is the picker's choice. It is the faster plan at 15 of the 16 shapes. The
+miss is one card 3840 x 15360, priced 287.3 against 296.0 and measured 293.2 against
+288.6. The prices use the rates measured here. The K split reads W and its second X at
+470 GB/s. The whole-K plan reads W at 340 / 405 GB/s on one card and 310 / 380 on two,
+at ow 1 / wider. Both plans add their tails: the tree's hops and the root for the split,
+and the first cast and the core's own pack for the whole K.
+
+So Kohaku-TT's form, built in this framework, is faster than the K split only on
+small shapes, and slower than Kohaku-TT's own kernel at every shape. The whole-K plan's
+account puts that on two terms, both OURS:
+
+- W's read runs on one NoC. A core's reader moves all of its W on NoC 0, and its writer
+  is busy taking X. The cores end in the order of their row: on one card at 4096 x 4096,
+  rows 0 to 2 end at 78 to 80 us and row 5 at 27 to 35. At the last core the rate is
+  371 to 427 GB/s at ow 2 to 8, and 307 to 353 at ow 1. At ow 1 a core's chunk is K
+  tiles of one column, which sit on one DRAM bank. Kohaku-TT's cores split W 5 : 3 over
+  both NoCs, at 364 to 449 GB/s for the same bytes. The term is not the bytes in flight:
+  8 chunks deep on the one mover (512 KB a core, Kohaku-TT's two movers' total) changed
+  nothing (64.7 against 64.7 and 182.2 against 182.9 on two cards, 86.0 against 86.8 on
+  one).
+- X's cast runs at a core's share of DRAM. The sender reads X as one requester among
+  the 40 to 120 cores reading W, at about 8 GB/s: 256 KB in 30 to 33 us, 1.1 MB in 120
+  to 125. The cast keeps pace with W everywhere except at ow 1, where X's bytes equal a
+  core's W. There it is the end (two cards 9216 x 2560: X 67.2 against W 69.4). Reading
+  the next chunk while the last is cast changed nothing (the plan's first run, with each
+  chunk read only after the last was cast, was within 1 us of these loops).
+
+What is left at decode, and what would take it:
+
+- The whole-K plan's W on both NoCs. That needs a receiver whose two movers are both free
+  for W: compute would wait for X's marks in its own port, in place of the writer
+  pushing X's chunks into the buffer. The receivers could then read W 5 : 3 as
+  Kohaku-TT's cores do. It is a wait of compute on a port, not built here.
+- The form only this framework's ports allow: the K split with a reduce-scatter inside
+  the group in place of the tree. Each rank sends each other rank of its group that
+  rank's share of its fp32 part, counted in that rank's port, and each rank adds the S
+  shares of its own ow / S columns and writes them to Y. That is one exchange in place of
+  log2 S hops of the whole block, each rank combining 1 / S of it. At two cards 32 x
+  4096 x 4096 the estimate is a tail of about 7.5 us in place of 10.4 (the send's fixed
+  0.8 us once, the bytes spread over S - 1 sends), so a loop of about 55 against 58.0.
+  Not built.
+
+**The column's step at M = 1024: the direct form.** Each rank of a column multicasting
+its own rows does not fit the broadcast's order, for two reasons:
+
+- A slot is free when every receiver has popped the block a window back. Only the
+  sender knows that: the receivers mark it in the sender's table.
+- VALID is one line a block, written by the sender alone, and it means "the whole block
+  has landed". A receiver takes the block when VALID reaches it. With several ranks
+  writing parts, the first part's VALID would release a block whose other parts are
+  still in flight.
+
+What would allow it is a counted VALID. Each rank would multicast its share into the
+slot at its offset and wait for the acknowledgement. It would then add one to a count
+on every receiver, with the NoC's multicast atomic increment (which leaves the sender
+out of its rectangle, so each rank adds its own count locally). A receiver would take
+the block at a count of R. The slot's freedom would reach the ranks as the spread's
+ready marker already does. The parts of one column's multicasts go over the same links,
+so the step would drop from the hand-over plus the cast to about the cast alone: at
+156 tiles about 11 of 26 us for X's row (the hand-over 15) and W's alike. The same holds
+for X's row step above. That is a new mode of the broadcast, not built here.
+
+The same-form table again, after these changes (a dash: unchanged):
+
+| M x K x N | One card: ours before / after | Kohaku-TT | Ours / Kohaku-TT: before / after | Two cards: ours before / after | Kohaku-TT | Ours / Kohaku-TT: before / after | What is left where ours is slower |
+|---|---|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | 95.3 / 86.8 | 81.0 | 1.18 / 1.07 | 58.0 / - | 44.7 | 1.30 | one card (whole K): W's read on one NoC; two: the tree (10.4) and X's second read (4.2) |
+| 32 x 8192 x 8192 | 314.7 / - | 302.7 | 1.04 | 176.1 / - | 155.5 | 1.13 | the tree (about 8) and the read under the ceiling |
+| 32 x 5120 x 17408 | 412.3 / - | 400.4 | 1.03 | 227.0 / - | 204.3 | 1.11 | the tree (13.3 / 8.8) and the read under the ceiling |
+| 32 x 17408 x 5120 | 425.3 / - | 414.7 | 1.03 | 231.4 / - | 224.7 | 1.03 | the read under the ceiling, the tree (about 10) |
+| 32 x 3840 x 15360 | 293.2 / - | 273.4 | 1.07 | 156.5 / - | 134.3 | 1.17 | the read under the ceiling, the tree (about 11) |
+| 32 x 15360 x 3840 | 294.9 / - | 262.9 | 1.12 | 156.0 / - | 145.6 | 1.07 | the read under the ceiling, the tree (13.8) |
+| 32 x 2560 x 9216 | 124.9 / 124.7 | 108.2 | 1.15 | 71.8 / 70.8 | 54.1 | 1.33 / 1.31 | (whole K) W's read on one NoC, 393 to 398 GB/s at the last core |
+| 32 x 9216 x 2560 | 127.0 / - | 128.6 | 0.99 | 75.6 / - | 64.9 | 1.16 | the tree (about 12) |
+| 1024 x 4096 x 4096 | 222.6 / - | 190.3 | 1.17 | 162.3 / 126.3 | 110.3 | 1.47 / 1.15 | the column's and the row's steps (W 53 + 38, X 55 + 37) |
+| 1024 x 8192 x 8192 | 698.8 / - | 711.2 | 0.98 | 380.6 / - | 382.7 | 0.99 | |
+| 1024 x 5120 x 17408 | 961.5 / - | 1,015.9 | 0.95 | 518.8 / - | 500.4 | 1.04 | two cards: the column's step |
+| 1024 x 17408 x 5120 | 924.0 / - | 884.3 | 1.04 | 549.6 / 503.6 | 485.5 | 1.13 / 1.04 | the column's step; two cards also the row's |
+| 1024 x 3840 x 15360 | 772.5 / - | 697.5 | 1.11 | 355.0 / - | 340.2 | 1.04 | the column's step |
+| 1024 x 15360 x 3840 | 602.5 / - | 655.4 | 0.92 | 442.8 / 399.8 | 328.9 | 1.35 / 1.22 | two cards: the row's step (285 + 229) |
+| 1024 x 2560 x 9216 | 356.3 / - | 307.6 | 1.16 | 309.1 / 193.3 | 159.2 | 1.94 / 1.21 | the column's step; two cards: X's cast (125) |
+| 1024 x 9216 x 2560 | 284.1 / 273.3 | 271.2 | 1.05 / 1.01 | 238.1 / 191.9 | 153.4 | 1.55 / 1.25 | two cards: the row's and the column's steps |
+| 4096 x 4096 x 4096 | 656.7 (single) / - | 819.8 (single) | 0.80 | 455.9 / 430.8 | 412.9 | 1.10 / 1.04 | the row's step beside the matrix unit |
+| 4096 x 8192 x 8192 | 2,312.7 / 2,283.4 | 2,371.3 | 0.98 / 0.96 | 1,321.9 / 1,295.0 | 1,428.0 | 0.93 / 0.91 | |
+| 4096 x 5120 x 17408 | 3,011.7 / 2,958.6 | 6,192.8 | 0.49 / 0.48 | 1,762.9 / 1,637.3 | 2,665.6 | 0.66 / 0.61 | |
+| 4096 x 17408 x 5120 | 2,965.8 (single) / - | 3,510.0 (single) | 0.84 | 1,834.9 / 1,572.6 | 1,542.2 | 1.19 / 1.02 | the row's step (1,116 + 598) |
+| 4096 x 3840 x 15360 | 2,166.3 / 1,950.1 | 3,613.6 | 0.60 / 0.54 | 1,174.4 / 1,156.9 | 1,758.5 | 0.67 / 0.66 | |
+| 4096 x 15360 x 3840 | 1,916.7 / - | 1,921.4 | 1.00 | 1,603.5 / 1,159.3 | 1,009.9 | 1.59 / 1.15 | the row's step (718 + 548) |
+| 4096 x 2560 x 9216 | 893.5 / 870.0 | 1,035.9 | 0.86 / 0.84 | 528.8 / 526.1 | 537.0 | 0.98 | |
+| 4096 x 9216 x 2560 | 978.3 / 885.7 | 875.7 | 1.12 / 1.01 | 949.2 / 681.5 | 436.8 | 2.17 / 1.56 | the row's step (426 + 335: 24 steps of 26 us) |
+
+On two cards the largest ratio went from 2.17 to 1.56. 14 of the 24 two-card rows
+changed, and 8 one-card rows. All that is left where ours is slower is OURS. At decode
+it is the tree and X's second read, which Kohaku-TT's form has not, and the read under
+the ceiling; where the picker takes Kohaku-TT's form, its W's read on one NoC. At
+prefill it is the step of a broadcast: the hand-over into the sender, then the cast.
+
+Measured on 2026-11-15 between 10:26 and 11:06, the whole-K plan between 12:05 and
+12:16. JSON:
+`results/linear-xspread-0x1.json` and `-0.json` (X's spread),
+`results/linear-priced-0x1.json` and `-0.json` (the priced plans; at 4096 cubed,
+4096 x 8192 x 8192 and the M = 4096 2560 x 9216 / 9216 x 2560 rows on two cards, the
+first fit's plans),
+`results/linear-tree-0x1.json` (the reduce's clocks, and the refit's 4096 x 8192 x 8192
+and 4096 x 2560 x 9216), `results/linear-tree-0.json`, `results/linear-tree-aaab-*.json`
+and `results/linear-tree-5to3-0x1.json`,
+`results/linear-hops-*.json` (the hops; the four-tile combine),
+`results/linear-hops-5to3-*.json`, and `results/linear-whole-0x1.json` and `-0.json`
+(the whole-K plan at all 16, as `--decode whole` runs it), `results/linear-whole-depth8-*.json` (8 deep) and
+`results/linear-whole-serial-*.json` (its first run, the cast not overlapped). The unpacker's clocks of the first of these runs
+did not land. The firmware sets a buffer's read pointer only on the unpacker and its
+write pointer only on the packer. Compute's row of T went through the write pointer, so
+on the unpacker it pointed near address 0, and the grid compute's input-wait word had
+done the same. The unpacker now uses the read pointer.
+
+```
+python projects/dense/linear.py --shapes "1024,9216,2560:out" --cards 0,1 --xspread on --account
+python projects/dense/linear.py --shapes "32,4096,4096:out" --cards 0,1 --account --pattern ABABAABA
+python projects/dense/linear.py --shapes "32,4096,4096:out" --cards 0 --account --decode whole
+```
+
 ## Shapes, one card and two, against Kohaku-TT
 
 Y = X x W in bfloat16 over fifteen shapes: ours on one card, and

@@ -1,6 +1,5 @@
-/* The control loop on the work cluster, with the class's commands: decide.c's rounds
- * through the ring until SUM's result word ends it, each command's handler and words
- * placed by the class's generated header (workcluster_thread.h). See ../README.md. */
+/* The work cluster's loop with the class's commands: decide.c's rounds until SUM's
+ * result ends it, each command placed by workcluster_thread.h. See ../README.md. */
 #include <stdint.h>
 
 #include "decide.h"

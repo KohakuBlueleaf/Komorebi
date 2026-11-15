@@ -11,6 +11,11 @@
 #include "api/compute/reconfig_data_format.h"
 #include "api/compute/tile_move_copy.h"
 #include "rules.hpp"
+// STAGE (rules.py attn_stages): 1 the score products only, packed out; 2 plus the hand
+// softmax step, packed out; 3 (default) the whole body.
+#ifndef STAGE
+#define STAGE 3
+#endif
 #if BODY == 19
 #include "softstep.hpp"
 #endif
@@ -105,12 +110,23 @@ void kernel_main() {
             );
         }
         MATH(tensix_sync(); const uint32_t t1 = rules::wall());
+#if STAGE >= 2
         vector_step(first);
+#endif
         MATH(tensix_sync(); const uint32_t t2 = rules::wall());
         MATH(info[rules::kScore + s] = t1 - t0; info[rules::kVector + s] = t2 - t1);
         tile_regs_commit();
-        cb_pop_front(rules::kCbSt, 1);
         tile_regs_wait();
+#if STAGE < 3
+        // Packed out as they are: tiles 0 .. kColumns of Dst into the output pages.
+        pack_format(true);
+        for (uint32_t t = 0; t <= kColumns; ++t) {
+            pack_tile<true>(t, rules::kCbOut, t);
+        }
+        tile_regs_release_math_clear();
+        cb_pop_front(rules::kCbKv, kBlockPages);
+        continue;
+#endif
         pack_format(false);
         cb_reserve_back(rules::kCbProb, kKeys);
         for (uint32_t t = 0; t < kKeys; ++t) {
@@ -122,9 +138,9 @@ void kernel_main() {
             PACK((pack_reconfig_l1_acc(0)));
             pack_tile<true>(3, rules::kCbOut, kColumns);  // the last row state
         } else {
-            cb_reserve_back(rules::kCbSt, 1);
-            pack_tile(3, rules::kCbSt);
-            cb_push_back(rules::kCbSt, 1);
+            // The state is one page of kCbSt, written in place, never pushed (a push
+            // from here overwrites the reader's count); the Dst half orders its reads.
+            pack_tile<true>(3, rules::kCbSt, 0);
         }
         tile_regs_release_math_clear();
         // P V (and the hand body's l = P 1) added into O.

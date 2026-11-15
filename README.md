@@ -107,7 +107,7 @@ same form beside them with its own speed-up; the gathered rows are single calls.
 | Output dim sharded, one copy of W | 32 x 8192 x 8192 | 314.7 µs | 176.1 µs | 1.79 | 155.5 µs (1.95) |
 | Output dim sharded, one copy of W | 32 x 5120 x 17408 | 412.3 µs | 227.0 µs | 1.82 | 204.3 µs (1.96) |
 | Output dim sharded, one copy of W | 1024 x 8192 x 8192 | 698.8 µs | 380.6 µs | 1.84 | 382.7 µs (1.86) |
-| Output dim sharded, one copy of W | 4096 x 5120 x 17408 | 3,011.7 µs | 1,762.9 µs | 1.71 | 2,665.6 µs (2.32) |
+| Output dim sharded, one copy of W | 4096 x 5120 x 17408 | 2,958.6 µs | 1,637.3 µs | 1.81 | 2,665.6 µs (2.32) |
 | W gathered on both cards | 8192 x 8192 x 8192 | 4,488.1 µs | 2,357.6 µs | 1.90 | 2,482.8 µs (1.83) |
 | W gathered on both cards | 16,384 x 16,384 x 16,384 | 34,544.8 µs | 17,731.5 µs | 1.95 | 17,067.8 µs (1.90) |
 
@@ -565,13 +565,17 @@ has to move the whole output across a link and add it, 69 to 149 µs at a decode
 so it is not the form to use on this hardware.
 
 Beside Kohaku-TT in the same form on the same two cards, 24 shapes
-([table](projects/dense/README.md#beside-kohaku-tt-the-same-shapes-and-forms)): at a
-decode step ours takes 1.03 to 1.33 of its time, and the difference is the sum inside
-a group and the read under the ceiling (7 to 23 µs). At prefill ours takes 0.66 to
-0.99 of its time where a card's half of N is wide (4096 x 5120 x 17408: 1,762.9 against
-2,665.6 µs) and 1.04 to 2.17 where it is narrow (4096 x 9216 x 2560: 949.2 against
-436.8 µs): there one row of cores reads the activation for the whole card. Each of
-these terms is the kernel's own, not the links' or the model's.
+([table](projects/dense/README.md#the-terms-where-ours-was-slower-one-by-one)): at a
+decode step ours takes 1.03 to 1.31 of its time. The difference is the sum inside a
+group and a second read of the activation, which Kohaku-TT's form does not have, and
+the read under the ceiling. Kohaku-TT's own form (every core all of K for its columns,
+no sum) is built as a second plan of the same kernel and is not faster yet: ours reads
+the weight on one mover where Kohaku-TT's uses both. At prefill ours takes 0.61 to
+0.99 of its time where a card's half of N is wide (4096 x 5120 x 17408: 1,637.3
+against 2,665.6 µs) and 1.02 to 1.56 where it is narrow (4096 x 9216 x 2560: 681.5
+against 436.8 µs): there the time is the step of a broadcast, a hand-over into the
+sending core and then its cast. Each of these terms is the kernel's own, not the
+links' or the model's.
 
 What crosses a link, and what it costs ([islands](docs/reference/islands.md)):
 
