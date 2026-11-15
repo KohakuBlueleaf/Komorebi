@@ -456,6 +456,9 @@ def part_defines(overlay, kernel):
     return defines, compile_args
 
 
+PARTS_BUILT = {"found": 0, "compiled": 0}  # build_part's, since a load's line read it
+
+
 def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None):
     """Builds and checks one part: compiled with the runtime's commands, position-
     independent, linked at two bases; kept under `cache` by a hash of its preprocessed
@@ -482,6 +485,8 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None
     work = Path(cache) / f"{stem}-{digest.hexdigest()[:16]}"
     work.mkdir(exist_ok=True)
     obj = work / "part.o"
+    made = not (obj.is_file() and (work / f"part-{LINK_BASE:x}.elf").is_file())
+    PARTS_BUILT["compiled" if made else "found"] += 1
     if not obj.is_file():
         run_into(
             obj,
