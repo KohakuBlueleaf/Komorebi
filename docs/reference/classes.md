@@ -273,7 +273,8 @@ are added to the run by `run.addon(..., handler=True)`
 ([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
 with the added number. Later submits of the set find it added. The files go into
 `build/<class>-use<key>/`: the key holds the load's build key, the handler, the set's
-values and the class's source files. A later process that makes the same program finds
+values, the class's source files and a hash of the package's Python source (the class
+compiler that wrote them: a changed compiler compiles the set again). A later process that makes the same program finds
 them there and reads the set's words from `first_use.json`, so nothing is compiled.
 Its parts are then found in the parts' cache, so nothing is built either.
 

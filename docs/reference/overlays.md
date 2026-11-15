@@ -387,7 +387,10 @@ What happens:
    and must fit the kernel's slot.
 2. **The cache of built parts.** A part is kept under a key of what decides its bytes:
    its source file, its defines, the recipe of the kernel it is built against (compiler,
-   levels, flags, includes, defines), the persistent kernel's ELF and the link script.
+   levels, flags, includes, defines), the persistent kernel's ELF, the link script and
+   a hash of the builder's and the checks' Python source (`overlay.py`,
+   `insn_check.py`; a merged part's also `merge.py`), so a changed check checks a kept
+   part again. The instruction check's markers on kernels hold its source's hash too.
    The key does not hold the overlay's name or number. Beside the key, the cache keeps
    the digest of every file the part includes. A part whose key and files are unchanged
    is not built again, in this session or any later one, and the instruction check is

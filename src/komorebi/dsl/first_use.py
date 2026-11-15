@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from komorebi import overlay
+from komorebi import _env, overlay
 from komorebi.dsl import compiler, front
 from komorebi.dsl.names import spelling
 from komorebi.errors import L1BudgetError, ProgramError
@@ -262,11 +262,13 @@ def folder_of(program, method, wanted):
     return folder / "build" / f"{cls.__name__.lower()}-{key}"
 
 
-def folder_key(load, name, wanted, sources):
+def folder_key(load, name, wanted, sources, code=None):
     """A short hash of what a first use's files depend on: the load's build key, the
-    handler, its set of constants, the class's source files."""
+    handler, its set of constants, the class's source files and the package's code
+    that compiles and writes them (`code`, by default _env.code_key())."""
     digests = [hashlib.sha256(source).hexdigest() for source in sources]
     made = [load, name, sorted(wanted.items()), digests]
+    made.append(_env.code_key() if code is None else code)
     return "use" + hashlib.sha256(repr(made).encode()).hexdigest()[:8]
 
 
