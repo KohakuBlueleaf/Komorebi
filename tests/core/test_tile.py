@@ -52,7 +52,7 @@ def test_silu_unit_program():
     )
     assert isinstance(rest, Loop) and rest.count == 7
     assert rest.body[0].op == "REPLAY" and rest.body[0].args["load_mode"] == 0
-    assert unit.cost("math")[1] == 1625.6
+    assert unit.cost("math")[1] == 1593.6
     assert unit.constants and unit.not_checked
 
 

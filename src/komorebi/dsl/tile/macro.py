@@ -1,8 +1,7 @@
-"""Schedule rule "load-macro chain": a row of loads, at most one operation for each of
-the vector unit's simple, MAD and round sub-units, and one store of the result where
-an operand was loaded becomes one SFPLOADMACRO a row (beside the other operands'
-plain loads). The fit is what the ISA's SFPLOADMACRO page states; a row that does not
-fit is refused with the reason (`Refused`)."""
+"""Schedule rule "load-macro chain": a row of loads, at most one operation a sub-unit
+(simple, MAD, round) and one store of the result where an operand was loaded becomes
+one SFPLOADMACRO a row, beside plain loads of the others. The fit is the ISA's
+SFPLOADMACRO page; a row that does not fit is refused with the reason (`Refused`)."""
 
 from dataclasses import dataclass, field
 from math import lcm

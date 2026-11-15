@@ -39,11 +39,10 @@ ROTATE = 3  # SFPSHFT2 mode: rotate lanes right by one inside each group of 8
 
 @dataclass(frozen=True)
 class Layout:
-    """Where the vectors of a value live in Dst. "tile": vector (t, h, c, q, p) of
-    tile t (rows 16 h + 4 q .. + 3, columns 16 c + p, + 2 .. of the lanes); "rows": a
-    per-row value, slot (h, q) of tile `tile`, lane l holding row 16 h + 4 q + l / 8
-    (the same in all 8 lanes of a lane row); "cols": a per-column value, slot (t, c,
-    p), lane l holding column 32 t + 16 c + 2 (l % 8) + p (the same in every row)."""
+    """Where a value's vectors live in Dst. "tile": vector (t, h, c, q, p) of tile t,
+    rows 16 h + 4 q .. + 3, columns 16 c + p + 2 k; "rows": per-row slot (h, q), lane l
+    holding row 16 h + 4 q + l / 8 in all 8 lanes of its lane row; "cols": per-column
+    slot (t, c, p), lane l holding column 32 t + 16 c + 2 (l % 8) + p in every row."""
 
     kind: str
     tile: int

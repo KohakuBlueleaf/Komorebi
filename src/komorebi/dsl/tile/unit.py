@@ -20,6 +20,7 @@ PRICES = {
     "loop": (2.0, "a pass of a loop the core runs: N + 2 cycles (probe 12)"),
     "replayed": (1.004, "a replayed word: 1.004 cycles (probe 8)"),
     "mad_stall": (1.0, "a MAD result read next: 1 stall (probe 9: 4.03 against 3.04)"),
+    # read by a store: no stall (experiments/tile_rules: add, scale, SiLU on the card)
     "shft2_stall": (1.0, "SFPSHFT2 lane modes stall the unit 1 cycle (stated)"),
     "built_word": (4.14, "a word built at run time: 4.14 cycles (probe 8)"),
     "table_word": (9.37, "a word loaded from an L1 table: 9.37 cycles (probe 8)"),
@@ -404,6 +405,7 @@ def _issue(insn, times, terms, state, how):
     if (
         previous is not None
         and OPS[previous.op].kind == "mad"
+        and insn.op != "SFPSTORE"
         and set(previous.writes()) & set(insn.reads())
     ):
         stall = "mad_stall"

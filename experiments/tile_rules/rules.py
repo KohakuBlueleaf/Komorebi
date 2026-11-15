@@ -39,15 +39,12 @@ SCALE = 0.08838834764831845  # 1 / sqrt(128), rounded to fp32 by both bodies
 EPS = 1e-6
 WIDTH = 2  # tiles in a row of the norm
 P_TILE, ROWS_TILE = 4, 2  # the norm's Dst tiles: per-column operand, per-row value
-# Largest relative error against float64 an emitted body may have, by case: one fp32
-# rounding, to nearest or toward zero (add, scale), the hand body's own error measured
-# for silu (1.8e-7) with room, and a sum of 64 squares, a 23-bit rsqrt and two products
-# (norm). The hand bodies' errors are reported against the same bound.
+# Largest relative error against float64 of an emitted body (README.md, "The gate");
+# hand bodies are reported against it too.
 TOLERANCE = {"silu": 1e-6, "add": 2**-23, "scale": 2**-23, "gate": 1e-6, "norm": 1e-5}
 
-# BODY: (case, form): form "hand", "emitted" or "macro" (emitted, load-macro rule).
-# The hand bodies: tt-metal's vector library (silu, add, scale), the decode project's
-# gate and norm (projects/decode/kernels).
+# BODY: (case, form "hand", "emitted" or "macro": emitted with the load-macro rule).
+# Hand: tt-metal's vector library (silu, add, scale), projects/decode (gate, norm).
 BODIES = {
     0: ("silu", "hand"),
     1: ("silu", "emitted"),

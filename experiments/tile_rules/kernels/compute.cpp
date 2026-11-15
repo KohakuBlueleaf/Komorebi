@@ -1,6 +1,5 @@
-// Tile-rules experiment compute: per unit (a tile, or a row of UNIT_TILES tiles) its
-// tiles copied into Dst, one body (define BODY, the table in rules.py: a hand body or
-// the one komorebi.dsl.tile emitted) timed on the math CPU, the unit packed.
+// Tile-rules compute: per unit (a tile, or a row of UNIT_TILES) its tiles copied into
+// Dst, one body (BODY: rules.py's table) timed on the math CPU, the unit packed.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -166,9 +165,8 @@ namespace {
 #elif BODY == 7
         MATH((km_tile::scale_macro(0)));
 #elif BODY == 8
-        // The decode project's gate for one tile (its gate compute.cpp, less the norm's
-        // scale): silu on Dst, then the product with b from its buffer on the matrix
-        // unit.
+        // The decode project's gate (its gate compute.cpp, less the norm's scale): silu
+        // on Dst, then the product with b from its buffer on the matrix unit.
         silu_tile_init();
         silu_tile(0);
         mul_hifi4_init(rules::kCbB);
