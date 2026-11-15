@@ -165,6 +165,20 @@ void kernel_main() {
                 LINEAR_ACCOUNT_DO(lap(account[kAcKWrite - kAcKMoveB], since));
             }
         }
+        // LINEAR_GATHER: the islands' columns into every copy of Y, the gather's own
+        // term in the stamps (put: its start, synced: its end)
+        if (LINEAR_GATHERS && km::islands() > 1 && copied(command.a2)) {
+            stamps[kStampPut] = km::wall();
+            if (!km::all_gather(
+                writer, command, command.a2, 0, plan(kKsMt) * command.a5
+            )) {
+                return false;
+            }
+            stamps[kStampSettled] = km::wall();
+            stamps[kStampUp] = stamps[kStampSettled];
+            stamps[kStampDown] = stamps[kStampSettled];
+            stamps[kStampSynced] = stamps[kStampSettled];
+        }
         stamps[kStampEnd] = km::wall();
         parity ^= 1u;
         LINEAR_ACCOUNT_DO(for (uint32_t word = kAcKMoveB; word <= kAcKWrite; ++word) {

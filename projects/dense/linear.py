@@ -32,6 +32,8 @@ G = pl.G
 # (IslandSession.held_bytes): the host transfer buffer, control block and overlay, slot.
 L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
+# on islands the reader's slot holds the larger service overlay (the collectives')
+L1_RUNTIME_ISLANDS = 17_024 + 40_256
 # The kernel buffer the linear kernels' code takes (mock builds): 79,936 B without puts;
 # K form or K split on two cards up to 108,240 B; the kernels' addition 118,000 B.
 KERNEL_BYTES = {"one": 88 * 1024, "two": 108 * 1024, "add": 116 * 1024}
@@ -51,6 +53,9 @@ SPLIT_REDUCE = "tree"
 # input dim sharded: the addition across in the kernels (kernel) or the all-reduce of Y
 # after the product (reduce) (--add)
 ADD = "kernel"
+# output dim sharded into a copy of Y: the kernels' all-gather at the call's end
+# (kernel) or the host's after it (host) (--gather)
+GATHER = "kernel"
 # The account's words (kernels/linear/linear.h kAcWFree ..), by name: cycles, but the
 # tiles and products (counts) and the ends and start (wall clocks)
 ACCOUNT_WORDS = (
@@ -198,7 +203,7 @@ def l1_budget(session, islands, extra=0):
         return min(pl.L1_BUDGET, free - L1_TRANSFER - L1_RUNTIME)
     tokens = 2 * abi.headers()["kTokenBytes"]
     held = session.held_bytes(extra=extra)
-    return min(pl.L1_BUDGET, free - held - L1_TRANSFER - L1_RUNTIME - tokens)
+    return min(pl.L1_BUDGET, free - held - L1_TRANSFER - L1_RUNTIME_ISLANDS - tokens)
 
 
 # The K-split plan (LINEAR_SPLIT) for an island's part of at most SPLIT_ROWS row tiles
@@ -423,6 +428,11 @@ def island_pieces(
                     for pieces in split_pieces(
                         form, a, b, m_tiles, k_tiles, n_tiles, (bm, bn, k_block)
                     ):
+                        if any(  # the pieces' own buffers, not the probe's
+                            p.plan.l1_bytes() + extra_bytes(p.plan, exchange) > budget
+                            for p in pieces
+                        ):
+                            continue
                         found = True
                         cost = (
                             max(plan_ns(p.plan) for p in pieces),
@@ -599,9 +609,15 @@ class Linear:
         self.n_tiles = n_tiles
         self.k_parts = k_spans(tensors["w"].placement, k_tiles)
         self.w_columns = w_column_spans(tensors["w"].placement, n_tiles)
-        self.tensors_y_copy = self.islands > 1 and tensors["y"].placement.copy
+        # Y a copy on several islands: each island's partial (W split along K), or,
+        # with W split along N, each island's own columns written into its copy
+        w_place = tensors["w"].placement
+        self.y_copy = self.islands > 1 and tensors["y"].placement.copy
+        self.tensors_y_copy = self.y_copy and (w_place.copy or w_place.split != 1)
         # the one addition across made by the kernels (LINEAR_ADD), two islands
         self.adds = self.tensors_y_copy and ADD == "kernel"
+        # the islands' columns of a Y copy gathered by the kernels (LINEAR_GATHER)
+        self.gathers = self.y_copy and not self.tensors_y_copy and GATHER == "kernel"
         if self.adds and self.islands != 2:
             raise SystemExit(
                 f"the kernels' addition is for two islands: {self.islands}"
@@ -661,6 +677,8 @@ class Linear:
         )
         if self.split is None and self.pieces is None:
             raise SystemExit(f"no grid plan fits L1 and {ranks} ranks: {dimensions}")
+        if self.gathers and (self.split is None or m_tiles != 1):
+            raise SystemExit(f"the kernels' gather is the K-split plan's: {dimensions}")
         if SUBBLOCK is not None:  # the script's --subblock, in every piece
             sh, sw = SUBBLOCK
             if any(p.plan.bm % sh or p.plan.bn % sw for p in self.pieces):
@@ -753,6 +771,7 @@ class Linear:
             handlers=LINEAR_H,
             defines={"LINEAR_SPLIT": 1, "LINEAR_OWN": 1}
             | ({"LINEAR_ADD": 1} if self.adds else {})
+            | ({"LINEAR_GATHER": 1} if self.gathers else {})
             | ({"LINEAR_ACCOUNT": 1} if ACCOUNT else {}),
         )
 
@@ -932,6 +951,30 @@ class Linear:
             )
         return out
 
+    def gathered(self, commands):
+        """`commands` calls each followed by the all-gather of Y (the output dim
+        sharded form into a copy of Y): per call the host's microseconds of the
+        product, of the gather, and each island's part of the gather."""
+        out = []
+        for _ in range(commands):
+            started = time.perf_counter()
+            self.calls(1, timeout=10.0)
+            between = time.perf_counter()
+            events = self.run.all_gather(self.tensors["y"])
+            ended = time.perf_counter()
+            if any(part.kind != "done" for part in events):
+                raise km.KomorebiError(f"the all-gather not done: {events}")
+            out.append(
+                {
+                    "product_us": round((between - started) * 1e6, 1),
+                    "gather_us": round((ended - between) * 1e6, 1),
+                    "gather_parts_us": [
+                        round(float(part.microseconds), 1) for part in events
+                    ],
+                }
+            )
+        return out
+
     def single(self, commands):
         """`commands` calls one at a time: the slowest part's microseconds each; each
         call's host time, its parts' (an island's, by its dispatcher's ticks) and its
@@ -974,13 +1017,13 @@ class Linear:
         """(first, count) of the columns island `to` keeps of the rows island `here`
         makes and holds W's columns of, as the kernels' window() finds them."""
         made, kept = self.made[here], self.kept[to]
-        if to != here and self.tensors_y_copy:  # each island its own partial
+        if to != here and self.y_copy:  # each island its partial, or its columns
             return (0, 0)
         if not made[1] or made[0] < kept[0][0] or sum(made) > sum(kept[0]):
             return (0, 0)
         held = self.w_columns[here]
         if kept[1][0] < held[0] or sum(kept[1]) > sum(held):
-            return (0, 0)
+            return held if self.y_copy else (0, 0)
         return kept[1]
 
     def describe(self):
@@ -1110,6 +1153,9 @@ def measure(product, cards, seconds):
     if getattr(product, "tensors_y_copy", False) and not product.adds:  # Y the sum
         report["reduced"] = product.reduced(REDUCED_CALLS)
         log(f"with the all-reduce: {report['reduced'][-1]}")
+    elif getattr(product, "y_copy", False) and not product.gathers:  # then gathered
+        report["gathered"] = product.gathered(REDUCED_CALLS)
+        log(f"with the all-gather: {report['gathered'][-1]}")
     return report
 
 
@@ -1282,6 +1328,13 @@ def main():
         "all-reduce of Y after the product",
     )
     parser.add_argument(
+        "--gather",
+        choices=["kernel", "host"],
+        default="kernel",
+        help="a chain's first layer: the kernels gather Y's columns at the call's end, "
+        "or the host's all-gather after it",
+    )
+    parser.add_argument(
         "--shapes",
         default=None,
         help='several products in one session: "M,K,N[:place];..."',
@@ -1303,8 +1356,9 @@ def main():
     if dimensions and any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
-    global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD
+    global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD, GATHER
     ACCOUNT, SPLIT_REDUCE, ADD = args.account, args.reduce, args.add
+    GATHER = args.gather
     NOCS = tuple(int(value) for value in args.nocs.split(","))
     VALID_SENT = args.valid == "sent"
     if args.subblock:
@@ -1320,14 +1374,19 @@ def main():
                 (tuple(int(value) for value in dims.split(",")), place or args.place)
             )
     for dims, place in products:
-        if place not in PLACES or any(value % pl.TILE for value in dims):
+        if place not in [*PLACES, "chain"] or any(value % pl.TILE for value in dims):
             raise SystemExit(f"{dims}:{place}: whole tiles, a place of {list(PLACES)}")
-    # the larger build: the K form's puts, or the K-split plan's page calls (mock
-    # 105,376 B), on two cards; the rows, out and in forms otherwise fit the one-card's
-    puts = len(cards) > 1 and any(
-        place == "k" or dims[0] <= SPLIT_ROWS * pl.TILE for dims, place in products
+        if place == "chain" and len(cards) != 2:
+            raise SystemExit("a chain is two layers on two cards: --cards A,B")
+    # two cards: the larger build (an island's build 96,240 B at prefill, 105,680 at
+    # decode); the kernels' addition or gather larger still
+    puts = len(cards) > 1
+    adds = len(cards) > 1 and (
+        ADD == "kernel"
+        and any(p == "in" for _, p in products)
+        or GATHER == "kernel"
+        and any(p == "chain" for _, p in products)
     )
-    adds = len(cards) > 1 and ADD == "kernel" and any(p == "in" for _, p in products)
     kernel_bytes = (
         args.kernel_bytes or KERNEL_BYTES["add" if adds else "two" if puts else "one"]
     )
@@ -1336,7 +1395,12 @@ def main():
     reports = []
     with km.Session(cards=cards, log=log, **options) as session:
         for dims, place in products:
-            reports.append(product_report(session, dims, place, cards, args))
+            one = chain_report if place == "chain" else product_report
+            reports.append(one(session, dims, place, cards, args))
+            if args.json:  # each product's report kept as it ends
+                Path(args.json).write_text(
+                    json.dumps({"products": reports}, indent=1, default=float)
+                )
     report = reports[0] if not args.shapes else {"products": reports}
     report["ok"] = all(one["ok"] for one in reports)
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
@@ -1390,6 +1454,93 @@ def product_report(session, dimensions, place, cards, args):
     for tensor in tensors.values():  # the next product's room (the tensor table)
         tensor.free()
     release_runs(session)
+    return report
+
+
+def chain_report(session, dimensions, place, cards, args):
+    """Two layers, M x H -> F -> H, both output dim sharded: the first writes each
+    island's columns into a copy of Y1, the all-gather completes it, the second
+    reads it as its X. Each layer loaded, measured, stopped and checked in turn."""
+    m_rows, hidden, mlp = dimensions
+    report = {"m": m_rows, "hidden": hidden, "mlp": mlp, "cards": cards}
+    report |= {"place": place, "nocs": list(NOCS), "valid": args.valid}
+    log(f"building the chain {dimensions}")
+    x_matrix, w1_matrix = ref.inputs(m_rows, hidden, mlp, kind=args.inputs)
+    _, w2_matrix = ref.inputs(m_rows, mlp, hidden, kind=args.inputs)
+    halves = {"group": even_group(session.graph), "split": 1}
+    y1 = session.empty((m_rows, mlp), "bfloat16", "tile", copy=True)
+    first = {
+        "x": session.tensor(x_matrix, "bfloat16", "tile", copy=True),
+        "w": session.tensor(w1_matrix, "bfloat16", "tile", **halves),
+        "y": y1,
+    }
+    # the all-gather's shares (pages of Y1's one tile row) are the islands' columns
+    shares = [
+        (part.start, len(part))
+        for part in (layout.partition(range(mlp // pl.TILE), c, 2) for c in range(2))
+    ]
+    if m_rows > pl.TILE or w_column_spans(first["w"].placement, mlp // pl.TILE) != [
+        tuple(share) for share in shares
+    ]:
+        raise SystemExit(f"a chain is one tile row, W1's columns the shares: {shares}")
+    report["first"] = attempt(
+        Linear,
+        session,
+        (m_rows, hidden, mlp),
+        first,
+        cards,
+        args,
+        (x_matrix, w1_matrix),
+    )
+    report["first"]["gather_shares"] = shares
+    for name in ("x", "w", "s", "t"):
+        first[name].free()
+    release_runs(session)
+    if not report["first"]["ok"]:
+        y1.free()
+        report["ok"] = False
+        return report
+    rows = np.arange(m_rows)
+    got = card.read_rows(session.sessions[0], y1.parts[0], rows, log)[:, :mlp]
+    second = {
+        "x": y1,
+        "w": session.tensor(w2_matrix, "bfloat16", "tile", **halves),
+        "y": session.empty((m_rows, hidden), "bfloat16", "tile", **halves),
+    }
+    report["second"] = attempt(
+        Linear,
+        session,
+        (m_rows, mlp, hidden),
+        second,
+        cards,
+        args,
+        (got, w2_matrix),
+    )
+    for tensor in second.values():
+        tensor.free()
+    release_runs(session)
+    report["ok"] = report["second"]["ok"]
+    if report["ok"]:
+        loop = [report[layer]["loop"] for layer in ("first", "second")]
+        report["chain_us"] = {
+            "first": loop[0]["microseconds_per_call"],
+            "second": loop[1]["microseconds_per_call"],
+        }
+        if "gathered" in loop[0]:  # the host's all-gather between the layers
+            gathered = loop[0]["gathered"]
+            report["chain_us"] |= {
+                "gather": float(np.median([one["gather_us"] for one in gathered])),
+                "first_then_gather": float(
+                    np.median(
+                        [one["product_us"] + one["gather_us"] for one in gathered]
+                    )
+                ),
+            }
+        else:  # inside the first layer's call: its stamps' gather, each island
+            report["chain_us"]["gather_in_first"] = [
+                one["microseconds_at_mhz"]["sync"] for one in report["first"]["passes"]
+            ]
+        log(f"chain: {report['chain_us']}")
     return report
 
 

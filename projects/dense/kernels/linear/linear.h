@@ -27,6 +27,13 @@ constexpr uint32_t kHandlerLinear = 1;
 #endif
 // The other island's partial of this rank's blocks, counted here (km::keeper).
 constexpr uint32_t kPortAdd = 7;
+// Built for the output dim sharded form into a copy of Y (LINEAR_GATHER, K-split
+// plan): each island writes its columns, then every rank's km::all_gather.
+#if defined(LINEAR_GATHER)
+#define LINEAR_GATHERS true
+#else
+#define LINEAR_GATHERS false
+#endif
 
 // S's set of island `island`'s partial in a command of `parity` (two, so that a
 // command's partial never lands on the one the other island still reads).
@@ -325,7 +332,8 @@ inline bool copied(uint32_t tensor) {
         kept_columns.first < held.first ||
         kept_columns.first + kept_columns.count > held.first + held.count
     ) {
-        return {0, 0};
+        // a copy of Y and W split along N: the island's own columns into its copy
+        return copied(y) ? held : Span{0, 0};
     }
     return kept_columns;
 }
