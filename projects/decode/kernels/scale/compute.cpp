@@ -7,7 +7,10 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     const uint32_t tiles = (
         compute.arg(block.plan + kSpOh) * compute.arg(block.plan + kSpOw)
     );
-    if (!compute.wait_front(kCbSum, tiles) || !decode::rms_scale(compute, command.a9)) {
+    if (
+        !compute.wait_front(kCbSum, tiles) ||
+        !decode::rms_scale(compute, command.a9, decode::live_rows(command))
+    ) {
         return 0;
     }
     const bool out = compute.reserve_back(kCbSplitOut, tiles);

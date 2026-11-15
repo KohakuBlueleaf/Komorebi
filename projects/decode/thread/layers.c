@@ -24,7 +24,8 @@ typedef struct {
     uint32_t apart;    /* q, k and v as three products, not qkv */
     uint32_t overlap;  /* and q, k, v, o each submitted before the one ahead is done */
     uint32_t attend;   /* ATTEND's a3 flags: DC_ATTEND_READ_ONLY, DC_ATTEND_LOCAL */
-    uint32_t position; /* the token's place in the cache */
+    uint32_t position; /* the first token's place in the cache */
+    uint32_t rows;     /* the tokens a step: a3's DC_ROWS field of every command */
     uint64_t span_ticks; /* q's submit to o's event, summed over the layers */
 } job_t;
 
@@ -65,7 +66,7 @@ static void product(
     command->a0 = a;
     command->a1 = w;
     command->a2 = y;
-    command->a3 = words[DC_WORD_REDUCE];
+    command->a3 = words[DC_WORD_REDUCE] | job->rows << DC_ROWS_SHIFT;
     if (overlapped(job, step) && (step == DC_STEP_K || step == DC_STEP_O)) {
         command->a3 |= KM_SPLIT_SECOND_SET;
     }
@@ -107,7 +108,7 @@ static void attend_command(const job_t* job, km_command_t* command) {
     command->a0 = t[DC_TENSOR_QKV];
     command->a1 = job->layer[DC_W_KEYS];
     command->a2 = t[DC_TENSOR_A];
-    command->a3 = words[DC_WORD_REDUCE] | job->attend;
+    command->a3 = words[DC_WORD_REDUCE] | job->attend | job->rows << DC_ROWS_SHIFT;
     command->a4 = KM_SPLIT_OP;
     command->a5 = plan & 0xFFu;
     command->a6 = words[DC_WORD_ATTEND];
@@ -228,8 +229,8 @@ static int run_attention(job_t* job) {
     return status;
 }
 
-/* LAYERS: a0 tokens, a1 layers, a2 stats slot, a3 first layer, a4 bits, a5 the first
- * position (decode.h). The result word: the ticks taken, or 0xFFFFFFF0 | status. */
+/* LAYERS: a0 steps, a1 layers, a2 stats slot, a3 first layer, a4 bits, a5 the first
+ * position, a6 rows a step (decode.h). Result: the ticks, or 0xFFFFFFF0 | status. */
 static uint32_t layers(const km_command_t* command) {
     uint64_t weight_bytes = 0, tensor_bytes = 0, stats_bytes = 0;
     const uint32_t* weights = (const uint32_t*)kmx_region(0, &weight_bytes);
@@ -239,7 +240,7 @@ static uint32_t layers(const km_command_t* command) {
     const uint32_t tokens = command->a0, count = command->a1, first = command->a3;
     if (
         weights == 0 || tensors == 0 || stats == 0 || args->nwords < DC_WORDS ||
-        command->a2 >= DC_STATS_SLOTS ||
+        command->a2 >= DC_STATS_SLOTS || command->a6 == 0u || command->a6 > 32u ||
         4ull * DC_STATS_WORDS * DC_STATS_SLOTS > stats_bytes || count == 0 ||
         4ull * DC_LAYER_WORDS * (first + count) > weight_bytes ||
         4ull * DC_TENSORS > tensor_bytes
@@ -261,6 +262,7 @@ static uint32_t layers(const km_command_t* command) {
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |
         ((command->a4 & 64u) != 0u ? DC_ATTEND_EXP_TWICE : 0u)
     );
+    job.rows = command->a6;
     job.span_ticks = 0ull;
     for (uint32_t step = 0; step < DC_STEPS; step++) {
         job.step_ticks[step] = 0ull;
@@ -272,7 +274,7 @@ static uint32_t layers(const km_command_t* command) {
     for (uint32_t token = 0; token < tokens && status == KMX_OK; token++) {
         for (uint32_t layer = 0; layer < count && status == KMX_OK; layer++) {
             job.layer = weights + DC_LAYER_WORDS * (first + layer);
-            job.position = command->a5 + token;
+            job.position = command->a5 + token * job.rows;
             kmx_progress(token << 16 | layer);
             for (uint32_t step = 0; step < DC_STEPS && status == KMX_OK; step++) {
                 if (job.overlap && step == DC_STEP_Q) {

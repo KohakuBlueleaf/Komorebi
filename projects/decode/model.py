@@ -249,37 +249,48 @@ def cache_pages(values, rows):
 
 
 def attend_constants():
-    """attend's constant tiles side by side: mask r (columns above r at DC_MASKED, the
-    rest 0) for r in 0..31, a tile of ones, one with ones in row 0 only, identity."""
-    columns = np.arange(TILE)
+    """attend's constant tiles side by side: mask k (row i's columns past i + k - 31 at
+    DC_MASKED, the rest 0) for k in 0..62, a tile of ones, one with ones in row 0 only,
+    the identity."""
+    rows, columns = np.arange(TILE)[:, None], np.arange(TILE)[None, :]
     masks = [
-        np.where(columns[None, :] > r, D_MASKED, 0.0) * np.ones((TILE, 1))
-        for r in range(D["DC_MASKS"])
+        np.where(columns > rows + k - D["DC_MASK_ZERO"], D_MASKED, 0.0)
+        for k in range(D["DC_MASKS"])
     ]
     row = np.zeros((TILE, TILE))
     row[0] = 1.0
     return np.concatenate(masks + [np.ones((TILE, TILE)), row, np.eye(TILE)], axis=1)
 
 
-def attention(model, q, keys, values):
+def attention(model, q, keys, values, rows=None):
     """softmax(q k^T / sqrt(width)) v of every query head over its KV head's `keys` and
-    `values` ([KV heads, n, width]), float64: [32, heads x width]."""
+    `values` ([KV heads, n, width]), float64: [32, heads x width]. `rows`: the first
+    rows are the last `rows` keys' tokens, row i over keys 0..n - rows + i (the rest 0);
+    None: every row over all n."""
     width, group = model.head_dim, model.heads // model.kv_heads
     out = np.zeros((q.shape[0], model.heads * width))
+    live = q.shape[0] if rows is None else rows
+    count = keys.shape[1]
+    mask = np.zeros((live, count))
+    if rows is not None:
+        mask[np.arange(count)[None, :] > count - rows + np.arange(rows)[:, None]] = (
+            -np.inf
+        )
     for head in range(model.heads):
         kv = head // group
-        query = np.asarray(q[:, head * width : (head + 1) * width], np.float64)
-        scores = query @ np.asarray(keys[kv], np.float64).T / math.sqrt(width)
+        query = np.asarray(q[:live, head * width : (head + 1) * width], np.float64)
+        scores = query @ np.asarray(keys[kv], np.float64).T / math.sqrt(width) + mask
         weights = np.exp(scores - scores.max(axis=1, keepdims=True))
         weights /= weights.sum(axis=1, keepdims=True)
-        out[:, head * width : (head + 1) * width] = weights @ values[kv]
+        out[:live, head * width : (head + 1) * width] = weights @ values[kv]
     return out
 
 
-def layer(model, x, w, cached=None):
+def layer(model, x, w, cached=None, rows=1):
     """One layer, float64, each output rounded to bf16 as the card stores it: {tensor:
-    values}. `cached`: (keys, values) of positions 0..t-1; the token's k and v (row 0)
-    are position t and a attends over 0..t. None: no attention, q stands in for a."""
+    values}. `cached`: (keys, values) of positions 0..t-1; the tokens' k and v (rows 0
+    to rows - 1) are positions t on, row i attending over 0..t + i (the other rows' a
+    is 0). None: no attention, q stands in for a."""
     f = {name: np.asarray(value[1], np.float64) for name, value in w.items()}
     out = {"h1": bf16(norm(x, f["norm1"], model.eps))}
     for name in ("q", "k", "v"):
@@ -287,13 +298,19 @@ def layer(model, x, w, cached=None):
     out["a"] = out["q"]
     if cached is not None:
         width = model.head_dim
-        rows = [
+        tokens = [
             np.concatenate(
-                [cached[i], out[name][0].reshape(model.kv_heads, 1, width)], axis=1
+                [
+                    cached[i],
+                    out[name][:rows]
+                    .reshape(rows, model.kv_heads, width)
+                    .swapaxes(0, 1),
+                ],
+                axis=1,
             )
             for i, name in enumerate(("k", "v"))
         ]
-        out["a"] = bf16(attention(model, out["q"], *rows))
+        out["a"] = bf16(attention(model, out["q"], *tokens, rows=rows))
     out["x1"] = bf16(x + out["a"] @ f["o"])
     out["h"] = bf16(norm(out["x1"], f["norm2"], model.eps))
     out["up"] = bf16(out["h"] @ f["up"])

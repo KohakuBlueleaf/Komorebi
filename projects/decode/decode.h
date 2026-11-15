@@ -22,8 +22,8 @@ enum {
     DC_CB_SCALE = 10,   /* scale: each row's 1 / rms in every column */
     DC_CB_UP = 11, /* gate: up's half of the sum in bf16, as the reference rounds it */
     DC_CB_PART = 12, /* add: this block's sums of squares on the diagonal */
-    /* attend: the head's two query tiles rows, the ones and the row-0 tile, the last
-     * key tile's mask; keys streamed, values, scores, P (bf16) held for the command */
+    /* attend: the head's query tiles, the ones, row-0 and identity tiles, the root's
+     * two masks; keys streamed, values, scores, P (bf16) held for the command */
     DC_CB_QUERY = 13,
     DC_CB_ATTEND_CONSTANT = 14,
     DC_CB_MASK = 15,
@@ -52,11 +52,12 @@ enum {
     DC_HEAD_GROUP = 2,   /* query heads a KV head */
     DC_STATE_TILES = 6,  /* a head's state: maximum, sum, 4 output tiles */
     DC_STATE_ITEM = 12,  /* both query heads' states: one message */
-    DC_MASKS = 32,       /* mask r: columns above r at DC_MASKED */
-    DC_ATTEND_ONES = 32, /* the constants' tile of ones */
-    DC_ATTEND_ROW = 33,  /* the tile with ones in row 0 only */
-    DC_ATTEND_IDENTITY = 34,
-    DC_ATTEND_CONSTANTS = 35,
+    DC_MASKS = 63,       /* mask k: row i's columns past i + k - 31 at DC_MASKED */
+    DC_MASK_ZERO = 31,   /* the mask of offset 0 */
+    DC_ATTEND_ONES = 63, /* the constants' tile of ones */
+    DC_ATTEND_ROW = 64,  /* the tile with ones in row 0 only */
+    DC_ATTEND_IDENTITY = 65,
+    DC_ATTEND_CONSTANTS = 66,
     DC_ATTEND_READ_ONLY = 0x200, /* a3: the reads, the append; no math, no merge */
     DC_ATTEND_LOCAL = 0x400,     /* a3: no merge (the root ends on its own part) */
     DC_ATTEND_EXP_TWICE = 0x800, /* a3: P's exponent taken twice (its cost, timed) */
@@ -73,6 +74,10 @@ enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
 /* LAYERS' a4: 1 products only, 2 parts only, 4 q k v apart (no attention), 8 overlap,
  * 16 attend's reads only, 32 no merge, 64 exponent twice; a5 the first position. */
 enum { DC_HANDLER_LAYERS = 1 };
+
+/* Every command's a3 bits 16 to 21: the rows that hold a token (1 to 32; 0 is 32), the
+ * first ones; LAYERS' a6 the same for each step (positions a5 + step x rows on). */
+enum { DC_ROWS_SHIFT = 16, DC_ROWS_MASK = 0x3F };
 
 enum {
     DC_WORD_SPLIT,        /* the SPLIT handler */

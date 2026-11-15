@@ -8,9 +8,10 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
         compute.arg(block.plan + kSpOh) * compute.arg(block.plan + kSpOw)
     );
     const uint32_t half = tiles / 2;
+    const uint32_t live = decode::live_rows(*block.command);
     if (
         !compute.wait_front(kCbSum, tiles) ||
-        !decode::rms_scale(compute, block.command->a9)
+        !decode::rms_scale(compute, block.command->a9, live)
     ) {
         return 0;
     }
@@ -44,7 +45,7 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
         decode::multiply_init(DC_CB_SCALE);
         decode::multiply(DC_CB_SCALE, 0, 0);
         silu_tile_init();
-        silu_tile(0);
+        DC_ROWS(live, rows::silu, 0);
         decode::multiply_init(DC_CB_UP);
         decode::multiply(DC_CB_UP, tile, 0);
         tile_regs_commit();

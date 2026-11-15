@@ -7,6 +7,16 @@
 #include "../../dense/kernels/split/split_op.hpp"
 #include "../decode.h"
 
+namespace decode {
+
+    // The rows that hold a token: a3's DC_ROWS field, 32 when it is 0.
+    inline uint32_t live_rows(const km_command_t& command) {
+        const uint32_t rows = (command.a3 >> DC_ROWS_SHIFT) & DC_ROWS_MASK;
+        return rows == 0u || rows > 32u ? 32u : rows;
+    }
+
+}  // namespace decode
+
 #if defined(COMPILE_FOR_TRISC)
 #include "api/compute/cb_api.h"
 #include "api/compute/eltwise_binary.h"
@@ -18,6 +28,7 @@
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
 #include "komorebi/device/km_worker.hpp"
+#include "rows.hpp"
 
 namespace decode {
 
@@ -70,9 +81,9 @@ namespace decode {
         return room;
     }
 
-    // DC_CB_SCALE: each row's 1 / sqrt(mean square + epsilon) in every column, from the
-    // groups' squares (DC_CB_PARTS). Unpack A is in the fp32 sum's format around it.
-    inline bool rms_scale(const km::Compute& compute, uint32_t epsilon) {
+    // DC_CB_SCALE: each live row's 1 / sqrt(mean square + epsilon) in every column,
+    // from the squares (DC_CB_PARTS); unpack A is in the fp32 sum's format around it.
+    inline bool rms_scale(const km::Compute& compute, uint32_t epsilon, uint32_t live) {
         if (
             !compute.wait_front(DC_CB_PARTS, DC_PARTS) ||
             !compute.wait_front(DC_CB_CONSTANT, DC_CONSTANTS)
@@ -96,9 +107,9 @@ namespace decode {
         matmul_init(DC_CB_SQUARES, DC_CB_CONSTANT, 0);
         matmul_tiles(DC_CB_SQUARES, DC_CB_CONSTANT, 0, DC_CONSTANT_MEAN, 0);
         binop_with_scalar_tile_init();
-        add_unary_tile(0, epsilon);
+        DC_ROWS(live, rows::plus, 0, epsilon);
         rsqrt_tile_init();
-        rsqrt_tile(0);
+        DC_ROWS(live, rows::rsqrt, 0);
         cb_pop_front(DC_CB_SQUARES, 1);
         const bool scaled = pack_one(compute, DC_CB_SCALE);
         cb_pop_front(DC_CB_PARTS, DC_PARTS);
