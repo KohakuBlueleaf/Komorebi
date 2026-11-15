@@ -68,7 +68,9 @@ namespace {
             rw.insert(
                 rw.end(), {kHandlerForward, kQueue, cap, 64, lines, idle, kBins, k}
             );
-            c.insert(c.end(), {64, quota, k, control + kRes});
+            // km::MessagesArgs' other words: no bodies, no X280 ranks, no inbox
+            rw.insert(rw.end(), km::kMessagesArgs - 8, 0u);
+            c.insert(c.end(), {64, quota, k, 0, control + kRes});  // 0: no X280 ranks
         };
         Job run;
         run.handler = kHandlerForward;

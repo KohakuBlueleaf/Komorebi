@@ -389,6 +389,33 @@ def check_bases(bases):
         raise StartError(f"not a multiple of {NOC_ALIGN} bytes: {named}")
 
 
+def go_layout(panels, columns, cores, abi_headers=None):
+    """KM_ISLAND_GO of an island of `cores` cores (whole rows of `columns`) over the
+    grid's `panels` (column ranges, at most two, in order): what km::team_go
+    multicasts its release over; 0 (one atomic a rank) when they do not tile the
+    grid."""
+    abi_headers = abi_headers or abi.headers()
+    starts = [first for first, _ in panels]
+    ends = [last for _, last in panels]
+    tiled = (
+        starts[:1] == [0]
+        and starts[1:] == [end + 1 for end in ends[:-1]]
+        and ends[-1:] == [columns - 1]
+    )
+    rows = cores // columns if columns else 0
+    if not (len(panels) <= 2 and tiled and rows * columns == cores):
+        return 0
+    if not (1 <= rows < 256 and columns < 256):
+        return 0
+    split = panels[1][0] if len(panels) == 2 else 0
+    return (
+        columns
+        | rows << abi_headers["KM_ISLAND_GO_ROWS"]
+        | split << abi_headers["KM_ISLAND_GO_SPLIT"]
+        | abi_headers["KM_ISLAND_GO_ON"]
+    )
+
+
 def _words(session, rows, shard_grid=None):
     """A row-major uint32 tensor of the rows (one page a row): in DRAM, or one row
     in the L1 of each core of `shard_grid`."""
@@ -2018,6 +2045,8 @@ class _Backend:
         line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
         plan = getattr(self.session, "link_plan", None)
         plans = getattr(self.session, "link_plans", None) if self.split else None
+        # the grid's panels: a whole island's release multicast (km::team_go)
+        panels = self.session.nocs().panels if len(graph.islands) > 1 else None
         for here, base, count in parts:
             plan = plans[here] if plans else plan
             area = plan.area if plans else self.session.link_area
@@ -2041,6 +2070,10 @@ class _Backend:
                 plan, "forward", 0
             )
             mine[:, at + abi_headers["KM_ISLAND_OWN"] // 4] = getattr(plan, "own", 0)
+            if panels is not None:
+                mine[:, at + abi_headers["KM_ISLAND_GO"] // 4] = go_layout(
+                    panels, columns, count, abi_headers
+                )
 
     def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its

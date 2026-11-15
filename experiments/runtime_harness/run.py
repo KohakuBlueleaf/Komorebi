@@ -133,7 +133,8 @@ def build(out, tree=ROOT, form="one"):
         f"-I{tree / 'src' / 'komorebi_native' / 'include'}",
         f"-I{tree / 'examples' / '05_forward' / 'kernels'}",
     ]
-    common = [cxx, "-Wall", *include, *FORMS[form]]
+    # KM_WIRE: a link's transport as NoC writes (the stub has no fabric headers)
+    common = [cxx, "-Wall", "-DKM_WIRE", *include, *FORMS[form]]
     todo = units(tree, "pinned_main" if form == "pinned" else "scenarios")
     sources = sorted(
         {

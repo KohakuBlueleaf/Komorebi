@@ -477,19 +477,25 @@ class IslandRun:
     def send(self):
         """Stores every island's queued commands on its card, so that the islands run
         their parts at once (a run over a link needs every part started): all handed
-        first, then stored one after another with nothing between, then the events
-        read meanwhile filed."""
+        first, then stored by one native call (every island's lines, one fence), then
+        the events read meanwhile filed."""
         for island, run in enumerate(self.runs):
             try:
                 run._hand()
             except KomorebiError as error:
                 raise self._error(error, island) from None
-        read = []
-        for island, run in enumerate(self.runs):
-            try:
-                read.append(run._store_handed())
-            except KomorebiError as error:
-                raise self._error(error, island) from None
+        ports = [run.port for run in self.runs]
+        together = getattr(type(ports[0]), "store_together", None)
+        if together is not None and all(type(port) is type(ports[0]) for port in ports):
+            # one native call: every island's lines, then one fence
+            read = together(ports, [run._store_upto() for run in self.runs])
+        else:
+            read = []
+            for island, run in enumerate(self.runs):
+                try:
+                    read.append(run._store_handed())
+                except KomorebiError as error:
+                    raise self._error(error, island) from None
         for island, (run, rows) in enumerate(zip(self.runs, read)):
             if len(rows):
                 try:
@@ -567,7 +573,9 @@ class IslandRun:
                     f"ranks {group}: not one run of island {island}'s cores"
                 )
             try:
-                read = self.runs[island].inspect((cores[0], count), _left(deadline))
+                read = self.runs[island].inspect(
+                    (self.graph.first(island) + first, count), _left(deadline)
+                )
             except KomorebiError as error:
                 raise self._error(error, island) from None
             out.extend(self._ranked(island, read))

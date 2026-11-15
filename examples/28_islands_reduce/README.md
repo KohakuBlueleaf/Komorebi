@@ -64,6 +64,16 @@ The bfloat16 row is from a run before the card's time was recorded. On one islan
 call returns at once: from a kernel the time is the command's own, and
 `run.all_reduce` sends nothing.
 
+These rows are from before two changes the reduce shares with the gather: the team's
+go before the adds and its release after are one multicast each (4.4 µs each as an
+atomic a rank, now 0.9), and the wait stores every island's command by one native call.
+Measured since by the account experiment (`experiments/islands_collectives/account`,
+two cards, from a kernel, every share exact): 2 pages 91.0 µs, of which the adds 70.1
+(about 90 cycles a float32 word, in integer code on the movers, not changed here), the
+other island's partial 7.3, its sums 5.6, the command 2.2, the entries and the meeting
+1.4, the lines out 2.0, the go and the release 0.9 each. `docs/reference/islands.md`
+has the account.
+
 ## Output
 
 Two cards, then one (`python reduce.py`, `python reduce.py --cards 0`), the last line
