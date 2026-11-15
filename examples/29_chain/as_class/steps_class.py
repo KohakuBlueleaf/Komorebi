@@ -14,7 +14,6 @@ import numpy as np
 import komorebi as km
 
 WORDS = 1024  # float32 words a page: one tile's
-KERNEL_BYTES = 84 * 1024  # the kernels with the chain's walk: 74,160 B (../README.md)
 STARTED = time.monotonic()
 
 SCALE = """
@@ -111,8 +110,8 @@ def parse():
     parser.add_argument(
         "--kernel-bytes",
         type=int,
-        default=KERNEL_BYTES,
-        help="the session's kernel buffer (the walk adds about 16 KiB of text)",
+        default=None,
+        help="the session's kernel buffer (default: the kernels')",
     )
     parser.add_argument(
         "--skip-plain",
