@@ -134,8 +134,8 @@ three of ours:
 None of our kernels is smaller than one of tinygrad's. As a list, the layer is 18
 entries against the decode program's 5. At the list's measured 3.99 us a call when
 closed (1.89 of it the command; `../README.md`, "What an entry costs"), the 13 extra
-entries are about 27 us of the thread's own time a layer. That does not count their
-DRAM round trips, nor the kernels behind them, which today are not ours.
+entries are about 27 us of the thread's own time a layer. That does not count
+their trips through DRAM, nor the kernels behind them, which today are not ours.
 
 ## One of tinygrad's kernels on the card
 
