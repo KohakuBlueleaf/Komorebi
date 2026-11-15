@@ -143,6 +143,7 @@ class Value:
     pushed: bool = False
     mover: str = ""  # broadcast: the mover that runs it
     window: int = 0  # broadcast: blocks in flight
+    length: int | None = None  # broadcast: cores a band (None: the whole side)
     loop: dict | None = None  # broadcast: the range loop its blocks count
     waited: bool = False  # a written tile: mover B has waited for its page
     popped: bool = False  # a written tile: mover B has freed its page
@@ -2901,6 +2902,8 @@ class HandlerCompiler:
             m, c = self.broadcast_end(broadcast, end, uses)
             movement += m
             compute += c
+        m, c = self.counted_ends(loop)
+        movement, compute = movement + m, compute + c
         movement += self.fed_moves(node, loop, body_m)
         return movement, compute
 
@@ -4823,7 +4826,7 @@ class HandlerCompiler:
                 "a broadcast of this core",
                 f'write km.{spelling("broadcast")}(self, along="row")',
             )
-        along, window = None, BROADCAST_WINDOW
+        along, window, placed = None, BROADCAST_WINDOW, {}
         for keyword_ in call.keywords:
             if keyword_.arg == spelling("along"):
                 value = keyword_.value
@@ -4836,11 +4839,16 @@ class HandlerCompiler:
                 along = value.value
             elif keyword_.arg == spelling("window"):
                 window = self.constant_int(keyword_.value)
+            elif keyword_.arg in (
+                spelling("broadcast_mover"),
+                spelling("broadcast_length"),
+            ):
+                placed[keyword_.arg] = keyword_.value
             else:
                 self.refuse(
                     node,
                     f"a broadcast has no {keyword_.arg}=",
-                    "use along= and window=",
+                    "use along=, window=, mover= and length=",
                 )
         if along is None:
             self.refuse(
@@ -4848,13 +4856,14 @@ class HandlerCompiler:
                 "a broadcast goes along a row or a column",
                 'write along="row" or along="column"',
             )
-        mover = ALONG[along]
+        mover, length = self.broadcast_place(node, along, placed)
         if mover in self.movers:
             self.refuse(
                 node,
-                f"{self.movers[mover]} already goes along a {along}; each mover runs "
-                "one broadcast (rows on mover A, columns on mover B)",
-                "make one broadcast along a row and one along a column",
+                f"{self.movers[mover]} already runs on mover {mover}; each mover runs "
+                "one broadcast (rows on mover A, columns on mover B unless mover= "
+                "says)",
+                "make one broadcast a mover: give the other mover=",
             )
         self.movers[mover] = name
         self.compiled.broadcast_lines.setdefault(
@@ -4864,7 +4873,7 @@ class HandlerCompiler:
         self.compiled.includes |= {"broadcast"}
         self.compute_waits = True
         self.scope[name] = Value(
-            "broadcast", name, mover=mover, window=window, pattern=along
+            "broadcast", name, mover=mover, window=window, pattern=along, length=length
         )
         movement = Line(
             f"km::Broadcast {name}(movement, command, kArgBroadcast);\n"
@@ -4872,11 +4881,46 @@ class HandlerCompiler:
             f"if (!{name}.included()) {{\n    return true;\n}}",
             mover=mover,
         )
+        counter = f"km_blocks_{name}"  # kept where casts count over loops
+        counted = [
+            Glue(f"uint32_t {counter} = 0;", {counter}, mover=mover),
+            Glue(f"uint32_t {counter} = 0;", {counter}),
+        ]
         compute = []
         if len(self.movers) == 1:
             compute.append(Line("if (compute.arg(kArgIncluded) == 0) {\n    break;\n}"))
-            return [movement, self.other_mover_skips(mover)], compute
-        return [movement], compute
+            return [movement, counted[0], self.other_mover_skips(mover)], [
+                *compute,
+                counted[1],
+            ]
+        return [movement, counted[0]], [counted[1]]
+
+    def broadcast_place(self, node, along, placed):
+        """A broadcast's mover and band: `mover="A"` (NoC 0: a column's sender at its
+        top, a row's at its left) or `"B"` (NoC 1: bottom, right), by default its
+        direction's (rows A, columns B); `length=L` bands of L cores, each with its
+        sender (an int the build knows), by default the rectangle's whole side."""
+        mover, length = ALONG[along], None
+        given = placed.get(spelling("broadcast_mover"))
+        if given is not None:
+            if not (isinstance(given, ast.Constant) and given.value in ("A", "B")):
+                self.refuse(
+                    node,
+                    'a broadcast\'s mover is "A" (NoC 0) or "B" (NoC 1)',
+                    'write mover="A" or mover="B"',
+                )
+            mover = given.value
+        given = placed.get(spelling("broadcast_length"))
+        if given is not None:
+            length = self.known_int(given)
+            if length is None or length < 1:
+                self.refuse(
+                    node,
+                    "a broadcast's length is cores a band, an int the build knows "
+                    "(a constant or a plan value) of 1 or more",
+                    "write length=L, L a module constant or a plan value",
+                )
+        return mover, length
 
     def other_mover_skips(self, mover):
         """The mover a handler's first broadcast does not run skips the handler on a
@@ -4937,7 +4981,13 @@ class HandlerCompiler:
             buffer.block = count
             broadcast.buffer = buffer
             self.compiled.broadcasts.append(
-                (broadcast.pattern, buffer, broadcast.window)
+                (
+                    broadcast.pattern,
+                    buffer,
+                    broadcast.window,
+                    broadcast.mover,
+                    broadcast.length,
+                )
             )
             if dtype == "float32":
                 self.compiled.unpack_fp32.add(buffer.name)
@@ -4948,7 +4998,10 @@ class HandlerCompiler:
                 "pages already",
                 "cast the same pages each time",
             )
-        if self.loops:
+        counted = self.counted_cast(node, name, broadcast)  # None: the one loop's
+        if counted is not None:
+            block = counted
+        elif self.loops:
             loop = self.loops[-1]
             if loop["first"] != "0":
                 self.refuse(
@@ -4988,9 +5041,42 @@ class HandlerCompiler:
         self.wait(node, f"mover {broadcast.mover}", WAIT_VALID)
         movement = [Line(text, uses, mover=broadcast.mover)]
         compute = []
+        if counted is not None:  # the next block's number, on its mover and compute
+            movement.append(Line(f"{counted}++;", {counted}, mover=broadcast.mover))
+            compute.append(Line(f"{counted}++;", {counted}))
         if not self.loops:
             movement_end, compute = self.broadcast_end(name, "1", set())
             movement += movement_end
+        return movement, compute
+
+    def counted_cast(self, node, name, broadcast):
+        """A cast inside more than one loop, or a loop not from 0: its blocks counted
+        over every loop around it by a word of its mover and of compute, the finish
+        after the outermost loop with the count (None: one loop from 0 counts them)."""
+        if not self.loops or len(self.loops) == 1 and self.loops[0]["first"] == "0":
+            return None
+        outer = self.loops[0]
+        if broadcast.loop is not None and broadcast.loop is not outer:
+            self.refuse(
+                node,
+                f"{name} casts in two loops of the handler's top",
+                "cast in one loop, at any depth",
+            )
+        broadcast.loop = outer
+        counted = outer.setdefault("counted", [])
+        if name not in counted:
+            counted.append(name)
+        return f"km_blocks_{name}"
+
+    def counted_ends(self, loop):
+        """After the outermost loop around counted casts: each broadcast's finish and
+        compute's padding, by the blocks counted."""
+        movement, compute = [], []
+        for name in loop.get("counted", ()):
+            counter = f"km_blocks_{name}"
+            m, c = self.broadcast_end(name, counter, {counter})
+            movement += m
+            compute += c
         return movement, compute
 
     def is_call_of(self, node, name, kind, arguments):
@@ -6063,6 +6149,8 @@ class HandlerCompiler:
             m, c = self.broadcast_end(broadcast, high, uses)
             movement += m
             compute += c
+        m, c = self.counted_ends(loop)
+        movement, compute = movement + m, compute + c
         movement += self.fed_moves(node, loop, body_m)
         return movement, compute
 

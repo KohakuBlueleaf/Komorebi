@@ -226,11 +226,11 @@ class Broadcast:
         return self.cores[0]
 
 
-def broadcasts(grid, grid_panels, rect, along, noc):
+def broadcasts(grid, grid_panels, rect, along, noc, length=None):
     """The broadcasts of `rect` = (x0, y0, columns, rows) along "column" or "row".
 
-    One broadcast per column of the rectangle, or per row and panel. The sender is where
-    the NoC's direction starts: NoC0 top or left, NoC1 bottom or right."""
+    One per column of the rectangle, or per row and panel (with `length`, per band of
+    so many cores of each), sent from the NoC's start: NoC0 top or left, NoC1 bottom."""
     x0, y0, columns, rows = rect
     if (
         columns < 1
@@ -253,6 +253,10 @@ def broadcasts(grid, grid_panels, rect, along, noc):
             for panel_first, panel_last in grid_panels
             if panel_first <= x_range[-1] and x_range[0] <= panel_last
         ]
+    if length is not None:
+        if length < 1:
+            raise ValueError(f"a broadcast's band of {length} cores")
+        runs = [run[i : i + length] for run in runs for i in range(0, len(run), length)]
     out = [Broadcast(tuple(run if noc == 0 else run[::-1])) for run in runs]
     if any(len(broadcast.cores) > BROADCAST_CORES_MAX for broadcast in out):
         raise ValueError(
@@ -280,11 +284,13 @@ def broadcast_rect(broadcast, noc0, noc_xy, noc):
     return first[0] | first[1] << 16, last[0] | last[1] << 16
 
 
-def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buffer):
+def broadcast_args(
+    grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buffer, length=None
+):
     """Each core's broadcast arguments by core index (km::BroadcastArgs fields).
 
     buffer = (broadcast id, circular buffer index, window B, pages P), B = P = 0 for
-    words alone. The rectangle lies in the group; others get rank BROADCAST_NONE."""
+    words alone; `length`: bands. The rectangle is in the group; others get no rank."""
     broadcast_id, cb, window, pages = buffer
     if (window, pages) != (0, 0) and (
         not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1
@@ -303,7 +309,7 @@ def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buf
     common |= {"next": BROADCAST_NO_NEXT, "fed": 0, "from": 0}
     none = common | {"rank": BROADCAST_NONE, "receivers": 0, "sender": 0}
     out = {i: none | {"mc_start": 0, "mc_end": 0} for i in workers}
-    for broadcast in broadcasts(grid, grid_panels, rect, along, noc):
+    for broadcast in broadcasts(grid, grid_panels, rect, along, noc, length):
         index = [y * columns + x for x, y in broadcast.cores]
         if not workers.issuperset(index):
             raise ValueError(f"rectangle {rect} is not inside {group}")

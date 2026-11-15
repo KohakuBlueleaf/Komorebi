@@ -146,7 +146,9 @@ and a name of the handler's with that prefix is refused.
 | `word += round + page`, `word` a mover's | the line on the word's mover | |
 | `pages.write(word)` (one page), `word` a mover's | that mover: its word page (the word first, zeros after), `km::write_pages`, `noc_async_write_barrier` | |
 | `b = km.Broadcast(self, along="row", window=2)` | the broadcast on its mover (rows on mover A, columns on mover B); a core it leaves out skips the handler, on the other mover too | the same core skips it |
+| `b = km.Broadcast(self, along="column", length=L, mover="A")` | bands of L cores of each column (or row), each band's first core its sender, on the mover given (A: NoC 0, the band's top or left; B: NoC 1, its bottom or right) | |
 | `if b.sender():` `v = b.cast(t.pages(first, n).read())` `else:` `v = b.arrive()` | the sender's reserve, read and cast, the others' arrival, block by block of the loop around it; the last block's finish | |
+| the same inside more than one loop, or a loop not from 0 | the blocks counted over every loop around the cast (`km_blocks_b`, on the mover and compute), the finish after the outermost loop by the count | the padding by the count |
 | `v = b.cast(k.tiles[k0:k1, 0:D].T, w.tiles[k0:k1, 0:E])` | several parts into one block, in order, each at its most's place (Several ranges into one block) | |
 | `for tile in v:` | | the block received, each page of it, then freed; the padding after the last |
 | `km.cxx("...", takes=[v])`, v a broadcast's block | | the block received before the body, `v_buffer` its buffer and `v` its first page there (0), freed after the body: the body indexes the block's pages itself |
@@ -174,7 +176,28 @@ runtime).
 
 A broadcast's rectangle is fixed at load (a program argument), and `Run.submit`
 refuses a broadcast's command whose group is not the rectangle's, naming the
-`km.Broadcast` line; a rectangle per command is not in this version.
+`km.Broadcast` line; a rectangle per command is not in this version. The group is
+the rectangle's core indices from its first core to its last, so on a rectangle
+narrower than the grid `self.rank` is not the place in the rectangle: a core is placed
+by `self.x` and `self.y`, and the cores between are in the group but skip the handler.
+
+### A broadcast's mover, bands and count
+
+`km.Broadcast(self, along="column", length=L, mover="A")` cuts each column of the
+rectangle into bands of L cores (the last band the rest), each a broadcast of its own
+whose sender is the band's first core in its NoC's direction: mover A runs on NoC 0
+(a column's top, a row's left), mover B on NoC 1 (bottom, right). Without them a row's
+broadcast is mover A's and a column's mover B's, the whole side of the rectangle a
+broadcast. L is an int the build knows (a constant or a plan value); each mover runs
+one broadcast of a handler.
+
+A cast inside one loop from 0 numbers its blocks by the loop's name and finishes after
+that loop, as before. Inside more than one loop (a job loop around a chunk loop whose
+count is the job's), or in a loop not from 0, the blocks are counted over every loop
+around it: a word `km_blocks_b` on the broadcast's mover and on compute, from 0 at the
+handler's top, the block's number at each cast or arrival and one more after it; the
+finish and compute's padding (`km::broadcast_end`) come after the outermost loop, by
+the count. Casts in two loops at the handler's top are refused.
 
 A body takes the handler's names and runs on one CPU or on compute's three: the section
 Inline bodies says what it takes where. From

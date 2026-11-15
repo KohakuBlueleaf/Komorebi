@@ -481,3 +481,79 @@ def test_range_and_block_refusals_name_the_line(cls, text, why):
     tensors = {"k": grid("bfloat16", 8, 2), "v": grid("float32", 8, 2)}
     with pytest.raises(Refused, match=rf"^{cls.__name__}.copy, line {line}, .*{why}"):
         compile_class(cls, {}, tensors)
+
+
+class Banded(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor, jobs: int):
+        down = km.Broadcast(self, along="column", length=2, mover="A")
+        for job in range(jobs):
+            for chunk in range(job + 2):
+                if down.sender():
+                    kv = down.cast(k.tiles[chunk : chunk + 1, 0:2].read())
+                else:
+                    kv = down.arrive()
+                km.cxx("use(kv);", takes=[kv])
+
+
+def test_a_broadcast_on_a_chosen_mover_in_bands_counted_over_its_loops():
+    compiled = compile_class(Banded, {}, {"k": grid("bfloat16", 8, 2),
+                                          "v": grid("bfloat16", 8, 2)})  # fmt: skip
+    assert compiled.broadcasts[0][3:] == ("A", 2)  # mover A, bands of 2 cores
+    movement = "\n".join(render(prune(compiled.movement["copy"]), 0))
+    compute = "\n".join(render(prune(compiled.compute["copy"]), 0))
+    assert "uint32_t km_blocks_down = 0;\n#else  // mover B\n" in movement
+    # the block's number counts every loop's passes, on mover A and compute
+    assert "down.reserve(km_blocks_down)" in movement
+    assert "!down.arrive(km_blocks_down)" in movement
+    assert (
+        movement.count("km_blocks_down++;") == compute.count("km_blocks_down++;") == 1
+    )
+    assert "kBroadcast0Window, km_blocks_down);" in compute
+
+
+class Unplaced(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor):
+        down = km.Broadcast(self, along="column", mover="C")  # unplaced
+        km.cxx("use();", takes=[down])
+
+
+class Unlengthed(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor, n: int):
+        down = km.Broadcast(self, along="column", length=n)  # unlengthed
+        km.cxx("use();", takes=[down])
+
+
+class TwoTops(km.Program):
+    @km.handler
+    def copy(self, k: km.Tensor, v: km.Tensor):
+        down = km.Broadcast(self, along="column")
+        for i in range(1, 3):
+            if down.sender():  # noqa: SIM108
+                kv = down.cast(k.tiles[i : i + 1, 0:2])
+            else:
+                kv = down.arrive()
+            km.cxx("use(kv);", takes=[kv])
+        for i in range(2):
+            if down.sender():  # noqa: SIM108 (two tops)
+                kv = down.cast(k.tiles[i : i + 1, 0:2])
+            else:
+                kv = down.arrive()
+            km.cxx("use(kv);", takes=[kv])
+
+
+@pytest.mark.parametrize(
+    "cls, text, why",
+    [
+        (Unplaced, "# unplaced", 'a broadcast\'s mover is "A"'),
+        (Unlengthed, "# unlengthed", "a broadcast's length is cores a band"),
+        (TwoTops, "(two tops)", "down casts in two loops"),
+    ],
+)
+def test_broadcast_place_and_count_refusals(cls, text, why):
+    line = line_of(text)
+    tensors = {"k": grid("bfloat16", 8, 2), "v": grid("bfloat16", 8, 2)}
+    with pytest.raises(Refused, match=rf"^{cls.__name__}.copy, line {line}, .*{why}"):
+        compile_class(cls, {}, tensors)

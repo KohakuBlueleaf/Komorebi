@@ -142,6 +142,14 @@ NAMES = {
     "broadcast": Name("Broadcast", "km.Broadcast(self, along=): a broadcast", None),
     "along": Name("along", "a broadcast's direction: row or column", None),
     "window": Name("window", "a broadcast's blocks in flight", "window"),
+    "broadcast_mover": Name(
+        "mover", 'a broadcast\'s mover, "A" (NoC 0) or "B" (NoC 1)', None
+    ),
+    "broadcast_length": Name(
+        "length",
+        "a broadcast's band: so many cores of the row or column a sender",
+        None,
+    ),
     "sender": Name("sender", "broadcast.sender(): this core sends", "sender"),
     "cast": Name("cast", "broadcast.cast(pages): the block, to the others", "cast"),
     "arrive": Name("arrive", "broadcast.arrive(): the block, arrived", "arrive"),

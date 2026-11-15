@@ -407,9 +407,11 @@ def rectangle_args(compiled, rect, nocs):
     )
     fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
     by_mover = {}
-    for number, (along, buffer, window) in enumerate(compiled.broadcasts):
-        noc = 0 if along == "row" else 1
-        by_mover[compiler.ALONG[along]] = layout.broadcast_args(
+    for number, (along, buffer, window, mover, length) in enumerate(
+        compiled.broadcasts
+    ):
+        noc = 0 if mover == "A" else 1  # each mover runs on its own NoC
+        by_mover[mover] = layout.broadcast_args(
             nocs.grid,
             nocs.panels,
             group,
@@ -419,6 +421,7 @@ def rectangle_args(compiled, rect, nocs):
             nocs.noc0,
             nocs.noc_xy,
             (number, buffer.index_a, window, buffer.block),
+            length,
         )
     cells = {
         y * grid_width + x: (x - first_x, y - first_y)
