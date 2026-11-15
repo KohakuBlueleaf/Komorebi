@@ -42,6 +42,7 @@ BROADCAST_WINDOW = 2
 # Circular buffer indices: reads from 0, writes from 16, the others from 8 (24 and up
 # are the runtime's).
 FIRST_READ, FIRST_OTHER, FIRST_WRITE, LAST_INDEX = 0, 8, 16, 25
+HANDOVER_WORDS = 16  # a body's words of the other mover: one 64 B page
 REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
 PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}
 TILE_ELEMENTS = 32 * 32
@@ -627,6 +628,7 @@ class HandlerCompiler:
         self.params = []
         self.counts = {}  # tensor parameter -> its page-count word name
         self.putters = []  # the movers ("A", "B") that put items: waited at the end
+        self.handed = {}  # a body's node id -> the words it takes of the other mover
         self.reads = 0
         self.writes = 0
         self.arrivals = 0
@@ -5075,6 +5077,62 @@ class HandlerCompiler:
         self.wait(node, "compute", WAIT_INPUT)
         return movement, compute
 
+    def take_handed(self, node, name, value, where, bound, before, after):
+        """A word one mover's body gave, taken by a body on the other mover: the
+        giver writes the body's words into a page of the hand-over buffer and pushes
+        it there; the taker waits for the page, reads them, and frees it after."""
+        parts = self.handed.setdefault(id(node), {"words": []})
+        words = parts["words"]
+        if len(words) == HANDOVER_WORDS:
+            self.refuse(
+                node,
+                f"a hand-over between the movers holds {HANDOVER_WORDS} words a body, "
+                f"and this body takes {name} after {len(words)}",
+                f"take at most {HANDOVER_WORDS} words of the other mover in one body",
+            )
+        if words and parts["giver"] != value.mover:
+            self.refuse(node, "a body's hand-over is from one mover", "take one's")
+        words.append(name)
+        buffer = self.other_buffer(
+            "kHandover",
+            "word",
+            "uint32",
+            4 * HANDOVER_WORDS,
+            1,
+            f"line {node.lineno}: a hand-over of mover {value.mover}'s words",
+        ).name
+        page = f"km_handed{node.lineno}"
+        stores = "".join(
+            f"\nkm::l1({page})[{n}] = {word};" for n, word in enumerate(words)
+        )
+        giving = (
+            f"if (!movement.reserve({buffer}, 1)) {{\n    return false;\n}}\n"
+            f"const uint32_t {page} = get_write_ptr({buffer});{stores}\n"
+            f"cb_push_back({buffer}, 1);"
+        )
+        if len(words) == 1:
+            parts["giver"] = value.mover
+            parts["line"] = Line(giving, set(words), mover=value.mover)
+            before.append(parts["line"])
+            before.append(
+                Line(
+                    f"if (!movement.wait_front({buffer}, 1)) {{\n    return false;\n}}"
+                    f"\ninvalidate_l1_cache();\nconst uint32_t {page} = "
+                    f"get_read_ptr({buffer});",
+                    mover=where,
+                )
+            )
+            after.append(Line(f"cb_pop_front({buffer}, 1);", mover=where))
+        else:
+            parts["line"].text = giving
+            parts["line"].uses |= {name}
+        bound.append(f"const uint32_t {name} = km::l1({page})[{len(words) - 1}];")
+        self.compiled.handovers.append(
+            f"{self.method.name}, line {node.lineno}: {name} from mover {value.mover} "
+            f"to mover {where} by the hand-over buffer"
+        )
+        return set()
+
     def other_buffer(self, name, role, dtype, page_bytes, pages, what):
         for buffer in self.compiled.buffers:
             if buffer.name == name:
@@ -5883,6 +5941,8 @@ class HandlerCompiler:
             value.mover == where or value.mover == "compute" and where in COMPUTE_CPUS
         ):
             return {item.id}
+        if value.kind == "word" and {value.mover, where} == {"A", "B"}:
+            return self.take_handed(node, item.id, value, where, bound, before, after)
         if value.kind in ("written", "reduced") and value.buffer is not None:
             if where != "B":
                 self.refuse(
