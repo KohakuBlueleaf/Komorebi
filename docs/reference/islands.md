@@ -375,7 +375,8 @@ that fit there now (asking island 0 alone for 48 GiB on a p150a: refused in 35 m
 most 16,688,832 pages of 2 KiB). Example 01's MAP on one group of the 238 ranks of two
 cards, its input of 238 x 2 tiles placed with no hint, `split=0` and `split=1` over the
 group (118, 2) (`examples/01_mapcollect/islands.py --whole --split 1 --group 118,2`;
-2026-11-14, AICLK 800 MHz idle before the run, host load 3.8 to 8.4, one run each):
+2026-11-14, AICLK 800 MHz read idle before the job, the session's 1,350 MHz from its open
+to its exit; host load 3.8 to 8.4, one run each):
 
 | Input hint | Island 0 holds | MAP, us | Wrong tiles |
 |---|---|---|---|
@@ -391,7 +392,8 @@ island 0 2.89 to 3.11 GB/s, card 0 alone 2.86 to 3.13 GB/s: each island first co
 its part out of the caller's rows, and those copies did not overlap.
 
 Without that copy (`examples/01_mapcollect/islands.py --whole --io-mib 64,512`, the
-run loaded, AICLK 800 MHz, host load 4.3, one run, every byte read back compared), GB/s
+run loaded, AICLK 1,350 MHz from the open: the 800 MHz once written here was read idle
+before the job; host load 4.3, one run, every byte read back compared), GB/s
 of one write and one read:
 
 | Size | Split over both cards: write, read | Island 0 alone: write, read |

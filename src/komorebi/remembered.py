@@ -23,9 +23,9 @@ def headroom(size):
 
 
 def script_key(shape):
-    """The running script: its resolved path and the session's `shape` ("card",
-    "islands 2"); None for code with no file (python -c, a notebook) and for a runner
-    installed in Python's prefix (pytest), whose entry every run of it would share."""
+    """The running script: its resolved path, the session's `shape` ("card", "islands
+    2") and the code's digest; None for code with no file (python -c, a notebook) and
+    for a runner installed in Python's prefix (pytest), all its runs one entry."""
     path = getattr(sys.modules.get("__main__"), "__file__", None)
     if path is None:
         return None
@@ -33,7 +33,18 @@ def script_key(shape):
     prefixes = {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}
     if any(path.is_relative_to(prefix) for prefix in prefixes):
         return None
-    return f"{path}|{shape}"
+    return f"{path}|{shape}|{code_digest()}"
+
+
+def code_digest():
+    """The package's Python and native headers' digest: a script's entry measured with
+    other code (other kernels' sizes) is not read, and is no entry."""
+    digest = hashlib.sha256(_env.code_key().encode())
+    native = _env.include_directory()
+    for one in sorted(native.rglob("*")) if native is not None else ():
+        if one.is_file():
+            digest.update(str(one.relative_to(native)).encode() + one.read_bytes())
+    return digest.hexdigest()[:12]
 
 
 def program_key(program, shape):

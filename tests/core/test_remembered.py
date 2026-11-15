@@ -40,6 +40,14 @@ def test_a_run_grows_the_entry_and_its_close_sets_it(cache):
     assert remembered.read()["scripts"][second.script] == 70656
 
 
+def test_an_entry_measured_with_other_code_is_not_read(cache, monkeypatch):
+    remembered.Memory(lambda message: None).wanted(92496)
+    monkeypatch.setattr(remembered, "code_digest", lambda: "other")
+    said = []
+    assert remembered.Memory(said.append).size is None
+    assert said == ["kernel buffer: the runtime's at the open (nothing remembered)"]
+
+
 def test_a_corrupt_file_is_no_entry_logged_once(cache):
     (cache / remembered.FILE).write_text('{"scripts": {"')
     said = []
