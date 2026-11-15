@@ -251,6 +251,8 @@ def _core_args(program, placed, core):
     when the run holds programs in the runtime's form."""
     if placed is None:
         return program.core_args(core)
+    if len(placed.programs) > 1:
+        return programs.core_args(placed, core)
     for group in placed.groups:
         if group.first <= core < group.first + group.count and group.programs:
             return placed.programs[group.programs[0]].core_args(core)

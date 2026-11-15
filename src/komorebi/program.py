@@ -173,6 +173,8 @@ class Program:
     program_field: int = field(default=0, init=False, compare=False)
     # in a run of programs, what the run adds to its own overlays' numbers
     overlay_shift: int = field(default=0, init=False, compare=False)
+    # where its per-core args start in a run of several programs (programs.plan)
+    args_at: int = field(default=0, init=False, compare=False)
 
     def __init_subclass__(cls, compute=None, defines=None, startup=None, **kwargs):
         """A class deriving Program with handler methods is a program written as a
