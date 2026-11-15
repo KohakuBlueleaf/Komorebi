@@ -22,6 +22,16 @@ namespace km {
     template <int = 0>
     const volatile uint32_t* island_area();
 
+#if !__has_include("api/dataflow/dataflow_api.h")
+    // A host build (no tt-metal): the area of a block the host wrote no table into,
+    // one island that holds every rank.
+    template <int>
+    inline const volatile uint32_t* island_area() {
+        static const uint32_t area[KM_ISLANDS_BYTES / 4] = {};
+        return area;
+    }
+#endif
+
     // An island area viewed through its header and its table; a card of its own
     // (KM_ONE_ISLAND) knows them at build time: island 0 of 1, no link area or tables.
     class Islands {
