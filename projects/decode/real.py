@@ -1,9 +1,7 @@
-"""A real prompt through every layer on the card: the model's own weights (bf16), the
-tokens fed one a step, the embedding, the final norm and the head on the host, the
-largest logit taken greedily; against torch_reference.py's tokens and hidden states.
-
-The tokenizer runs with the reference (it writes the prompt's tokens); this script
-reads the checkpoint's safetensors with numpy alone."""
+"""A real prompt on the card: the model's own weights (bf16), a token a step, the
+embedding, final norm and head on the host, the largest logit taken greedily; against
+torch_reference.py's tokens and hidden states (its tokenizer writes the prompt's
+tokens). The checkpoint's safetensors are read with numpy alone."""
 
 import argparse
 import json
