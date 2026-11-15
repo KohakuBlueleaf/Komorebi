@@ -126,6 +126,12 @@ NAMES = {
         "against float64, printed with its cost",
         None,
     ),
+    "row": Name(
+        "row",
+        "km.Stream(pages, row=2): each item a row of 2 tiles, for a tile function "
+        "in the row form",
+        "row",
+    ),
     "zip": Name(
         "zip",
         "for a, b in zip(km.Stream(..), km.Stream(..)): streams read in step, a "

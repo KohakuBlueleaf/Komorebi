@@ -199,6 +199,43 @@ class Gate(km.Program):
 |---|---|---|
 | `for x, g in zip(km.Stream(...), km.Stream(...)):` | the read streams in one `movement.move` with the write streams the loop pushes to | block k of each stream from the half its mover filled; the streams have one count, block and repeat |
 | `results.push(f(x, g))`, `t = f(x, g)` | | once before the blocks `copy_init` and the body's setup (`km_tile::f_init()`); a tile: DST held, each operand copied into DST in the order of the unit program's operands, `km_tile::f(0)` on the math CPU, DST 0 packed into the write stream at the tile's place |
+| `for row in km.Stream(pages, block=4, row=2):` | one read stream, as without `row=` | each item a row of 2 tiles of the block; the block a multiple of the row |
+| `results.push(self.f(row, self.w))`, `self.w` a field | | the row form: the field filled above the loop waited for before its blocks and freed after them; a row: its tiles copied into DST 0 and 1, the field's tile into DST 4, `km_tile::f(0)`, DST 0 and 1 packed; DST in full-sync mode |
+
+A function called on a row of a stream of `row=` tiles is traced in the tile
+compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows of the
+streams, its last the fields it holds as resident rows, and its arithmetic the row
+form's, the sum of a row (`trace.reduce_sum`) and a value a row (`.col()`) or a column
+(`.row()`) among it. From
+[tile rules](../../experiments/tile_rules/as_class/norm_class.py), the row norm:
+
+```python
+class RowNorm(km.Program):
+    """norm: each core's `rows` rows of WIDTH tiles of x from rank x rows, y = x
+    rsqrt(mean(x^2) + eps) g into the same pages of out; g's tile filled from w."""
+
+    weight: km.L1[km.fp32, 1, 32, 32]
+
+    @km.tile_function(tolerance=TOLERANCE)
+    def norm(row, weight):
+        ms = trace.reduce_sum(row * row, exact=True) * (1.0 / (32 * WIDTH))
+        r = trace.rsqrt(ms + rules.EPS)
+        return row * r.col() * weight.row()
+
+    @km.handler(stamps="stamps")
+    def norm_rows(
+        self, x: km.Tensor, w: km.Tensor, out: km.Tensor, stamps: km.Tensor, rows: int
+    ):
+        first = self.rank * rows * WIDTH
+        self.weight.fill(km.Stream(w.pages(0, 1)))
+        results = km.Stream(out.pages(first, rows * WIDTH), write=True, block=BLOCK)
+        for row in km.Stream(x.pages(first, rows * WIDTH), block=BLOCK, row=WIDTH):
+            results.push(self.norm(row, self.weight))
+```
+
+The weight's tile is the row form's per-column operand, laid out by the host
+(`p_tile` of [rules.py](../../experiments/tile_rules/rules.py)): the tile compiler's
+row form reads it so.
 
 The build traces the function on tiles of the streams' formats (`unit_program(ir,
 load_macro=True)`), writes the body as `tile_<f>.hpp` and its unit program as text,
@@ -214,7 +251,8 @@ read the wall clock around each call between two `tensix_sync()`, as the tile
 compiler's measurements do, and writes page `rank` of `t` (uint32 pages of 19 words or
 more): the command's sequence, the calls, 16 empty spans, then each call's span. From
 the same example on the card: 768 calls, a median span of 1,666 cycles less the empty
-span of 10, 1,656 cycles a tile, against the 1,657.6 the build prints.
+span of 10, 1,656 cycles a tile, against the 1,657.6 the build prints. In the row form
+the cost and the span are a row's.
 
 What the tile compiler does not lower is refused, naming the handler's line, the
 function and the compiler's sentence, with "write this body inline: km.cxx(...,
@@ -390,6 +428,7 @@ the packed text of the five CPUs, of 70,656 B.
 | [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
 | [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,712 / 38,640 B | 86.68 / 76.06 us a command (bfloat16, 12 cores, 64 tiles a core); the emitted body 1,656 cycles a tile on the math CPU, 1,657.6 printed |
 | [tile rules](../../experiments/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
+| [tile rules](../../experiments/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,376 B (stamped) | the emitted body 771.0 cycles a row of 2 tiles on the math CPU, 753.0 printed; 771.5 in the one-core harness, 3,201.5 its hand norm |
 
 ## Not in this version
 

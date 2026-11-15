@@ -301,8 +301,11 @@ def rectangle_args(compiled, rect, nocs):
 
 
 def compute_options(compiled):
-    """The compute kernel's options: fp32 in DST; float32 buffers unpacked to it."""
+    """The compute kernel's options: fp32 in DST; float32 buffers unpacked to it;
+    DST in full-sync mode for a row-form tile function."""
     options = {"math_fidelity": "HiFi4", "fp32_dest_acc_en": True}
+    if compiled.full_dst:  # a row-form tile function's DST tiles past the half
+        options["dst_full_sync_en"] = True
     fp32 = [b for b in compiled.buffers if b.name in compiled.unpack_fp32]
     for buffer in fp32:
         options.setdefault("unpack_to_dest_mode", {})
@@ -786,17 +789,26 @@ def tile_costs(compiled):
     if not compiled.tile_calls:
         return []
     lines = [
-        "tile functions (the math CPU's vector-unit cycles a tile by the tile "
-        "compiler's cost model; the copies into DST and the pack not priced):"
+        "tile functions (the math CPU's vector-unit cycles a tile, or a row of the "
+        "row form, by the tile compiler's cost model; the copies into DST and the "
+        "pack not priced):"
     ]
     for handler, line, text, function, cxx in compiled.tile_calls:
-        unit = compiled.units[cxx][1]
+        (_, _, width), unit = compiled.units[cxx]
         count, cycles, _ = unit.cost("math")
         rules = [
-            f"{p.name}: {'; '.join(p.done)}"
+            f"{p.name}: {'; '.join(counted(p.done))}"
             for p in unit.passes
             if p.done and p.name in ("load_macro", "replay", "fuse_mad")
         ]
+        code = function.function.__code__
+        operands = list(unit.operands)
+        operands += [
+            f"{name} (resident)"
+            for name in code.co_varnames[: code.co_argcount]
+            if name not in operands
+        ]
+        each = "a tile" if width == 1 else f"a row of {width} tiles"
         tolerance = (
             "not stated"
             if function.tolerance is None
@@ -804,11 +816,19 @@ def tile_costs(compiled):
         )
         lines.append(
             f"  {handler}, line {line}, `{text}`: {function.name} on "
-            f"{', '.join(unit.operands)} (tile_{cxx}.hpp): {count} instructions, "
-            f"{cycles} cycles a tile; {'; '.join(rules) or 'no rule fired'}; "
+            f"{', '.join(operands)} (tile_{cxx}.hpp): {count} instructions, "
+            f"{cycles} cycles {each}; {'; '.join(rules) or 'no rule fired'}; "
             f"tolerance {tolerance}"
         )
     return lines
+
+
+def counted(done):
+    """A rule's entries in order, each once, a repeated one with its count."""
+    seen = {}
+    for entry in done:
+        seen[entry] = seen.get(entry, 0) + 1
+    return [entry if n == 1 else f"{entry} ({n} times)" for entry, n in seen.items()]
 
 
 def lines_of(program, error):
