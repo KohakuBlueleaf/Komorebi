@@ -324,6 +324,39 @@ build is seen; `KMR_INSN_CHECK=0` turns it off.
 
 Described in [Host API, instructions the cores lack](host.md#instructions-the-cores-lack).
 
+### A wait that never completes
+
+**The hazard.** A wait in a kernel that nothing ever satisfies (a page that is never
+pushed, a marker that never comes, a NoC barrier that never clears) holds its core in
+the command. Without the guard no one gets it out: the command misses its deadline, the
+dispatcher frees it while the core stays in the wait, and the next command to that core
+does not run.
+
+**The rule.** The program's waits complete: every page, marker and acknowledgement a
+wait names is sent by some core of the same command, on every path.
+
+**The guard.** A switch, `guard` of `km.Program` (and the same keyword at a class's
+making), on by default. On, the kernels keep live words, poll each command's abort word
+in every runtime wait and time their NoC barriers: at a command's deadline the
+dispatcher reads the group (`run.inspect` does the same on request), the waits return,
+the cores leave, clear their pages and take the next command, and a core that cannot
+leave is reset. Its cost on one p150a, example 16's empty command in the kernel form: 373
+cycles on one core and 301 on 120 cores (1,012.5 against 639 and 1,149.5 against 848),
+in the runtime's form 341 and 286, a sum of 16 tiles 250 to 890, and 9,520 B of kernel
+text in the kernel form (34,848 against 25,328) and 6,400 B in the runtime's (30,432
+against 24,032); the gate class's command of 120 cores is the same within 1 µs. Off
+(`False`, kernels built with `KM_GUARD` 0): none of it. `run.inspect` raises naming the
+program, the load's log says once that its commands are not given up at a deadline and
+that a hang then costs a card reset, a `CommandTimeout` of such a run says that no core
+was asked to leave, and the reset lists (`recover=True`) reset only a core whose own
+wait limit ended its kernels. Programs that share the runtime's kernels (a list, a dict,
+a merge) must agree, else `ProgramError` names two. A program known right takes the rule
+on itself.
+
+Described in [giving up one command](runtime.md#giving-up-one-command),
+[Host API, `Program`](host.md#program) and
+[recovery](../guides/recovery.md#the-ladder).
+
 ### A wait or a loop of the program's own that polls nothing
 
 **The hazard.** A program's own `noc_async_*_barrier` calls have no timeout, and a loop
