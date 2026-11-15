@@ -1,20 +1,7 @@
-"""Staged run of the softmax step's rules, one session, one core: the hand step (run
-on the card before), the emitted step with none of the five rules, then one rule
-added a stage, the smallest saving first, so that a stage that does not return names
-its rule. The matrix row sums come last: the cost model takes them only once the
-interleave is on, and they are the only rule that adds waits and buffers (a second
-Dst acquire, P and the state through two buffers, a tile of ones from the reader).
-The exp step with its rules follows, and the matrix unit's product last: the
-library's matmul_block_no_mop, then the emitted words (their values and cycles
-compared). Each stage's name is logged before its launch and "returned" after it;
-`--stages` runs some of them.
-
-A rule is switched off by replacing its entry point in komorebi.dsl.tile.steps while
-a stage's header is built (rules.py's headers keep every rule on).
-
-`rule_stages.py build` (mock device: the stage headers, every kernel, the host
-checks on made-up results) and `rule_stages.py card` (compiles nothing).
-"""
+"""Staged run of the softmax step's rules on one core (README.md, "The rules, one at
+a time"): the hand step, the emitted step with no rule, one rule added a stage, BODY
+20 and 21, then the products 22 and 23; each stage's name is logged before its launch.
+`rule_stages.py build` (mock device) and `rule_stages.py card` (compiles nothing)."""
 
 import argparse
 import contextlib
@@ -37,9 +24,8 @@ from komorebi import session as km_session  # noqa: E402
 from komorebi.dsl.tile import emit, steps  # noqa: E402
 
 STAGED = GENERATED / "stages"
-# The rules of the step: 1 matrix_sum, 2 max_macro, 3 interleave, 4 LReg 11 as a
-# fourth constant register, 5 constants held once a step (the exp step's rule 5 is
-# its store's address mode, in body 21).
+# The step's rules: 1 matrix_sum, 2 max_macro, 3 interleave, 4 LReg 11 a constant
+# register, 5 constants held for the step (the exp step's: its store's address mode).
 ALL = frozenset({1, 2, 3, 4, 5})
 # (name, BODY, rules on; None: rules.py's own header).
 STAGES = [
@@ -58,7 +44,8 @@ STAGES = [
 
 @contextlib.contextmanager
 def rules_on(on):
-    """komorebi.dsl.tile.steps with only the rules `on`."""
+    """komorebi.dsl.tile.steps with only the rules `on` (the others' entry points
+    replaced while a stage's header is built)."""
     saved = {
         k: getattr(steps, k)
         for k in ("_matrix_sums", "max_macro", "interleave", "constant_registers")

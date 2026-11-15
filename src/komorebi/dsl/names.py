@@ -28,7 +28,8 @@ NAMES = {
     "stamps": Name(
         "stamps",
         'km.handler(overlay=True, stamps="t"): its load and call cycles, a page a '
-        "mover of tensor t",
+        'mover of tensor t; km.handler(stamps="t") of a handler calling a tile '
+        "function: the math CPU's cycles of each call, a page a rank",
         None,
     ),
     "field": Name("L1", "km.L1[format, *shape]: a field resident in the L1", None),
@@ -48,6 +49,9 @@ NAMES = {
         "self.partition(pages): this core's part by rank; b.partition(pages): "
         "by its place along broadcast b's row or column",
         None,
+    ),
+    "core": Name(
+        "core", "self.core: this core's place in the grid (its worker index)", "me"
     ),
     "x": Name("x", "self.x: this core's column in the broadcasts' rectangle", None),
     "y": Name("y", "self.y: this core's row in the broadcasts' rectangle", None),
@@ -80,6 +84,9 @@ NAMES = {
     "push": Name("push", "out.push(tile): a tile into a write stream", None),
     "fill": Name("fill", "self.field.fill(km.Stream(pages)): pages into a field", None),
     "pages": Name("pages", "tensor.pages(first, count): a range of pages", "page"),
+    "tiles": Name(
+        "tiles", "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major", None
+    ),
     "read": Name(
         "read",
         "pages.read(): the pages, read (a cast's block); word = pages.read() of one "
@@ -94,6 +101,9 @@ NAMES = {
     ),
     "reduce": Name("reduce", "km.reduce(tile, form=): the group's sum", "reduce"),
     "form": Name("form", "a reduce's form: owner or tree", "form"),
+    "group": Name(
+        "group", "km.reduce(t, group=S): in groups of S consecutive ranks", None
+    ),
     "broadcast": Name("Broadcast", "km.Broadcast(self, along=): a broadcast", None),
     "along": Name("along", "a broadcast's direction: row or column", None),
     "window": Name("window", "a broadcast's blocks in flight", "window"),
@@ -113,6 +123,59 @@ NAMES = {
         "Tile", "gives=km.Tile: the tile a body leaves in DST 0", "tile"
     ),
     "on": Name("on", "the CPU of an inline body", None),
+    "tile_function": Name(
+        "tile_function",
+        "@km.tile_function: a function of tiles, traced and emitted for compute by "
+        "the tile compiler; a handler calls it on the tiles of its streams",
+        None,
+    ),
+    # a tile function's arithmetic: the tile compiler's trace functions, by these
+    # names (error= and over= pass through to exp and exp2)
+    **{
+        f"math_{name}": Name(
+            name, f"km.{name}: {what} (in a tile function)", f"trace.{name}"
+        )
+        for name, what in (
+            ("exp", "e^x, exp(x, error=, over=)"),
+            ("exp2", "2^x, exp2(x, error=, over=)"),
+            ("sigmoid", "1 / (1 + e^-x)"),
+            ("silu", "x sigmoid(x)"),
+            ("tanh", "tanh(x)"),
+            ("sqrt", "the square root"),
+            ("rsqrt", "1 / sqrt(x)"),
+            ("reciprocal", "1 / x"),
+            ("relu", "max(x, 0)"),
+            ("square", "x x"),
+            ("maximum", "the larger of two, value by value"),
+            ("minimum", "the smaller of two, value by value"),
+            ("reduce_sum", "a row's sum (the row form), reduce_sum(x, exact=)"),
+            ("reduce_max", "a row's largest value (the row form)"),
+        )
+    },
+    "tolerance": Name(
+        "tolerance",
+        "@km.tile_function(tolerance=1e-6): its stated largest relative error "
+        "against float64, printed with its cost",
+        None,
+    ),
+    "row": Name(
+        "row",
+        "km.Stream(pages, row=2): each item a row of 2 tiles, for a tile function "
+        "in the row form",
+        "row",
+    ),
+    "to": Name(
+        "to",
+        "self.forward(rank, message, to=Class.handler), self.send(..., to=): the "
+        "dynamic handler the message names there",
+        "handler",
+    ),
+    "zip": Name(
+        "zip",
+        "for a, b in zip(km.Stream(..), km.Stream(..)): streams read in step, a "
+        "tile of each a turn",
+        None,
+    ),
     "tile_buffer": Name(
         "_buffer",
         "tile_buffer in a body: a stream tile's buffer (the loop's name)",

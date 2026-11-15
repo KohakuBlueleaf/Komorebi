@@ -34,6 +34,13 @@ def parse():
     parser.add_argument("--context", type=int, default=256, help="the cache's rows")
     parser.add_argument("--json", default=None)
     parser.add_argument("--tokens", default=None, help=".npz of the card's tokens")
+    parser.add_argument(
+        "--bodies",
+        nargs="*",
+        default=list(card.DEFAULT_BODIES),
+        choices=list(card.BODIES),
+        help="the operations whose vector bodies are emitted (bodies.py)",
+    )
     return parser.parse_args()
 
 
@@ -124,10 +131,17 @@ def main():
     if steps > args.context:
         raise ValueError(f"{steps} positions past a cache of {args.context}")
     report = {"model": model.name, "prompt_tokens": len(prompt), "steps": steps}
+    report["bodies"] = args.bodies
     tokens, per_layer, step_us = list(prompt), [], []
     with km.Session(log=log) as session:
         decode = card.Decode(
-            session, model, model.layers, 1.0, log, context=args.context
+            session,
+            model,
+            model.layers,
+            1.0,
+            log,
+            context=args.context,
+            bodies=args.bodies,
         )
         written = 0.0
         empty = np.zeros((model.kv_heads, 0, model.head_dim), np.float32)

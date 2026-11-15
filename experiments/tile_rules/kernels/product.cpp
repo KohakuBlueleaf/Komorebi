@@ -1,9 +1,5 @@
-// Tile-rules product: the dense project's compute order (unpack, math, pack) for one
-// tile of A times one of B a unit, by the library's matmul_block_no_mop (BODY 22) or
-// by its unpack and the words komorebi.dsl.tile emits for its math (BODY 23). The
-// product is timed on the math CPU as the attention body times its score products:
-// from its issue (no sync before it: the unpacker is ahead holding both Src banks) to
-// a tensix_sync after it; the empty span (kSync) is taken off on the host.
+// Tile-rules product (BODY 22: matmul_block_no_mop; 23: its unpack and the emitted math
+// words), timed on the math CPU from its issue to a tensix_sync after it.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -40,6 +36,7 @@ void kernel_main() {
         cb_wait_front(rules::kCbA, 1);
         cb_wait_front(rules::kCbB, 1);
         tile_regs_acquire();
+        // No sync before the product: the unpacker is ahead holding both Src banks.
         MATH(const uint32_t start = rules::wall());
 #if BODY == 22
         matmul_block_no_mop(rules::kCbA, rules::kCbB, 0, 0, 0, false, 1, 1, 1);

@@ -2,19 +2,34 @@
 // up, each times 1 / rms (the norm); out = silu(gate) * up, up rounded to bf16 first.
 #include "api/compute/compute_kernel_api.h"
 #include "../ops.hpp"
+#if DC_EMIT_NORM || DC_EMIT_GATE
+#include "../emitted.hpp"
+#endif
 
 uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     const uint32_t tiles = (
         compute.arg(block.plan + kSpOh) * compute.arg(block.plan + kSpOw)
     );
-    const uint32_t half = tiles / 2;
-    const uint32_t live = decode::live_rows(*block.command);
+    [[maybe_unused]] const uint32_t half = tiles / 2;
+    [[maybe_unused]] const uint32_t live = decode::live_rows(*block.command);
+#if DC_EMIT_NORM
+    if (!compute.wait_front(kCbSum, tiles) || !decode::emitted::rms_scale(compute)) {
+        return 0;
+    }
+#else
     if (
         !compute.wait_front(kCbSum, tiles) ||
         !decode::rms_scale(compute, block.command->a9, live)
     ) {
         return 0;
     }
+#endif
+#if DC_EMIT_GATE
+    const bool gated = decode::emitted::gate(compute, tiles);
+    cb_pop_front(DC_CB_SCALE, 1);
+    cb_pop_front(kCbSum, tiles);
+    return gated ? 1 : 0;
+#else
     const bool up = compute.reserve_back(DC_CB_UP, tiles);  // whole items: tiles pages
     pack_reconfig_data_format(DC_CB_UP);
     for (uint32_t tile = 0; tile < half; tile++) {
@@ -62,4 +77,5 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     cb_pop_front(DC_CB_SCALE, 1);
     cb_pop_front(kCbSum, tiles);
     return out && up ? 1 : 0;
+#endif
 }

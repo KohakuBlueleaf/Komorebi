@@ -1,6 +1,9 @@
 // Scale, compute: Y = the sum times each row's 1 / rms (the norm's weight is in W's
 // rows), bf16; on q's and k's blocks then each head's norm and rotation (DC_QK).
 #include "../ops.hpp"
+#if DC_EMIT_NORM || DC_EMIT_QK
+#include "../emitted.hpp"
+#endif
 
 #if !defined(DC_EPSILON)
 #error "DC_EPSILON: the norms' epsilon (float bits), the overlay's define"
@@ -8,6 +11,10 @@
 
 // The sum's tiles times DC_CB_SCALE into `out` (reserved and pushed here).
 static bool scaled(km::Compute& compute, uint32_t tiles, uint32_t out) {
+#if DC_EMIT_NORM
+    const bool room = compute.reserve_back(out, tiles);
+    decode::emitted::scale_tiles(0, tiles, out, room);
+#else
     const bool room = compute.reserve_back(out, tiles);
     pack_reconfig_data_format(out);
     for (uint32_t tile = 0; tile < tiles; tile++) {
@@ -23,6 +30,7 @@ static bool scaled(km::Compute& compute, uint32_t tiles, uint32_t out) {
         }
         tile_regs_release();
     }
+#endif
     if (room) {
         cb_push_back(out, tiles);
     }
@@ -31,6 +39,7 @@ static bool scaled(km::Compute& compute, uint32_t tiles, uint32_t out) {
     return room;
 }
 
+#if !DC_EMIT_QK
 // Head `head` of the scaled tiles (DC_CB_Y): its rows' 1 / rms over its 128 columns
 // into DC_CB_SCALE, then each tile times it and the norm's weight into DC_CB_NORMED.
 static bool head_norm(km::Compute& compute, uint32_t head, uint32_t live) {
@@ -116,18 +125,25 @@ static void rotated(uint32_t live, bool room) {
     }
     cb_pop_front(DC_CB_NORMED, DC_HEAD_TILES);
 }
+#endif
 
 uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
-    const uint32_t live = decode::live_rows(*block.command);
+    [[maybe_unused]] const uint32_t live = decode::live_rows(*block.command);
     const uint32_t tiles = (
         compute.arg(block.plan + kSpOh) * compute.arg(block.plan + kSpOw)
     );
+#if DC_EMIT_NORM
+    if (!compute.wait_front(kCbSum, tiles) || !decode::emitted::rms_scale(compute)) {
+        return 0;
+    }
+#else
     if (
         !compute.wait_front(kCbSum, tiles) ||
         !decode::rms_scale(compute, DC_EPSILON, live)
     ) {
         return 0;
     }
+#endif
     if (!decode::qk_block(compute, block)) {
         return scaled(compute, tiles, kCbSplitOut) ? 1 : 0;
     }
@@ -138,9 +154,14 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     ) {
         return 0;
     }
-    reconfig_data_format_srca(kCbSum, DC_CB_Y);
     const bool out = compute.reserve_back(kCbSplitOut, tiles);
     bool done = true;
+#if DC_EMIT_QK
+    for (uint32_t head = 0; done && head < tiles / DC_HEAD_TILES; head++) {
+        done = decode::emitted::head(compute, head, out);
+    }
+#else
+    reconfig_data_format_srca(kCbSum, DC_CB_Y);
     for (uint32_t head = 0; done && head < tiles / DC_HEAD_TILES; head++) {
         done = head_norm(compute, head, live);
         if (done) {
@@ -149,6 +170,7 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
         }
     }
     reconfig_data_format_srca(DC_CB_Y, kCbSum);
+#endif
     cb_pop_front(DC_CB_ROPE, 2 * DC_HEAD_TILES);
     cb_pop_front(DC_CB_HEAD, DC_HEAD_ITEM);
     cb_pop_front(DC_CB_Y, tiles);

@@ -1,11 +1,17 @@
 // Add, compute: Y = the sum + the block (the residual), each tile in DEST in fp32,
 // packed in bf16 for the root's writer; then the rows' squares of Y for the next norm.
 #include "../ops.hpp"
+#if DC_EMIT_ADD
+#include "../emitted.hpp"
+#endif
 
 uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     const uint32_t tiles = (
         compute.arg(block.plan + kSpOh) * compute.arg(block.plan + kSpOw)
     );
+#if DC_EMIT_ADD
+    return decode::emitted::residual_add(compute, tiles) ? 1 : 0;
+#else
     if (!compute.wait_front(kCbSum, tiles) || !compute.wait_front(DC_CB_BLOCK, tiles)) {
         return 0;
     }
@@ -53,4 +59,5 @@ uint32_t km_overlay(km::Compute& compute, const SplitBlock& block) {
     cb_pop_front(DC_CB_CONSTANT, DC_CONSTANTS);
     reconfig_data_format_srca(DC_CB_Y, kCbSum);
     return part ? 1 : 0;
+#endif
 }

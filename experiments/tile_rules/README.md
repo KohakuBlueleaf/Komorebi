@@ -53,6 +53,7 @@ reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.
 | shared layout of buffers and the info page | `kernels/rules.hpp` |
 | the per-core attention body (BODY 18, 19) and its reader | `kernels/attention.cpp`, `kernels/attn_reader.cpp` |
 | the product (BODY 22, 23): unpack, math, pack in the dense project's order | `kernels/product.cpp` |
+| the attention body in stages (score product, + the step, the whole body, body 19), one session, each stage's name printed before its launch | `attn_stages.py` |
 | driver: emits `kernels/generated/*.hpp`, builds, runs, checks | `rules.py` |
 | the rules in stages (the hand step, the emitted step with none, one rule added a stage, BODY 20, 21, then 22 and 23), one session, each stage's name printed before its launch; a rule is switched off by replacing its entry point while its header is built | `rule_stages.py` |
 
@@ -159,7 +160,9 @@ within 3.1e-3 of float64 (tolerance 4e-3); estimate a step 2350 for the vector p
 ### The rules, one at a time
 
 `rule_stages.py`, the same core, cycles a step (3 score tiles and the state), the median
-of 16 less the empty span; values against float64 (tolerance 2e-3 each):
+of 16 less the empty span; values against float64 (tolerance 2e-3 each). The smallest
+saving first; the row sums on the matrix unit last: the cost model takes them only with
+the interleave on, and they alone add waits and buffers.
 
 | stage | estimate | card | error | p / l / alpha / m |
 |---|---|---|---|---|
@@ -238,3 +241,14 @@ the accurate softmax step (-12%: 26 KB of straight-line code, unexplained).
   (Float32 for the unpacker, wrong for products). The first hand norm gave even
   columns 0 and odd columns scaled by about 10^3 or 10^-19; the first hand gate gave 58
   non-finite values. With `reconfig_data_format` before each product both are right.
+
+## The row state is not a queue
+
+The attention body keeps its row state in one page of `kCbSt`, written in place by the
+pack CPU and never pushed or popped. A buffer with two producers (the reader's first
+page, then the pack CPU's) hangs: the pack CPU's push writes its own count of pushes
+into the buffer's received counter, not an increment, so after its first push the
+counter reads 1 although two pages were pushed, equals the pops, and the unpacker's wait
+for the next page never returns. The first version of the body did that and left the
+core stuck twice. The tile emitter now refuses such a
+buffer in a unit's table (`emit`'s `one-producer` check).

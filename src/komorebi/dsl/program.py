@@ -9,9 +9,11 @@ from pathlib import Path
 from komorebi import _env, abi, layout, overlay
 from komorebi import program as km_program
 from komorebi.dsl import compiler
-from komorebi.dsl.front import MESSAGE_WORDS
+from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.tile import emit
+from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.errors import ProgramError
 
 BUILD = "build"
@@ -80,8 +82,11 @@ def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **t
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
+    self.reduce_groups = compiled.reduce_groups
     if compiled.rectangle:
         program_args = rectangle_of(self, compiled)
+    if compiled.word_fields:
+        program_args = words_of(compiled, tensors, program_args)
     built = write(cls, compiled, l1)
     for line in built.report:
         log(line)
@@ -248,6 +253,33 @@ def rectangle_of(program, compiled):
     return args
 
 
+def words_of(compiled, tensors, rectangle):
+    """The program arguments of a class with word fields: compute's, the L1 address
+    of each field's tensor (made with a tensor of the field's name, one row in each
+    core's L1, the host's to read after the run)."""
+    if rectangle is not None:
+        raise ProgramError(
+            f"{compiled.name}: word fields with self.x, self.y or a broadcast are not "
+            "in this version"
+        )
+    addresses = []
+    for name, count in compiled.word_fields.items():
+        tensor = tensors.get(name)
+        if tensor is None or tensor.shard_grid is None or tensor.dtype != "uint32":
+            raise ProgramError(
+                f"{compiled.name}.{name} is {count} words in each core's L1: make "
+                f"the program with {name}=session.empty((cores, {count}), "
+                '"uint32", shard_grid=session.grid)'
+            )
+        if tensor.page_bytes < 4 * count:
+            raise ProgramError(
+                f"{compiled.name}.{name} is {count} words; a row of {name} is "
+                f"{tensor.page_bytes} B"
+            )
+        addresses.append(tensor.address)
+    return lambda core: ([], [], addresses)
+
+
 def session_nocs(program, nocs):
     """Session.load's hand-over: the session's NoCs, unless the class was made with
     its own."""
@@ -300,8 +332,14 @@ def rectangle_args(compiled, rect, nocs):
 
 
 def compute_options(compiled):
-    """The compute kernel's options: fp32 in DST; float32 buffers unpacked to it."""
-    options = {"math_fidelity": "HiFi4", "fp32_dest_acc_en": True}
+    """The compute kernel's options: fp32 in DST; float32 buffers unpacked to it;
+    DST in full-sync mode for a row-form tile function."""
+    options = {
+        "math_fidelity": compiled.fidelity or "HiFi4",
+        "fp32_dest_acc_en": True,
+    }
+    if compiled.full_dst:  # a row-form tile function's DST tiles past the half
+        options["dst_full_sync_en"] = True
     fp32 = [b for b in compiled.buffers if b.name in compiled.unpack_fp32]
     for buffer in fp32:
         options.setdefault("unpack_to_dest_mode", {})
@@ -331,6 +369,9 @@ def write(cls, compiled, l1):
         "compute.cpp": compute_source(compiled),
         **parts(compiled),
     }
+    for cxx, (_, unit) in compiled.units.items():  # the tile functions' bodies
+        files[f"tile_{cxx}.hpp"] = emit(unit)
+        files[f"tile_{cxx}.txt"] = unit.dump() + "\n"
     if compiled.dynamic:  # compute alone: the runtime's movers carry the messages
         del files["movement.cpp"]
         files["compute.cpp"] = dynamic_source(compiled)
@@ -437,7 +478,7 @@ def header(compiled):
                 slots = buffer.pages[0]
                 lines.append(
                     f"constexpr km::Arrival {buffer.name} = "
-                    f"{{{buffer.index_a}, {slots}, 1}};"
+                    f"{{{buffer.index_a}, {slots}, {buffer.block}}};"
                 )
             elif buffer.role == "field":
                 lines += [
@@ -468,7 +509,39 @@ def header(compiled):
             lines.append(
                 f'constexpr km::Pattern {constant} = km::pattern("{letters}");'
             )
+    lines += format_macros(compiled)
     return "\n".join(lines) + "\n"
+
+
+def mixed_formats(compiled):
+    """(the formats compute unpacks are more than one, those it packs are): a
+    kernel of one of each sets them once at its start."""
+    unpacked, packed = set(), set()
+    for buffer in compiled.buffers:
+        if buffer.role in ("read", "field", "arrival", "broadcast"):
+            unpacked.add(buffer.dtype)
+        elif buffer.role in ("write", "out"):
+            packed.add(buffer.dtype)
+            if buffer.name in compiled.unpack_fp32:  # a sum packed again
+                unpacked.add(buffer.dtype)
+    return len(unpacked) > 1, len(packed) > 1
+
+
+def format_macros(compiled):
+    """Compute's format changes before an unpack or a pack: the library's reconfig
+    calls when the kernel's buffers have more than one format, else nothing."""
+    unpack, pack = mixed_formats(compiled)
+    return [
+        "",
+        "// Compute's formats: set again before each unpack and pack when its buffers",
+        "// have more than one.",
+        "#define KM_UNPACK_FORMAT_A(cb) "
+        + ("reconfig_data_format_srca(cb)" if unpack else "((void)0)"),
+        "#define KM_UNPACK_FORMATS(a, b) "
+        + ("reconfig_data_format((a), (b))" if unpack else "((void)0)"),
+        "#define KM_PACK_FORMAT(cb) "
+        + ("pack_reconfig_data_format(cb)" if pack else "((void)0)"),
+    ]
 
 
 def tensor_aliases(compiled):
@@ -586,6 +659,8 @@ def compute_includes(compiled):
     for path, needs in COMPUTE_INCLUDES:
         if needs is None or needs in compiled.includes:
             lines.append(f'#include "{path}"')
+    if any(mixed_formats(compiled)):
+        lines.append('#include "api/compute/reconfig_data_format.h"')
     if compiled.overlays:
         lines.append('#include "komorebi/device/km_overlay.hpp"')
     return lines + compiled.body_includes["compute"]
@@ -704,6 +779,7 @@ COMPUTE_INCLUDES = [
     ("api/compute/compute_kernel_hw_startup.h", None),
     ("api/compute/eltwise_binary_sfpu.h", "add"),
     ("api/compute/eltwise_unary/fill.h", "fill"),
+    ("api/compute/matmul.h", "matmul"),
     ("api/compute/pack.h", None),
     ("api/compute/reg_api.h", None),
     ("api/compute/tile_move_copy.h", None),
@@ -764,6 +840,14 @@ def summary(compiled, folder, files, l1):
         )
     for name, value in sorted(compiled.constants.items()):
         report.append(f"  {spelling('plan')}: {name} = {value}")
+    report += tile_costs(compiled)
+    report += product_costs(compiled)
+    for name, (fillers, readers) in compiled.field_users.items():
+        if fillers and readers:
+            report.append(
+                f"  field {name}: filled by {', '.join(fillers)}, read by "
+                f"{', '.join(readers)} (it stays in L1 between commands)"
+            )
     room = "" if l1 is None else f" of {l1} B left for buffers"
     report.append(f"  L1: the buffers take {total} B{room}")
     if l1 is not None and total > l1:
@@ -772,6 +856,93 @@ def summary(compiled, folder, files, l1):
             "give smaller blocks in the plan"
         )
     return report
+
+
+def tile_costs(compiled):
+    """Per call of a tile function: its unit program's cost on the math CPU (the
+    tile compiler's model, the vector unit only), the rules that fired, the stated
+    tolerance."""
+    if not compiled.tile_calls:
+        return []
+    lines = [
+        "tile functions (the math CPU's vector-unit cycles a tile, or a row of the "
+        "row form, by the tile compiler's cost model; the copies into DST and the "
+        "pack not priced):"
+    ]
+    for handler, line, text, function, cxx in compiled.tile_calls:
+        (_, _, width), unit = compiled.units[cxx]
+        count, cycles, _ = unit.cost("math")
+        rules = [
+            f"{p.name}: {'; '.join(counted(p.done))}"
+            for p in unit.passes
+            if p.done and p.name in ("load_macro", "replay", "fuse_mad")
+        ]
+        code = function.function.__code__
+        operands = list(unit.operands)
+        operands += [
+            f"{name} (resident)"
+            for name in code.co_varnames[: code.co_argcount]
+            if name not in operands
+        ]
+        each = "a tile" if width == 1 else f"a row of {width} tiles"
+        tolerance = (
+            "not stated"
+            if function.tolerance is None
+            else f"{function.tolerance:g} relative against float64"
+        )
+        lines.append(
+            f"  {handler}, line {line}, `{text}`: {function.name} on "
+            f"{', '.join(operands)} (tile_{cxx}.hpp): {count} instructions, "
+            f"{cycles} cycles {each}; {'; '.join(rules) or 'no rule fired'}; "
+            f"tolerance {tolerance}"
+        )
+    return lines
+
+
+def product_costs(compiled):
+    """Per product `acc += f(block, self.w)`: the library's call, its matrix-unit
+    words (16 a tile product a fidelity phase, HiFi4: 4) and their price by the tile
+    compiler's model, between 6 or more Dst blocks rotating and none: the library's
+    own word order is not known."""
+    if not compiled.products:
+        return []
+    lines = [
+        "products (the library's matmul_block, priced by the tile compiler's "
+        "matrix_cost; the library's order, rotation not known):"
+    ]
+    for handler, line, text, function, columns, block, fidelity in compiled.products:
+        phases = FIDELITIES[fidelity]
+        if isinstance(block, int):  # a field of sums: a pair of broadcast blocks
+            products = columns * block
+            words = 16 * phases * products
+            rotating = matrix_cost([("MVMUL", i % 8) for i in range(words)])
+            alone = matrix_cost([("MVMUL", 0)] * words)
+            lines.append(
+                f"  {handler}, line {line}, `{text}`: {function.name}, a pair of "
+                f"blocks into the field's {columns} tiles over k = {block}: "
+                f"{products} tile products, {words} MVMUL words ({fidelity}), "
+                f"{rotating:.1f} to {alone:.1f} cycles a pair; the unpack, the pack "
+                "and its L1 accumulation not priced"
+            )
+            continue
+        words = 16 * phases * columns
+        rotating = matrix_cost([("MVMUL", i % 8) for i in range(words)])
+        alone = matrix_cost([("MVMUL", 0)] * words)
+        lines.append(
+            f"  {handler}, line {line}, `{text}`: {function.name}, a tile of the "
+            f"stream by {columns} tile(s) of the field: {columns} tile product(s), "
+            f"{words} MVMUL words ({fidelity}), {rotating:.1f} to {alone:.1f} "
+            "cycles a stream tile; the unpack of the operands and the pack not priced"
+        )
+    return lines
+
+
+def counted(done):
+    """A rule's entries in order, each once, a repeated one with its count."""
+    seen = {}
+    for entry in done:
+        seen[entry] = seen.get(entry, 0) + 1
+    return [entry if n == 1 else f"{entry} ({n} times)" for entry, n in seen.items()]
 
 
 def lines_of(program, error):

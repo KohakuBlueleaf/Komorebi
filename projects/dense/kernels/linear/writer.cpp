@@ -16,69 +16,6 @@
 
 namespace {
 
-    // Waits until port `port` of this core has counted `wanted` arrivals, then clears
-    // it. False: gave up (recorded).
-    bool counted(
-        const km::Writer& writer,
-        const km_command_t& command,
-        uint32_t port,
-        uint32_t wanted
-    ) {
-        volatile tt_l1_ptr uint32_t* words = km::port_words(writer, port);
-        words[KM_PORT_WANT] = wanted;
-        const uint32_t code = writer.poll_at(
-            km::kWherePort,
-            [&] {
-                invalidate_l1_cache();
-                return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
-            },
-            writer.args().wait_limit
-        );
-        if (code != km::kGaveNone) {
-            writer.gave_up(
-                km::kStWriter,
-                code,
-                km::kWherePort,
-                km::slot(command) | port << 8,
-                command.sequence
-            );
-            return false;
-        }
-        words[KM_PORT_COUNT] = 0;
-        words[KM_PORT_WANT] = 0;
-        return true;
-    }
-
-    // Waits until word COUNT of port `port` of this core holds `marker`. False: gave
-    // up (recorded).
-    bool marked(
-        const km::Writer& writer,
-        const km_command_t& command,
-        uint32_t port,
-        uint32_t marker
-    ) {
-        volatile tt_l1_ptr uint32_t* words = km::port_words(writer, port);
-        const uint32_t code = writer.poll_at(
-            km::kWherePort,
-            [&] {
-                invalidate_l1_cache();
-                return words[KM_PORT_COUNT] == marker;
-            },
-            writer.args().wait_limit
-        );
-        if (code != km::kGaveNone) {
-            writer.gave_up(
-                km::kStWriter,
-                code,
-                km::kWherePort,
-                km::slot(command) | port << 8,
-                command.sequence
-            );
-            return false;
-        }
-        return true;
-    }
-
     // One token to port `port` of rank `rank`, wherever it is (another island's
     // through the relay).
     bool tell(
@@ -95,25 +32,6 @@ namespace {
             km::to_island(km::island_of(rank))
                 .put(writer, command, arrival, kCbToken, 1, rank, port, 0)
         );
-    }
-
-    // This CPU's writes have landed (acknowledged), so other cores may read them from
-    // DRAM. False: gave up (recorded).
-    bool landed(const km::Writer& writer, const km_command_t& command) {
-        const uint32_t code = writer.poll_at(
-            km::kWhereData,
-            [] {
-                return ncrisc_noc_nonposted_writes_flushed(noc_index);
-            },
-            writer.args().wait_limit
-        );
-        if (code != km::kGaveNone) {
-            writer.gave_up(
-                km::kStWriter, code, km::kWhereData, km::slot(command), command.sequence
-            );
-            return false;
-        }
-        return true;
     }
 
 }  // namespace
@@ -395,10 +313,14 @@ void kernel_main() {
                                     read_rows(k_block, slice_base);
                                 }
                                 const km::Partition rows = rows_of(k_block);
-                                if (
-                                    !marked(writer, command, kPortReady, marker) ||
-                                    !flushed(writer, km::kStWriter, km::kFlushReads)
-                                ) {
+                                if (!marked(
+                                    writer,
+                                    km::kStWriter,
+                                    command,
+                                    kPortReady,
+                                    marker
+                                ) ||
+                                    !flushed(writer, km::kStWriter, km::kFlushReads)) {
                                     return false;
                                 }
                                 if (rows.len != 0) {
@@ -416,7 +338,7 @@ void kernel_main() {
                                         rows.len * block_width * kBf16Bytes
                                     );
                                 }
-                                if (!landed(writer, command)) {
+                                if (!landed(writer, km::kStWriter, command)) {
                                     return false;
                                 }
                                 noc_semaphore_inc(
@@ -470,7 +392,13 @@ void kernel_main() {
                             );
                             if (
                                 spread &&
-                                !counted(writer, command, kPortSlices, column_ranks - 1)
+                                !counted(
+                                    writer,
+                                    km::kStWriter,
+                                    command,
+                                    kPortSlices,
+                                    column_ranks - 1
+                                )
                             ) {
                                 return false;
                             }
@@ -514,7 +442,8 @@ void kernel_main() {
                     // the addition
                     finished = true;
                     if (
-                        !broadcast.finish() || !landed(writer, command) ||
+                        !broadcast.finish() ||
+                        !landed(writer, km::kStWriter, command) ||
                         !km::gather_pages(
                             writer,
                             command,

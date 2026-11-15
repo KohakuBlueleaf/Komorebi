@@ -15,6 +15,59 @@ namespace {
         tile_regs_release();
     }
 
+    // The whole-K plan's receiver: unpack's timed wait until X's marker in its port
+    // counts `chunks` of the command's chunks landed; `seen` the count on all three.
+    bool x_landed(
+        const km::Compute& compute,
+        const km_command_t& command,
+        uint32_t chunks,
+        uint32_t& seen
+    ) {
+        if (chunks <= seen) {
+            return true;
+        }
+        uint32_t heard = 0;
+        UNPACK(({
+            volatile tt_l1_ptr uint32_t* marker = (
+                km::l1(
+                    compute.control() + KM_CONTROL_PORT + kPortKXGot * KM_PORT_STRIDE
+                )
+            );
+            uint32_t word = 0;
+            const uint32_t code = km::poll_live(
+                compute.control(),
+                km::kRoleUnpack,
+                km::kWherePort,
+                true,
+                [&] {
+                    invalidate_l1_cache();
+                    word = marker[KM_PORT_COUNT];
+                    return km::broadcast_reached(word, command.sequence, chunks);
+                },
+                compute.wait_limit(),
+                0
+            );
+            if (code == km::kGaveNone) {
+                heard = word & 0xFFFFu;
+            } else {
+                km::command_gave_up(
+                    compute.control(),
+                    km::kStCompute,
+                    code,
+                    km::kWherePort,
+                    km::slot(command),
+                    command.sequence
+                );
+            }
+            ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, heard);
+            ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, heard);
+        }));
+        MATH((heard = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)));
+        PACK((heard = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)));
+        seen = heard;
+        return heard != 0;
+    }
+
 }  // namespace
 
 void kernel_main() {
@@ -39,6 +92,14 @@ void kernel_main() {
         const km::Group group = k_group(command, compute.me(), plan(kKsS), index);
         const km::Arrival arrival = {kCbKArrive, plan(kKsArrive), block_tiles};
         const uint32_t form = plan(kKsForm);
+        const km::Pattern pattern = km::Pattern::of(plan(kKsPattern));
+        const bool x_cast = plan(kKsXCast) != 0;  // X whole in kCbKX, by chunk
+        const bool x_marked = plan(kKsXRole) == kKXReceiver;  // ... once marked
+        uint32_t x_seen = 0;
+#if defined(LINEAR_ACCOUNT) && !defined(TRISC_MATH)  // the math thread: no buffers
+        volatile uint32_t* stamps = stamp_row();
+#endif
+        uint32_t round = 0;
         const bool room = compute.reserve_back(kCbKSum, block_tiles);
         bool ok = true;  // the same on all three threads (wait_front tells them)
         matmul_block_init(
@@ -52,10 +113,14 @@ void kernel_main() {
             const uint32_t length = (
                 at.k_count - offset < chunk_tiles ? at.k_count - offset : chunk_tiles
             );
-            const uint32_t x_half = km::block_half(kKChunksX, kKChunkPattern, chunk);
-            const uint32_t w_half = km::block_half(kKChunksW, kKChunkPattern, chunk);
+            const uint32_t x_half = (
+                x_cast ? kCbKX : km::block_half(kKChunksX, pattern, chunk)
+            );
+            const uint32_t w_half = km::block_half(kKChunksW, pattern, chunk);
+            const uint32_t x_first = x_cast ? chunk * block_height * chunk_tiles : 0;
             ok = (
-                compute.wait_front(x_half, block_height * chunk_tiles) &&
+                (!x_marked || x_landed(compute, command, chunk + 1, x_seen)) &&
+                compute.wait_front(x_half, x_first + block_height * chunk_tiles) &&
                 compute.wait_front(w_half, chunk_tiles * block_width)
             );
             if (!ok) {
@@ -75,7 +140,7 @@ void kernel_main() {
                         matmul_block(
                             x_half,
                             w_half,
-                            subblock_row * chunk_tiles + k_tile,
+                            x_first + subblock_row * chunk_tiles + k_tile,
                             k_tile * block_width + subblock_column,
                             0,
                             0,
@@ -105,19 +170,32 @@ void kernel_main() {
                     tile_regs_release();
                 }
             }
-            cb_pop_front(x_half, block_height * chunk_tiles);
+            if (!x_cast) {
+                cb_pop_front(x_half, block_height * chunk_tiles);
+            }
             cb_pop_front(w_half, chunk_tiles * block_width);
         }
+        if (ok && x_cast) {
+            cb_pop_front(kCbKX, x_pages(plan, at));
+        }
+        LINEAR_ACCOUNT_DO(PACK((stamps[kAcKOwn] = km::wall())));
         reconfig_data_format_srca(kCbKw, kCbKArrive);
         copy_init(kCbKArrive);
         if (ok) {
             pack_reconfig_l1_acc(1);
             ok = km::reduce(compute, arrival, group, form, [&](uint32_t slot) {
+                LINEAR_ACCOUNT_DO(if (round < kKRounds) {
+                    UNPACK((stamps[kAcKTaken + round] = km::wall()));
+                });
                 for (uint32_t tile = 0; tile < block_tiles; ++tile) {
                     move_tile(
                         kCbKArrive, km::slot_page(arrival, slot) + tile, kCbKSum, tile
                     );
                 }
+                LINEAR_ACCOUNT_DO(if (round < kKRounds) {
+                    PACK((stamps[kAcKAdded + round] = km::wall()));
+                });
+                round++;
             });
         }
         pack_reconfig_l1_acc(0);

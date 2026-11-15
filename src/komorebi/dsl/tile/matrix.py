@@ -1,16 +1,14 @@
-"""The matrix unit's words of a tile product: the library's no-MOP matmul on Blackhole
-(`matmul_block_no_mop`), expanded. A 32x32 by 32x32 product is one replay of 16 MVMUL a
-fidelity phase in the address-mode order below (those `mm_no_mop_init_short` sets:
-ADDR_MOD_0 SrcB + 8, Dst + 8; 1 SrcA + 16, SrcB to its carriage register, Dst + 8; 2
-SrcA back, SrcB + 32, Dst + 8; 4 SrcA + 32, SrcB + 48, Dst back; 5 all back, the phase
-+ 1). The words write the Dst tile's 8-row blocks 0 .. 7 (the first half of K), then
-0 .. 7 again (the second half): two words on one block are 8 apart. In0 goes to SrcB,
-in1 to SrcA."""
+"""The matrix unit's words of a tile product: the library's Blackhole no-MOP matmul
+(`matmul_block_no_mop`) expanded, one replay of 16 MVMUL a fidelity phase in the
+address-mode order of `mm_no_mop_init_short`, writing the Dst tile's 8-row blocks
+0 .. 7, then 0 .. 7 again (two words on a block 8 apart). In0 to SrcB, in1 to SrcA."""
 
 from komorebi.dsl.tile.unit import Call, Insn, Product, UnitProgram, matrix_cost
 
 # MathFidelity: the number of phases (the library's enum value; LoFi replays once)
 PHASES = {"LoFi": 0, "HiFi2": 2, "HiFi3": 3, "HiFi4": 4}
+# ADDR_MOD 0: SrcB + 8, Dst + 8; 1: SrcA + 16, SrcB back, Dst + 8; 2: SrcA back, SrcB
+# + 32, Dst + 8; 4: SrcA + 32, SrcB + 48, Dst back; 5: all back, the phase + 1
 REPLAY_MODES = (0, 1, 0, 2, 0, 1, 0, 4, 0, 1, 0, 2, 0, 1, 0, 5)
 BLOCKS = 8  # 8-row Dst blocks in a 32x32 tile
 CLR_NONE, CLR_A, CLR_B = 0, 1, 2  # p_setrwc: the Src banks a word releases
@@ -67,21 +65,18 @@ def tile_products(fidelity, ct_dim, rt_dim, dst_index):
 
 def block_cost(fidelity, ct_dim, rt_dim, kt_dim=1):
     """(cycles, words of one call) of `kt_dim` K steps of the library's
-    `matmul_block(in0, in1, .., ct_dim, rt_dim, kt_dim)` on the matrix unit (its
-    callers call it once a K tile, adding into the same Dst tiles). The MOP form
-    (`matmul_block`) and the no-MOP form (`matmul_block_no_mop`) issue the same words
-    in the same order: the MOP replays the same 16-word image once a fidelity phase
-    and ends with the same SETRWC, issued one a cycle by the MOP expander."""
+    `matmul_block(.., ct_dim, rt_dim, kt_dim)`, a call a K tile adding into the same Dst
+    tiles. The MOP form issues the same words as `matmul_block_no_mop`: it replays the
+    same 16-word image a fidelity phase and ends with the same SETRWC."""
     words = [w for w, _ in tile_products(fidelity, ct_dim, rt_dim, 0)]
     return matrix_cost(words * kt_dim), words
 
 
 def product_program(name, fidelity):
     """The unit program of one K step of `matmul_block_no_mop(in0, in1, i0, i1, dst,
-    false, 1, 1, kt_dim)` with the math CPU's words emitted: the library's unpack
-    (`llk_unpack_AB_matmul`) and init (`mm_no_mop_init_short`: the address modes) are
-    the caller's, the words are the expansion above (one Dst tile: the RISC-V sets its
-    base once)."""
+    false, 1, 1, kt_dim)` with the math CPU's words emitted; the library's unpack
+    (`llk_unpack_AB_matmul`) and init (`mm_no_mop_init_short`, the address modes) are
+    the caller's."""
     pairs = tile_products(fidelity, 1, 1, 0)
     unit = UnitProgram(name, "fp32")
     text = f"the no-MOP product's words at {fidelity}"
