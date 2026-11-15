@@ -73,9 +73,9 @@ class Direct(NamedTuple):
 
 class Call(NamedTuple):
     """A call of a chain: `handler` with its ten words on cores `group`, in groups of
-    `size` whose root writes block g (`width` tiles from g x width) of `output`. With
-    `input` (the call before's output) it waits for the marks of the blocks its share
-    `k` or its `ranges` meet."""
+    `size` whose root writes block g (`width` tiles on) of `output` and of each of
+    `outputs` ((tensor, width)), then marks. With `input` (the call before's output)
+    it waits for the marks of the blocks its share `k` or its `ranges` meet."""
 
     handler: object
     args: tuple  # a0 to a9
@@ -92,6 +92,7 @@ class Call(NamedTuple):
     word: tuple = None  # (name, argument 0 to 9): the per-submit word, ORed into it
     row: int = 0  # its stamps' row
     name: str = None  # what a refusal calls it
+    outputs: tuple = ()  # its other outputs: (tensor, width), block g each a group
 
 
 def _label(call, index):
@@ -106,9 +107,17 @@ def _shape(call, index):
             f"{_label(call, index)}: {count} cores in groups of {call.size} (1 to "
             f"{words()['kChainSizeMask']}, dividing its cores)"
         )
-    if not 0 <= call.width <= words()["kChainWidthMask"]:
-        raise ChainRefused(f"{_label(call, index)}: width {call.width}, 0 to 255")
+    for width in (call.width, *(width for _, width in call.outputs)):
+        if not 0 <= width <= words()["kChainWidthMask"]:
+            raise ChainRefused(f"{_label(call, index)}: width {width}, 0 to 255")
     return count // call.size
+
+
+def width_of(call, tensor):
+    """The width of `tensor`'s blocks as `call` writes them (None: it does not)."""
+    if call.output == tensor:
+        return call.width
+    return dict(call.outputs).get(tensor)
 
 
 def partition(items, index, count):
@@ -148,7 +157,9 @@ def _cores(call):
 
 def _writers(calls, upto, tensor):
     """The calls before `upto` that write `tensor`, latest last."""
-    return [index for index in range(upto) if calls[index].output == tensor]
+    return [
+        index for index in range(upto) if width_of(calls[index], tensor) is not None
+    ]
 
 
 def check_calls(calls):
@@ -184,6 +195,7 @@ def check_calls(calls):
                 read.earlier
                 and writers
                 and writers[-1] == index - 1
+                and calls[index - 1].output == read.tensor
                 and call.input != read.tensor
             ):
                 raise ChainRefused(
@@ -248,14 +260,15 @@ def _prove_read(calls, index, read, known):
                     (
                         at
                         for at in reversed(_writers(calls, index, read.tensor))
-                        if calls[at].width
-                        and tile // calls[at].width < _shape(calls[at], at)
+                        if width_of(calls[at], read.tensor)
+                        and tile // width_of(calls[at], read.tensor)
+                        < _shape(calls[at], at)
                     ),
                     None,
                 )
                 if writer is None:
                     continue
-                block = tile // calls[writer].width
+                block = tile // width_of(calls[writer], read.tensor)
                 if (writer, block) not in known[core]:
                     raise ChainRefused(
                         f"{_label(call, index)}: core {core} reads {read.tensor} tile "
@@ -280,6 +293,12 @@ def check_direct(calls):
                 "of K tiles"
             )
         before = calls[index - 1]
+        if before.outputs:
+            raise ChainRefused(
+                f"{label}: a direct input from {_label(before, index - 1)}, which "
+                "writes several outputs: a data mark does not wait for the others' "
+                "writes (send it through DRAM)"
+            )
         groups = _shape(before, index - 1)
         sends = [[0, 0] for _ in range(groups)]
         for core, rank, group in _cores(call):

@@ -6899,9 +6899,12 @@ class HandlerCompiler:
             )
         text = "\n".join(lines[included:])
         on, takes, gives, includes, at = "compute", [], None, [], None
+        stated = {}  # reads= and writes=: the tensors it reads or writes, stated
         for keyword_ in call.keywords:
             value = keyword_.value
-            if keyword_.arg == spelling("at"):
+            if keyword_.arg in (spelling("body_reads"), spelling("body_writes")):
+                stated[keyword_.arg] = value
+            elif keyword_.arg == spelling("at"):
                 at = self.kernel_at(node, value)
             elif keyword_.arg == spelling("on"):
                 if not (isinstance(value, ast.Constant) and value.value in BODY_CPUS):
@@ -6947,8 +6950,10 @@ class HandlerCompiler:
                 self.refuse(
                     node,
                     f"km.cxx has no {keyword_.arg}=",
-                    "use takes=, gives=, on=, include= and at=",
+                    f"use takes=, gives=, on=, include=, at=, "
+                    f"{spelling('body_reads')}= and {spelling('body_writes')}=",
                 )
+        self.stated_tensors(node, stated, takes)
         if at is not None:
             self.kernel_takes(node, takes, gives, name)
         if (gives is None) != (name is None):
@@ -7022,6 +7027,38 @@ class HandlerCompiler:
         if mover is None:
             return moves, lines
         return lines, []
+
+    def stated_tensors(self, node, stated, takes):
+        """`reads=[t]` and `writes=[t]` of a body: tensor parameters it takes, whose
+        pages its own C++ reads or writes (a chain's description of the call; the
+        build cannot check the C++ against them)."""
+        taken = {item.id for item in takes if isinstance(item, ast.Name)}
+        for keyword_, value in stated.items():
+            if not isinstance(value, ast.List) or not all(
+                isinstance(item, ast.Name) for item in value.elts
+            ):
+                self.refuse(
+                    node,
+                    f"{keyword_}= is a list of the tensors the body {keyword_}",
+                    f"write {keyword_}=[t]",
+                )
+            for item in value.elts:
+                if getattr(self.scope.get(item.id), "kind", None) != "tensor":
+                    self.refuse(
+                        node,
+                        f"{item.id} in {keyword_}= is not a tensor parameter: "
+                        f"{keyword_}= names the tensors whose pages the body "
+                        f"{keyword_} in DRAM",
+                        f"name tensor parameters in {keyword_}=",
+                    )
+                if item.id not in taken:
+                    self.refuse(
+                        node,
+                        f"{item.id} is in {keyword_}= and not in "
+                        f"{spelling('takes')}=: a body states what it {keyword_} of "
+                        "what it takes",
+                        f"take it: {spelling('takes')}=[..., {item.id}]",
+                    )
 
     def kernel_at(self, node, value):
         """`at="start"` or `at="end"`: a body at its kernel's start (before the

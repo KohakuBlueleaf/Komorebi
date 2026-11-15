@@ -45,6 +45,8 @@ class Lines:
     reduce: tuple = None  # (line, form expression or None, group size or None)
     names: dict = field(default_factory=dict)  # name -> its expression
     loops: set = field(default_factory=set)  # names of loop variables
+    body_reads: list = field(default_factory=list)  # (tensor, line): reads= of a body
+    body_writes: list = field(default_factory=list)  # (tensor, line): writes=
     refused: str = None
 
 
@@ -174,23 +176,44 @@ class LineReader:
         if self.is_km_call(call, "cxx"):
             self.body_takes(node, call)
             return
+        if self.is_km_call(call, "reduce"):  # a state merged in place (combine=)
+            self.reduction(node, call)
+            return
         if isinstance(func, ast.Attribute) and func.attr in ("push", "end"):
             return
         if self.touches_expression(call):
             self.refuse(node, "a read or write of a form the chain does not describe")
 
     def body_takes(self, node, call):
+        """A body's tensors: each stated in reads= (an outside input of the call) or
+        writes= (written by the call), else refused."""
+        stated = {spelling("body_reads"): set(), spelling("body_writes"): set()}
         for keyword in call.keywords:
-            if keyword.arg != "takes" or not isinstance(keyword.value, ast.List):
+            if keyword.arg in stated and isinstance(keyword.value, ast.List):
+                stated[keyword.arg] = {
+                    item.id for item in keyword.value.elts if isinstance(item, ast.Name)
+                }
+        reads, writes = stated.values()
+        for keyword in call.keywords:
+            if keyword.arg != spelling("takes"):
+                continue
+            if not isinstance(keyword.value, ast.List):
                 continue
             for taken in keyword.value.elts:
-                if isinstance(taken, ast.Name) and taken.id in self.tensors:
+                if not (isinstance(taken, ast.Name) and taken.id in self.tensors):
+                    continue
+                if taken.id in reads:
+                    self.lines.body_reads.append((taken.id, node.lineno))
+                if taken.id in writes:
+                    self.lines.body_writes.append((taken.id, node.lineno))
+                if taken.id not in reads | writes:
                     self.refuse(
                         node,
                         f"an inline body takes tensor {taken.id}: what it reads or "
-                        "writes is the body's own C++, which the build does not read "
-                        "(state the call's description with chain.Call; its record "
-                        "waits for its input before the body)",
+                        "writes is the body's own C++, which the build does not read; "
+                        f"state it at the body: {spelling('body_reads')}=[{taken.id}] "
+                        "(an outside input of the call) or "
+                        f"{spelling('body_writes')}=[{taken.id}] (written by the call)",
                     )
 
     def stream(self, node, call, leader):
@@ -449,6 +472,9 @@ class Described:
     name: str = None
     tensor_bits: list = field(default_factory=list)  # (tensor, its parameter's bit)
     mask_word: int = None
+    outputs: list = field(default_factory=list)  # its other outputs: (tensor, width)
+    body_reads: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
+    body_writes: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
 
 
 def describe(run, call, group):
@@ -539,16 +565,27 @@ def derived(method, lines, given, program, group, label):
     described = Described(None, None, group, size, 0, name=label)
     described.sends = sends
     writes = [a for a in lines.accesses if a.kind == "write"]
-    if len({a.tensor for a in writes}) > 1:
-        raise Undescribed(
-            f"line {writes[1].line}: a second output ({writes[1].tensor}); a chain's "
-            "call writes one tensor"
-        )
-    if writes:
-        described.output = given[writes[0].tensor]
-        described.width = output_width(
-            method, lines, writes, given, program, group, size
-        )
+    outputs = list(dict.fromkeys(a.tensor for a in writes))  # in the lines' order
+    for number, name in enumerate(outputs):
+        mine = [a for a in writes if a.tensor == name]
+        width = output_width(method, lines, mine, given, program, group, size)
+        if number == 0:
+            described.output, described.width = given[name], width
+            continue
+        if id(given[name]) in {id(t) for t, _ in described.outputs} | {
+            id(described.output)
+        }:
+            raise Undescribed(
+                f"line {mine[0].line}: {name} is the same tensor as another output"
+            )
+        described.outputs.append((given[name], width))
+    for kind, held in (
+        ("body_reads", described.body_reads),
+        ("body_writes", described.body_writes),
+    ):
+        for name, line in getattr(lines, kind):
+            entry = held.setdefault(id(given[name]), (given[name], []))
+            entry[1].append(line)
     for access in (a for a in lines.accesses if a.kind == "read"):
         tensor = given[access.tensor]
         k, ranges = read_shape(method, lines, access, given, program, group, size)
@@ -713,6 +750,8 @@ def chain_calls(run, calls, group, prefetch=True):
                 )
         described.append(one)
     written = {id(one.output) for one in described if one.output is not None}
+    written |= {id(tensor) for one in described for tensor, _ in one.outputs}
+    written |= {key for one in described for key in one.body_writes}
     return [
         placed(described, index, one, names, written, prefetch)
         for index, one in enumerate(described)
@@ -725,14 +764,13 @@ def placed(described, index, one, names, written, prefetch):
     label = f"call {index} ({one.name})"
     before = described[index - 1] if index else None
     before_output = before.output if before is not None else None
+    before_others = {id(t) for t, _ in before.outputs} if before is not None else set()
     call_input, k, ranges, reads, direct = None, None, (), [], None
+    others = []  # reads of the call before's other outputs: (key, k, ranges)
+    body_conflicts(described, index, one, names, label)
     for key, (tensor, read_k, read_ranges, read_lines) in one.reads.items():
         name = tensor_name(tensor, names)
-        writers = [
-            at
-            for at in range(index)
-            if described[at].output is not None and id(described[at].output) == key
-        ]
+        writers = [at for at in range(index) if writes_key(described[at], key)]
         mark = one.marks.get(key)
         for line, stated in read_lines:
             if stated is True and key in written:
@@ -750,6 +788,10 @@ def placed(described, index, one, names, written, prefetch):
             if mark == "direct":
                 direct = True
             continue
+        if key in before_others and mark is None:  # proven by the input's marks
+            others.append((key, read_k, tuple(read_ranges)))
+            reads.append(kc.Read(name, read_k, tuple(read_ranges), True))
+            continue
         if mark == "direct":
             raise kc.ChainRefused(
                 f"{label}: km.{spelling('direct')}({name}): a direct input is the call "
@@ -763,6 +805,14 @@ def placed(described, index, one, names, written, prefetch):
                 "at the call, so the build proves it complete or refuses"
             )
         reads.append(kc.Read(name, read_k, tuple(read_ranges), bool(writers)))
+    for key, (tensor, _lines) in one.body_reads.items():
+        if key not in one.reads:  # an outside input: nothing of the chain writes it
+            reads.append(kc.Read(tensor_name(tensor, names), None, (), False))
+    if others and not covered(before, one, k, ranges, others):
+        # every block of the call before: its marks tell of each output's block
+        whole = before.width * (before.group[1] // before.size)
+        call_input = tensor_name(before_output, names)
+        k, ranges = None, (kc.Range(0, 0, whole),)
     for key, how in one.marks.items():
         if key not in one.reads:
             raise kc.ChainRefused(
@@ -789,7 +839,58 @@ def placed(described, index, one, names, written, prefetch):
         tuple(reads),
         direct_area(one) if direct else None,
         name=one.name,
+        outputs=tuple((tensor_name(t, names), width) for t, width in one.outputs),
     )
+
+
+def writes_key(one, key):
+    """Whether described call `one` writes the tensor of id `key` (an output)."""
+    outputs = [one.output, *(tensor for tensor, _ in one.outputs)]
+    return any(tensor is not None and id(tensor) == key for tensor in outputs)
+
+
+def body_conflicts(described, index, one, names, label):
+    """A tensor a body writes (writes=) is read by no other call of the chain, and a
+    body's outside input (reads=) is written by no call: neither can be proven."""
+    for key in set(one.reads) | set(one.body_reads):
+        for at, other in enumerate(described):
+            if at != index and key in other.body_writes:
+                tensor, lines = other.body_writes[key]
+                raise kc.ChainRefused(
+                    f"{label}: reads {tensor_name(tensor, names)}, which a body of "
+                    f"call {at} ({other.name}) writes ({spelling('body_writes')}=, "
+                    f"line {lines[0]}): what a body writes is not described, so no "
+                    "read of it in the chain is proven; read it in a later chain or "
+                    "command"
+                )
+    for key, (tensor, lines) in one.body_reads.items():
+        for at, other in enumerate(described):
+            if at != index and writes_key(other, key):
+                raise kc.ChainRefused(
+                    f"{label}: line {lines[0]}'s body reads "
+                    f"{tensor_name(tensor, names)} ({spelling('body_reads')}=), an "
+                    f"outside input of the chain, and call {at} ({other.name}) writes "
+                    "it: what a body reads is not described, so it cannot wait for it"
+                )
+
+
+def covered(before, one, k, ranges, others):
+    """Whether each core's reads of the call before's other outputs are blocks its
+    input's marks already tell it of (`k` or `ranges` of the call before's output)."""
+    groups = before.group[1] // before.size
+    widths = {id(tensor): width for tensor, width in before.outputs}
+    for local in range(one.group[1]):
+        rank, group = local % one.size, local // one.size
+        known = {
+            block
+            for first, count in kc.tiles_of(k, ranges, rank, group, one.size)
+            for block in kc.blocks_met(first, count, before.width, groups)
+        }
+        for key, read_k, read_ranges in others:
+            for first, count in kc.tiles_of(read_k, read_ranges, rank, group, one.size):
+                if set(kc.blocks_met(first, count, widths[key], groups)) - known:
+                    return False
+    return True
 
 
 def direct_area(one):
