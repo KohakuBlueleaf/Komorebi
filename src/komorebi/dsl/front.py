@@ -3,6 +3,7 @@ and the calls of a handler's lines. The lines are read by the compiler, never ru
 Python: calling one outside a class's handler raises ProgramError.
 """
 
+import inspect
 import operator
 from dataclasses import dataclass
 
@@ -83,6 +84,34 @@ class L1:
         return Field(format_, tuple(shape))
 
 
+class Message:
+    """`class Visit(km.Message)` with int annotations: a dynamic handler's message,
+    its named words 1, 2, ... in order (word 0 is the runtime's mark)."""
+
+    words = {}  # name -> its word
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        names = list(inspect.get_annotations(cls))
+        if not all(inspect.get_annotations(cls)[name] is int for name in names):
+            raise ProgramError(f"{cls.__name__}: a message's words are ints")
+        if not 1 <= len(names) <= MESSAGE_WORDS - 1:
+            raise ProgramError(
+                f"{cls.__name__}: 1 to {MESSAGE_WORDS - 1} named words, "
+                f"{len(names)} given"
+            )
+        cls.words = {name: word for word, name in enumerate(names, start=1)}
+
+    def __init__(self, **words):
+        raise ProgramError(
+            f"km.{spelling('message')} is a line of a handler: the compiler reads it, "
+            "Python never runs it"
+        )
+
+
+MESSAGE_WORDS = 16  # a message of 64 bytes, the runtime's default
+
+
 class ClassHandler(Handler):
     """A handler of a program made from a class: a Handler (its number and program)
     whose `args(...)` gives the command words of a call."""
@@ -101,9 +130,10 @@ class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
 
-    def __init__(self, function, overlay=False):
+    def __init__(self, function, overlay=False, stamps=None):
         self.function = function
         self.overlay = overlay  # its code is an overlay: loaded into a slot, called
+        self.stamps = stamps  # the tensor parameter its load and call cycles go to
         self.name = function.__name__
         self.number = None
         self.words = None  # [(parameter, kind)] in word order, set by the compiler
@@ -180,12 +210,13 @@ def word_of(handler, parameter, kind, value):
     return value
 
 
-def handler(function=None, *, overlay=False):
+def handler(function=None, *, overlay=False, stamps=None):
     """Makes a method of a class deriving km.Program a handler; `overlay=True`: its
-    code is built apart as an overlay, loaded into a slot when a command needs it."""
+    code is built apart as an overlay, loaded into a slot when a command needs it;
+    `stamps="t"`: each mover's load and call cycles to tensor parameter t."""
     if function is None:
-        return lambda function: HandlerMethod(function, overlay)
-    return HandlerMethod(function, overlay)
+        return lambda function: HandlerMethod(function, overlay, stamps)
+    return HandlerMethod(function, overlay, stamps)
 
 
 def line_only(kind):
@@ -214,6 +245,7 @@ def exports():
     """The module-level names of `komorebi` for programs written as classes."""
     made = {
         "handler": handler,
+        "message": Message,
         "field": L1,
         "symbol": symbol,
         "tile_value": Tile,

@@ -102,6 +102,9 @@ words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, 
 | `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B | `km::reduce`, the arrivals added in rank order |
 | `if self.rank == self.leader:` and `pages.write(whole)` | the leader's write of the sum | |
 | `return word` under `if self.rank == self.leader:` | `movement.result(word)` on mover B | |
+| `word = pages.read()` (one page) | mover B: `km::read_pages` of the page into its word page, the barrier, the L1 cache invalidated, the page's first word | |
+| `word += round + page`, `word` a mover's | the line on the word's mover | |
+| `pages.write(word)` (one page), `word` a mover's | that mover: its word page (the word first, zeros after), `km::write_pages`, `noc_async_write_barrier` | |
 | `b = km.Broadcast(self, along="row", window=2)` | the broadcast on its mover (rows on mover A, columns on mover B); a core it leaves out skips the handler | the same core skips it |
 | `if b.sender():` `v = b.cast(t.pages(first, n).read())` `else:` `v = b.arrive()` | the sender's reserve, read and cast, the others' arrival, block by block of the loop around it; the last block's finish | |
 | `for tile in v:` | | the block received, each page of it, then freed; the padding after the last |
@@ -175,11 +178,97 @@ it prints where each handler's code lives. From
 
 ```text
 where the handlers' code lives:
-  mix: overlay 1: reader 64 B, writer 192 B; slots: reader 3 x 8,640 B, writer 2 x 3,968 B, unpack 1 x 2,624 B, math 1 x 1,664 B, pack 1 x 1,664 B
+  mix: overlay 1: reader 64 B, writer 384 B; slots: reader 3 x 8,640 B, writer 2 x 3,968 B, unpack 1 x 2,624 B, math 1 x 1,664 B, pack 1 x 1,664 B
   scale: overlay 2: reader 3,968 B, writer 3,968 B, unpack 2,624 B, math 1,664 B, pack 1,664 B; slots: reader 3 x 8,640 B, writer 2 x 3,968 B, unpack 1 x 2,624 B, math 1 x 1,664 B, pack 1 x 1,664 B
 ```
 
+`@km.handler(overlay=True, stamps="stamps")`, `stamps` a tensor parameter of uint32
+pages of at least five words, adds to the case on each mover the wall clock around the
+load and the call, and writes the command's sequence, the overlay, the load's and the
+call's cycles and whether it was held to page 2 x core + mover of `stamps` (mover A 0,
+B 1). From the same example, mix on mover B, median cycles (load, call): held 67 /
+967, loading 1,779 / 1,007.
+
 A broadcast's handler is resident.
+
+## Dynamic handlers and messages
+
+A handler with `for message in self.arrive():` is [dynamic](dynamic.md): its lines are
+compute's alone and the runtime's movers carry its messages (`messages_reader.cpp`,
+`messages_writer.cpp`); the program is made dynamic as any program is, with
+`.dynamic(name, **options)`. A class has at most one dynamic handler, and a move in one
+is refused. A message is a class deriving `km.Message` whose int annotations are its
+words, 1 up (word 0 is the runtime's). From
+[05 forward](../../examples/05_forward/as_class/forward_class.py):
+
+```python
+class Visit(km.Message):
+    id: int
+    forwards: int
+    state: int
+    sum: int
+
+
+class Forward(km.Program):
+    @km.handler
+    def forward(
+        self,
+        message_count: int,
+        forwards: int,
+        mode: int,
+        target_rank: int,
+        results: int,
+    ):
+        if self.seeding():
+            part = self.partition(message_count)
+            for index in range(part.count):
+                seed = Visit(id=part.start + index, forwards=forwards, state=1)
+                self.send(self.rank, seed)
+        for message in self.arrive():
+            message.state ^= message.state << 13
+            if message.forwards == 0:
+                self.consume()
+            else:
+                message.forwards -= 1
+                self.forward(message.state % self.size, message)
+
+
+program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
+```
+
+| Line | Compute |
+|---|---|
+| `if self.seeding():` | `messages.seeding()`, its lines, then `messages.seeded()` |
+| `seed = Visit(id=..., ...)` | 16 words, the named ones set, the others 0 |
+| `self.send(rank, seed)` | `messages.send(rank, seed)` |
+| `for message in self.arrive():` | each packet of `messages.next()`, each message of it copied, then `messages.done(packet)` |
+| `message.state`, `message.sum += x` | the message's word |
+| `self.forward(rank, message)` | `messages.forward(rank, message)` |
+| `self.consume()` | `messages.consume()` |
+
+In a dynamic handler `self.rank` and `self.size` are the message loop's
+(`messages.rank()`, `messages.count()`): the group without its counter tiles. A core's
+totals go where a `km.cxx` body puts them (05 writes them to an L1 area whose address
+is a command word).
+
+## X280 threads
+
+Each build also writes `<name>_thread.h`, a C header for a thread's commands: each
+handler's number, the place of each of its words (a0 is 0) and their count, and
+whether its command asks for the leader's result. A thread that includes it (the
+build folder, `program.built.folder`, in its `includes`) submits the class's commands
+with `kmx_submit` and waits with `kmx_wait`. From
+[07 work cluster](../../examples/07_work_cluster/as_class/README.md):
+
+```c
+/* SUM, line 35. */
+#define WORKCLUSTER_HANDLER_SUM 2u
+#define WORKCLUSTER_SUM_STATE 0u
+#define WORKCLUSTER_SUM_CORES 1u
+#define WORKCLUSTER_SUM_FIRST 2u
+#define WORKCLUSTER_SUM_WORDS 3u
+#define WORKCLUSTER_SUM_RESULT 1u /* KM_FLAG_RESULT */
+```
 
 ## Islands
 
@@ -224,15 +313,23 @@ the packed text of the five CPUs, of 70,656 B.
 | Example | Results | Kernel text, class / hand | Time, class / hand |
 |---|---|---|---|
 | [01 map/collect](../../examples/01_mapcollect/as_class/README.md) | the same: 20 jobs checked, 10 exact | 33,584 / 34,288 B | on the cores 1.77 / 1.91 us a command (120 cores, 1,000 jobs, trace stamps) |
-| [01 on two islands](../../examples/01_mapcollect/as_class/README.md) | the same: every tile exact; 354 asks and 708 pages over the links, as the hand's | 60,048 / 61,152 B (mock, islands' build) | own groups 2.96 / 3.08 us a command; island 0 reading island 1's input 637.6 / 617.4 us a round |
+| [01 on two islands](../../examples/01_mapcollect/as_class/README.md) | the same: every tile exact; 2,360 asks and 4,720 pages over the links in 20 rounds, as the hand's | 60,048 / 61,152 B (mock, islands' build) | own groups 2.88 / 3.04 us a command; island 0 reading its own input 198.4 / 190.6 us a round, island 1's 626.0 / 615.5 (20 rounds): the dispatcher's 4.82 / 4.62 and 448.4 / 448.1, the class's submit 8 us longer |
 | [02 merge tree](../../examples/02_merge_tree/as_class/README.md) | the same: 40 jobs, exact ones bit-equal, 40 result words | 42,240 / 36,176 B | on the cores 15.33 / 15.14 us a command (first seen to sent, median) |
 | [03 broadcast](../../examples/03_broadcast/as_class/README.md) | the same: 960 ranks, all exact (level 1a) | 48,736 / 53,424 B (mock) | 109.0 / 99.8 us a job, exclusive (level 1a) |
+| [05 forward](../../examples/05_forward/as_class/README.md) | the same: exact in 3 of 3 runs, 10^6 forwards | 41,600 / 43,040 B | 12,162 / 12,297 us a run (median of 3) |
+| [07 work cluster](../../examples/07_work_cluster/as_class/README.md) | the same: 204 rounds, sum 1,004,917, every state word | 21,200 / 21,424 B (mock) | the thread's loop 10.55 / 10.75 ms |
 | [11 movement](../../examples/11_movement/as_class/README.md) | the same: every copy exact (level 1a) | 38,288 / 36,720 B | READ AAAB 308.74 / 310.44 GB/s (level 1a) |
-| [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 31,088 / 27,324 B, and the parts above | a scale turn 1,379 / 1,717 us from the host; a mix turn 2,794 / 2,123 us (120 commands / 1) |
+| [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
 
-## Not at level 1
+## Not in this version
 
-A rectangle per command; dynamic handlers and messages; a class's handlers called from an X280 thread, and a
-group switched to a class's program (`kmx_load`); a core's own word written to DRAM;
-tile expressions (`tile * factors`, `block @ self.weight`); `@`, slices and `.columns`
-of a field.
+A rectangle per command; tile expressions (`tile * factors`, `block @ self.weight`);
+`@`, slices and `.columns` of a field; a message that names its handler (several
+dynamic handlers of one loop).
+
+A group switched to a class's program (`kmx_load`): a load switches between programs
+in the runtime's form, parts on the runtime's reader, writer and compute, and a class
+is built in the kernel form, its streams moved by `km::Movement`. A class in that form
+needs its movement lines to run in parts on the runtime's reader and writer, and the
+runtime's switch to give each part its buffers; that is a change of the runtime, not of
+the compiler.

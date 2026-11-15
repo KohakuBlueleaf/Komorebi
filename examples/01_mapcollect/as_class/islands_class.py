@@ -56,31 +56,29 @@ def rounds(session, run, handler, words_of, one_of, tensors, exact, args):
     """MAP rounds of `handler`: each island's own group in turn (words by
     `words_of`), checked; then island 0's group (its arguments by `one_of`) reading the
     local input and the one island 1 holds, what crossed each link, checked."""
-    source, far, output = tensors
     graph = session.graph
     own = [(graph.first(i), graph.count(i)) for i in range(len(session.sessions))]
-    every = [own[job % len(own)] for job in range(args.map_jobs)]
     out = {}
-    out["map_own_us"] = hand.median(
-        [
-            hand.timed(run, handler, every, words_of(source, output, every))
-            for _ in range(args.map_rounds)
-        ]
-    )
-    (got,) = session.read_bf16(output)
-    out["own_check"] = hand.check(exact, got, own, PER)
-    hand.log(f"MAP on {own} in turn: {out['map_own_us']} us, {out['own_check']}")
+    own_rounds(session, run, handler, words_of, tensors, exact, args, out)
     group = own[0]
+    source, far, output = tensors
     for name, tensor in (("local", source), ("across", far)):
         words = one_of(tensor, output, group)
         before = run.crossings()
-        spent = []
+        spent, submits, dispatched = [], [], []
         for _ in range(args.map_rounds):
             started = time.perf_counter()
-            run.wait(run.submit(handler, group, words), timeout=10.0)
+            ticket = run.submit(handler, group, words)
+            submitted = time.perf_counter()
+            (event,) = run.wait(ticket, timeout=10.0)  # island 0's part alone
             spent.append((time.perf_counter() - started) * 1e6)
+            submits.append((submitted - started) * 1e6)
+            dispatched.append(event.microseconds)
         moved = run.crossings() - before
         out[f"map_{name}_us"] = hand.median(spent)
+        out[f"submit_{name}_us"] = hand.median(submits)
+        out[f"dispatcher_{name}_us"] = hand.median(dispatched)
+        out[f"spread_{name}_us"] = [round(min(spent), 1), round(max(spent), 1)]
         out[f"crossed_{name}"] = {
             "0->1": moved.total(0, 1),
             "1->0": moved.total(1, 0),
@@ -96,6 +94,23 @@ def rounds(session, run, handler, words_of, one_of, tensors, exact, args):
         and not out["crossed_local"]["0->1"]["asks"]
     )
     return out
+
+
+def own_rounds(session, run, handler, words_of, tensors, exact, args, out):
+    """MAP rounds of each island's own group in turn, checked."""
+    source, _, output = tensors
+    graph = session.graph
+    own = [(graph.first(i), graph.count(i)) for i in range(len(session.sessions))]
+    every = [own[job % len(own)] for job in range(args.map_jobs)]
+    out["map_own_us"] = hand.median(
+        [
+            hand.timed(run, handler, every, words_of(source, output, every))
+            for _ in range(args.map_rounds)
+        ]
+    )
+    (got,) = session.read_bf16(output)
+    out["own_check"] = hand.check(exact, got, own, PER)
+    hand.log(f"MAP on {own} in turn: {out['map_own_us']} us, {out['own_check']}")
 
 
 def zero(session, tensor):
