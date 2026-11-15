@@ -73,6 +73,8 @@ run.submit(
 | `rect`, `nocs` | with a broadcast or `self.x`, `self.y`: the rectangle (x, y, columns, rows), the whole grid when not given, and the grid's NoCs, the session's (`Session.load` gives them) when not given; each core's program arguments are made from them at the load |
 | `depth`, `log` | the ring slots used, as a `Program`'s; where the build's report goes (`print`) |
 | `broadcast_wait` | as a `Program`'s ([host](host.md#program)), `False` by default: `True` builds the kernels with a word broadcast's wait at `finish` (the guard), in a build folder of its own |
+| `form` | `"kernel"` (the default): the class owns its kernels; `"runtime"`: the class is a program in the runtime's form, in parts the runtime's kernels call, which loads in a list or a dict and which a group switches to ([The runtime's form](#the-runtimes-form)); each form has its build folder |
+| `beside` | with `form="runtime"`, a program or a list of them that share the run's cores: the class leaves their buffer indices and takes their unpack modes ([The runtime's form](#the-runtimes-form)) |
 
 The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
 service's reader part built for every example and project that builds without a card
@@ -1529,6 +1531,115 @@ may cross (each move: its tensor's placement; what it lowers to):
 
 A copy's read never crosses: each island reads its own.
 
+## The runtime's form
+
+`Class(..., form="runtime")` builds the class's handlers, their lines unchanged, as a
+program in the runtime's form ([host](host.md#several-programs-in-one-run)): the
+runtime owns the kernels and the command loop, and the class's code is the program's
+parts, which the loop calls for a command of that program. Such a program loads
+alone, in a list or in a dict beside other programs of that form (written by hand or as
+classes), and a group switches to it (`run.load`, or a thread's `kmx_load`). From the
+dense experiment's Linear and example 22's Gate:
+
+```python
+linear = Linear(form="runtime", plan={"OH": 1}, session=session, **tensors)
+gate = Gate(form="runtime", BLOCK=1, beside=linear, a=a, b=b, out=out, log=print)
+run = session.load({linear: (0, 112), gate: (112, 8)})
+run.wait(run.load(gate, group=(0, 112)))  # cores 0 to 111 now run the gate
+```
+
+How the class runs in this form:
+
+- **The movement lines.** `movement.cpp` holds the handler switch as one function over
+  the mover's runtime, used as the kernel form's `km::Movement` (as an overlay handler's
+  part uses it). The reader's `km_program` (mover A) and the writer's (mover B) call it,
+  each built from that file. A line lowers to the same code in both forms.
+- **Compute.** `compute.cpp`'s switch is compute's `km_program`. The runtime runs the
+  hardware start-up on the program's first buffer below 16 and its first from 16 when a
+  group loads it. Each command first sets those two buffers' formats again
+  (`reconfig_data_format`, `pack_reconfig_data_format`): in a list, the core's last
+  command may have been another program's
+  ([hazards](hazards.md#formats-another-program-left-on-the-same-cores)).
+- **Buffers.** The class's buffers are the program's (the same indices, formats and
+  pages). A dict's load sets them up for the group; a list holds every program's in one
+  layout.
+- **State.** A part keeps nothing from one call to the next (its `.bss` is zeroed at
+  every call), and a class keeps nothing there: a field is a buffer, whose pages stay in
+  L1 between commands; a stream's place is its buffer's pointers, which the runtime's
+  kernels keep; everything else is a handler's local.
+- **Arguments.** The movers' compile arguments (each tensor's accessor) are the reader's
+  and the writer's parts'. A rectangle's per-core arguments are given at the program's
+  place among the run's ([host](host.md#several-programs-in-one-run)).
+- **Overlay handlers** are the program's own overlays, numbered after those of the
+  programs before it ([overlays](overlays.md#several-programs-with-overlays)) and built
+  with the program's compile arguments.
+
+`beside=` is for a list: its programs' buffers are in one layout, with indices disjoint,
+and a class picks its indices from 0, 8 and 16 as if alone. Made beside programs, it
+leaves their indices and takes their `unpack_to_dest_mode` at those indices, so the run
+has one set of compute options. The fidelity is the programs' to agree on: a class
+whose tile functions have no product gives `compute={"math_fidelity": ...}`.
+
+Refused when the class is made in this form (`ProgramError`, naming the handler's
+line), each with what lifting it would need (none of it is built):
+
+- **A body at a kernel's start** (`km.cxx(..., at="start")`): the runtime owns the
+  kernels' start. The place exists in a dict's run: every part of a program is called
+  with the load command (`KM_HANDLER_LOAD`) when a group takes the program, where
+  compute runs the start-up today, so the body would run there. A list's run sends no
+  load, so it would need one sent to every core at the run's start.
+- **A body at a kernel's end** (`at="end"`): no part is called when the run stops; it
+  would need the runtime's loop to call each program's parts once at the stop.
+- **`startup=`** (a start-up of the class's own, `km.Startup`): the start-up is the
+  runtime's, on the first buffer below 16 and the first from 16. The same load call
+  has the place: the start-up there would take the class's buffers and order, and
+  each command's two format calls the same buffers.
+- **A dynamic handler**: the runtime's form has no message loop of a program's own;
+  it would need the runtime's message kernels to serve a program field, and two
+  programs' dynamic handlers in one run are not built either
+  ([overlays](overlays.md#not-in-this-version)).
+
+An overlay handler is not refused: it is one of the program's own overlays (above).
+
+A class made in the kernel form and given to a list or a dict is refused at the load
+(`ProgramError`) with `form="runtime"` named, and with what that form would refuse in
+the class when it uses one of the above, so it is not rebuilt only to be refused
+again.
+
+On the card (card 0, AICLK 1,350 MHz), each figure a command's time on the events,
+the median of 5:
+
+| Class | Kernel form | The runtime's form |
+|---|---|---|
+| [22 gate](../../examples/22_gate/as_class/README.md), 12 cores, 64 tiles a core (AAAB) | 81.14 us | 81.78 us; every word of the output equal |
+| [linear layer](../../experiments/language/dense_class/README.md), the K split, 32 x 4096 x 4096 | 94.20 us (a kernel buffer of 94,208 B) | 95.58 us; Y's words equal (exact on integers; 4.38e-3 relative RMS on normal values, both); the first command 114.6 us (it loads the five parts, 71 KB) |
+| kernel text | gate 38,080 B, Linear 92,304 B (mock) | the runtime's kernels 30,416 B (gate) and 30,592 B (Linear); parts, reader / writer / unpack / math / pack: gate 4,928 / 4,992 / 4,032 / 2,176 / 2,048 B, Linear 18,240 / 20,096 / 13,824 / 8,704 / 10,176 B |
+
+The runtime's form costs 0.64 us a command of the gate and 1.38 us of Linear. A held
+program's `load()` is part of it (113 cycles a command in
+[example 16](../../examples/16_two_programs/README.md), 0.08 us); the rest is the parts'
+code, called through a part's entry instead of inlined into the kernel's loop, and
+not split further by measurement. These two rows were measured before each command set
+its start-up's formats again; with those two calls a command, a later run gave 81.64 us
+and 95.16 us: no cost above the noise, so every command makes them.
+
+Two classes in one run, both in this form (the Linear above with one row tile a block,
+the Gate at Linear's fidelity with blocks of one tile):
+
+- **A dict**, Linear on cores 0 to 111 and the Gate on 112 to 119: the split exact
+  (96.2 us), the gate 0 wrong (23.12 us); `run.load(gate, group=(0, 112))` 10.64 us
+  from the host's submit to its event, then the gate on those 112 cores 0 wrong
+  (47.9 us); `run.load(linear, ...)` back 4.68 us, and the split exact again (95.5 us).
+  Example 16 measures a load on the cores: 3,529 to 3,791 cycles (2.6 to 2.8 us).
+- **A list**, every core both: the split exact (113.4 us, its first command), then the
+  gate on 120 cores 0 wrong (52.1 us). Before each command set its formats again, the
+  gate's output after the split was wrong
+  ([hazards](hazards.md#formats-another-program-left-on-the-same-cores)).
+
+[12 overlays](../../examples/12_overlays/as_class/README.md)' class in this form (its two
+handlers are overlays): 40 commands, every word as the example checks it; mix on mover
+B, held, 116 / 982 cycles (load, call), scale on mover B 132 / 2,502.
+
 ## Refusals
 
 A line the compiler does not take raises `Refused` (a `ProgramError`) when the class is
@@ -1629,9 +1740,7 @@ the pack CPU's words. Items of a tensor on two islands (refused when the kernel 
 built: no call moves part of another island's page). A range loop whose count is one
 mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
-A group switched to a class's program (`kmx_load`): a load switches between programs
-in the runtime's form, parts on the runtime's reader, writer and compute, and a class
-is built in the kernel form, its streams moved by `km::Movement`. A class in that form
-needs its movement lines to run in parts on the runtime's reader and writer, and the
-runtime's switch to give each part its buffers; that is a change of the runtime, not of
-the compiler.
+A class in the runtime's form with a dynamic handler, a body at a kernel's start or
+end, or a start-up of its own (`startup=`): refused ([The runtime's
+form](#the-runtimes-form)); the runtime's form has a message loop of no program, and
+the runtime owns the kernels' start, end and start-up.

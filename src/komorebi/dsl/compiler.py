@@ -249,6 +249,8 @@ class Compiled:
     entries: dict = field(default_factory=dict)  # km.Entry class name -> words
     # The inline bodies at a kernel's start or end (at=): (at, kernel) -> texts.
     kernel_bodies: dict = field(default_factory=dict)
+    kernel_body_lines: list = field(default_factory=list)  # their lines, in order
+    reserved: set = field(default_factory=set)  # indices left to other programs
     startup: object = None  # the class's km.Startup, or None (the default start-up)
     # A handler with constant parameters -> [(its set of values, the handler built
     # for them)] (handler_variants).
@@ -283,13 +285,16 @@ def class_annotations(cls):
     return merged
 
 
-def compile_class(cls, plan, tensors, l1=None, constants=None, handlers=None):
-    """Compiles each handler of `cls`; `plan` the program's sizes by name, `tensors`
-    an example tensor of each tensor parameter, `l1` the bytes left for buffers (an
-    unknown symbol takes what the others leave), `constants` the class's constants'
-    values, `handlers` the sets of the constant parameters (handler_variants)."""
+def compile_class(
+    cls, plan, tensors, l1=None, constants=None, handlers=None, reserved=()
+):
+    """Compiles each handler of `cls`; `plan` sizes by name, `tensors` an example of
+    each tensor parameter, `l1` the bytes left for buffers, `constants` the constants'
+    values, `handlers` the constant parameters' sets (handler_variants), `reserved`
+    buffer indices its buffers do not take (an unknown symbol takes what is left)."""
     methods = handler_methods(cls)
     compiled = Compiled(cls.__name__, inspect.getsourcefile(methods[0].function))
+    compiled.reserved = set(reserved)
     declared_constants(compiled, cls, constants)
     compiled.fields = {
         name: front.Field(
@@ -928,6 +933,7 @@ def next_index(compiled):
     taken = {b.index_a for b in compiled.buffers} | {
         b.index_b for b in compiled.buffers
     }
+    taken |= compiled.reserved
     index = FIRST_OTHER
     while index in taken:
         index += 1
@@ -3433,6 +3439,7 @@ class HandlerCompiler:
             taken = {b.index_a for b in self.compiled.buffers} | {
                 b.index_b for b in self.compiled.buffers
             }
+            taken |= self.compiled.reserved
             index = first
             while index in taken or index + 1 in taken:
                 index += 2
@@ -4905,6 +4912,7 @@ class HandlerCompiler:
         taken = {b.index_a for b in self.compiled.buffers} | {
             b.index_b for b in self.compiled.buffers
         }
+        taken |= self.compiled.reserved
         index = FIRST_WRITE
         while index in taken:
             index += 1
@@ -5752,6 +5760,7 @@ class HandlerCompiler:
         taken = {b.index_a for b in self.compiled.buffers} | {
             b.index_b for b in self.compiled.buffers
         }
+        taken |= self.compiled.reserved
         index = FIRST_OTHER
         while index in taken:
             index += 1
@@ -6648,6 +6657,7 @@ class HandlerCompiler:
             if mover is not None:
                 body = f"#if {guard}\n{body}\n#endif"
             self.compiled.kernel_bodies.setdefault((at, kernel), []).append(body)
+            self.compiled.kernel_body_lines.append((at, node.lineno))
             return [], []
         lines = [*before, Line(body, uses, mover=mover), *after]
         moves, self.body_moves = self.body_moves, []

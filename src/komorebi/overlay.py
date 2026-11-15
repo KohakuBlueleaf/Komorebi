@@ -437,7 +437,7 @@ def linked_facts(recipe, elf, base, undefined):
 
 def part_defines(overlay, kernel):
     """The defines of one part's build, and its compile arguments (None: the
-    kernel's)."""
+    kernel's; a program's own overlay may carry the program's)."""
     function = FUNCTION
     if overlay.program:
         function = PROGRAM_FUNCTION
@@ -451,7 +451,8 @@ def part_defines(overlay, kernel):
         **({"KM_MESSAGE_PART": 1, "KM_MESSAGE_PARTS": 1} if overlay.message else {}),
         **overlay.defines,
     }
-    compile_args = overlay.compile_args.get(kernel, []) if overlay.program else None
+    given = overlay.program or overlay.compile_args
+    compile_args = overlay.compile_args.get(kernel, []) if given else None
     return defines, compile_args
 
 
