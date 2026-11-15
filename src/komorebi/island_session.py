@@ -1596,7 +1596,6 @@ class IslandSession:
                     }
             plans = self._links(programs)
             tables = self._tables_for_load()
-            built = False  # a prebuild: every island's built, then it stops
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
                 try:
                     # one island: the card's run as it is without islands
@@ -1610,12 +1609,12 @@ class IslandSession:
                             **options,
                         )
                     )
-                except prebuild.Stopped:
-                    built = True
                 except KomorebiError as error:
                     raise _named(error, island) from None
-            if built:
-                raise prebuild.Stopped()
+            if prebuild.active():  # every island built: a mock run for the launch
+                self.run = prebuild.Run()
+                self._remember(program)
+                return self.run
             self._check_links(runs, plans)
         except (KernelSizeError, L1BudgetError) as error:
             for run in runs:

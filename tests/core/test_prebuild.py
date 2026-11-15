@@ -65,3 +65,14 @@ def test_a_compiled_kernel_is_logged_with_its_own_defines(tmp_path):
     session.Session._log_built(made, descriptor, time.time() - 5, made)
     assert logged[0].startswith("built: 1 found, 1 compiled")
     assert logged[1] == "compiled: reader.cpp brisc (KM_LINK_CHUNK=65536 LINEAR_OWN=1)"
+
+
+def test_a_mock_run_s_calls_return_at_once_with_nothing():
+    before = prebuild.LOADS[0]
+    run = prebuild.Run()
+    assert prebuild.LOADS[0] == before + 1 and run.alive()
+    event = run.wait(run.submit("twice", a=1))
+    assert float(event.microseconds) == 0.0 and f"{event.microseconds:.2f}" == "0.00"
+    assert list(event.values) == [] and event and int(event + 1) == 0
+    run.stop()
+    assert run.stopped and not run.alive()

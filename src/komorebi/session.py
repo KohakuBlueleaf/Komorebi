@@ -1004,6 +1004,13 @@ class Session:
     def _read_device(self, tensors, first, pages):
         """read() through the device API: DRAM tensors by banks, an L1 tensor whole
         (which waits for launched cores: not while a run is loaded)."""
+        if prebuild.active():  # a mock run computed nothing: zeros
+            return [
+                np.zeros(
+                    (dram.page_range(first, pages, t.pages)[1], t.page_bytes), "u1"
+                )
+                for t in tensors
+            ]
         in_l1 = [tensor for tensor in tensors if not tensor.in_dram]
         if in_l1 and self.run is not None and not self.run.stopped:
             raise ChannelError(
@@ -1282,10 +1289,10 @@ class Session:
         launch.build()
         return [built_files(launch.recipes(), started)]
 
-    def _log_built(self, descriptor, started, program, stop=True):
+    def _log_built(self, descriptor, started, program):
         """The load's line: its kernels and overlay parts found built and compiled
         (with a transfer kernel built before it), each compiled kernel's defines of
-        `program` and the runtime's (KM_*); a prebuild stops here (`stop`)."""
+        `program` and the runtime's (KM_*)."""
         found, compiled = built_files(descriptor.recipes(), started)
         for before_found, before_compiled in self._built_before:
             found, compiled = found + before_found, compiled + before_compiled
@@ -1305,8 +1312,6 @@ class Session:
                         or str(define)[2:].split("=")[0] in program.defines
                     )
                     self.log(f"compiled: {Path(source).name} {row[0]} ({defines})")
-        if stop and prebuild.active():
-            raise prebuild.Stopped()
 
     def read_bf16(self, *tensors):
         """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
@@ -1604,7 +1609,7 @@ class Session:
                 f"(text: {text})"
             )
             if build[-1]:
-                self._log_built(descriptor, built_at, program, stop=False)
+                self._log_built(descriptor, built_at, program)
                 refused = self._resize(program.sizes.total or KERNEL_BUFFER_MAX)
                 raise KernelSizeError(
                     program.name, program.sizes, KERNEL_BUFFER_MAX, refused
@@ -1624,6 +1629,10 @@ class Session:
             else:
                 backend.load_overlays(program, descriptor)
             self._log_built(descriptor, built_at, program)
+            if prebuild.active():  # built: a mock run stands in for the launch
+                self._starting = None
+                self.run = prebuild.Run(counted=self.island is None)
+                return self.run
             if backend.apart_links:  # after every other write: a transfer's buffer
                 link.clear(self)  # starts at the link cores' buffers' base too
             self.log("launch")
@@ -1861,6 +1870,10 @@ class Session:
                 )
             first.load_overlays(program, descriptor)
             self._log_built(descriptor, built_at, program)
+            if prebuild.active():  # built: a mock run stands in for the launch
+                self._starting = None
+                self.run = prebuild.Run()
+                return self.run
             for island, dispatch in enumerate(dispatches):
                 backend = first if island == 0 else copy.copy(first)
                 backend.port, backend.state_tensor = dispatch, states[island]
