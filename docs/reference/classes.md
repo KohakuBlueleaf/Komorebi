@@ -94,14 +94,14 @@ transfer buffer. On card 0 split in two, example 01's class: the build's table a
 load's are equal in every row but the slot (43,008 B reserved, 39,552 B loaded): host
 transfer buffer 82,000 B in both (the build counted 32,848 B before).
 
-The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` eight hex
-digits of what changes the generated sources (the plan, each tensor's format, page
-bytes, shape and layout, the field sizes solved from the L1 (not the L1 itself) and the
-trace depth, the rectangle and the NoCs, the class's constants by name and value, the
-listed sets of the constant parameters): two instances of one class built differently
-have a folder each, and two built alike share one. So a class built on a mock device is
-the card's build: the mock session's L1 left is the card's (it counts the host transfer
-buffer the card's channel takes), and a job that loads it compiles no kernel. In it: `<name>.h` (the
+The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` sixteen hex
+digits of the generated files' names and text (not of the make's inputs: the plan,
+the tensors, the constants and the sets that give a file its text are in the text): two
+instances whose files are equal share one folder, whoever made them and whatever else
+differed (a mock device's make and a card's), and files that differ are never one
+folder. A part's cache key and the kernels' own hash carry the folder's path, so a
+class made on a mock device is the card's build: a job that loads it compiles no
+kernel and no overlay part. A file the folder already holds equal is not written again. In it: `<name>.h` (the
 handler numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
 handler's parts in `<handler>/`, and `program.txt`, the report it also prints: each
 buffer with its indices, format, pages, bytes and the Python line that made it, and the
@@ -274,10 +274,10 @@ becomes the handler's overlay parts (`<set>/movement.cpp`, `<set>/compute.cpp`),
 are added to the run by `run.addon(..., handler=True)`
 ([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
 with the added number. Later submits of the set find it added. The files go into
-`build/<class>-use<key>/`: the key holds the load's build key, the handler, the set's
+`build/<class>-use<key>/`: the key holds the load's folder and make key, the handler, the set's
 values, the class's source files and a hash of the package's Python source (the class
 compiler that wrote them: a changed compiler compiles the set again). A later process that makes the same program finds
-them there and reads the set's words from `first_use.json`, so nothing is compiled.
+them there (their digest, kept in `first_use.json`, is compared with the files) and reads the set's words from it, so nothing is compiled.
 Its parts are then found in the parts' cache, so nothing is built either.
 `program.ahead(Gate.gate, size=4)` compiles a set before the run and has the load
 build its parts ([overlays](overlays.md#code-added-to-a-live-run), built ahead).
@@ -1747,7 +1747,7 @@ static inline void workcluster_step(
 ```
 
 The thread is made and its C built at the make, before any card job: the header the
-thread was built with is in a folder of its own (`build/<name>-<key>/thread-<hash>/`),
+thread was built with is in a folder of its own (`build/<name>-<hash>/thread-<hash>/`),
 put first among its includes. The make refuses a region parameter that names no
 region of the class. It also refuses C that names a handler, a tensor or a region
 the program lacks. The message gives the class's line, the C's errors with their
