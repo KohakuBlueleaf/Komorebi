@@ -129,7 +129,8 @@ arithmetic is tile functions, which the tile compiler turns into the matrix and 
 units' instructions.
 
 A SwiGLU layer, `y = (silu(x W1) * (x W3)) W2`: two handlers and the chain that runs
-them as one command.
+them as one command. The class is [31_swiglu](examples/31_swiglu/README.md)'s, which
+runs it on a card against float64.
 
 ```python
 import komorebi as km
@@ -634,7 +635,7 @@ src/komorebi_native/
   x280/kernel/                 the dispatcher for X280 cluster 0
   x280/engines/  x280/kmx/     the plain-C graph engine; the X280 thread library
   csrc/host/                   the native module: X280 runtime, commands, events
-examples/                      01_mapcollect to 30_add_overlay
+examples/                      01_mapcollect to 31_swiglu
 projects/                      raster, raytrace, dense (with SwiGLU), attention, decode
 experiments/                   hardware and design probes (see its README)
 reference/                     CPU, C++ and CUDA references the programs are checked against

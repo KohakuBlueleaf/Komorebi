@@ -764,6 +764,22 @@ it in the B family.
 
 Described in [Tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function).
 
+### A tile function's sqrt, reciprocal and division outside their domain
+
+**The hazard.** `km.sqrt(x)` is `x * rsqrt(x)` and `km.reciprocal(y)` the unit's
+estimate refined by two Newton steps, neither guarded: `km.sqrt` of a negative value,
+`km.rsqrt` of 0 or a negative value and `km.reciprocal(0)` (so `x / 0`) give what the
+words compute, not the IEEE answer (tt-metal's `sqrt_tile` and `div_binary_tile` test
+those cases; the unit program does not). `km.sqrt(0)` is 0.
+
+**The rule.** Give `km.sqrt` values of 0 or more and `km.rsqrt`, `km.reciprocal` and a
+divisor values away from 0, or write the guard in the expression (`km.maximum(x, 0.0)`),
+or use the inline body of the library's call.
+
+**The guard.** Nothing.
+
+Described in [Tile functions, what a tile function may contain](tile.md#what-a-tile-function-may-contain).
+
 ## X280 threads
 
 ### A thread that never polls the stop flag
