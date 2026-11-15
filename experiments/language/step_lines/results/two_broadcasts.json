@@ -1,0 +1,1 @@
+{"rows": [{"handler": "down", "rms_rel": 0.00031132866431144064, "max_rel": 0.0003384756164803228, "microseconds": [19.98, 18.76, 18.9, 18.28, 18.76], "equal_to_down": true}, {"handler": "window", "rms_rel": 0.00031132866431144064, "max_rel": 0.0003384756164803228, "microseconds": [25.42, 26.0, 25.22, 25.36, 25.34], "equal_to_down": true}], "wall_s": 18.7}

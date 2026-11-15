@@ -27,9 +27,9 @@ Four handlers: `streams` (X's and W's streams in a zip), `down` (above), `window
 whole column block of 2 N columns cast, its second half multiplied) and `turned` (W
 transposed in DRAM, read with `.T`, the part multiplied with the transpose flag). X's
 stream is on mover A: a column's broadcast is mover B's, which waits at a cast outside
-a loop for compute to free the block, after the stream's last block. A class runs one
-broadcast a mover (the core's arguments hold one), so each broadcast handler is its
-own class: `Down` (`streams`, `down`), `Window`, `Turned`, loaded in turn. `build`
+a loop for compute to free the block, after the stream's last block. A class then ran
+one broadcast a mover (the core's arguments held one), so each broadcast handler is
+its own class: `Down` (`streams`, `down`), `Window`, `Turned`, loaded in turn. `build`
 builds the three on a mock device; `card` runs each handler 5 times into its own Y and
 writes `results/broadcast_product.json`.
 
@@ -82,3 +82,24 @@ slot 0 after m's store, so alpha was 1. A model with alpha = 1 gives that run's 
 (10.07 against the card's 10.09) and softmax (0.7641 against 0.7643). The step form now
 keeps such a value in a free slot (tile.md); tile_rules' step units are emitted
 unchanged.
+
+## Two handlers' broadcasts on one mover
+
+Question: do two handlers of one class, each with a column's broadcast on mover B,
+each read their own arguments (the second's after the first's), and give the sums
+each gives in a class of its own?
+
+`two_broadcasts.py` makes class `Two` of broadcast_product's `down` and `window` on the
+same 12 x 4 rectangle and runs them in turn, 5 commands each, each into its own Y.
+
+| Handler | Y against float64 (relative RMS / max) | Equal to `down` | Time a command (5) |
+|---|---|---|---|
+| `down` | 3.11e-4 / 3.38e-4 | | 18.3 to 20.0 us |
+| `window` | 3.11e-4 / 3.38e-4 | datum for datum | 25.2 to 26.0 us |
+
+Kernel text (mock): `Two` 52,944 B.
+
+Both give the words each gave in a class of its own (above): `window` reads its own
+buffer (64 pages, number 1's area) and not `down`'s, which ran before it on the same
+core. With one set of arguments a mover, as before, both would have run with the
+last one's. The times are those of each handler alone, within 0.5 us.
