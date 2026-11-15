@@ -3,6 +3,7 @@ compiler's vector function (`chain.Chain`) is written as vector-unit instruction
 named values, the rules run as passes (algebra, schedule, layout), then the hazard
 checks. Built on fp32 Dst: whole-tile operands, constants, +, -, *, sigmoid, rsqrt."""
 
+import copy
 import struct
 
 from komorebi.dsl.tile import chain as chains
@@ -434,6 +435,77 @@ def constant_registers(code, prog):
     return done
 
 
+def negated_zero(code):
+    """Algebra: a -0.0 loaded only as the addend of multiply-adds becomes the fixed
+    zero with the addend's sign flipped (one SFPLOADI less). Returns what it did."""
+    done = []
+    for insn in [x for x in code if x.op == "SFPLOADI"]:
+        value = insn.args["lreg_ind"]
+        if (insn.args["instr_mod0"], insn.args["imm16"]) != (0, 0x8000):
+            continue
+        readers = [x for x in code if value in x.reads()]
+        writers = [x for x in code if value in x.writes()]
+        if writers != [insn] or not all(
+            x.op == "SFPMAD"
+            and x.read_fields().count("lreg_src_c") == 1
+            and [x.args[f] for f in x.read_fields()].count(value) == 1
+            and x.args["lreg_src_c"] == value
+            for x in readers
+        ):
+            continue
+        for x in readers:
+            x.args["lreg_src_c"] = "zero"
+            x.args["instr_mod1"] ^= 2
+        code.remove(insn)
+        done.append(f"-0.0 as -zero ({len(readers)} reader(s))")
+    return done
+
+
+def resident_constants(code, prog):
+    """Layout: constants the row still loads move into work registers that stay set
+    across the rows, most words saved first, while the row's values still fit; equal
+    constants share one. Returns (what it did, the loads, the pinned values)."""
+    found = {}
+    for insn in code:
+        if insn.op == "SFPLOADI" and isinstance(insn.args["lreg_ind"], str):
+            found.setdefault(insn.args["lreg_ind"], []).append(insn)
+    by_bits = {}
+    for value, words in found.items():
+        writers = [x for x in code if value in x.writes()]
+        bits = _bits_of(words)
+        if writers == words and bits is not None and value.startswith("v"):
+            by_bits.setdefault(bits, []).append(value)
+    saved = {b: sum(len(found[v]) for v in vs) for b, vs in by_bits.items()}
+    done, loads, pinned = [], [], []
+    for bits in sorted(saved, key=lambda b: -saved[b]):
+        trial = copy.deepcopy(code)
+        first, *others = by_bits[bits]
+        _share(trial, by_bits[bits], first)
+        words = [x for x in trial if x.op == "SFPLOADI" and x.args["lreg_ind"] == first]
+        for w in words:
+            trial.remove(w)
+        try:
+            allocate(copy.deepcopy(loads + words + trial), prog, [*pinned, first])
+        except ValueError:
+            continue
+        code[:] = trial
+        loads += words
+        pinned.append(first)
+        done.append(f"{words[0].note} held across rows ({saved[bits]} words a row)")
+    return done, loads, pinned
+
+
+def _share(code, values, name):
+    """Every value of `values` read as `name`; their loads but `name`'s dropped."""
+    for insn in list(code):
+        held = insn.args.get("lreg_ind")
+        if insn.op == "SFPLOADI" and held in values and held != name:
+            code.remove(insn)
+        for arg, _ in OPS[insn.op].args:
+            if insn.args[arg] in values:
+                insn.args[arg] = name
+
+
 def _bits_of(words):
     """The 32-bit value SFPLOADI words build (FLOATB, FLOATA, USHORT, then UPPER),
     or None for another form."""
@@ -499,17 +571,18 @@ def _replay(count, load):
     }
 
 
-def allocate(code, prog):
+def allocate(code, prog, pinned=()):
     """Layout: each value gets an LReg 0 .. 7 for its live range (a result takes the
     register of an operand that dies there, else the lowest free one); the fixed
-    constants take 9 / 10 / 11, the programmable ones 12 upward."""
+    constants take 9 / 10 / 11, the programmable ones 12 upward. `pinned` values live
+    to the end of `code` (they are read again by the next row)."""
     regs = {name: FIXED[name] for name in FIXED}
     regs.update({name: PROGRAMMABLE[i] for i, name in enumerate(prog)})
     last = {}
     for i, insn in enumerate(code):
         for v in insn.reads() + insn.writes():
             if isinstance(v, str) and v not in regs:
-                last[v] = i
+                last[v] = len(code) if v in pinned else i
     free = list(range(WORK))
     for i, insn in enumerate(code):
         dying = [
@@ -711,10 +784,26 @@ def unit_program(ir, dest="fp32", load_macro=False):
     setup = []
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
+    unit.passes.append(Pass("algebra", "negated_zero", negated_zero(body.code)))
     done = constant_registers(body.code, body.prog)
     unit.passes.append(Pass("layout", "constant_registers", done))
     unit.passes.append(Pass("schedule", "hoist", hoist(body.code, setup)))
-    unit.passes.append(Pass("layout", "allocate", allocate(body.code, body.prog)))
+    done, held, pinned = resident_constants(body.code, body.prog)
+    unit.passes.append(Pass("layout", "resident_constants", done))
+    whole = held + body.code
+    unit.passes.append(Pass("layout", "allocate", allocate(whole, body.prog, pinned)))
+    body.code[:] = whole[len(held) :]
+    held_regs = {x.args["lreg_ind"] for x in held}
+    clobbered = [x.op for x in body.code if held_regs & set(x.writes())]
+    unit.checks.append(
+        Check(
+            "resident",
+            "a register held across rows is written by no row instruction",
+            f"refused: {clobbered}" if clobbered else f"ok: LReg {sorted(held_regs)}",
+        )
+    )
+    if clobbered:
+        raise UnitError(f"{ir.name}: a held constant register is overwritten")
     allocate(setup, body.prog)
     unit.constants = {
         PROGRAMMABLE[i]: value for i, value in enumerate(body.prog.values())
@@ -793,6 +882,7 @@ def unit_program(ir, dest="fp32", load_macro=False):
             {"stall_res": STALL_SFPU, "wait_res": WAIT_MATH},
             "SFPU waits for the matrix unit",
         ),
+        *held,
         Loop("face", FACES, [face, step, Insn(step.op, dict(step.args), step.note)]),
         *drained,
         Insn("SETRWC", {**_setrwc(), "BitMask": SET_D}, "Dst counter back to 0"),

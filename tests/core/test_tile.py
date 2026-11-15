@@ -52,7 +52,7 @@ def test_silu_unit_program():
     )
     assert isinstance(rest, Loop) and rest.count == 7
     assert rest.body[0].op == "REPLAY" and rest.body[0].args["load_mode"] == 0
-    assert unit.cost("math")[1] == 1593.6
+    assert unit.cost("math")[1] == 1533.6
     assert unit.constants and unit.not_checked
 
 
@@ -85,7 +85,7 @@ def test_load_macro_fits_add_and_refuses_silu():
     fit = next(p for p in unit.passes if p.name == "load_macro")
     assert "SFPLOADMACRO" in fit.done[0] and unit.cost("math")[1] == 91.6
     refused = next(p for p in silu(load_macro=True).passes if p.name == "load_macro")
-    assert refused.done[0].startswith("refused: the row computes with 45")
+    assert refused.done[0].startswith("refused: the row computes with 39")
 
 
 def test_row_norm_lanes_and_broadcast():
