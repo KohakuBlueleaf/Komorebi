@@ -1181,7 +1181,88 @@ call's cycles and whether it was held to page 2 x core + mover of `stamps` (move
 B 1). From the same example, mix on mover B, median cycles (load, call): held 67 /
 967, loading 1,779 / 1,007.
 
-A broadcast's handler is resident.
+A broadcast's handler is resident. `@km.handler(overlay=False)` keeps a handler
+resident also where a merged program's build would move it (below).
+
+## Classes merged into one
+
+Several classes become ONE program in the kernel form: one program field, one handler
+numbering, one L1 layout. Two ways give the same program:
+
+```python
+merged = km.merge(gate, linear, session=session)  # programs already made
+run = session.load(merged)
+run.submit(gate.gate, (0, 12), args=(a, b, out, 64, pattern))  # a source's handler
+
+
+class Layer(Gate, Linear):  # the classes themselves
+    pass
+
+
+layer = Layer(x=x, w=w, y=y, a=a, b=b, out=out, session=session)
+run.submit(Layer.split, (0, 112), args=(x, w, y))
+```
+
+`km.merge(a, b, ..., overlay=[...], resident=[...], name=None, session=None, l1=None,
+log=print)` takes made class programs: each handler is compiled again with what its
+own program was made with (its constants, plan and example tensors). A class deriving
+two or more classes with handlers, adding no handler, constant or field of its own, is
+made as one class is (`Layer(x=x, ..., session=session)`): the make's keywords go to
+each class, a constant to each class that declares it.
+
+- **Numbering.** The first class keeps its numbers; each next one takes the next
+  numbers in its own order. The build prints them (`4: linear.gate as linear_gate
+  (linear's 3)`). A name two classes have is named `<class>_<name>` in the kernels and
+  the header; `merged.handler("gate")` is refused naming both, `merged.handler(gate,
+  "gate")`, `layer.handler(Gate, "gate")` or the merged name pick one, and on a merged
+  class `Layer.gate` is refused the same way. A source's own handler (`gate.gate`,
+  `linear.split`) given to a run of the merged program is mapped to its number there.
+  More handlers than a program numbers (239) is refused with the count.
+- **Constants.** Each class keeps its own: two classes' `K_TILES` are two values, each
+  handler's `self.K_TILES` its own class's. On a merged class a keyword for a name two
+  classes declare differently is refused naming both (merge made programs to give each
+  its own value); declared alike, the one value goes to both. The plan's names are
+  shared: one name with two values is refused.
+- **Tensors.** A tensor parameter is a compile argument of the movement kernel, by its
+  name. Two classes whose parameter of one name has two different example tensors (the
+  gate's `a` of 768 pages, Linear's `a` of 1,024 x 4,096 tiles) each keep theirs: the
+  second class's is the kernel's `<class>_<name>`, and its handlers' lines name it in
+  a block of their own (`using A = LinearA;`).
+- **Fields and buffers.** A field of one name in two classes is one field when declared
+  alike (format and shape, by each class's constants), else refused naming both:
+  `field sums is Field(...) in Sums and Field(...) in Wider`. The streams' buffers are
+  one class's: a pair is shared by handlers of one role, format, page and block, as
+  between the handlers of one class, so the L1 they take is at least each class's.
+  The build's L1 check refuses what does not fit, with the bytes: the gate class's
+  `BLOCK = 8` merged with Linear asks 1,642,496 B of the 1,414,272 B left; at
+  `BLOCK = 2` the gate's streams share Linear's pairs and add nothing.
+- **Where the code lives.** Resident unless marked: `overlay=[...]` and
+  `resident=[...]` name handlers (a name, a merged name, a source's handler) or whole
+  sources (a made program, a class), and `@km.handler(overlay=True / False)` is a
+  handler's own marker; the merge's markers override it. When the kernels do not fit
+  the session's kernel buffer, the load places the largest resident handler that may
+  move (unmarked, not a broadcast's; by its generated C++: its lines in both kernels
+  and the tile functions only it calls) as an overlay, prints its choice and loads
+  again, until they fit; a handler whose part the overlay builder refuses stays
+  resident and the next is tried; with none left, the load's `KernelSizeError` gives
+  the bytes. At every load the session prints where each handler's code lives,
+  resident ones too.
+
+Measured on a mock device (the build; the card run is not in this version):
+[merged_class](../../experiments/language/merged_class/README.md), the gate class
+(`BLOCK = 2`) and Linear: the kernels 98,656 B (Linear's alone 92,304, the gate's
+38,064), so a kernel buffer of 97 KiB; at 91 KiB the load's pick moved `split`, then
+`linear_gate`, then `gate_gate`, and the overlay builder refused each part (a stream's
+handler keeps its own copy of `km::move_filled` and `km::move_drained`), so all four
+stay resident and the load is refused with the bytes.
+
+Not merged, each refused with its reason: a dynamic handler (its message loop is its
+program's own kernels); a handler with constant parameters (built once a set in its own
+program), and `handlers=` on a merged class; classes whose compute options or start-ups
+differ; a define or the rectangle given two values; a merged program as a source; a
+class with a hand program (a class is in the kernel form, a hand program merges in the
+runtime's form: [Programs merged into one](host.md#programs-merged-into-one)). A chain
+over handlers of several classes is not built: a class has no chain on this version.
 
 ## Dynamic handlers and messages
 

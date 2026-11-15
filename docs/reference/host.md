@@ -244,12 +244,18 @@ source keeps its own copy of the runtime's functions it uses.
 
 Not merged, each refused with its reason: a program in the kernel form (it owns
 `kernel_main` and the loop; merge it in the runtime's form, each source defining
-`km_program`); a class (it is built in the kernel form); a merged program as a source
-(merge its sources); a source with overlays of its own (`Program.overlay`: their numbers
-are the ones a merged program's sources placed as overlays take). A class in the runtime's form would need its movement lines in
-parts that the runtime's reader and writer call, the runtime's switch to set up each
-part's buffers, its compute start-up on its own formats, and its overlays numbered in
-the run: a change of the runtime's kernels and of the class compiler.
+`km_program`); a class with a hand program (a class is built in the kernel form);
+a merged program as a source (merge its sources); a source with overlays of its own
+(`Program.overlay`: their numbers are the ones a merged program's sources placed as
+overlays take). Sources whose buffers are of both exponent families are refused as one
+program is (one family a kernel). Classes merge with classes, as one program in the
+kernel form ([Classes merged into one](classes.md#classes-merged-into-one)).
+
+A class in the runtime's form would need, five things: its movement lines in parts
+that the runtime's reader and writer call; the runtime's switch to set up each part's
+buffers at a command; its compute start-up on its own formats in its compute part; its
+own overlays numbered in the run; and the class compiler emitting `km_program` in place
+of `kernel_main`. That is a change of the runtime's kernels and of the compiler.
 
 ## `Session`
 

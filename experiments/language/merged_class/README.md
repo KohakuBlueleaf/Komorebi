@@ -1,0 +1,69 @@
+# Two classes merged into one program
+
+Question: can two programs written as classes, the gate of
+[22 gate](../../../examples/22_gate/as_class/README.md) and the linear layer of
+[dense_class](../dense_class/README.md), be ONE program (`km.merge`), each handler
+keeping its own class's constants and tensors, and what does a command of each cost
+beside its own program?
+
+`merged_class.py` makes `Gate` (bfloat16, 12 cores of 64 tiles, example 22's command)
+and `Linear` (the K split for one row tile, 112 cores, and its SwiGLU gate), then
+`km.merge(gate, linear)`
+([Classes merged into one](../../../docs/reference/classes.md#classes-merged-into-one)).
+With `--beside` each program is also loaded alone, Linear first and the gate last, and
+the same commands run on it.
+
+```bash
+python merged_class.py --beside
+```
+
+The checks are the two scripts' own: the gate's output against float64 (values wrong
+past the hand program's bound), Linear's `exact` (small integers, Y must equal the
+host's product) and `swiglu` (relative RMS against float64), read after the run stops.
+
+## What the build makes
+
+Four handlers, numbered over the two classes: `gate.gate` keeps 1 (as `gate_gate`, a
+name both classes have), Linear's `split`, `grid` and `gate` take 2, 3 and 4 (the last
+as `linear_gate`). Both classes name tensors `a`, `b` and `out` with different
+examples (768 pages; 1,024 x 4,096 tiles): Linear's are the kernel's `linear_a`,
+`linear_b`, `linear_out`, which its handlers' lines name in a block of their own.
+
+The gate's `BLOCK` is 2 here, not its default 8. At 8 the merged program asks
+1,642,496 B of L1 for its buffers, of the 1,414,272 B left, and the build refuses it:
+the gate's three pairs of 8-tile blocks are not Linear's. At 2 the gate's streams share
+Linear's pairs (the same role, format, page and block) and add no buffer.
+
+On a mock device (the build of each load, the JIT cache the card would use):
+
+| Program | Kernel text (BRISC, NCRISC, TRISC0 to 2) | Total |
+|---|---|---:|
+| Gate, `BLOCK = 2` | 14,532, 10,424, 6,372, 2,724, 3,284 | 38,064 B |
+| Linear | 28,288, 25,640, 16,636, 9,232, 11,644 | 92,304 B |
+| merged | 29,592, 27,144, 16,440, 11,164, 13,436 | 98,656 B |
+
+The merged kernels are 6,352 B over Linear's: the gate's case and its own copy of the
+tile function `silu_gate` (the two classes' functions are two functions). Linear alone
+is over its own script's kernel buffer of 89 KiB in this tree (92,304 B; its README
+measured 90,192), so this script gives the session 97 KiB, and the buffers still fit
+(1,373,904 B of 1,432,448 B in the load's table).
+
+At 91 KiB the load does not fit and picks: `split` (7,497 B of generated C++, the
+largest of the handlers that may move; `grid` holds broadcasts and stays), then
+`linear_gate`, then `gate_gate`, each placed as an overlay and built again. The overlay
+builder refuses each part (a stream's handler keeps its own copy of the runtime's
+`km::move_filled` and `km::move_drained`), so each stays resident, and with none left
+the load is refused with the bytes.
+
+## On the card
+
+Not measured in this version. The first run loaded the gate alone, then Linear alone,
+whose launch tt-metal refused: "Statically allocated circular buffers ... clash with L1
+buffers ... L1 buffer allocated at 1423872 and static circular buffer region ends at
+1464448", though Linear's L1 table fits; after the gate's load, whose host transfer
+buffer is 82,000 B against Linear's 32,848, an L1 buffer stays where Linear's buffers
+reach. The script now loads Linear first. The second run hung in the script itself (a
+tensor read while the run was live); it reads after the run stops now.
+
+The numbers to set beside, from each program's own page: the gate class in bfloat16 at
+`BLOCK = 8`, 83.70 us; Linear's K split, 94.2 us.
