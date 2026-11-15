@@ -13,6 +13,7 @@ from komorebi.dsl.tile.unit import (
     Insn,
     Loop,
     Product,
+    Runtime,
     Sync,
     UnitError,
     encode,
@@ -26,12 +27,17 @@ def _lines(items, depth):
     pad, out = "    " * depth, []
     for item in items:
         if isinstance(item, Loop):
-            var = item.name
-            if item.unroll:
+            var, count = item.name, item.count
+            if isinstance(count, Runtime) and count.guard:
+                out.append(f"{pad}if ({count.text}) {{")
+                out += _lines(item.body, depth + 1)
+                out.append(f"{pad}}}")
+                continue
+            if isinstance(count, Runtime):
+                count = count.text
+            elif item.unroll:
                 out.append(f"#pragma GCC unroll {item.count}")
-            out.append(
-                f"{pad}for (uint32_t {var} = 0; {var} < {item.count}; ++{var}) {{"
-            )
+            out.append(f"{pad}for (uint32_t {var} = 0; {var} < {count}; ++{var}) {{")
             out += _lines(item.body, depth + 1)
             out.append(f"{pad}}}")
         elif isinstance(item, Insn):
@@ -116,11 +122,19 @@ def emit(unit):
     unit.checks.append(
         Check("one-producer", "one pushing CPU or kernel a buffer", check_buffers(unit))
     )
+    signature = "const uint32_t dst"
+    if unit.band:
+        signature += ", const uint32_t rows"
     lines = [
         f"// {name}: emitted by komorebi.dsl.tile from its unit program ({unit.dest} "
         "Dst); math CPU only.",
         f"// Writes {', '.join(unit.clobbers) or 'no constant register'}; the caller "
         "acquires Dst and waits.",
+        *(
+            ["// rows: the live rows (1 .. 32), run in bands of 4."]
+            if unit.band
+            else []
+        ),
         "#pragma once",
         "",
         "#include <stdint.h>",
@@ -132,7 +146,7 @@ def emit(unit):
         *_lines(unit.init["math"], 2),
         "    }",
         "",
-        f"    inline void {name}(const uint32_t dst) {{",
+        f"    inline void {name}({signature}) {{",
         *_lines(_math_part(unit.tile["math"]), 2),
         "    }",
         "",

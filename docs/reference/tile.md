@@ -45,8 +45,8 @@ header = emit(unit)  # km_tile::gate_init(), km_tile::gate(dst)
 
 | Call | What it does |
 |---|---|
-| `unit_program(ir, dest="fp32", load_macro=False)` | the stream form: one store a tile, of an expression over up to 3 whole input tiles (`Dst` tiles 0, 1, 2). `load_macro=True` adds the load-macro rule (below) |
-| `rows.row_program(ir, width, rows_tile, cols_tile)` | the row form: a row of `width` tiles (1 or 2) in `Dst` tiles 0 .. width - 1, a per-row value in `Dst` tile `rows_tile`, a per-column operand in `Dst` tile `cols_tile` |
+| `unit_program(ir, dest="fp32", load_macro=False, rows=False)` | the stream form: one store a tile, of an expression over up to 3 whole input tiles (`Dst` tiles 0, 1, 2). `load_macro=True` adds the load-macro rule (below); `rows=True` the band (below) |
+| `rows.row_program(ir, width, rows_tile, cols_tile, rows=False)` | the row form: a row of `width` tiles (1 or 2) in `Dst` tiles 0 .. width - 1, a per-row value in `Dst` tile `rows_tile`, a per-column operand in `Dst` tile `cols_tile`; `rows=True` the band |
 | `steps.step_program(ir, width, state_tile, fidelity="HiFi4")` | the step form: a row of `width` tiles (1 to 3) in `Dst` tiles 0 .. width - 1, stored over them, and a state tile of per-row values in `Dst` tile `state_tile`, read and written in place; `fidelity` is the matrix unit's, for a row sum the cost model gives it |
 | `row_operand(row, width)` | the per-column operand tile `.row()` reads, placed from a plain row of 32 `width` values (1024 values in face order, written once by the host) |
 | `matrix.product_program(name, fidelity)` | one tile product with the math CPU's words emitted (the library's unpack and `mm_no_mop_init_short` are the caller's) |
@@ -54,7 +54,54 @@ header = emit(unit)  # km_tile::gate_init(), km_tile::gate(dst)
 | `matrix.block_cost(fidelity, ct_dim, rt_dim, kt_dim=1)` | the priced cycles and words of `kt_dim` K steps of `matmul_block` (the MOP form issues the same words as the no-MOP form) |
 | `emit(unit)` | the C++ header; `UnitError` if a word does not encode, a check refuses (below) |
 | `unit.dump()` | the program as text: setup, loop nests, each pass and what it did, each check and its verdict, the rules not checked, the cost on each CPU |
-| `unit.cost(cpu)` | `(instructions, cycles a unit, terms)` on `"unpack"`, `"math"` or `"pack"` |
+| `unit.cost(cpu, rows=32)` | `(instructions, cycles a unit, terms)` on `"unpack"`, `"math"` or `"pack"`; `rows`: the live rows a band body is priced at |
+
+## The band: the live rows only
+
+A decode step holds a token in a few rows of each tile; the rest of the rows hold
+nothing anyone reads. With `rows=True` the emitted body is `<name>(dst, rows)`: `rows`
+is a runtime argument (a word of the caller's command, 1 to 32; 0 or more than 32
+means the whole tile) and the body runs the bands of 4 rows that hold one. Rows past
+the last band are left as they were in `Dst`. Without `rows` the code is the whole
+tile's, unchanged.
+
+- **Stream form.** Faces 0 and 1 (rows 0 to 15) run in a loop of two, faces 2 and 3 in
+  a loop of two that runs past 16 rows. A face records its first row pass into the
+  replay buffer as it runs, then a loop the core runs replays the face's other bands
+  (`(rows + 3) / 4` bands in faces 0 and 1, the rest in 2 and 3). A band is 2 row
+  passes, or 1 when a pass covers 4 rows (a load macro of two row steps, a per-row
+  operand's 4-row block). Each face's `Dst` is set from the face's base by the two
+  `SETRWC` that end the face, so the rows a face ran do not move the next face. The
+  per-row prepass (a per-row operand's term once a block) runs the whole tile.
+- **Row form.** Each instruction belongs to the first band whose stored value it
+  feeds (followed back from the stores through the registers); bands are 8 rows, the
+  two row groups the schedule interleaves. A run of instructions of one band runs
+  under `if (rows > first row)`; a run that ends in a multiply-add ends in an
+  `SFPNOP` (the run after it may not run).
+- **The cost.** `unit.cost("math", rows)` prices the body at `rows` live rows: the
+  words of the bands that run; the loop of bands and the tests of the rows are priced
+  at nothing, as the card ran them (the core's loop and test run ahead of the words it
+  hands the unit). At 32 rows a band body is priced as the whole tile.
+
+On the card (`experiments/tile_rules`, bodies 24 to 26, math cycles a tile less the
+sync; the estimate in brackets):
+
+| Body | 1 row | 9 rows | 17 rows | 32 rows | Whole tile |
+|---|---:|---:|---:|---:|---:|
+| add, load macro | 35.0 (24.2) | 48.5 (40.6) | 71.0 (67.0) | 93.5 (91.6) | 93.0 (91.6) |
+| silu(a) b | 220.0 (210.3) | 603.0 (587.3) | 992.0 (974.0) | 1568.0 (1539.6) | not run (1539.6) |
+| norm, a row of 2 tiles | 183.0 (173) | 349.0 (337) | 519.0 (509) | 682.0 (673) | 689.5 (673) |
+
+Every live band equals the whole tile's result within the case's tolerance, and the
+rows past the band are the input's bit for bit. At 32 rows the band costs what the
+whole tile does (add 93.5 against 93.0; the norm's 682 is under its whole tile's).
+The estimate is low by about 10 cycles a body at every row count (add 35.0 against
+24.2 at one row, the norm 10 at each), a cost the model does not have.
+
+| Refused under the band | Why |
+|---|---|
+| load macro: "a macro turn of N row steps; a band is 2" | a macro's register turn would cross a band; the row stays plain |
+| row form: "the row form's band takes no lane flags" | a flag set in a run that does not run would change the lanes of the next |
 
 ## What a tile function may contain
 
@@ -139,6 +186,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | allocate | layout | each value an LReg 0 .. 7 for its live range |
 | replay | schedule | the first row's instructions recorded into the replay buffer as it runs, replayed by the others |
 | load_macro | schedule | a row of loads, one operation a sub-unit and a store becomes one `SFPLOADMACRO` a row |
+| band | schedule | with `rows=True`: the face loop or the row groups run for the live rows only (above) |
 | per-row lanes | layout | a per-row value lives as lanes of one tile: slot `(h, q)` of the rows tile, lane `l` holding row `16 h + 4 q + l / 8`, the same in all 8 lanes of its lane row; the sum along a row is a multiply-add chain then three lane rotations (`SFPSHFT2`, 1, 2 and 4 lanes) |
 | broadcast | layout | `.col()` reads the per-row slot once a half-row; `.row()` reads the per-column operand once a vector column; no other broadcast is built |
 
@@ -197,6 +245,7 @@ Every price names the one-core measurement it comes from
 | a word pushed | 1 |
 | a word replayed | 1.004 |
 | a pass of a loop the core runs | N + 2 |
+| a pass of a band's loop, a band's test of the rows | 0 (the band on the card, above) |
 | a multiply-add result read by the next instruction | 1 stall (not when the reader is a store) |
 | an `SFPSHFT2` lane mode | 1 stall (the ISA's statement) |
 | a word built at run time | 4.14 |

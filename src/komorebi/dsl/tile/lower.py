@@ -25,6 +25,7 @@ from komorebi.dsl.tile.unit import (
     Insn,
     Loop,
     Pass,
+    Runtime,
     Sync,
     UnitError,
     UnitProgram,
@@ -36,6 +37,7 @@ from komorebi.dsl.tile.unit import (
 # ADDR_MOD_6 steps Dst by 2 (one row group) after a load macro.
 ADDR_MOD, MACRO_ADDR_MOD = 7, 6
 ROWS, FACES = 8, 4
+BANDS = 4  # bands of 4 rows a face (rule band: a body runs the bands of live rows)
 TILE = 64  # Dst address units of one fp32 tile: 4 faces of 16 rows
 # Operand tiles a whole-tile stream body reads (Dst tiles 0 ..).
 OPERANDS = 3
@@ -1161,12 +1163,14 @@ def _step_mode(incr):
     )
 
 
-def unit_program(ir, dest="fp32", load_macro=False):
+def unit_program(ir, dest="fp32", load_macro=False, rows=False):
     """The unit program of stream kernel `ir` on `dest` (fp32) Dst registers: operand
     k read from Dst tile k (relative to the caller's `dst`), the result stored into
-    tile 0. `load_macro`: try the load-macro rule (a refusal is a pass's record)."""
+    tile 0. `load_macro`: try the load-macro rule (a refusal is a pass's record);
+    `rows`: the band, the body's live rows a runtime argument (`band_faces`)."""
     if dest != "fp32":
         raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
+    band = bool(rows)
     chain = stream_chain(ir)
     if chain.values or chain.prev is not None:
         fail(f"{ir.name}: the unit program takes no runtime scalars")
@@ -1260,7 +1264,12 @@ def unit_program(ir, dest="fp32", load_macro=False):
     if load_macro and not per_row:
         try:
             plan = macro.fit(body.code)
+            if band and (ROWS // plan.rows) % BANDS:
+                raise macro.Refused(
+                    f"a macro turn of {plan.rows} row steps; a band is 2"
+                )
         except macro.Refused as e:
+            plan = None
             unit.passes.append(Pass("schedule", "load_macro", [f"refused: {e}"]))
     unit.init["math"] = [
         Insn(
@@ -1356,9 +1365,69 @@ def unit_program(ir, dest="fp32", load_macro=False):
     rows, done = replay(face)
     unit.passes.append(Pass("schedule", "replay", done))
     faces = next(x for x in unit.tile["math"] if isinstance(x, Loop))
-    faces.body[:1] = rows
+    if band:
+        at = unit.tile["math"].index(faces)
+        unit.tile["math"][at : at + 1] = band_faces(face, faces.body[1:])
+        unit.band = True
+        done = [
+            f"{face.count // BANDS} pass(es) of the face's rows a band of 4 live "
+            "rows, faces 2 and 3 past 16 rows"
+        ]
+        if pre is not None:
+            done.append("the per-row pass runs the whole tile")
+        unit.passes.append(Pass("schedule", "band", done))
+    else:
+        faces.body[:1] = rows
     unit.not_checked = [r for r in NOT_CHECKED if plan is None or "load-macro" not in r]
     return unit
+
+
+# The band's C++ (`rows`: the body's argument, 1 .. 32; 0 or past 32: the whole tile):
+# bands in faces 0 and 1, whether faces 2 and 3 run, and the bands in them.
+LOWER = "(rows - 1u < 16u ? (rows + 3u) / 4u : 4u)"
+UPPER_FACES = "(rows - 1u >= 16u ? 2u : 0u)"
+UPPER = "(rows - 17u < 16u ? (rows - 13u) / 4u : 4u)"
+
+
+def _live(rows):
+    return rows if 1 <= rows <= 32 else 32
+
+
+def _lower(rows):
+    return min(4, (_live(rows) + 3) // 4)
+
+
+def _upper(rows):
+    return max(0, (_live(rows) - 13) // 4)
+
+
+def band_faces(face, steps):
+    """Rule band: the face loop (`face`: a face's row loop, `steps`: the two SETRWC
+    to the next face) on the live rows: faces 0, 1, then 2, 3 past 16 rows, each a
+    recorded pass and a runtime loop of its other bands, replayed; each face's Dst set
+    from its base by the SETRWC, whatever rows the face before ran."""
+    per_band = face.count // BANDS
+    row = face.body
+    n = min(REPLAY_ENTRIES, len(row))
+    record = Insn("REPLAY", _replay(n, 1), f"record {n} while they run")
+    play = [Insn("REPLAY", _replay(n, 0), f"replay {n}"), *row[n:]]
+
+    def one(text, of):
+        more = Loop(
+            "band",
+            Runtime(f"{text} - 1u", lambda r: of(r) - 1),
+            play * per_band,
+        )
+        return [record, *row, *play * (per_band - 1), more, *steps]
+
+    return [
+        Loop("face", 2, one(LOWER, _lower)),
+        Loop(
+            "face",
+            Runtime(UPPER_FACES, lambda r: 2 if _live(r) > 16 else 0),
+            one(UPPER, _upper),
+        ),
+    ]
 
 
 def _rwc(**args):

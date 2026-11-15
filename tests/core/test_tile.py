@@ -105,7 +105,7 @@ def test_load_macro_fits_add_and_refuses_silu():
     assert refused.done[0].startswith("refused: the row computes with 37")
 
 
-def test_row_norm_lanes_and_broadcast():
+def norm_ir():
     x, g = TensorParam("x", False, F32), TensorParam("g", False, F32)
     y = TensorParam("y", True, F32)
     ir = KernelIR("norm", [x, g, y], [], {})
@@ -116,7 +116,11 @@ def test_row_norm_lanes_and_broadcast():
             row = trace.load(xs.tiles[t, :])
             r = trace.rsqrt(trace.reduce_sum(row * row, exact=True) * (1 / 64) + 1e-6)
             trace.store(ys.tiles[t, :], row * r.col() * weight.row())
-    checks = {c.rule: c.verdict for c in row_program(ir, 2, 2, 4).checks}
+    return ir
+
+
+def test_row_norm_lanes_and_broadcast():
+    checks = {c.rule: c.verdict for c in row_program(norm_ir(), 2, 2, 4).checks}
     assert checks["lanes"].startswith("ok") and checks["broadcast"].startswith("ok")
     # a lane rotation reading a sum is not held: the interleave puts other work between
     assert checks["mad-reader"] == "ok"
@@ -272,3 +276,29 @@ def test_matrix_block_words_and_price():
     assert [x.op for _, x in pairs].count("MVMUL") == 32 and len(pairs) == 34
     assert block_cost("HiFi2", 1, 1) == (41.0, [w for w, _ in pairs])
     assert block_cost("HiFi4", 2, 2, 4)[0] == 1055.0
+
+
+def test_band_takes_the_live_rows_at_run_time():
+    whole = stream("add", 2, lambda a, b: a + b, load_macro=True)
+    unit = stream("add", 2, lambda a, b: a + b, load_macro=True, rows=True)
+    assert "inline void add(const uint32_t dst) {" in emit(whole)
+    text = emit(unit)
+    assert "inline void add(const uint32_t dst, const uint32_t rows) {" in text
+    assert "face < (rows - 1u >= 16u ? 2u : 0u)" in text
+    costs = [unit.cost("math", rows)[1] for rows in (1, 4, 5, 16, 17, 32)]
+    assert costs[0] == costs[1] < costs[2] < costs[3] < costs[4] < costs[5]
+    # at 32 rows: the whole tile's words; the bands' loop is priced at nothing
+    assert costs[5] == whole.cost("math")[1]
+    loops = [x for x in unit.tile["math"] if isinstance(x, Loop)]
+    assert [x.count for x in loops][0] == 2 and len(loops) == 2
+
+
+def test_band_in_the_row_form_guards_each_band():
+    whole = row_program(norm_ir(), 2, 2, 4)
+    unit = row_program(norm_ir(), 2, 2, 4, rows=True)
+    assert "const uint32_t rows" in emit(unit)
+    guards = [x for x in unit.tile["math"] if isinstance(x, Loop)]
+    assert guards and all(x.count.guard for x in guards)
+    words = sum(1 for _ in insns(whole.tile["math"]))
+    assert sum(1 for _ in insns(unit.tile["math"])) == words
+    assert unit.cost("math", 1)[1] < unit.cost("math", 9)[1] < unit.cost("math", 32)[1]
