@@ -10,10 +10,10 @@
 #include "km_relay.hpp"
 #include "km_worker.hpp"
 
-// 1 (the default): a word-only cast's caster waits at finish until every receiver
-// cleared VALID; 0 (km.Program(broadcast_wait=False)) leaves that wait out
+// 1 (km.Program(broadcast_wait=True)): a word-only cast's caster waits at finish
+// until every receiver cleared VALID; 0 (the default) leaves that wait out
 #if !defined(KM_BROADCAST_WAIT)
-#define KM_BROADCAST_WAIT 1
+#define KM_BROADCAST_WAIT 0
 #endif
 
 namespace km {

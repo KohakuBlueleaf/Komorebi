@@ -113,7 +113,7 @@ def make(
     trace=0,
     defines=None,
     handlers=None,
-    broadcast_wait=True,
+    broadcast_wait=False,
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
@@ -682,14 +682,14 @@ def camel(name):
     return "".join(part.capitalize() for part in name.split("_"))
 
 
-def sources_key(plan, tensors, room, depth, rect, nocs, wait=True, constants=None):
+def sources_key(plan, tensors, room, depth, rect, nocs, wait=False, constants=None):
     """A short hash of what a class is made with that changes its generated sources:
     the plan, each tensor's format, page and shape, the make's options (a
-    broadcast_wait of False too; True keeps the key it had before the option), and the
+    broadcast_wait of True too; False keeps the key it had before the option), and the
     class's constants by name and value (constants_keyed)."""
     made = [sorted(plan.items()), room, depth, rect, nocs]
-    if not wait:
-        made.append("broadcast_wait=False")
+    if wait:
+        made.append("broadcast_wait=True")
     if constants:  # none: the key of a class without constants as before them
         made.append(sorted(constants.items()))
     for name, tensor in sorted(tensors.items()):

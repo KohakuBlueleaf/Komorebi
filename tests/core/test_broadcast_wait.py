@@ -11,28 +11,28 @@ def program(**kwargs):
     return Program(name="cast", kernels="kernels", **kwargs)
 
 
-def test_on_by_default_adds_no_define():
+def test_off_by_default_adds_no_define():
     made = program(defines={"OTHER": 1})
-    assert made.broadcast_wait is True
-    assert made.defines == {"OTHER": 1}  # the header's default: KM_BROADCAST_WAIT 1
+    assert made.broadcast_wait is False
+    assert made.defines == {"OTHER": 1}  # the header's default: KM_BROADCAST_WAIT 0
 
 
-def test_off_defines_zero():
-    made = program(broadcast_wait=False, defines={"OTHER": 1})
-    assert made.defines == {"OTHER": 1, "KM_BROADCAST_WAIT": 0}
+def test_on_defines_one():
+    made = program(broadcast_wait=True, defines={"OTHER": 1})
+    assert made.defines == {"OTHER": 1, "KM_BROADCAST_WAIT": 1}
 
 
 def test_define_against_the_keyword_refused():
     with pytest.raises(ProgramError, match="KM_BROADCAST_WAIT=1 and broadcast_wait"):
-        program(broadcast_wait=False, defines={"KM_BROADCAST_WAIT": 1})
+        program(defines={"KM_BROADCAST_WAIT": 1})
     with pytest.raises(ProgramError, match="KM_BROADCAST_WAIT=0 and broadcast_wait"):
-        program(defines={"KM_BROADCAST_WAIT": 0})
-    assert program(broadcast_wait=False, defines={"KM_BROADCAST_WAIT": 0}).defines == {
-        "KM_BROADCAST_WAIT": 0
+        program(broadcast_wait=True, defines={"KM_BROADCAST_WAIT": 0})
+    assert program(broadcast_wait=True, defines={"KM_BROADCAST_WAIT": 1}).defines == {
+        "KM_BROADCAST_WAIT": 1
     }
 
 
-def test_class_key_differs_off_and_keeps_its_value_on():
+def test_class_key_differs_on_and_keeps_its_value_off():
     made = ({"BLOCK": 4}, {}, 1000, 4, None, None)
-    assert sources_key(*made) == sources_key(*made, True)
-    assert sources_key(*made) != sources_key(*made, False)
+    assert sources_key(*made) == sources_key(*made, False)
+    assert sources_key(*made) != sources_key(*made, True)
