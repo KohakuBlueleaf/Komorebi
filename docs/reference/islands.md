@@ -1040,6 +1040,24 @@ port arrival; the deadline gave the command up, `CommandTimeout` named island 1 
 cores, and the run went on; 16 pages of island 1 read inside the run were exact. Open
 to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
+## Classes on islands
+
+A class (`km.Program` written as a class) is made with the island session as its
+`session` (its L1 table is island 0's) and loaded on every island, a copy an island.
+`session.grid` is each island's grid, the same on every island. What its lines mean:
+
+| A class's line | On two islands |
+|---|---|
+| `self.rank`, `self.size`, `self.leader` | the flat rank less the command's first, the group's count: as on one card |
+| a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
+| `km.reduce(..., group=S)` | each group of S consecutive ranks on one island; a command whose group of S spans two islands is refused by name, with the first rank to start at |
+| `km.Broadcast`, `self.x`, `self.y` | the rectangle is one island's: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores); a group that is not, such as a row across the link, is refused, saying a broadcast stays on one island |
+
+The output dimension sharded, the activation a copy (`experiments/language/
+dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of
+its 112 ranks centred on island 1's first rank, so each island runs four groups of 14
+on its own half of W's columns; X `copy=True`, W and Y `split=1` over that group.
+
 ## What is not built
 
 - Links: a dynamic run's messages cross only in a RUN of every rank, and while the

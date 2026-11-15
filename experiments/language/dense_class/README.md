@@ -32,6 +32,7 @@ one load runs them; its files are under `build/linear-<hash>/` beside the script
 ```bash
 python linear_class.py --rows 1 32 --check exact swiglu  # the K split, then the grid
 python linear_class.py --rows 1 32 --check exact --k-tiles 128 64  # two programs
+python linear_class.py --cards 0,1 --rows 1 --check exact random --block 8  # two cards
 python linear_parts.py --repeat 3          # the first version's plans' parts, alone
 ```
 

@@ -303,6 +303,29 @@ class BankRange:
             self._release(self)
 
 
+def _check_reduce_islands(graph, handler, group):
+    """Refuses a command of a class's handler that reduces in groups of S consecutive
+    ranks when one such group of the command spans two islands (a reduce's cores
+    reach each other on their own card only)."""
+    method = getattr(handler, "method", None)
+    program = getattr(handler, "program", None)
+    found = getattr(program, "reduce_groups", {}).get(getattr(method, "name", None))
+    if found is None:
+        return
+    size, line = found
+    first, count = group
+    for island in range(1, len(graph.islands)):
+        edge = graph.first(island)
+        if first < edge < first + count and (edge - first) % size:
+            low = first + (edge - first) // size * size
+            raise ValueError(
+                f"{type(program).__name__}.{method.name}, {line}: its reduce group "
+                f"of {size} ranks at flat ranks {low}..{low + size - 1} spans islands "
+                f"{island - 1} and {island}; start the command so that island "
+                f"{island}'s first rank {edge} begins a group"
+            )
+
+
 class IslandRun:
     """The runs of one program on every island, as one run over flat ranks. A ticket
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
@@ -381,6 +404,7 @@ class IslandRun:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
+        _check_reduce_islands(self.graph, handler, group)
         if self._dynamic(handler):
             self._serve_links(group)
         self._grow(1)
@@ -1170,6 +1194,15 @@ class IslandSession:
     @property
     def ranks(self):
         return self.graph.ranks
+
+    @property
+    def grid(self):
+        """Each island's grid (columns, rows), the same on every island: a class's
+        rectangle is one island's (docs/reference/islands.md#classes-on-islands)."""
+        grids = {tuple(session.grid) for session in self.sessions}
+        if len(grids) != 1:
+            raise KomorebiError(f"the islands' grids differ: {sorted(grids)}")
+        return grids.pop()
 
     def island(self, island):
         """Island `island`'s own Session (local ranks, its own tensors)."""
