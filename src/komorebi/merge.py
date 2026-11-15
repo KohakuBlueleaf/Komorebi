@@ -278,7 +278,8 @@ class Merged(Program):
                     f"  // {source.name}"
                 )
         for number, (index, own) in sorted(self.numbers.items()):
-            mapped = f"km_merged_own(command, {own}u)"
+            # a source's own number equal to the merged one: the command as it came
+            mapped = "command" if own == number else f"km_merged_own(command, {own}u)"
             if index in self.code_overlays:
                 part = self.overlay_number(index)
                 call = f"km_merged_overlay(kernel, {part}u, {mapped})"

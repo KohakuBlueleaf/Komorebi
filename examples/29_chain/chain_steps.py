@@ -33,9 +33,10 @@ def parse():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
         "--form",
-        choices=["kernel", "runtime"],
+        choices=["kernel", "runtime", "merged"],
         default="kernel",
-        help="the program's form: its own kernels, or parts the runtime's kernels call",
+        help="the program's form: its own kernels, or parts the runtime's kernels call "
+        "(merged: SUM one program, SCALE and ADD another, merged into one)",
     )
     return parser.parse_args()
 
@@ -55,6 +56,17 @@ def program(tiles, form="kernel"):
         compile_args={"reader": tiles.tensor_args(), "writer": tiles.tensor_args()},
         handlers=KERNELS / "steps.h",
     )
+
+
+def merged(tiles):
+    """The runtime's form as two programs merged into one (km.merge): `sums` holds SUM
+    (its 3 kept), `maps` SCALE and ADD (their 1 and 2 become 4 and 5); a chain's
+    records name handlers of both, each taken to its source's own number."""
+    sums, maps = program(tiles, "runtime"), program(tiles, "runtime")
+    sums.name, sums.handlers = "sums", {"sum": C["kHandlerSum"]}
+    maps.name = "maps"
+    maps.handlers = {"scale": C["kHandlerScale"], "add": C["kHandlerAdd"]}
+    return km.merge(sums, maps, log=log)
 
 
 def calls(t, cores, width, add_read=None):
@@ -169,7 +181,12 @@ def main():
             result["refused"] = None
         except kc.ChainRefused as error:
             result["refused"] = str(error)
-        run = session.load(program(tensors["x"], args.form), wait=0.5, deadline=0.5)
+        loaded = (
+            merged(tensors["x"])
+            if args.form == "merged"
+            else program(tensors["x"], args.form)
+        )
+        run = session.load(loaded, wait=0.5, deadline=0.5)
         chain = run.chain(steps, C["kChainMode"])
         log(f"loaded; the chain's records written ({len(steps)})")
         checks = {}

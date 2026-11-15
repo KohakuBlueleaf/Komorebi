@@ -35,7 +35,16 @@ def parse():
     parser.add_argument("--rounds", type=int, default=40, help="commands a phase")
     parser.add_argument(
         "--phase",
-        choices=["disjoint", "combined", "price", "switch", "live", "load", "all"],
+        choices=[
+            "disjoint",
+            "combined",
+            "price",
+            "switch",
+            "live",
+            "load",
+            "merged",
+            "all",
+        ],
         default="all",
     )
     parser.add_argument(
@@ -444,6 +453,52 @@ def load_time(session, args, cores):
     return out
 
 
+def merged_phase(session, args, cores):
+    """sum and scale merged into ONE program (km.merge): commands in turn on random
+    groups, every result checked; then the cycles a command of the two as a list and
+    merged: an empty command and a sum of 16 tiles, on one core and on `cores`."""
+    generator = np.random.default_rng(args.seed)
+    checked = Checked(session, cores, args.rounds, generator)
+    sum_program, scale_program = programs(checked.inputs, checked.sums, checked.doubled)
+    # --8<-- [start:merged]
+    merged = km.merge(sum_program, scale_program, log=log)  # handlers 1, 2 and 3, 4
+    run = session.load(merged)
+    sum_handler = merged.handler("sum")  # sum's alone: 1
+    scale_handler = scale_program.handler("scale")  # scale's own 1, mapped: 3
+    # --8<-- [end:merged]
+    try:
+        sent = interleaved(
+            run,
+            checked,
+            lambda name: group_in(generator, 0, cores),
+            args.rounds,
+            sum_handler,
+            scale_handler,
+        )
+    finally:
+        run.stop()
+    wrong = checked.wrong()
+    log(f"merged: {sent} commands, {wrong} wrong")
+    out = {"commands": sent, "wrong": wrong, "cycles": {}}
+    forms = {
+        "list": (
+            [sum_program, scale_program],
+            sum_program.handler("empty"),
+            sum_program.handler("sum"),
+        ),
+        "merged": (merged, merged.handler(sum_program, "empty"), sum_handler),
+    }
+    for form, (loaded, empty, sums) in forms.items():
+        commands = []
+        for group in ((0, 1), (0, cores)):
+            words = checked.sum_words(group)
+            commands.append((f"{form} empty {group[1]}", empty, group, words))
+            commands.append((f"{form} sum {group[1]}", sums, group, words))
+        run = session.load(loaded, trace=4 * args.rounds + 2)
+        out["cycles"].update(one_at_a_time(run, commands, args.rounds))
+    return out
+
+
 def ranks_of(session):
     """Every core of the grid; on a session of islands, every flat rank."""
     if hasattr(session, "graph"):
@@ -485,10 +540,12 @@ def main():
             report["live"] = live(session, args, cores)
         if args.phase in ("load", "all"):
             report["load_cycles"] = load_time(session, args, cores)
+        if args.phase in ("merged", "all"):
+            report["merged"] = merged_phase(session, args, cores)
         report["aiclk_mhz"].append(aiclk_mhz(card))
     wrong = sum(
         report[key]["wrong"]
-        for key in ("disjoint", "combined", "live")
+        for key in ("disjoint", "combined", "live", "merged")
         if key in report
     )
     refused = report.get("disjoint", {}).get("refused", True)
