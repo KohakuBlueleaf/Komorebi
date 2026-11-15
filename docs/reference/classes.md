@@ -428,11 +428,11 @@ have): its words exact; the add took 7.84 s (its parts linked and checked on its
 tables) and 72 ms with the class named ahead; its command 9.42 and 9.40 µs against 9.26
 and 9.42 µs loaded at the start; the gate 22.84 µs before the add, 22.40 after and
 22.58 after its group switched back, 0 wrong, the same largest error each time. With
-per-core args (a class reading x page `self.x` on a rectangle of cores 60 to 119): its
-words exact added live and loaded at the start, 3.66 µs a command added, 3.78 µs at the
-start. A class with a row broadcast of one page a block gave wrong words added AND
-loaded at the start (launch args), with every broadcast delivered and no give-up: a
-fault of that class's broadcast beside the gate, not of the row, cause not found.
+per-core args, on a rectangle of cores 60 to 119: a class reading x page `self.x`, and
+a class whose rows' first cores broadcast a page along the row, each exact added live
+(3.80 and 4.88 µs a command) and loaded at the start (3.78 and 4.94 µs); the broadcast
+class loaded and called four times by a thread's `kmx_load` and commands (the load
+10.2 µs, a call 6.0 to 6.8 µs), exact.
 
 ## The lines of a handler
 
