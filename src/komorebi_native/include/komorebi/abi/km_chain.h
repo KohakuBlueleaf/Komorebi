@@ -1,0 +1,69 @@
+/* The chain: a core runs a list of commands by itself from records in DRAM, each one
+ * command and the next one's address. Plain C: the device, the X280 and the host. */
+#pragma once
+
+/* A record: 16 words, 64 bytes, 64-byte aligned, at most kChainRecordsMax a chain. */
+enum {
+    kChainArguments = 0, /* words 0 to 9: the command's a0 to a9 */
+    kChainGroup = 10,    /* the command's cores: first | count << 16 */
+    kChainInfo = 11,     /* the info word (below) */
+    kChainRanges = 12,   /* three: base | step << 12 | width << 20 | root only << 31 */
+    kChainNext = 15,     /* the next record's address in the same bank; 0: the last */
+    kChainWords = 16,
+    kChainRecordBytes = 64,
+    kChainRecordsMax = 256
+};
+
+/* The info word's flags: its input is marked by the record before's roots once
+ * written; its parts go up its group's tree (credits); its input is sent (direct). */
+enum { kChainMarked = 1, kChainSends = 2, kChainDataMark = 4 };
+
+/* Info bits 4 to 7: the command's word the chain command's a0 is ORed into (km_abi.h:
+ * a0 3 to a9 15; the per-submit word); 0: none. */
+enum { kChainTokenShift = 4, kChainTokenMask = 0xF };
+
+/* Info bit 8: what a core reads of the record before's output (tiles of its row): its
+ * share of a K range (range 0's base and width, over the group's ranks), or the range
+ * words, range i base + step x group, width wide. Bits 9 to 15: the group's size (0:
+ * the program says); 16 to 23 the output tiles a group writes (0: the program says);
+ * 24 to 31 the record's stamp row. */
+enum {
+    kChainNeedsK = 0,
+    kChainNeedsRanges = 1,
+    kChainNeedsShift = 8,
+    kChainRangeCount = 3,
+    kChainSizeShift = 9,
+    kChainSizeMask = 0x7F,
+    kChainWidthShift = 16,
+    kChainWidthMask = 0xFF,
+    kChainRowShift = 24
+};
+
+/* The chain's words and two record slots on each core: the runtime's trace buffer's
+ * index (0 to 28 are a program's), so a chain's program runs untraced. */
+enum { kChainBuffer = 31 };
+
+/* A direct input's writes go under this NoC transaction id. */
+enum { kChainInputTrid = 15 };
+
+/* Stamps (KM_CHAIN_STAMPS): at byte kChainStamps of the chain's buffer a row a kernel
+ * and stamp row, word 0 its runs, the others sums of the wall clock from its start. */
+enum {
+    kChainStamps = 256,
+    kChainStampKernels = 3, /* the reader, the writer, compute's pack */
+    kChainStampRecords = 8,
+    kChainStampWords = 16,
+    kChainStampBytes = 1536
+};
+
+/* The stamp words the chain's own calls take (a program takes the others): the record
+ * taken, its input marked, the reader's record done and its next fetch, the writer's
+ * writes acknowledged, its marks issued, its wait for a credit. */
+enum {
+    kChainStampTaken = 1,
+    kChainStampMarked = 4,
+    kChainStampDone = 6,
+    kChainStampLast = 7,
+    kChainStampMarks = 11,
+    kChainStampCredit = 14
+};
