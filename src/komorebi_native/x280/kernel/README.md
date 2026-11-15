@@ -124,8 +124,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
   core), while the line keeps the flat group the cores test. A group with no part here
   is rejected as outside (3). A group of link cores, first `KM_GROUP_LINK_BASE` + k, is
   never cut: it is link cores k on, the island's cores after its ranks. EXIT goes to
-  `island_first | cores << 16`; a queued job's first core is placed as `island_first`
-  plus the core it gets. A dynamic run reads the
+  `island_first | cores << 16`; a queued job is placed inside the island's ranks (one
+  larger than them is rejected with 3), its first core as `island_first` plus the core
+  it gets. A dynamic run reads the
   status lines of its group's part (`part`); the engine and the graph engine check a
   group against [island_first, island_first + cores).
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
