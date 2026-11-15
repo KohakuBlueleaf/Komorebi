@@ -123,6 +123,29 @@ NAMES = {
         "the tile compiler; a handler calls it on the tiles of its streams",
         None,
     ),
+    # a tile function's arithmetic: the tile compiler's trace functions, by these
+    # names (error= and over= pass through to exp and exp2)
+    **{
+        f"math_{name}": Name(
+            name, f"km.{name}: {what} (in a tile function)", f"trace.{name}"
+        )
+        for name, what in (
+            ("exp", "e^x, exp(x, error=, over=)"),
+            ("exp2", "2^x, exp2(x, error=, over=)"),
+            ("sigmoid", "1 / (1 + e^-x)"),
+            ("silu", "x sigmoid(x)"),
+            ("tanh", "tanh(x)"),
+            ("sqrt", "the square root"),
+            ("rsqrt", "1 / sqrt(x)"),
+            ("reciprocal", "1 / x"),
+            ("relu", "max(x, 0)"),
+            ("square", "x x"),
+            ("maximum", "the larger of two, value by value"),
+            ("minimum", "the smaller of two, value by value"),
+            ("reduce_sum", "a row's sum (the row form), reduce_sum(x, exact=)"),
+            ("reduce_max", "a row's largest value (the row form)"),
+        )
+    },
     "tolerance": Name(
         "tolerance",
         "@km.tile_function(tolerance=1e-6): its stated largest relative error "

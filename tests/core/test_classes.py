@@ -99,6 +99,84 @@ def test_a_matrix_product_in_a_tile_function_is_refused_by_its_line():
         made(Product, a=tensor("float32"), b=tensor("float32"), out=tensor("float32"))
 
 
+@km.tile_function
+def scaled(a, b):
+    return a * b
+
+
+@km.tile_function
+def project(x, w):
+    return x @ w
+
+
+class OtherFunction(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor):
+        self.weight.fill(km.Stream(w.pages(0, 4)))
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.pages(0, 2), block=2):
+            acc += scaled(block, self.weight)
+
+
+class Unfilled(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.pages(0, 2), block=2):
+            acc += project(block, self.weight)  # unfilled
+
+
+class Narrow(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor):
+        self.weight.fill(km.Stream(w.pages(0, 4)))
+        acc = km.tile.zeros(km.fp32)
+        for block in km.Stream(x.pages(0, 2), block=2):
+            acc += project(block, self.weight)  # narrow
+
+
+class Mixed(km.Program):
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor):
+        self.weight.fill(km.Stream(w.pages(0, 4)))
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.pages(0, 2), block=2):
+            acc += block
+            acc += project(block, self.weight)  # mixed
+
+
+PRODUCTS = [
+    (OtherFunction, "acc += scaled(block, self.weight)", "is not `return a @ b`"),
+    (Unfilled, "# unfilled", "is not filled above"),
+    (Narrow, "# narrow", "is K rows of 2 tiles and acc holds 1"),
+    (Mixed, "# mixed", "this loop has other tile lines"),
+]
+
+
+@pytest.mark.parametrize(("cls", "text", "message"), PRODUCTS)
+def test_a_product_the_compiler_does_not_take_is_refused_by_its_line(
+    cls, text, message
+):
+    line = line_of(text)
+    match = rf"^{cls.__name__}.apply, line {line}, .*{message}"
+    with pytest.raises(Refused, match=match):
+        made(cls, x=tensor("bfloat16"), w=tensor("bfloat16"))
+
+
+def test_a_product_of_float32_tiles_is_refused_by_its_line():
+    line = line_of("# narrow")
+    with pytest.raises(Refused, match=rf"^Narrow.apply, line {line}, .*bfloat16 tiles"):
+        made(Narrow, x=tensor("float32"), w=tensor("bfloat16"))
+
+
 class Note(km.Message):
     hops: int
 

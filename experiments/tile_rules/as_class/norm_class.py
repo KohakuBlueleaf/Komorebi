@@ -13,7 +13,6 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.dsl.tile import trace
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -40,8 +39,8 @@ class RowNorm(km.Program):
 
     @km.tile_function(tolerance=TOLERANCE)
     def norm(row, weight):
-        ms = trace.reduce_sum(row * row, exact=True) * (1.0 / (32 * WIDTH))
-        r = trace.rsqrt(ms + rules.EPS)
+        ms = km.reduce_sum(row * row, exact=True) * (1.0 / (32 * WIDTH))
+        r = km.rsqrt(ms + rules.EPS)
         return row * r.col() * weight.row()
 
     @km.handler(stamps="stamps")
