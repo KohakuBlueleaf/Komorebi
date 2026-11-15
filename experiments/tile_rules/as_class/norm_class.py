@@ -1,7 +1,6 @@
-"""The row norm of ../rules.py as a tile function of a class, in the row form: each
-item of the stream a row of 2 tiles, the weight a field the function holds, timed on
-the math CPU and checked against float64 (build/norm/ beside this file). See
-README.md.
+"""The row norm of ../rules.py as a class's tile function in the row form (a row of 2
+tiles, the weight a field it holds), timed on the math CPU and checked against float64
+(build/rownorm/ beside this file). See README.md.
 Example: python norm_class.py --cores 12 --rows 32
 """
 

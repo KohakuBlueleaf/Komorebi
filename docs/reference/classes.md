@@ -9,8 +9,8 @@ tags:
 # Programs written as classes
 
 Status: experimental. The lines of this page are those of levels 1 and 2 (tile
-functions); eight scripts run as classes beside their hand programs, on one
-Blackhole card and on two ([below](#measured)).
+functions); the scripts [below](#measured) run as classes beside their hand programs
+or the tile compiler's measurements, on one Blackhole card and on two.
 
 A class deriving `km.Program` whose methods are decorated with `km.handler` is a
 program written as a class. Made, it is compiled: each handler's body is read with
@@ -113,10 +113,12 @@ words (`Run.submit_many`), `Class.handler.args(...)` gives one command's words, 
 | `w = km.cxx(..., gives=int)` | `uint32_t w = 0;` then the body, which sets it | the same |
 | `t = km.cxx(..., gives=km.Tile)` | | `tile_regs_acquire()` then the body, which leaves the tile in DST 0 |
 | `self.f.fill(km.Stream(t.pages(first, n)))` | mover A: `reserve` of the field, `km::read_pages` of its n tiles, the barrier, `cb_push_back` | |
+| `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
 the group's size and its rank 0; `self.x` and `self.y` its column and row in the
-rectangle.
+rectangle; `self.core` its place in the grid, whatever the group (`me()` of the
+runtime).
 
 A broadcast's rectangle is fixed at load (a program argument), and `Run.submit`
 refuses a broadcast's command whose group is not the rectangle's, naming the
@@ -271,6 +273,23 @@ A field is filled from a stream of a page range, of its own tiles' count, and on
 `km.cxx` body in the same block takes it; every core that fills it frees it. `@`,
 slices and `.columns` of a field are level 2.
 
+A field of fewer than 1,024 `km.u32` words, `km.L1[km.u32, n]`, is words the host
+reads after the run: the class is made with a tensor of the field's name, one row of
+at least n words in each core's L1 (`shard_grid`), whose address is compute's program
+argument. A line sets a word, `self.f[i] = x` or `self.f[i] += x`, and is the unpack
+CPU's alone (one write, not one a compute CPU); its value may read the field's words,
+and no other line reads them. From
+[14 message handlers](../../examples/14_message_handlers/as_class/handlers_class.py):
+
+```python
+totals = session.tensor(np.zeros((cores, WORDS), np.uint32), "uint32", shard_grid=grid)
+program = MessageHandlers(totals=totals, log=log).dynamic(
+    "lookup", "value", "report", **hand.options(args)
+)
+```
+
+and after the run `totals.read()`, a row a core.
+
 ## Overlays
 
 `@km.handler(overlay=True)` makes a handler's code an [overlay](overlays.md): the
@@ -301,8 +320,7 @@ A broadcast's handler is resident.
 A handler with `for message in self.arrive():` is [dynamic](dynamic.md): its lines are
 compute's alone and the runtime's movers carry its messages (`messages_reader.cpp`,
 `messages_writer.cpp`); the program is made dynamic as any program is, with
-`.dynamic(name, **options)`. A class has at most one dynamic handler, and a move in one
-is refused. A message is a class deriving `km.Message` whose int annotations are its
+`.dynamic(name, **options)`. A move in a dynamic handler is refused. A message is a class deriving `km.Message` whose int annotations are its
 words, 1 up (word 0 is the runtime's). From
 [05 forward](../../examples/05_forward/as_class/forward_class.py):
 
@@ -350,6 +368,43 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 | `message.state`, `message.sum += x` | the message's word |
 | `self.forward(rank, message)` | `messages.forward(rank, message)` |
 | `self.consume()` | `messages.consume()` |
+
+A class may have several dynamic handlers. One, the RUN command's (the program's
+`.dynamic(name, ...)` names it first), has lines besides its loop: the seeding, a
+word field's zeroing; each other is its loop alone, no words. Their loops are one
+loop: each message is taken by the loop of the handler it names, and
+`self.forward(rank, message, to=Class.handler)` (or `self.send(..., to=)`) names the
+handler at the rank it goes to; without `to=` a message keeps its handler (a seed:
+the RUN command's). From
+[14 message handlers](../../examples/14_message_handlers/as_class/handlers_class.py):
+
+```python
+@km.handler
+def value(self):
+    for message in self.arrive():
+        self.totals[VALUES] += 1
+        message.sum += message.value
+        message.steps -= 1
+        if message.steps != 0:
+            key = message.value ^ 0x85EBCA6B  # the next key
+            key ^= key >> 16
+            key *= 0x7FEB352D
+            key ^= key >> 15
+            key *= 0x846CA68B
+            key ^= key >> 16
+            message.key = key
+            owner = key % self.size
+            self.totals[OWN] += owner == self.rank
+            self.forward(owner, message, to=MessageHandlers.lookup)
+        else:
+            self.totals[OWN] += message.origin == self.rank
+            self.forward(message.origin, message, to=MessageHandlers.report)
+```
+
+| Line | Compute |
+|---|---|
+| the loops of `lookup`, `value`, `report` | one loop; a message's case by `messages.handler()`: `case kHandlerValue:` and the loop's lines; a message of no handler of the class consumed |
+| `self.forward(rank, message, to=MessageHandlers.lookup)` | `messages.forward(rank, message, kHandlerLookup)` |
 
 In a dynamic handler `self.rank` and `self.size` are the message loop's
 (`messages.rank()`, `messages.count()`): the group without its counter tiles. A core's
@@ -427,6 +482,7 @@ the packed text of the five CPUs, of 70,656 B.
 | [11 movement](../../examples/11_movement/as_class/README.md) | the same: every copy exact (level 1a) | 38,288 / 36,720 B | READ AAAB 308.74 / 310.44 GB/s (level 1a) |
 | [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 32,584 / 27,324 B, and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
 | [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,712 / 38,640 B | 86.68 / 76.06 us a command (bfloat16, 12 cores, 64 tiles a core); the emitted body 1,656 cycles a tile on the math CPU, 1,657.6 printed |
+| [14 message handlers](../../examples/14_message_handlers/as_class/README.md) | the same: exact in 3 of 3 runs, 1,013,360 messages of three handlers | 42,640 / 43,568 B (mock) | 10,987 / 11,149 us a run (median of 3) |
 | [tile rules](../../experiments/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
 | [tile rules](../../experiments/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,376 B (stamped) | the emitted body 771.0 cycles a row of 2 tiles on the math CPU, 753.0 printed; 771.5 in the one-core harness, 3,201.5 its hand norm |
 
@@ -434,7 +490,7 @@ the packed text of the five CPUs, of 70,656 B.
 
 A rectangle per command; tile arithmetic outside a tile function (`tile * factors`
 in a handler's line); a matrix product (`block @ self.weight`); slices and `.columns`
-of a field; a message that names its handler (several dynamic handlers of one loop).
+of a field; a word field with a rectangle (`self.x`, a broadcast).
 
 A group switched to a class's program (`kmx_load`): a load switches between programs
 in the runtime's form, parts on the runtime's reader, writer and compute, and a class

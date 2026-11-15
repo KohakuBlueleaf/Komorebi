@@ -50,6 +50,9 @@ NAMES = {
         "by its place along broadcast b's row or column",
         None,
     ),
+    "core": Name(
+        "core", "self.core: this core's place in the grid (its worker index)", "me"
+    ),
     "x": Name("x", "self.x: this core's column in the broadcasts' rectangle", None),
     "y": Name("y", "self.y: this core's row in the broadcasts' rectangle", None),
     # messages (a dynamic handler: compute alone, the runtime's movers)
@@ -131,6 +134,12 @@ NAMES = {
         "km.Stream(pages, row=2): each item a row of 2 tiles, for a tile function "
         "in the row form",
         "row",
+    ),
+    "to": Name(
+        "to",
+        "self.forward(rank, message, to=Class.handler), self.send(..., to=): the "
+        "dynamic handler the message names there",
+        "handler",
     ),
     "zip": Name(
         "zip",

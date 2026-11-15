@@ -45,7 +45,7 @@ PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}
 TILE_ELEMENTS = 32 * 32
 # Names the generated code takes for itself: a parameter or a variable may not.
 GENERATED = {"command", "movement", "compute", "rank", "size", "group", "ok"}
-GENERATED |= {"self_x", "self_y", "rect_columns", "rect_rows"}
+GENERATED |= {"self_x", "self_y", "self_core", "rect_columns", "rect_rows"}
 GENERATED |= {"messages", "packet", "arrived", "incoming", "word_page", "stamp"}
 GENERATED |= {"spans", "spans_page", "called"}
 GENERATED_NUMBERED = re.compile(
@@ -159,6 +159,9 @@ class Compiled:
     broadcast_lines: dict = field(default_factory=dict)
     stamps: dict = field(default_factory=dict)  # overlay handler -> (tensor, word)
     dynamic: str | None = None  # the handler whose lines are a message loop
+    # The other dynamic handlers, each its message loop alone: name -> method; their
+    # loops are cases of the dynamic handler's loop, by the handler a message names.
+    folded: dict = field(default_factory=dict)
     results: set = field(default_factory=set)  # handlers whose leader returns a word
     messages: dict = field(default_factory=dict)  # km.Message class name -> words
     words: dict = field(default_factory=dict)  # name -> [(parameter, kind)]
@@ -176,6 +179,9 @@ class Compiled:
     constants: dict = field(default_factory=dict)  # plan names used -> value
     rectangle: bool = False  # self.x or self.y used
     fields: dict = field(default_factory=dict)  # name -> front.Field
+    word_fields: dict = field(
+        default_factory=dict
+    )  # a field of km.u32 words: name -> n
     fills: list = field(default_factory=list)  # (field, count text, handler, line)
     moves: list = field(default_factory=list)  # Move of every line that moves pages
     # Each tile function's unit program by its C++ name, and each call of one.
@@ -206,6 +212,24 @@ def compile_class(cls, plan, tensors, l1=None):
         for name, value in inspect.get_annotations(cls).items()
         if isinstance(value, front.Field)
     }
+    for name, value in list(compiled.fields.items()):
+        if word_field(value):  # words in each core's row of an L1 tensor
+            compiled.word_fields[name] = value.shape[0]
+            del compiled.fields[name]
+    dynamic = [m for m in methods if arrive_of(source_of(m.function)[0])]
+    if len(dynamic) > 1:
+        loops = [m for m in dynamic if not loop_alone(m)]
+        if len(loops) > 1:
+            definition = source_of(loops[1].function)[0]
+            raise Refused(
+                f"{cls.__name__}.{loops[1].name}, line "
+                f"{definition.lineno}: {loops[0].name} has lines "
+                "besides its message loop, and so has this one: the RUN command's "
+                "handler has them, a handler a message names is its loop alone; "
+                f"keep the seeding and the totals in {loops[0].name}"
+            )
+        run = loops[0] if loops else dynamic[0]
+        compiled.folded = {m.name: m for m in dynamic if m is not run}
     for number, method in enumerate(methods, start=1):
         compiled.handlers[method.name] = number
         if method.overlay:
@@ -214,6 +238,48 @@ def compile_class(cls, plan, tensors, l1=None):
         HandlerCompiler(compiled, method, names, plan, tensors).run()
     bind_fields(compiled, plan, l1)
     return compiled
+
+
+def arrive_of(definition):
+    """The `for message in self.arrive():` loop of a handler's def, or None."""
+    for node in ast.walk(definition):
+        if (
+            isinstance(node, ast.For)
+            and isinstance(node.iter, ast.Call)
+            and isinstance(node.iter.func, ast.Attribute)
+            and isinstance(node.iter.func.value, ast.Name)
+            and node.iter.func.value.id == "self"
+            and node.iter.func.attr == spelling("arrive_messages")
+        ):
+            return node
+    return None
+
+
+def loop_alone(method):
+    """Whether a dynamic handler is its message loop alone (no words, nothing
+    before or after the loop but a docstring)."""
+    definition = source_of(method.function)[0]
+    body = [
+        n
+        for n in definition.body
+        if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))
+    ]
+    return (
+        len(definition.args.args) == 1
+        and len(body) == 1
+        and body[0] is arrive_of(definition)
+    )
+
+
+def word_field(value):
+    """Whether a field is words the host reads (`km.L1[km.u32, n]`, n under a tile's
+    1,024), not tiles."""
+    return (
+        value.format.dtype == "uint32"
+        and len(value.shape) == 1
+        and isinstance(value.shape[0], int)
+        and 0 < value.shape[0] < TILE_ELEMENTS
+    )
 
 
 def field_refused(compiled, name, why, instead):
@@ -375,6 +441,7 @@ class HandlerCompiler:
         self.loops = []  # the range loops around the statement, innermost last
         self.movers = {}  # mover -> the broadcast it runs
         self.allow_words = False  # a body's word is read by the return only
+        self.field_line = False  # a word field's words are read in a line setting one
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
         self.stream_loops = []  # the numbers of the read loops around the statement
         # Per read loop around the statement: its tile function, its other tile
@@ -432,6 +499,11 @@ class HandlerCompiler:
     def run(self):
         name = self.method.name
         self.compiled.lines[name] = self.definition.lineno
+        if name in self.compiled.folded:  # its loop is a case of the dynamic one's
+            self.compiled.words[name] = []
+            self.compiled.movement[name] = []
+            self.compiled.compute[name] = []
+            return
         movement = [
             Glue("const uint32_t rank = movement.me() - km::first(command);", {"rank"})
         ]
@@ -452,6 +524,7 @@ class HandlerCompiler:
                         {f"self_{axis}"},
                     )
                 )
+            nodes.append(Glue(f"const uint32_t self_core = {me}.me();", {"self_core"}))
             for side in ("columns", "rows"):
                 nodes.append(
                     Glue(
@@ -463,6 +536,15 @@ class HandlerCompiler:
                 Glue(
                     f"const km::Group group = km::group_of(command, {me}.me());",
                     {"group"},
+                )
+            )
+        for index, field_ in enumerate(self.compiled.word_fields):
+            where = f"km::kMessagesCArgs + {index}" if self.dynamic else str(index)
+            compute.append(
+                Glue(
+                    f"volatile tt_l1_ptr uint32_t* field_{field_} = "
+                    f"km::l1(compute.arg({where}));",
+                    {f"field_{field_}"},
                 )
             )
         self.bind_parameters(movement, compute)
@@ -746,6 +828,8 @@ class HandlerCompiler:
         self.scope[name] = Value("message", name, words=cls.words)
         _, body = self.statements(node.body)
         self.scope.pop(name)
+        if self.compiled.folded:
+            body = [self.handler_cases(name, cls, body)]
         copy = (
             "const volatile tt_l1_ptr uint32_t* incoming = packet[arrived];\n"
             f"uint32_t {name}[kMessageWords] = {{}};  // word 0: the runtime's\n"
@@ -766,6 +850,64 @@ class HandlerCompiler:
         )
         return [], [outer]
 
+    def handler_cases(self, name, cls, body):
+        """The message loop's body of a class of several dynamic handlers: a case of
+        each, by the handler the message names (its own loop's, compiled here with its
+        own lines and names); a message of no handler of the class is consumed."""
+        cases = [
+            Block(
+                f"case kHandler{camel(self.method.name)}: {{",
+                "}",
+                [*body, Line("break;")],
+            )
+        ]
+        for folded in self.compiled.folded.values():
+            saved = (
+                self.method,
+                self.definition,
+                self.source_lines,
+                self.first_line,
+                self.scope,
+            )
+            self.method = folded
+            self.definition, self.source_lines, self.first_line = source_of(
+                folded.function
+            )
+            self.scope = {}
+            try:
+                loop = arrive_of(self.definition)
+                if not isinstance(loop.target, ast.Name):
+                    self.refuse(
+                        loop, "one message name", "write for m in self.arrive()"
+                    )
+                self.check_name(loop, loop.target.id)
+                self.scope[loop.target.id] = Value("message", name, words=cls.words)
+                if loop.target.id != name:
+                    self.refuse(
+                        loop,
+                        f"the loops of one class's dynamic handlers name their "
+                        f"message alike ({name})",
+                        f"write for {name} in self.arrive()",
+                    )
+                _, lines = self.statements(loop.body)
+            finally:
+                (
+                    self.method,
+                    self.definition,
+                    self.source_lines,
+                    self.first_line,
+                    self.scope,
+                ) = saved
+            cases.append(
+                Block(
+                    f"case kHandler{camel(folded.name)}: {{",
+                    "}",
+                    [*lines, Line("break;")],
+                )
+            )
+        cases.append(Line("default:\n    messages.consume();", {"messages"}))
+        return Block("switch (messages.handler()) {", "}", cases, {"messages"})
+
     def message_call(self, node, call, kind):
         """self.send(rank, message), self.forward(rank, message), self.consume()."""
         if not self.dynamic:
@@ -774,9 +916,13 @@ class HandlerCompiler:
             if call.args or call.keywords:
                 self.refuse(node, "consume() takes nothing", "write self.consume()")
             return [], [Line("messages.consume();", {"messages"})]
-        if len(call.args) != 2 or call.keywords:
+        to = [k for k in call.keywords if k.arg == spelling("to")]
+        if len(call.args) != 2 or len(call.keywords) != len(to) or len(to) > 1:
             self.refuse(
-                node, "a rank and a message", f"write self.{spelling(kind)}(rank, m)"
+                node,
+                "a rank and a message (and the handler there, to=)",
+                f"write self.{spelling(kind)}(rank, m) or "
+                f"self.{spelling(kind)}(rank, m, to={self.compiled.name}.handler)",
             )
         message = call.args[1]
         if not (
@@ -786,7 +932,25 @@ class HandlerCompiler:
             self.refuse(node, "the second is a message", "give a message's name")
         rank = self.integer(call.args[0])
         uses = self.uses(call.args[0]) | {"messages", message.id}
-        return [], [Line(f"messages.{kind}({rank}, {message.id});", uses)]
+        handler = f", {self.handler_named(node, to[0].value)}" if to else ""
+        return [], [Line(f"messages.{kind}({rank}, {message.id}{handler});", uses)]
+
+    def handler_named(self, node, value):
+        """The C++ of `to=Class.handler`: a dynamic handler of this class."""
+        named = (
+            isinstance(value, ast.Attribute)
+            and isinstance(value.value, ast.Name)
+            and value.value.id == self.compiled.name
+            and value.attr in (*self.compiled.folded, self.compiled.dynamic)
+        )
+        if not named:
+            self.refuse(
+                node,
+                f"to= names a dynamic handler of {self.compiled.name}",
+                f"write to={self.compiled.name}.<handler>, a handler with "
+                "`for message in self.arrive():`",
+            )
+        return f"kHandler{camel(value.attr)}"
 
     def seeding_branch(self, node):
         """`if self.seeding():` the first messages, then the loop is told they are
@@ -959,6 +1123,8 @@ class HandlerCompiler:
         )
 
     def assign(self, node):
+        if len(node.targets) == 1 and self.word_name(node.targets[0]):
+            return self.set_field_word(node, node.targets[0])
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Attribute):
             return self.set_word(node, node.targets[0], self.integer(node.value))
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
@@ -1017,6 +1183,11 @@ class HandlerCompiler:
 
     def augmented(self, node):
         target = node.target
+        if self.word_name(target):
+            op = OPERATORS.get(type(node.op))
+            if op is None:
+                self.refuse(node, "an operator level 1 has no C++ for", "use + - *")
+            return self.set_field_word(node, target, op)
         if isinstance(target, ast.Attribute):
             op = OPERATORS.get(type(node.op))
             if op is None:
@@ -1037,6 +1208,52 @@ class HandlerCompiler:
         text = f"{target.id} {op}= {self.integer(node.value)};"
         uses = self.uses(node.value) | {target.id}
         return [Line(text, uses)], [Line(text, uses)]
+
+    def word_name(self, node):
+        """The word field `node` indexes (`self.f[i]`), or None."""
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "self"
+            and node.value.attr in self.compiled.word_fields
+        ):
+            return node.value.attr
+        return None
+
+    def field_word(self, node):
+        """The C++ of `self.f[i]`, word i of word field f in this core's L1 (its
+        index checked when it is a constant)."""
+        name = self.word_name(node)
+        index = self.integer(node.slice)
+        count = self.compiled.word_fields[name]
+        if index.rstrip("u").isdigit() and int(index.rstrip("u")) >= count:
+            self.refuse(
+                node,
+                f"self.{name} has {count} words, 0 to {count - 1}",
+                "index one of them",
+            )
+        return f"field_{name}[{index}]", self.uses(node.slice) | {f"field_{name}"}
+
+    def set_field_word(self, node, target, op=""):
+        """`self.f[i] = value` (or `+=` and the others): a word the host reads after
+        the run, written by the unpack CPU alone (one write, not three); the value
+        may read the field's words."""
+        word, uses = self.field_word(target)
+        self.field_line = True
+        try:
+            value = self.integer(node.value)
+        finally:
+            self.field_line = False
+        uses |= self.uses(node.value)
+        uses |= {
+            f"field_{n}" for n in self.compiled.word_fields if self.reads_word(node, n)
+        }
+        return [], [Line(f"UNPACK(({word} {op}= {value}));", uses)]
+
+    def reads_word(self, node, name):
+        """Whether the value of `node` reads word field `name`."""
+        return any(self.word_name(item) == name for item in ast.walk(node.value))
 
     def set_word(self, node, target, text, op=""):
         """`message.word = value` (or `+=` and the others): a word of a message."""
@@ -1095,6 +1312,16 @@ class HandlerCompiler:
             return str(self.constant(node, node.id))
         if isinstance(node, ast.Attribute):
             return self.message_word(node) or self.attribute(node)
+        if self.word_name(node):
+            if not self.field_line:
+                self.refuse(
+                    node,
+                    f"self.{self.word_name(node)} is words the host reads, written "
+                    "by one CPU: its words are read in a line that sets one",
+                    f"keep the count in an int, or write self.{self.word_name(node)}"
+                    "[i] += value",
+                )
+            return self.field_word(node)[0]
         if isinstance(node, ast.BinOp):
             op = OPERATORS.get(type(node.op))
             if op is None:
@@ -1139,7 +1366,9 @@ class HandlerCompiler:
     def attribute(self, node):
         base = node.value
         if isinstance(base, ast.Name) and base.id == "self":
-            kind = kind_of(node.attr, ("rank", "size", "leader", "x", "y"))
+            kind = kind_of(node.attr, ("rank", "size", "leader", "x", "y", "core"))
+            if kind == "core":
+                return "self_core"
             if kind == "rank":
                 return "rank"
             if kind == "size":
@@ -1173,8 +1402,8 @@ class HandlerCompiler:
                 found.add(value.cxx or item.id)
             if isinstance(item, ast.Attribute) and isinstance(item.value, ast.Name):
                 if item.value.id == "self":
-                    kind = kind_of(item.attr, ("rank", "size", "x", "y"))
-                    if kind in ("x", "y"):
+                    kind = kind_of(item.attr, ("rank", "size", "x", "y", "core"))
+                    if kind in ("x", "y", "core"):
                         found.add(f"self_{kind}")
                     elif kind:
                         found.add(kind)
@@ -3102,6 +3331,7 @@ GENERATED_VALUES = (
     "group",
     "self_x",
     "self_y",
+    "self_core",
     "rect_columns",
     "rect_rows",
 )

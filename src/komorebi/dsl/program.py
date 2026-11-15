@@ -83,6 +83,8 @@ def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **t
     self.broadcast_lines = compiled.broadcast_lines
     if compiled.rectangle:
         program_args = rectangle_of(self, compiled)
+    if compiled.word_fields:
+        program_args = words_of(compiled, tensors, program_args)
     built = write(cls, compiled, l1)
     for line in built.report:
         log(line)
@@ -247,6 +249,33 @@ def rectangle_of(program, compiled):
         return state["args"](core)
 
     return args
+
+
+def words_of(compiled, tensors, rectangle):
+    """The program arguments of a class with word fields: compute's, the L1 address
+    of each field's tensor (made with a tensor of the field's name, one row in each
+    core's L1, the host's to read after the run)."""
+    if rectangle is not None:
+        raise ProgramError(
+            f"{compiled.name}: word fields with self.x, self.y or a broadcast are not "
+            "in this version"
+        )
+    addresses = []
+    for name, count in compiled.word_fields.items():
+        tensor = tensors.get(name)
+        if tensor is None or tensor.shard_grid is None or tensor.dtype != "uint32":
+            raise ProgramError(
+                f"{compiled.name}.{name} is {count} words in each core's L1: make "
+                f"the program with {name}=session.empty((cores, {count}), "
+                '"uint32", shard_grid=session.grid)'
+            )
+        if tensor.page_bytes < 4 * count:
+            raise ProgramError(
+                f"{compiled.name}.{name} is {count} words; a row of {name} is "
+                f"{tensor.page_bytes} B"
+            )
+        addresses.append(tensor.address)
+    return lambda core: ([], [], addresses)
 
 
 def session_nocs(program, nocs):
