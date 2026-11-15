@@ -87,7 +87,7 @@ static int entries_new(
             }
         }
         const volatile uint32_t* entry = walk->list + at / 4u;
-        const uint32_t next = entry[kChainNext];
+        const uint32_t next = entry[kChainNext] & ~(uint32_t)kChainRowMask;
         if (
             (
                 at == offset && walk->list[offset / 4u + NN_ENTRY_KIND] != NN_KIND_CHAIN

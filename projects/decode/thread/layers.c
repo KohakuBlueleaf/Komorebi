@@ -298,7 +298,7 @@ static int chain_write(job_t* job, uint32_t count, int token) {
         call.command = &command;
         call.word = call.by_ranges = call.k_base = call.k_tiles = 0u;
         call.ranges[0] = call.ranges[1] = call.ranges[2] = 0u;
-        call.size = call.width = call.row = 0u;
+        call.size = call.width = call.row = call.handler = 0u;
         uint32_t flags = 0u;
         if (g > 0u && chain_writes(job, chain_steps[(g - 1u) % steps])) {
             flags |= kChainMarked;
