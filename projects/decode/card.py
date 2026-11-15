@@ -426,11 +426,12 @@ class Decode:
         rows=1,
         chain=None,
         pair=False,
+        token=False,
     ):
         """One LAYERS command: its result word and stats slot. `bare` products only,
         `parts` their parts only, `apart` q, k, v as three, `overlap` two in flight;
-        `position` the first token's (default: the cache's end); `attend` ATTEND_MODES';
-        `rows` tokens a step; `chain` the layer as one command, `pair` its first two."""
+        `rows` tokens a step from `position` (default: the cache's end); `attend`
+        ATTEND_MODES'; `chain` a layer, `pair` its first two, `token` a token as one."""
         slot = self.slot
         self.slot += 1
         mode = 3 if parts else int(bare)
@@ -441,6 +442,9 @@ class Decode:
             raise ValueError("the chain: the fused layer, on a program built for it")
         mode |= D["DC_LAYERS_CHAIN"] if chain else 0
         mode |= D["DC_LAYERS_PAIR"] if chain and pair else 0
+        if token and (pair or not chain):
+            raise ValueError("a token as one command: the chain's whole layers")
+        mode |= D["DC_LAYERS_TOKEN"] if token else 0
         steps = tokens * rows
         position = self.context - steps if position is None else position
         if not 0 <= position <= self.context - steps or not 1 <= rows <= md.TILE:

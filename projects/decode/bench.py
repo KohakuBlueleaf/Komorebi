@@ -116,6 +116,11 @@ def parse():
         help="checks first a command a step, then the chain's first two records",
     )
     parser.add_argument(
+        "--token",
+        action="store_true",
+        help="a token as one command (all its records written once); CASE/layer beside",
+    )
+    parser.add_argument(
         "--commands",
         action="store_true",
         help="each case also a command a step on the chain's program (CASE/commands)",
@@ -237,16 +242,32 @@ def loop_check(decode, model, caches, seed, layers, length, want):
     return {"layers": layers, "length": length} | out
 
 
-def measure(decode, case, tokens, layers, index, length):
+def token_equal(decode, model, seed, length, layers):
+    """One token through `layers` layers as a command a layer, then as one command,
+    from the same x at row length - 1: whether every tensor the card keeps is equal."""
+    position, got = length - 1, []
+    for token in (False, True):
+        decode.write_activation("x", md.start(seed, model))
+        decode.job(1, layers, position=position, token=token)
+        got.append(
+            {n: decode.read_activation(n) for n in ("qkv", "a", "x1", "gated", "x")}
+        )
+    differ = [name for name in got[0] if not np.array_equal(got[0][name], got[1][name])]
+    return {"layers": layers, "equal": not differ, "different": differ}
+
+
+def measure(decode, case, tokens, layers, index, length, token=False):
     """One job of `tokens` x `layers` under the power and clock samplers, the last
-    token at the cache's row length - 1."""
+    token at the cache's row length - 1; `token`: a token as one command."""
     meter = power.PowerSampler(index)
     with meter, dense_bench.Clock(index) as clock:
         meter.mark("job")
         started = time.perf_counter()
         position = length - tokens
-        name, _, commands = case.partition("/")
-        job = CASES[name] | ({"chain": False} if commands else {})
+        name, _, form = case.partition("/")  # CASE/commands, CASE/layer: as named
+        job = CASES[name] | (
+            {"chain": False} if form == "commands" else {"token": token and not form}
+        )
         got = decode.job(tokens, layers, timeout=60.0, position=position, **job)
         seconds = time.perf_counter() - started
         meter.mark("after")
@@ -330,7 +351,7 @@ def chain_account(model, cases, length, tokens):
     for name, case in cases.items():
         command = (
             case["steps"]["chain"]
-            if "/" not in name
+            if not name.endswith("/commands")
             else sum(us for step, us in case["steps"].items() if step != "chain")
         )
         out[name] = {
@@ -338,7 +359,7 @@ def chain_account(model, cases, length, tokens):
             "commands_us": round(command, 2),
             "thread_us": round(case["layer"] - command, 2),
         }
-        if "/" not in name:  # the thread's parts (DC_THREAD_*): records, submit, wake
+        if not name.endswith("/commands"):  # DC_THREAD_*: records, submit, wake
             parts = case["thread"]
             out[name]["thread_parts_us"] = {
                 "records": round(parts["records"], 2),
@@ -358,6 +379,7 @@ RECORDS = ("qkv", "attend", "o", "gate_up", "down")  # the chain's, in order
 EXPS = {4096: 3.47, 1024: 1.09, 256: 0.20}
 # chain.h's stamp kernels and words
 READER, WRITER, COMPUTE = 0, 1, 2
+LAST_ROW = 5  # decode.h DC_CHAIN_LAST_ROW: a token's last record
 TAKEN, WEIGHT, FULL, MARKED, MOVED, DONE, LAST = range(1, 8)
 FIRST, PARTS, SUM, OUT, OP_START, OP_END = range(2, 8)
 
@@ -375,9 +397,22 @@ def stamp_means(stamps, mhz):
 def records_account(model, plans, stamps, mhz, command_us, length, tokens, exps):
     """The chain's layer per record from the stamps (sums over the runs): each record's
     span on the path, from the record before's end (its slowest root's writes
-    acknowledged) to its own; its terms on its median root; the tail to the slowest."""
+    acknowledged) to its own; its terms on its median root; the tail to the slowest.
+    A token as one command: its last down folded into down's, qkv's from the one before.
+    """
+    before, layers, token_end = 0.0, 1.0, None
+    if stamps[:, READER, LAST_ROW, 0].any():  # a token: its last down apart
+        last = stamps[:, :, LAST_ROW]
+        stamps = stamps.copy()
+        stamps[:, :, len(RECORDS) - 1] += last
+        layers = stamps[:, READER, len(RECORDS) - 1, 0].max() / last[:, READER, 0].max()
+        plan = plans[md.plan_of(model, "down")]
+        roots = np.arange(0, plan.cores(), plan.s)
+        token_end = float(np.nanmax(stamp_means(last, mhz)[0][roots, COMPUTE, OUT]))
+        down = stamp_means(stamps, mhz)[0][roots, COMPUTE, len(RECORDS) - 1, OUT]
+        before = float(np.nanmax(down)) - token_end / layers  # qkv's: the down before
     means, counts = stamp_means(stamps, mhz)
-    rows, before = [], 0.0
+    rows = []
     for index, name in enumerate(RECORDS):
         plan = plans[md.plan_of(model, "o" if name == "attend" else name)]
         cores = plan.cores()
@@ -479,7 +514,9 @@ def records_account(model, plans, stamps, mhz, command_us, length, tokens, exps)
     return {
         "records": rows,
         "command_us": round(command_us, 2),
-        "end_us": round(command_us - before, 2),
+        "end_us": round(
+            command_us - (before if token_end is None else token_end / layers), 2
+        ),
     }
 
 
@@ -586,9 +623,12 @@ def main():
     args = parse()
     model = md.from_config(args.config) if args.config else md.MODELS[args.model]
     layers = args.layers or model.layers
+    if args.token and args.no_chain:
+        raise SystemExit("--token: the chain's program")
     report = {"model": model.name, "layers": layers, "tokens": args.tokens}
     report["bodies"] = args.bodies
     report["chain"] = not args.no_chain
+    report["token"] = args.token
     report["layer_bytes"] = model.layer_bytes()
     report["plans"] = {
         f"{k}x{n}": plan.words()
@@ -667,6 +707,11 @@ def main():
                     report["check"][stage] = got
                     ok &= got["append_exact"] and all(got[name]["ok"] for name in names)
                     log(f"check, {stage}: {json.dumps(got)}")
+                for count in sorted({2, layers}) if args.token and ok else ():
+                    got = token_equal(decode, model, args.seed, args.lengths[0], count)
+                    report["check"][f"token x{count}"] = got
+                    ok &= got["equal"]
+                    log(f"check, a token as one command: {json.dumps(got)}")
                 checks = [(length, 1) for length in args.lengths]
                 for length, rows in checks + [(args.lengths[0], CHECK_ROWS)]:
                     if not ok:
@@ -680,13 +725,17 @@ def main():
             timed = list(args.cases)
             if args.commands and not args.no_chain:
                 timed += [f"{case}/commands" for case in args.cases]
+            if args.token:  # beside each: the chain a layer a command
+                timed += [f"{case}/layer" for case in args.cases]
             for length in args.lengths if ok else ():
                 for case in timed:
                     log(f"case {case}, T {length}: {args.tokens} x {layers} layers")
                     if decode.stamps:
                         decode.chain_stamps()  # zeroed: this case's only
-                    result = measure(decode, case, args.tokens, layers, index, length)
-                    if decode.stamps and "/" not in case:
+                    result = measure(
+                        decode, case, args.tokens, layers, index, length, args.token
+                    )
+                    if decode.stamps and not case.endswith("/commands"):
                         stamped[(length, case)] = decode.chain_stamps()
                     log(f"case {case}: {json.dumps(result)}")
                     results.append(result)
@@ -741,7 +790,7 @@ def main():
     plans = md.plans(model, chunk=args.chunk, patterns=patterns(args))
     for result in results:
         key = (result["length"], result["case"])
-        if key in stamped and result["case"] in ("full", "bare"):
+        if key in stamped and result["case"].partition("/")[0] in ("full", "bare"):
             count = result["tokens"] * result["layers"]
             report["account"][result["length"]].setdefault("records", {})[
                 result["case"]

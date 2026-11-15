@@ -46,6 +46,11 @@ def parse():
         action="store_true",
         help="a command a step (before stage 6), not the layer as one command",
     )
+    parser.add_argument(
+        "--token",
+        action="store_true",
+        help="a token as one command (the chain's records of every layer, once)",
+    )
     return parser.parse_args()
 
 
@@ -138,6 +143,7 @@ def main():
     report = {"model": model.name, "prompt_tokens": len(prompt), "steps": steps}
     report["bodies"] = args.bodies
     report["chain"] = not args.no_chain
+    report["token"] = args.token
     tokens, per_layer, step_us = list(prompt), [], []
     kernel_bytes = None if args.no_chain else card.CHAIN_KERNEL_BYTES
     with km.Session(log=log, kernel_bytes=kernel_bytes) as session:
@@ -166,7 +172,9 @@ def main():
                 if position < hidden.shape[0]:  # layer by layer, each output kept
                     errors = []
                     for layer in range(model.layers):
-                        decode.job(1, 1, first=layer, position=position)
+                        decode.job(
+                            1, 1, first=layer, position=position, token=args.token
+                        )
                         decode.slot = 0
                         row = decode.read_activation("x")[0]
                         if layer == model.layers - 1:
@@ -177,7 +185,9 @@ def main():
                         f"position {position}: per layer {np.round(errors, 4).tolist()}"
                     )
                 else:
-                    ran = decode.job(1, model.layers, position=position)
+                    ran = decode.job(
+                        1, model.layers, position=position, token=args.token
+                    )
                     step_us.append(ran["thread_ticks"] / card.TICKS_PER_MICROSECOND)
                 row = decode.read_activation("x")[0]
                 logits = head @ final_norm(row, last_norm, model.eps)

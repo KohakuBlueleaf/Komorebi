@@ -75,8 +75,12 @@ enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
  * 16 attend's reads only, 32 no merge, 64 exponent twice; a5 the first position. */
 enum { DC_HANDLER_LAYERS = 1 };
 
-/* LAYERS' a4 128: the layer as one command (the chain); with 256 its first two only. */
-enum { DC_LAYERS_CHAIN = 128, DC_LAYERS_PAIR = 256 };
+/* LAYERS' a4 128: the layer as one command (the chain); with 256 its first two only;
+ * with 512 a token as one command (every layer's records, written once a form). */
+enum { DC_LAYERS_CHAIN = 128, DC_LAYERS_PAIR = 256, DC_LAYERS_TOKEN = 512 };
+
+/* A token's last record's stamp row (the others: their step's, 0 to 4). */
+enum { DC_CHAIN_LAST_ROW = 5 };
 
 /* Every command's a3 bits 16 to 21: the rows that hold a token (1 to 32; 0 is 32), the
  * first ones; LAYERS' a6 the same for each step (positions a5 + step x rows on). */
