@@ -284,6 +284,28 @@ the L1 budget table.
 Described in [Host API, several programs in one run](host.md#several-programs-in-one-run)
 and [movement, the NoC of each CPU](movement.md#the-noc-of-each-cpu).
 
+### Formats another program left on the same cores
+
+**The hazard.** In a run loaded with a list, every core holds every program and nothing
+runs between one program's command and the next program's: the unpacker's and the
+packer's data formats are what the last command left. A program that sets no format
+itself (all its buffers of one format, as the runtime's start-up left them) reads or
+packs its tiles in the other program's formats. You see wrong values, NaN among them,
+and no error: on the card, example 22's Gate after the dense Linear's K split on the
+same cores (Linear's reduce leaves the unpacker on float32).
+
+**The rule.** A compute part in a run of several programs sets the formats it relies on
+at the start of its command (`reconfig_data_format`, `pack_reconfig_data_format`), or
+before each unpack and pack. A group that switches program has no such hazard: its
+load runs the start-up again on the new program's buffers.
+
+**The guard.** For a class in the runtime's form: each command starts by setting the
+formats of the runtime's start-up on the program's buffers again (two calls on
+compute). For a hand-written part, nothing.
+
+Described in [Programs written as classes, the runtime's form](classes.md#the-runtimes-form)
+and [Host API, several programs in one run](host.md#several-programs-in-one-run).
+
 ### An instruction the Tensix cores lack
 
 **The hazard.** The compiler may emit an instruction a Tensix core does not implement

@@ -115,9 +115,23 @@ run.submit(tracer.handler("trace"), group=(0, 88), args=[...])
 | `{program: (first, count), ...}` | each group its own program and buffers (disjoint groups; a core outside them holds no program) |
 | `[program, ...]` | every core every program, in one L1 layout: buffer indices disjoint, or an index both declare declared identically (then one shared buffer); otherwise `km.L1LayoutError` with the L1 budget table |
 
+What each takes:
+
+| | `program` | `{program: group}` | `[program, ...]` |
+|---|---|---|---|
+| a program in the kernel form (a class by default) | yes | no | no |
+| a program in the runtime's form, by hand or a class made with `form="runtime"` ([classes](classes.md#the-runtimes-form)) | yes | yes | yes; a class made `beside=` the others leaves their buffer indices |
+| per-core `args` | yes | yes, each program's at its place | yes, each program's at its place |
+| a program's own overlays | yes | yes | yes |
+| a dynamic handler | the kernel form only | no | no |
+| `run.load(program, group=...)` | no | yes | no |
+
 The programs' order (the list, or the dict's) is their program field. Programs that share
-cores share compute options (`compute`) and `opt` levels; per-core `args` are taken when a
-group holds one program. In the runtime's form a program has no dynamic handler; its own
+cores share compute options (`compute`) and `opt` levels. In a run of several programs
+every core holds every program's per-core `args` (a group may switch to any): program
+p's after the earlier programs', each as wide as its longest list on any core, and its
+parts read their own from that place on (`KM_PROGRAM_ARGS_AT`, 0 in a run of one). In
+the runtime's form a program has no dynamic handler; its own
 overlays are numbered after those of the programs before it
 ([overlays](overlays.md#several-programs-with-overlays)). A run holds up to 63 programs. `run.programs` lists them by program
 field.
