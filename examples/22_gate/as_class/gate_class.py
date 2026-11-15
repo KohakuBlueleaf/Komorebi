@@ -12,7 +12,6 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.dsl.tile import trace
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -27,7 +26,7 @@ TOLERANCE = 1e-6  # the gate's largest relative error against float64 (fp32 valu
 @km.tile_function(tolerance=TOLERANCE)
 def silu_gate(a, b):
     """The gate of two tiles: what the tile compiler emits for compute."""
-    return trace.silu(a) * b
+    return km.silu(a) * b
 
 
 class Gate(km.Program):
@@ -204,7 +203,7 @@ def main():
         "--formats",
         nargs="+",
         default=["bfloat16", "float32"],
-        help="the class's tensors; float32 also runs GateTimed",
+        help="the class's tensors, each with Gate and GateTimed",
     )
     args = parser.parse_args()
     args.pattern = km.Pattern(args.pattern)
@@ -217,7 +216,7 @@ def main():
         if args.beside:
             report["runs"]["hand"] = run_hand(session, args, cores)
         for dtype in args.formats:
-            for timed in (False, True) if dtype == "float32" else (False,):
+            for timed in (False, True):
                 record = run_class(session, args, cores, dtype, timed)
                 report["runs"][f"{'timed ' if timed else ''}class {dtype}"] = record
     ok = True

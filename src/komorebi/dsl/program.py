@@ -13,6 +13,7 @@ from komorebi.dsl.front import MESSAGE_WORDS
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
 from komorebi.dsl.tile import emit
+from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.errors import ProgramError
 
 BUILD = "build"
@@ -740,6 +741,7 @@ COMPUTE_INCLUDES = [
     ("api/compute/compute_kernel_hw_startup.h", None),
     ("api/compute/eltwise_binary_sfpu.h", "add"),
     ("api/compute/eltwise_unary/fill.h", "fill"),
+    ("api/compute/matmul.h", "matmul"),
     ("api/compute/pack.h", None),
     ("api/compute/reg_api.h", None),
     ("api/compute/tile_move_copy.h", None),
@@ -801,6 +803,7 @@ def summary(compiled, folder, files, l1):
     for name, value in sorted(compiled.constants.items()):
         report.append(f"  {spelling('plan')}: {name} = {value}")
     report += tile_costs(compiled)
+    report += product_costs(compiled)
     room = "" if l1 is None else f" of {l1} B left for buffers"
     report.append(f"  L1: the buffers take {total} B{room}")
     if l1 is not None and total > l1:
@@ -848,6 +851,30 @@ def tile_costs(compiled):
             f"{', '.join(operands)} (tile_{cxx}.hpp): {count} instructions, "
             f"{cycles} cycles {each}; {'; '.join(rules) or 'no rule fired'}; "
             f"tolerance {tolerance}"
+        )
+    return lines
+
+
+def product_costs(compiled):
+    """Per product `acc += f(block, self.w)`: the library's call, its matrix-unit
+    words (16 a tile product a fidelity phase, HiFi4: 4) and their price by the tile
+    compiler's model, between 6 or more Dst blocks rotating and none: the library's
+    own word order is not known."""
+    if not compiled.products:
+        return []
+    lines = [
+        "products (the library's matmul_block, priced by the tile compiler's "
+        "matrix_cost; the library's order, rotation not known):"
+    ]
+    for handler, line, text, function, columns, _ in compiled.products:
+        words = 16 * 4 * columns
+        rotating = matrix_cost([("MVMUL", i % 8) for i in range(words)])
+        alone = matrix_cost([("MVMUL", 0)] * words)
+        lines.append(
+            f"  {handler}, line {line}, `{text}`: {function.name}, a tile of the "
+            f"stream by {columns} tile(s) of the field: {columns} tile product(s), "
+            f"{words} MVMUL words, {rotating:.1f} to {alone:.1f} cycles a stream "
+            "tile; the unpack of the operands and the pack not priced"
         )
     return lines
 
