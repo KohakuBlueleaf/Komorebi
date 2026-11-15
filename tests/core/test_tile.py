@@ -1,14 +1,26 @@
 """The tile layer: instruction words, SiLU's unit program (passes, checks, cost), the
 emitted header, the load-macro rule and the row form's lane checks."""
 
+import math
 import random
 
 import pytest
 
 from komorebi.dsl.tile import UnitError, emit, trace, unit_program
-from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
+from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.rows import row_program
-from komorebi.dsl.tile.unit import OPS, Call, Insn, Loop, decode, encode
+from komorebi.dsl.tile.steps import step_program
+from komorebi.dsl.tile.unit import (
+    OPS,
+    Call,
+    Insn,
+    Loop,
+    decode,
+    encode,
+    insns,
+    matrix_cost,
+    rotate_blocks,
+)
 
 
 def stream(name, inputs, fn, **options):
@@ -52,7 +64,7 @@ def test_silu_unit_program():
     )
     assert isinstance(rest, Loop) and rest.count == 7
     assert rest.body[0].op == "REPLAY" and rest.body[0].args["load_mode"] == 0
-    assert unit.cost("math")[1] == 1593.6
+    assert unit.cost("math")[1] == 1533.6
     assert unit.constants and unit.not_checked
 
 
@@ -85,7 +97,7 @@ def test_load_macro_fits_add_and_refuses_silu():
     fit = next(p for p in unit.passes if p.name == "load_macro")
     assert "SFPLOADMACRO" in fit.done[0] and unit.cost("math")[1] == 91.6
     refused = next(p for p in silu(load_macro=True).passes if p.name == "load_macro")
-    assert refused.done[0].startswith("refused: the row computes with 45")
+    assert refused.done[0].startswith("refused: the row computes with 39")
 
 
 def test_row_norm_lanes_and_broadcast():
@@ -101,5 +113,86 @@ def test_row_norm_lanes_and_broadcast():
             trace.store(ys.tiles[t, :], row * r.col() * weight.row())
     checks = {c.rule: c.verdict for c in row_program(ir, 2, 2, 4).checks}
     assert checks["lanes"].startswith("ok") and checks["broadcast"].startswith("ok")
-    # each lane rotation of a sum waits a cycle: the unit does not stall it
-    assert checks["mad-reader"] == "repaired: 32 SFPNOP"
+    # a lane rotation reading a sum is not held: the interleave puts other work between
+    assert checks["mad-reader"] == "ok"
+
+
+def test_exp_step_per_row_operand():
+    s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
+    p = TensorParam("p", True, F32)
+    ir = KernelIR("expstep", [s, m, p], [], {})
+    with trace.Tracer(ir):
+        ss, ms, ps = (trace.TensorProxy(t) for t in (s, m, p))
+        for t in trace.grid(trace.num_tiles(ss)):
+            x, state = trace.load(ss.tiles[t]), trace.load(ms.tiles[t])
+            trace.store(ps.tiles[t], trace.exp(x * 0.125 - state.col()))
+    unit = unit_program(ir)
+    code = [x for x in insns(unit.tile["math"]) if x.op == "SFPLOAD"]
+    # per 4-row block: the state once (tile 1), the two column groups of s
+    assert [x.args["dest_reg_addr"] for x in code[:3]] == [0, 64, 2]
+    fused = [x for x in insns(unit.tile["math"]) if x.op == "SFPMAD"][0]
+    assert fused.args["lreg_src_c"] == code[1].args["lreg_ind"]
+    assert fused.args["instr_mod1"] == 2  # s 0.125 - m in one multiply-add
+
+
+def _exp_ir(**exp):
+    s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
+    p = TensorParam("p", True, F32)
+    ir = KernelIR("expflash", [s, m, p], [], {})
+    with trace.Tracer(ir):
+        ss, ms, ps = (trace.TensorProxy(t) for t in (s, m, p))
+        for t in trace.grid(trace.num_tiles(ss)):
+            x, state = trace.load(ss.tiles[t]), trace.load(ms.tiles[t])
+            trace.store(ps.tiles[t], trace.exp(x * 0.125 - state.col(), **exp))
+    return ir
+
+
+def test_exp_at_a_stated_error_takes_the_flash_template():
+    unit = unit_program(_exp_ir(error=2e-3, over=(-math.inf, 0.0)))
+    done = {p.name: p.done for p in unit.passes}
+    assert done["templates"][0].split(": ", 1)[1].startswith("flash, relative")
+    # the bias folded into m's term: 639 - m log2 e once a block, one MAD a vector
+    assert done["common_values"] and not done["interleave"][0].startswith("0 ")
+    mads = [x for x in insns(unit.tile["math"]) if x.op == "SFPMAD"]
+    assert len(mads) == 7  # per block: the state's term, then 3 for each vector
+    with pytest.raises(PlanError, match="no template meets"):
+        unit_program(_exp_ir(error=1e-9))
+
+
+def test_softmax_step_state_lanes_and_word():
+    s, st = TensorParam("s", False, F32), TensorParam("st", False, F32)
+    p, out = TensorParam("p", True, F32), TensorParam("out", True, F32)
+    ir = KernelIR("softstep", [s, st, p, out], [], {})
+    with trace.Tracer(ir):
+        ss, sts, ps, outs = (trace.TensorProxy(t) for t in (s, st, p, out))
+        for t in trace.grid(trace.num_tile_rows(ss)):
+            x = trace.load(ss.tiles[t, :]) * 0.18
+            state = trace.load_state(sts.tiles[t])
+            m_new = trace.maximum(state[0], trace.reduce_max(x, exact=True))
+            prob = trace.exp2(x - m_new.col(), error=2e-3, over=(-math.inf, 0.0))
+            l_new = state[1] + trace.reduce_sum(prob, exact=True)
+            trace.store(ps.tiles[t, :], prob)
+            moved = trace.word_max(m_new - state[0])
+            trace.store_state(outs.tiles[t], [m_new, l_new], word=moved)
+    unit = step_program(ir, 2, 3)
+    checks = {c.rule: c.verdict for c in unit.checks}
+    assert checks["lanes"].startswith("ok") and checks["broadcast"].startswith("ok")
+    scaled = next(p for p in unit.passes if p.name == "max_scale")
+    assert scaled.done and "out of a maximum" in scaled.done[0]
+    code = list(insns(unit.tile["math"]))
+    assert [x.op for x in code].count("SFPTRANSP") == 1  # the word's lanes
+    assert code[-1].op == "SFPSTORE" and code[-1].args["dest_reg_addr"] == 3 * 64 + 34
+
+
+def test_matrix_unit_rotation_prices_and_rule():
+    # probe 11: a block added into again after K words costs max(1, 6 / K) a word
+    n = 24 * 64
+    for k, want in ((1, 6.0), (2, 3.0), (3, 2.0), (4, 1.5), (5, 1.2), (6, 1.0)):
+        words = [("MVMUL", i % k) for i in range(n)]
+        assert matrix_cost(words, synced=False) / n == pytest.approx(want, abs=0.01)
+    assert matrix_cost([("MVMUL", 0)]) == 8.0
+    assert matrix_cost([("MOVA2D", 0)] * 4, synced=False) == 4.0  # moves wait for none
+    inner_fastest = [("MVMUL", b) for b in range(8) for _ in range(2)]
+    rotated = rotate_blocks(inner_fastest)
+    assert [b for _, b in rotated] == list(range(8)) * 2
+    assert matrix_cost(inner_fastest) == 63.0 and matrix_cost(rotated) == 23.0

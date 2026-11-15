@@ -3,10 +3,11 @@ compiler's vector function (`chain.Chain`) is written as vector-unit instruction
 named values, the rules run as passes (algebra, schedule, layout), then the hazard
 checks. Built on fp32 Dst: whole-tile operands, constants, +, -, *, sigmoid, rsqrt."""
 
+import copy
 import struct
 
 from komorebi.dsl.tile import chain as chains
-from komorebi.dsl.tile import macro
+from komorebi.dsl.tile import macro, sfpu
 from komorebi.dsl.tile.ir import BF16, F32, PlanError, fail
 from komorebi.dsl.tile.unit import (
     FIXED,
@@ -55,6 +56,7 @@ NOT_CHECKED = (
     "dst-window: Dst accesses inside the window (the walk of rows is not checked)",
     "dst-tiles: Dst tiles per acquire (the caller's index)",
     "placement: code placement and the kernel buffer's size",
+    "src-banks: an unpack of more faces than Src has banks (2) waits for a release",
 )
 
 
@@ -65,6 +67,9 @@ class Body:
     def __init__(self):
         self.code, self.count, self.depth = [], 0, 0
         self.prog, self.bits = {}, {}
+        # {bits: value}: constants loaded once and read again (None: one per read),
+        # those of `cacheable`; `loaded`: loads made of each constant
+        self.cache, self.cacheable, self.loaded = None, set(), {}
 
     def fresh(self):
         self.count += 1
@@ -104,7 +109,12 @@ class Body:
         """`value` (fp32) into a new value: one SFPLOADI when bf16 or fp16 holds it
         exactly, else the low then the high half."""
         bits = struct.unpack("<I", struct.pack("<f", value))[0]
+        if self.cache is not None and bits in self.cache:
+            return self.cache[bits]
         out = self.fresh()
+        self.loaded[bits] = self.loaded.get(bits, 0) + 1
+        if self.cache is not None and bits in self.cacheable:
+            self.cache[bits] = out
         note = note or f"{value!r}"
         if bits & 0xFFFF == 0:
             self.op("SFPLOADI", note, lreg_ind=out, instr_mod0=0, imm16=bits >> 16)
@@ -284,7 +294,33 @@ def rsqrt(b, x):
     return b.mad(e, half, y, "y + (1 - y x y) y / 2")
 
 
-FUNCTIONS = {"sigmoid": sigmoid, "rsqrt": rsqrt}
+def flash_exp2(b, u):
+    """2^(u - 639) as Kohaku-TT's flash softmax computes it (sfpu.flash_exp2): u
+    clamped to 512 from below, its bits << 9 give the exponent and the fraction f,
+    a degree-2 polynomial of 1.f gives the mantissa."""
+    floor = b.register_const(sfpu.FLASH_FLOOR)
+    c = b.op("SFPMOV", "u (clamped in place)", lreg_c=u)
+    b.op("SFPSWAP", "max(u, 512)", lreg_src_c=c, lreg_dest=floor, instr_mod1=1)
+    e = b.op("SFPSHFT", "bits << 9", imm12_math=9, lreg_c=c, instr_mod1=SHIFT_IMM_VC)
+    m = b.op("SFPSETEXP", "1.f", imm12_math=127, lreg_c=e, instr_mod1=1)
+    p = b.mad(m, b.const(sfpu.FLASH_B2), b.const(sfpu.FLASH_B1), "B2 m + B1")
+    p = b.mad(p, m, b.const(sfpu.FLASH_B0), "(B2 m + B1) m + B0")
+    return b.op("SFPSETEXP", "2^n p", lreg_c=p, lreg_dest=e, instr_mod1=2)
+
+
+def maximum(b, x, y):
+    """The larger of x and y in every lane: one SFPSWAP on copies (the copy of a
+    value read no more is dropped by the pass drop_copies)."""
+    big = b.op("SFPMOV", "max: first", lreg_c=x)
+    small = b.op("SFPMOV", "max: second", lreg_c=y)
+    b.op("SFPSWAP", "max, min", lreg_src_c=big, lreg_dest=small, instr_mod1=1)
+    return big
+
+
+FUNCTIONS = {"exp": exp, "sigmoid": sigmoid, "rsqrt": rsqrt}
+# Lane tests of a condition: (instruction, mod1, the operands swapped)
+CONDITIONS = {"gt": ("SFPGT", 1, False), "lt": ("SFPGT", 1, True)}
+ZERO_TESTS = {"eq": 6, "ne": 2}  # SFPSETCC on the integer view: -0.0 is not 0
 
 
 def _value(b, node, done, source=None):
@@ -295,7 +331,7 @@ def _value(b, node, done, source=None):
         return done[key]
     k = node.kind
     if k == "operand":
-        if node.value[1] is not None or node.along:
+        if source is None and (node.value[1] is not None or node.along):
             fail("the unit program reads whole-tile operands")
         if source is None:
             if node.value[0] >= OPERANDS:
@@ -304,7 +340,22 @@ def _value(b, node, done, source=None):
         else:
             out = source(node.value[0])
     elif k == "const":
-        out = b.const(node.value)
+        fixed = {0: "zero", 0x3F800000: "one"}
+        out = fixed.get(struct.unpack("<I", struct.pack("<f", node.value))[0])
+        out = out or b.const(node.value)
+    elif k == "max":
+        x, y = (_value(b, a, done, source) for a in node.args)
+        out = maximum(b, x, y)
+    elif k == "mad":
+        out = b.mad(*(_value(b, a, done, source) for a in node.args))
+    elif k == "flash_exp2":
+        out = flash_exp2(b, _value(b, node.args[0], done, source))
+    elif k == "select":
+        then, other = (_value(b, a, done, source) for a in node.args)
+        out = b.op("SFPMOV", "select: the other value", lreg_c=other)
+        _when(b, node.value, done, source)
+        b.op("SFPMOV", "select: where it holds", lreg_c=then, lreg_dest=out)
+        b.end()
     elif k == "call":
         if node.value not in FUNCTIONS:
             fail(f"vector function {node.value} is not built in the unit program")
@@ -323,6 +374,110 @@ def _value(b, node, done, source=None):
         fail(f"vector operation {k} is not built in the unit program")
     done[key] = out
     return out
+
+
+def _when(b, cond, done, source):
+    """Lane flags from comparison `cond`: the lanes where it holds run what follows."""
+    x, y = (_value(b, v, done, source) for v in (cond.a, cond.b))
+    if cond.kind in ZERO_TESTS and y == "zero":
+        mod = ZERO_TESTS[cond.kind]
+        b.when("SFPSETCC", f"x {cond.kind} 0", lreg_c=x, instr_mod1=mod)
+        return
+    if cond.kind not in CONDITIONS:
+        fail(f"the comparison {cond.kind} is not built in the unit program")
+    name, mod, swap = CONDITIONS[cond.kind]
+    x, y = (y, x) if swap else (x, y)
+    b.when(name, f"x {cond.kind} y", lreg_c=y, lreg_dest=x, instr_mod1=mod)
+
+
+def drop_copies(code):
+    """Algebra: a plain copy (SFPMOV) of a value read no more after it is no copy:
+    its readers take the value itself. Returns what it did."""
+    first, last = {}, {}
+    for i, insn in enumerate(code):
+        for v in insn.reads() + insn.writes():
+            first.setdefault(v, i)
+            last[v] = i
+    alias, keep, depth = {}, [], 0
+    for i, insn in enumerate(code):
+        for arg, _ in OPS[insn.op].args:
+            value = insn.args[arg]
+            if isinstance(value, str) and value in alias:
+                insn.args[arg] = alias[value]
+        if insn.sets_flags():
+            depth = 0 if insn.op == "SFPENCC" else depth + 1
+        a = insn.args
+        source, out = a.get("lreg_c"), a.get("lreg_dest")
+        if (
+            insn.op == "SFPMOV"
+            and a["instr_mod1"] == 0
+            and not depth
+            and isinstance(source, str)
+            and source.startswith("v")
+            and last.get(source) == i
+            and first.get(out) == i
+        ):
+            alias[out] = source
+            last[source] = last.get(out, i)
+            continue
+        keep.append(insn)
+    done = len(code) - len(keep)
+    code[:] = keep
+    return [f"{done} copies of values read no more"] if done else []
+
+
+def common_values(code):
+    """Algebra: an instruction computing what an earlier one computed from the same
+    values is dropped, its readers take the earlier result (a per-row value computed
+    once a block, not once a vector). Values written once only. Returns what it did."""
+    writes, loaders = {}, {}
+    for insn in code:
+        for v in insn.writes():
+            writes[v] = writes.get(v, 0) + 1
+            loaders.setdefault(v, []).append(insn)
+    # a constant is known by its bits, whichever value loads it
+    bits = {
+        v: _bits_of(words)
+        for v, words in loaders.items()
+        if all(w.op == "SFPLOADI" for w in words)
+    }
+    seen, alias, keep, depth = {}, {}, [], 0
+    for insn in code:
+        for arg, _ in OPS[insn.op].args:
+            value = insn.args[arg]
+            if isinstance(value, str) and value in alias:
+                insn.args[arg] = alias[value]
+        if insn.sets_flags():
+            depth = 0 if insn.op == "SFPENCC" else depth + 1
+        # constants stay loaded where read (the constant passes place them)
+        out, kind = insn.writes(), OPS[insn.op].kind
+        if (
+            not depth
+            and not insn.sets_flags()
+            and kind in ("mad", "simple")
+            and insn.op != "SFPSWAP"
+            and len(out) == 1
+            and isinstance(out[0], str)
+            and out[0].startswith("v")
+            and writes[out[0]] == 1
+            and all(writes.get(v, 0) <= 1 or bits.get(v) for v in insn.reads())
+        ):
+            fields = [a for a, _ in OPS[insn.op].args if a not in OPS[insn.op].writes]
+            known = [
+                ("bits", bits[v]) if bits.get(v) else v
+                for v in (insn.args[a] for a in fields)
+            ]
+            key = (insn.op, *zip(fields, known, strict=True))
+            if key in seen:
+                alias[out[0]] = seen[key]
+                continue
+            seen[key] = out[0]
+        keep.append(insn)
+    read = {v for insn in keep for v in insn.reads() if insn.op != "SFPLOADI"}
+    keep = [x for x in keep if x.op != "SFPLOADI" or x.writes()[0] in read]
+    done = len(code) - len(keep)
+    code[:] = keep
+    return [f"{done} instructions computed once for their readers"] if done else []
 
 
 def fold_negation(code):
@@ -357,8 +512,23 @@ def fold_negation(code):
                 done.append(f"a negation into its consumer ({users[0].note})")
                 del code[i]
                 continue
+        if users and all(_addend_only(x, out) for x in users):
+            for x in users:
+                x.args["lreg_src_c"] = source
+                x.args["instr_mod1"] ^= 2
+            done.append(f"a negation into the addend of {len(users)} multiply-add(s)")
+            del code[i]
+            continue
         i += 1
     return done
+
+
+def _addend_only(insn, value):
+    """True when multiply-add `insn` reads `value` once, as its addend (VC)."""
+    if insn.op not in ("SFPMAD", "SFPADD"):
+        return False
+    reads = [insn.args[f] for f in ("lreg_src_a", "lreg_src_b", "lreg_src_c")]
+    return reads.count(value) == 1 and insn.args["lreg_src_c"] == value
 
 
 def fuse_mad(code):
@@ -385,7 +555,10 @@ def fuse_mad(code):
         add.args["lreg_src_a"] = insn.args["lreg_src_a"]
         add.args["lreg_src_b"] = insn.args["lreg_src_b"]
         add.args["lreg_src_c"] = c if b == out else b
-        add.args["instr_mod1"] |= insn.args["instr_mod1"] & 1
+        if c == out and add.args["instr_mod1"] & 2:
+            # the add negated the product: the product's sign flips, not the addend's
+            add.args["instr_mod1"] ^= 3
+        add.args["instr_mod1"] ^= insn.args["instr_mod1"] & 1
         add.note = f"{insn.note or 'a b'} + c, one rounding".strip()
         done.append(f"a product into its add ({add.note})")
         del code[i]
@@ -432,6 +605,77 @@ def constant_registers(code, prog):
         code[:0] = _config(name, bits, note)
         done.append(f"{note} in {name} ({saved[bits]} words a row)")
     return done
+
+
+def negated_zero(code):
+    """Algebra: a -0.0 loaded only as the addend of multiply-adds becomes the fixed
+    zero with the addend's sign flipped (one SFPLOADI less). Returns what it did."""
+    done = []
+    for insn in [x for x in code if x.op == "SFPLOADI"]:
+        value = insn.args["lreg_ind"]
+        if (insn.args["instr_mod0"], insn.args["imm16"]) != (0, 0x8000):
+            continue
+        readers = [x for x in code if value in x.reads()]
+        writers = [x for x in code if value in x.writes()]
+        if writers != [insn] or not all(
+            x.op == "SFPMAD"
+            and x.read_fields().count("lreg_src_c") == 1
+            and [x.args[f] for f in x.read_fields()].count(value) == 1
+            and x.args["lreg_src_c"] == value
+            for x in readers
+        ):
+            continue
+        for x in readers:
+            x.args["lreg_src_c"] = "zero"
+            x.args["instr_mod1"] ^= 2
+        code.remove(insn)
+        done.append(f"-0.0 as -zero ({len(readers)} reader(s))")
+    return done
+
+
+def resident_constants(code, prog):
+    """Layout: constants the row still loads move into work registers that stay set
+    across the rows, most words saved first, while the row's values still fit; equal
+    constants share one. Returns (what it did, the loads, the pinned values)."""
+    found = {}
+    for insn in code:
+        if insn.op == "SFPLOADI" and isinstance(insn.args["lreg_ind"], str):
+            found.setdefault(insn.args["lreg_ind"], []).append(insn)
+    by_bits = {}
+    for value, words in found.items():
+        writers = [x for x in code if value in x.writes()]
+        bits = _bits_of(words)
+        if writers == words and bits is not None and value.startswith("v"):
+            by_bits.setdefault(bits, []).append(value)
+    saved = {b: sum(len(found[v]) for v in vs) for b, vs in by_bits.items()}
+    done, loads, pinned = [], [], []
+    for bits in sorted(saved, key=lambda b: -saved[b]):
+        trial = copy.deepcopy(code)
+        first, *others = by_bits[bits]
+        _share(trial, by_bits[bits], first)
+        words = [x for x in trial if x.op == "SFPLOADI" and x.args["lreg_ind"] == first]
+        for w in words:
+            trial.remove(w)
+        try:
+            allocate(copy.deepcopy(loads + words + trial), prog, [*pinned, first])
+        except ValueError:
+            continue
+        code[:] = trial
+        loads += words
+        pinned.append(first)
+        done.append(f"{words[0].note} held across rows ({saved[bits]} words a row)")
+    return done, loads, pinned
+
+
+def _share(code, values, name):
+    """Every value of `values` read as `name`; their loads but `name`'s dropped."""
+    for insn in list(code):
+        held = insn.args.get("lreg_ind")
+        if insn.op == "SFPLOADI" and held in values and held != name:
+            code.remove(insn)
+        for arg, _ in OPS[insn.op].args:
+            if insn.args[arg] in values:
+                insn.args[arg] = name
 
 
 def _bits_of(words):
@@ -499,17 +743,18 @@ def _replay(count, load):
     }
 
 
-def allocate(code, prog):
+def allocate(code, prog, pinned=()):
     """Layout: each value gets an LReg 0 .. 7 for its live range (a result takes the
     register of an operand that dies there, else the lowest free one); the fixed
-    constants take 9 / 10 / 11, the programmable ones 12 upward."""
+    constants take 9 / 10 / 11, the programmable ones 12 upward. `pinned` values live
+    to the end of `code` (they are read again by the next row)."""
     regs = {name: FIXED[name] for name in FIXED}
     regs.update({name: PROGRAMMABLE[i] for i, name in enumerate(prog)})
     last = {}
     for i, insn in enumerate(code):
         for v in insn.reads() + insn.writes():
             if isinstance(v, str) and v not in regs:
-                last[v] = i
+                last[v] = len(code) if v in pinned else i
     free = list(range(WORK))
     for i, insn in enumerate(code):
         dying = [
@@ -518,13 +763,23 @@ def allocate(code, prog):
             if isinstance(v, str) and last.get(v) == i and v not in insn.writes()
         ]
         free += [regs[v] for v in dict.fromkeys(dying) if regs.get(v, WORK) < WORK]
-        for v in insn.writes():
+        for v in dict.fromkeys(insn.writes()):
             if isinstance(v, str) and v not in regs:
                 taken = [regs[d] for d in dying if regs.get(d, WORK) < WORK]
+                if not taken and not free:
+                    raise ValueError("more live values than the 8 work registers")
                 regs[v] = taken[0] if taken else min(free)
                 free.remove(regs[v])
                 if last.get(v, i) == i:
                     free.append(regs[v])
+            elif (
+                isinstance(v, str)
+                and last.get(v) == i
+                and regs[v] < WORK
+                and regs[v] not in free
+            ):
+                # rewritten in place (SFPSWAP's smaller value) and read no more
+                free.append(regs[v])
     for insn in code:
         for arg, _ in OPS[insn.op].args:
             value = insn.args[arg]
@@ -681,12 +936,17 @@ def stream_chain(ir):
     loads = {id(n): n for n in nodes if n.kind in ("load", "resident")}
 
     def leaf_of(node, offset, kind):
-        if id(node) not in loads or kind != "copy" or offset is not None:
+        if id(node) not in loads or kind not in ("copy", "bcast_col") or offset:
             return None
         return chains.Leaf(node, kind, offset)
 
     compiler = chains._Compiler(ir.name, shapes, {})
     return compiler.chain(ir.stores[0].value, leaf_of)
+
+
+def _templates(chosen):
+    """The templates record: each transcendental's chosen form and its bound."""
+    return [f"{k}: {v}" for k, v in chosen.items()]
 
 
 def unit_program(ir, dest="fp32", load_macro=False):
@@ -704,23 +964,69 @@ def unit_program(ir, dest="fp32", load_macro=False):
     if not dtypes <= {BF16, F32}:
         fail(f"{ir.name}: tensors are bf16 or fp32")
     body = Body()
-    result = _value(body, chain.fn.result, {})
-    body.store(result)
+    per_row = [k for k, leaf in enumerate(chain.operands) if leaf.kind == "bcast_col"]
+    if per_row:
+        # A per-row operand (a state tile, each row's value in all its lanes): a row
+        # step takes a 4-row block's even and odd vectors, the state loaded once.
+        shared = {}
+
+        def source(k, p):
+            if k in per_row:
+                if k not in shared:
+                    shared[k] = body.load(TILE * k, f"per-row operand {k}")
+                return shared[k]
+            return body.load(TILE * k + 2 * p, f"operand {k}, {'odd' if p else 'even'}")
+
+        results = [
+            _value(body, chain.fn.result, {}, lambda k, p=p: source(k, p))
+            for p in (0, 1)
+        ]
+        for p, result in enumerate(results):
+            body.store(result, 2 * p, f"the result to Dst ({'odd' if p else 'even'})")
+    else:
+        result = _value(body, chain.fn.result, {})
+        body.store(result)
     unit = UnitProgram(ir.name, dest)
     unit.operands = [leaf.source.attrs["view"].tensor.name for leaf in chain.operands]
     setup = []
+    unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
+    if per_row:
+        # The even and odd vectors of a block are two independent chains.
+        from komorebi.dsl.tile.rows import interleave  # noqa: PLC0415 (rows imports us)
+
+        unit.passes.append(Pass("algebra", "drop_copies", drop_copies(body.code)))
+        unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
+        moved = interleave(body.code, 0, len(body.code))
+        done = [f"{moved} instructions moved in the even and odd chains"]
+        unit.passes.append(Pass("schedule", "interleave", done))
+    unit.passes.append(Pass("algebra", "negated_zero", negated_zero(body.code)))
     done = constant_registers(body.code, body.prog)
     unit.passes.append(Pass("layout", "constant_registers", done))
     unit.passes.append(Pass("schedule", "hoist", hoist(body.code, setup)))
-    unit.passes.append(Pass("layout", "allocate", allocate(body.code, body.prog)))
+    done, held, pinned = resident_constants(body.code, body.prog)
+    unit.passes.append(Pass("layout", "resident_constants", done))
+    whole = held + body.code
+    unit.passes.append(Pass("layout", "allocate", allocate(whole, body.prog, pinned)))
+    body.code[:] = whole[len(held) :]
+    held_regs = {x.args["lreg_ind"] for x in held}
+    clobbered = [x.op for x in body.code if held_regs & set(x.writes())]
+    unit.checks.append(
+        Check(
+            "resident",
+            "a register held across rows is written by no row instruction",
+            f"refused: {clobbered}" if clobbered else f"ok: LReg {sorted(held_regs)}",
+        )
+    )
+    if clobbered:
+        raise UnitError(f"{ir.name}: a held constant register is overwritten")
     allocate(setup, body.prog)
     unit.constants = {
         PROGRAMMABLE[i]: value for i, value in enumerate(body.prog.values())
     }
     plan = None
-    if load_macro:
+    if load_macro and not per_row:
         try:
             plan = macro.fit(body.code)
         except macro.Refused as e:
@@ -739,7 +1045,11 @@ def unit_program(ir, dest="fp32", load_macro=False):
         Insn("SETRWC", {**_setrwc(), "BitMask": 0xF}, "reset the counters"),
         *setup,
     ]
-    if plan is None:
+    if plan is None and per_row:
+        row = [*body.code, Insn("INCRWC", _rwc(rwc_d=4), "next 4-row block")]
+        face = Loop("row", ROWS // 2, row, unroll=True)
+        drained = []
+    elif plan is None:
         row = [*body.code, Insn("INCRWC", _rwc(rwc_d=2), "next 4 rows")]
         face = Loop("row", ROWS, row, unroll=True)
         drained = []
@@ -793,6 +1103,7 @@ def unit_program(ir, dest="fp32", load_macro=False):
             {"stall_res": STALL_SFPU, "wait_res": WAIT_MATH},
             "SFPU waits for the matrix unit",
         ),
+        *held,
         Loop("face", FACES, [face, step, Insn(step.op, dict(step.args), step.note)]),
         *drained,
         Insn("SETRWC", {**_setrwc(), "BitMask": SET_D}, "Dst counter back to 0"),

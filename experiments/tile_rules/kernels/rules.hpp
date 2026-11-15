@@ -11,6 +11,11 @@ namespace rules {
     // (decode's DC_CB_Y: not unpacked to Dst); its P pages (decode's constant tiles).
     constexpr uint32_t kCbSquares = 3, kCbScale = 4, kCbY = 5;
     constexpr uint32_t kPIdentity = 0, kPMean = 1, kPWeight = 2;
+    // The per-core attention body's buffers: a step's K and V tiles, the query row,
+    // P, the row state, the ones tile (the hand body's row sum on the matrix unit).
+    constexpr uint32_t kCbKv = 0, kCbQ = 1, kCbProb = 2, kCbSt = 3, kCbOnes = 4;
+    // Its info words: the step's score products, vector body and P V products.
+    constexpr uint32_t kScore = 64, kVector = 256, kProduct = 320;
     constexpr uint32_t kMaxUnits = 32;
 
     // Info page words: kNonce is written last; kBody + u the body of unit u (a tile,
