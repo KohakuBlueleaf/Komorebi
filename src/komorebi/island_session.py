@@ -1612,7 +1612,7 @@ class IslandSession:
                 except KomorebiError as error:
                     raise _named(error, island) from None
             if prebuild.active():  # every island built: a mock run for the launch
-                self.run = prebuild.Run()
+                self.run = prebuild.Run(parts=runs)
                 self._remember(program)
                 return self.run
             self._check_links(runs, plans)
