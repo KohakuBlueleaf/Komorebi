@@ -303,7 +303,7 @@ static int wake(uint64_t deadline) {
 }
 
 /* Core 0: submits `command` (again after each busy rejection) and waits for its event
- * by `deadline`. KMX_OK once done; KMX_BAD when refused or timed out (`event` says). */
+ * by `deadline`. KMX_OK once done; KMX_BAD when refused, timed out or stash full. */
 static int until_done(
     const km_command_t* command, uint64_t deadline, kmx_event* event
 ) {
@@ -326,7 +326,7 @@ static int until_done(
             status = kmx_wait(handle, deadline, event);
         }
         if (status != KMX_OK) {
-            return status;
+            return status == KMX_FULL ? KMX_BAD : status; /* KMX_STASH set aside */
         }
         if (event->kind == KM_EVENT_DONE) {
             return KMX_OK;
@@ -336,7 +336,7 @@ static int until_done(
         }
         status = wake(deadline);
         if (status != KMX_OK) {
-            return status;
+            return status == KMX_FULL ? KMX_BAD : status;
         }
     }
 }

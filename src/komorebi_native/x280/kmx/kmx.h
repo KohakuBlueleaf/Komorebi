@@ -75,7 +75,7 @@ void kmx_command(
 int kmx_block(km_command_t* command, int id, uint64_t offset, uint32_t bytes);
 
 /* Core 0: cores [first, first + count) hold `program` once KMX_OK (sent again after a
- * busy rejection, by `deadline`); KMX_BAD: refused (`event`, may be 0) or no record. */
+ * busy rejection, by `deadline`); KMX_BAD: refused (`event`), no record, stash full. */
 int kmx_load(
     uint32_t program,
     uint32_t first,
@@ -162,7 +162,7 @@ int kmx_fetch_clean(
 );
 
 /* Core 0: the region's lines written back, then copied out to `to`. KMX_OK; KMX_BAD (a
- * bound, a refusal, a timeout: `event`, may be 0); KMX_LATE / KMX_STOPPED. */
+ * bound, refusal or timeout: `event`, may be 0; stash full); KMX_LATE / KMX_STOPPED. */
 int kmx_store(
     int id,
     uint64_t offset,
