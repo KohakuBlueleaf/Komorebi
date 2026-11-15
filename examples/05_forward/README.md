@@ -88,10 +88,10 @@ with every core in the group.
 
 Before the counter tiles, when every core kept its own tail, 4 of 22 runs of 10^6 forwards
 under the feeder ended with a reported reason: a reservation's answer was lost (32) or a
-packet wait ran out (24, 28). See [atomic_answers](../../experiments/atomic_answers/).
+packet wait ran out (24, 28). See [atomic_answers](../../experiments/noc/atomic_answers/).
 
 A reserved position that is never written (a gap) cannot be made on the card; the CPU
-harness (`experiments/runtime_harness`, case `messages_gap`) shows it reported with the core
+harness (`experiments/checks/runtime_harness`, case `messages_gap`) shows it reported with the core
 and the position.
 
 ## Over two cards

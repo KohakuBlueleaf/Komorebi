@@ -299,7 +299,7 @@ the graph events the kernel would have posted. A graph that does not end within
 
 ## Reference graphs
 
-`experiments/graph_checks/graphs/` holds 40 named graphs as `.bin` uploads with a
+`experiments/checks/graph_checks/graphs/` holds 40 named graphs as `.bin` uploads with a
 `.json` beside each: the bindings, the simulation parameters and the answer (the check,
 status, error, final registers, rounds, the set of commands submitted and the events). They
 are for another implementation, such as the dispatcher's, to replay; the set and

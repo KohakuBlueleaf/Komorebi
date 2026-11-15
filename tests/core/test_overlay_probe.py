@@ -1,12 +1,12 @@
-"""The overlay builder's slot check (experiments/overlay_probe): a slot that overlaps
-reserved L1 is rejected before anything is loaded."""
+"""The overlay builder's slot check (experiments/code/overlay_probe): a slot that
+overlaps reserved L1 is rejected before anything is loaded."""
 
 import importlib.util
 from pathlib import Path
 
 import pytest
 
-PATH = Path(__file__).resolve().parents[2] / "experiments/overlay_probe/builder.py"
+PATH = Path(__file__).resolve().parents[2] / "experiments/code/overlay_probe/builder.py"
 SPEC = importlib.util.spec_from_file_location("overlay_builder", PATH)
 builder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(builder)

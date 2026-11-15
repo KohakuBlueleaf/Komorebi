@@ -1327,7 +1327,7 @@ sender, then the cast. Casting every rank's share itself, each into every core's
 (several casters a block), was tried and is slower: 1024 x 4096 x 4096 went from 126.3
 to 260.9 us and 4096 x 4096 x 4096 from 430.8 to 565.0 on two cards, because each step
 then waits for the slot to be free on every core and for every caster's increment
-([experiments/casters](../../experiments/casters/README.md#tried-in-the-linear-prefill),
+([experiments/noc/casters](../../experiments/noc/casters/README.md#tried-in-the-linear-prefill),
 `results/linear-counted-0x1.json`).
 
 Measured on 2026-11-15 between 10:26 and 11:06, the whole-K plan between 12:05 and

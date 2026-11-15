@@ -27,7 +27,7 @@ import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
 from komorebi.engines import stream as stream_engine  # noqa: E402
 
-ks = stream_engine  # the name experiments/dispatcher/measure.py still reads
+ks = stream_engine  # the name experiments/x280/dispatcher/measure.py still reads
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
 INCLUDE = os.path.join(HERE, "..", "..", "..", "src", "komorebi_native", "include")
@@ -53,7 +53,7 @@ REJECT_HANDLER, REJECT_FLAGS, REJECT_GROUP, REJECT_EXITED, REJECT_REGION = 1, 2,
 REJECT_STREAMS, REJECT_UNKNOWN, REJECT_DEADLINE, REJECT_QUEUE = 6, 7, 8, 9
 REJECT_PROGRAM = 13
 STREAMS = os.path.join(
-    HERE, "..", "..", "..", "experiments", "stream_checks", "streams"
+    HERE, "..", "..", "..", "experiments", "checks", "stream_checks", "streams"
 )
 HANDLER_CHECK_UPLOAD = 246  # KMD_VERIFY_LINES images only
 HANDLER_TRAP = 244  # KMD_VERIFY_LINES images only: core 0 loads from address a0

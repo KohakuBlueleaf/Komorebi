@@ -68,5 +68,5 @@ From the host the two kinds cost the same: the time is the host's round trip. On
 X280 a round with the thread costs 8 µs more than one with a second grid command: the
 dispatcher stores the line into the thread's memory and takes its answer from the
 thread's ring, and FOLD reads 16 table words from DRAM. The experiment
-`experiments/thread_commands` measures the dispatcher's part alone (2.56 µs against
+`experiments/x280/thread_commands` measures the dispatcher's part alone (2.56 µs against
 1.64 µs for a NOP to one core).

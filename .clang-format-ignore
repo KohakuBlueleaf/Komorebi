@@ -1,4 +1,4 @@
-# Unchanged copy of a file of another project; see experiments/landing/README.md.
-experiments/landing/kernels/ttx_dispatch.hpp
-experiments/collision/kernels/ttx_dispatch.hpp
+# Unchanged copy of a file of another project; see experiments/noc/landing/README.md.
+experiments/noc/landing/kernels/ttx_dispatch.hpp
+experiments/noc/collision/kernels/ttx_dispatch.hpp
 projects/attention/kernels/sfpu.hpp

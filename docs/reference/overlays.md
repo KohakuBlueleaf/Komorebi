@@ -357,6 +357,6 @@ dispatcher does not check which program its cores hold. A failed bound gives up 
 where `copy`.
 
 The experiments these numbers stand beside are
-[overlay_costs](../../experiments/overlay_costs/README.md),
-[overlay_probe](../../experiments/overlay_probe/README.md) and
-[remote_load](../../experiments/remote_load/README.md).
+[overlay_costs](../../experiments/code/overlay_costs/README.md),
+[overlay_probe](../../experiments/code/overlay_probe/README.md) and
+[remote_load](../../experiments/code/remote_load/README.md).

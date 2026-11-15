@@ -4,7 +4,7 @@ Runs the persistent kernel kernels on a card without the X280: core 119 (the las
 12 x 10 grid) runs `feeder.cpp` and plays the dispatcher, and cores 0 to 118 run a
 program's reader, compute and writer. `test_mapcollect_fed.py` beside this directory
 calls `mapcollect_fed.py` in one device open (set `KMR_CARD=1` to run the card tests).
-Longer runs are run by hand: `experiments/feeder_runs/`.
+Longer runs are run by hand: `experiments/checks/feeder_runs/`.
 
 | File | What it does |
 |---|---|
@@ -55,7 +55,7 @@ of the submitted and acknowledged commands give.
 
 Times in the summary and the trace are Tensix wall-clock cycles compared across cores
 and converted with the AICLK the driver reports. Measured with
-`experiments/wall_clock/` (one Blackhole p150a, core (0, 0) against six cores from the
+`experiments/core/wall_clock/` (one Blackhole p150a, core (0, 0) against six cores from the
 corners to the centre): the clock is one chip-wide count, every core within 90 cycles
 (67 ns) of the first, with no measurable drift over 2 s (under 0.01 ppm); against host
 time it runs at 1343 to 1347 MHz with the driver reporting 1350 (within the host

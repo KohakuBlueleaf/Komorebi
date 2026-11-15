@@ -117,7 +117,7 @@ addresses valid.
 
 A NoC write between two cores' L1 is only correct when its source and destination
 addresses share their low four bits. Measured on a Blackhole p150a
-([experiment](../../experiments/noc_alignment/README.md)): when they differ, a 4-byte
+([experiment](../../experiments/noc/noc_alignment/README.md)): when they differ, a 4-byte
 write lands at the destination address but carries the bytes found at the destination's
 offset within the source's 16-byte line, and a non-posted write is acknowledged as
 usual. The mismatch is silent and wrong, never an error. The runtime's small writes

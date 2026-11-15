@@ -105,7 +105,7 @@ def compared(session, out, wanted, dtype):
         scale = max(scale, float(np.abs(want).max()))
         large = np.abs(want) >= hand.SMALL
         relative = max(relative, float((difference / np.abs(want))[large].max()))
-        judged = np.abs(want) > 1e-30  # as experiments/tile_rules judges
+        judged = np.abs(want) > 1e-30  # as experiments/language/tile_rules judges
         whole = max(whole, float((difference / np.abs(want))[judged].max()))
         wrong += int((difference > hand.BOUND * np.abs(want) + 2.0**-10).sum())
         hand.log(f"  output pages from {first} read back")

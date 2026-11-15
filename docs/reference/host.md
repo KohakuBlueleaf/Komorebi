@@ -39,7 +39,7 @@ nothing.
 | `compile_args` | `{"reader": [...], "writer": [...], "compute": [...]}` |
 | `compute` | compute kernel options, the fields of tt-metal's `ComputeConfigDescriptor` (v0.81.1): `math_fidelity` (`"LoFi"`, `"HiFi2"`, `"HiFi3"`, `"HiFi4"`), `unpack_to_dest_mode` (`"UnpackToDestFp32"` or `"Default"` for every circular buffer, or `{cb: name}` with the others `Default`), and the flags `fp32_dest_acc_en`, `math_approx_mode`, `dst_full_sync_en`, `bfp8_pack_precise`, `enable_trisc2_rvv`; any other name raises `ProgramError` |
 | `defines` | `{name: value}` for all three kernels |
-| `depth` | mailbox slots the cores scan and the dispatcher uses, 1 to 64 (`KM_RING_SLOTS`; [the cost of depth](../../experiments/dispatcher/README.md#ring-slots-and-depth)) |
+| `depth` | mailbox slots the cores scan and the dispatcher uses, 1 to 64 (`KM_RING_SLOTS`; [the cost of depth](../../experiments/x280/dispatcher/README.md#ring-slots-and-depth)) |
 | `handlers` | `{name: number}`, or a header whose `constexpr uint32_t kHandlerName = n;` lines give them (`kHandlerBigStep` becomes `"big_step"`); numbers 1 to 239 |
 | `opt` | `{"reader": "Os", "writer": "Os"}`: an optimisation level per kernel, one of the runtime's `O0`, `O1`, `O2`, `O3`, `Os`, `Ofast`, `Oz` (anything else raises `ProgramError`); a kernel without one keeps the runtime's default, `O2` for the reader and writer and `O3` for the compute kernel (its three threads together). A set level also defines `KM_OPT_LEVEL` for that kernel, so that it is cached apart |
 | `noc` | `{"reader": 1, "writer": 0}`: the NoC each data-movement kernel uses, 0 or 1; without it the reader is on NoC 0 and the writer on NoC 1. Both on one NoC, or a name other than `reader` and `writer`, raises `ProgramError`; programs that share cores or switch groups give the same `noc` ([movement](movement.md#the-noc-of-each-cpu)) |
@@ -201,7 +201,7 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`, or
   grid is under full matrix load (the card lowers its core voltage; the dispatcher
   trapped in 9 of 18 such runs), and it is never the default; safe use is the caller's
   claim. A host-fed command at depth 16 costs 1.228 microseconds at 1000 MHz and 0.726
-  at 1750, one after the other on one card (`experiments/dispatcher/measure.py bench
+  at 1750, one after the other on one card (`experiments/x280/dispatcher/measure.py bench
   --n 100000 --depth 16 --group 1 --batch 64 --host-depth 64 --pll 1000`, then `--pll
   1750`). Before the session sets the clock, the runtime that opens the cluster leaves
   it at its safe 200 MHz. The session's log names the clock it set.
@@ -439,7 +439,7 @@ Every offset is checked twice before anything moves: on the host (`km.ChannelErr
 and in the kernel, against the region and the core's L1; an L1 tensor's page must also
 lie above the firmware's part of L1 and apart from the core's word slot (that floor is
 the kernel's check alone). A core that refuses writes nothing. Card 1, a p150a at x8 16 GT/s, host seconds of a whole tensor (median of
-three, every byte compared; `experiments/host_push/framework.py`):
+three, every byte compared; `experiments/host/host_push/framework.py`):
 
 | | 20 MiB frame read | 94 MB tensor read | 20 MiB write | 94 MB write |
 |---|---|---|---|---|
@@ -448,7 +448,7 @@ three, every byte compared; `experiments/host_push/framework.py`):
 | channel, in a run | 0.0067 | 0.023 | 0.0055 | 0.026 |
 
 An L1 tensor of 128 KiB a core on all 120 cores (15 MiB), card 1, AICLK 1350 MHz, host
-load 4, one measurement each, every byte compared (`experiments/host_push/l1_tensor.py`):
+load 4, one measurement each, every byte compared (`experiments/host/host_push/l1_tensor.py`):
 inside a run written in 2.8 ms and read in 5.1 ms (5.5 and 3.1 GB/s for the host; 1.09
 and 1.05 ms on the cores, 14.4 and 15.0 GB/s); without a run read in 0.11 s, the
 launch's cost. The device API reads at about 2 MB per second (above).
@@ -468,7 +468,7 @@ every open and each transfer checks them against a fresh nonce.
 
 `run.thread.read(name)` reads only the region's pages of the thread's bank (over
 4 MB, in 2 MB chunks with a log line each): a 1 MB region in 0.48 s, 5 MB in 3.8 s
-(`experiments/x280_threads/region_read.py`, host load about 4). The load still writes
+(`experiments/x280/x280_threads/region_read.py`, host load about 4). The load still writes
 the regions' whole tensor, 8 MB per MB of regions.
 
 ## `Run`

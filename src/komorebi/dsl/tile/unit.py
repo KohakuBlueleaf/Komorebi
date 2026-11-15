@@ -17,7 +17,7 @@ SAVED = 11
 WORK = 8  # LReg 0 .. 7 hold values
 REPLAY_ENTRIES = 32  # entries of one thread's replay buffer
 # Cycles (AICLK) of the math CPU's vector code: one-core Blackhole measurements
-# (experiments/tile_probes/README.md, section 8) or, where marked, the ISA's word.
+# (experiments/core/tile_probes/README.md, section 8) or, where marked, the ISA's word.
 PRICES = {
     "word": (1.0, "a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16)"),
     "loop": (2.0, "a pass of a loop the core runs: N + 2 cycles (probe 12)"),
@@ -27,7 +27,8 @@ PRICES = {
     "guard": (0.0, "a band's test of the live rows: hidden (tile_rules: the band)"),
     "replayed": (1.004, "a replayed word: 1.004 cycles (probe 8)"),
     "mad_stall": (1.0, "a MAD result read next: 1 stall (probe 9: 4.03 against 3.04)"),
-    # read by a store: no stall (experiments/tile_rules: add, scale, SiLU on the card)
+    # read by a store: no stall (experiments/language/tile_rules: add, scale, SiLU,
+    # on the card)
     "shft2_stall": (1.0, "SFPSHFT2 lane modes stall the unit 1 cycle (stated)"),
     "built_word": (4.14, "a word built at run time: 4.14 cycles (probe 8)"),
     "table_word": (9.37, "a word loaded from an L1 table: 9.37 cycles (probe 8)"),

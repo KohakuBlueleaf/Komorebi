@@ -103,12 +103,12 @@ programs' CPU tests.
 
 ## The runtime on the CPU
 
-[`experiments/runtime_harness`](../experiments/runtime_harness/README.md) compiles the
+[`experiments/checks/runtime_harness`](../experiments/checks/runtime_harness/README.md) compiles the
 Tensix runtime's device headers and the map/collect kernels unchanged against a stub of
 the tt-metal calls they use, runs them as host threads on a simulated grid, and forces
 failure paths on it: stop flags, give-ups, lost or late command chunks, mailbox races,
 items past a buffer's end. It is a tool run by hand (`python
-experiments/runtime_harness/run.py`), not part of the test suite.
+experiments/checks/runtime_harness/run.py`), not part of the test suite.
 
 The rule: a new wait in the runtime comes with a scenario there that makes it give up,
 by the stop flag and by its timeout, and shows that every kernel of the tile still
