@@ -560,6 +560,7 @@ def add(run, program):
     run._switch["records"][field] = address
     entries_s = _own_entries(run, own)
     run.programs.append(program)
+    program.added_live = True  # a refusal naming the class's programs tells it
     if run._holds is not None:
         run._holds.append(np.zeros(run.cores, bool))
     for thread in run.threads.values():  # kmx_load reaches it
