@@ -551,6 +551,7 @@ What a body takes, by where it runs:
 | `takes=` of | compute's three | one compute CPU | a mover |
 |---|---|---|---|
 | an int, a partition, a pattern, a page's words (`.read()[0:2]`) | by its name | by its name | by its name |
+| a constant of the class (`self.K`, [Constants](#constants)) | `K`, a `constexpr uint32_t` of this program's value | the same | the same |
 | an entry `e` of a table (`for e in ...entries(...)`), or a table | `e_word`, each of its words (a table: `name_count`) | the same | the same |
 | a body's word (`w = km.cxx(..., gives=int)`) | a word of compute's three | a word of that CPU, or of compute's three | a word of that mover |
 | a stream's tile or item (the loop's name) | `name_buffer` and `name_index`, its buffer and place | `name`, its L1 address: unpack's own; math and pack are handed it by mailbox before the body and hand a release back after it, and unpack frees the block only then | after the loop: `name_tiles` and `name_cycles`, what this mover moved in the loop's move (`km::Moved`: its tiles, the cycles of its passes that moved a block) |
@@ -1862,12 +1863,18 @@ session gives more with `kernel_bytes`
 (`t.pages(first, count)`, a partition's share `s[part]`, a rectangle `t.tiles[r0:r1,
 c0:c1]`), their zip, `.write` of a page range or of a rectangle (`t.tiles[r0:r1,
 c0:c1].write(...)`), `.drain` and `.fill`, the assignments
-before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write. A
+before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write (after the reduce, or `if self.rank % G
+== 0:` with G the reduce's group: each group's root; before the reduce, rank 0 alone,
+refused in a call of several groups). A
 first page is a number of the call's words, the class's constants, `self.rank`, `size`
 and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the first tensor
 written; each group's root writes block g, `width` tiles from g x width), the group size
-(the reduce's group, else 1), and each read as a share of K tiles or as ranges of
-`base + step x g`. The record's input is the call before's output; another read is an
+(the reduce's group, else 1), and each read as a share of K tiles (each group's ranks
+reading the same K tiles as `km::partition` shares them, whether by `self.partition` in
+one group or by the rank's share written out) or as ranges of `base + step x g` (a
+root's alone under its `if`). The decode layer's five calls (112, 120, 96 and 120 cores in groups of 7,
+15, 2 and 15) are described so, both ways with equal records; where its chain stands
+on the card is in [decode_class](../../experiments/language/decode_class/README.md). The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
 input that `run.chain` proves (as a written chain's,
 [the earlier input](chain.md#the-earlier-input-and-the-direct-input)). A rectangle of
