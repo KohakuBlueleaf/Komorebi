@@ -49,6 +49,9 @@ def parse():
         help="the kernel form's command stored by the wait, or first: island by "
         "island (old), the other island first (reversed), or send(); a list, in turn",
     )
+    parser.add_argument(
+        "--inspect", action="store_true", help="once after the load: run.inspect()"
+    )
     parser.add_argument("--json")
     return parser.parse_args()
 
@@ -225,6 +228,17 @@ def main():
         )
         run = session.load(program, wait=args.wait)
         log(f"loaded: {islands} islands, {ranks} ranks")
+        if args.inspect:  # every rank's state, each island's group in its own ranks
+            seen = run.inspect()
+            row = {
+                "call": "inspect",
+                "ranks": len(seen),
+                "islands": sorted({one["island"] for one in seen}),
+                "in_order": [one["rank"] for one in seen] == list(range(ranks)),
+            }
+            ok &= row["ranks"] == ranks and row["in_order"]
+            rows.append(row)
+            print(json.dumps(row), flush=True)
         nop = km.abi.headers()["KM_HANDLER_NOP"]  # the command's own time, no call
         card = []
         for _ in range(args.rounds if "nop" in args.calls.split(",") else 0):

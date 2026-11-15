@@ -19,6 +19,11 @@ inline uint64_t get_noc_addr(uint32_t x, uint32_t y, uint32_t addr) {
     return kmsim::noc_core(x, y, addr);
 }
 
+// NoC address of addr in the calling core's own L1.
+inline uint64_t get_noc_addr(uint32_t addr) {
+    return kmsim::noc_self(addr);
+}
+
 // Interleaved DRAM pages: one flat DRAM, no banks; page p at base + p * page_size.
 template <bool DRAM>
 struct InterleavedAddrGen {
@@ -58,6 +63,10 @@ template <typename Args>
 struct TensorAccessor {
     TensorAccessor(Args, uint32_t base) :
         base(base), page_size(kmsim::compile_arg(Args::index)) {
+    }
+
+    uint32_t get_aligned_page_size() const {
+        return page_size;
     }
 
     uint32_t base;
@@ -297,3 +306,38 @@ inline bool noc_cmd_bufs_mid_clear() {
 #ifndef NUM_DRAM_BANKS
 #define NUM_DRAM_BANKS 8
 #endif
+
+// Not modelled, only compiled: the link cores' page path, the wire between islands,
+// overlays and multicasts (no scenario runs a link, loads an overlay or multicasts).
+#define NOC_MAX_TRANSACTION_ID 0xF
+#define NIU_MST_NONPOSTED_WR_REQ_SENT 0
+#define NOC_STATUS_READ_REG(noc, reg) 0u
+#define NOC_UNICAST_ADDR_X(addr) 0u
+#define NOC_UNICAST_ADDR_Y(addr) 0u
+#ifndef MEM_MAP_END
+#define MEM_MAP_END (64 * 1024)
+#endif
+inline uint32_t noc_nonposted_writes_num_issued[2] = {};
+inline uint32_t kmsim_config[64] = {};
+#define TENSIX_CFG_BASE (reinterpret_cast<uintptr_t>(kmsim_config))
+#define RISCV_IC_INVALIDATE_InvalidateAll_ADDR32 0
+
+inline void noc_async_read_set_trid(uint32_t, uint8_t = 0) {
+    kmsim::point("noc_async_read_set_trid");
+}
+
+inline void noc_inline_dw_write(uint64_t, uint32_t, uint8_t = 0xF, uint8_t = 0) {
+    kmsim::point("noc_inline_dw_write");
+}
+
+inline uint64_t get_noc_multicast_addr(
+    uint32_t x_start, uint32_t y_start, uint32_t, uint32_t, uint32_t addr
+) {
+    return kmsim::noc_core(x_start, y_start, addr);
+}
+
+inline void noc_async_write_multicast(
+    uint32_t, uint64_t, uint32_t, uint32_t, bool = false
+) {
+    kmsim::point("noc_async_write_multicast");
+}

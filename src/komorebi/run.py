@@ -573,11 +573,16 @@ class Run:
         return self._given_up_error(handle) if handle in self._given_up else None
 
     def inspect(self, group=None, timeout=10.0):
-        """While the run goes on: the dispatcher reads each core of `group` (default
-        every core): core_state's dict, `live` (each kernel's runtime wait and command)
-        and `trace` (the latest commands' entries); `read` False for a core it could
-        not reach. inspect_ticks: the X280 timer ticks the read took on core 0."""
-        first, count = self._group(group) if group is not None else (0, self.cores)
+        """While the run goes on: the dispatcher reads each rank of `group` (flat, of
+        this island; default every core): core_state's dict, `live` (each kernel's wait
+        and command), `trace` (the latest commands' entries); `read` False for a core
+        it could not reach. inspect_ticks: X280 ticks the read took on core 0."""
+        first, count = (0, self.cores)
+        if group is not None:  # flat ranks, of this island: the dispatcher reads cores
+            low, high = self._part(*self._group(group))
+            first, count = int(low), int(high - low)
+            if count != group[1]:
+                raise ValueError(f"group {tuple(group)}: not this island's ranks")
         handle = self._queue_command(
             self.h["KMD_HANDLER_INSPECT"], (first, count), flags=self._flag_dispatcher
         )
@@ -982,8 +987,12 @@ class Run:
         """Stores the commands already handed to the port (one native round, no wait);
         returns the events read meanwhile, not yet filed."""
         if self.port.queued and self._handed > self._base:
-            return self.port.wait(_NO_HANDLES, (self._handed - 1) & M32, 0.0)
+            return self.port.wait(_NO_HANDLES, self._store_upto(), 0.0)
         return ()
+
+    def _store_upto(self):
+        """The number of the last command handed: what _store_handed stores up to."""
+        return (self._handed - 1) & M32
 
     def wait_any(self, handles, timeout=10.0):
         """Sends what is queued and waits for the first event among the handles;

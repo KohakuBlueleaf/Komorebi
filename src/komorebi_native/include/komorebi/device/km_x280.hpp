@@ -6,19 +6,6 @@
 
 #include "km_core.hpp"
 
-namespace km {
-
-    // Where codes of the X280 port (the gave-up word of the kernel that sent).
-    constexpr uint32_t kWhereX280Send = 36;    // a store to the X280 core did not leave
-    constexpr uint32_t kWhereX280Answer = 37;  // no answer to an ask in time
-    constexpr uint32_t kWhereX280Tell = 38;    // no tell from the X280 core in time
-    constexpr uint32_t kWhereX280None = 39;  // the program gave this core no X280 core
-    static_assert(
-        kWhereX280Send > kWhereMessagesCounter, "after the dynamic where codes"
-    );
-
-}  // namespace km
-
 #if !defined(COMPILE_FOR_TRISC)
 namespace km {
 
