@@ -1,0 +1,132 @@
+{
+ "tile_function": "tile function (trace.silu(a) * b): 1539.6 (from build)",
+ "summary": {
+  "calls_us": [
+   24192.8,
+   2329.0,
+   2301.6,
+   2296.7
+  ],
+  "aiclk_mhz": 1350,
+  "wall_s": 11,
+  "cost_model": 1539.6
+ },
+ "calls": [
+  {
+   "call": 0,
+   "us": 24192.8,
+   "nonce_ok": true,
+   "error": 0,
+   "body_less_sync": 1567.0,
+   "body": [
+    1576,
+    1577.0,
+    1580
+   ],
+   "stream_cycles": 355458,
+   "vs_float64": {
+    "max": 2.39948700244788e-07,
+    "mean": 5.156586276972758e-08,
+    "not_finite": 0
+   },
+   "vs_tinygrad": {
+    "max": 3.2286872738708153e-07,
+    "mean": 3.863300369069493e-08,
+    "not_finite": 0
+   },
+   "tinygrad_vs_float64": {
+    "max": 2.1535854247793812e-07,
+    "mean": 3.934756002328299e-08,
+    "not_finite": 0
+   },
+   "ok": true
+  },
+  {
+   "call": 1,
+   "us": 2329.0,
+   "nonce_ok": true,
+   "error": 0,
+   "body_less_sync": 1568.0,
+   "body": [
+    1576,
+    1578.0,
+    1580
+   ],
+   "stream_cycles": 355527,
+   "vs_float64": {
+    "max": 2.39948700244788e-07,
+    "mean": 5.156586276972758e-08,
+    "not_finite": 0
+   },
+   "vs_tinygrad": {
+    "max": 3.2286872738708153e-07,
+    "mean": 3.863300369069493e-08,
+    "not_finite": 0
+   },
+   "tinygrad_vs_float64": {
+    "max": 2.1535854247793812e-07,
+    "mean": 3.934756002328299e-08,
+    "not_finite": 0
+   },
+   "ok": true
+  },
+  {
+   "call": 2,
+   "us": 2301.6,
+   "nonce_ok": true,
+   "error": 0,
+   "body_less_sync": 1568.0,
+   "body": [
+    1576,
+    1578.0,
+    1580
+   ],
+   "stream_cycles": 355539,
+   "vs_float64": {
+    "max": 2.39948700244788e-07,
+    "mean": 5.156586276972758e-08,
+    "not_finite": 0
+   },
+   "vs_tinygrad": {
+    "max": 3.2286872738708153e-07,
+    "mean": 3.863300369069493e-08,
+    "not_finite": 0
+   },
+   "tinygrad_vs_float64": {
+    "max": 2.1535854247793812e-07,
+    "mean": 3.934756002328299e-08,
+    "not_finite": 0
+   },
+   "ok": true
+  },
+  {
+   "call": 3,
+   "us": 2296.7,
+   "nonce_ok": true,
+   "error": 0,
+   "body_less_sync": 1568.0,
+   "body": [
+    1576,
+    1578.0,
+    1580
+   ],
+   "stream_cycles": 355494,
+   "vs_float64": {
+    "max": 2.39948700244788e-07,
+    "mean": 5.156586276972758e-08,
+    "not_finite": 0
+   },
+   "vs_tinygrad": {
+    "max": 3.2286872738708153e-07,
+    "mean": 3.863300369069493e-08,
+    "not_finite": 0
+   },
+   "tinygrad_vs_float64": {
+    "max": 2.1535854247793812e-07,
+    "mean": 3.934756002328299e-08,
+    "not_finite": 0
+   },
+   "ok": true
+  }
+ ]
+}
