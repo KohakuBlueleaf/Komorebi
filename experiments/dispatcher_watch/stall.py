@@ -99,7 +99,12 @@ def main():
             run, source, output, args.tiles, groups, args.maps, 0
         )
         split = len(placed)
-        handle = run._queue_command(run.h["KMD_HANDLER_STALL"], (0, 1), [args.stall_ms])
+        handle = run._queue_command(
+            run.h["KMD_HANDLER_STALL"],
+            (0, 1),
+            [args.stall_ms],
+            flags=run.h["KMD_FLAG_DISPATCHER"],
+        )
         run._counts[-1] = 0  # the kernel's own command: no sequence number
         (pong,) = run.wait([handle], timeout=10.0)
         stalled = time.perf_counter()

@@ -1,5 +1,5 @@
-// Linear reader (NoC0 by default): X's row broadcast over this island's K a window of
-// columns; in its own window, the subblocks other islands put into S, to compute.
+// Linear reader (NoC0 by default): X's row broadcast over this island's K for its own
+// window of columns (LINEAR_ADD: then both partials of each subblock, to compute).
 #include <stdint.h>
 
 #include "../dense.h"
@@ -7,6 +7,10 @@
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "linear.h"
+
+#if defined(LINEAR_SPLIT)  // the K-split plan (linear.h): its own body
+#include "ksplit_reader.hpp"
+#else
 
 void kernel_main() {
     constexpr auto x_args = TensorAccessorArgs<0>();
@@ -20,6 +24,7 @@ void kernel_main() {
     const auto plan = [&](uint32_t word) {
         return core(kCorePlan + word);
     };
+    uint32_t parity = 0;  // LINEAR_ADD: the command's set of S
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerLinear) {
             return;
@@ -30,9 +35,6 @@ void kernel_main() {
         const uint32_t m_tiles = plan(kPlMt);
         invalidate_l1_cache();  // the tensor table
         const Span mine = k_part(w, here, k_whole, n_whole);
-        const bool exchange = (
-            LINEAR_EXCHANGES && exchanging(x, w, y, m_tiles, k_whole, n_whole)
-        );
         // the rows this island makes: the plan's rows start at its first
         const Span made = made_rows(x, here, m_tiles, k_whole);
         const bool included = core(kCoreRank) != 0;
@@ -41,37 +43,18 @@ void kernel_main() {
         const uint32_t k_blocks = blocks_of(mine.count, k_block_tiles);
         const uint32_t blocks_high = plan(kPlNbh), blocks_wide = plan(kPlNbw);
         const uint32_t first_row = made.first + core(kCoreM0);
-        const uint32_t first_column = core(kCoreN0);
         const uint32_t made_end = made.first + made.count;
-        const uint32_t row_end = (
-            first_row + plan(kPlPcM) < made_end ? first_row + plan(kPlPcM) : made_end
-        );
         const uint32_t subblock_tiles = plan(kPlSh) * plan(kPlSw);
         const uint32_t block_tiles = block_height * block_width;
         const Sent sent = {core(kCoreSetPages), core(kCoreSent)};
-        // the other islands that put here, a K block of a block each: k blocks 0 ..
-        const uint32_t senders = (
-            LINEAR_EXCHANGES ? senders_to(x, w, y, here, m_tiles, k_whole, n_whole) : 0
+        // this island's own columns of the rows it makes (none: nothing to make)
+        const uint32_t width = (
+            window(x, w, y, here, here, m_tiles, k_whole, n_whole).count
         );
-        const uint32_t kept = window(x, y, here, here, m_tiles, k_whole, n_whole).count;
-        if (
-            included && mine.count != 0 && kept != 0 && senders > 1 &&
-            senders >= k_blocks
-        ) {
-            reader.gave_up(  // more islands put here than K blocks to take them in
-                km::kStReader,
-                km::kGaveBadItem,
-                km::kWhereData,
-                km::slot(command),
-                command.sequence
-            );
-            return;
-        }
+        LINEAR_ACCOUNT_DO(uint32_t account[kAcReaderEnd - kAcXFree + 1] = {});
         const Holding x_here = holding(x, here, m_tiles * k_whole);
         const auto x_matrix = TensorAccessor(x_args, x_here.address);
         const auto s_matrix = TensorAccessor(s_args, holding(s, here, 1).address);
-        // the writer's go, once a command: every island's puts are in S
-        bool waited = !exchange;
         if (included && mine.count != 0) {
             km::Broadcast broadcast(reader, command, kArgBroadcast);
 #if defined(LINEAR_VALID_SENT)
@@ -81,127 +64,117 @@ void kernel_main() {
                 return;
             }
             uint32_t step = 0;
-            for (uint32_t turn = 1; turn <= islands; ++turn) {
-                const uint32_t to = island_at(here, turn);
-                const uint32_t width = (
-                    window(x, y, here, to, m_tiles, k_whole, n_whole).count
+            for (
+                uint32_t block = 0; width != 0 && block < blocks_high * blocks_wide;
+                ++block
+            ) {
+                const uint32_t block_row = (
+                    first_row + block / blocks_wide * block_height
                 );
-                if (width == 0 || (!LINEAR_EXCHANGES && to != here)) {
-                    continue;
-                }
-                const bool own = !LINEAR_EXCHANGES || to == here;
-                if (own && !waited) {
-                    if (!km::port_wait(reader, command, kPortGo, 1)) {
-                        return;
-                    }
-                    waited = true;
-                }
-                const uint32_t column_end = (
-                    first_column + plan(kPlPcN) < width
-                        ? first_column + plan(kPlPcN)
-                        : width
-                );
-                for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
-                    const uint32_t block_row = (
-                        first_row + block / blocks_wide * block_height
-                    );
-                    const uint32_t block_column = (
-                        first_column + block % blocks_wide * block_width
-                    );
-                    const bool inside = (
-                        block_row < row_end && block_column < column_end
-                    );
-                    for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
-                        if (!broadcast.sender()) {
-                            if (!broadcast.arrive(step)) {
-                                return;
-                            }
-                        } else {
-                            const uint32_t base = broadcast.reserve(step);
-                            if (base == 0) {
-                                return;
-                            }
-                            const uint32_t k_start = k_block * k_block_tiles;
-                            const uint32_t k_length = (
-                                mine.count - k_start < k_block_tiles
-                                    ? mine.count - k_start
-                                    : k_block_tiles
-                            );
-                            const uint32_t rows = (
-                                block_row >= made_end
-                                    ? 0
-                                    : made_end - block_row < block_height
-                                        ? made_end - block_row
-                                        : block_height
-                            );
-                            for (uint32_t tile_row = 0; tile_row < rows; ++tile_row) {
-                                // a row of X: this island's K, its part's pages
-                                const uint32_t page = (
-                                    (block_row + tile_row) * k_whole + mine.first +
-                                    k_start
-                                );
-                                if (!x_here.holds(page, k_length)) {
-                                    reader.gave_up(  // X is not split as W is
-                                        km::kStReader,
-                                        km::kGaveBadItem,
-                                        km::kWhereData,
-                                        km::slot(command),
-                                        command.sequence
-                                    );
-                                    return;
-                                }
-                                const uint32_t index = x_here.index(page);
-                                const uint32_t at = (
-                                    base + tile_row * k_block_tiles * kBf16Bytes
-                                );
-                                for (uint32_t k = 0; k < k_length; ++k) {
-                                    noc_async_read_page(
-                                        index + k, x_matrix, at + k * kBf16Bytes
-                                    );
-                                }
-                            }
-                            if (!flushed(reader, km::kStReader, km::kFlushReads)) {
-                                return;
-                            }
-                            if (!broadcast.cast(step)) {
-                                return;
-                            }
+                for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
+                    LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
+                    if (!broadcast.sender()) {
+                        if (!broadcast.arrive(step)) {
+                            return;
                         }
-                        if (!own || k_block >= senders) {
-                            continue;
+                        LINEAR_ACCOUNT_DO(lap(account[kAcXCast - kAcXFree], since));
+                    } else {
+                        const uint32_t base = broadcast.reserve(step);
+                        if (base == 0) {
+                            return;
                         }
-                        // sender k_block's tiles of this block, a subblock at a time
-                        // (a block wholly outside the columns: none were put)
-                        const uint32_t first_page = (
-                            sent.page(k_block, block * block_tiles)
+                        LINEAR_ACCOUNT_DO(lap(account[0], since));
+                        const uint32_t k_start = k_block * k_block_tiles;
+                        const uint32_t k_length = (
+                            mine.count - k_start < k_block_tiles
+                                ? mine.count - k_start
+                                : k_block_tiles
                         );
-                        for (
-                            uint32_t tile = 0; tile < block_tiles;
-                            tile += subblock_tiles
-                        ) {
-                            if (!reader.reserve(kCbSent, subblock_tiles)) {
+                        const uint32_t rows = (
+                            block_row >= made_end
+                                ? 0
+                                : made_end - block_row < block_height
+                                    ? made_end - block_row
+                                    : block_height
+                        );
+                        for (uint32_t tile_row = 0; tile_row < rows; ++tile_row) {
+                            // a row of X: this island's K, its part's pages
+                            const uint32_t page = (
+                                (block_row + tile_row) * k_whole + mine.first + k_start
+                            );
+                            if (!x_here.holds(page, k_length)) {
+                                reader.gave_up(  // X is not split as W is
+                                    km::kStReader,
+                                    km::kGaveBadItem,
+                                    km::kWhereData,
+                                    km::slot(command),
+                                    command.sequence
+                                );
                                 return;
                             }
-                            const uint32_t at = get_write_ptr(kCbSent);
-                            for (uint32_t k = 0; inside && k < subblock_tiles; ++k) {
+                            const uint32_t index = x_here.index(page);
+                            const uint32_t at = (
+                                base + tile_row * k_block_tiles * kBf16Bytes
+                            );
+                            for (uint32_t k = 0; k < k_length; ++k) {
                                 noc_async_read_page(
-                                    first_page + tile + k, s_matrix, at + k * kBf16Bytes
+                                    index + k, x_matrix, at + k * kBf16Bytes
                                 );
                             }
-                            if (!flushed(reader, km::kStReader, km::kFlushReads)) {
-                                return;
-                            }
-                            cb_push_back(kCbSent, subblock_tiles);
                         }
+                        if (!flushed(reader, km::kStReader, km::kFlushReads)) {
+                            return;
+                        }
+                        LINEAR_ACCOUNT_DO(lap(account[kAcXRead - kAcXFree], since));
+                        if (!broadcast.cast(step)) {
+                            return;
+                        }
+                        LINEAR_ACCOUNT_DO(lap(account[kAcXCast - kAcXFree], since));
                     }
                 }
             }
             if (!broadcast.finish()) {
                 return;
             }
+            // LINEAR_ADD (two islands, Y a copy): told both partials are in S, each
+            // subblock of this island's then of the other's to compute
+            if (LINEAR_ADDS && islands == 2 && copied(y)) {
+                if (!km::port_wait(reader, command, kPortGo, 1)) {
+                    return;
+                }
+                const uint32_t sets[2] = {
+                    add_set(parity, here), add_set(parity, island_at(here, 1))
+                };
+                for (
+                    uint32_t tile = 0; tile < blocks_high * blocks_wide * block_tiles;
+                    tile += subblock_tiles
+                ) {
+                    for (const uint32_t set : sets) {
+                        if (!reader.reserve(kCbSent, subblock_tiles)) {
+                            return;
+                        }
+                        const uint32_t at = get_write_ptr(kCbSent);
+                        for (uint32_t k = 0; k < subblock_tiles; ++k) {
+                            noc_async_read_page(
+                                sent.page(set, tile + k), s_matrix, at + k * kBf16Bytes
+                            );
+                        }
+                        if (!flushed(reader, km::kStReader, km::kFlushReads)) {
+                            return;
+                        }
+                        cb_push_back(kCbSent, subblock_tiles);
+                    }
+                }
+            }
         }
-        if (!waited) {
-            km::port_wait(reader, command, kPortGo, 1);
-        }
+        parity ^= 1u;
+        LINEAR_ACCOUNT_DO({
+            account[kAcReaderEnd - kAcXFree] = km::wall();
+            volatile tt_l1_ptr uint32_t* stamps = km::l1(get_write_ptr(kCbStamp));
+            for (uint32_t word = kAcXFree; word <= kAcReaderEnd; ++word) {
+                stamps[word] = account[word - kAcXFree];
+            }
+        });
     });
 }
+#endif  // LINEAR_SPLIT

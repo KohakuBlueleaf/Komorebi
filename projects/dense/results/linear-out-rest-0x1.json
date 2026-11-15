@@ -1,0 +1,5516 @@
+{
+ "products": [
+  {
+   "m": 32,
+   "k": 17408,
+   "n": 5120,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.418,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      80
+     ],
+     [
+      80,
+      80
+     ]
+    ],
+    "y": [
+     [
+      0,
+      80
+     ],
+     [
+      80,
+      80
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 1,
+     "kt": 544,
+     "nt": 80,
+     "s": 13,
+     "oh": 1,
+     "ow": 9,
+     "kc": 1,
+     "sh": 1,
+     "sw": 3,
+     "l1": 538624,
+     "form": "split",
+     "cores": 117
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42640,
+      "TRISC0": 13128,
+      "TRISC1": 8364,
+      "TRISC2": 8584
+     },
+     "total": 105680
+    },
+    "pieces": [],
+    "exchange": false,
+    "l1_budget": 1340592,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      227.38,
+      228.34,
+      227.38
+     ],
+     "reps": 2199,
+     "seconds": 0.509,
+     "microseconds_per_call": 231.402,
+     "part_microseconds_median": [
+      226.32,
+      227.06
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1343,
+       1349.1,
+       1350
+      ],
+      "1": [
+       1350,
+       1350.0,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 551.1,
+      "parts_us": [
+       227.2,
+       227.4
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 303338,
+         "slowest": {
+          "move_a": 271236,
+          "move_b": 278155,
+          "reduce": 23468,
+          "y_write": 1677,
+          "reader_all": 27770
+         },
+         "most": {
+          "move_a": 286876,
+          "move_b": 291415,
+          "reduce": 118612,
+          "y_write": 1745,
+          "reader_all": 131835
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 303454,
+         "span": 303454,
+         "start_spread": 263,
+         "end_spread": 302122
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 224.8,
+         "span": 224.8,
+         "start_spread": 0.2,
+         "end_spread": 223.8
+        }
+       },
+       {
+        "account": {
+         "core": 0,
+         "span": 303638,
+         "slowest": {
+          "move_a": 269917,
+          "move_b": 277277,
+          "reduce": 24314,
+          "y_write": 2002,
+          "reader_all": 29056
+         },
+         "most": {
+          "move_a": 284485,
+          "move_b": 289560,
+          "reduce": 107133,
+          "y_write": 2015,
+          "reader_all": 121278
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 303779,
+         "span": 303779,
+         "start_spread": 300,
+         "end_spread": 302390
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 225.0,
+         "span": 225.0,
+         "start_spread": 0.2,
+         "end_spread": 224.0
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 513.9,
+      "parts_us": [
+       226.1,
+       228.3
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 301928,
+         "slowest": {
+          "move_a": 267298,
+          "move_b": 275264,
+          "reduce": 25022,
+          "y_write": 1609,
+          "reader_all": 30488
+         },
+         "most": {
+          "move_a": 284519,
+          "move_b": 288776,
+          "reduce": 118128,
+          "y_write": 1699,
+          "reader_all": 132051
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 302106,
+         "span": 302106,
+         "start_spread": 265,
+         "end_spread": 300923
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 223.8,
+         "span": 223.8,
+         "start_spread": 0.2,
+         "end_spread": 222.9
+        }
+       },
+       {
+        "account": {
+         "core": 0,
+         "span": 304846,
+         "slowest": {
+          "move_a": 269764,
+          "move_b": 278233,
+          "reduce": 24658,
+          "y_write": 1940,
+          "reader_all": 30605
+         },
+         "most": {
+          "move_a": 286955,
+          "move_b": 291380,
+          "reduce": 108587,
+          "y_write": 1960,
+          "reader_all": 122561
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 305068,
+         "span": 305068,
+         "start_spread": 264,
+         "end_spread": 303928
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 226.0,
+         "span": 226.0,
+         "start_spread": 0.2,
+         "end_spread": 225.1
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 502.3,
+      "parts_us": [
+       225.7,
+       227.4
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 301501,
+         "slowest": {
+          "move_a": 270904,
+          "move_b": 276570,
+          "reduce": 23274,
+          "y_write": 1623,
+          "reader_all": 26490
+         },
+         "most": {
+          "move_a": 284437,
+          "move_b": 288919,
+          "reduce": 118673,
+          "y_write": 1706,
+          "reader_all": 130945
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 301730,
+         "span": 301730,
+         "start_spread": 291,
+         "end_spread": 300484
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 223.5,
+         "span": 223.5,
+         "start_spread": 0.2,
+         "end_spread": 222.6
+        }
+       },
+       {
+        "account": {
+         "core": 0,
+         "span": 303782,
+         "slowest": {
+          "move_a": 270650,
+          "move_b": 278993,
+          "reduce": 22814,
+          "y_write": 1942,
+          "reader_all": 28650
+         },
+         "most": {
+          "move_a": 285736,
+          "move_b": 290291,
+          "reduce": 107311,
+          "y_write": 1951,
+          "reader_all": 122624
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 303998,
+         "span": 303998,
+         "start_spread": 283,
+         "end_spread": 302862
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 225.2,
+         "span": 225.2,
+         "start_spread": 0.2,
+         "end_spread": 224.3
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 0,
+       "span": 303552,
+       "slowest": {
+        "move_a": 267580,
+        "move_b": 275292,
+        "reduce": 26645,
+        "y_write": 1582,
+        "reader_all": 31881
+       },
+       "most": {
+        "move_a": 286055,
+        "move_b": 290444,
+        "reduce": 107404,
+        "y_write": 1693,
+        "reader_all": 121527
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 303669,
+       "span": 303669,
+       "start_spread": 264,
+       "end_spread": 302476
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 224.9,
+       "span": 224.9,
+       "start_spread": 0.2,
+       "end_spread": 224.1
+      }
+     },
+     {
+      "account": {
+       "core": 0,
+       "span": 304127,
+       "slowest": {
+        "move_a": 268976,
+        "move_b": 276455,
+        "reduce": 25691,
+        "y_write": 1949,
+        "reader_all": 30697
+       },
+       "most": {
+        "move_a": 285911,
+        "move_b": 290734,
+        "reduce": 109723,
+        "y_write": 1971,
+        "reader_all": 123675
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 304327,
+       "span": 304327,
+       "start_spread": 269,
+       "end_spread": 303078
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 225.4,
+       "span": 225.4,
+       "start_spread": 0.2,
+       "end_spread": 224.5
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.0054125589370493,
+     "rms_rel": 0.003972502513651292,
+     "rows": 32,
+     "ok": true,
+     "readback_s": 0.108
+    },
+    "tflops": 24.65,
+    "ok": true
+   },
+   "ok": true
+  },
+  {
+   "m": 32,
+   "k": 15360,
+   "n": 3840,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.282,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      60
+     ],
+     [
+      60,
+      60
+     ]
+    ],
+    "y": [
+     [
+      0,
+      60
+     ],
+     [
+      60,
+      60
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 1,
+     "kt": 480,
+     "nt": 60,
+     "s": 23,
+     "oh": 1,
+     "ow": 12,
+     "kc": 1,
+     "sh": 1,
+     "sw": 4,
+     "l1": 1208320,
+     "form": "split",
+     "cores": 115
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42640,
+      "TRISC0": 13128,
+      "TRISC1": 8364,
+      "TRISC2": 8584
+     },
+     "total": 105680
+    },
+    "pieces": [],
+    "exchange": false,
+    "l1_budget": 1340592,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      152.5,
+      152.38,
+      151.34
+     ],
+     "reps": 3282,
+     "seconds": 0.512,
+     "microseconds_per_call": 156.042,
+     "part_microseconds_median": [
+      151.06,
+      151.76
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1350,
+       1350.0,
+       1350
+      ],
+      "1": [
+       1350,
+       1350.0,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 443.7,
+      "parts_us": [
+       148.9,
+       152.5
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 197655,
+         "slowest": {
+          "move_a": 172625,
+          "move_b": 167148,
+          "reduce": 28386,
+          "y_write": 2088,
+          "reader_all": 19651
+         },
+         "most": {
+          "move_a": 177996,
+          "move_b": 177219,
+          "reduce": 78064,
+          "y_write": 2175,
+          "reader_all": 80579
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 197850,
+         "span": 197850,
+         "start_spread": 314,
+         "end_spread": 196620
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 146.6,
+         "span": 146.6,
+         "start_spread": 0.2,
+         "end_spread": 145.6
+        }
+       },
+       {
+        "account": {
+         "core": 0,
+         "span": 202436,
+         "slowest": {
+          "move_a": 172569,
+          "move_b": 173874,
+          "reduce": 26030,
+          "y_write": 2517,
+          "reader_all": 24082
+         },
+         "most": {
+          "move_a": 179133,
+          "move_b": 181109,
+          "reduce": 71600,
+          "y_write": 2541,
+          "reader_all": 78483
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 202673,
+         "span": 202673,
+         "start_spread": 255,
+         "end_spread": 201428
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 150.1,
+         "span": 150.1,
+         "start_spread": 0.2,
+         "end_spread": 149.2
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 424.8,
+      "parts_us": [
+       148.7,
+       152.4
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 197557,
+         "slowest": {
+          "move_a": 172652,
+          "move_b": 174417,
+          "reduce": 21053,
+          "y_write": 2055,
+          "reader_all": 19595
+         },
+         "most": {
+          "move_a": 179122,
+          "move_b": 180912,
+          "reduce": 56820,
+          "y_write": 2162,
+          "reader_all": 74900
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 197744,
+         "span": 197744,
+         "start_spread": 356,
+         "end_spread": 196565
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 146.5,
+         "span": 146.5,
+         "start_spread": 0.3,
+         "end_spread": 145.6
+        }
+       },
+       {
+        "account": {
+         "core": 0,
+         "span": 202524,
+         "slowest": {
+          "move_a": 173322,
+          "move_b": 173935,
+          "reduce": 26053,
+          "y_write": 2503,
+          "reader_all": 23355
+         },
+         "most": {
+          "move_a": 178789,
+          "move_b": 181284,
+          "reduce": 73282,
+          "y_write": 2529,
+          "reader_all": 83885
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 202730,
+         "span": 202730,
+         "start_spread": 245,
+         "end_spread": 201588
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 150.2,
+         "span": 150.2,
+         "start_spread": 0.2,
+         "end_spread": 149.3
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 417.9,
+      "parts_us": [
+       151.1,
+       151.3
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 200681,
+         "slowest": {
+          "move_a": 172860,
+          "move_b": 169659,
+          "reduce": 28912,
+          "y_write": 2077,
+          "reader_all": 22499
+         },
+         "most": {
+          "move_a": 178793,
+          "move_b": 180364,
+          "reduce": 57917,
+          "y_write": 2174,
+          "reader_all": 71774
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 200863,
+         "span": 200863,
+         "start_spread": 297,
+         "end_spread": 199763
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 148.8,
+         "span": 148.8,
+         "start_spread": 0.2,
+         "end_spread": 148.0
+        }
+       },
+       {
+        "account": {
+         "core": 0,
+         "span": 200941,
+         "slowest": {
+          "move_a": 174223,
+          "move_b": 168637,
+          "reduce": 29780,
+          "y_write": 2496,
+          "reader_all": 20877
+         },
+         "most": {
+          "move_a": 180349,
+          "move_b": 180540,
+          "reduce": 75099,
+          "y_write": 2513,
+          "reader_all": 81538
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 201117,
+         "span": 201117,
+         "start_spread": 292,
+         "end_spread": 199916
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 149.0,
+         "span": 149.0,
+         "start_spread": 0.2,
+         "end_spread": 148.1
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 0,
+       "span": 201867,
+       "slowest": {
+        "move_a": 170953,
+        "move_b": 174352,
+        "reduce": 25431,
+        "y_write": 2051,
+        "reader_all": 25554
+       },
+       "most": {
+        "move_a": 179497,
+        "move_b": 181828,
+        "reduce": 60770,
+        "y_write": 2152,
+        "reader_all": 76792
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 202010,
+       "span": 202010,
+       "start_spread": 248,
+       "end_spread": 200890
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 149.6,
+       "span": 149.6,
+       "start_spread": 0.2,
+       "end_spread": 148.8
+      }
+     },
+     {
+      "account": {
+       "core": 0,
+       "span": 201637,
+       "slowest": {
+        "move_a": 173647,
+        "move_b": 175480,
+        "reduce": 23625,
+        "y_write": 2517,
+        "reader_all": 22229
+       },
+       "most": {
+        "move_a": 178719,
+        "move_b": 180704,
+        "reduce": 66636,
+        "y_write": 2517,
+        "reader_all": 80342
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 201843,
+       "span": 201843,
+       "start_spread": 281,
+       "end_spread": 200691
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 149.5,
+       "span": 149.5,
+       "start_spread": 0.2,
+       "end_spread": 148.7
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.005585278351407166,
+     "rms_rel": 0.0039671188219813445,
+     "rows": 32,
+     "ok": true,
+     "readback_s": 0.076
+    },
+    "tflops": 24.19,
+    "ok": true
+   },
+   "ok": true
+  },
+  {
+   "m": 32,
+   "k": 9216,
+   "n": 2560,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.125,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      40
+     ],
+     [
+      40,
+      40
+     ]
+    ],
+    "y": [
+     [
+      0,
+      40
+     ],
+     [
+      40,
+      40
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 1,
+     "kt": 288,
+     "nt": 40,
+     "s": 23,
+     "oh": 1,
+     "ow": 8,
+     "kc": 2,
+     "sh": 1,
+     "sw": 4,
+     "l1": 843776,
+     "form": "split",
+     "cores": 115
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42640,
+      "TRISC0": 13128,
+      "TRISC1": 8364,
+      "TRISC2": 8584
+     },
+     "total": 105680
+    },
+    "pieces": [],
+    "exchange": false,
+    "l1_budget": 1340592,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      70.68,
+      71.0,
+      71.92
+     ],
+     "reps": 7043,
+     "seconds": 0.533,
+     "microseconds_per_call": 75.64,
+     "part_microseconds_median": [
+      70.72,
+      71.2
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1350,
+       1350.0,
+       1350
+      ],
+      "1": [
+       1350,
+       1350.0,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 362.0,
+      "parts_us": [
+       70.3,
+       70.7
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 91650,
+         "slowest": {
+          "move_a": 74119,
+          "move_b": 68530,
+          "reduce": 21588,
+          "y_write": 1496,
+          "reader_all": 13807
+         },
+         "most": {
+          "move_a": 77122,
+          "move_b": 72387,
+          "reduce": 43965,
+          "y_write": 1545,
+          "reader_all": 53619
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 91867,
+         "span": 91867,
+         "start_spread": 290,
+         "end_spread": 90660
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 68.0,
+         "span": 68.0,
+         "start_spread": 0.2,
+         "end_spread": 67.2
+        }
+       },
+       {
+        "account": {
+         "core": 0,
+         "span": 92212,
+         "slowest": {
+          "move_a": 75307,
+          "move_b": 67689,
+          "reduce": 22722,
+          "y_write": 1768,
+          "reader_all": 12910
+         },
+         "most": {
+          "move_a": 76420,
+          "move_b": 73921,
+          "reduce": 46328,
+          "y_write": 1768,
+          "reader_all": 57168
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 92424,
+         "span": 92424,
+         "start_spread": 283,
+         "end_spread": 91197
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 68.5,
+         "span": 68.5,
+         "start_spread": 0.2,
+         "end_spread": 67.6
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 344.9,
+      "parts_us": [
+       70.0,
+       71.0
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 91476,
+         "slowest": {
+          "move_a": 73324,
+          "move_b": 70260,
+          "reduce": 19717,
+          "y_write": 1466,
+          "reader_all": 14389
+         },
+         "most": {
+          "move_a": 76124,
+          "move_b": 72944,
+          "reduce": 42272,
+          "y_write": 1531,
+          "reader_all": 55255
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 91619,
+         "span": 91619,
+         "start_spread": 286,
+         "end_spread": 90465
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 67.9,
+         "span": 67.9,
+         "start_spread": 0.2,
+         "end_spread": 67.0
+        }
+       },
+       {
+        "account": {
+         "core": 23,
+         "span": 92546,
+         "slowest": {
+          "move_a": 74238,
+          "move_b": 72963,
+          "reduce": 17798,
+          "y_write": 1752,
+          "reader_all": 14263
+         },
+         "most": {
+          "move_a": 77593,
+          "move_b": 74462,
+          "reduce": 46108,
+          "y_write": 1769,
+          "reader_all": 57512
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 92647,
+         "span": 92647,
+         "start_spread": 305,
+         "end_spread": 91427
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 68.6,
+         "span": 68.6,
+         "start_spread": 0.2,
+         "end_spread": 67.7
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 343.0,
+      "parts_us": [
+       70.6,
+       71.9
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 0,
+         "span": 92112,
+         "slowest": {
+          "move_a": 74325,
+          "move_b": 64253,
+          "reduce": 26359,
+          "y_write": 1469,
+          "reader_all": 14008
+         },
+         "most": {
+          "move_a": 77098,
+          "move_b": 73270,
+          "reduce": 44781,
+          "y_write": 1538,
+          "reader_all": 52632
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 92323,
+         "span": 92323,
+         "start_spread": 241,
+         "end_spread": 91189
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 68.4,
+         "span": 68.4,
+         "start_spread": 0.2,
+         "end_spread": 67.5
+        }
+       },
+       {
+        "account": {
+         "core": 0,
+         "span": 93811,
+         "slowest": {
+          "move_a": 73061,
+          "move_b": 63901,
+          "reduce": 28113,
+          "y_write": 1766,
+          "reader_all": 16737
+         },
+         "most": {
+          "move_a": 77263,
+          "move_b": 72318,
+          "reduce": 47378,
+          "y_write": 1779,
+          "reader_all": 53721
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 93990,
+         "span": 93990,
+         "start_spread": 241,
+         "end_spread": 92854
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 69.6,
+         "span": 69.6,
+         "start_spread": 0.2,
+         "end_spread": 68.8
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 0,
+       "span": 94067,
+       "slowest": {
+        "move_a": 74133,
+        "move_b": 64562,
+        "reduce": 28024,
+        "y_write": 1449,
+        "reader_all": 16195
+       },
+       "most": {
+        "move_a": 76946,
+        "move_b": 72069,
+        "reduce": 45318,
+        "y_write": 1515,
+        "reader_all": 57695
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 94255,
+       "span": 94255,
+       "start_spread": 246,
+       "end_spread": 93117
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 69.8,
+       "span": 69.8,
+       "start_spread": 0.2,
+       "end_spread": 69.0
+      }
+     },
+     {
+      "account": {
+       "core": 0,
+       "span": 91900,
+       "slowest": {
+        "move_a": 72874,
+        "move_b": 67467,
+        "reduce": 22633,
+        "y_write": 1768,
+        "reader_all": 14976
+       },
+       "most": {
+        "move_a": 76414,
+        "move_b": 72709,
+        "reduce": 44796,
+        "y_write": 1771,
+        "reader_all": 53664
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 92107,
+       "span": 92107,
+       "start_spread": 250,
+       "end_spread": 91005
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 68.2,
+       "span": 68.2,
+       "start_spread": 0.2,
+       "end_spread": 67.4
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.006697550604608023,
+     "rms_rel": 0.0039692793322186415,
+     "rows": 32,
+     "ok": true,
+     "readback_s": 0.036
+    },
+    "tflops": 19.96,
+    "ok": true
+   },
+   "ok": true
+  },
+  {
+   "m": 1024,
+   "k": 17408,
+   "n": 5120,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.475,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      80
+     ],
+     [
+      80,
+      80
+     ]
+    ],
+    "y": [
+     [
+      0,
+      80
+     ],
+     [
+      80,
+      80
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 32,
+     "kt": 544,
+     "nt": 70,
+     "rows": 8,
+     "cols": 10,
+     "pcm": 4,
+     "pcn": 7,
+     "bm": 4,
+     "bn": 7,
+     "kb": 16,
+     "sh": 4,
+     "sw": 1,
+     "wa": 2,
+     "ww": 2,
+     "layout": "2d",
+     "l1": 852992,
+     "form": "grid",
+     "nk": 34,
+     "nbh": 1,
+     "nbw": 1,
+     "rect": [
+      0,
+      0,
+      10,
+      8
+     ]
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42448,
+      "TRISC0": 11960,
+      "TRISC1": 5684,
+      "TRISC2": 8924
+     },
+     "total": 96240
+    },
+    "pieces": [
+     {
+      "rect": [
+       0,
+       0,
+       10,
+       8
+      ],
+      "m0": 0,
+      "n0": 0,
+      "bands": [
+       4,
+       7
+      ],
+      "blocks": [
+       1,
+       1
+      ],
+      "cores": 80
+     },
+     {
+      "rect": [
+       10,
+       0,
+       2,
+       8
+      ],
+      "m0": 0,
+      "n0": 70,
+      "bands": [
+       4,
+       7
+      ],
+      "blocks": [
+       1,
+       1
+      ],
+      "cores": 16
+     }
+    ],
+    "exchange": false,
+    "l1_budget": 1332400,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      1008.62,
+      1005.6,
+      1006.22
+     ],
+     "reps": 497,
+     "seconds": 0.502,
+     "microseconds_per_call": 1010.358,
+     "part_microseconds_median": [
+      1005.0,
+      1004.9
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1350,
+       1350.0,
+       1350
+      ],
+      "1": [
+       1343,
+       1348.5,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 1289.0,
+      "parts_us": [
+       1008.6,
+       1004.0
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 94,
+         "span": 1357976,
+         "slowest": {
+          "w_free": 7939,
+          "w_read": 1088161,
+          "w_cast": 219176,
+          "w_tiles": 3808,
+          "y_wait": 17188,
+          "y_write": 18339,
+          "x_free": 812972,
+          "x_read": 344153,
+          "x_cast": 120237,
+          "input_wait": 3281700680,
+          "math": 1567,
+          "pack": 543446,
+          "products": 15232,
+          "reader_end": 1335562,
+          "compute_start": 187,
+          "compute_end": 1353980
+         },
+         "most": {
+          "w_free": 233513,
+          "w_read": 1096059,
+          "w_cast": 1316144,
+          "w_tiles": 3808,
+          "y_wait": 53336,
+          "y_write": 20988,
+          "x_free": 3290514703,
+          "x_read": 3289639673,
+          "x_cast": 3300515267,
+          "input_wait": 3294689532,
+          "math": 3281893376,
+          "pack": 3287129382,
+          "products": 3295000022
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 1358082,
+         "span": 1358082,
+         "start_spread": 234,
+         "end_spread": 1357410
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1006.0,
+         "span": 1006.0,
+         "start_spread": 0.2,
+         "end_spread": 1005.5
+        }
+       },
+       {
+        "account": {
+         "core": 94,
+         "span": 1351451,
+         "slowest": {
+          "w_free": 8041,
+          "w_read": 1082911,
+          "w_cast": 217181,
+          "w_tiles": 3808,
+          "y_wait": 17179,
+          "y_write": 19584,
+          "x_free": 786435,
+          "x_read": 367650,
+          "x_cast": 115381,
+          "input_wait": 1127207684,
+          "math": 1568,
+          "pack": 544661,
+          "products": 15232,
+          "reader_end": 1328403,
+          "compute_start": 183,
+          "compute_end": 1348048
+         },
+         "most": {
+          "w_free": 240906,
+          "w_read": 1088919,
+          "w_cast": 1308969,
+          "w_tiles": 3808,
+          "y_wait": 55832,
+          "y_write": 19945,
+          "x_free": 3293852333,
+          "x_read": 3290435507,
+          "x_cast": 3282481356,
+          "input_wait": 3292072252,
+          "math": 3292729879,
+          "pack": 3285756988,
+          "products": 3281899296
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 1351616,
+         "span": 1351616,
+         "start_spread": 275,
+         "end_spread": 1350913
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1001.2,
+         "span": 1001.2,
+         "start_spread": 0.2,
+         "end_spread": 1000.7
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 1279.4,
+      "parts_us": [
+       1005.6,
+       1002.3
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 94,
+         "span": 1353886,
+         "slowest": {
+          "w_free": 7877,
+          "w_read": 1079826,
+          "w_cast": 220647,
+          "w_tiles": 3808,
+          "y_wait": 17195,
+          "y_write": 22099,
+          "x_free": 786815,
+          "x_read": 367875,
+          "x_cast": 113824,
+          "input_wait": 3281700680,
+          "math": 1583,
+          "pack": 547183,
+          "products": 15232,
+          "reader_end": 1328373,
+          "compute_start": 133,
+          "compute_end": 1350546
+         },
+         "most": {
+          "w_free": 241001,
+          "w_read": 1088856,
+          "w_cast": 1309059,
+          "w_tiles": 3808,
+          "y_wait": 55982,
+          "y_write": 22442,
+          "x_free": 786815,
+          "x_read": 667262,
+          "x_cast": 1278340,
+          "input_wait": 3294689532,
+          "math": 3281893376,
+          "pack": 3287129382,
+          "products": 3295000022
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 1354020,
+         "span": 1354020,
+         "start_spread": 220,
+         "end_spread": 1353435
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1003.0,
+         "span": 1003.0,
+         "start_spread": 0.2,
+         "end_spread": 1002.5
+        }
+       },
+       {
+        "account": {
+         "core": 93,
+         "span": 1349445,
+         "slowest": {
+          "w_free": 7877,
+          "w_read": 1090166,
+          "w_cast": 212224,
+          "w_tiles": 3808,
+          "y_wait": 17170,
+          "y_write": 15757,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 1268001,
+          "input_wait": 1125304232,
+          "math": 1578,
+          "pack": 540915,
+          "products": 15232,
+          "reader_end": 1330304,
+          "compute_start": 107,
+          "compute_end": 1346100
+         },
+         "most": {
+          "w_free": 281004,
+          "w_read": 1091613,
+          "w_cast": 1311150,
+          "w_tiles": 3808,
+          "y_wait": 51019,
+          "y_write": 21933,
+          "x_free": 785768,
+          "x_read": 696031,
+          "x_cast": 1280679,
+          "input_wait": 3292072252,
+          "math": 3292729879,
+          "pack": 3285756988,
+          "products": 3281899296
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 1349532,
+         "span": 1349532,
+         "start_spread": 227,
+         "end_spread": 1348894
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 999.7,
+         "span": 999.7,
+         "start_spread": 0.2,
+         "end_spread": 999.2
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 1278.1,
+      "parts_us": [
+       1006.2,
+       1000.5
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 94,
+         "span": 1354874,
+         "slowest": {
+          "w_free": 7916,
+          "w_read": 1083947,
+          "w_cast": 218898,
+          "w_tiles": 3808,
+          "y_wait": 17227,
+          "y_write": 20758,
+          "x_free": 788972,
+          "x_read": 366420,
+          "x_cast": 115138,
+          "input_wait": 3281700680,
+          "math": 1552,
+          "pack": 545890,
+          "products": 15232,
+          "reader_end": 1330779,
+          "compute_start": 129,
+          "compute_end": 1351644
+         },
+         "most": {
+          "w_free": 236996,
+          "w_read": 1091167,
+          "w_cast": 1311479,
+          "w_tiles": 3808,
+          "y_wait": 54884,
+          "y_write": 21056,
+          "x_free": 789598,
+          "x_read": 654373,
+          "x_cast": 1279116,
+          "input_wait": 3294689532,
+          "math": 3281893376,
+          "pack": 3287129382,
+          "products": 3295000022
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 1355008,
+         "span": 1355008,
+         "start_spread": 258,
+         "end_spread": 1354400
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1003.7,
+         "span": 1003.7,
+         "start_spread": 0.2,
+         "end_spread": 1003.3
+        }
+       },
+       {
+        "account": {
+         "core": 94,
+         "span": 1347102,
+         "slowest": {
+          "w_free": 7869,
+          "w_read": 1076149,
+          "w_cast": 219346,
+          "w_tiles": 3808,
+          "y_wait": 17281,
+          "y_write": 20266,
+          "x_free": 777834,
+          "x_read": 368280,
+          "x_cast": 117796,
+          "input_wait": 1127207684,
+          "math": 1574,
+          "pack": 545346,
+          "products": 15232,
+          "reader_end": 1323357,
+          "compute_start": 121,
+          "compute_end": 1343743
+         },
+         "most": {
+          "w_free": 249355,
+          "w_read": 1083719,
+          "w_cast": 1304125,
+          "w_tiles": 3808,
+          "y_wait": 54325,
+          "y_write": 20708,
+          "x_free": 787769,
+          "x_read": 657990,
+          "x_cast": 1272186,
+          "input_wait": 3292072252,
+          "math": 3292729879,
+          "pack": 3285756988,
+          "products": 3281899296
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 1347269,
+         "span": 1347269,
+         "start_spread": 244,
+         "end_spread": 1346683
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 998.0,
+         "span": 998.0,
+         "start_spread": 0.2,
+         "end_spread": 997.5
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 94,
+       "span": 1354474,
+       "slowest": {
+        "w_free": 7880,
+        "w_read": 1085221,
+        "w_cast": 218756,
+        "w_tiles": 3808,
+        "y_wait": 17201,
+        "y_write": 19892,
+        "x_free": 798505,
+        "x_read": 359706,
+        "x_cast": 113334,
+        "input_wait": 3281700680,
+        "math": 1542,
+        "pack": 545004,
+        "products": 15232,
+        "reader_end": 1331813,
+        "compute_start": 138,
+        "compute_end": 1351824
+       },
+       "most": {
+        "w_free": 239698,
+        "w_read": 1091638,
+        "w_cast": 1312508,
+        "w_tiles": 3808,
+        "y_wait": 55193,
+        "y_write": 19892,
+        "x_free": 798505,
+        "x_read": 646138,
+        "x_cast": 1279567,
+        "input_wait": 3294689532,
+        "math": 3281893376,
+        "pack": 3287129382,
+        "products": 3295000022
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 1354671,
+       "span": 1354671,
+       "start_spread": 283,
+       "end_spread": 1354051
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 1003.5,
+       "span": 1003.5,
+       "start_spread": 0.2,
+       "end_spread": 1003.0
+      }
+     },
+     {
+      "account": {
+       "core": 94,
+       "span": 1352261,
+       "slowest": {
+        "w_free": 7874,
+        "w_read": 1084298,
+        "w_cast": 218792,
+        "w_tiles": 3808,
+        "y_wait": 17204,
+        "y_write": 18087,
+        "x_free": 788907,
+        "x_read": 366813,
+        "x_cast": 114426,
+        "input_wait": 1127207684,
+        "math": 1554,
+        "pack": 543199,
+        "products": 15232,
+        "reader_end": 1330926,
+        "compute_start": 113,
+        "compute_end": 1349108
+       },
+       "most": {
+        "w_free": 246854,
+        "w_read": 1089732,
+        "w_cast": 1311625,
+        "w_tiles": 3808,
+        "y_wait": 55727,
+        "y_write": 21596,
+        "x_free": 794729,
+        "x_read": 650004,
+        "x_cast": 1278927,
+        "input_wait": 3292072252,
+        "math": 3292729879,
+        "pack": 3285756988,
+        "products": 3281899296
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 1352369,
+       "span": 1352369,
+       "start_spread": 262,
+       "end_spread": 1351754
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 1001.8,
+       "span": 1001.8,
+       "start_spread": 0.2,
+       "end_spread": 1001.3
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.005124323697577829,
+     "rms_rel": 0.003966559693275668,
+     "rows": 256,
+     "ok": true,
+     "readback_s": 0.217
+    },
+    "tflops": 180.66,
+    "ok": true
+   },
+   "ok": true
+  },
+  {
+   "m": 1024,
+   "k": 3840,
+   "n": 15360,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.286,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      240
+     ],
+     [
+      240,
+      240
+     ]
+    ],
+    "y": [
+     [
+      0,
+      240
+     ],
+     [
+      240,
+      240
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 32,
+     "kt": 120,
+     "nt": 200,
+     "rows": 7,
+     "cols": 10,
+     "pcm": 5,
+     "pcn": 20,
+     "bm": 5,
+     "bn": 20,
+     "kb": 8,
+     "sh": 1,
+     "sw": 4,
+     "wa": 2,
+     "ww": 2,
+     "layout": "2d",
+     "l1": 1246208,
+     "form": "grid",
+     "nk": 15,
+     "nbh": 1,
+     "nbw": 1,
+     "rect": [
+      0,
+      0,
+      10,
+      7
+     ]
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42448,
+      "TRISC0": 11960,
+      "TRISC1": 5684,
+      "TRISC2": 8924
+     },
+     "total": 96240
+    },
+    "pieces": [
+     {
+      "rect": [
+       0,
+       0,
+       10,
+       7
+      ],
+      "m0": 0,
+      "n0": 0,
+      "bands": [
+       5,
+       20
+      ],
+      "blocks": [
+       1,
+       1
+      ],
+      "cores": 70
+     },
+     {
+      "rect": [
+       10,
+       0,
+       2,
+       7
+      ],
+      "m0": 0,
+      "n0": 200,
+      "bands": [
+       5,
+       20
+      ],
+      "blocks": [
+       1,
+       1
+      ],
+      "cores": 14
+     }
+    ],
+    "exchange": false,
+    "l1_budget": 1332400,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      667.72,
+      668.68,
+      671.62
+     ],
+     "reps": 748,
+     "seconds": 0.497,
+     "microseconds_per_call": 664.934,
+     "part_microseconds_median": [
+      662.76,
+      664.36
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1343,
+       1348.7,
+       1350
+      ],
+      "1": [
+       1343,
+       1349.4,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 945.8,
+      "parts_us": [
+       643.6,
+       667.7
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 77,
+         "span": 865145,
+         "slowest": {
+          "w_free": 3517,
+          "w_read": 673022,
+          "w_cast": 122660,
+          "w_tiles": 2400,
+          "y_wait": 34676,
+          "y_write": 22375,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 762449,
+          "input_wait": 0,
+          "math": 2721,
+          "pack": 435125,
+          "products": 12000,
+          "reader_end": 832987,
+          "compute_start": 166,
+          "compute_end": 861298
+         },
+         "most": {
+          "w_free": 44414,
+          "w_read": 673022,
+          "w_cast": 799773,
+          "w_tiles": 2400,
+          "y_wait": 71149,
+          "y_write": 44323,
+          "x_free": 3231711232,
+          "x_read": 1088421888,
+          "x_cast": 3231711232,
+          "input_wait": 3245342720,
+          "math": 2781,
+          "pack": 455141,
+          "products": 12000
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 865330,
+         "span": 865330,
+         "start_spread": 259,
+         "end_spread": 864685
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 641.0,
+         "span": 641.0,
+         "start_spread": 0.2,
+         "end_spread": 640.5
+        }
+       },
+       {
+        "account": {
+         "core": 81,
+         "span": 897783,
+         "slowest": {
+          "w_free": 3518,
+          "w_read": 685876,
+          "w_cast": 121875,
+          "w_tiles": 2400,
+          "y_wait": 32647,
+          "y_write": 45050,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 751543,
+          "input_wait": 0,
+          "math": 2681,
+          "pack": 458026,
+          "products": 12000,
+          "reader_end": 843030,
+          "compute_start": 161,
+          "compute_end": 894014
+         },
+         "most": {
+          "w_free": 109769,
+          "w_read": 685876,
+          "w_cast": 811841,
+          "w_tiles": 2400,
+          "y_wait": 68866,
+          "y_write": 49360,
+          "x_free": 3231711232,
+          "x_read": 128673,
+          "x_cast": 3221225472,
+          "input_wait": 3245342720,
+          "math": 2757,
+          "pack": 460350,
+          "products": 12000
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 897930,
+         "span": 897930,
+         "start_spread": 292,
+         "end_spread": 897254
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 665.1,
+         "span": 665.1,
+         "start_spread": 0.2,
+         "end_spread": 664.6
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 924.5,
+      "parts_us": [
+       644.7,
+       668.7
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 76,
+         "span": 865113,
+         "slowest": {
+          "w_free": 3483,
+          "w_read": 668846,
+          "w_cast": 123560,
+          "w_tiles": 2400,
+          "y_wait": 42839,
+          "y_write": 17726,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 776586,
+          "input_wait": 0,
+          "math": 2682,
+          "pack": 430454,
+          "products": 12000,
+          "reader_end": 837756,
+          "compute_start": 152,
+          "compute_end": 861505
+         },
+         "most": {
+          "w_free": 77695,
+          "w_read": 668846,
+          "w_cast": 796352,
+          "w_tiles": 2400,
+          "y_wait": 72673,
+          "y_write": 37530,
+          "x_free": 617755,
+          "x_read": 111102,
+          "x_cast": 777150,
+          "input_wait": 3245342720,
+          "math": 2746,
+          "pack": 448193,
+          "products": 12000
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 865221,
+         "span": 865221,
+         "start_spread": 294,
+         "end_spread": 864666
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 640.9,
+         "span": 640.9,
+         "start_spread": 0.2,
+         "end_spread": 640.5
+        }
+       },
+       {
+        "account": {
+         "core": 81,
+         "span": 899118,
+         "slowest": {
+          "w_free": 3436,
+          "w_read": 688917,
+          "w_cast": 121822,
+          "w_tiles": 2400,
+          "y_wait": 32691,
+          "y_write": 43493,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 755695,
+          "input_wait": 0,
+          "math": 2722,
+          "pack": 456454,
+          "products": 12000,
+          "reader_end": 845941,
+          "compute_start": 83,
+          "compute_end": 895387
+         },
+         "most": {
+          "w_free": 119786,
+          "w_read": 688917,
+          "w_cast": 814771,
+          "w_tiles": 2400,
+          "y_wait": 73202,
+          "y_write": 47870,
+          "x_free": 640257,
+          "x_read": 130762,
+          "x_cast": 763806,
+          "input_wait": 3245342720,
+          "math": 2769,
+          "pack": 458872,
+          "products": 12000
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 899210,
+         "span": 899210,
+         "start_spread": 250,
+         "end_spread": 898647
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 666.1,
+         "span": 666.1,
+         "start_spread": 0.2,
+         "end_spread": 665.7
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 942.8,
+      "parts_us": [
+       671.6,
+       644.2
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 82,
+         "span": 903002,
+         "slowest": {
+          "w_free": 3445,
+          "w_read": 687021,
+          "w_cast": 121570,
+          "w_tiles": 2400,
+          "y_wait": 32712,
+          "y_write": 49818,
+          "x_free": 629143,
+          "x_read": 84865,
+          "x_cast": 43059,
+          "input_wait": 0,
+          "math": 2727,
+          "pack": 462836,
+          "products": 12000,
+          "reader_end": 843725,
+          "compute_start": 90,
+          "compute_end": 899570
+         },
+         "most": {
+          "w_free": 103229,
+          "w_read": 687877,
+          "w_cast": 813799,
+          "w_tiles": 2400,
+          "y_wait": 72275,
+          "y_write": 53611,
+          "x_free": 639363,
+          "x_read": 132115,
+          "x_cast": 759248,
+          "input_wait": 3245342720,
+          "math": 2799,
+          "pack": 464609,
+          "products": 12000
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 903154,
+         "span": 903154,
+         "start_spread": 256,
+         "end_spread": 902558
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 669.0,
+         "span": 669.0,
+         "start_spread": 0.2,
+         "end_spread": 668.6
+        }
+       },
+       {
+        "account": {
+         "core": 77,
+         "span": 862298,
+         "slowest": {
+          "w_free": 3444,
+          "w_read": 668841,
+          "w_cast": 122903,
+          "w_tiles": 2400,
+          "y_wait": 42690,
+          "y_write": 15290,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 770730,
+          "input_wait": 0,
+          "math": 2768,
+          "pack": 427991,
+          "products": 12000,
+          "reader_end": 836955,
+          "compute_start": 126,
+          "compute_end": 858108
+         },
+         "most": {
+          "w_free": 53830,
+          "w_read": 668841,
+          "w_cast": 795671,
+          "w_tiles": 2400,
+          "y_wait": 67712,
+          "y_write": 41523,
+          "x_free": 640257,
+          "x_read": 130762,
+          "x_cast": 771192,
+          "input_wait": 3245342720,
+          "math": 2768,
+          "pack": 452387,
+          "products": 12000
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 862415,
+         "span": 862415,
+         "start_spread": 239,
+         "end_spread": 861843
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 638.8,
+         "span": 638.8,
+         "start_spread": 0.2,
+         "end_spread": 638.4
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 77,
+       "span": 865936,
+       "slowest": {
+        "w_free": 3446,
+        "w_read": 671787,
+        "w_cast": 123207,
+        "w_tiles": 2400,
+        "y_wait": 42783,
+        "y_write": 15374,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 776415,
+        "input_wait": 0,
+        "math": 2745,
+        "pack": 428109,
+        "products": 12000,
+        "reader_end": 840268,
+        "compute_start": 147,
+        "compute_end": 861534
+       },
+       "most": {
+        "w_free": 41124,
+        "w_read": 671787,
+        "w_cast": 799026,
+        "w_tiles": 2400,
+        "y_wait": 75705,
+        "y_write": 38172,
+        "x_free": 632712,
+        "x_read": 120368,
+        "x_cast": 777077,
+        "input_wait": 3245342720,
+        "math": 2757,
+        "pack": 449174,
+        "products": 12000
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 866095,
+       "span": 866095,
+       "start_spread": 233,
+       "end_spread": 865498
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 641.6,
+       "span": 641.6,
+       "start_spread": 0.2,
+       "end_spread": 641.1
+      }
+     },
+     {
+      "account": {
+       "core": 77,
+       "span": 880424,
+       "slowest": {
+        "w_free": 3426,
+        "w_read": 690354,
+        "w_cast": 122941,
+        "w_tiles": 2400,
+        "y_wait": 39447,
+        "y_write": 14572,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 787759,
+        "input_wait": 0,
+        "math": 2734,
+        "pack": 427330,
+        "products": 12000,
+        "reader_end": 855103,
+        "compute_start": 128,
+        "compute_end": 875680
+       },
+       "most": {
+        "w_free": 88773,
+        "w_read": 690354,
+        "w_cast": 817248,
+        "w_tiles": 2400,
+        "y_wait": 70207,
+        "y_write": 34731,
+        "x_free": 650172,
+        "x_read": 130049,
+        "x_cast": 788108,
+        "input_wait": 3245342720,
+        "math": 2771,
+        "pack": 445418,
+        "products": 12000
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 880596,
+       "span": 880596,
+       "start_spread": 289,
+       "end_spread": 880007
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 652.3,
+       "span": 652.3,
+       "start_spread": 0.2,
+       "end_spread": 651.9
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.005445280068779518,
+     "rms_rel": 0.003963569364595773,
+     "rows": 256,
+     "ok": true,
+     "readback_s": 0.2
+    },
+    "tflops": 181.67,
+    "ok": true
+   },
+   "ok": true
+  },
+  {
+   "m": 1024,
+   "k": 15360,
+   "n": 3840,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.357,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      60
+     ],
+     [
+      60,
+      60
+     ]
+    ],
+    "y": [
+     [
+      0,
+      60
+     ],
+     [
+      60,
+      60
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 32,
+     "kt": 480,
+     "nt": 50,
+     "rows": 8,
+     "cols": 10,
+     "pcm": 4,
+     "pcn": 5,
+     "bm": 4,
+     "bn": 5,
+     "kb": 16,
+     "sh": 4,
+     "sw": 1,
+     "wa": 2,
+     "ww": 2,
+     "layout": "2d",
+     "l1": 689152,
+     "form": "grid",
+     "nk": 30,
+     "nbh": 1,
+     "nbw": 1,
+     "rect": [
+      0,
+      0,
+      10,
+      8
+     ]
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42448,
+      "TRISC0": 11960,
+      "TRISC1": 5684,
+      "TRISC2": 8924
+     },
+     "total": 96240
+    },
+    "pieces": [
+     {
+      "rect": [
+       0,
+       0,
+       10,
+       8
+      ],
+      "m0": 0,
+      "n0": 0,
+      "bands": [
+       4,
+       5
+      ],
+      "blocks": [
+       1,
+       1
+      ],
+      "cores": 80
+     },
+     {
+      "rect": [
+       10,
+       0,
+       2,
+       8
+      ],
+      "m0": 0,
+      "n0": 50,
+      "bands": [
+       4,
+       5
+      ],
+      "blocks": [
+       1,
+       1
+      ],
+      "cores": 16
+     }
+    ],
+    "exchange": false,
+    "l1_budget": 1332400,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      675.98,
+      671.3,
+      666.02
+     ],
+     "reps": 745,
+     "seconds": 0.502,
+     "microseconds_per_call": 674.244,
+     "part_microseconds_median": [
+      671.44,
+      670.98
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1343,
+       1347.1,
+       1350
+      ],
+      "1": [
+       1343,
+       1348.2,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 956.4,
+      "parts_us": [
+       676.0,
+       673.5
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 93,
+         "span": 908831,
+         "slowest": {
+          "w_free": 7002,
+          "w_read": 720185,
+          "w_cast": 150140,
+          "w_tiles": 2400,
+          "y_wait": 12580,
+          "y_write": 12968,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 857468,
+          "input_wait": 1056456480,
+          "math": 1100,
+          "pack": 344968,
+          "products": 9600,
+          "reader_end": 892816,
+          "compute_start": 181,
+          "compute_end": 905522
+         },
+         "most": {
+          "w_free": 227604,
+          "w_read": 728102,
+          "w_cast": 878353,
+          "w_tiles": 2400,
+          "y_wait": 45815,
+          "y_write": 15059,
+          "x_free": 3197550458,
+          "x_read": 3158654689,
+          "x_cast": 1063992919,
+          "input_wait": 3212492565,
+          "math": 1126,
+          "pack": 347100,
+          "products": 9600
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 908926,
+         "span": 908926,
+         "start_spread": 257,
+         "end_spread": 908272
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 673.3,
+         "span": 673.3,
+         "start_spread": 0.2,
+         "end_spread": 672.8
+        }
+       },
+       {
+        "account": {
+         "core": 93,
+         "span": 905518,
+         "slowest": {
+          "w_free": 6995,
+          "w_read": 721748,
+          "w_cast": 147450,
+          "w_tiles": 2400,
+          "y_wait": 12525,
+          "y_write": 11356,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 857291,
+          "input_wait": 1052851641,
+          "math": 1082,
+          "pack": 343388,
+          "products": 9600,
+          "reader_end": 891569,
+          "compute_start": 153,
+          "compute_end": 902742
+         },
+         "most": {
+          "w_free": 221953,
+          "w_read": 724861,
+          "w_cast": 876999,
+          "w_tiles": 2400,
+          "y_wait": 45857,
+          "y_write": 14915,
+          "x_free": 3196763174,
+          "x_read": 3212426694,
+          "x_cast": 1063173349,
+          "input_wait": 3212328719,
+          "math": 1132,
+          "pack": 346662,
+          "products": 9600
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 905581,
+         "span": 905581,
+         "start_spread": 290,
+         "end_spread": 904975
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 670.8,
+         "span": 670.8,
+         "start_spread": 0.2,
+         "end_spread": 670.4
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 941.4,
+      "parts_us": [
+       659.4,
+       671.3
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 94,
+         "span": 886458,
+         "slowest": {
+          "w_free": 6941,
+          "w_read": 699201,
+          "w_cast": 153094,
+          "w_tiles": 2400,
+          "y_wait": 12559,
+          "y_write": 9355,
+          "x_free": 413763,
+          "x_read": 337049,
+          "x_cast": 102169,
+          "input_wait": 3207937915,
+          "math": 1095,
+          "pack": 341377,
+          "products": 9600,
+          "reader_end": 874665,
+          "compute_start": 129,
+          "compute_end": 883868
+         },
+         "most": {
+          "w_free": 243355,
+          "w_read": 707592,
+          "w_cast": 859902,
+          "w_tiles": 2400,
+          "y_wait": 46162,
+          "y_write": 9355,
+          "x_free": 413763,
+          "x_read": 650360,
+          "x_cast": 854915,
+          "input_wait": 3212492565,
+          "math": 1108,
+          "pack": 341377,
+          "products": 9600
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 886621,
+         "span": 886621,
+         "start_spread": 315,
+         "end_spread": 886012
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 656.8,
+         "span": 656.8,
+         "start_spread": 0.2,
+         "end_spread": 656.3
+        }
+       },
+       {
+        "account": {
+         "core": 92,
+         "span": 902586,
+         "slowest": {
+          "w_free": 6974,
+          "w_read": 715304,
+          "w_cast": 150123,
+          "w_tiles": 2400,
+          "y_wait": 12524,
+          "y_write": 12466,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 853412,
+          "input_wait": 3212328719,
+          "math": 1081,
+          "pack": 344510,
+          "products": 9600,
+          "reader_end": 887773,
+          "compute_start": 114,
+          "compute_end": 900009
+         },
+         "most": {
+          "w_free": 216730,
+          "w_read": 721284,
+          "w_cast": 873250,
+          "w_tiles": 2400,
+          "y_wait": 44951,
+          "y_write": 17030,
+          "x_free": 429317,
+          "x_read": 621017,
+          "x_cast": 857752,
+          "input_wait": 3212328719,
+          "math": 1133,
+          "pack": 349057,
+          "products": 9600
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 902750,
+         "span": 902750,
+         "start_spread": 274,
+         "end_spread": 902153
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 668.7,
+         "span": 668.7,
+         "start_spread": 0.2,
+         "end_spread": 668.3
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 913.5,
+      "parts_us": [
+       616.4,
+       666.0
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 95,
+         "span": 828498,
+         "slowest": {
+          "w_free": 230103,
+          "w_read": 411700,
+          "w_cast": 150045,
+          "w_tiles": 2400,
+          "y_wait": 25831,
+          "y_write": 5741,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 805360,
+          "input_wait": 3183328612,
+          "math": 1085,
+          "pack": 337713,
+          "products": 9600,
+          "reader_end": 820502,
+          "compute_start": 124,
+          "compute_end": 825983
+         },
+         "most": {
+          "w_free": 230103,
+          "w_read": 631052,
+          "w_cast": 796797,
+          "w_tiles": 2400,
+          "y_wait": 29272,
+          "y_write": 8663,
+          "x_free": 359637,
+          "x_read": 581418,
+          "x_cast": 806548,
+          "input_wait": 3212492565,
+          "math": 1110,
+          "pack": 340330,
+          "products": 9600
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 828584,
+         "span": 828584,
+         "start_spread": 259,
+         "end_spread": 828000
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 613.8,
+         "span": 613.8,
+         "start_spread": 0.2,
+         "end_spread": 613.3
+        }
+       },
+       {
+        "account": {
+         "core": 89,
+         "span": 895450,
+         "slowest": {
+          "w_free": 6944,
+          "w_read": 719417,
+          "w_cast": 140917,
+          "w_tiles": 2400,
+          "y_wait": 12541,
+          "y_write": 9974,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 845417,
+          "input_wait": 1064189797,
+          "math": 1067,
+          "pack": 341990,
+          "products": 9600,
+          "reader_end": 882677,
+          "compute_start": 104,
+          "compute_end": 892389
+         },
+         "most": {
+          "w_free": 215621,
+          "w_read": 719417,
+          "w_cast": 868596,
+          "w_tiles": 2400,
+          "y_wait": 42781,
+          "y_write": 10043,
+          "x_free": 422202,
+          "x_read": 613113,
+          "x_cast": 858328,
+          "input_wait": 3212328719,
+          "math": 1113,
+          "pack": 342075,
+          "products": 9600
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 895642,
+         "span": 895642,
+         "start_spread": 276,
+         "end_spread": 895067
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 663.4,
+         "span": 663.4,
+         "start_spread": 0.2,
+         "end_spread": 663.0
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 93,
+       "span": 898303,
+       "slowest": {
+        "w_free": 6920,
+        "w_read": 714041,
+        "w_cast": 148058,
+        "w_tiles": 2400,
+        "y_wait": 12540,
+        "y_write": 11156,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 851767,
+        "input_wait": 1056456480,
+        "math": 1110,
+        "pack": 343180,
+        "products": 9600,
+        "reader_end": 884433,
+        "compute_start": 112,
+        "compute_end": 895377
+       },
+       "most": {
+        "w_free": 219584,
+        "w_read": 718105,
+        "w_cast": 869608,
+        "w_tiles": 2400,
+        "y_wait": 46316,
+        "y_write": 13199,
+        "x_free": 427556,
+        "x_read": 620070,
+        "x_cast": 857023,
+        "input_wait": 3212492565,
+        "math": 1121,
+        "pack": 345288,
+        "products": 9600
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 898369,
+       "span": 898369,
+       "start_spread": 251,
+       "end_spread": 897765
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 665.5,
+       "span": 665.5,
+       "start_spread": 0.2,
+       "end_spread": 665.0
+      }
+     },
+     {
+      "account": {
+       "core": 89,
+       "span": 895710,
+       "slowest": {
+        "w_free": 6935,
+        "w_read": 720252,
+        "w_cast": 141122,
+        "w_tiles": 2400,
+        "y_wait": 12532,
+        "y_write": 9508,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 846319,
+        "input_wait": 1064189797,
+        "math": 1104,
+        "pack": 341502,
+        "products": 9600,
+        "reader_end": 883742,
+        "compute_start": 133,
+        "compute_end": 893002
+       },
+       "most": {
+        "w_free": 216827,
+        "w_read": 720464,
+        "w_cast": 870065,
+        "w_tiles": 2400,
+        "y_wait": 42583,
+        "y_write": 11302,
+        "x_free": 429576,
+        "x_read": 607737,
+        "x_cast": 858013,
+        "input_wait": 3212328719,
+        "math": 1108,
+        "pack": 343093,
+        "products": 9600
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 895905,
+       "span": 895905,
+       "start_spread": 243,
+       "end_spread": 895308
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 663.6,
+       "span": 663.6,
+       "start_spread": 0.2,
+       "end_spread": 663.2
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.00517482252122592,
+     "rms_rel": 0.00396506215328441,
+     "rows": 256,
+     "ok": true,
+     "readback_s": 0.168
+    },
+    "tflops": 179.16,
+    "ok": true
+   },
+   "ok": true
+  },
+  {
+   "m": 1024,
+   "k": 2560,
+   "n": 9216,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.13,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      144
+     ],
+     [
+      144,
+      144
+     ]
+    ],
+    "y": [
+     [
+      0,
+      144
+     ],
+     [
+      144,
+      144
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 32,
+     "kt": 80,
+     "nt": 144,
+     "rows": 8,
+     "cols": 12,
+     "pcm": 4,
+     "pcn": 12,
+     "bm": 4,
+     "bn": 12,
+     "kb": 16,
+     "sh": 1,
+     "sw": 4,
+     "wa": 2,
+     "ww": 2,
+     "layout": "2d",
+     "l1": 1262592,
+     "form": "grid",
+     "nk": 5,
+     "nbh": 1,
+     "nbw": 1,
+     "rect": [
+      0,
+      0,
+      12,
+      8
+     ]
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42448,
+      "TRISC0": 11960,
+      "TRISC1": 5684,
+      "TRISC2": 8924
+     },
+     "total": 96240
+    },
+    "pieces": [
+     {
+      "rect": [
+       0,
+       0,
+       12,
+       8
+      ],
+      "m0": 0,
+      "n0": 0,
+      "bands": [
+       4,
+       12
+      ],
+      "blocks": [
+       1,
+       1
+      ],
+      "cores": 96
+     }
+    ],
+    "exchange": false,
+    "l1_budget": 1332400,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      289.84,
+      288.66,
+      286.5
+     ],
+     "reps": 1733,
+     "seconds": 0.502,
+     "microseconds_per_call": 289.719,
+     "part_microseconds_median": [
+      286.32,
+      286.42
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1350,
+       1350.0,
+       1350
+      ],
+      "1": [
+       1350,
+       1350.0,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 572.2,
+      "parts_us": [
+       287.4,
+       289.8
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 93,
+         "span": 384349,
+         "slowest": {
+          "w_free": 1226,
+          "w_read": 271858,
+          "w_cast": 49625,
+          "w_tiles": 960,
+          "y_wait": 28756,
+          "y_write": 27797,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 239358,
+          "input_wait": 0,
+          "math": 565,
+          "pack": 159929,
+          "products": 3840,
+          "reader_end": 352915,
+          "compute_start": 147,
+          "compute_end": 383370
+         },
+         "most": {
+          "w_free": 5826,
+          "w_read": 271905,
+          "w_cast": 323244,
+          "w_tiles": 960,
+          "y_wait": 38110,
+          "y_write": 49468,
+          "x_free": 1084227584,
+          "x_read": 3235905536,
+          "x_cast": 3221225472,
+          "input_wait": 3238002688,
+          "math": 570,
+          "pack": 181371,
+          "products": 3840
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 384445,
+         "span": 384445,
+         "start_spread": 258,
+         "end_spread": 383760
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 284.8,
+         "span": 284.8,
+         "start_spread": 0.2,
+         "end_spread": 284.3
+        }
+       },
+       {
+        "account": {
+         "core": 93,
+         "span": 387685,
+         "slowest": {
+          "w_free": 1195,
+          "w_read": 272367,
+          "w_cast": 49593,
+          "w_tiles": 960,
+          "y_wait": 28678,
+          "y_write": 30422,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 238428,
+          "input_wait": 0,
+          "math": 549,
+          "pack": 162596,
+          "products": 3840,
+          "reader_end": 353277,
+          "compute_start": 137,
+          "compute_end": 386322
+         },
+         "most": {
+          "w_free": 1331,
+          "w_read": 272367,
+          "w_cast": 323700,
+          "w_tiles": 960,
+          "y_wait": 28777,
+          "y_write": 41386,
+          "x_free": 3225419776,
+          "x_read": 3221225472,
+          "x_cast": 3229614080,
+          "input_wait": 3235905536,
+          "math": 580,
+          "pack": 173294,
+          "products": 3840
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 387816,
+         "span": 387816,
+         "start_spread": 275,
+         "end_spread": 387100
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 287.3,
+         "span": 287.3,
+         "start_spread": 0.2,
+         "end_spread": 286.7
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 569.2,
+      "parts_us": [
+       288.7,
+       286.5
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 93,
+         "span": 386087,
+         "slowest": {
+          "w_free": 1197,
+          "w_read": 273601,
+          "w_cast": 49584,
+          "w_tiles": 960,
+          "y_wait": 28726,
+          "y_write": 27656,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 241576,
+          "input_wait": 0,
+          "math": 574,
+          "pack": 159774,
+          "products": 3840,
+          "reader_end": 354467,
+          "compute_start": 120,
+          "compute_end": 384815
+         },
+         "most": {
+          "w_free": 6050,
+          "w_read": 273601,
+          "w_cast": 324999,
+          "w_tiles": 960,
+          "y_wait": 35286,
+          "y_write": 47236,
+          "x_free": 159386,
+          "x_read": 74928,
+          "x_cast": 242574,
+          "input_wait": 3238002688,
+          "math": 577,
+          "pack": 179139,
+          "products": 3840
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 386196,
+         "span": 386196,
+         "start_spread": 259,
+         "end_spread": 385609
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 286.1,
+         "span": 286.1,
+         "start_spread": 0.2,
+         "end_spread": 285.6
+        }
+       },
+       {
+        "account": {
+         "core": 94,
+         "span": 383240,
+         "slowest": {
+          "w_free": 1157,
+          "w_read": 270818,
+          "w_cast": 49456,
+          "w_tiles": 960,
+          "y_wait": 28766,
+          "y_write": 27699,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 235371,
+          "input_wait": 0,
+          "math": 533,
+          "pack": 159898,
+          "products": 3840,
+          "reader_end": 351585,
+          "compute_start": 106,
+          "compute_end": 381914
+         },
+         "most": {
+          "w_free": 5627,
+          "w_read": 270870,
+          "w_cast": 322065,
+          "w_tiles": 960,
+          "y_wait": 28768,
+          "y_write": 40445,
+          "x_free": 157036,
+          "x_read": 75730,
+          "x_cast": 235753,
+          "input_wait": 3235905536,
+          "math": 582,
+          "pack": 172331,
+          "products": 3840
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 383380,
+         "span": 383380,
+         "start_spread": 277,
+         "end_spread": 382771
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 284.0,
+         "span": 284.0,
+         "start_spread": 0.2,
+         "end_spread": 283.5
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 565.9,
+      "parts_us": [
+       286.5,
+       286.0
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 93,
+         "span": 383038,
+         "slowest": {
+          "w_free": 1178,
+          "w_read": 267779,
+          "w_cast": 49397,
+          "w_tiles": 960,
+          "y_wait": 28670,
+          "y_write": 30775,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 238512,
+          "input_wait": 0,
+          "math": 570,
+          "pack": 162812,
+          "products": 3840,
+          "reader_end": 348496,
+          "compute_start": 158,
+          "compute_end": 381837
+         },
+         "most": {
+          "w_free": 3190,
+          "w_read": 267779,
+          "w_cast": 318914,
+          "w_tiles": 960,
+          "y_wait": 33551,
+          "y_write": 49799,
+          "x_free": 152929,
+          "x_read": 75002,
+          "x_cast": 238732,
+          "input_wait": 3238002688,
+          "math": 584,
+          "pack": 181699,
+          "products": 3840
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 383194,
+         "span": 383194,
+         "start_spread": 276,
+         "end_spread": 382591
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 283.8,
+         "span": 283.8,
+         "start_spread": 0.2,
+         "end_spread": 283.4
+        }
+       },
+       {
+        "account": {
+         "core": 93,
+         "span": 382372,
+         "slowest": {
+          "w_free": 1170,
+          "w_read": 269882,
+          "w_cast": 49254,
+          "w_tiles": 960,
+          "y_wait": 28673,
+          "y_write": 28085,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 234967,
+          "input_wait": 0,
+          "math": 546,
+          "pack": 160241,
+          "products": 3840,
+          "reader_end": 350398,
+          "compute_start": 116,
+          "compute_end": 381123
+         },
+         "most": {
+          "w_free": 6264,
+          "w_read": 269882,
+          "w_cast": 320953,
+          "w_tiles": 960,
+          "y_wait": 28772,
+          "y_write": 38424,
+          "x_free": 154733,
+          "x_read": 72968,
+          "x_cast": 235692,
+          "input_wait": 3235905536,
+          "math": 578,
+          "pack": 170324,
+          "products": 3840
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 382549,
+         "span": 382549,
+         "start_spread": 287,
+         "end_spread": 381957
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 283.4,
+         "span": 283.4,
+         "start_spread": 0.2,
+         "end_spread": 282.9
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 93,
+       "span": 382609,
+       "slowest": {
+        "w_free": 1188,
+        "w_read": 269107,
+        "w_cast": 49480,
+        "w_tiles": 960,
+        "y_wait": 28698,
+        "y_write": 28807,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 237477,
+        "input_wait": 0,
+        "math": 556,
+        "pack": 160948,
+        "products": 3840,
+        "reader_end": 349852,
+        "compute_start": 108,
+        "compute_end": 381340
+       },
+       "most": {
+        "w_free": 5739,
+        "w_read": 269107,
+        "w_cast": 320374,
+        "w_tiles": 960,
+        "y_wait": 28779,
+        "y_write": 44362,
+        "x_free": 157597,
+        "x_read": 71844,
+        "x_cast": 238005,
+        "input_wait": 3238002688,
+        "math": 566,
+        "pack": 176270,
+        "products": 3840
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 382747,
+       "span": 382747,
+       "start_spread": 235,
+       "end_spread": 382172
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 283.5,
+       "span": 283.5,
+       "start_spread": 0.2,
+       "end_spread": 283.1
+      }
+     },
+     {
+      "account": {
+       "core": 94,
+       "span": 378349,
+       "slowest": {
+        "w_free": 1200,
+        "w_read": 268138,
+        "w_cast": 49311,
+        "w_tiles": 960,
+        "y_wait": 28758,
+        "y_write": 25694,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 234948,
+        "input_wait": 0,
+        "math": 552,
+        "pack": 157806,
+        "products": 3840,
+        "reader_end": 348770,
+        "compute_start": 120,
+        "compute_end": 377090
+       },
+       "most": {
+        "w_free": 2632,
+        "w_read": 268247,
+        "w_cast": 319583,
+        "w_tiles": 960,
+        "y_wait": 42945,
+        "y_write": 50233,
+        "x_free": 161707,
+        "x_read": 79231,
+        "x_cast": 242523,
+        "input_wait": 3235905536,
+        "math": 585,
+        "pack": 182151,
+        "products": 3840
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 378514,
+       "span": 378514,
+       "start_spread": 242,
+       "end_spread": 377887
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 280.4,
+       "span": 280.4,
+       "start_spread": 0.2,
+       "end_spread": 279.9
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.005841360697397564,
+     "rms_rel": 0.003963067617293407,
+     "rows": 256,
+     "ok": true,
+     "readback_s": 0.124
+    },
+    "tflops": 166.78,
+    "ok": true
+   },
+   "ok": true
+  },
+  {
+   "m": 1024,
+   "k": 9216,
+   "n": 2560,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.165,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      40
+     ],
+     [
+      40,
+      40
+     ]
+    ],
+    "y": [
+     [
+      0,
+      40
+     ],
+     [
+      40,
+      40
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 32,
+     "kt": 288,
+     "nt": 40,
+     "rows": 8,
+     "cols": 10,
+     "pcm": 4,
+     "pcn": 4,
+     "bm": 4,
+     "bn": 4,
+     "kb": 16,
+     "sh": 1,
+     "sw": 4,
+     "wa": 2,
+     "ww": 2,
+     "layout": "2d",
+     "l1": 607232,
+     "form": "grid",
+     "nk": 18,
+     "nbh": 1,
+     "nbw": 1,
+     "rect": [
+      0,
+      0,
+      10,
+      8
+     ]
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42448,
+      "TRISC0": 11960,
+      "TRISC1": 5684,
+      "TRISC2": 8924
+     },
+     "total": 96240
+    },
+    "pieces": [
+     {
+      "rect": [
+       0,
+       0,
+       10,
+       8
+      ],
+      "m0": 0,
+      "n0": 0,
+      "bands": [
+       4,
+       4
+      ],
+      "blocks": [
+       1,
+       1
+      ],
+      "cores": 80
+     }
+    ],
+    "exchange": false,
+    "l1_budget": 1332400,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      301.8,
+      285.36,
+      286.8
+     ],
+     "reps": 1744,
+     "seconds": 0.509,
+     "microseconds_per_call": 291.856,
+     "part_microseconds_median": [
+      287.22,
+      287.56
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1350,
+       1350.0,
+       1350
+      ],
+      "1": [
+       1350,
+       1350.0,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 591.1,
+      "parts_us": [
+       301.8,
+       283.5
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 87,
+         "span": 403738,
+         "slowest": {
+          "w_free": 4221,
+          "w_read": 308445,
+          "w_cast": 70648,
+          "w_tiles": 1152,
+          "y_wait": 10230,
+          "y_write": 4933,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 371112,
+          "input_wait": 1064353604,
+          "math": 1304,
+          "pack": 162876,
+          "products": 4608,
+          "reader_end": 396196,
+          "compute_start": 123,
+          "compute_end": 400664
+         },
+         "most": {
+          "w_free": 53697,
+          "w_read": 308886,
+          "w_cast": 383988,
+          "w_tiles": 1152,
+          "y_wait": 27343,
+          "y_write": 5023,
+          "x_free": 3212721884,
+          "x_read": 1064877825,
+          "x_cast": 3204693565,
+          "input_wait": 3212033707,
+          "math": 3211607889,
+          "pack": 1059405448,
+          "products": 3212590756
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 403964,
+         "span": 403964,
+         "start_spread": 321,
+         "end_spread": 403293
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 299.2,
+         "span": 299.2,
+         "start_spread": 0.2,
+         "end_spread": 298.7
+        }
+       },
+       {
+        "account": {
+         "core": 87,
+         "span": 378999,
+         "slowest": {
+          "w_free": 4175,
+          "w_read": 284377,
+          "w_cast": 70745,
+          "w_tiles": 1152,
+          "y_wait": 10227,
+          "y_write": 4056,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 351989,
+          "input_wait": 3208625510,
+          "math": 1303,
+          "pack": 161155,
+          "products": 4608,
+          "reader_end": 372245,
+          "compute_start": 141,
+          "compute_end": 374965
+         },
+         "most": {
+          "w_free": 7371,
+          "w_read": 284377,
+          "w_cast": 359943,
+          "w_tiles": 1152,
+          "y_wait": 25320,
+          "y_write": 6187,
+          "x_free": 3173564199,
+          "x_read": 3204726548,
+          "x_cast": 3207642880,
+          "input_wait": 3208625510,
+          "math": 3204628224,
+          "pack": 1059864331,
+          "products": 3201646362
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 379160,
+         "span": 379160,
+         "start_spread": 311,
+         "end_spread": 378470
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 280.9,
+         "span": 280.9,
+         "start_spread": 0.2,
+         "end_spread": 280.3
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 555.8,
+      "parts_us": [
+       285.4,
+       285.1
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 89,
+         "span": 381648,
+         "slowest": {
+          "w_free": 4132,
+          "w_read": 287276,
+          "w_cast": 70565,
+          "w_tiles": 1152,
+          "y_wait": 10244,
+          "y_write": 4118,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 354775,
+          "input_wait": 3207348093,
+          "math": 1308,
+          "pack": 161911,
+          "products": 4608,
+          "reader_end": 374819,
+          "compute_start": 122,
+          "compute_end": 378327
+         },
+         "most": {
+          "w_free": 12705,
+          "w_read": 287276,
+          "w_cast": 362608,
+          "w_tiles": 1152,
+          "y_wait": 25607,
+          "y_write": 5828,
+          "x_free": 35857,
+          "x_read": 259614,
+          "x_cast": 355340,
+          "input_wait": 3212033707,
+          "math": 3211607889,
+          "pack": 1059405448,
+          "products": 3212590756
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 381831,
+         "span": 381831,
+         "start_spread": 258,
+         "end_spread": 381274
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 282.8,
+         "span": 282.8,
+         "start_spread": 0.2,
+         "end_spread": 282.4
+        }
+       },
+       {
+        "account": {
+         "core": 89,
+         "span": 381334,
+         "slowest": {
+          "w_free": 4131,
+          "w_read": 286594,
+          "w_cast": 70988,
+          "w_tiles": 1152,
+          "y_wait": 10224,
+          "y_write": 3905,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 356630,
+          "input_wait": 3208068758,
+          "math": 1299,
+          "pack": 161608,
+          "products": 4608,
+          "reader_end": 374554,
+          "compute_start": 111,
+          "compute_end": 377716
+         },
+         "most": {
+          "w_free": 32808,
+          "w_read": 286594,
+          "w_cast": 362586,
+          "w_tiles": 1152,
+          "y_wait": 26355,
+          "y_write": 7170,
+          "x_free": 18268,
+          "x_read": 262812,
+          "x_cast": 357313,
+          "input_wait": 3208625510,
+          "math": 3204628224,
+          "pack": 1059864331,
+          "products": 3201646362
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 381533,
+         "span": 381533,
+         "start_spread": 283,
+         "end_spread": 380982
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 282.6,
+         "span": 282.6,
+         "start_spread": 0.2,
+         "end_spread": 282.2
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 561.7,
+      "parts_us": [
+       286.8,
+       275.5
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 87,
+         "span": 383543,
+         "slowest": {
+          "w_free": 4113,
+          "w_read": 288583,
+          "w_cast": 70677,
+          "w_tiles": 1152,
+          "y_wait": 10225,
+          "y_write": 4650,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 354390,
+          "input_wait": 1064353604,
+          "math": 1301,
+          "pack": 162315,
+          "products": 4608,
+          "reader_end": 376138,
+          "compute_start": 126,
+          "compute_end": 380084
+         },
+         "most": {
+          "w_free": 10763,
+          "w_read": 288839,
+          "w_cast": 364032,
+          "w_tiles": 1152,
+          "y_wait": 25527,
+          "y_write": 6444,
+          "x_free": 31389,
+          "x_read": 262949,
+          "x_cast": 354993,
+          "input_wait": 3212033707,
+          "math": 3211607889,
+          "pack": 1059405448,
+          "products": 3212590756
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 383707,
+         "span": 383707,
+         "start_spread": 248,
+         "end_spread": 383131
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 284.2,
+         "span": 284.2,
+         "start_spread": 0.2,
+         "end_spread": 283.8
+        }
+       },
+       {
+        "account": {
+         "core": 89,
+         "span": 368310,
+         "slowest": {
+          "w_free": 4107,
+          "w_read": 273430,
+          "w_cast": 70707,
+          "w_tiles": 1152,
+          "y_wait": 10280,
+          "y_write": 4200,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 338623,
+          "input_wait": 3208068758,
+          "math": 1297,
+          "pack": 161722,
+          "products": 4608,
+          "reader_end": 361103,
+          "compute_start": 141,
+          "compute_end": 364428
+         },
+         "most": {
+          "w_free": 40013,
+          "w_read": 273508,
+          "w_cast": 349143,
+          "w_tiles": 1152,
+          "y_wait": 17896,
+          "y_write": 5574,
+          "x_free": 42043,
+          "x_read": 260848,
+          "x_cast": 339347,
+          "input_wait": 3208625510,
+          "math": 3204628224,
+          "pack": 1059864331,
+          "products": 3201646362
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 368488,
+         "span": 368488,
+         "start_spread": 295,
+         "end_spread": 367886
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 273.0,
+         "span": 273.0,
+         "start_spread": 0.2,
+         "end_spread": 272.5
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 85,
+       "span": 404238,
+       "slowest": {
+        "w_free": 4141,
+        "w_read": 309554,
+        "w_cast": 70239,
+        "w_tiles": 1152,
+        "y_wait": 10235,
+        "y_write": 4687,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 371900,
+        "input_wait": 1062027052,
+        "math": 1300,
+        "pack": 162789,
+        "products": 4608,
+        "reader_end": 396775,
+        "compute_start": 131,
+        "compute_end": 401186
+       },
+       "most": {
+        "w_free": 59780,
+        "w_read": 309554,
+        "w_cast": 384705,
+        "w_tiles": 1152,
+        "y_wait": 34396,
+        "y_write": 5476,
+        "x_free": 88187,
+        "x_read": 294428,
+        "x_cast": 372167,
+        "input_wait": 3212033707,
+        "math": 3211607889,
+        "pack": 1059405448,
+        "products": 3212590756
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 404446,
+       "span": 404446,
+       "start_spread": 245,
+       "end_spread": 403855
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 299.6,
+       "span": 299.6,
+       "start_spread": 0.2,
+       "end_spread": 299.2
+      }
+     },
+     {
+      "account": {
+       "core": 87,
+       "span": 399935,
+       "slowest": {
+        "w_free": 4095,
+        "w_read": 305142,
+        "w_cast": 70435,
+        "w_tiles": 1152,
+        "y_wait": 10252,
+        "y_write": 4656,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 367538,
+        "input_wait": 3208625510,
+        "math": 1305,
+        "pack": 162249,
+        "products": 4608,
+        "reader_end": 392479,
+        "compute_start": 102,
+        "compute_end": 396361
+       },
+       "most": {
+        "w_free": 56569,
+        "w_read": 305166,
+        "w_cast": 380308,
+        "w_tiles": 1152,
+        "y_wait": 26629,
+        "y_write": 5613,
+        "x_free": 82183,
+        "x_read": 292301,
+        "x_cast": 367930,
+        "input_wait": 3208625510,
+        "math": 3204628224,
+        "pack": 1059864331,
+        "products": 3201646362
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 400083,
+       "span": 400083,
+       "start_spread": 247,
+       "end_spread": 399511
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 296.4,
+       "span": 296.4,
+       "start_spread": 0.2,
+       "end_spread": 295.9
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.005855681904710679,
+     "rms_rel": 0.003957895390848523,
+     "rows": 256,
+     "ok": true,
+     "readback_s": 0.102
+    },
+    "tflops": 165.56,
+    "ok": true
+   },
+   "ok": true
+  },
+  {
+   "m": 4096,
+   "k": 5120,
+   "n": 17408,
+   "cards": [
+    0,
+    1
+   ],
+   "links": 0,
+   "place": "out",
+   "nocs": [
+    0,
+    1
+   ],
+   "valid": "acked",
+   "upload_s": 0.483,
+   "placements": {
+    "x": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ]
+    ],
+    "w": [
+     [
+      0,
+      272
+     ],
+     [
+      272,
+      272
+     ]
+    ],
+    "y": [
+     [
+      0,
+      272
+     ],
+     [
+      272,
+      272
+     ]
+    ]
+   },
+   "x280_mhz": [
+    1350,
+    1350
+   ],
+   "linear": {
+    "plan": {
+     "mt": 128,
+     "kt": 160,
+     "nt": 240,
+     "rows": 9,
+     "cols": 10,
+     "pcm": 15,
+     "pcn": 24,
+     "bm": 15,
+     "bn": 12,
+     "kb": 4,
+     "sh": 1,
+     "sw": 4,
+     "wa": 2,
+     "ww": 2,
+     "layout": "2d",
+     "l1": 1197056,
+     "form": "grid",
+     "nk": 40,
+     "nbh": 1,
+     "nbw": 2,
+     "rect": [
+      0,
+      0,
+      10,
+      9
+     ]
+    },
+    "kernel_sizes": {
+     "text": {
+      "BRISC": 49904,
+      "NCRISC": 42448,
+      "TRISC0": 11960,
+      "TRISC1": 5684,
+      "TRISC2": 8924
+     },
+     "total": 96240
+    },
+    "pieces": [
+     {
+      "rect": [
+       0,
+       0,
+       10,
+       9
+      ],
+      "m0": 0,
+      "n0": 0,
+      "bands": [
+       15,
+       24
+      ],
+      "blocks": [
+       1,
+       2
+      ],
+      "cores": 90
+     },
+     {
+      "rect": [
+       10,
+       0,
+       2,
+       9
+      ],
+      "m0": 0,
+      "n0": 240,
+      "bands": [
+       15,
+       24
+      ],
+      "blocks": [
+       1,
+       2
+      ],
+      "cores": 18
+     }
+    ],
+    "exchange": false,
+    "l1_budget": 1332400,
+    "l1_held": [
+     9024,
+     9024
+    ],
+    "crossed_bytes": {
+     "blocks": 0,
+     "tiles": 0,
+     "put_bytes": 0
+    },
+    "loop": {
+     "single_microseconds": [
+      1738.06,
+      1739.82,
+      1741.58
+     ],
+     "reps": 288,
+     "seconds": 0.508,
+     "microseconds_per_call": 1762.933,
+     "part_microseconds_median": [
+      1744.58,
+      1743.04
+     ],
+     "crossed_a_call": {
+      "messages": 0.0,
+      "lines": 0.0,
+      "asks": 0.0,
+      "pages": 0.0,
+      "parts": 0.0,
+      "puts": 0.0,
+      "bytes": 0.0
+     },
+     "aiclk_mhz": {
+      "0": [
+       1293,
+       1329.9,
+       1350
+      ],
+      "1": [
+       1318,
+       1338.2,
+       1350
+      ]
+     }
+    },
+    "single_detail": [
+     {
+      "host_us": 2016.6,
+      "parts_us": [
+       1735.9,
+       1738.1
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 105,
+         "span": 2339922,
+         "slowest": {
+          "w_free": 737922,
+          "w_read": 878504,
+          "w_cast": 376877,
+          "w_tiles": 3840,
+          "y_wait": 61322,
+          "y_write": 267856,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 2191653,
+          "input_wait": 3266185296,
+          "math": 32832,
+          "pack": 2183515,
+          "products": 57600,
+          "reader_end": 2242771,
+          "compute_start": 129,
+          "compute_end": 2333059
+         },
+         "most": {
+          "w_free": 967144,
+          "w_read": 990987,
+          "w_cast": 2130230,
+          "w_tiles": 3840,
+          "y_wait": 70473,
+          "y_write": 279347,
+          "x_free": 3292167429,
+          "x_read": 3297550752,
+          "x_cast": 3288286444,
+          "input_wait": 3296398653,
+          "math": 3283059796,
+          "pack": 3283899202,
+          "products": 3295389404
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 2340037,
+         "span": 2340037,
+         "start_spread": 262,
+         "end_spread": 2339366
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1733.4,
+         "span": 1733.4,
+         "start_spread": 0.2,
+         "end_spread": 1732.9
+        }
+       },
+       {
+        "account": {
+         "core": 105,
+         "span": 2342652,
+         "slowest": {
+          "w_free": 730845,
+          "w_read": 922340,
+          "w_cast": 338743,
+          "w_tiles": 3840,
+          "y_wait": 63310,
+          "y_write": 269197,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 2193351,
+          "input_wait": 1089073152,
+          "math": 33132,
+          "pack": 2184713,
+          "products": 57600,
+          "reader_end": 2244203,
+          "compute_start": 137,
+          "compute_end": 2335010
+         },
+         "most": {
+          "w_free": 920418,
+          "w_read": 981114,
+          "w_cast": 2137127,
+          "w_tiles": 3840,
+          "y_wait": 69604,
+          "y_write": 280929,
+          "x_free": 3297220045,
+          "x_read": 3289526352,
+          "x_cast": 3286615156,
+          "input_wait": 3289990992,
+          "math": 3279843744,
+          "pack": 3298594486,
+          "products": 3293510229
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 2342808,
+         "span": 2342808,
+         "start_spread": 257,
+         "end_spread": 2342147
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1735.4,
+         "span": 1735.4,
+         "start_spread": 0.2,
+         "end_spread": 1734.9
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 2021.9,
+      "parts_us": [
+       1739.8,
+       1737.0
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 105,
+         "span": 2342518,
+         "slowest": {
+          "w_free": 722270,
+          "w_read": 923600,
+          "w_cast": 348226,
+          "w_tiles": 3840,
+          "y_wait": 60899,
+          "y_write": 270049,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 2191646,
+          "input_wait": 3266185296,
+          "math": 33070,
+          "pack": 2185612,
+          "products": 57600,
+          "reader_end": 2242527,
+          "compute_start": 146,
+          "compute_end": 2335420
+         },
+         "most": {
+          "w_free": 915411,
+          "w_read": 999856,
+          "w_cast": 2142361,
+          "w_tiles": 3840,
+          "y_wait": 69762,
+          "y_write": 281237,
+          "x_free": 1606747,
+          "x_read": 1150200,
+          "x_cast": 2207874,
+          "input_wait": 3296398653,
+          "math": 3283059796,
+          "pack": 3283899202,
+          "products": 3295389404
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 2342663,
+         "span": 2342663,
+         "start_spread": 253,
+         "end_spread": 2342052
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1735.3,
+         "span": 1735.3,
+         "start_spread": 0.2,
+         "end_spread": 1734.9
+        }
+       },
+       {
+        "account": {
+         "core": 105,
+         "span": 2337678,
+         "slowest": {
+          "w_free": 551277,
+          "w_read": 688560,
+          "w_cast": 757946,
+          "w_tiles": 3840,
+          "y_wait": 56490,
+          "y_write": 265681,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 2194028,
+          "input_wait": 1089073152,
+          "math": 32834,
+          "pack": 2181477,
+          "products": 57600,
+          "reader_end": 2244707,
+          "compute_start": 128,
+          "compute_end": 2330274
+         },
+         "most": {
+          "w_free": 1043715,
+          "w_read": 819030,
+          "w_cast": 2142808,
+          "w_tiles": 3840,
+          "y_wait": 69849,
+          "y_write": 276962,
+          "x_free": 1528679,
+          "x_read": 1007752,
+          "x_cast": 2209837,
+          "input_wait": 3289990992,
+          "math": 3279843744,
+          "pack": 3298594486,
+          "products": 3293510229
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 2337785,
+         "span": 2337785,
+         "start_spread": 293,
+         "end_spread": 2337149
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1731.7,
+         "span": 1731.7,
+         "start_spread": 0.2,
+         "end_spread": 1731.2
+        }
+       }
+      ]
+     },
+     {
+      "host_us": 2007.7,
+      "parts_us": [
+       1735.6,
+       1741.6
+      ],
+      "passes": [
+       {
+        "account": {
+         "core": 105,
+         "span": 2339486,
+         "slowest": {
+          "w_free": 969095,
+          "w_read": 676256,
+          "w_cast": 342482,
+          "w_tiles": 3840,
+          "y_wait": 67025,
+          "y_write": 267848,
+          "x_free": 0,
+          "x_read": 0,
+          "x_cast": 2191756,
+          "input_wait": 3266185296,
+          "math": 33013,
+          "pack": 2183353,
+          "products": 57600,
+          "reader_end": 2242678,
+          "compute_start": 136,
+          "compute_end": 2333030
+         },
+         "most": {
+          "w_free": 969095,
+          "w_read": 928269,
+          "w_cast": 2131313,
+          "w_tiles": 3840,
+          "y_wait": 68559,
+          "y_write": 278091,
+          "x_free": 1611249,
+          "x_read": 1031588,
+          "x_cast": 2199367,
+          "input_wait": 3296398653,
+          "math": 3283059796,
+          "pack": 3283899202,
+          "products": 3295389404
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 2339627,
+         "span": 2339627,
+         "start_spread": 251,
+         "end_spread": 2339027
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1733.1,
+         "span": 1733.1,
+         "start_spread": 0.2,
+         "end_spread": 1732.6
+        }
+       },
+       {
+        "account": {
+         "core": 106,
+         "span": 2341935,
+         "slowest": {
+          "w_free": 805888,
+          "w_read": 749460,
+          "w_cast": 436276,
+          "w_tiles": 3840,
+          "y_wait": 63052,
+          "y_write": 270400,
+          "x_free": 1614579,
+          "x_read": 298059,
+          "x_cast": 280060,
+          "input_wait": 3282843946,
+          "math": 33184,
+          "pack": 2185543,
+          "products": 57600,
+          "reader_end": 2241541,
+          "compute_start": 156,
+          "compute_end": 2335406
+         },
+         "most": {
+          "w_free": 929396,
+          "w_read": 948951,
+          "w_cast": 2133728,
+          "w_tiles": 3840,
+          "y_wait": 71776,
+          "y_write": 280978,
+          "x_free": 1614579,
+          "x_read": 1064520,
+          "x_cast": 2203032,
+          "input_wait": 3289990992,
+          "math": 3279843744,
+          "pack": 3298594486,
+          "products": 3293510229
+         }
+        },
+        "put_counts": {},
+        "cores": 118,
+        "cycles": {
+         "put": 0,
+         "sync": 0,
+         "own": 2342093,
+         "span": 2342093,
+         "start_spread": 242,
+         "end_spread": 2341484
+        },
+        "microseconds_at_mhz": {
+         "put": 0.0,
+         "sync": 0.0,
+         "own": 1734.9,
+         "span": 1734.9,
+         "start_spread": 0.2,
+         "end_spread": 1734.4
+        }
+       }
+      ]
+     }
+    ],
+    "run": {
+     "cores": 236,
+     "kernel": [
+      "none",
+      "none"
+     ],
+     "gave_up": [],
+     "broadcast_gave_up": []
+    },
+    "passes": [
+     {
+      "account": {
+       "core": 105,
+       "span": 2335715,
+       "slowest": {
+        "w_free": 919536,
+        "w_read": 695414,
+        "w_cast": 373542,
+        "w_tiles": 3840,
+        "y_wait": 66063,
+        "y_write": 263499,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 2187433,
+        "input_wait": 3266185296,
+        "math": 33057,
+        "pack": 2178963,
+        "products": 57600,
+        "reader_end": 2238468,
+        "compute_start": 129,
+        "compute_end": 2328412
+       },
+       "most": {
+        "w_free": 994051,
+        "w_read": 956504,
+        "w_cast": 2127711,
+        "w_tiles": 3840,
+        "y_wait": 70340,
+        "y_write": 274738,
+        "x_free": 1599516,
+        "x_read": 1062513,
+        "x_cast": 2194980,
+        "input_wait": 3296398653,
+        "math": 3283059796,
+        "pack": 3283899202,
+        "products": 3295389404
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 2335803,
+       "span": 2335803,
+       "start_spread": 295,
+       "end_spread": 2335186
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 1730.2,
+       "span": 1730.2,
+       "start_spread": 0.2,
+       "end_spread": 1729.8
+      }
+     },
+     {
+      "account": {
+       "core": 105,
+       "span": 2338715,
+       "slowest": {
+        "w_free": 752366,
+        "w_read": 893827,
+        "w_cast": 346831,
+        "w_tiles": 3840,
+        "y_wait": 61604,
+        "y_write": 266187,
+        "x_free": 0,
+        "x_read": 0,
+        "x_cast": 2188883,
+        "input_wait": 1089073152,
+        "math": 32888,
+        "pack": 2181811,
+        "products": 57600,
+        "reader_end": 2239772,
+        "compute_start": 144,
+        "compute_end": 2331115
+       },
+       "most": {
+        "w_free": 923604,
+        "w_read": 978150,
+        "w_cast": 2139828,
+        "w_tiles": 3840,
+        "y_wait": 69047,
+        "y_write": 278910,
+        "x_free": 1599478,
+        "x_read": 1162465,
+        "x_cast": 2206174,
+        "input_wait": 3289990992,
+        "math": 3279843744,
+        "pack": 3298594486,
+        "products": 3293510229
+       }
+      },
+      "put_counts": {},
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 2338887,
+       "span": 2338887,
+       "start_spread": 283,
+       "end_spread": 2338265
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 1732.5,
+       "span": 1732.5,
+       "start_spread": 0.2,
+       "end_spread": 1732.0
+      }
+     }
+    ],
+    "check": {
+     "max_rel": 0.0049702053065408276,
+     "rms_rel": 0.003960682150240353,
+     "rows": 256,
+     "ok": true,
+     "readback_s": 0.265
+    },
+    "tflops": 414.16,
+    "ok": true
+   },
+   "ok": true
+  }
+ ]
+}

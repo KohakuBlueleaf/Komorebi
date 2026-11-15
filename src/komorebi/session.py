@@ -249,11 +249,20 @@ def _core_args(program, placed, core):
     return [], [], []
 
 
-# A link CPU's own chunk on the link cores (Run._link_chunk): at most, at least (the
-# put rings' least, km_pages.hpp kRingChunkMin), and what is left besides.
+# A link CPU's own chunk on the link cores (Run._link_chunk): at most, and what is
+# left besides; at least the least that holds a put ring (link_chunk_least).
 LINK_CHUNK_MOST = 512 << 10
-LINK_CHUNK_LEAST = 128 << 10
 LINK_CHUNK_MARGIN = 64 << 10
+# km_pages.hpp's ring: kRingChunkMin, kRingSlotsMin, kRingHeader
+RING_CHUNK_MIN, RING_SLOTS_MIN, RING_HEADER = 128 << 10, 8, 128
+
+
+def link_chunk_least(packet):
+    """The least link chunk (whole 64 KiB) whose put ring has RING_SLOTS_MIN slots of
+    `packet` bytes in its half (km_pages.hpp ring_slots): 192 KiB for 8 KiB packets."""
+    ring = 2 * RING_SLOTS_MIN * (RING_HEADER + packet)
+    return max(RING_CHUNK_MIN, -(-ring // (64 << 10)) * (64 << 10))
+
 
 # The defines of an island run that the link cores' own kernels are built with too.
 LINK_DEFINES = ("KM_PAGE_LINKS", "KM_TENSOR_TABLE", "KM_ASKS_BY_HOST")
@@ -2327,10 +2336,10 @@ class _Backend:
         return [("KM_LINK_QUEUE", "1")]
 
     def _link_chunk(self, program, cores, apart=0):
-        """A link CPU's own chunk (bytes; 0: none, the transfer chunk serves): at most
-        LINK_CHUNK_MOST, whole 64 KiB, two in what a link core has left after the
-        program's buffers (unless `apart` bytes of link area and relay are its alone),
-        the transfer buffer, what the session keeps and the put queue."""
+        """A link CPU's own chunk (bytes; 0: none): at most LINK_CHUNK_MOST, at least
+        link_chunk_least, whole 64 KiB, two in what a link core has left after the
+        program's buffers (unless `apart`), the transfer buffer, what the session keeps
+        and the put queue."""
         buffers = 0
         if not apart:  # else launched on the ranks only (buffers per core range)
             buffers = sum(
@@ -2348,7 +2357,8 @@ class _Backend:
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
-        return chunk if chunk >= LINK_CHUNK_LEAST else 0
+        least = link_chunk_least(getattr(self.session, "packet", 0) or 0)
+        return chunk if chunk >= least else 0  # else no ring: the transfer chunk's
 
     def _transfer_buffer(self, cores, grid, chunk):
         """The L1 every core moves a transfer's chunks through (a sharded tensor)."""

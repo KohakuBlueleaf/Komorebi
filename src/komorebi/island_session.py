@@ -476,13 +476,26 @@ class IslandRun:
 
     def send(self):
         """Stores every island's queued commands on its card, so that the islands run
-        their parts at once (a run over a link needs every part started) while the
-        host waits on one."""
+        their parts at once (a run over a link needs every part started): all handed
+        first, then stored one after another with nothing between, then the events
+        read meanwhile filed."""
         for island, run in enumerate(self.runs):
             try:
-                run.store()
+                run._hand()
             except KomorebiError as error:
                 raise self._error(error, island) from None
+        read = []
+        for island, run in enumerate(self.runs):
+            try:
+                read.append(run._store_handed())
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+        for island, (run, rows) in enumerate(zip(self.runs, read)):
+            if len(rows):
+                try:
+                    run._take(rows)
+                except KomorebiError as error:
+                    raise self._error(error, island) from None
 
     def wait(self, tickets, timeout=10.0):
         """Sends what is queued and waits, within one `timeout` for all, for every

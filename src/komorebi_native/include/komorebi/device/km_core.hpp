@@ -13,6 +13,30 @@
 #include "km_command.hpp"
 #include "km_island.hpp"
 
+#if defined(KM_CHECK_NOC_SOURCES) && !defined(COMPILE_FOR_TRISC)
+namespace km {
+
+    // Debug builds (KM_CHECK_NOC_SOURCES): a write's source at or above MEM_L1_SIZE (a
+    // kernel's static, local memory) never completes; the CPU stops here, before it.
+    inline uint32_t noc_source(uint32_t source) {
+        if (source >= MEM_L1_SIZE) {
+            for (;;) {
+                asm volatile("");
+            }
+        }
+        return source;
+    }
+
+}  // namespace km
+
+// Every NoC write and multicast write made after this line (the runtime's headers and
+// the kernels that include them) checks its source.
+#define noc_async_write(source, ...) \
+    noc_async_write(::km::noc_source(source), __VA_ARGS__)
+#define noc_async_write_multicast(source, ...) \
+    noc_async_write_multicast(::km::noc_source(source), __VA_ARGS__)
+#endif
+
 namespace km {
 
     // The island area of this core's control block: every kernel's argument 0 is the

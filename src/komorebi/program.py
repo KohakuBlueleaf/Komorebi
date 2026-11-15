@@ -4,6 +4,7 @@ plain description; nothing here needs a device.
 """
 
 import functools
+import importlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -152,6 +153,12 @@ class Program:
     overlays_built: object = field(default=None, init=False, compare=False)
     # the program field of its commands: its place in the last load (0: the first)
     program_field: int = field(default=0, init=False, compare=False)
+
+    def __init_subclass__(cls, **kwargs):
+        """A class deriving Program with handler methods is a program written as a
+        class: made, it is compiled into an ordinary program (komorebi.dsl)."""
+        super().__init_subclass__(**kwargs)
+        importlib.import_module("komorebi.dsl.program").prepare(cls)
 
     def __post_init__(self):
         if isinstance(self.handlers, str | Path):

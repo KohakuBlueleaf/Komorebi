@@ -58,6 +58,8 @@ STREAMS = os.path.join(
 HANDLER_CHECK_UPLOAD = 246  # KMD_VERIFY_LINES images only
 HANDLER_TRAP = 244  # KMD_VERIFY_LINES images only: core 0 loads from address a0
 LIM_UPLOAD = abi.headers()["KMD_LIM_UPLOAD"]  # the upload region, from the layout
+# the header's flag of a command to the dispatcher itself (TRAP, CHECK_UPLOAD)
+FLAG_DISPATCHER = abi.headers()["KMD_FLAG_DISPATCHER"]
 HOST_READY, READY_MARK = 4, 0x594452  # the ready block's first word and its mark
 TRACE_SUBMIT, TRACE_FREE, TRACE_MARK = 1, 2, 0x54524345  # KMD_TRACE images only
 TRACE_QUEUED = 3  # a submit from the job queue
@@ -939,7 +941,9 @@ def case_trap(session, args):
         core_count = plan.grid_x * plan.grid_y
         out = {"tag": plan.tag}
         out["delay_req"] = plan.submit(command(HANDLER_DELAY, 0, core_count, 1, cycles))
-        out["trap_req"] = plan.submit(kernel_command(HANDLER_TRAP, 8))
+        trap = kernel_command(HANDLER_TRAP, 8)
+        trap[1] |= FLAG_DISPATCHER << 8
+        out["trap_req"] = plan.submit(trap)
         deadline = time.monotonic() + 5.0
         while plan.host_word(0) < STATE_DONE and time.monotonic() < deadline:
             pass
@@ -1143,6 +1147,7 @@ def case_result(session, args):
 def check_upload(offset, size, seed):
     """KMD_HANDLER_CHECK_UPLOAD: a0 = offset, a1 = bytes, a2 = seed."""
     words = kernel_command(HANDLER_CHECK_UPLOAD, offset)
+    words[1] |= FLAG_DISPATCHER << 8
     words[5], words[6] = size, seed
     return words
 
