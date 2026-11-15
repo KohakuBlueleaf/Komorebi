@@ -55,6 +55,19 @@ SIGNIFICAND = {
     "bfp2_b": 1,
 }
 
+# Significand bits (of 11) the matrix unit multiplies a side at each fidelity, as
+# the card gave them: a product's left operand is in SrcB, its right in SrcA.
+SIDE_BITS = {
+    "srca": {"LoFi": 5, "HiFi2": 10, "HiFi3": 10, "HiFi4": 10},
+    "srcb": {"LoFi": 7, "HiFi2": 7, "HiFi3": 11, "HiFi4": 11},
+}
+
+
+def bits_used(dtype, side, fidelity):
+    """Significand bits of a `dtype` operand the product multiplies on `side`
+    ("srca" or "srcb") at `fidelity`: the smaller of the format's and the side's."""
+    return min(SIGNIFICAND[dtype], SIDE_BITS[side][fidelity])
+
 
 def itemsize(dtype):
     """Bytes of one element of `dtype` on the card (not of a block format: its tile
