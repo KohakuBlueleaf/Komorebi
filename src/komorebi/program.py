@@ -123,15 +123,15 @@ def source_form(path):
 
 
 def broadcast_defines(name, defines, wait):
-    """`defines` with KM_BROADCAST_WAIT 0 when `wait` is False (the header's default
-    is 1, so a program that waits adds nothing); a define that says otherwise raises."""
+    """`defines` with KM_BROADCAST_WAIT 1 when `wait` is True (the header's default
+    is 0, so a program without it adds nothing); a define that says otherwise raises."""
     given = defines.get("KM_BROADCAST_WAIT")
     if given is not None and (str(given) != "0") != bool(wait):
         raise ProgramError(
             f"{name}: defines KM_BROADCAST_WAIT={given} and broadcast_wait={wait}; "
             "give broadcast_wait alone"
         )
-    return defines if wait else {**defines, "KM_BROADCAST_WAIT": 0}
+    return {**defines, "KM_BROADCAST_WAIT": 1} if wait else defines
 
 
 @dataclass(eq=False)  # one program is one object: a key of session.load's dict
@@ -159,9 +159,9 @@ class Program:
     # handlers (names or numbers) whose commands use the cores' ports: run.submit
     # refuses one on cores a command of them still holds unless it is exclusive
     port_handlers: set = field(default_factory=set)
-    # a word-only broadcast's caster waits at finish for every receiver's clear of
-    # VALID (km_broadcast.hpp); False builds the kernels with KM_BROADCAST_WAIT 0
-    broadcast_wait: bool = True
+    # True: a word-only broadcast's caster waits at finish for every receiver's
+    # clear of VALID (KM_BROADCAST_WAIT 1, km_broadcast.hpp); False (default): none
+    broadcast_wait: bool = False
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
     pairs: list = field(default_factory=list, init=False)  # the BufferPairs given
     overlays: dict = field(default_factory=dict, init=False)  # name -> Overlay
