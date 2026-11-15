@@ -813,6 +813,22 @@ or use the inline body of the library's call.
 
 Described in [Tile functions, what a tile function may contain](tile.md#what-a-tile-function-may-contain).
 
+### A float word given a float's bits
+
+**The hazard.** A `scale: float` parameter takes the number and packs its float32 bits
+itself. A caller that still passes the bits, as an `int` word took them
+(`bits(2.0)`, 1073741824), gives the number 1073741824.0: the command runs and every
+value it scales is wrong. A float word that is past float32's range is refused; one
+that float32 rounds (0.1) is the rounded value, as a float32 tensor's would be.
+
+**The rule.** Pass a float word the number (`Steps.scale(x, y, 2.0, 2)`); keep bits
+for an `int` word whose body reads them.
+
+**The guard.** A value that is not a number, or past float32's range, is refused at
+submit, naming the parameter. An int is a number and is not refused.
+
+Described in [Classes, the command words](classes.md#making-and-calling).
+
 ## X280 threads
 
 ### A thread that never polls the stop flag

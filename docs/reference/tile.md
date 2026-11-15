@@ -157,7 +157,12 @@ smaller result). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32
 a call holds. On the card ([tile lines](../../experiments/language/tile_lines/README.md), bf16
 inputs): `x / y` within 1.6e-7 of float64, `sqrt` 9.5e-8, `reciprocal` 1.1e-7, `minimum`
 and `abs` exact, four inputs `x * y + z * w` 6.0e-8 (largest relative errors); none is
-guarded outside its domain ([hazards](hazards.md#a-tile-functions-sqrt-reciprocal-and-division-outside-their-domain)). Inputs are fp32 tensors or tensors
+guarded outside its domain ([hazards](hazards.md#a-tile-functions-sqrt-reciprocal-and-division-outside-their-domain)).
+A parameter that a handler passes a float word for (`affine(x, scale, shift)`, scale a
+`scale: float` word) is a run-time scalar: the body takes its bits after `dst`
+(`affine(dst, scale_bits, shift_bits)`) and loads each into a work register held across
+the rows by two `TT_SFPLOADI`, its halves built on the core; the rows are the words a
+number gives (as many as the work registers hold, with the row's values). Inputs are fp32 tensors or tensors
 of the B family (bf16, bfp8_b, bfp4_b, bfp2_b), which run on an fp32 `Dst`, or tensors
 of the A family (fp16, bfp8, bfp4, bfp2), which run on a 16-bit `Dst`: the same words,
 each `SFPLOAD` and `SFPSTORE` in the FP16A mode, the vector code in fp32 between them
@@ -262,7 +267,8 @@ Each rule is a pass; `dump()` prints what each one did.
 | "the unit program reads at most 4 operand tiles" | the operands sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst` a call holds |
 | "the unit program reads whole-tile operands" | a slice or a broadcast operand needs the row form |
 | "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering (tanh, exp2 outside a template and the comparisons other than `>`, `<`, `==`, `!=` have none) |
-| "the unit program takes no runtime scalars" | every immediate is built into the header; a run-time word would need building on the core |
+| "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
+| "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
 | "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |
 | "takes tiles of float16 (the A family, a 16-bit Dst) and is called on a row" | the row form and the step form keep each row's value, its sums and the state word in `Dst` between their levels, which a 16-bit `Dst` would cut to fp16 (the word is an int32) |
 | the load macro: "refused: fp16a Dst" (a pass's record, not a refusal) | the macro's load and store are built for the fp32 `Dst`; an A-family unit runs its rows plain |
@@ -279,6 +285,13 @@ Each rule is a pass; `dump()` prints what each one did.
 | emit: "macro k runs template t, which the init does not store"; "... writes VD 12 + t in the tile's code" | the macro would run whatever template an earlier body left, or, from the second tile on, the word that overwrote it |
 | emit: "W (...) has VD v: with the back door open it stores template v - 12 and runs nothing" | any vector word but `SFPCONFIG` and `SFPLOADMACRO` with a `VD` of 12 or more is a template store while `LaneConfig`'s back door is open (the ISA's `SFPCONFIG` page); only the init's template stores may have one |
 | emit: "buffer B is pushed by X and Y" | a buffer's received counter takes one producer's count: a second producer's pages never reach the wait (a state kept in place is neither pushed nor popped) |
+
+What the limits above would take, where a user would write the line: a slice or a
+broadcast operand in the whole-tile form (`x * w.row()` in the stream form) needs the
+row form's per-column load inside the stream form, about 100 lines; two stores of one
+call need a second result tile in `Dst` and a second pack, about 60 lines; `>=` and
+`<=` are the swapped `SFPGT` with its flags inverted, about 10 lines; tanh needs
+tt-metal's fp32 polynomial lowered and its error checked, about 40 lines.
 
 A refused load macro is not an error: the pass records "refused: reason" and the rows
 stay plain.

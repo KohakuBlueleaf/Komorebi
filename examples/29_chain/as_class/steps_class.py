@@ -22,7 +22,7 @@ SCALE = """
 copy_init(tile_buffer);
 copy_tile(tile_buffer, tile_index, 0);
 binop_with_scalar_tile_init();
-mul_unary_tile(0, factor);
+mul_unary_tile(0, __builtin_bit_cast(uint32_t, factor));
 """
 
 
@@ -34,10 +34,10 @@ def plus(a, b):
 class StepHandlers(km.Program):
     """Each core's `width` tiles from rank x width (SCALE, ADD), or its share of
     `tiles` tiles summed up a tree to the group's root (SUM); float32 tiles, the
-    factor a float32's bits. Made alone: no chain's walk in its kernels."""
+    factor a float word. Made alone: no chain's walk in its kernels."""
 
     @km.handler
-    def scale(self, a: km.Tensor, out: km.Tensor, factor: int, width: int):
+    def scale(self, a: km.Tensor, out: km.Tensor, factor: float, width: int):
         first = self.rank * width
         results = km.Stream(out.pages(first, width), write=True)
         for tile in km.Stream(a.pages(first, width)):
@@ -68,27 +68,19 @@ class Steps(StepHandlers):
     """The handlers with the chain's walk: the four steps as a km.chain method."""
 
     @km.chain
-    def steps(self, x, y, z, s, t, factor: int, width: int, tiles: int):
+    def steps(self, x, y, z, s, t, factor: float, width: int, tiles: int):
         self.scale(x, y, factor, width)
-        self.scale(y, z, THREE, width)
+        self.scale(y, z, 3.0, width)
         self.add(z, km.past(y), s, width)
         self.sum(s, t, tiles)
-
-
-THREE = int(np.float32(3).view(np.uint32))  # SCALE's second factor
-
-
-def bits(factor):
-    """A float32's bits: SCALE's factor word."""
-    return int(np.float32(factor).view(np.uint32))
 
 
 def step_args(tensors, factor, width, tiles):
     """Each step's handler and arguments, as a command a step submits them."""
     x, y, z, s, t = (tensors[name] for name in "xyzst")
     return [
-        (Steps.scale, (x, y, bits(factor), width)),
-        (Steps.scale, (y, z, THREE, width)),
+        (Steps.scale, (x, y, float(factor), width)),
+        (Steps.scale, (y, z, 3.0, width)),
         (Steps.add, (z, y, s, width)),
         (Steps.sum, (s, t, tiles)),
     ]
@@ -99,8 +91,8 @@ def host_list(tensors, factor, width, tiles):
     reads, written two calls back (km.past)."""
     x, y, z, s, t = (tensors[name] for name in "xyzst")
     return [
-        Steps.scale(x, y, bits(factor), width),
-        Steps.scale(y, z, THREE, width),
+        Steps.scale(x, y, float(factor), width),
+        Steps.scale(y, z, 3.0, width),
         Steps.add(z, km.past(y), s, width),
         Steps.sum(s, t, tiles),
     ]
@@ -215,7 +207,7 @@ def main():
                 host_list(tensors, factor, args.width, tiles), cores=cores
             )
             method = run.chain(
-                program.steps(x_, y, z, s, t, bits(factor), args.width, tiles),
+                program.steps(x_, y, z, s, t, float(factor), args.width, tiles),
                 cores=cores,
             )
             chains[factor] = (listed, method)
