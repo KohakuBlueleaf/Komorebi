@@ -105,6 +105,34 @@ anywhere in 64 pages of bfloat16 integers -4 to 4, half of them adding 0.5.
 | gather: time a command | | 16.16 us |
 | Kernel text, B (mover A, mover B, unpack, math, pack) | 14,840, 9,968, 6,004, 2,324, 3,128 | 17,348, 22,336, 9,572, 3,440, 6,208 |
 
+A second class, `BandCasts` (TableJobs with it did not fit the kernels' text: 75,968
+B of 70,656), runs `banded` on 2 x 4 cores: a job loop around a chunk loop of the
+job's chunks (job j casts j + 2), its broadcast on mover A in bands of 2 cores:
+
+```python
+down = km.Broadcast(self, along="column", length=BAND, mover="A", unread=unread)
+for job in range(jobs):
+    for chunk in range(job + 2):
+        ...  # the cast and the copy, as gather's
+```
+
+| Line | What it lowers to |
+|---|---|
+| `km.Broadcast(..., length=BAND, mover="A")` | 4 broadcasts, one a band of 2 cores of a column, on NoC 0: the senders are rows 0 and 2 |
+| the cast inside two loops | the blocks counted by `km_blocks_down` on mover A and compute (5 for 2 jobs), the finish and compute's padding (1 block to the window of 2) after the job loop |
+| `unread=unread` | the same command with the word 1: each core's mover pushes each block's slot as it is, then pads |
+
+```bash
+python table_jobs.py --part bands    # BandCasts: banded, then again unread
+```
+
+| | BandCasts |
+|---|---|
+| banded: the bands' pages (8 cores, 5 blocks; 416 filled) | 0 words differ |
+| banded: time a command | 13.98 us |
+| unread: time a command | 9.84 us |
+| Kernel text, B (mover A, mover B, unpack, math, pack) | 22,048, 8,820, 4,884, 1,536, 3,340 |
+
 gather places each core by `self.y * COLUMNS + self.x`: a rectangle's group is the
 contiguous core indices from its first core to its last, so `self.rank` of its second
 row is the grid's width on, and the cores between are in the group but not the

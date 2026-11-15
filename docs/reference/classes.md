@@ -147,6 +147,7 @@ and a name of the handler's with that prefix is refused.
 | `pages.write(word)` (one page), `word` a mover's | that mover: its word page (the word first, zeros after), `km::write_pages`, `noc_async_write_barrier` | |
 | `b = km.Broadcast(self, along="row", window=2)` | the broadcast on its mover (rows on mover A, columns on mover B); a core it leaves out skips the handler, on the other mover too | the same core skips it |
 | `b = km.Broadcast(self, along="column", length=L, mover="A")` | bands of L cores of each column (or row), each band's first core its sender, on the mover given (A: NoC 0, the band's top or left; B: NoC 1, its bottom or right) | |
+| `km.Broadcast(self, ..., unread=word)` | when the word is not 0, each core's mover takes each block's slot and pushes it as it is (no read, cast or arrival), padding to the window at the end | the blocks taken as cast ones |
 | `if b.sender():` `v = b.cast(t.pages(first, n).read())` `else:` `v = b.arrive()` | the sender's reserve, read and cast, the others' arrival, block by block of the loop around it; the last block's finish | |
 | the same inside more than one loop, or a loop not from 0 | the blocks counted over every loop around the cast (`km_blocks_b`, on the mover and compute), the finish after the outermost loop by the count | the padding by the count |
 | `v = b.cast(k.tiles[k0:k1, 0:D].T, w.tiles[k0:k1, 0:E])` | several parts into one block, in order, each at its most's place (Several ranges into one block) | |
@@ -198,6 +199,15 @@ around it: a word `km_blocks_b` on the broadcast's mover and on compute, from 0 
 handler's top, the block's number at each cast or arrival and one more after it; the
 finish and compute's padding (`km::broadcast_end`) come after the outermost loop, by
 the count. Casts in two loops at the handler's top are refused.
+
+`unread=word` (a word of the handler) runs the same command with no broadcast: when
+the word is not 0, each core's mover takes each block's slot and pushes it as it is,
+and after the last block pads the slots to the window as the finish does; compute
+takes the blocks as it takes cast ones. A block compute takes and drops unused is
+`for tile in v: pass` (waited for, freed). In the
+[table of jobs](../../experiments/language/class_lines/README.md), BandCasts casts 5
+blocks over two loops down bands of 2 cores on mover A, 0 of 416 filled pages
+differing on the card (13.98 us), and runs the command again unread (9.84 us).
 
 A body takes the handler's names and runs on one CPU or on compute's three: the section
 Inline bodies says what it takes where. From

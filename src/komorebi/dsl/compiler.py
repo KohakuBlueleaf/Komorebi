@@ -144,6 +144,7 @@ class Value:
     mover: str = ""  # broadcast: the mover that runs it
     window: int = 0  # broadcast: blocks in flight
     length: int | None = None  # broadcast: cores a band (None: the whole side)
+    unread: tuple | None = None  # broadcast: (C++ of its unread word, names it reads)
     loop: dict | None = None  # broadcast: the range loop its blocks count
     waited: bool = False  # a written tile: mover B has waited for its page
     popped: bool = False  # a written tile: mover B has freed its page
@@ -4842,13 +4843,14 @@ class HandlerCompiler:
             elif keyword_.arg in (
                 spelling("broadcast_mover"),
                 spelling("broadcast_length"),
+                spelling("broadcast_unread"),
             ):
                 placed[keyword_.arg] = keyword_.value
             else:
                 self.refuse(
                     node,
                     f"a broadcast has no {keyword_.arg}=",
-                    "use along=, window=, mover= and length=",
+                    "use along=, window=, mover=, length= and unread=",
                 )
         if along is None:
             self.refuse(
@@ -4875,6 +4877,9 @@ class HandlerCompiler:
         self.scope[name] = Value(
             "broadcast", name, mover=mover, window=window, pattern=along, length=length
         )
+        unread = placed.get(spelling("broadcast_unread"))
+        if unread is not None:  # a word of the handler: its C++, the names it reads
+            self.scope[name].unread = (self.integer(unread), self.uses(unread))
         movement = Line(
             f"km::Broadcast {name}(movement, command, kArgBroadcast);\n"
             f"if (!{name}.ok()) {{\n    return false;\n}}\n"
@@ -5035,6 +5040,8 @@ class HandlerCompiler:
         uses = {name} | text_uses(block, self)
         for part in parts:
             uses |= range_uses(part["pages"], self)
+        if broadcast.unread is not None:  # each core's slot pushed as it is, or cast
+            text, uses = self.unread_push(broadcast, text, uses)
         self.scope[value] = Value("arrived", buffer.name, buffer=buffer)
         self.wait(node, f"mover {broadcast.mover}", WAIT_FREE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_DONE)
@@ -5048,6 +5055,41 @@ class HandlerCompiler:
             movement_end, compute = self.broadcast_end(name, "1", set())
             movement += movement_end
         return movement, compute
+
+    def unread_push(self, broadcast, text, uses):
+        """`unread=word`: when the word is not 0, each core's mover takes the block's
+        slot and pushes it as it is (no read, no cast, no arrival); else the cast."""
+        word, reads = broadcast.unread
+        buffer = broadcast.buffer.name
+        text = (
+            f"if ({word}) {{\n"
+            f"    if (!movement.reserve({buffer}, {buffer}Pages)) {{\n"
+            "        return false;\n"
+            "    }\n"
+            f"    cb_push_back({buffer}, {buffer}Pages);\n"
+            f"}} else {text}"
+        )
+        return text, uses | reads
+
+    def unread_end(self, broadcast, blocks, uses, finish):
+        """After the last block of a broadcast pushed unread: its mover pads the slots
+        to the window, as the finish does; else the finish."""
+        word, reads = broadcast.unread
+        buffer = broadcast.buffer.name
+        pad = f"km_pad_{broadcast.cxx}"
+        text = (
+            f"if ({word}) {{\n"
+            f"    const uint32_t {pad} = ({buffer}Window - ({blocks}) % "
+            f"{buffer}Window) % {buffer}Window * {buffer}Pages;\n"
+            f"    if ({pad} != 0) {{\n"
+            f"        if (!movement.reserve({buffer}, {pad})) {{\n"
+            "            return false;\n"
+            "        }\n"
+            f"        cb_push_back({buffer}, {pad});\n"
+            "    }\n"
+            f"}} else {finish.text}"
+        )
+        return Line(text, finish.uses | uses | reads, mover=broadcast.mover)
 
     def counted_cast(self, node, name, broadcast):
         """A cast inside more than one loop, or a loop not from 0: its blocks counted
@@ -5243,6 +5285,8 @@ class HandlerCompiler:
             {name},
             mover=broadcast.mover,
         )
+        if broadcast.unread is not None:
+            movement = self.unread_end(broadcast, blocks, uses, movement)
         compute = Line(
             f"km_ok = km_ok && km::broadcast_end(compute, {buffer}, {buffer}Pages, "
             f"{buffer}Window, {blocks});",

@@ -145,6 +145,11 @@ NAMES = {
     "broadcast_mover": Name(
         "mover", 'a broadcast\'s mover, "A" (NoC 0) or "B" (NoC 1)', None
     ),
+    "broadcast_unread": Name(
+        "unread",
+        "a broadcast's word: when not 0, each core's mover pushes each block unread",
+        None,
+    ),
     "broadcast_length": Name(
         "length",
         "a broadcast's band: so many cores of the row or column a sender",

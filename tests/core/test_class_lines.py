@@ -485,8 +485,8 @@ def test_range_and_block_refusals_name_the_line(cls, text, why):
 
 class Banded(km.Program):
     @km.handler
-    def copy(self, k: km.Tensor, v: km.Tensor, jobs: int):
-        down = km.Broadcast(self, along="column", length=2, mover="A")
+    def copy(self, k: km.Tensor, v: km.Tensor, jobs: int, unread: int):
+        down = km.Broadcast(self, along="column", length=2, mover="A", unread=unread)
         for job in range(jobs):
             for chunk in range(job + 2):
                 if down.sender():
@@ -496,7 +496,7 @@ class Banded(km.Program):
                 km.cxx("use(kv);", takes=[kv])
 
 
-def test_a_broadcast_on_a_chosen_mover_in_bands_counted_over_its_loops():
+def test_a_broadcast_on_a_chosen_mover_in_bands_counted_over_its_loops_or_unread():
     compiled = compile_class(Banded, {}, {"k": grid("bfloat16", 8, 2),
                                           "v": grid("bfloat16", 8, 2)})  # fmt: skip
     assert compiled.broadcasts[0][3:] == ("A", 2)  # mover A, bands of 2 cores
@@ -510,6 +510,12 @@ def test_a_broadcast_on_a_chosen_mover_in_bands_counted_over_its_loops():
         movement.count("km_blocks_down++;") == compute.count("km_blocks_down++;") == 1
     )
     assert "kBroadcast0Window, km_blocks_down);" in compute
+    # unread: each core's slot pushed as it is, the end padded to the window
+    assert "if (unread) {" in movement
+    assert "movement.reserve(kBroadcast0, kBroadcast0Pages)" in movement
+    assert "} else if (down.sender()) {" in movement
+    assert "% kBroadcast0Window * kBroadcast0Pages;" in movement
+    assert "} else if (!down.finish()) {" in movement
 
 
 class Unplaced(km.Program):

@@ -1,7 +1,7 @@
-"""A table of jobs on the movers and compute, and a gather of a rectangle's ranges
-(rows with a step, K transposed and V cast as one block), each checked against numpy.
-README.md says what each line lowers to.
-Example: python table_jobs.py --cores 8 --jobs 3"""
+"""A table of jobs on the movers and compute, a gather of a rectangle's ranges, and
+casts in bands counted over two loops, each checked against numpy. README.md says
+what each line lowers to.
+Example: python table_jobs.py --cores 8 --jobs 3; python table_jobs.py --part bands"""
 
 import argparse
 import json
@@ -137,6 +137,53 @@ class TableJobs(km.Program, defines={"TABLE_BIAS": f"{BIAS}f", "SLOT_PAGES": SLO
             )
 
 
+BAND_RECT, BAND = (0, 0, COLUMNS, 4), 2  # bands: 2 columns of 4 cores, 2 a band
+COPY = """
+for (uint32_t page = 0; page < SLOT_PAGES; page++) {
+    tile_regs_acquire();
+    copy_init(kv_buffer);
+    copy_tile(kv_buffer, kv + page, 0);
+    tile_regs_commit();
+    tile_regs_wait();
+    if (seen != 0) {
+        pack_tile(0, seen_buffer);
+    }
+    tile_regs_release();
+}
+"""  # a block's pages, packed in order into a write stream's block
+
+
+class BandCasts(km.Program, defines={"SLOT_PAGES": SLOT}):
+    """banded: the chunks of `jobs` jobs (job j casts j + 2), each block counted over
+    both loops, cast down bands of 2 cores on mover A, or pushed unread."""
+
+    @km.handler
+    def banded(
+        self, k: km.Tensor, v: km.Tensor, bands: km.Tensor, keys: int, jobs: int,
+        unread: int,
+    ):  # fmt: skip
+        down = km.Broadcast(self, along="column", length=BAND, mover="A", unread=unread)
+        r0 = self.y * COLUMNS + self.x
+        blocks = jobs * (jobs + 3) // 2  # job j casts j + 2 chunks
+        for job in range(jobs):
+            for chunk in range(job + 2):
+                k0 = chunk * KB
+                if down.sender():
+                    kv = down.cast(
+                        k.tiles[k0 : min(k0 + KB, keys), 0:DT].T,
+                        v.tiles[k0 : min(k0 + KB, keys), 0:DV],
+                    )
+                else:
+                    kv = down.arrive()
+                block = job * (job + 3) // 2 + chunk
+                seen = km.Stream(
+                    bands.pages((r0 * blocks + block) * SLOT, SLOT),
+                    write=True,
+                    block=SLOT,
+                )
+                km.cxx(COPY, takes=[kv, seen])
+
+
 def tables_of(rng, cores, jobs, pages):
     """Each core's table page and its jobs: `jobs` jobs of 1 to 5 pages anywhere in
     the source, each target a page range of its own; the targets' pages in all."""
@@ -174,11 +221,19 @@ def gather_inputs(rng, rows, stride, keys):
     for rank in range(cores):
         for row in range(rank, rank + rows * stride, stride):
             qo[row * DT : (row + 1) * DT] = q[row * DT : (row + 1) * DT]
-    slots = np.zeros((cores * chunks * SLOT, 1024), np.uint16)
-    filled = np.zeros(cores * chunks * SLOT, bool)
+    slots, filled = slots_of(k, v, keys, range(chunks), cores)
+    return {"q": q, "k": k, "v": v}, qo, slots, filled, chunks
+
+
+def slots_of(k, v, keys, sequence, cores):
+    """Each core's blocks, the chunks of `sequence` in turn, as the casts leave them
+    (K's chunk transposed, then V's), and which of their pages the chunks fill."""
+    count = len(sequence)
+    slots = np.zeros((cores * count * SLOT, 1024), np.uint16)
+    filled = np.zeros(cores * count * SLOT, bool)
     for rank in range(cores):
-        for chunk in range(chunks):
-            base, k0 = (rank * chunks + chunk) * SLOT, chunk * KB
+        for block, chunk in enumerate(sequence):
+            base, k0 = (rank * count + block) * SLOT, chunk * KB
             for key in range(min(KB, keys - k0)):
                 for h in range(DT):  # K transposed: column h a row of the slot
                     slots[base + h * KB + key] = k[(k0 + key) * DT + h]
@@ -186,17 +241,17 @@ def gather_inputs(rng, rows, stride, keys):
                 for c in range(DV):  # then V's rows, after K's most
                     at = base + KB * DT + key * DV + c
                     slots[at], filled[at] = v[(k0 + key) * DV + c], True
-    return {"q": q, "k": k, "v": v}, qo, slots, filled, chunks
+    return slots, filled
 
 
-def slot_pages(got, want, filled, inputs):
+def slot_pages(got, want, filled, inputs, cores=RECT[2] * RECT[3]):
     """Each filled slot page that differs: (core, chunk, slot page) and the input
     page it holds instead (K's or V's page, zeros, or none of them)."""
     found = {}
     for name in ("k", "v"):
         for index, page in enumerate(inputs[name]):
             found.setdefault(page.tobytes(), f"{name}{index}")
-    chunks = len(got) // (RECT[2] * RECT[3] * SLOT)
+    chunks = len(got) // (cores * SLOT)
     wrong = []
     for at in np.flatnonzero(filled & (got != want).any(axis=1)):
         core, rest = divmod(int(at), chunks * SLOT)
@@ -272,21 +327,70 @@ def run(session, cores=8, jobs=3, pages=64, seed=1, rows=3, stride=4, keys=7):
     return report
 
 
+def run_bands(session, keys=7, jobs=2, seed=1):
+    """BandCasts made and loaded once; banded on its rectangle with the casts, then
+    with the blocks pushed unread: the report (each command's event and time, the
+    kernel text, the bands' words that differ from numpy's)."""
+    rng = np.random.default_rng(seed)
+    k_rows, cores = -(-keys // KB) * KB, BAND_RECT[2] * BAND_RECT[3]
+    k, _ = bf16_pages(rng, k_rows * DT)
+    v, _ = bf16_pages(rng, k_rows * DV)
+    sequence = [chunk for job in range(jobs) for chunk in range(job + 2)]
+    want, filled = slots_of(k, v, keys, sequence, cores)
+    tiled = {}
+    for name, pages_of, width in (("k", k, DT), ("v", v, DV)):
+        tiled[name] = session.empty((k_rows * 32, width * 32), "bfloat16", "tile")
+        session.write(tiled[name], pages_of.view(np.uint8).reshape(len(pages_of), -1))
+    bands = session.empty((len(want) * 32, 32), "bfloat16", "tile")
+    unread_bands = session.empty(tuple(bands.shape), "bfloat16", "tile")
+    program = BandCasts(**tiled, bands=bands, rect=BAND_RECT, session=session, log=log)
+    report = {"cores": cores, "blocks": len(sequence)}
+    loaded = session.load(program)
+    try:
+        group = program.rectangle["group"]
+        for name, out, unread in (("banded", bands, 0), ("unread", unread_bands, 1)):
+            report[f"{name}_event"], report[f"{name}_microseconds"] = submitted(
+                loaded, BandCasts.banded, group,
+                (tiled["k"], tiled["v"], out, keys, jobs, unread),
+            )  # fmt: skip
+    finally:
+        loaded.stop()
+    report["kernel_text"] = program.sizes.text
+    (got,) = session.read(bands)
+    got = got.view(np.uint16).reshape(want.shape)
+    report["filled"] = int(filled.sum())
+    report["wrong"] = int((got[filled] != want[filled]).sum())
+    if report["wrong"]:
+        report["pages"] = slot_pages(got, want, filled, {"k": k, "v": v}, cores)
+    report["ok"] = report["wrong"] == 0 and (
+        report["banded_event"] == report["unread_event"] == "done"
+    )
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cores", type=int, default=8)
     parser.add_argument("--jobs", type=int, default=3, help="jobs a core walks")
     parser.add_argument("--pages", type=int, default=64, help="source pages")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--part", choices=("jobs", "bands"), default="jobs",
+        help="jobs: TableJobs (walk, gather); bands: BandCasts (banded, unread)",
+    )  # fmt: skip
     parser.add_argument("--rows", type=int, default=3, help=f"gather: Q rows, <= {R}")
     parser.add_argument("--stride", type=int, default=4, help="gather: rows apart")
-    parser.add_argument("--keys", type=int, default=7, help="gather: K and V rows")
+    parser.add_argument("--keys", type=int, default=7, help="K and V rows")
+    parser.add_argument("--band-jobs", type=int, default=2, help="banded: jobs")
     args = parser.parse_args()
     with km.Session(log=log) as session:
-        report = run(
-            session, args.cores, args.jobs, args.pages, args.seed, args.rows,
-            args.stride, args.keys,
-        )  # fmt: skip
+        if args.part == "bands":
+            report = run_bands(session, args.keys, args.band_jobs, args.seed)
+        else:
+            report = run(
+                session, args.cores, args.jobs, args.pages, args.seed, args.rows,
+                args.stride, args.keys,
+            )  # fmt: skip
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
