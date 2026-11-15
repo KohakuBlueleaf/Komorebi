@@ -13,7 +13,16 @@ from test_class_handler_constants import grid, quiet
 
 import komorebi as km
 from komorebi import added, added_program, formats, native, overlay, programs
+from komorebi.build import BuildError
 from komorebi.errors import ProgramError
+
+
+def native_module():
+    """The native module, or the test skipped where no tt-metal tree is named."""
+    try:
+        return native.load_module()
+    except BuildError as error:
+        pytest.skip(str(error))
 
 
 @km.tile_function
@@ -175,7 +184,7 @@ def test_a_class_named_ahead_takes_the_next_field_and_sizes_the_area():
     assert reserve >= end + programs.CB_ALIGN
     assert made.switch_pad not in {b.index for b in [*loaded.buffers, *other.buffers]}
     assert made.switch_loaded == 1
-    made.session = SimpleNamespace(_module=native.load_module())
+    made.session = SimpleNamespace(_module=native_module())
     (part,) = added_program.ahead_overlays(made, placed, 0, {})
     assert part.number == overlay.constants()["kOverlayService"] - 2
     assert part.recipes == {} and part.name == "project"
@@ -201,7 +210,7 @@ def descriptors_text(tables, sizes):
 def test_the_added_class_s_parts_get_its_formats_in_a_copy_of_the_tables(tmp_path):
     other = project(form="runtime")
     loaded = twice(form="runtime")
-    module = native.load_module()
+    module = native_module()
     run = run_of(loaded)
     run.backend.session = SimpleNamespace(_module=module)
     run.backend.switch_pad, run.backend.switch_loaded = 27, 1
