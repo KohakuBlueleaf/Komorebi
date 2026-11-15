@@ -31,7 +31,7 @@ from komorebi.errors import (
     ThreadFailed,
     WaitTimeout,
 )
-from komorebi.merge import lifted
+from komorebi.merge import lifted, merged_holds
 from komorebi.program import Handler
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
@@ -257,11 +257,21 @@ class Run:
 
     # Submitting --------------------------------------------------------------------
 
-    def chain(self, calls, mode, flags=0):
-        """Calls (chain.Call) as one chain's records, written once: their inputs proven
-        or checked first (chain.ChainRefused names the call, the tensor, the core).
-        `mode`: the program's chain mode (the command's a4), `flags` its a1."""
+    def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True):
+        """Calls (chain.Call, or a class's handler calls) as one chain's records, their
+        inputs proven or checked first (ChainRefused names call, tensor, core). `mode`
+        the chain mode (a4), `flags` a1; a class's calls: `cores` the group of those
+        without cores=, `prefetch` False: every read waits for its input's marks."""
+        if any(isinstance(call, front.HandlerCall) for call in calls):
+            calls = self._class_calls(calls, cores, prefetch)
+        walk = self._walk(calls)
         report, word = chain_module.build(calls)
+        calls = [  # a class's handler: the one built for its words' constants
+            call._replace(
+                handler=self._words_built_for(call.handler, [call.args], "a chain")
+            )
+            for call in calls
+        ]
         numbers = [self._handler(call.handler) for call in calls]
         for index, (_, field) in enumerate(numbers):
             if field != numbers[0][1]:
@@ -279,8 +289,9 @@ class Run:
             .ravel(),
         )
         self._unfenced = True
+        handler = self.field_handler(*numbers[0]) if walk is None else walk
         return chain_module.Chain(
-            calls[0].handler,
+            handler,  # a number: submit makes no words of it
             (first, end - first),
             mode,
             flags,
@@ -289,6 +300,24 @@ class Run:
             report,
             calls,
         )
+
+    def _class_calls(self, calls, cores, prefetch, group=None):
+        """The framework's calls of a chain stated with a class's handler calls
+        (komorebi.dsl.chain_calls); `group` (flat ranks) in place of `cores`."""
+        made = importlib.import_module("komorebi.dsl.chain_calls")
+        group = self._group(cores) if group is None else group
+        return made.chain_calls(self, list(calls), group, prefetch)
+
+    def _walk(self, calls):
+        """The chain command's handler when the first call is a class's handler of a
+        program built with the chain's walk (its records each name their handler);
+        None: the first call's handler, the program's own chain mode."""
+        first = calls[0].handler if calls else None
+        if not isinstance(first, HandlerMethod | ClassHandler):
+            return None
+        field = self._handler(first)[1]
+        number = getattr(self.programs[field], "chain_handler", 0)
+        return self.field_handler(number, field) if number else None
 
     def submit(
         self,
@@ -486,6 +515,7 @@ class Run:
                 field
                 for field, program in enumerate(self.programs)
                 if isinstance(program, handler.owner)
+                or merged_holds(program, handler.owner)
             ]
             if not fields:
                 raise ValueError(f"{handler.name}: no program of its class in the run")
@@ -519,6 +549,21 @@ class Run:
             program, method, method.constants_given(args), run=self
         )
         return ClassHandler(number, program, built)
+
+    def _words_built_for(self, handler, rows, where):
+        """A class's handler given command words (submit_many's rows, a chain call's
+        words): the handler built for the constant values they carry (plain words:
+        the defaults), as _built_for. Others: `handler`."""
+        if not isinstance(handler, HandlerMethod | ClassHandler):
+            return handler
+        method = handler if isinstance(handler, HandlerMethod) else handler.method
+        if not front.constant_parameters(method.function):
+            return handler
+        program = None
+        if isinstance(handler, HandlerMethod):
+            program = self.programs[self._handler(handler)[1]]
+        made = importlib.import_module("komorebi.dsl.program")
+        return made.words_handler(handler, rows, program, where)
 
     def _class_form_refused(self, handler, fields):
         """Why `Class.handler` names no program when the run holds several of its
@@ -637,13 +682,15 @@ class Run:
         defines=None,
         timeout=10.0,
         message=False,
+        compile_args=None,
     ):
         """Adds overlay `name` to the live run: `parts` as Program.overlay's, built
-        against the loaded kernels, written into the room the load reserved, its table
-        entry given to every core by a command. Returns its number: with `handler` a
-        handler's, with `message` a dynamic handler's (its body a compute part)."""
+        against the loaded kernels (`compile_args` {kernel: [words]} in place of
+        theirs), written into the room the load reserved, its table entry given to
+        every core by a command. Returns its number (a handler's, a dynamic handler's).
+        """
         return added.addon(
-            self, name, parts, handler, number, defines, timeout, message
+            self, name, parts, handler, number, defines, timeout, message, compile_args
         )
 
     @property
@@ -870,6 +917,8 @@ class Run:
         started = time.perf_counter()
         self._check_alive()
         program_field = 0
+        rows = () if args is None else args  # a class's words: their constants' handler
+        handler = self._words_built_for(handler, rows, "submit_many")
         if isinstance(handler, str | Handler | HandlerMethod):
             handler, program_field = self._handler(handler)
         columns = [np.asarray(handler), np.asarray(firsts), np.asarray(counts)]

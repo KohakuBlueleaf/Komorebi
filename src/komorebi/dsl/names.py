@@ -32,6 +32,25 @@ NAMES = {
         "function: the math CPU's cycles of each call, a page a rank",
         None,
     ),
+    "chain": Name(
+        "chain",
+        "km.chain: a method whose lines are calls of the class's handlers, a chain",
+        "chain",
+    ),
+    "past": Name(
+        "past", "km.past(t) at a chain's call: written further back, proven", None
+    ),
+    "direct": Name(
+        "direct",
+        "km.direct(t) at a chain's call: sent into the cores' L1; "
+        'km.handler(direct=("t",)): the inputs that may be',
+        None,
+    ),
+    "prefetch": Name(
+        "prefetch",
+        "km.Stream(..., prefetch=False): read only once the chain's input is marked",
+        None,
+    ),
     "field": Name("L1", "km.L1[format, *shape]: a field resident in the L1", None),
     "symbol": Name(
         "symbol", "K = km.symbol(): a size the plan gives or the build solves", None

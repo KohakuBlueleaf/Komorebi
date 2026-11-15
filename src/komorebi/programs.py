@@ -175,6 +175,8 @@ def check(program, count):
             else '; make the class with form="runtime"'
             + (f", which refuses it: {refused}" if refused else "")
         )
+        if getattr(program, "merged_sources", None) is not None:  # merged classes
+            made = '; a merge of classes made with form="runtime" is in that form'
         if count > 1:
             raise ProgramError(
                 f"{program.name}: several programs in one run are each in the "

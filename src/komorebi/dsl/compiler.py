@@ -20,7 +20,15 @@ from komorebi.dsl import front
 from komorebi.dsl.names import kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
 from komorebi.dsl.tile import trace, unit_program
-from komorebi.dsl.tile.ir import BF16, BLOCK_B, F32, KernelIR, PlanError, TensorParam
+from komorebi.dsl.tile.ir import (
+    A_DTYPES,
+    BF16,
+    BLOCK_B,
+    F32,
+    KernelIR,
+    PlanError,
+    TensorParam,
+)
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.errors import ProgramError
@@ -259,6 +267,7 @@ class Compiled:
     # only where the plan gives it (declared_constants).
     class_constants: dict = field(default_factory=dict)
     declared: dict = field(default_factory=dict)  # name -> its front.Constant
+    chain: int = 0  # the chain's walk: its handler number (0: none in this build)
 
 
 def handler_methods(cls):
@@ -342,6 +351,7 @@ def compile_class(
             compiled.overlays[method.name] = len(compiled.overlays) + 1
         names = handler_names(method)
         HandlerCompiler(compiled, method, names, plan, tensors).run()
+    listed_words(compiled, methods)
     bind_fields(compiled, plan, l1)
     compiled.compute_options = class_compute(cls, compiled)
     compiled.startup = getattr(cls, "startup_given", None)
@@ -353,6 +363,32 @@ def declared_constants(compiled, cls, constants):
     `compiled` (a symbol's where the plan or the make gives it)."""
     compiled.declared = front.constants_of(cls)
     compiled.class_constants = dict(constants or {})
+
+
+def prefetch_checked(handler, node, value):
+    """A read stream's `prefetch=`: True or False as written (the chain's walk reads
+    it, komorebi.dsl.chain_calls); anything else refused at its line."""
+    if not (isinstance(value, ast.Constant) and isinstance(value.value, bool)):
+        handler.refuse(
+            node,
+            f"{spelling('prefetch')}= is True or False as written",
+            f"write {spelling('prefetch')}=False (read once the input is marked) or "
+            "True (proven unwritten by the chain, or refused)",
+        )
+
+
+def listed_words(compiled, methods):
+    """A handler whose sets are listed: its sets' words on it too (its parameters but
+    the constants, one for every set), so that `Class.handler.args(...)` gives a
+    call's words before the handler for its constants is picked."""
+    for method in methods:
+        built = [variant for _, variant in compiled.variants.get(method.name, [])]
+        if not built or built[0] is method:
+            continue
+        first = built[0]
+        if all(v.words == first.words and v.widths == first.widths for v in built):
+            method.words, method.widths = first.words, first.widths
+            method.returns = first.returns
 
 
 def handler_variants(compiled, methods, handlers):
@@ -762,16 +798,47 @@ def turned_tiles(tiles, first):
 
 
 def tile_format_refusal(formats):
-    """None, or why a tile function is refused tiles of `formats`: its code runs on
-    an fp32 Dst, which reads the A family wrong (the card: each datum 2^-15 off)."""
-    wrong = [f for f in formats if f not in TILE_FORMATS]
-    if not wrong:
+    """None, or why a tile function is refused tiles of `formats`: float32 and the B
+    family run on an fp32 Dst, the A family on a 16-bit one (tile_dest); a mix of
+    the two is refused (an fp32 Dst reads the A family 2^-15 off, a 16-bit Dst cuts
+    float32 to fp16)."""
+    if all(f in TILE_FORMATS for f in formats) or all(f in A_DTYPES for f in formats):
         return None
+    a = [f for f in formats if f in A_DTYPES]
+    other = [f for f in formats if f not in A_DTYPES]
     return (
         f"a tile function takes tiles of float32 or the B family ("
-        f"{', '.join(TILE_FORMATS)}), not {', '.join(wrong)}: its code runs on an "
-        "fp32 Dst, which the card fills wrong from the A family"
+        f"{', '.join(TILE_FORMATS)}), run on an fp32 Dst, or of the A family ("
+        f"{', '.join(A_DTYPES)}), run on a 16-bit Dst; given {', '.join(a)} with "
+        f"{', '.join(other)}: an fp32 Dst reads the A family 2^-15 off, and a 16-bit "
+        "Dst holds no float32"
     )
+
+
+class SrcaSwitch:
+    """A tile call's SrcA format set again before each unpack into it (a product's w,
+    each copied operand) when those are not of one format: the call's setup sets it
+    once, for the first of them, and the unpacker reads every later tile as that."""
+
+    def __init__(self, products, copied):
+        read = [w.buffer.dtype for _, w in products] + [c.buffer.dtype for c in copied]
+        self.on = len(set(read)) > 1
+
+    def product(self, a, w):
+        if not self.on:
+            return []
+        return [f"KM_UNPACK_FORMATS({w.buffer.name}.mover_a, {a.buffer.name}.mover_a);"]
+
+    def copy(self, item):
+        if not self.on:
+            return []
+        return [f"KM_UNPACK_FORMAT_A({item.buffer.name}.mover_a);"]
+
+
+def tile_dest(formats):
+    """The Dst a tile function on tiles of `formats` runs on: "fp16a" for the A
+    family, else "fp32"."""
+    return "fp16a" if all(f in A_DTYPES for f in formats) else "fp32"
 
 
 def field_refused(compiled, name, why, instead):
@@ -3054,7 +3121,7 @@ class HandlerCompiler:
             and all(item and self.in_this_loop(item) for item in items)
         ):
             return self.stream_field_product(node, field_, function, *items)
-        blocks = []
+        blocks, casts = [], []
         for arg in call.args:
             item = isinstance(arg, ast.Name) and self.scope.get(arg.id)
             if not item or item.kind != "arrived":
@@ -3066,6 +3133,7 @@ class HandlerCompiler:
                     "v = b.arrive()` for each operand",
                 )
             blocks.append(item.buffer)
+            casts.append(item.tensor)
         if len(blocks) != 2 or call.keywords:
             self.refuse(node, "a product of two blocks", "write self.f += g(a, b)")
         stored = self.compiled.fields[field_]
@@ -3079,15 +3147,7 @@ class HandlerCompiler:
         if why is not None:
             self.refuse(node, why, "cast tiles of matrix formats of one family")
         left, right = blocks[0].dtype, blocks[1].dtype
-        if self.placed(node, {}, function, left, right, None):
-            self.refuse(
-                node,
-                f"{function.name} turns the product (its right operand in SrcB), and "
-                "a product of two broadcasts' blocks is built in the plain placement "
-                "alone",
-                "drop the marker, or mark it the plain way: "
-                f"`return km.{spelling('srcb')}(a) @ b`",
-            )
+        turned = self.placed(node, {}, function, left, right, ("tensor", casts[1]))
         rows, columns = self.field_sides(node, field_)
         a, b = blocks
         inner = a.block // rows if rows and a.block % rows == 0 else 0
@@ -3139,6 +3199,20 @@ class HandlerCompiler:
             )
         )
         self.wait(node, "compute", WAIT_INPUT)
+        init = (
+            f"    KM_UNPACK_FORMATS({b.name}, {a.name});\n"
+            f"    matmul_block_init({a.name}, {b.name}, 0, {width}, {height}, "
+            f"{inner});\n"
+        )
+        calls = (
+            f"                matmul_block({a.name}, {b.name}, {row} * {inner} + {k}, "
+            f"{k} * {columns} + {column}, 0, 0, {width}, {height}, {inner});\n"
+        )
+        turn = ""
+        if turned:
+            init, calls, turn = self.turned_blocks(
+                a, b, (row, column, k), inner, columns, (height, width)
+            )
         packs = "\n".join(
             f"        pack_tile<true>({i * width + j}, {buffer}, ({row} + {i}) * "
             f"{columns} + {column} + {j});"
@@ -3153,9 +3227,7 @@ class HandlerCompiler:
             f"    km_ok = compute.reserve_back({buffer}, {buffer}Pages);\n"
             "}\n"
             "if (km_ok) {\n"
-            f"    KM_UNPACK_FORMATS({b.name}, {a.name});\n"
-            f"    matmul_block_init({a.name}, {b.name}, 0, {width}, {height}, "
-            f"{inner});\n"
+            f"{init}"
             f"    KM_PACK_FORMAT({buffer});\n"
             f"    pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
             f"    for (uint32_t {row} = 0; {row} < {rows}; {row} += {height}) {{\n"
@@ -3163,9 +3235,9 @@ class HandlerCompiler:
             f"{width}) {{\n"
             "            tile_regs_acquire();\n"
             f"            for (uint32_t {k} = 0; {k} < {inner}; {k}++) {{\n"
-            f"                matmul_block({a.name}, {b.name}, {row} * {inner} + {k}, "
-            f"{k} * {columns} + {column}, 0, 0, {width}, {height}, {inner});\n"
+            f"{calls}"
             "            }\n"
+            f"{turn}"
             "            tile_regs_commit();\n"
             "            tile_regs_wait();\n"
             + "\n".join("    " + line for line in packs.split("\n"))
@@ -3179,6 +3251,28 @@ class HandlerCompiler:
             "}"
         )
         return [Line(f"{sums}++;", mover="B")], [Line(text, {"km_ok"})]
+
+    def turned_blocks(self, a, b, names, inner, columns, sides):
+        """The broadcasts' product turned: its setup, a K tile's calls (W's tiles into
+        SrcB, each row of X's subblock read transposed: DST i * width .. hold row i's
+        transposed sums) and the lines after the K tiles (DST turned back, the setup
+        again)."""
+        row, column, k = names
+        height, width = sides
+        init = (
+            f"KM_UNPACK_FORMATS({a.name}, {b.name});\n"
+            f"matmul_block_init({b.name}, {a.name}, 1, 1, {width}, 1);"
+        )
+        calls = "".join(
+            f"                matmul_block({b.name}, {a.name}, {k} * {columns} + "
+            f"{column}, ({row} + {i}) * {inner} + {k}, {i * width}, 1, 1, {width}, "
+            "1);\n"
+            for i in range(height)
+        )
+        self.compiled.includes.add("transpose_dest")
+        lines = turned_tiles(height * width, 0).text.split("\n") + init.split("\n")[1:]
+        turn = "".join(f"            {line}\n" for line in lines)
+        return "".join(f"    {line}\n" for line in init.split("\n")), calls, turn
 
     def sums_field(self, node, field_):
         """A field of sums: fp32, rows x columns of tiles; its count of sums (a
@@ -3365,6 +3459,8 @@ class HandlerCompiler:
                 repeat = self.integer(keyword_.value)
             elif key == spelling("write_stream"):
                 continue
+            elif key == spelling("prefetch") and not write:
+                prefetch_checked(self, node, keyword_.value)
             else:
                 self.refuse(node, f"a stream has no {key}=", "use block=, pattern=")
         block = self.row_width if block is None else block
@@ -4024,6 +4120,7 @@ class HandlerCompiler:
         row: 0 .. width - 1). Returns (no movement, compute's lines)."""
         function = self.tile_function_of(call)
         self.held_not_traced(node, call, function)
+        traced_placement = self.traced_placement(node, function)
         if not self.loop_states:
             self.refuse(
                 node,
@@ -4107,7 +4204,7 @@ class HandlerCompiler:
             (operands[parameters.index(p.a)][0], operands[parameters.index(p.w)][0])
             for p in unit.products
         ]
-        for a, w in products:
+        for (a, w), p in zip(products, unit.products):
             why = product_refusal(a.buffer.dtype, w.buffer.dtype)
             if why is not None:
                 self.refuse(
@@ -4115,6 +4212,17 @@ class HandlerCompiler:
                     f"{why}, in {function.name}",
                     "stream tensors of matrix formats of one family into it",
                 )
+            self.compiled.placements.append(
+                (
+                    self.method.name,
+                    node.lineno,
+                    self.text(node),
+                    a.buffer.dtype,
+                    w.buffer.dtype,
+                    traced_placement.get((p.a, p.w), "none"),
+                    None,
+                )
+            )
         if products:
             fidelity = unit.fidelity
             if self.compiled.fidelity not in (None, fidelity):
@@ -4149,6 +4257,12 @@ class HandlerCompiler:
         timed = self.method.stamps is not None and not self.method.overlay
         count = len(unit.operands)
         slots = DST_HALF // count if width == 1 else 1
+        copied = [
+            operands[parameters.index(operand)][0]
+            for operand in unit.operands
+            if operand is not None
+        ]
+        switch = SrcaSwitch(products, copied)
         number = self.stream_loops[-1]
         lines = ["tile_regs_acquire();"]
         if slots > 1:  # the calls of `slots` tiles an acquire, each its own DST tiles
@@ -4161,6 +4275,7 @@ class HandlerCompiler:
                 f"for (uint32_t {slot} = 0; {slot} < {batch}; {slot}++) {{",
             ]
             for a, w in products:  # unpacked in the unit's issue order
+                lines += [f"    {line}" for line in switch.product(a, w)]
                 lines.append(
                     f"    UNPACK((llk_unpack_AB_matmul({a.cxx}, {w.cxx}, {a.first} + "
                     f"{slot}, {w.first} + {slot}, 1, 1, 1)));"
@@ -4169,6 +4284,7 @@ class HandlerCompiler:
                 if operand is None:  # a product's Dst tile
                     continue
                 item, _ = operands[parameters.index(operand)]
+                lines += [f"    {line}" for line in switch.copy(item)]
                 lines.append(
                     f"    copy_tile({item.cxx}, {item.first} + {slot}, "
                     f"{count} * {slot} + {dst});"
@@ -4177,6 +4293,7 @@ class HandlerCompiler:
             lines += ["    " + line for line in self.timed_call(call_, timed)] + ["}"]
         elif width == 1:
             for a, w in products:  # unpacked in the unit's issue order
+                lines += switch.product(a, w)
                 lines.append(
                     f"UNPACK((llk_unpack_AB_matmul({a.cxx}, {w.cxx}, {a.first}, "
                     f"{w.first}, 1, 1, 1)));"
@@ -4185,6 +4302,7 @@ class HandlerCompiler:
                 if operand is None:  # a product's Dst tile
                     continue
                 item, _ = operands[parameters.index(operand)]
+                lines += switch.copy(item)
                 lines.append(f"copy_tile({item.cxx}, {item.first}, {dst});")
         else:  # the row form: the row in DST 0 .. width - 1, the field's tile after
             item = streamed[0]
@@ -4209,6 +4327,45 @@ class HandlerCompiler:
             batch=(number, count) if slots > 1 else None,
         )
         return [], [Line("\n".join(lines))]
+
+    def traced_placement(self, node, function):
+        """Each product's placement ("none" or "plain") in a traced tile function, by
+        its operands' names; refused at the call's line when a marker turns one (the
+        unit's vector code reads the products in DST in one body, and the transpose
+        back is a library call) or marks both operands for one side."""
+        tree = source_of(function.function)[0]
+        placements = {}
+        for product in ast.walk(tree):
+            if not (
+                isinstance(product, ast.BinOp) and isinstance(product.op, ast.MatMult)
+            ):
+                continue
+            left = marked_operand(product.left)[1]
+            right = marked_operand(product.right)[1]
+            where = (
+                f"{function.name}'s `{ast.unparse(product)}` (line {product.lineno})"
+            )
+            if left is not None and left == right:
+                self.refuse(
+                    node,
+                    f"{where}: both operands are marked km.{spelling(left)}",
+                    "mark one operand",
+                )
+            if left == "srca" or right == "srcb":
+                self.refuse(
+                    node,
+                    f"{where} turns the product (its right operand in SrcB), and a "
+                    "tile function the tile compiler traces runs its vector code on "
+                    "the product in DST in one body: the turned product would leave "
+                    "(a @ w)^T there, and DST's transpose back is a library call the "
+                    "body's words do not hold",
+                    "mark it the plain way (`km.srcb(a) @ w`), or make the product "
+                    "a tile function `return a @ km.srcb(w)` of its own that a "
+                    "handler's product line adds",
+                )
+            names = (marked_operand(product.left)[0], marked_operand(product.right)[0])
+            placements[names] = "none" if left is None and right is None else "plain"
+        return placements
 
     def timed_call(self, call, timed):
         """A call's lines; `timed` (stamps): between two tensix_sync(), its span on
@@ -4279,9 +4436,19 @@ class HandlerCompiler:
         cxx = function.name
         while cxx in self.compiled.units:
             cxx += "_"
-        tensors = [
-            TensorParam(p, False, TILE_FORMATS[f]) for p, f in zip(parameters, formats)
-        ]
+        dest = tile_dest(formats)
+        if dest != "fp32" and width > 1:
+            self.refuse(
+                node,
+                f"the tile function {function.name} ({where}) takes tiles of "
+                f"{', '.join(sorted(set(formats)))} (the A family, a 16-bit Dst) and "
+                "is called on a row: the row form keeps each row's value and its sums "
+                "in Dst between its levels, which a 16-bit Dst would cut to fp16",
+                "call it on a stream's tiles, one tile a side, or stream tensors of "
+                "the B family",
+            )
+        kinds = {**TILE_FORMATS, **{f: f for f in A_DTYPES}}
+        tensors = [TensorParam(p, False, kinds[f]) for p, f in zip(parameters, formats)]
         result = TensorParam("result", True, F32)
         ir = KernelIR(cxx, [*tensors, result], [], {})
         held = len(parameters) - len(fields)  # the fields are the last parameters
@@ -4301,7 +4468,7 @@ class HandlerCompiler:
                         trace.store(out.tiles[t, :], value)
             if width == 1:
                 fidelity = function.fidelity or "HiFi4"  # its products'
-                unit = unit_program(ir, load_macro=True, fidelity=fidelity)
+                unit = unit_program(ir, dest, load_macro=True, fidelity=fidelity)
             else:
                 unit = row_program(ir, width, width, 2 * width)
                 self.compiled.full_dst = True
@@ -5523,15 +5690,9 @@ class HandlerCompiler:
             self.compiled.full_dst = True
         number = self.arrivals
         self.arrivals += 1
-        arrival = self.other_buffer(
-            f"kArrival{number}",
-            "arrival",
-            "float32",
-            PAGE_BYTES["float32"],
-            slots * width,
-            f"line {node.lineno}: {self.text(node)}",
+        arrival = self.arrival_buffer(
+            number, slots, width, f"line {node.lineno}: {self.text(node)}"
         )
-        arrival.block = width
         self.compiled.unpack_fp32.add(arrival.name)
         out = self.out_buffer(
             "float32",
@@ -5622,15 +5783,9 @@ class HandlerCompiler:
             )
         number = self.arrivals
         self.arrivals += 1
-        arrival = self.other_buffer(
-            f"kArrival{number}",
-            "arrival",
-            "float32",
-            PAGE_BYTES["float32"],
-            slots * tiles,
-            f"line {node.lineno}: {self.text(node)}",
+        arrival = self.arrival_buffer(
+            number, slots, tiles, f"line {node.lineno}: {self.text(node)}"
         )
-        arrival.block = tiles
         self.compiled.unpack_fp32.add(arrival.name)
         buffer = f"kField{camel(field_)}"
         self.compiled.includes |= {"port", "pack"}
@@ -5752,6 +5907,24 @@ class HandlerCompiler:
             f"to mover {where} by the hand-over buffer"
         )
         return set()
+
+    def arrival_buffer(self, number, slots, per, what):
+        """kArrival<number>, which the handlers' reduces of that number share: a slot
+        of the largest part (`per` pages) and as many slots as the most a reduce takes.
+        """
+        name = f"kArrival{number}"
+        found = next((b for b in self.compiled.buffers if b.name == name), None)
+        if found is not None:
+            per, slots = max(per, found.block), max(
+                slots, found.pages[0] // found.block
+            )
+            found.block, found.pages = per, (slots * per,)
+            return found
+        arrival = self.other_buffer(
+            name, "arrival", "float32", PAGE_BYTES["float32"], slots * per, what
+        )
+        arrival.block = per
+        return arrival
 
     def other_buffer(self, name, role, dtype, page_bytes, pages, what):
         for buffer in self.compiled.buffers:
@@ -6013,7 +6186,8 @@ class HandlerCompiler:
             uses |= range_uses(part["pages"], self)
         if broadcast.unread is not None:  # each core's slot pushed as it is, or cast
             text, uses = self.unread_push(broadcast, text, uses)
-        self.scope[value] = Value("arrived", buffer.name, buffer=buffer)
+        tensors = ",".join(sorted({part["pages"].tensor for part in parts}))
+        self.scope[value] = Value("arrived", buffer.name, buffer=buffer, tensor=tensors)
         self.wait(node, f"mover {broadcast.mover}", WAIT_FREE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_DONE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_VALID)
