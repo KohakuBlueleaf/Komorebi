@@ -166,6 +166,11 @@ class LineReader:
             tensor, first, count = self.pages(node, func.value)
             self.add("write", tensor, node, first, count, leader=leader)
             return
+        if method == spelling("write") and self.is_rectangle(func.value):
+            rows, columns = self.rectangle(node, func.value.slice)
+            access = self.add("write", func.value.value.value.id, node, leader=leader)
+            access.rect = (*rows, *columns)
+            return
         if method == spelling("drain") and self.is_km_call(func.value, "stream"):
             self.stream(node, func.value, leader)
             return
@@ -252,6 +257,16 @@ class LineReader:
             return None  # a field's pages (km.Stream(self.f, ...)): no tensor
         self.refuse(node, "a stream of a form the chain does not describe")
         return None
+
+    def is_rectangle(self, node):
+        """Whether `node` is a tensor parameter's rectangle, `t.tiles[r0:r1, c0:c1]`."""
+        return (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == spelling("tiles")
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id in self.tensors
+        )
 
     def rectangle(self, node, index):
         if not (isinstance(index, ast.Tuple) and len(index.elts) == 2):
@@ -475,6 +490,7 @@ class Described:
     outputs: list = field(default_factory=list)  # its other outputs: (tensor, width)
     body_reads: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
     body_writes: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
+    unranged: dict = field(default_factory=dict)  # tensor -> why it is no range
 
 
 def describe(run, call, group):
@@ -600,6 +616,8 @@ def derived(method, lines, given, program, group, label):
             entry[1].append(line)
     for access in (a for a in lines.accesses if a.kind == "read"):
         tensor = given[access.tensor]
+        if unranged_read(described, access, tensor, method, lines, given, program):
+            continue
         k, ranges = read_shape(method, lines, access, given, program, group, size)
         held = described.reads.setdefault(id(tensor), [tensor, None, [], []])
         if k is not None:
@@ -644,6 +662,28 @@ def spans(method, lines, access, given, program, group):
         else:
             out.append((evaluator.value(access.first), evaluator.value(access.count)))
     return out
+
+
+def unranged_read(described, access, tensor, method, lines, given, program):
+    """A read of a rectangle of several rows, not whole ones (a weight's columns,
+    `w.tiles[0:K, c:c + n]`): no range of tiles. Kept as an outside read, which no
+    call of the chain may write (placed refuses it there); False for other reads."""
+    if access.rect is None:
+        return False
+    group = described.group
+    for rank in range(group[1]):
+        evaluator = Evaluator(method, lines, given, program, rank, group[1])
+        r0, r1, c0, c1 = (evaluator.value(side) for side in access.rect)
+        columns = tensor.shape[-1] // 32
+        if r1 - r0 > 1 and (c0, c1) != (0, columns):
+            described.unranged[id(tensor)] = (
+                f"line {access.line} reads {access.tensor} as a rectangle of several "
+                "rows, not whole ones, which is not one range of tiles"
+            )
+            described.reads.setdefault(id(tensor), [tensor, None, [], []])
+            described.reads[id(tensor)][3].append((access.line, access.prefetch))
+            return True
+    return False
 
 
 def output_width(method, lines, writes, given, program, group, size):
@@ -791,6 +831,11 @@ def placed(described, index, one, names, written, prefetch):
                     "of the chain writes it: it is read only once marked"
                 )
         if before_output is not None and key == id(before_output):
+            if key in one.unranged:
+                raise kc.ChainRefused(
+                    f"{label}: {one.unranged[key]}; it is the call before's output, "
+                    "read by ranges of tiles"
+                )
             if mark == "past":
                 raise kc.ChainRefused(
                     f"{label}: km.{spelling('past')} marks {name}, the call before's "
@@ -800,6 +845,11 @@ def placed(described, index, one, names, written, prefetch):
             if mark == "direct":
                 direct = True
             continue
+        if key in one.unranged and writers:
+            raise kc.ChainRefused(
+                f"{label}: {one.unranged[key]}; a call of the chain writes it, and "
+                "only a range's tiles are proven complete"
+            )
         if key in before_others and mark is None:  # proven by the input's marks
             others.append((key, read_k, tuple(read_ranges)))
             reads.append(kc.Read(name, read_k, tuple(read_ranges), True))

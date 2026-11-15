@@ -425,6 +425,7 @@ A handler of **another** class added to a live run is not built. It would need:
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
+| `y.tiles[r0:r1, c0:c1].write(gate(self.h, self.g))`, gate a tile function, h and g fields of sums of one shape | as the field's write | tile by tile each field's tile copied into the DST tile of its operand, gate's body on the math CPU, DST 0 packed into Y's format; both fields freed, both counts reset |
 | `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
@@ -940,8 +941,9 @@ A **tile function** is a Python function of tiles that the tile compiler
 ([Tile functions](tile.md)) traces and emits for compute: decorated with
 `@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
 called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
-stream form: `+`, `-`, `*`, number constants, `km.silu`, `km.sigmoid`,
-`km.rsqrt`, `km.exp` (`error=`, `over=`) of up to three tiles, one result. From
+stream form: `+`, `-`, `*`, `/`, `abs`, number constants, `km.silu`, `km.sigmoid`,
+`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.exp`
+(`error=`, `over=`) of up to four tiles, one result. From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
@@ -983,6 +985,22 @@ class Gate(km.Program):
 | `results.push(f(x, g))`, `t = f(x, g)` | | once before the blocks `copy_init` and the body's setup (`km_tile::f_init()`); DST held for as many tiles as half of DST takes (4 float32 tiles over the operands: 2 tiles of a gate an acquire), each tile's operands copied into its DST tiles in the order of the unit program's operands and `km_tile::f(d)` on the math CPU, then each tile's first DST tile packed into the write stream at its place |
 | `for row in km.Stream(pages, block=4, row=2):` | one read stream, as without `row=` | each item a row of 2 tiles of the block; the block a multiple of the row |
 | `results.push(self.f(row, self.w))`, `self.w` a field | | the row form: the field filled above the loop waited for before its blocks and freed after them; a row: its tiles copied into DST 0 and 1, the field's tile into DST 4, `km_tile::f(0)`, DST 0 and 1 packed; DST in full-sync mode |
+
+**A tile expression in a handler's line.** `results.push(x / y)`, `t = km.silu(x) * y *
+SCALE`: an expression of the loop's tiles, numbers, module constants and the tile
+arithmetic above is the tile function of the tiles it names, in the order it names
+them, and is emitted as that function's call is (`tile_line_N` in the build's list,
+N the line): its unit program is the same, word for word, as the one a
+`@km.tile_function` of the same expression gives. A word of the command, a field or
+`self` in such an expression is refused at its line (the unit program's numbers are
+immediates built into its code); a call that is no tile arithmetic (`km.cxx(...)`)
+leaves the line to its own form. On the card
+([tile lines](../../experiments/language/tile_lines/README.md), bf16 tiles, 768 a
+command on 12 cores): `results.push(km.silu(x) * y)` equal datum for datum to the tile
+function's call, 82.1 us both; `x / y` within 1.6e-7 of float64 at 30.3 us against
+75.5 us for the inline body of tt-metal's `div_binary_tile`; `km.sqrt(x)` within 9.5e-8
+at 40.2 us against 53.9 us for `sqrt_tile`; `km.minimum(abs(x), y)` exact; four tiles
+`x * y + z * w` within 6.0e-8.
 
 A function called on a row of a stream of `row=` tiles is traced in the tile
 compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows of the
@@ -1100,6 +1118,17 @@ A product's sum is in one of two places:
   blocks are two streams' (the field one row of n tiles, `km.L1[km.fp32, 1, n, 32,
   32]`) or two broadcasts' arrived blocks (rows x k and k x columns, `b.cast(...)` or
   `b.arrive()`), as the dense project's grid form.
+
+A field of sums starts from zero at each command: its first block packs without the L1
+accumulation, and its count of sums is 0 at the handler's start; nothing of one
+command's sums is kept for the next. One loop may add two products into two fields
+(`self.h += self.p(xb, w1b)` and `self.g += self.p(xb, w3b)`, X's block read once for
+both): each is counted on mover B for its write, and a product whose setup differs from
+the loop's first (W's format, the block's shape, a turn) sets its own before its K
+tiles and the first's after them. A tile function of fields of sums is written as one
+rectangle (the table above): the README's SwiGLU layer,
+[31 swiglu](../../examples/31_swiglu/README.md), whose `up` handler writes
+`gate(self.h, self.g)`.
 
 The size rule: a sum in DST is at most 8 float32 tiles (4 in the half-sync DST, 8 in
 full sync); a larger sum is a float32 field, 4 KiB a tile of L1.
@@ -1772,7 +1801,8 @@ session gives more with `kernel_bytes`
 
 **The lines a call is described from.** A handler's streams of page ranges
 (`t.pages(first, count)`, a partition's share `s[part]`, a rectangle `t.tiles[r0:r1,
-c0:c1]`), their zip, `.write` of a page range, `.drain` and `.fill`, the assignments
+c0:c1]`), their zip, `.write` of a page range or of a rectangle (`t.tiles[r0:r1,
+c0:c1].write(...)`), `.drain` and `.fill`, the assignments
 before them, one `km.reduce(..., form="tree")` and the leader's `if` around a write. A
 first page is a number of the call's words, the class's constants, `self.rank`, `size`
 and `leader` (`+ - * // %`, `min`, `max`). From these: the output (the first tensor
@@ -1781,7 +1811,11 @@ written; each group's root writes block g, `width` tiles from g x width), the gr
 `base + step x g`. The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
 input that `run.chain` proves (as a written chain's,
-[the earlier input](chain.md#the-earlier-input-and-the-direct-input)).
+[the earlier input](chain.md#the-earlier-input-and-the-direct-input)). A rectangle of
+several rows that are not whole rows (a weight's columns, `w.tiles[0:K, c:c + n]`) is
+no range of tiles: it is read as an outside tensor, and refused when a call of the
+chain writes it. A call's `cores=(first, count)` puts it on its own group (the README's
+SwiGLU: `up` on 12 cores, `down` on 4).
 
 **Several outputs.** A handler that writes more than one tensor, each as block g of its
 group (the decode layer's x and its rows' squares, a tile a group), is a call with
@@ -1823,6 +1857,7 @@ island 0's program and `cores` in flat ranks.
 | a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor and states neither `reads=` nor `writes=` | `run.chain` | the handler, the line and why; it still runs as a command |
 | a body's `reads=` of a tensor a call of the chain writes; a read of a tensor another call's body writes (`writes=`) | `run.chain` | the call, the line, the tensor, the other call |
 | a call of a program made without the walk | `run.chain` | the handler; `chain=True` or a `km.chain` method |
+| a rectangle of rows not whole read from the call before's output or from a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | a `kc.Call` among a class's calls | `run.chain` | the call |
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
 | `km.past` of the call before's output, or of a tensor the handler does not read | `run.chain` | the call, the tensor |
@@ -2038,8 +2073,7 @@ the packed text of the five CPUs, of 70,656 B.
 
 ## Not in this version
 
-A rectangle per command; tile arithmetic outside a tile function (`tile * factors`
-in a handler's line); slices and `.columns` of a field; a rectangle of tiles with a
+A rectangle per command; slices and `.columns` of a field; a rectangle of tiles with a
 step on its columns; a transposed rectangle outside a cast; a stream of a rectangle
 of more than one row whose columns are words; a field
 filled from a broadcast; a product's operands other than a stream's tile and a field,
