@@ -222,6 +222,12 @@ NAMES = {
     "group": Name(
         "group", "km.reduce(t, group=S): in groups of S consecutive ranks", None
     ),
+    "combine": Name(
+        "combine",
+        "km.reduce(self.state, combine=MERGE): each arrival merged into the state "
+        "by an inline body, not added",
+        None,
+    ),
     "broadcast": Name("Broadcast", "km.Broadcast(self, along=): a broadcast", None),
     "along": Name("along", "a broadcast's direction: row or column", None),
     "window": Name("window", "a broadcast's blocks in flight", "window"),
@@ -252,6 +258,18 @@ NAMES = {
     "srca": Name("srca", "km.srca(x) @ w: x is the product's SrcA operand", None),
     "takes": Name("takes", "the names an inline body reads", None),
     "gives": Name("gives", "what an inline body gives: int or km.Tile", None),
+    "body_reads": Name(
+        "reads",
+        "km.cxx(..., takes=[t], reads=[t]): the tensors a body reads, for a chain an "
+        "outside input of the call",
+        None,
+    ),
+    "body_writes": Name(
+        "writes",
+        "km.cxx(..., takes=[t], writes=[t]): the tensors a body writes, for a chain "
+        "written by the call",
+        None,
+    ),
     "tile_value": Name(
         "Tile", "gives=km.Tile: the tile a body leaves in DST 0", "tile"
     ),

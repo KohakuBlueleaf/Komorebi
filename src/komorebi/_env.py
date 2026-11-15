@@ -4,6 +4,8 @@ The tree is TT_METAL_HOME's when set, else the root of the komorebi-runtime pack
 it is installed. Nothing runs at import.
 """
 
+import functools
+import hashlib
 import os
 from pathlib import Path
 
@@ -25,6 +27,20 @@ _X280_IDLE_IMAGE = Path("build/x280/firmware-lim-idle.bin")
 def package_directory():
     """The directory of the installed `komorebi` package."""
     return Path(__file__).resolve().parent
+
+
+@functools.cache
+def code_key(*names):
+    """A short hash of the package's Python source: the files or folders `names`
+    (relative to the package), or every file when none is named. A build or a check
+    keyed by it is made again once the code that made it changes."""
+    root = package_directory()
+    paths = [root / name for name in names] or [root]
+    digest = hashlib.sha256()
+    for path in paths:
+        for one in sorted(path.rglob("*.py")) if path.is_dir() else [path]:
+            digest.update(str(one.relative_to(root)).encode() + one.read_bytes())
+    return digest.hexdigest()[:16]
 
 
 def include_directory():

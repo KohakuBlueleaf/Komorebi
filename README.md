@@ -57,14 +57,15 @@ kmr doctor
 
 A program's kernels are loaded once and stay on the cores. After that a kernel is a
 call: the host submits commands and the card runs them. Three handlers of one class
-(`scale`, `add`, `sum`; reduced from [29_chain](examples/29_chain/README.md)):
+(`scale`, `add`, `sum`; this block is
+[quick.py](examples/29_chain/as_class/quick.py) of [29_chain](examples/29_chain/README.md)):
 
 ```python
 import numpy as np
 import komorebi as km
 from steps_class import Steps, bits  # examples/29_chain/as_class: the kernels
 
-with km.Session() as session:
+with km.Session(kernel_bytes=84 * 1024) as session:  # room for the chain's code
     x = session.tensor(np.ones((16, 1024), np.float32), "float32")  # 16 tiles in DRAM
     y, z, s = (
         session.tensor(np.zeros((16, 1024), np.float32), "float32") for _ in "yzs"
@@ -94,7 +95,8 @@ with km.Session() as session:
     )
     for _ in range(100):
         run.wait(run.submit(layer))
-    print(t.read()[0, :4])
+    run.stop()  # a tensor is read back once the run is stopped
+    print(t.read()[0, :4])  # [128. 128. 128. 128.]
 ```
 
 The card can also decide what runs next by itself: a C thread on an X280 cluster
@@ -121,108 +123,88 @@ share of the work.
 ### As a Python class
 
 On `main`, after 0.2.0 (experimental). A method marked as a handler is compiled, when
-the class is made, into the C++ kernels of the next section: its streams and
-broadcasts become the data-movement code and the buffers, its parameters the
-command's words. An inline C++ body runs on the compute units with the streams and
-fields it takes.
+the class is made, into the C++ kernels of the next section: its streams become the
+data-movement code and the buffers, its parameters the command's words. The
+arithmetic is tile functions, which the tile compiler turns into the matrix and vector
+units' instructions.
 
-Multi-head attention on two cards, the heads sharded over them. The class names
-tensors, never cards: the host places each tensor by a hint, and each card's cores
-work on the heads their card holds.
+A SwiGLU layer, `y = (silu(x W1) * (x W3)) W2`: two handlers and the chain that runs
+them as one command.
 
 ```python
 import komorebi as km
 
 
-class Job(km.Entry):
-    """A row of a core's job table: the first pages of its queries, keys, values and
-    output, and how many rows of each."""
-
-    q: int
-    k: int
-    v: int
-    o: int
-    rows: int
-    keys: int
+@km.tile_function
+def gate(h, g):  # the vector unit
+    return km.silu(h) * g
 
 
-class Attention(
-    km.Program, compute={"math_fidelity": "HiFi2", "fp32_dest_acc_en": True}
-):
-    DT = km.constant(2)  # tiles a row of Q and of K: a head of 64
-    DV = km.constant(2)  # tiles a row of V
-    R = km.constant(13)  # query rows a job
-    KB = km.constant(12)  # key rows a block; Attention(..., KB=8) is another build
+class SwiGLU(km.Program):
+    """x is [32, D], W1 and W3 are [D, H], W2 is [H, D]; every size in tiles of 32."""
 
-    state: km.L1[km.fp32, 2 * R, 32, 32] = km.own(push=None)  # each row's max and sum
-    acc: km.L1[km.fp32, R * (DV + 1), 32, 32] = km.own(push=None)  # O as it builds
+    D = km.constant(32)  # x's and y's width: 1,024
+    H = km.constant(96)  # the hidden width: 3,072
+    WIDTH = km.constant(8)  # the columns one core makes
+    CHUNK = km.constant(2)  # K tiles a block
+    W_BLOCK = CHUNK * WIDTH
+
+    h: km.L1[km.fp32, 1, WIDTH, 32, 32]  # x W1, this core's columns: a field in L1
+    g: km.L1[km.fp32, 1, WIDTH, 32, 32]  # x W3
+    out: km.L1[km.fp32, 1, WIDTH, 32, 32]  # hidden W2
+
+    @km.tile_function(fidelity="HiFi2")
+    def project(x, w):  # the matrix unit
+        return x @ w
 
     @km.handler
-    def attend(
-        self, q: km.Tensor, k: km.Tensor, v: km.Tensor, o: km.Tensor, tables: km.Tensor
-    ):
-        # A column of cores works on one head. Its first core reads each block of K
-        # and V from DRAM once and casts it down the column; the others take it from
-        # the NoC, so K and V are read once a column, not once a core.
-        down = km.Broadcast(self, along="column", length=10, mover="A", window=2)
-        jobs = tables.pages(self.rank, 1).entries(Job, first=8, size=8, count=0)
-        for job in jobs:
-            q0, o0 = job.q // self.DT, job.o // self.DV
-            k0, v0 = job.k // self.DT, job.v // self.DV
-            queries = km.Stream(
-                q.tiles[q0 : q0 + job.rows, 0 : self.DT], block=self.R * self.DT
-            )
-            for b in range((job.keys + self.KB - 1) // self.KB):
-                kr, vr = k0 + b * self.KB, v0 + b * self.KB
-                if down.sender():
-                    kv = down.cast(
-                        k.tiles[kr : min(kr + self.KB, k0 + job.keys), 0 : self.DT].T,
-                        v.tiles[vr : min(vr + self.KB, v0 + job.keys), 0 : self.DV],
-                    )
-                else:
-                    kv = down.arrive()
-                # softmax(Q K^T) V over this block of keys, kept as a running max, sum
-                # and O: inline C++ on the matrix and vector units
-                km.cxx(
-                    "Flash<kv_buffer, state, acc>::block(job_rows, job_keys, b);",
-                    takes=[queries, kv, job, b, self.state, self.acc],
-                    include=["flash.hpp"],
-                )
-            out = km.Stream(
-                o.tiles[o0 : o0 + job.rows, 0 : self.DV], write=True, block=self.DV
-            )
-            for row in range(job.rows):
-                km.cxx(
-                    "Flash<out_buffer, state, acc>::finalize(row);",
-                    takes=[out, row, self.state, self.acc],
-                )
+    def up(self, x: km.Tensor, w1: km.Tensor, w3: km.Tensor, hidden: km.Tensor):
+        first = self.rank * self.WIDTH  # this core's columns of the hidden
+        for xb, w1b, w3b in zip(
+            km.Stream(x.tiles[0:1, 0 : self.D], block=self.CHUNK),
+            km.Stream(
+                w1.tiles[0 : self.D, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+            km.Stream(
+                w3.tiles[0 : self.D, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+        ):
+            self.h += self.project(xb, w1b)
+            self.g += self.project(xb, w3b)
+        hidden.tiles[0:1, first : first + self.WIDTH].write(gate(self.h, self.g))
+
+    @km.handler
+    def down(self, hidden: km.Tensor, w2: km.Tensor, y: km.Tensor):
+        first = self.rank * self.WIDTH  # this core's columns of y
+        for hb, wb in zip(
+            km.Stream(hidden.tiles[0:1, 0 : self.H], block=self.CHUNK),
+            km.Stream(
+                w2.tiles[0 : self.H, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+        ):
+            self.out += self.project(hb, wb)
+        y.tiles[0:1, first : first + self.WIDTH].write(self.out)
+
+    @km.chain
+    def forward(self, x, w1, w3, w2, hidden, y):
+        self.up(x, w1, w3, hidden, cores=(0, 12))  # 96 columns of the hidden, 8 a core
+        self.down(hidden, w2, y, cores=(0, 4))  # 32 columns of y
 
 
-with km.Session(cards=[0, 1]) as session:  # two cards as one run: 236 flat ranks
-    # split=0: a tensor's rows are dealt over the ranks, so half the heads are in each
-    # card's DRAM and every core's jobs name pages its own card holds
-    q = session.tensor(q_rows, "bfloat16", "tile", split=0)
-    k = session.tensor(k_rows, "bfloat16", "tile", like=q)
-    v = session.tensor(v_rows, "bfloat16", "tile", like=q)
-    o = session.empty(q_rows.shape, "bfloat16", "tile", like=q)
-    tables = session.tensor(job_tables, "uint32", split=0)  # a page of jobs a rank
-    program = Attention(q=q, k=k, v=v, o=o, tables=tables)  # compiled here
-    run = session.load(program)  # a copy of the kernels on each card
-    words = (q, k, v, o, tables)
-    run.wait(run.submit(Attention.attend, (0, session.ranks), args=words))
-    result = o.read()
+program = SwiGLU(x=x, w1=w1, w3=w3, w2=w2, hidden=hidden, y=y)  # compiled here
+run = session.load(program)
+layer = run.chain(program.forward(x, w1, w3, w2, hidden, y))  # stated once
+run.wait(run.submit(layer))  # the whole layer is one command
 ```
 
-Reduced from [attention_class](experiments/language/attention_class/README.md), which
-has the whole class (the causal mask, the constant tiles, `flash.hpp`), and from
-[01_mapcollect on two islands](examples/01_mapcollect/as_class/README.md). What a
-handler's lines may be is in [classes](docs/reference/classes.md), what a tile
-function may contain in [tile functions](docs/reference/tile.md), how tensors are
-placed over cards in [islands](docs/reference/islands.md). Smaller classes to start
-from: [22_gate](examples/22_gate/as_class/README.md) (a tile function for the
-arithmetic) and [dense_class](experiments/language/dense_class/README.md) (a linear
-layer: a field of sums, the matrix unit, a reduce over a group). Nine of the examples
-have a class beside the hand program (`as_class/` in each).
+What a handler's lines may be is in [classes](docs/reference/classes.md), what a tile
+function may contain in [tile functions](docs/reference/tile.md), a chain in
+[the chain](docs/reference/chain.md). More classes: a group of cores each taking a
+part of K and adding up a tree ([dense_class](experiments/language/dense_class/README.md)),
+attention with a broadcast of K and V down a column and inline C++ for the arithmetic
+([attention_class](experiments/language/attention_class/README.md)), the same class on
+two cards ([01_mapcollect](examples/01_mapcollect/as_class/README.md)). Nine of the
+examples have a class beside the hand program (`as_class/` in each).
 
 ### As C++ kernels
 
@@ -456,6 +438,27 @@ one; the cores' work is the same either way (126 against 131 µs on the card), a
 goes is three round trips to the host. A record names its handler, or leaves it to the
 chain's command, as the decode's records do. A class states the same chain as a list of
 its handlers' calls or an `@km.chain` method ([classes](docs/reference/classes.md#chains)).
+
+### Kernels in: the host appends, the card runs
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/kernelin-dark.svg">
+  <img src="docs/images/kernelin-light.svg" width="830" alt="Two timelines of five kernel calls: linear, norm, attend, swiglu and out. First, the host submits each kernel and waits, on two rows (the host, the cores): for every kernel the host works, submits a command, the cores compute, and an event goes back to the host before the next command; between two kernels the cores wait for the host. Second, kernels in, on four rows (the host, the list in DRAM, an X280 thread, the cores): the host appends an entry for each call to a list in DRAM, ahead of the cores, and for one call that has no kernel yet it first compiles the kernel and adds it to the live run; each entry waits in the list until the X280 thread takes it and submits its command; the cores compute the five kernels one after another with no host between them; the last kernel, out, pushes the result's pages to the host's memory, and only then does the host read y. A note gives the nn project's measurement on one card, its cheapest kernel on 120 cores: 140.9 microseconds a call with the host submitting and waiting, 23.0 with the host appending to an open list, 4.4 replaying a written list; time in the figure is schematic.">
+</picture>
+
+A chain fixes its calls ahead. When the next call is only known as the program runs,
+as with a framework's eager calls, the host can still stay off the path between two
+kernels: it appends kernel calls to a list in DRAM and never waits for one, and a
+thread on an X280 cluster walks the list and submits each. A call whose kernel is not
+built yet is compiled and added to the live run. Getting a result out is one more
+kernel, which pushes its pages to the host's memory.
+
+In the [nn project](projects/nn/README.md) a call takes 140.9 µs with the host
+submitting and waiting, 23.0 µs with the host appending to an open list, and 4.4 µs
+replaying a written list. The list and its thread are that project's; a kernel added
+to a live run is the framework's ([30_add_overlay](examples/30_add_overlay/),
+[a set compiled on its first use](docs/reference/classes.md#a-set-compiled-on-its-first-use)).
+The two have not run as one program yet.
 
 ### One program on the grid
 

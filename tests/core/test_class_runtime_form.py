@@ -81,6 +81,13 @@ class StartedUp(km.Program, startup=km.Startup("ones", "ones", "ones")):
         km.Stream(source.pages(0, 1)).drain()
 
 
+class Ended(km.Program):
+    @km.handler
+    def copy(self, source: km.Tensor, target: km.Tensor):
+        km.cxx("noc_async_write_barrier();", on="mover_b", at="end")  # at the end
+        km.Stream(source.pages(0, 1)).drain()
+
+
 class Overlaid(km.Program):
     @km.handler(overlay=True)
     def copy(self, source: km.Tensor, target: km.Tensor, count: int):
@@ -139,12 +146,10 @@ def test_what_the_runtimes_form_has_no_place_for_is_refused_by_its_line():
     line = line_of("def walk(self, source")
     with pytest.raises(ProgramError, match=rf"Walk.walk \(line {line}\): a dynamic"):
         made(Walk, form="runtime")
-    line = line_of('km.cxx("prepare();", at="start")')
-    with pytest.raises(ProgramError, match=rf"kernel's start \(line {line}\)"):
-        made(Started, form="runtime")
-    with pytest.raises(ProgramError, match=r"StartedUp: startup=: in form="):
-        made(StartedUp, form="runtime")
-    made(Started)  # each is built in the kernel form
+    line = line_of('on="mover_b", at="end")')
+    with pytest.raises(ProgramError, match=rf"kernel's end \(line {line}\)"):
+        made(Ended, form="runtime")
+    made(Ended)  # each is built in the kernel form
 
 
 def test_an_overlay_handler_is_an_overlay_of_the_runtime_form_program():
