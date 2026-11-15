@@ -34,8 +34,8 @@ L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
 # on islands the reader's slot holds the larger service overlay (the collectives')
 L1_RUNTIME_ISLANDS = 17_024 + 40_256
-# The kernel buffer the linear kernels' code takes (mock builds): 79,936 B without puts;
-# K form or K split on two cards up to 108,240 B; the kernels' addition 118,000 B.
+# The kernel buffer the linear kernels' code takes: one card up to 72 K; an island of
+# two cards up to 106 K; the kernels' addition or gather up to 118,000 B (mock builds).
 KERNEL_BYTES = {"one": 88 * 1024, "two": 108 * 1024, "add": 116 * 1024}
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
@@ -89,10 +89,9 @@ ACCOUNT_CLOCKS = (
     ("compute_start", "kAcComputeStart"),
     ("compute_end", "kAcComputeEnd"),
 )
-# Placements by hint (X, W, Y): "k" (K and N split, puts); "rows" (W gathered: X, Y
-# split along M); "out" (W, Y split along N, X a copy); "in" (X, W along K, Y partials).
+# Placements by hint (X, W, Y): "rows" (W gathered: X, Y split along M); "out" (W, Y
+# split along N, X a copy); "in" (X, W along K, Y partials).
 PLACES = {
-    "k": ({"split": 1}, {"split": 0}, {"split": 1}),
     "rows": ({"split": 0}, {"copy": True}, {"split": 0}),
     "out": ({"copy": True}, {"split": 1}, {"split": 1}),
     "in": ({"split": 1}, {"split": 0}, {"copy": True}),
@@ -171,20 +170,11 @@ def kept_spans(placement, m_tiles, n_tiles):
     ]
 
 
-def chunk(plan):
-    """Tiles a put: the smallest whole number of subblocks at or over kPutTiles."""
+def extra_buffers(plan):
+    """The linear kernels' buffers past the grid plan's: a partial's subblocks added
+    (LINEAR_ADD), the token and its slot, T's row."""
     subblock = plan.sh * plan.sw
-    return pl.cdiv(L["kPutTiles"], subblock) * subblock
-
-
-def extra_buffers(plan, exchange):
-    """The linear kernels' buffers past the grid plan's: two chunks of the tiles put
-    across (a subblock on one island, where nothing is put), another island's subblock
-    put here, the token and its slot."""
-    subblock = plan.sh * plan.sw
-    send = 2 * chunk(plan) if exchange else subblock
     return [
-        (L["kCbSend"], "bfloat16", L["kBf16Bytes"], send),
         (L["kCbSent"], "bfloat16", L["kBf16Bytes"], 2 * subblock),
         (L["kCbToken"], "uint32", L["kSignalBytes"], 1),
         (L["kCbArrive"], "uint32", L["kSignalBytes"], 1),
@@ -208,8 +198,8 @@ def slice_pages(plan):
     return pl.cdiv(plan.kb, plan.rows) * plan.bn
 
 
-def extra_bytes(plan, exchange):
-    return sum(page * pages for _, _, page, pages in extra_buffers(plan, exchange))
+def extra_bytes(plan):
+    return sum(page * pages for _, _, page, pages in extra_buffers(plan))
 
 
 def l1_budget(session, islands, extra=0):
@@ -290,18 +280,7 @@ def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget, adds=False):
     return None if best is None else best[1]
 
 
-# The writers' put counters in T (kernels/linear/linear.h kStampFed ..), by name
-PUT_COUNTS = (
-    ("fed", "kStampFed"),
-    ("line", "kStampLine"),
-    ("piece", "kStampPiece"),
-    ("turn", "kStampTurn"),
-    ("write", "kStampWrite"),
-    ("pieces", "kStampPieces"),
-)
-
-
-def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange):
+def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget):
     """The grid plan's rule on the island's grid with the extra buffers inside
     `budget`, with fewer rows of cores until its rect lies inside the island's ranks
     (link cores take the last cores)."""
@@ -312,7 +291,7 @@ def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange):
             plan = pl.grid_plan(m_tiles, k_tiles, n_tiles, (columns, used_rows), room)
             if plan is None:
                 break
-            over = plan.l1_bytes() + extra_bytes(plan, exchange) - budget
+            over = plan.l1_bytes() + extra_bytes(plan) - budget
             if over <= 0:
                 if plan.group(grid)[1] <= ranks:
                     return plan
@@ -415,14 +394,12 @@ def two_rects(grid, ranks):
     }
 
 
-def island_pieces(
-    m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange, kb, every=False
-):
+def island_pieces(m_tiles, k_tiles, n_tiles, grid, ranks, budget, kb):
     """The pieces of the island's ranks: the old single rect (fitting_plan), or the
     whole grid, or two rectangles sharing one block, in bands of whole blocks: the
-    cheapest by plan_ns (then the larger block, the larger K block). The K block is
-    `kb`, lower only when nothing fits; `every`: any K block size up to `kb`."""
-    single = fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange)
+    cheapest by plan_ns (then the larger block, the larger K block), any K block up to
+    `kb`."""
+    single = fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget)
     best = None
     if single is not None:
         cost = plan_ns(single)
@@ -430,9 +407,7 @@ def island_pieces(
     rects = two_rects(grid, ranks)
     if not rects or single is None or single.layout != "2d":
         return None if best is None else best[1]
-    k_blocks = range(kb, 0, -1) if every else pl.K_BLOCKS
-    for k_block in [value for value in k_blocks if value <= kb] or [1]:
-        found = False
+    for k_block in range(kb, 0, -1):
         for bm in range(1, m_tiles + 1):
             for bn in range(1, n_tiles + 1):
                 sh, sw = pl.subblock(bm, bn)
@@ -441,18 +416,17 @@ def island_pieces(
                 probe = piece_plan(bm, k_tiles, bn, (1, 1), (bm, bn, k_block, 1, 1))
                 if probe is None:
                     continue
-                if probe.l1_bytes() + extra_bytes(probe, exchange) > budget:
+                if probe.l1_bytes() + extra_bytes(probe) > budget:
                     continue
                 for form, (a, b) in rects.items():
                     for pieces in split_pieces(
                         form, a, b, m_tiles, k_tiles, n_tiles, (bm, bn, k_block)
                     ):
                         if any(  # the pieces' own buffers, not the probe's
-                            p.plan.l1_bytes() + extra_bytes(p.plan, exchange) > budget
+                            p.plan.l1_bytes() + extra_bytes(p.plan) > budget
                             for p in pieces
                         ):
                             continue
-                        found = True
                         cost = (
                             max(plan_ns(p.plan) for p in pieces),
                             -bm * bn,
@@ -460,8 +434,6 @@ def island_pieces(
                         )
                         if cost < best[0]:
                             best = (cost, pieces)
-        if found and not every:
-            break
     return best[1]
 
 
@@ -515,8 +487,8 @@ def split_pieces(form, a, b, m_tiles, k_tiles, n_tiles, block):
 
 
 def sent_pages(pieces, grid):
-    """S's pages a set (a set each other island): the output blocks of every piece's
-    cores, in core order."""
+    """S's pages a set (LINEAR_ADD: an island's partial): the output blocks of every
+    piece's cores, in core order."""
     return sum(
         len(piece.places(grid))
         * piece.plan.nbh
@@ -525,21 +497,6 @@ def sent_pages(pieces, grid):
         * piece.plan.bn
         for piece in pieces
     )
-
-
-def piece_blocks(piece, grid, width):
-    """The output blocks of a piece's cores holding some of the window's tiles (M x
-    `width`): those a core puts."""
-    plan = piece.plan
-    blocks = 0
-    for first_row, first_column in piece.places(grid).values():
-        row_end = min(first_row + plan.pcm, plan.mt + piece.m0)
-        column_end = min(first_column + plan.pcn, width)
-        for block in range(plan.nbh * plan.nbw):
-            row = first_row + block // plan.nbw * plan.bm
-            column = first_column + block % plan.nbw * plan.bn
-            blocks += row < row_end and column < column_end
-    return blocks
 
 
 def pieces_args(pieces, nocs, ranks, m_tiles, group_word, movers=(0, 1)):
@@ -596,8 +553,7 @@ def pieces_args(pieces, nocs, ranks, m_tiles, group_word, movers=(0, 1)):
             )
             first += plan.nbh * plan.nbw * plan.bm * plan.bn
     windows = (pieces[0].plan.wa, pieces[0].plan.ww)
-    # a core of no piece: no broadcast, its rank word 0, and M, so that it finds the
-    # exchange its island's pieces find and joins the sync's tree with them
+    # a core of no piece: no broadcast, its rank word 0, and M
     idle_core = [0] * L["kCoreWords"]
     idle_core[L["kCorePlan"] + L["kPlMt"]] = m_tiles
     idle = [0] * len(card.BROADCAST_FIELDS) + idle_core
@@ -652,13 +608,15 @@ class Linear:
             for here in range(self.islands)
             for to in range(self.islands)
         )
-        self.exchange = any(
+        if any(  # an island's columns kept by another (W split along K, Y along N)
             self.window(here, to)[1]
             for here in range(self.islands)
             for to in range(self.islands)
             if to != here
-        )
-        one_card = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.nocs.grid)
+        ):
+            raise SystemExit(
+                "W split along K takes Y a copy (each island's partial of all of Y)"
+            )
         # S and T; R, the all-reduce's scratch, when Y is each island's partial and
         # the all-reduce adds
         reduces = self.tensors_y_copy and not self.adds
@@ -668,9 +626,9 @@ class Linear:
             if self.islands != 1 or not 0 < COLUMNS <= grid[0]:
                 raise SystemExit(f"--columns {COLUMNS}: one island, 1 to {grid[0]}")
             grid, planned = (COLUMNS, grid[1]), COLUMNS * grid[1]
-        # a few rows and nothing put: the K-split plan
+        # a few rows: the K-split plan
         self.split = None
-        if part_m <= SPLIT_ROWS and not self.exchange and COLUMNS is None:
+        if part_m <= SPLIT_ROWS and COLUMNS is None:
             self.split = split_choice(
                 part_m, part_k, part_n, planned, self.budget, self.adds
             )
@@ -684,14 +642,7 @@ class Linear:
                 grid,
                 planned,
                 self.budget,
-                self.exchange,
-                # nothing put: any K block the model likes; puts: the one-card plan's
-                (
-                    pl.K_BLOCKS[0]
-                    if not self.exchange or one_card is None
-                    else one_card.kb
-                ),
-                every=not self.exchange,
+                pl.K_BLOCKS[0],
             )
         )
         if self.split is None and self.pieces is None:
@@ -711,11 +662,7 @@ class Linear:
         for name in ("kCbRow", "kCbCol", "kCbPart"):
             assert L[name] == G[name], name
         assert L["kCbYOut"] == G["kCbGridOut"]
-        pages = (
-            max(1, self.islands - 1) * sent_pages(self.pieces, self.nocs.grid)
-            if self.exchange and self.split is None
-            else 1  # nothing put
-        )
+        pages = 1  # S: no partial added
         if self.adds:  # a set an island a command parity: each island's partial
             pages = 2 * self.islands * self.set_pages()
         tensors["s"] = session.empty(
@@ -788,7 +735,7 @@ class Linear:
                 "unpack_to_dest_mode": {L["kCbKArrive"]: fp32, L["kCbKSum"]: fp32},
             },
             handlers=LINEAR_H,
-            defines={"LINEAR_SPLIT": 1, "LINEAR_OWN": 1}
+            defines={"LINEAR_SPLIT": 1}
             | ({"LINEAR_ADD": 1} if self.adds else {})
             | ({"LINEAR_GATHER": 1} if self.gathers else {})
             | ({"LINEAR_ACCOUNT": 1} if ACCOUNT else {}),
@@ -802,8 +749,7 @@ class Linear:
             kernels=KERNELS,
             buffers=[
                 km.Buffer(*buffer)
-                for buffer in self.plan.buffers()[:4]
-                + extra_buffers(self.plan, self.exchange)
+                for buffer in self.plan.buffers()[:4] + extra_buffers(self.plan)
             ],
             args=pieces_args(
                 self.pieces,
@@ -828,9 +774,7 @@ class Linear:
             },
             handlers=LINEAR_H,
             noc=dict(zip(("reader", "writer"), NOCS, strict=True)),
-            # nothing exchanged: kernels without the puts and the sync (smaller)
-            defines=({} if self.exchange else {"LINEAR_OWN": 1})
-            | ({"LINEAR_ADD": 1} if self.adds else {})
+            defines=({"LINEAR_ADD": 1} if self.adds else {})
             | (
                 {"LINEAR_SPREAD": 1}
                 if any(spreads(p.plan) for p in self.pieces)
@@ -854,7 +798,8 @@ class Linear:
 
     def passes(self, mhz=1350.0):
         """The last call's passes on each island from the writers' wall clocks (AICLK
-        cycles, and microseconds at `mhz`): the puts sent, the sync, its own columns."""
+        cycles, and microseconds at `mhz`): to the crossing (the far partial or the
+        gather), the crossing, after it."""
         out = []
         for island, one in enumerate(self.session.sessions):
             (raw,) = one.read(self.tensors["t"].parts[island])
@@ -862,11 +807,6 @@ class Linear:
                 raw.view(np.uint32).reshape(-1, L["kStampBytes"] // 4).astype(np.int64)
             )
             ran = words[words[:, L["kStampEnd"]] != 0]
-            counts = {  # the puts' cycles (pieces: a count): mean and most a core
-                name: ran[:, L[stamp]]
-                for name, stamp in PUT_COUNTS
-                if ran[:, L["kStampPieces"]].any()
-            }
             account = {}
             names = SPLIT_ACCOUNT_WORDS if self.split is not None else ACCOUNT_WORDS
             clocks = () if self.split is not None else ACCOUNT_CLOCKS
@@ -886,8 +826,8 @@ class Linear:
                     # every core's, in core order (the spread of each phase)
                     "cores": {name: ran[:, L[w]].tolist() for name, w in names},
                 }
-            # the cores that stamped the puts (or the addition's gather): all of the
-            # K form's; the K split's first ranks, the grid's ranks with blocks
+            # the cores that stamped a crossing: the K split's first ranks (every rank
+            # with the gather), the grid's ranks with blocks
             has = ran[:, L["kStampPut"]] != 0
             stamped = bool(has.any())
             # the 32-bit clock as signed cycles from the first core's start
@@ -901,7 +841,7 @@ class Linear:
             cycles["span"] = end - start
             cycles["start_spread"] = ran[:, L["kStampStart"]].max() - start
             cycles["end_spread"] = end - ran[:, L["kStampEnd"]].min()
-            if stamped:  # inside the sync: the last core's each step, from the last put
+            if stamped:  # inside the crossing: the last core's steps, from its start
                 at = {
                     name: ran[has, L[stamp]].max()
                     for name, stamp in (
@@ -916,16 +856,12 @@ class Linear:
                     "down": at["down"] - at["up"],
                     "go": synced - at["down"],
                 }
-                # each core's own wait for its last put's confirmation
+                # each core's own wait for the crossing
                 waits = ran[has, L["kStampSettled"]] - ran[has, L["kStampPut"]]
                 cycles["settle_median"] = int(np.median(waits))
             out.append(
                 {
                     "account": account,
-                    "put_counts": {
-                        name: [round(float(value.mean()), 1), int(value.max())]
-                        for name, value in counts.items()
-                    },
                     "cores": len(ran),
                     "cycles": {key: int(value) for key, value in cycles.items()},
                     "microseconds_at_mhz": {
@@ -1015,27 +951,6 @@ class Linear:
                 }
             )
         return np.concatenate(out)
-
-    def crossed(self):
-        """Bytes a call should cross, from the placements and the pieces: each island
-        holding part of K puts, for every other island keeping columns, each core's
-        output blocks that hold some of them (whole blocks, bf16); and the ideal: every
-        other holder's M x columns tiles."""
-        plan = self.plan
-        page = self.tensors["s"].aligned_page_bytes
-        total = {"blocks": 0, "tiles": 0}
-        for sender, (_, k_part) in enumerate(self.k_parts):
-            for to in range(self.islands):
-                width = self.window(sender, to)[1]
-                if to == sender or not k_part or not width:
-                    continue
-                total["tiles"] += self.made[sender][1] * width * page
-                for piece in self.pieces:
-                    total["blocks"] += piece_blocks(piece, self.nocs.grid, width) * (
-                        plan.bm * plan.bn * page
-                    )
-        total["put_bytes"] = chunk(plan) * page if self.exchange else 0
-        return total
 
     def window(self, here, to):
         """(first, count) of the columns island `to` keeps of the rows island `here`
@@ -1265,10 +1180,8 @@ def attempt(product_class, session, dimensions, tensors, cards, args, matrices):
     report["kernel_sizes"] = sizes(product.program)
     if isinstance(product, Linear):
         report["pieces"] = product.describe()
-        report["exchange"] = product.exchange
         report["l1_budget"] = product.budget
         report["l1_held"] = product.l1_held
-        report["crossed_bytes"] = product.crossed()
     log(f"{product_class.__name__} loaded, plan {report['plan']}")
     try:
         report["loop"] = measure(product, cards, args.seconds)
@@ -1304,10 +1217,10 @@ def main():
     parser.add_argument(
         "--place",
         choices=list(PLACES),
-        default="k",
-        help="k: X, W split along K, Y along N (W sharded); rows: X, Y split along "
-        "M, W a copy on every island (W gathered); out: W, Y split along N, X a "
-        "copy; in: X, W split along K, Y a copy (a partial an island)",
+        default="out",
+        help="out: W, Y split along N, X a copy; in: X, W split along K, Y a copy (a "
+        "partial an island); rows: X, Y split along M, W a copy on every island (W "
+        "gathered)",
     )
     parser.add_argument("--cards", default="0")
     parser.add_argument("--inputs", choices=["uniform", "int"], default="uniform")
@@ -1413,7 +1326,7 @@ def main():
             raise SystemExit("a chain is two layers on two cards: --cards A,B")
     # two cards: the larger build (an island's build 96,240 B at prefill, 105,680 at
     # decode); the kernels' addition or gather larger still
-    puts = len(cards) > 1
+    two = len(cards) > 1
     adds = len(cards) > 1 and (
         ADD == "kernel"
         and any(p == "in" for _, p in products)
@@ -1421,7 +1334,7 @@ def main():
         and any(p == "chain" for _, p in products)
     )
     kernel_bytes = (
-        args.kernel_bytes or KERNEL_BYTES["add" if adds else "two" if puts else "one"]
+        args.kernel_bytes or KERNEL_BYTES["add" if adds else "two" if two else "one"]
     )
     options = {"links": args.links, "kernel_bytes": kernel_bytes}
     options = {key: value for key, value in options.items() if value}

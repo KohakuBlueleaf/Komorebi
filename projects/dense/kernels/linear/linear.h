@@ -8,15 +8,8 @@
 #include "komorebi/device/km_placement.hpp"
 
 // LINEAR, reference words a0 X ([M, K] tiles), a1 W ([K, N]), a2 Y ([M, N]), a3 S (a
-// copy: tiles put here, below), a6 T (0: none; a 64 B row a rank); a4 K, a5 N tiles.
+// copy: partials, below), a6 T (0: none; a 64 B row a rank); a4 K, a5 N tiles.
 constexpr uint32_t kHandlerLinear = 1;
-// Built for a plan that exchanges nothing (LINEAR_OWN): each island its own window
-// only, no puts and no sync in the build.
-#if defined(LINEAR_OWN)
-#define LINEAR_EXCHANGES false
-#else
-#define LINEAR_EXCHANGES true
-#endif
 
 // Built for the input dim sharded form's addition (LINEAR_ADD: two islands, Y a copy):
 // partials to S, the other's gathered here (km::gather_pages), added in fp32, to Y.
@@ -52,13 +45,12 @@ inline uint32_t add_set(uint32_t parity, uint32_t island) {
 }
 
 // Buffers: the grid plan's (row and column broadcasts, bf16 output subblocks, fp32
-// partial sums), then a block of the columns put across, the subblocks put here.
+// partial sums), then the partials' subblocks added (LINEAR_ADD), a token, T's row.
 constexpr uint32_t kCbRow = 0;
 constexpr uint32_t kCbCol = 1;
 constexpr uint32_t kCbYOut = 16;
 constexpr uint32_t kCbPart = 24;
-constexpr uint32_t kCbSend = 17;  // bf16, two chunks of the tiles put (put_chunk)
-constexpr uint32_t kCbSent = 5;   // bf16, an output subblock from one other island
+constexpr uint32_t kCbSent = 5;  // bf16, a subblock of a partial (LINEAR_ADD)
 constexpr uint32_t kCbToken = 6;
 constexpr uint32_t kCbArrive = 7;
 constexpr uint32_t kCbStamp = 8;  // the writer's row of T
@@ -66,28 +58,16 @@ constexpr uint32_t kBf16Bytes = 2048;
 constexpr uint32_t kPartBytes = 4096;  // fp32
 constexpr uint32_t kSignalBytes = 32;
 constexpr uint32_t kStampBytes = 128;
-// A put's tiles at least (64 KiB): a chunk is the smallest whole number of subblocks
-// at or over it.
-constexpr uint32_t kPutTiles = 32;
-// T's words: the command taken, the other islands' columns put (sent), the sync done,
-// its own columns written (the wall clock, AICLK cycles).
+// T's words: the command taken, the crossing begun (the far partial or the gather),
+// the crossing done, the command ended (the wall clock, AICLK cycles).
 constexpr uint32_t kStampStart = 0;
 constexpr uint32_t kStampPut = 1;
 constexpr uint32_t kStampSynced = 2;
 constexpr uint32_t kStampEnd = 3;
-// Inside the sync: the last put counted, the island's tree up, the leaders' crossing
-// (the leader) or the tree's word down.
+// Inside the crossing: the far partial landed (Up and Down the same).
 constexpr uint32_t kStampSettled = 4;
 constexpr uint32_t kStampUp = 5;
 constexpr uint32_t kStampDown = 6;
-// The puts' cycles a command: waiting for tiles, in put_pages, in put_piece, its
-// pieces' slot waits and writes (PutRun turn, write); and the pieces.
-constexpr uint32_t kStampFed = 7;
-constexpr uint32_t kStampLine = 8;
-constexpr uint32_t kStampPiece = 9;
-constexpr uint32_t kStampTurn = 10;
-constexpr uint32_t kStampWrite = 11;
-constexpr uint32_t kStampPieces = 12;
 // The account (LINEAR_ACCOUNT): AICLK cycles of each CPU's phases a command, written at
 // its end: the movers' frees, reads, casts and writes; compute's waits, math and pack.
 constexpr uint32_t kAcWFree = 16;
@@ -152,11 +132,7 @@ constexpr uint32_t kAcKReaderReduce = 20;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
-// Ports: the island's tree up and down, the leaders' crossing, the writer's go to its
-// own reader (the writer's puts count at its page port, km::pages_port).
-constexpr uint32_t kPortUp = 2;
-constexpr uint32_t kPortCross = 3;
-constexpr uint32_t kPortDown = 4;
+// Ports: the writer's go to its own reader (LINEAR_ADD: both partials are in S).
 constexpr uint32_t kPortGo = 5;
 
 // Arguments as the grid form's: reader, writer: broadcast words, then core words;
@@ -348,58 +324,17 @@ inline bool copied(uint32_t tensor) {
     return kept_columns;
 }
 
-// The islands in the order an island computes their columns: the next one first, its
-// own last (`turn` 1 .. islands).
+// The island `turn` places after island `here` (1: the next one).
 inline uint32_t island_at(uint32_t here, uint32_t turn) {
     return (here + turn) % km::islands();
-}
-
-// Whether any island puts to another: one holds part of K and another keeps columns
-// of the rows it makes. The same answer on every island (no sync when false).
-[[gnu::noinline]] inline bool exchanging(
-    uint32_t x, uint32_t w, uint32_t y, uint32_t m, uint32_t k, uint32_t n
-) {
-    for (uint32_t from = 0; from < km::islands(); ++from) {
-        if (k_part(w, from, k, n).count == 0) {
-            continue;
-        }
-        for (uint32_t to = 0; to < km::islands(); ++to) {
-            if (to != from && window(x, w, y, from, to, m, k, n).count != 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-// The other islands that put to island `here` (each a K block of a block: k blocks
-// 0 ..): those holding part of K that make rows `here` keeps columns of.
-[[gnu::noinline]] inline uint32_t senders_to(
-    uint32_t x,
-    uint32_t w,
-    uint32_t y,
-    uint32_t here,
-    uint32_t m,
-    uint32_t k,
-    uint32_t n
-) {
-    uint32_t senders = 0;
-    for (uint32_t turn = 1; turn < km::islands(); ++turn) {
-        const uint32_t from = island_at(here, turn);
-        senders += (
-            k_part(w, from, k, n).count != 0 &&
-            window(x, w, y, from, here, m, k, n).count != 0
-        );
-    }
-    return senders;
 }
 
 inline uint32_t blocks_of(uint32_t numerator, uint32_t denominator) {
     return (numerator + denominator - 1) / denominator;
 }
 
-// S: a set a sending island (sent_set), in a set every core's output blocks in the
-// order it makes them (its first page a core word), tiles as packed.
+// S: a set an island and command parity (add_set), in a set every core's output
+// blocks in the order it makes them (its first page a core word), tiles as packed.
 struct Sent {
     uint32_t set_pages;
     uint32_t first;
@@ -408,11 +343,3 @@ struct Sent {
         return set * set_pages + first + tile;
     }
 };
-
-inline uint32_t put_chunk(uint32_t subblock_tiles) {
-    return blocks_of(kPutTiles, subblock_tiles) * subblock_tiles;
-}
-
-inline uint32_t sent_set(uint32_t from, uint32_t to) {
-    return (from + km::islands() - to - 1) % km::islands();
-}

@@ -105,15 +105,6 @@ def ratio(one, two):
     return None if one is None or two is None else one / two
 
 
-def passes(report):
-    """The slower island's put, sync and own pass in microseconds (slowest core)."""
-    found = ((report or {}).get("linear") or {}).get("passes")
-    if not found:
-        return None
-    slower = max(found, key=lambda one: sum(one["cycles"].values()))
-    return slower["microseconds_at_mhz"]
-
-
 def clock(report):
     """Mean AICLK of a loop, MHz: the lower of the cards'."""
     loop = ((report or {}).get("linear") or report or {}).get("loop") or {}
@@ -127,46 +118,32 @@ def pair(one, two):
 
 
 def tables():
-    """The README tables: times and ratios, then our crossing and the clocks."""
-    head = "| M x K x N | Ours 1 card | Ours 2 cards | Ours ratio | Kohaku-TT 1 card "
+    """The README tables: times and ratios, then the clocks of the loops."""
+    head = "| M x K x N | Ours 1 card | Kohaku-TT 1 card "
     head += "| Kohaku-TT 2 cards | ratio | Kohaku-TT 2 cards, K split | ratio |"
-    rows = [head, "|---|---|---|---|---|---|---|---|---|"[:-4] + "---|---|"]
-    crossing = [
-        "| M x K x N | Our plan (rows x cols, kb) | Crossed a call, MB | Put | Sync "
-        "| Own | AICLK mean, MHz: ours 1, ours 2, Kohaku-TT 1, Kohaku-TT 2 |",
-        "|---|---|---|---|---|---|---|",
+    rows = [head, "|---|---|---|---|---|---|---|"]
+    clocks = [
+        "| M x K x N | AICLK mean, MHz: ours 1, Kohaku-TT 1, Kohaku-TT 2 |",
+        "|---|---|",
     ]
     for shape in SHAPES:
-        one, two = (load(ours_path(shape, c)) for c in ([0], [0, 1]))
-        ours = [ours_times(one), ours_times(two)]
+        one = load(ours_path(shape, [0]))
         k1 = ktt_times(shape, [0])
         k2 = ktt_times(shape, [0, 1])
         ks = ktt_times(shape, [0, 1], "ksplit")
-        cells = [f"{text(s)} / {text(loop)}" for s, loop in (ours[0], ours[1], k1, k2)]
+        cells = [f"{text(s)} / {text(loop)}" for s, loop in (ours_times(one), k1, k2)]
         ksplit_cell = f"{text(ks[0])} / {text(ks[1])}"
         rows.append(
-            f"| {name(shape)} | {cells[0]} | {cells[1]} | {pair(*ours)} | {cells[2]} | "
-            f"{cells[3]} | {pair(k1, k2)} | {ksplit_cell} | {pair(k1, ks)} |"
+            f"| {name(shape)} | {cells[0]} | {cells[1]} | {cells[2]} | "
+            f"{pair(k1, k2)} | {ksplit_cell} | {pair(k1, ks)} |"
         )
-        found = passes(two)
-        plan = (two or {}).get("linear", {}).get("plan")
-        if found and plan:
-            crossed = two["linear"]["crossed_bytes"]["blocks"] / 1e6
-            times = " | ".join(
-                f"{found[key] / 1e3:.2f}" for key in ("put", "sync", "own")
-            )
-            clocks = [
-                clock(one),
-                clock(two),
-                clock(load(result_path(RESULTS, shape, "ktt", [0], "default"))),
-                clock(load(result_path(RESULTS, shape, "ktt", [0, 1], "default"))),
-            ]
-            plan_text = f"{plan['rows']} x {plan['cols']}, {plan['kb']}"
-            crossing.append(
-                f"| {name(shape)} | {plan_text} | {crossed:,.1f} | {times} | "
-                f"{' / '.join(text(c, 0) for c in clocks)} |"
-            )
-    return "\n".join(rows + [""] + crossing)
+        means = [
+            clock(one),
+            clock(load(result_path(RESULTS, shape, "ktt", [0], "default"))),
+            clock(load(result_path(RESULTS, shape, "ktt", [0, 1], "default"))),
+        ]
+        clocks.append(f"| {name(shape)} | {' / '.join(text(c, 0) for c in means)} |")
+    return "\n".join(rows + [""] + clocks)
 
 
 def main():
