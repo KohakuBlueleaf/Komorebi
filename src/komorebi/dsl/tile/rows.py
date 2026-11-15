@@ -46,6 +46,7 @@ class Layout:
 
     kind: str
     tile: int
+    offset: int = 0  # "rows": the slot's offset in its tile (steps.SLOT)
 
     def address(self, t, h, c, q, p):
         """The Dst address of the vector a tile vector (t, h, c, q, p) meets."""
@@ -53,7 +54,7 @@ class Layout:
         if self.kind == "tile":
             return base + TILE * t + 32 * h + 16 * c + 4 * q + 2 * p
         if self.kind == "rows":
-            return base + 4 * (4 * h + q)
+            return base + 4 * (4 * h + q) + self.offset
         return base + 16 * c + 8 * t + 2 * p
 
 
@@ -294,29 +295,24 @@ def _apply_phase(b, stored, layouts, width):
 
 
 def interleave(code, start, end):
-    """Schedule: reorders code[start:end] (straight line, no lane flags) so that an
+    """Schedule: reorders code[start:end] (straight line; a run under lane flags, from
+    the flag-setting instruction to its SFPENCC, moves as one) so that an
     instruction reading the MAD result issued just before it waits behind another
     ready one. Returns how many instructions moved."""
     block = code[start:end]
-    if any(x.sets_flags() for x in block):
+    units = _units(block)
+    if units is None:
         return 0
     preds = []
-    for i, insn in enumerate(block):
+    for i, unit in enumerate(units):
         mine = set()
         for j in range(i):
-            other = block[j]
-            raw = set(other.writes()) & set(insn.reads())
-            war = set(other.reads()) & set(insn.writes())
-            waw = set(other.writes()) & set(insn.writes())
-            dst = "dest_reg_addr" in other.args and "dest_reg_addr" in insn.args
-            same = dst and other.args["dest_reg_addr"] == insn.args["dest_reg_addr"]
-            touches = "SFPSTORE" in (other.op, insn.op)
-            if raw or war or waw or (same and touches):
+            if any(_depends(x, y) for x in units[j] for y in unit):
                 mine.add(j)
         preds.append(mine)
-    height = [1] * len(block)
-    for i in range(len(block) - 1, -1, -1):
-        for j in range(i + 1, len(block)):
+    height = [1] * len(units)
+    for i in range(len(units) - 1, -1, -1):
+        for j in range(i + 1, len(units)):
             if i in preds[j]:
                 height[i] = max(height[i], height[j] + 1)
     later = {v for x in code[end:] for v in x.reads()}
@@ -329,28 +325,76 @@ def interleave(code, start, end):
             left[v] = left.get(v, 0) + 1
     live = {v for v in outside if left.get(v) or v in later}
     order, issued, previous = [], set(), None
-    while len(order) < len(block):
-        ready = [i for i in range(len(block)) if i not in issued and preds[i] <= issued]
+    while len(order) < len(units):
+        ready = [i for i in range(len(units)) if i not in issued and preds[i] <= issued]
         ready.sort(key=lambda i: (-height[i], i))
-        fits = [i for i in ready if len(_after(block[i], live, left, later)) <= WORK]
-        ready = fits or ready
+        after = {i: len(_unit_after(units[i], live, left, later)) for i in ready}
+        fits = [i for i in ready if after[i] <= WORK]
+        # none fits: the one that leaves the fewest values live
+        ready = fits or sorted(ready, key=lambda i: after[i])
         pick = ready[0]
         if previous is not None and OPS[previous.op].kind == "mad":
             for i in ready:
-                if not set(previous.writes()) & set(block[i].reads()):
+                if not set(previous.writes()) & set(units[i][0].reads()):
                     pick = i
                     break
-        for v in block[pick].reads():
-            left[v] -= 1
-        live = _after(block[pick], live, left, later, issue=True)
+        live = _unit_after(units[pick], live, left, later, issue=True)
         order.append(pick)
         issued.add(pick)
-        previous = block[pick]
-    code[start:end] = [block[i] for i in order]
+        previous = units[pick][-1]
+    code[start:end] = [x for i in order for x in units[i]]
     if _pressure(code) > WORK:
         code[start:end] = block
         return 0
     return sum(1 for k, i in enumerate(order) if k != i)
+
+
+def _units(block):
+    """The block as units that move whole: an instruction, or a run under lane flags
+    (None when a run does not close inside the block)."""
+    units, i = [], 0
+    while i < len(block):
+        if not block[i].sets_flags():
+            units.append([block[i]])
+            i += 1
+            continue
+        depth, j = 0, i
+        while True:
+            if j == len(block):
+                return None
+            x = block[j]
+            if x.sets_flags():
+                depth = 0 if x.op == "SFPENCC" else depth + 1
+            j += 1
+            if depth == 0:
+                break
+        units.append(block[i:j])
+        i = j
+    return units
+
+
+def _depends(other, insn):
+    """True when `insn` must stay after `other` (registers or a Dst row)."""
+    raw = set(other.writes()) & set(insn.reads())
+    war = set(other.reads()) & set(insn.writes())
+    waw = set(other.writes()) & set(insn.writes())
+    dst = "dest_reg_addr" in other.args and "dest_reg_addr" in insn.args
+    same = dst and other.args["dest_reg_addr"] == insn.args["dest_reg_addr"]
+    touches = "SFPSTORE" in (other.op, insn.op)
+    return bool(raw or war or waw or (same and touches))
+
+
+def _unit_after(unit, live, left, later, issue=False):
+    """The live work values once every instruction of `unit` has issued; with
+    `issue`, `left` counts their reads off."""
+    out, counts = set(live), dict(left)
+    for x in unit:
+        for v in x.reads():
+            counts[v] -= 1
+        out = _after(x, out, counts, later, issue=True)
+    if issue:
+        left.update(counts)
+    return out
 
 
 def _pressure(code):
@@ -398,8 +442,10 @@ def _check_broadcast(unit, code, layouts, width):
     columns, followed back through the values (before register allocation)."""
     writer = {}
     sources = {}
-    checked = 0
+    checked = depth = 0
     for insn in code:
+        if insn.sets_flags():
+            depth = 0 if insn.op == "SFPENCC" else depth + 1
         if insn.op == "SFPLOAD":
             sources[insn.writes()[0]] = {insn.args["dest_reg_addr"]}
         elif insn.op == "SFPSTORE":
@@ -421,7 +467,8 @@ def _check_broadcast(unit, code, layouts, width):
             for v in insn.reads():
                 got |= sources.get(v, set())
             for v in insn.writes():
-                sources[v] = got
+                # a write under lane flags keeps what the other lanes held
+                sources[v] = got | (sources.get(v, set()) if depth else set())
                 writer[v] = insn
     unit.checks.append(
         Check(
@@ -442,7 +489,9 @@ def _check_lanes(unit, code, rows):
     for insn in code:
         reads = insn.reads()
         if insn.op == "SFPLOAD":
-            span[insn.writes()[0]] = 1
+            # a per-row slot holds complete values
+            whole = insn.args["dest_reg_addr"] // TILE == rows.tile
+            span[insn.writes()[0]] = 8 if whole else 1
             continue
         if insn.op == "SFPSTORE":
             address = insn.args["dest_reg_addr"]

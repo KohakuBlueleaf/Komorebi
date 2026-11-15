@@ -25,6 +25,7 @@ PRICES = {
     "built_word": (4.14, "a word built at run time: 4.14 cycles (probe 8)"),
     "table_word": (9.37, "a word loaded from an L1 table: 9.37 cycles (probe 8)"),
     "macro_row": (1.046, "one SFPLOADMACRO a row: 1.046 cycles (probe 9)"),
+    "swap_stall": (1.0, "SFPSWAP: the unit takes only SFPNOP the next cycle (stated)"),
 }
 # SFPSHFT2 modes that take 2 cycles and stall the unit one (VectorUnit table).
 SHFT2_SLOW = (2, 3, 4)
@@ -88,6 +89,16 @@ OPS = {
     "SFPSETEXP": Op(0x82, _R, ("lreg_c", "lreg_dest"), ("lreg_dest",)),
     "SFPIADD": Op(0x79, _R, ("lreg_c", "lreg_dest"), ("lreg_dest",)),
     "SFPGT": Op(0x97, _R, ("lreg_c", "lreg_dest"), (), "flags"),
+    "SFPSETCC": Op(0x7B, _R, ("lreg_c",), (), "flags"),
+    # mod1 1: VC gets the larger, VD the smaller (a VD of 8 and up is not written)
+    "SFPSWAP": Op(
+        0x92,
+        (("imm12_math", 12), ("lreg_src_c", 4), ("lreg_dest", 4), ("instr_mod1", 4)),
+        ("lreg_src_c", "lreg_dest"),
+        ("lreg_src_c", "lreg_dest"),
+    ),
+    # LReg 0-3 (and 4-7): per column, the 4 lane rows across the 4 registers
+    "SFPTRANSP": Op(0x8C, _R),
     "SFPENCC": Op(0x8A, _R, (), (), "flags"),
     "SFPCAST": Op(
         0x90,
@@ -209,8 +220,11 @@ class Insn:
         return names
 
     def writes(self):
-        """The register arguments written."""
-        return [self.args[n] for n in OPS[self.op].writes]
+        """The register arguments written (SFPSWAP writes only work registers)."""
+        out = [self.args[n] for n in OPS[self.op].writes]
+        if self.op == "SFPSWAP":
+            out = [v for v in out if _work_register(v)]
+        return out
 
     def sets_flags(self):
         """True when it changes the lanes' condition flags."""
@@ -218,7 +232,17 @@ class Insn:
             return not self.args["instr_mod1"] & IADD_NO_CC
         if self.op == "SFPGT":
             return bool(self.args["instr_mod1"] & 1)
-        return self.op == "SFPENCC"
+        return self.op in ("SFPENCC", "SFPSETCC")
+
+
+def _work_register(value):
+    """True for LReg 0-7, by number, by "L<n>" or by a value's name (not a fixed or
+    programmable constant's)."""
+    if isinstance(value, int):
+        return value < WORK
+    if value[0] == "L":
+        return int(value[1:]) < WORK
+    return value not in FIXED and not value.startswith("p")
 
 
 def _arg(value):
@@ -415,6 +439,8 @@ def _issue(insn, times, terms, state, how):
         and previous.args["instr_mod1"] in SHFT2_SLOW
     ):
         stall = "shft2_stall"
+    if previous is not None and previous.op == "SFPSWAP" and insn.op != "SFPNOP":
+        stall = "swap_stall"
     if stall:
         cycles, source = PRICES[stall]
         terms.append((f"stall ({stall})", times, times * cycles, source))

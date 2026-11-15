@@ -141,7 +141,17 @@ class _Shapes:
             return "row" if node.attrs["view"].kind == "row" else "tile"
         if k in ("const", "param", "size"):
             return "scalar"
+        if k == "slot":
+            return "col"
         args = [self(a) for a in node.args]
+        if k == "word":
+            if args[0] != "col":
+                fail("tile.word_max reduces a per-row value", node.line)
+            return "word"
+        if k == "state":
+            if any(a != "col" for a in args[: len(args) - node.attrs["word"]]):
+                fail("a state tile stores per-row values", node.line)
+            return "state"
         if k == "reduce":
             if node.attrs.get("dim", -1) == -2:
                 fail("a sum over rows (dim=-2) reduces a column run", node.line)

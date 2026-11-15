@@ -8,6 +8,7 @@ import pytest
 from komorebi.dsl.tile import UnitError, emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.dsl.tile.rows import row_program
+from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import OPS, Call, Insn, Loop, decode, encode, insns
 
 
@@ -121,3 +122,28 @@ def test_exp_step_per_row_operand():
     fused = [x for x in insns(unit.tile["math"]) if x.op == "SFPMAD"][0]
     assert fused.args["lreg_src_c"] == code[1].args["lreg_ind"]
     assert fused.args["instr_mod1"] == 2  # s 0.125 - m in one multiply-add
+
+
+def test_softmax_step_state_lanes_and_word():
+    s, st = TensorParam("s", False, F32), TensorParam("st", False, F32)
+    p, out = TensorParam("p", True, F32), TensorParam("out", True, F32)
+    ir = KernelIR("softstep", [s, st, p, out], [], {})
+    with trace.Tracer(ir):
+        ss, sts, ps, outs = (trace.TensorProxy(t) for t in (s, st, p, out))
+        for t in trace.grid(trace.num_tile_rows(ss)):
+            x = trace.load(ss.tiles[t, :]) * 0.18
+            state = trace.load_state(sts.tiles[t])
+            m_new = trace.maximum(state[0], trace.reduce_max(x, exact=True))
+            prob = trace.exp2(x - m_new.col())
+            l_new = state[1] + trace.reduce_sum(prob, exact=True)
+            trace.store(ps.tiles[t, :], prob)
+            moved = trace.word_max(m_new - state[0])
+            trace.store_state(outs.tiles[t], [m_new, l_new], word=moved)
+    unit = step_program(ir, 2, 3)
+    checks = {c.rule: c.verdict for c in unit.checks}
+    assert checks["lanes"].startswith("ok") and checks["broadcast"].startswith("ok")
+    scaled = next(p for p in unit.passes if p.name == "max_scale")
+    assert scaled.done and "out of a maximum" in scaled.done[0]
+    code = list(insns(unit.tile["math"]))
+    assert [x.op for x in code].count("SFPTRANSP") == 1  # the word's lanes
+    assert code[-1].op == "SFPSTORE" and code[-1].args["dest_reg_addr"] == 3 * 64 + 34

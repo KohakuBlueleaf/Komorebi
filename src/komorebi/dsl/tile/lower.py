@@ -7,7 +7,7 @@ import copy
 import struct
 
 from komorebi.dsl.tile import chain as chains
-from komorebi.dsl.tile import macro
+from komorebi.dsl.tile import macro, sfpu
 from komorebi.dsl.tile.ir import BF16, F32, PlanError, fail
 from komorebi.dsl.tile.unit import (
     FIXED,
@@ -66,6 +66,9 @@ class Body:
     def __init__(self):
         self.code, self.count, self.depth = [], 0, 0
         self.prog, self.bits = {}, {}
+        # {bits: value}: constants loaded once and read again (None: one per read),
+        # those of `cacheable`; `loaded`: loads made of each constant
+        self.cache, self.cacheable, self.loaded = None, set(), {}
 
     def fresh(self):
         self.count += 1
@@ -105,7 +108,12 @@ class Body:
         """`value` (fp32) into a new value: one SFPLOADI when bf16 or fp16 holds it
         exactly, else the low then the high half."""
         bits = struct.unpack("<I", struct.pack("<f", value))[0]
+        if self.cache is not None and bits in self.cache:
+            return self.cache[bits]
         out = self.fresh()
+        self.loaded[bits] = self.loaded.get(bits, 0) + 1
+        if self.cache is not None and bits in self.cacheable:
+            self.cache[bits] = out
         note = note or f"{value!r}"
         if bits & 0xFFFF == 0:
             self.op("SFPLOADI", note, lreg_ind=out, instr_mod0=0, imm16=bits >> 16)
@@ -285,7 +293,33 @@ def rsqrt(b, x):
     return b.mad(e, half, y, "y + (1 - y x y) y / 2")
 
 
+def flash_exp2(b, u):
+    """2^(u - 639) as Kohaku-TT's flash softmax computes it (sfpu.flash_exp2): u
+    clamped to 512 from below, its bits << 9 give the exponent and the fraction f,
+    a degree-2 polynomial of 1.f gives the mantissa."""
+    floor = b.register_const(sfpu.FLASH_FLOOR)
+    c = b.op("SFPMOV", "u (clamped in place)", lreg_c=u)
+    b.op("SFPSWAP", "max(u, 512)", lreg_src_c=c, lreg_dest=floor, instr_mod1=1)
+    e = b.op("SFPSHFT", "bits << 9", imm12_math=9, lreg_c=c, instr_mod1=SHIFT_IMM_VC)
+    m = b.op("SFPSETEXP", "1.f", imm12_math=127, lreg_c=e, instr_mod1=1)
+    p = b.mad(m, b.const(sfpu.FLASH_B2), b.const(sfpu.FLASH_B1), "B2 m + B1")
+    p = b.mad(p, m, b.const(sfpu.FLASH_B0), "(B2 m + B1) m + B0")
+    return b.op("SFPSETEXP", "2^n p", lreg_c=p, lreg_dest=e, instr_mod1=2)
+
+
+def maximum(b, x, y):
+    """The larger of x and y in every lane: one SFPSWAP on copies (the copy of a
+    value read no more is dropped by the pass drop_copies)."""
+    big = b.op("SFPMOV", "max: first", lreg_c=x)
+    small = b.op("SFPMOV", "max: second", lreg_c=y)
+    b.op("SFPSWAP", "max, min", lreg_src_c=big, lreg_dest=small, instr_mod1=1)
+    return big
+
+
 FUNCTIONS = {"exp": exp, "sigmoid": sigmoid, "rsqrt": rsqrt}
+# Lane tests of a condition: (instruction, mod1, the operands swapped)
+CONDITIONS = {"gt": ("SFPGT", 1, False), "lt": ("SFPGT", 1, True)}
+ZERO_TESTS = {"eq": 6, "ne": 2}  # SFPSETCC on the integer view: -0.0 is not 0
 
 
 def _value(b, node, done, source=None):
@@ -305,7 +339,22 @@ def _value(b, node, done, source=None):
         else:
             out = source(node.value[0])
     elif k == "const":
-        out = b.const(node.value)
+        fixed = {0: "zero", 0x3F800000: "one"}
+        out = fixed.get(struct.unpack("<I", struct.pack("<f", node.value))[0])
+        out = out or b.const(node.value)
+    elif k == "max":
+        x, y = (_value(b, a, done, source) for a in node.args)
+        out = maximum(b, x, y)
+    elif k == "mad":
+        out = b.mad(*(_value(b, a, done, source) for a in node.args))
+    elif k == "flash_exp2":
+        out = flash_exp2(b, _value(b, node.args[0], done, source))
+    elif k == "select":
+        then, other = (_value(b, a, done, source) for a in node.args)
+        out = b.op("SFPMOV", "select: the other value", lreg_c=other)
+        _when(b, node.value, done, source)
+        b.op("SFPMOV", "select: where it holds", lreg_c=then, lreg_dest=out)
+        b.end()
     elif k == "call":
         if node.value not in FUNCTIONS:
             fail(f"vector function {node.value} is not built in the unit program")
@@ -324,6 +373,56 @@ def _value(b, node, done, source=None):
         fail(f"vector operation {k} is not built in the unit program")
     done[key] = out
     return out
+
+
+def _when(b, cond, done, source):
+    """Lane flags from comparison `cond`: the lanes where it holds run what follows."""
+    x, y = (_value(b, v, done, source) for v in (cond.a, cond.b))
+    if cond.kind in ZERO_TESTS and y == "zero":
+        mod = ZERO_TESTS[cond.kind]
+        b.when("SFPSETCC", f"x {cond.kind} 0", lreg_c=x, instr_mod1=mod)
+        return
+    if cond.kind not in CONDITIONS:
+        fail(f"the comparison {cond.kind} is not built in the unit program")
+    name, mod, swap = CONDITIONS[cond.kind]
+    x, y = (y, x) if swap else (x, y)
+    b.when(name, f"x {cond.kind} y", lreg_c=y, lreg_dest=x, instr_mod1=mod)
+
+
+def drop_copies(code):
+    """Algebra: a plain copy (SFPMOV) of a value read no more after it is no copy:
+    its readers take the value itself. Returns what it did."""
+    first, last = {}, {}
+    for i, insn in enumerate(code):
+        for v in insn.reads() + insn.writes():
+            first.setdefault(v, i)
+            last[v] = i
+    alias, keep, depth = {}, [], 0
+    for i, insn in enumerate(code):
+        for arg, _ in OPS[insn.op].args:
+            value = insn.args[arg]
+            if isinstance(value, str) and value in alias:
+                insn.args[arg] = alias[value]
+        if insn.sets_flags():
+            depth = 0 if insn.op == "SFPENCC" else depth + 1
+        a = insn.args
+        source, out = a.get("lreg_c"), a.get("lreg_dest")
+        if (
+            insn.op == "SFPMOV"
+            and a["instr_mod1"] == 0
+            and not depth
+            and isinstance(source, str)
+            and source.startswith("v")
+            and last.get(source) == i
+            and first.get(out) == i
+        ):
+            alias[out] = source
+            last[source] = last.get(out, i)
+            continue
+        keep.append(insn)
+    done = len(code) - len(keep)
+    code[:] = keep
+    return [f"{done} copies of values read no more"] if done else []
 
 
 def fold_negation(code):
@@ -609,13 +708,23 @@ def allocate(code, prog, pinned=()):
             if isinstance(v, str) and last.get(v) == i and v not in insn.writes()
         ]
         free += [regs[v] for v in dict.fromkeys(dying) if regs.get(v, WORK) < WORK]
-        for v in insn.writes():
+        for v in dict.fromkeys(insn.writes()):
             if isinstance(v, str) and v not in regs:
                 taken = [regs[d] for d in dying if regs.get(d, WORK) < WORK]
+                if not taken and not free:
+                    raise ValueError("more live values than the 8 work registers")
                 regs[v] = taken[0] if taken else min(free)
                 free.remove(regs[v])
                 if last.get(v, i) == i:
                     free.append(regs[v])
+            elif (
+                isinstance(v, str)
+                and last.get(v) == i
+                and regs[v] < WORK
+                and regs[v] not in free
+            ):
+                # rewritten in place (SFPSWAP's smaller value) and read no more
+                free.append(regs[v])
     for insn in code:
         for arg, _ in OPS[insn.op].args:
             value = insn.args[arg]
