@@ -12,7 +12,9 @@
 #include "api/compute/tile_move_copy.h"
 #include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
+#include "sets.hpp"
 #include "split.h"
+#include "split_op.hpp"
 
 namespace {
 
@@ -33,20 +35,27 @@ namespace {
 
 void kernel_main() {
     km::Compute compute;
-    const auto plan = [&](uint32_t word) {
-        return compute.arg(word);
-    };
-    const uint32_t k_tiles = plan(kSpKt), block_height = plan(kSpOh);
-    const uint32_t block_width = plan(kSpOw);
-    const uint32_t chunk_tiles = plan(kSpKc), subblock_height = plan(kSpSh);
-    const uint32_t subblock_width = plan(kSpSw), group_size = plan(kSpS);
-    const uint32_t block_tiles = block_height * block_width;
     compute_kernel_hw_startup<SrcOrder::Reverse>(kCbSa, kCbSw, kCbSum);
     compute.run([&](const km_command_t& command) {
-        if (km::handler(command) != kHandlerSplit) {
+        if (km::handler(command) != kHandlerSplit || command.a5 >= kSplitPlans) {
             return;
         }
-        const uint32_t reduce_form = command.a3, mode = command.a4;
+        const auto plan = [&](uint32_t word) {
+            return compute.arg(plan_words(command) + word);
+        };
+        const uint32_t k_tiles = plan(kSpKt), block_height = plan(kSpOh);
+        const uint32_t block_width = plan(kSpOw);
+        const uint32_t chunk_tiles = plan(kSpKc), subblock_height = plan(kSpSh);
+        const uint32_t subblock_width = plan(kSpSw), group_size = plan(kSpS);
+        const uint32_t block_tiles = block_height * block_width;
+        const km::Pattern pattern = chunk_pattern(plan(kSpPattern));
+        const uint32_t reduce_form = split_form(command), mode = command.a4;
+        if (mode == kSplitOp) {
+            if (split_op_part(command, kOpCompute)) {
+                split_op(compute, command);
+            }
+            return;
+        }
         const km::Group group = km::digit_group(command, compute.me(), 1, group_size);
         const km::Partition k_part = km::partition(k_tiles, group.rank, group.size);
         const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
@@ -64,8 +73,8 @@ void kernel_main() {
             const uint32_t chunk_length = (
                 k_part.len - offset < chunk_tiles ? k_part.len - offset : chunk_tiles
             );
-            const uint32_t a_half = km::block_half(kChunksA, kChunkPattern, chunk);
-            const uint32_t w_half = km::block_half(kChunksW, kChunkPattern, chunk);
+            const uint32_t a_half = km::block_half(kChunksA, pattern, chunk);
+            const uint32_t w_half = km::block_half(kChunksW, pattern, chunk);
             ok = (
                 compute.wait_front(a_half, block_height * chunk_tiles) &&
                 compute.wait_front(w_half, chunk_tiles * block_width)
@@ -124,21 +133,29 @@ void kernel_main() {
         copy_init(kCbArrive);
         if (ok && full) {
             pack_reconfig_l1_acc(1);
-            ok = km::reduce(compute, arrival, group, reduce_form, [&](uint32_t slot) {
-                for (uint32_t tile = 0; tile < block_tiles; ++tile) {
-                    move_tile(
-                        kCbArrive, km::slot_page(arrival, slot) + tile, kCbSum, tile
-                    );
+            ok = reduce_set(
+                compute, command, arrival, group, reduce_form, [&](uint32_t slot) {
+                    for (uint32_t tile = 0; tile < block_tiles; ++tile) {
+                        move_tile(
+                            kCbArrive, km::slot_page(arrival, slot) + tile, kCbSum, tile
+                        );
+                    }
                 }
-            });
+            );
         }
         pack_reconfig_l1_acc(0);
         if (ok && full && room) {
             cb_push_back(kCbSum, block_tiles);
         }
-        if (
-            ok && full && group.rank == 0
-        ) {  // the group's sum, in bf16, for the writer
+        // A root's unpack pops the sum, a sender's writer pops it: roles change with
+        // the plan, so unpack counts the writer's pop too (one item: the whole buffer).
+        if (ok && full && group.rank != 0) {
+            UNPACK((get_local_cb_interface(kCbSum).tiles_acked += block_tiles));
+        }
+        if (ok && full && group.rank == 0 && split_op_part(command, kOpCompute)) {
+            ok = split_op(compute, command);         // the operation takes the sum
+        } else if (ok && full && group.rank == 0) {  // the group's sum, in bf16, for
+                                                     // the writer
             ok = compute.wait_front(kCbSum, block_tiles);
             const bool out = compute.reserve_back(kCbSplitOut, block_tiles);
             pack_reconfig_data_format(kCbSplitOut);

@@ -351,14 +351,16 @@ class GridProduct:
 
 
 def split_program(plan, tensors, fidelity="HiFi2"):
-    """The K-split form's program for `plan`: every core gets the plan words; both
-    movers read the K chunks (A and W to each), the writer also writes Y."""
-    words = plan.words()
+    """The K-split form's program for `plan` (or a list of plans that share their
+    buffers, a command's a5 picking one): every core gets the plan words; both movers
+    read the K chunks (A and W to each), the writer also writes Y."""
+    plans = list(plan) if isinstance(plan, list | tuple) else [plan]
+    words = pl.split_table(plans)
     fp32 = "UnpackToDestFp32"
     return km.Program(
         "dense_split",
         kernels=SPLIT_KERNELS,
-        buffers=[km.Buffer(*buffer) for buffer in plan.buffers()],
+        buffers=[km.Buffer(*buffer) for buffer in plans[0].buffers()],
         args=lambda core: (words, words, words),
         compile_args={
             "reader": tensors["a"].tensor_args() + tensors["w"].tensor_args(),

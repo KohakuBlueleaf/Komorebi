@@ -5,21 +5,29 @@
 #include "api/dataflow/dataflow_api.h"
 #include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
+#include "sets.hpp"
 #include "split.h"
+#include "split_op.hpp"
 
 void kernel_main() {
     using Y = km::Tensor<0>;
     using A = km::Tensor<Y::next_compile_time_args_offset()>;
     using W = km::Tensor<A::next_compile_time_args_offset()>;
     km::Writer writer;
-    const auto plan = [&](uint32_t word) {
-        return writer.arg(word);
-    };
     writer.run([&](const km_command_t& command) {
-        const uint32_t y_address = command.a2, reduce_form = command.a3;
+        const uint32_t y_address = command.a2, reduce_form = split_form(command);
         const uint32_t mode = command.a4;
         if (km::handler(command) != kHandlerSplit) {
             return true;
+        }
+        if (command.a5 >= kSplitPlans) {  // no such plan: the command is not completed
+            return false;
+        }
+        const auto plan = [&](uint32_t word) {
+            return writer.arg(plan_words(command) + word);
+        };
+        if (mode == kSplitOp) {
+            return !split_op_part(command, kOpWriter) || split_op(writer, command);
         }
         if (!move_chunks(writer, command, A(command.a0), W(command.a1))) {
             return false;
@@ -35,10 +43,13 @@ void kernel_main() {
         const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
         if (group.rank != 0) {
             return (
-                km::reduce_emit(
+                emit_set(
                     writer, command, arrival, group, reduce_form, kCbSum, block_tiles
                 )
             );
+        }
+        if (split_op_part(command, kOpWriter)) {  // the operation writes the block
+            return split_op(writer, command);
         }
         if (!km::reduce_result(writer, kCbSplitOut, block_tiles)) {
             return false;
