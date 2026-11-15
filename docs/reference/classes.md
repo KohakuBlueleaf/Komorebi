@@ -512,6 +512,7 @@ What a body takes, by where it runs:
 | `takes=` of | compute's three | one compute CPU | a mover |
 |---|---|---|---|
 | an int, a partition, a pattern, a page's words (`.read()[0:2]`) | by its name | by its name | by its name |
+| a constant of the class (`self.K`, [Constants](#constants)) | `K`, a `constexpr uint32_t` of this program's value | the same | the same |
 | an entry `e` of a table (`for e in ...entries(...)`), or a table | `e_word`, each of its words (a table: `name_count`) | the same | the same |
 | a body's word (`w = km.cxx(..., gives=int)`) | a word of compute's three | a word of that CPU, or of compute's three | a word of that mover |
 | a stream's tile or item (the loop's name) | `name_buffer` and `name_index`, its buffer and place | `name`, its L1 address: unpack's own; math and pack are handed it by mailbox before the body and hand a release back after it, and unpack frees the block only then | after the loop: `name_tiles` and `name_cycles`, what this mover moved in the loop's move (`km::Moved`: its tiles, the cycles of its passes that moved a block) |
