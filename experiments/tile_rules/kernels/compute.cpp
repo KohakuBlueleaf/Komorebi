@@ -86,14 +86,16 @@ namespace {
     // The decode project's norm (its add's sums of squares, its scale's rms_scale and
     // product) for one row of tiles, then the product with the weight tile.
     inline void norm_unit() {
+        cb_wait_front(rules::kCbY, kUnitTiles);
         tile_regs_acquire();
-        matmul_init(rules::kCbA, rules::kCbA, 1);
+        matmul_init(rules::kCbY, rules::kCbY, 1);
         for (uint32_t t = 0; t < kUnitTiles; ++t) {
-            matmul_tiles(rules::kCbA, rules::kCbA, t, t, 0);
+            matmul_tiles(rules::kCbY, rules::kCbY, t, t, 0);
         }
         mul_hifi4_init(rules::kCbP);
         mul_hifi4(rules::kCbP, rules::kPIdentity, 0);
         pack_one(rules::kCbSquares);
+        cb_pop_front(rules::kCbY, kUnitTiles);
         tile_regs_acquire();
         matmul_init(rules::kCbSquares, rules::kCbP, 0);
         matmul_tiles(rules::kCbSquares, rules::kCbP, 0, rules::kPMean, 0);

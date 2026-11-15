@@ -101,3 +101,5 @@ def test_row_norm_lanes_and_broadcast():
             trace.store(ys.tiles[t, :], row * r.col() * weight.row())
     checks = {c.rule: c.verdict for c in row_program(ir, 2, 2, 4).checks}
     assert checks["lanes"].startswith("ok") and checks["broadcast"].startswith("ok")
+    # each lane rotation of a sum waits a cycle: the unit does not stall it
+    assert checks["mad-reader"] == "repaired: 32 SFPNOP"

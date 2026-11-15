@@ -7,8 +7,9 @@
 namespace rules {
 
     constexpr uint32_t kCbA = 0, kCbB = 1, kCbP = 2, kCbOut = 16, kCbInfo = 24;
-    // The hand norm's one-page buffers and its P pages (decode's constant tiles).
-    constexpr uint32_t kCbSquares = 3, kCbScale = 4;
+    // The hand norm's buffers: its one-page buffers, the row again for the products
+    // (decode's DC_CB_Y: not unpacked to Dst); its P pages (decode's constant tiles).
+    constexpr uint32_t kCbSquares = 3, kCbScale = 4, kCbY = 5;
     constexpr uint32_t kPIdentity = 0, kPMean = 1, kPWeight = 2;
     constexpr uint32_t kMaxUnits = 32;
 

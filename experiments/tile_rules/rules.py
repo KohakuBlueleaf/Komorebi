@@ -29,7 +29,7 @@ KERNELS = HERE / "kernels"
 GENERATED = KERNELS / "generated"
 # rules.hpp's layout.
 CB_A, CB_B, CB_P, CB_OUT, CB_INFO, MAX_UNITS = 0, 1, 2, 16, 24, 32
-CB_SQUARES, CB_SCALE = 3, 4  # the hand norm's
+CB_SQUARES, CB_SCALE, CB_Y = 3, 4, 5  # the hand norm's
 NONCE, ERROR, UNITS, BODY, LOOP, SYNC, SYNCS = 0, 1, 2, 64, 128, 192, 16
 TILE_WORDS = 1024
 DESCRIPTOR = (
@@ -198,6 +198,7 @@ def launch(session, body, data):
     run.cb(core, CB_P, "float32", page, max(1, defines["HAS_P"]) * page)
     run.cb(core, CB_SQUARES, "float32", page, page)
     run.cb(core, CB_SCALE, "float32", page, page)
+    run.cb(core, CB_Y, "float32", page, 2 * unit_tiles * page)
     run.cb(core, CB_OUT, "float32", page, 2 * unit_tiles * page)
     run.cb(core, CB_INFO, "float32", page, page)
 
@@ -206,7 +207,7 @@ def launch(session, body, data):
 
     accessors = [w for t in tensors for w in t.accessor_args()]
     words = [t.address for t in tensors]
-    words += [count, unit_tiles, INPUTS[case], defines["HAS_P"]]
+    words += [count, unit_tiles, INPUTS[case], defines["HAS_P"], int(body == 10)]
     run.kernel(str(KERNELS / "reader.cpp"), core, 1, accessors, [], [], args(words))
     accessors = t_out.accessor_args() + t_info.accessor_args()
     words = [t_out.address, t_info.address, len(data["a"])]
@@ -411,7 +412,7 @@ def card(args):
     with open("/proc/loadavg") as f:
         load = f.read().split()[:3]
     started = time.time()
-    clock, records = [aiclk_mhz()], []
+    clock, records, saved = [aiclk_mhz()], [], {}
     with km.Session() as session:
         log(f"device open {time.time() - started:.1f}s")
         for case in args.cases:
@@ -428,11 +429,15 @@ def card(args):
                 nonces[body] = nonce
                 clock.append(aiclk_mhz())
             rec = check(case, data, outputs, infos, nonces)
+            saved.update({f"{case}_{BODIES[b][1]}": out for b, out in outputs.items()})
+            saved.update({f"{case}_input_{k}": v for k, v in data.items()})
             rec["estimates"] = {
                 k: v for k, v in costs.items() if k.split("_")[0] == case
             }
             log(json.dumps(rec))
             records.append(rec)
+    if args.save:
+        np.savez(args.save, **saved)
     out = {"aiclk_mhz": clock, "load": load, "wall_s": round(time.time() - started, 1)}
     print(json.dumps(out), flush=True)
     clean = all(
@@ -450,6 +455,7 @@ def main():
     p.add_argument("--cases", nargs="+", choices=CASES, default=list(CASES))
     p.add_argument("--units", type=int, default=16)
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--save", help="card: the outputs and inputs into this .npz file")
     args = p.parse_args()
     if not 1 <= args.units <= MAX_UNITS:
         p.error(f"--units is 1 .. {MAX_UNITS}")

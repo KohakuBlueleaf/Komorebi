@@ -1,5 +1,5 @@
-// Tile-rules experiment reader (RISCV_1): the P pages once, then per unit its tiles of
-// A (one tile, or a row) and, with two inputs, one tile of B.
+// Tile-rules reader (RISCV_1): the P pages once, then per unit its tiles of A (and,
+// for the hand norm, of Y again) and, with two inputs, one tile of B.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -29,6 +29,7 @@ void kernel_main() {
     const uint32_t unit_tiles = get_arg_val<uint32_t>(4);
     const uint32_t inputs = get_arg_val<uint32_t>(5);
     const uint32_t p_pages = get_arg_val<uint32_t>(6);
+    const uint32_t copy_y = get_arg_val<uint32_t>(7);
     const auto a = TensorAccessor(a_args, get_arg_val<uint32_t>(0));
     const auto b = TensorAccessor(b_args, get_arg_val<uint32_t>(1));
     const auto p = TensorAccessor(p_args, get_arg_val<uint32_t>(2));
@@ -38,6 +39,9 @@ void kernel_main() {
     for (uint32_t u = 0; u < units; ++u) {
         for (uint32_t t = 0; t < unit_tiles; ++t) {
             read(a, u * unit_tiles + t, rules::kCbA);
+            if (copy_y != 0) {
+                read(a, u * unit_tiles + t, rules::kCbY);
+            }
         }
         if (inputs == 2) {
             read(b, u, rules::kCbB);

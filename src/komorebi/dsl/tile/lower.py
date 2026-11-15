@@ -38,8 +38,9 @@ TILE = 64  # Dst address units of one fp32 tile: 4 faces of 16 rows
 # Operand tiles a whole-tile stream body reads (Dst tiles 0 ..).
 OPERANDS = 3
 # The readers of a MAD-class result that the unit does not hold back (rule
-# mad-reader; SFPGT and SFPLE added from tt-metal's ckernel_sfpu_recip.h).
+# mad-reader: the ISA's SFPMAD page; SFPGT, SFPLE from tt-metal's ckernel_sfpu_recip.h).
 NOT_HELD = ("SFPIADD", "SFPSHFT", "SFPAND", "SFPOR", "SFPSWAP", "SFPGT", "SFPLE")
+SHFT2_LANES = (2, 3, 4)  # SFPSHFT2 lane modes: their reads are not seen at all
 STALL_SFPU, WAIT_MATH = 0x100, 0x10
 SET_D, CR_D = 0x4, 0x4
 CC_RESET = (3, 10)  # SFPENCC imm, mod1: condition on, every lane's flag set
@@ -541,15 +542,26 @@ def check_mad_readers(blocks_):
         i = 1
         while i < len(code):
             prev, cur = code[i - 1], code[i]
-            if (
-                OPS[prev.op].kind == "mad"
-                and cur.op in NOT_HELD
-                and set(prev.writes()) & set(cur.reads())
-            ):
+            if OPS[prev.op].kind == "mad" and not_held(cur, set(prev.writes())):
                 code.insert(i, Insn("SFPNOP", {}, "hazard mad-reader: MAD result"))
                 repairs += 1
             i += 1
     return repairs
+
+
+def not_held(insn, written):
+    """True when `insn` reads (or half-writes) a register of `written` the cycle after
+    a multiply-add and the unit does not stall it (the ISA's SFPMAD page)."""
+    reads = set(insn.reads())
+    if insn.op in NOT_HELD or insn.op == "SFPLOADI":
+        return bool(reads & written)
+    if insn.op == "SFPSHFT2":
+        return insn.args["instr_mod1"] in SHFT2_LANES and bool(reads & written)
+    if insn.op in ("SFPSETSGN", "SFPSETEXP", "SFPSETMAN"):
+        return not insn.args["instr_mod1"] & 1 and insn.args["lreg_dest"] in written
+    if insn.op == "SFPCONFIG":
+        return bool({"L0", 0} & written)
+    return False
 
 
 def check_config_nop(code):
