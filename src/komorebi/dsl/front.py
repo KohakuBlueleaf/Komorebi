@@ -515,6 +515,60 @@ class Region:
         self.bank, self.address, self.island = int(bank), int(address), int(island)
 
 
+class ThreadRegion:
+    """`groups = km.region(4096)` in a class body: a region of the class's X280
+    thread, its bytes an int or of the class's constants; ids in body order."""
+
+    def __init__(self, size):
+        if isinstance(size, bool) or not isinstance(size, int | Constant):
+            raise ProgramError(
+                f"km.{spelling('thread_region')}({size!r}): its bytes, an int or of "
+                f"the class's constants (km.{spelling('constant')})"
+            )
+        self.size, self.name = size, None
+
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def bytes(self, values):
+        """Its bytes among a made program's constant `values`."""
+        return self.size.value(values) if isinstance(self.size, Constant) else self.size
+
+
+class ClassThread:
+    """`thread = km.x280_thread("t.c", cluster=1)` in a class body: the class's X280
+    thread, C files beside the class's source; on a made program, its Thread."""
+
+    def __init__(self, sources, options, line):
+        self.sources, self.options, self.line = sources, options, line
+        self.cluster = options.get("cluster", 1)
+        self.name = None
+
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def __get__(self, program, owner=None):
+        if program is None:
+            return self
+        return program.threads[self.cluster]
+
+
+THREAD_OPTIONS = ("cluster", "deadline", "includes", "defines", "prefetch",
+                  "host_fallback")  # fmt: skip
+
+
+def thread(*sources, **options):
+    """The spelling of a class's thread: its C files, then Program.thread's options
+    but its regions (km.region in the body) and words (thread_words= at the make)."""
+    unknown = sorted(set(options) - set(THREAD_OPTIONS))
+    if not sources or unknown:
+        raise ProgramError(
+            f"km.{spelling('class_thread')}(*sources, {', '.join(THREAD_OPTIONS)}): "
+            + (f"{', '.join(unknown)} is not one of them" if unknown else "no source")
+        )
+    return ClassThread(sources, options, inspect.currentframe().f_back.f_lineno)
+
+
 def region_words(handler, parameter, value):
     """A region argument's (bank address, bank)."""
     if isinstance(value, Region):
@@ -762,6 +816,8 @@ def exports():
         "startup": Startup,
         "tensor": Tensor,
         "region": Region,
+        "class_thread": thread,
+        "thread_region": ThreadRegion,
         "stream": line_only("stream"),
         "reduce": line_only("reduce"),
         "broadcast": line_only("broadcast"),

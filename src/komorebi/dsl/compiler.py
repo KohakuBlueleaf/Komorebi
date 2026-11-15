@@ -3185,6 +3185,7 @@ class HandlerCompiler:
             self.summed[field_] = sums
             self.compiled.summed_fields.add(f"kField{camel(field_)}")
             self.opening.append(Line(f"uint32_t {sums} = 0;  // self.{field_}'s"))
+            self.opening.append(Line(sums_room_line(field_)))
             self.opening_b.append(  # mover B counts the same sums: its write's
                 Line(f"uint32_t {sums} = 0;  // self.{field_}'s", mover="B")
             )
@@ -3216,23 +3217,28 @@ class HandlerCompiler:
             init, calls, turn = self.turned_blocks(
                 a, b, (row, column, k), inner, columns, (height, width)
             )
-        packs = "\n".join(
-            f"        pack_tile<true>({i * width + j}, {buffer}, ({row} + {i}) * "
-            f"{columns} + {column} + {j});"
-            for i in range(height)
-            for j in range(width)
+        room = sums_room(field_)
+        packs = (
+            f"            if ({room}) {{\n"
+            + "\n".join(
+                f"                pack_tile<true>({i * width + j}, {buffer}, ({row} + "
+                f"{i}) * {columns} + {column} + {j});"
+                for i in range(height)
+                for j in range(width)
+            )
+            + "\n            }"
         )
         text = (
             "km_ok = km_ok && km::broadcast_receive(compute, "
             f"{a.name}, {a.name}Pages) &&\n"
             f"    km::broadcast_receive(compute, {b.name}, {b.name}Pages);\n"
-            f"if (km_ok && {sums} == 0) {{  // a new sum: the field's pages held\n"
-            f"    km_ok = compute.reserve_back({buffer}, {buffer}Pages);\n"
-            "}\n"
+            f"{sums_reserve(sums, room, buffer)}"
             "if (km_ok) {\n"
             f"{init}"
             f"    KM_PACK_FORMAT({buffer});\n"
-            f"    pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
+            f"    if ({room}) {{\n"
+            f"        pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
+            "    }\n"
             f"    for (uint32_t {row} = 0; {row} < {rows}; {row} += {height}) {{\n"
             f"        for (uint32_t {column} = 0; {column} < {columns}; {column} += "
             f"{width}) {{\n"
@@ -3243,11 +3249,13 @@ class HandlerCompiler:
             f"{turn}"
             "            tile_regs_commit();\n"
             "            tile_regs_wait();\n"
-            + "\n".join("    " + line for line in packs.split("\n"))
-            + "\n            tile_regs_release();\n"
+            f"{packs}\n"
+            "            tile_regs_release();\n"
             "        }\n"
             "    }\n"
-            "    pack_reconfig_l1_acc(0);\n"
+            f"    if ({room}) {{\n"
+            "        pack_reconfig_l1_acc(0);\n"
+            "    }\n"
             f"    {sums}++;\n"
             f"    km::broadcast_done({a.name}, {a.name}Pages);\n"
             f"    km::broadcast_done({b.name}, {b.name}Pages);\n"
@@ -3294,6 +3302,7 @@ class HandlerCompiler:
             self.summed[field_] = sums
             self.compiled.summed_fields.add(f"kField{camel(field_)}")
             self.opening.append(Line(f"uint32_t {sums} = 0;  // self.{field_}'s"))
+            self.opening.append(Line(sums_room_line(field_)))
             self.opening_b.append(  # mover B counts the same sums: its write's
                 Line(f"uint32_t {sums} = 0;  // self.{field_}'s", mover="B")
             )
@@ -3355,16 +3364,21 @@ class HandlerCompiler:
                 self.compiled.fidelity,
             )
         )
-        packs = "\n".join(
-            f"        pack_tile<true>({j}, {buffer}, {column} + {j});"
-            for j in range(width)
+        room = sums_room(field_)
+        packs = (
+            f"        if ({room}) {{\n"
+            + "\n".join(
+                f"            pack_tile<true>({j}, {buffer}, {column} + {j});"
+                for j in range(width)
+            )
+            + "\n        }"
         )
         text = (
-            f"if (km_ok && {sums} == 0) {{  // a new sum: the field's pages held\n"
-            f"    km_ok = compute.reserve_back({buffer}, {buffer}Pages);\n"
-            "}\n"
+            f"{sums_reserve(sums, room, buffer)}"
             "if (km_ok) {\n"
-            f"    pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
+            f"    if ({room}) {{\n"
+            f"        pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
+            "    }\n"
             f"    for (uint32_t {column} = 0; {column} < {columns}; {column} += "
             f"{width}) {{\n"
             "        tile_regs_acquire();\n"
@@ -3377,7 +3391,9 @@ class HandlerCompiler:
             f"{packs}\n"
             "        tile_regs_release();\n"
             "    }\n"
-            "    pack_reconfig_l1_acc(0);\n"
+            f"    if ({room}) {{\n"
+            "        pack_reconfig_l1_acc(0);\n"
+            "    }\n"
             f"    {sums}++;\n"
             "}"
         )
@@ -4836,6 +4852,7 @@ class HandlerCompiler:
         # a row packed while the one before is written (one row: the row alone)
         out.pages = (max(held + [columns * min(rows, 2)]),)
         buffer, sums = f"kField{camel(field_)}", self.summed[field_]
+        room, out_room = sums_room(field_), f"km_room{node.lineno}"
         step = max(w for w in range(1, DST_HALF + 1) if columns % w == 0)
         tile = f"km_tile{node.lineno}"
         copies = "\n".join(
@@ -4849,7 +4866,9 @@ class HandlerCompiler:
             "if (km_ok) {\n"
             if pushed
             else f"if (km_ok && {sums} > 0) {{\n"
-            f"    cb_push_back({buffer}, {buffer}Pages);\n"
+            f"    if ({room}) {{  // pack's: its pages held\n"
+            f"        cb_push_back({buffer}, {buffer}Pages);\n"
+            "    }\n"
             f"    km_ok = compute.wait_front({buffer}, {buffer}Pages);\n"
             "}\n"
             f"if (km_ok && {sums} > 0) {{\n"
@@ -4859,6 +4878,7 @@ class HandlerCompiler:
             f"{taken}"
             f"    KM_UNPACK_FORMAT_A({buffer});\n"
             f"    copy_init({buffer});\n"
+            f"    bool {out_room} = true;  // pack's alone: it guards the packs only\n"
             f"    for (uint32_t {tile} = 0; km_ok && "
             f"{tile} < {rows * columns}; {tile} += "
             f"{step}) {{\n"
@@ -4866,8 +4886,9 @@ class HandlerCompiler:
             f"{copies}\n"
             "        tile_regs_commit();\n"
             "        tile_regs_wait();\n"
-            f"        km_ok = compute.reserve_back({out.name}, {step});\n"
-            "        if (km_ok) {\n"
+            f"        {out_room} = {out_room} && compute.reserve_back({out.name}, "
+            f"{step});\n"
+            f"        if ({out_room}) {{\n"
             f"            KM_PACK_FORMAT({out.name});\n"
             f"{packs}\n"
             f"            cb_push_back({out.name}, {step});\n"
@@ -5877,38 +5898,44 @@ class HandlerCompiler:
             ),
         ]
         tile = f"km_tile{node.lineno}"
+        room = sums_room(field_)
         combine = (
             f"KM_UNPACK_FORMAT_A({arrival.name}.cb);\n"
             f"copy_init({arrival.name}.cb);\n"
             f"KM_PACK_FORMAT({buffer});\n"
-            f"pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
+            f"if ({room}) {{\n"
+            f"    pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
+            "}\n"
             f"for (uint32_t {tile} = 0; {tile} < {tiles}; {tile}++) {{\n"
             "    tile_regs_acquire();\n"
             f"    copy_tile({arrival.name}.cb, km::slot_page({arrival.name}, "
             f"km_slot) + {tile}, 0);\n"
             "    tile_regs_commit();\n"
             "    tile_regs_wait();\n"
-            f"    pack_tile<true>(0, {buffer}, {tile});\n"
+            f"    if ({room}) {{\n"
+            f"        pack_tile<true>(0, {buffer}, {tile});\n"
+            "    }\n"
             "    tile_regs_release();\n"
             "}\n"
-            "pack_reconfig_l1_acc(0);\n"
+            f"if ({room}) {{\n"
+            "    pack_reconfig_l1_acc(0);\n"
+            "}\n"
             f"{sums}++;"
         )
         body = "\n".join("    " + line for line in combine.split("\n"))
         compute = [
             Line(
                 f"// self.{field_}'s sums and the group's: each arrival added into it\n"
-                f"if (km_ok && {sums} == 0) {{  // no product: the first arrival "
-                "overwrites\n"
-                f"    km_ok = compute.reserve_back({buffer}, {buffer}Pages);\n"
-                "}\n"
+                f"{sums_reserve(sums, room, buffer)}"
                 f"km_ok = km_ok && km::reduce(compute, {arrival.name}, "
                 f"{group.format(cpu='compute')}, {form}, "
                 f"[&](uint32_t km_slot) {{\n{body}\n}});\n"
-                f"if (km_ok) {{  // to mover B's send, or to the leader's write\n"
+                f"if (km_ok && {room}) {{  // to mover B's send, or to the leader's "
+                "write\n"
                 f"    cb_push_back({buffer}, {buffer}Pages);\n"
                 "}\n"
-                f"{sums} = 0;",
+                + sent_field_acked(buffer, group.format(cpu="compute"), form)
+                + f"{sums} = 0;",
                 uses | {"km_ok"},
             ),
         ]
@@ -8074,3 +8101,39 @@ CXX_KEYWORDS = {
     "km",
     "uint32_t",
 }
+
+
+def sums_room(field_):
+    """The name of pack's own word that it holds a field of sums' pages: only pack's
+    reserve decides it (unpack's and math's is always true), so it guards the pack
+    lines alone and never a branch all three compute threads take."""
+    return f"km_room_sums_{field_}"
+
+
+def sums_room_line(field_):
+    """A field of sums' room, declared beside its count of sums."""
+    return f"bool {sums_room(field_)} = true;  // pack holds self.{field_}'s pages"
+
+
+def sums_reserve(sums, room, buffer):
+    """A new sum holds the field's pages: pack's reserve sets the room, and a give-up
+    leaves it false for the command, so the three threads still run the sections
+    and the destination's hand-over together while pack packs nothing."""
+    return (
+        f"if (km_ok && {sums} == 0) {{  // a new sum: the field's pages held\n"
+        f"    {room} = {room} && compute.reserve_back({buffer}, {buffer}Pages);\n"
+        "}\n"
+    )
+
+
+def sent_field_acked(buffer, group, form):
+    """A field of sums is emptied by compute's unpack on the group's root and by mover
+    B's send elsewhere; unpack keeps its own count of the pages taken, so a core that
+    sent counts mover B's pop there too, or its next turn as root rewinds the count
+    (the hand's K split does the same). The field is one whole item of its buffer."""
+    return (
+        f"if (km_ok && !km::reduce_send({group}, {form}).root) {{  // mover B pops it\n"
+        f"    UNPACK((get_local_cb_interface({buffer}).tiles_acked += "
+        f"{buffer}Pages));\n"
+        "}\n"
+    )

@@ -9,7 +9,7 @@ tags:
 # Measured
 
 Every whole program's table, each row from the program's own page and its committed
-results. The [README](../README.md#at-a-glance) keeps a few of these numbers; this page
+results. The [README](../README.md#results) keeps a few of these numbers; this page
 keeps all of them.
 
 Unless a section says otherwise: one P150A, 2026-11-13, AICLK 1,350 MHz nominal (the
