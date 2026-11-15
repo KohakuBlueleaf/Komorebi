@@ -1,5 +1,5 @@
 // Probes 11 (matrix-unit issue cost, K Dst blocks in rotation) and 14 (ties of MVMUL,
-// packer): unpack fills SrcA and SrcB, the math thread runs, the pack thread waits.
+// packer); probe 11 keeps the order of the dense matrix-product kernel on every thread.
 #pragma once
 
 #include <stdint.h>
@@ -10,8 +10,9 @@ namespace fpu {
 
     constexpr uint32_t kWallClock = 0xFFB121F0;  // RISCV_DEBUG_REG_WALL_CLOCK_L
     constexpr uint32_t kDstWindow = 0xFFBD8000;
-    constexpr uint32_t kRows = 128;       // Dst rows (32-bit view) the probes use
-    constexpr uint32_t kAm = ADDR_MOD_1;  // no step on any counter
+    constexpr uint32_t kRows = 128;  // Dst rows (32-bit view) the ties probe reads
+    constexpr uint32_t kTileWords = 1024;  // one packed tile: Dst rows 0..63
+    constexpr uint32_t kAm = ADDR_MOD_7;  // no step on any counter; the matmul init uses 0..6
 
     inline uint32_t wall() {
         return *reinterpret_cast<volatile uint32_t*>(kWallClock);
@@ -42,10 +43,12 @@ namespace fpu {
         fence();
     }
 
-    // Unpack thread: tile 0 of the input CB into SrcA and SrcB, then its done word.
+    // Probe 14 unpack thread: face 0 of tile 0 into SrcA and SrcB, then its done word.
+    // One face: a face is a hand-over of a Src bank and a Src has two banks.
     inline void unpack(volatile uint32_t* out, uint32_t nonce) {
 #ifdef TRISC_UNPACK
-        llk_unpack_AB_init<BroadcastType::NONE>(probe::kCbIn, probe::kCbIn);
+        const ckernel::TensorShape one_face{16, 16, 1, 1};
+        _llk_unpack_AB_init_<BroadcastType::NONE>(one_face);
         llk_unpack_AB(probe::kCbIn, probe::kCbIn, 0, 0);
         tensix_sync();
 #endif
@@ -64,10 +67,9 @@ namespace fpu {
         tensix_sync();
     }
 
-    // Math thread state: no counter step in kAm, Dst offset 0, counters (and the
-    // fidelity counter) zero. No window access: Dst is read and written by the pack
-    // thread.
-    inline void math_state() {
+    // Math thread counters: no step in kAm, all counters zero; the Dst offset stays
+    // the one the section protocol set.
+    inline void math_counters() {
         addr_mod_t{
             .srca = {.incr = 0},
             .srcb = {.incr = 0},
@@ -75,9 +77,14 @@ namespace fpu {
             .fidelity = {.incr = 0, .clr = 0},
         }
             .set(kAm);
-        TTI_SETC16(DEST_TARGET_REG_CFG_MATH_Offset_ADDR32, 0);
         TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, 15);
         tensix_sync();
+    }
+
+    // Probe 14: the same with the Dst offset zero.
+    inline void math_state() {
+        TTI_SETC16(DEST_TARGET_REG_CFG_MATH_Offset_ADDR32, 0);
+        math_counters();
     }
 
     // Math thread state with the window in FP32 (probe 14).
@@ -87,21 +94,12 @@ namespace fpu {
         tensix_sync();
     }
 
-    // ---- Probe 11: issue cost (rows 3 and 4) ----------------------------------------
-    //
-    // Each config is a body of kLen instruction words (kLen - 4 when K = 5), word i
-    // writing Dst block i mod K (rows 8 (i mod K)), recorded once into the replay
-    // buffer with TTI_ words (the form every replay in the LLK uses) and played
-    // kReplays times a span. The math thread only issues; the pack thread zeroes Dst
-    // before each config and reads it after it, so no window access meets a running
-    // matrix-unit instruction. Config 0 is one MVMUL, pushed once.
-
+    // Probe 11 (rows 3 and 4): a config is a body of kLen words, word i on Dst block
+    // i mod K, played kReplays times.
     enum Op : uint32_t { kMvmul, kElwmul, kElwadd, kMova2d, kMovb2d };
 
     constexpr uint32_t kNumConfigs = 15;
     constexpr uint32_t kReps = 3, kReplays = 64;
-    constexpr uint32_t kSeqMath = 12;  // math thread: config i done (nonce + 1 + i)
-    constexpr uint32_t kSeqPack = 13;  // pack thread: Dst zero again (nonce + i)
 
     template <Op OP, uint32_t D>
     inline void emit() {
@@ -206,80 +204,86 @@ namespace fpu {
         }
     }
 
-    // Math thread: configs first .. first + count - 1, each after the pack thread has
-    // zeroed Dst; the empty span (two syncs around nothing) goes to the slot after the
-    // last config. Every wait is bounded.
-    inline void math(volatile uint32_t* out, uint32_t nonce, uint32_t first, uint32_t count) {
+    // Math thread: the config, then the release of SrcA and SrcB the unpack thread
+    // handed over (CLR_AB, as the eltwise kernels release).
+    inline void issue(uint32_t c, volatile uint32_t* out) {
 #ifdef TRISC_MATH
-        if (!wait_word(out, probe::kDone0, nonce) || !wait_word(out, kSeqPack, nonce)) {
-            out[probe::kAuxError] = probe::kErrorSpin;
-            return;
-        }
-        math_state();
+        run_config(c, out + probe::kData + 32 * c);
+        TTI_SETRWC(p_setrwc::CLR_AB, 0, 0, 0, 0, 15);
+        tensix_sync();
+#endif
+    }
+
+    // Math thread, before the first section: counters, and the clock's own cost (two
+    // syncs around nothing) in the slot after the last config.
+    inline void math_prepare(volatile uint32_t* out) {
+#ifdef TRISC_MATH
+        math_counters();
         volatile uint32_t* e = out + probe::kData + 32 * kNumConfigs;
         for (uint32_t r = 0; r < 3; ++r) {
             const uint32_t a = wall();
             tensix_sync();
             e[r] = wall() - a;
         }
-        for (uint32_t i = 0; i < count; ++i) {
-            run_config(first + i, out + probe::kData + 32 * (first + i));
-            post_word(out, kSeqMath, nonce + 1 + i);
-            if (!wait_word(out, kSeqPack, nonce + 1 + i)) {
-                out[probe::kAuxError] = probe::kErrorSpin;
-                break;
-            }
-        }
-        TTI_SETRWC(p_setrwc::CLR_AB, 0, 0, 0, 0, 15);
-        tensix_sync();
 #endif
     }
 
-    // Pack thread: zero Dst, then after each config of the math thread read rows
-    // 0..kRows-1 into config c's words (4 nonzero words, 5..12 four (value, count)
-    // pairs), zero them again and say so. Returns error bits.
-    inline uint32_t watch(volatile uint32_t* out, uint32_t nonce, uint32_t first, uint32_t count) {
+    // Pack thread: the section packed to the scratch buffer, its words counted into
+    // config c's words 4 (nonzero) and 5..12 (four value, count pairs).
+    inline void collect(
+        volatile uint32_t* out, uint32_t c, const volatile uint32_t* tile
+    ) {
 #ifdef TRISC_PACK
-        configure_dest_access<ThreadId::PackThreadId>(DataFormat::Float32, true);
+        cb_reserve_back(probe::kCbScratch, 1);
+        pack_tile(0, probe::kCbScratch);
         tensix_sync();
-        zero_rows();
-        post_word(out, kSeqPack, nonce);
-        for (uint32_t i = 0; i < count; ++i) {
-            volatile uint32_t* d = out + probe::kData + 32 * (first + i);
-            if (!wait_word(out, kSeqMath, nonce + 1 + i)) {
-                return probe::kErrorSpin;
+        volatile uint32_t* d = out + probe::kData + 32 * c;
+        uint32_t nonzero = 0, nv = 0;
+        uint32_t val[4] = {0, 0, 0, 0}, cnt[4] = {0, 0, 0, 0};
+        for (uint32_t j = 0; j < kTileWords; ++j) {
+            const uint32_t v = tile[j];
+            if (v == 0) {
+                continue;
             }
-            tensix_sync();
-            volatile uint32_t* w = win();
-            uint32_t nonzero = 0, nv = 0;
-            uint32_t val[4] = {0, 0, 0, 0}, cnt[4] = {0, 0, 0, 0};
-            for (uint32_t j = 0; j < 16 * kRows; ++j) {
-                const uint32_t v = w[j];
-                if (v == 0) {
-                    continue;
-                }
-                ++nonzero;
-                uint32_t q = 0;
-                while (q < nv && val[q] != v) {
-                    ++q;
-                }
-                if (q == nv && nv < 4) {
-                    val[nv++] = v;
-                }
-                if (q < nv) {
-                    ++cnt[q];
-                }
+            ++nonzero;
+            uint32_t q = 0;
+            while (q < nv && val[q] != v) {
+                ++q;
             }
-            d[4] = nonzero;
-            for (uint32_t q = 0; q < 4; ++q) {
-                d[5 + 2 * q] = val[q];
-                d[6 + 2 * q] = cnt[q];
+            if (q == nv && nv < 4) {
+                val[nv++] = v;
             }
-            zero_rows();
-            post_word(out, kSeqPack, nonce + 1 + i);
+            if (q < nv) {
+                ++cnt[q];
+            }
+        }
+        d[4] = nonzero;
+        for (uint32_t q = 0; q < 4; ++q) {
+            d[5 + 2 * q] = val[q];
+            d[6 + 2 * q] = cnt[q];
         }
 #endif
-        return 0;
+    }
+
+    // All three threads, one Dst section per config, in the order of the dense kernel:
+    // acquire, unpack hand-over, math and release, commit, wait, pack, release.
+    inline void skeleton(
+        volatile uint32_t* out,
+        const volatile uint32_t* tile,
+        uint32_t first,
+        uint32_t count
+    ) {
+        matmul_block_init(probe::kCbIn, probe::kCbIn, 0, 1, 1, 1);
+        math_prepare(out);
+        for (uint32_t i = 0; i < count; ++i) {
+            tile_regs_acquire();
+            UNPACK((llk_unpack_AB_matmul(probe::kCbIn, probe::kCbIn, 0, 0, 1, 1, 1)));
+            issue(first + i, out);
+            tile_regs_commit();
+            tile_regs_wait();
+            collect(out, first + i, tile);
+            tile_regs_release();
+        }
     }
 
     // ---- Probe 14: ties (row 7) -----------------------------------------------------

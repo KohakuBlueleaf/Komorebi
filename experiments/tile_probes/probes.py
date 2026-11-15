@@ -63,7 +63,15 @@ def to_dev(session, words):
 
 
 def run_kernel(
-    session, probe, in_words, params, defines=(), rvv=False, peer=None, extra_cbs=None
+    session,
+    probe,
+    in_words,
+    params,
+    defines=(),
+    rvv=False,
+    peer=None,
+    extra_cbs=None,
+    in_format="float32",
 ):
     """Runs one probe on core (0, 0); returns (out words as uint32, nonce). With peer
     (x, y), the reader and the CBs also run on that core; extra_cbs maps more CB
@@ -78,7 +86,8 @@ def run_kernel(
     launch = session.launch()
     sizes = {CB_IN: IN_WORDS, CB_OUT: OUT_WORDS, CB_SCRATCH: SCRATCH_WORDS}
     for index, words in sizes.items():
-        launch.cb(both, index, "float32", words * 4, words * 4)
+        fmt = in_format if index == CB_IN else "float32"
+        launch.cb(both, index, fmt, words * 4, words * 4)
     for index, (fmt, page) in (extra_cbs or {}).items():
         launch.cb(core, index, fmt, page, page)
 
@@ -791,16 +800,14 @@ FPU_CONFIGS = (
 )  # fmt: skip  (fpu.hpp run_config)
 FPU_A = 1 + 2**-6  # every SrcA and SrcB value
 FPU_REPS, FPU_PLAYS = 3, 64  # kReps spans of kReplays replays of the body (fpu.hpp)
-# Words one block of an instruction covers (rows x 16), and what a word holds after n
-# instructions on its block, with SrcA = SrcB = FPU_A: MVMUL phase 0 adds 16 products
-# of 1.0 (SrcA's implicit one and top 4 bits) and FPU_A; ELWMUL adds the same product
-# of one pair; ELWADD with its accumulate bit adds SrcA + SrcB; the moves copy.
+# Rows a block covers, and what a word adds per instruction when SrcA = SrcB = FPU_A:
+# MVMUL phase 0 16 products of 1.0 and FPU_A, ELWMUL one such product, ELWADD A + B.
 FPU_ROWS = {"mvmul": 8, "elwmul": 8, "elwadd": 8, "mova2d": 8, "movb2d": 4}
 FPU_ADDS = {"mvmul": 16 * FPU_A, "elwmul": FPU_A, "elwadd": 1 + FPU_A}
 
 
 def fpu_rows(out, first, count):
-    """One row of the result per config run: spans, cycles per instruction, Dst check."""
+    """One row per config run: spans, cycles per instruction, Dst check."""
     d = out[DATA:]
     empty = [int(v) for v in d[32 * len(FPU_CONFIGS) : 32 * len(FPU_CONFIGS) + 3]]
     base = statistics.median(empty)
@@ -831,11 +838,14 @@ def fpu_rows(out, first, count):
 
 
 def fpu(session, args):
-    words = np.full(1024, f32_bits(FPU_A), dtype=np.uint32)
+    pair = int(f32_bits(FPU_A) >> 16) * 0x10001  # two bf16 values a word
+    words = np.full(512, pair, dtype=np.uint32)  # one bf16 tile, as the dense kernel's
     first, count = args.first, args.count
-    if not (0 <= first and 1 <= count and first + count <= len(FPU_CONFIGS)):
+    if not (first >= 0 and count >= 1 and first + count <= len(FPU_CONFIGS)):
         raise SystemExit(f"fpu: configs 0..{len(FPU_CONFIGS) - 1}")
-    out, nonce = run_kernel(session, "fpu", words, [first, count])
+    out, nonce = run_kernel(
+        session, "fpu", words, [first, count], in_format="bfloat16"
+    )
     return fpu_rows(out, first, count), out, nonce
 
 
@@ -1028,7 +1038,7 @@ def main():
     p.add_argument("--rays", type=int, default=32, help="walk: multiple of 32, <= 1024")
     p.add_argument("--ray-set", choices=["camera", "random"], default="random")
     p.add_argument("--form", choices=["a", "b"], default="a")
-    p.add_argument("--first", type=int, default=0, help="fpu: first config (0 = one MVMUL)")
+    p.add_argument("--first", type=int, default=0, help="fpu: first config")
     p.add_argument("--count", type=int, default=1, help="fpu: number of configs")
     p.add_argument("--copy", choices=["rvv", "scalar"], default="rvv")
     args = p.parse_args()
