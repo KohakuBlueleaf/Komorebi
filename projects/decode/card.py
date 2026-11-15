@@ -194,6 +194,11 @@ class Decode:
             raise ValueError("attend: the merge's rounds do not fit the arrival slots")
         if context % md.TILE or not md.TILE <= context < 1 << 16:
             raise ValueError(f"context {context}: whole tiles, below 65536 rows")
+        if context // md.TILE > 0xFF:  # attend.hpp: a9's cache tiles, bits 16 to 23
+            raise ValueError(
+                f"context {context}: {context // md.TILE} cache tiles a head, past the "
+                "8 bits of attend's a9 field (255 tiles, 8160 rows)"
+            )
 
     def program(self):
         """The K split's kernels with a table of the layer's plans, four overlays and
