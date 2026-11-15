@@ -1387,13 +1387,26 @@ handler keeps its own copy of `km::move_filled` and `km::move_drained`), so all 
 stay resident and the load is refused with the bytes.
 
 Not merged, each refused with its reason: a dynamic handler (its message loop is its
-program's own kernels); a handler with constant parameters (built once a set in its own
-program), and `handlers=` on a merged class; classes whose compute options or start-ups
+program's own kernels); a made program with `km.ANY` among its sets (its sets are
+compiled on first use against its own program's load: list them to merge them);
+`handlers=` on a merged class (`class Layer(A, B)`: its handlers take their defaults;
+merge made programs to give sets); two classes whose handlers of one name both have
+constant parameters (a set is picked by the handler's name); classes whose compute options or start-ups
 differ; a define or the rectangle given two values; a merged program as a source; a
 class in the kernel form with a hand program, and `form=` or `beside=` at the make of a
 class merging classes (it is built in the kernel form). Classes made with
 `form="runtime"` merge with each other and with hand programs, in the runtime's form
 ([Programs merged into one](host.md#programs-merged-into-one)).
+
+A handler with constant parameters merges as its program built it: `km.merge` of a
+program made with `handlers={"gate": [{"size": 4}, {"size": 8}]}` gives the merged
+program `gate_size4` and `gate_size8`, at the numbers the class's own build gives them
+(the first class keeps its numbers, the next ones follow), or `gate` at its defaults
+when no set is listed. A call names the class's handler with the constants
+(`Gate.gate`, `size=4` at its place) and the merged program's handler of that set
+takes it; a set not listed is refused as in one class. The gate class merged with
+GateBlocks made with blocks 8 and 4 listed ran on the card, 120 cores, 16 tiles a core:
+`Gate.gate` 43.74 us, block 4 43.32 us, block 8 42.0 us, each 0 wrong.
 
 A chain runs over a merged class's handlers as over one class's
 ([Chains](#chains)). `class Layer(Scale, Rest)` gets the chain's walk from a `km.chain`

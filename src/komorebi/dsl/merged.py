@@ -77,6 +77,10 @@ class MergedClass(km_program.Program):
 
     def _handler_of(self, index, name):
         method = self.methods.get((index, name))
+        if method is None:  # a handler with listed sets: its first set's
+            listed = getattr(self, "constant_handlers", {}).get(name, [])
+            mine = [m for _, m in listed if m.source_index == index]
+            method = mine[0] if mine else None
         if method is None:
             raise ValueError(f"{self.classes[index].name} has no handler {name!r}")
         return ClassHandler(method.number, self, method)
@@ -212,10 +216,12 @@ def merge_made(programs, name=None, overlay=(), resident=(), session=None, l1=No
             )
         if not hasattr(program, "make_given"):
             raise ProgramError(f"{program.name}: not a made class program")
-        if program.constant_handlers and program.make_given["sets"]:
+        if getattr(program, "first_use", None) is not None:
             raise ProgramError(
-                f"{program.name}: made with sets of its handlers' constant parameters "
-                f"({spelling('handlers')}=); a merged program builds each handler once"
+                f"{program.name}: made with km.{spelling('first_use')}, whose sets are "
+                "compiled on first use against its own program's load; a merged "
+                "program builds its handlers once: list the sets "
+                f"({spelling('handlers')}=) to merge them"
             )
     sources = [
         Source(program.name, type(program), program.make_given, program)
@@ -304,8 +310,9 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
     form_refused(cls, given)
     if handlers is not None:
         raise ProgramError(
-            f"{cls.__name__}: {spelling('handlers')}= of a merged class is not built; "
-            "a merged program builds each handler once"
+            f"{cls.__name__}: {spelling('handlers')}= of a merged class is not built "
+            "(its handlers take their defaults); make each class with its sets and "
+            "merge the made programs (km.merge)"
         )
     parents = cls.merged_parents
     declared = {}  # each class keeps its own constants; an override names one
@@ -383,9 +390,7 @@ def start(self, sources, name, overlay, resident, session, l1, trace, log):
         methods = {key: copy.copy(method) for key, method in class_methods.items()}
     self.methods = methods
     self.by_name = {method.name: method for method in methods.values()}
-    self.own_numbers = {
-        key: int(handler_method(sources[key[0]].cls, key[1])) for key in methods
-    }
+    self.own_numbers = {key: method.own for key, method in methods.items()}
     markers(self, overlay, True)
     markers(self, resident, False)
     self.build()
@@ -402,20 +407,15 @@ def numbered(name, sources):
     owners = {}
     for index, source in enumerate(sources):
         for method in compiler.handler_methods(source.cls):
-            if front.constant_parameters(method.function):
-                raise ProgramError(
-                    f"{source.cls.__name__}.{method.name}: a handler with constant "
-                    "parameters is built once a set in its own program; not merged"
-                )
             owners.setdefault(method.name, []).append(index)
     shared = {key: value for key, value in owners.items() if len(value) > 1}
     methods, top = {}, 0
     for index, source in enumerate(sources):
-        own = compiler.handler_methods(source.cls)
-        for place, method in enumerate(own, start=1):
+        own = set_handlers(source)
+        for place, method in own:
             number = place if index == 0 else top + place
             copied = copy.copy(method)
-            copied.number = number
+            copied.number, copied.source_index = number, index
             if method.name in shared:
                 prefix = source.name.lower().replace("-", "_").replace("+", "_")
                 copied.name = f"{prefix}_{method.name}"
@@ -427,6 +427,37 @@ def numbered(name, sources):
             "at most"
         )
     return methods, shared
+
+
+def set_handlers(source):
+    """[(own number, method)] of a class's handlers as its program built them: a
+    handler with constant parameters once for each set its make listed (named by the
+    values, at the numbers the class's own build gives them) or once at its defaults."""
+    sets = (source.given or {}).get("sets") or {}
+    methods = [copy.copy(m) for m in compiler.handler_methods(source.cls)]
+    built = compiler.handler_variants(compiler.Compiled(source.name, ""), methods, sets)
+    for number, method in built:
+        method.own = number
+    return sorted(built, key=lambda pair: pair[0])
+
+
+def set_lists(self):
+    """{a class's handler name: [(its constant values, the merged copy)]} of each
+    handler with constant parameters (komorebi.dsl.program.constant_handler)."""
+    lists, owner = {}, {}
+    for (index, _), method in self.methods.items():
+        values = getattr(method, "constant_set", None)
+        if values is not None and front.constant_parameters(method.function):
+            original = method.function.__name__
+            if owner.setdefault(original, index) != index:
+                first, other = self.classes[owner[original]], self.classes[index]
+                names = f"{first.name} and {other.name}"
+                raise ProgramError(
+                    f"{self.cname}: {original} has constant parameters in {names}; "
+                    "a set is picked by the handler's name: rename one of them"
+                )
+            lists.setdefault(original, []).append((dict(values), method))
+    return lists
 
 
 def markers(self, given, overlay):
@@ -530,7 +561,7 @@ def build(self):
     self.broadcast_lines = compiled.broadcast_lines
     self.reduce_groups = compiled.reduce_groups
     self.port_handlers = set(compiled.port_handlers)
-    self.constant_handlers = {}
+    self.constant_handlers = set_lists(self)  # each listed set's merged handler
     program_args = made.rectangle_of(self, compiled) if compiled.rectangle else None
     if compiled.word_fields:
         program_args = made.words_of(compiled, tensors, program_args)
