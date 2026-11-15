@@ -174,7 +174,8 @@ def program(tensors, arguments_of, compiled, later=()):
     for name in OVERLAYS:  # mix/reader.cpp ... shift/reader.cpp and compute.cpp
         if name not in later:  # added to the live run instead (--addon)
             made.overlay(name, KERNELS / name)
-    return made.slots(count={"reader": 3, "compute": 1})
+    # slot bytes named (empty: the sizes stay) give the kernels the path for run.addon
+    return made.slots(count={"reader": 3, "compute": 1}, bytes={} if later else None)
 
 
 # --8<-- [end:program]

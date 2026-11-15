@@ -280,8 +280,9 @@ def _prove_read(calls, index, read, known):
 
 def check_direct(calls):
     """A direct input's checks: the call before's output, read by a share of K, each
-    core's share from one root and within the landing area. The bytes each root of
-    the call before sends and to how many cores, by call: {index: [(bytes, cores)]}."""
+    core's share within the landing area (its tiles from one root or several, each
+    root sending its block's part). The bytes each root of the call before sends and
+    to how many cores, by call: {index: [(bytes, cores)]}."""
     report = {}
     for index, call in enumerate(calls):
         if call.direct is None:
@@ -303,20 +304,16 @@ def check_direct(calls):
         sends = [[0, 0] for _ in range(groups)]
         for core, rank, group in _cores(call):
             for first, count in tiles_of(call.k, (), rank, group, call.size):
-                met = list(blocks_met(first, count, before.width, groups))
-                if len(met) != 1:
-                    raise ChainRefused(
-                        f"{label}: core {core} reads {call.input} tiles {first} to "
-                        f"{first + count - 1}, from {len(met)} roots; a direct input "
-                        "has one sender a core"
-                    )
                 if count > call.direct.tiles:
                     raise ChainRefused(
                         f"{label}: core {core} reads {count} tiles of {call.input}; "
                         f"its arrival area holds {call.direct.tiles}"
                     )
-                sends[met[0]][0] += count * call.direct.tile_bytes
-                sends[met[0]][1] += 1
+                for block in blocks_met(first, count, before.width, groups):
+                    low = max(first, block * before.width)
+                    high = min(first + count, (block + 1) * before.width)
+                    sends[block][0] += (high - low) * call.direct.tile_bytes
+                    sends[block][1] += 1
         report[index] = [tuple(item) for item in sends]
     return report
 
@@ -407,6 +404,7 @@ class Chain:
         self.tensor = tensor  # the records, a copy in every bank
         self.report = report
         self.calls = list(calls)
+        self.direct, self.written = [], []  # a class's: tensors sent direct, written
 
     def args(self, words_given):
         """The chain command's a0 to a8 for a submit's words (the record in bank 0)."""

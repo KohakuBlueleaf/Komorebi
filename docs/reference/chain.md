@@ -163,9 +163,17 @@ call before it that wrote that tile must be in what the core knows; otherwise
 
 **A direct input** is sent by the call before's roots into the L1 of the cores that read
 it, in place of a read from DRAM. `run.chain` checks that it is the call before's
-output, read by a share of K tiles; that each reading core's share comes from one
-root; and that it fits the landing area the program declares. It reports the bytes each
-root sends and to how many cores.
+output, read by a share of K tiles, and that each share fits the landing area the
+program declares. It reports the bytes each root sends and to how many cores. A
+reading core's share may come from several roots. Each root writes the part of its
+block that meets the share at that part's own offset in the area, waits for its own
+writes' acknowledgements (its transaction id), and only then marks the core. The core
+waits for one mark from each block its share meets, the same count as for a DRAM
+read. So no core reads its area before every part has landed, whatever order the
+roots run in. A tensor sent direct has no DRAM copy: a host read of it
+(`session.read`, `tensor.read`) after the chain raises, naming the call that sent it,
+until a write or a later chain writes it. A later call of the same chain that reads it
+is refused.
 
 ## What is refused
 
@@ -175,7 +183,7 @@ root sends and to how many cores.
 | an earlier input a core reads before anything tells it complete | the call, the core, the tensor and tile, the call and block that wrote it |
 | an outside tensor that a call of the chain writes | the call, the tensor, the call that writes it |
 | an earlier input that the call before writes (it is this call's input) | the call, the tensor |
-| a direct input not read by a share of K, from more than one root, or past its landing area | the call, the core, the tiles |
+| a direct input not read by a share of K, or past its landing area | the call, the core, the tiles |
 | a group size that does not divide the call's cores, over 127, or a width over 255 | the call |
 | a call of a handler of another program than the first call's | the call, both program fields |
 | a handler number over 255, a stamp row over 63 | the call |
@@ -237,6 +245,24 @@ walk runs inside one program's kernels, so the runtime's load of another program
 between two records does not happen. Programs merged into one
 ([host](host.md#programs-merged-into-one)) are one program: a record names a handler of
 any of its sources ([below](#a-record-of-another-programs-handler)).
+
+A class's overlay handler in a chain ([classes](classes.md#chains)) loads its overlay
+at the start of its record, in line: the reader loads, the core's other CPUs meet it
+when a part is not held, then the record's input is waited for and the part called.
+Loading the next record's parts while a core waits for its input is not built. A
+model of every order of the reader and a follower found two faults in it. (A) A
+follower that lags a record behind can have checked a slot and not yet counted its
+call when the read ahead picks that slot as the least recently used one, and then
+calls bytes being replaced. (B) A follower takes the next record once it is in the
+ring, before the read ahead lands, so it can decide to wait for the reader and say so
+only after the reader's load has found the parts held and gone on: nothing then
+answers it. Closing (A) means leaving out the slots of every record still in flight
+(two before the current one, for the compute cores), which leaves none to read into;
+closing (B) means a follower taking back its wait, which the load's meet counts do not
+allow. It matters little at the default slots (a slot a handler, up to four): every
+part is held after a chain's first command and a record loads nothing (72 cycles, the
+check). With fewer slots than handlers, each record loads in line, after the core's
+other CPUs have ended the record before.
 
 ## In the runtime's form
 

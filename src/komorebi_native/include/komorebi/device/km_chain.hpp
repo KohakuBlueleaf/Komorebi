@@ -156,6 +156,12 @@ namespace km {
         return l1(buffer.fifo_limit - buffer.fifo_size + offset);
     }
 
+    // The first byte of buffer `buffer` (the same on every core of the program).
+    inline uint32_t chain_area_base(uint32_t buffer) {
+        const LocalCBInterface& area = get_local_cb_interface(buffer);
+        return area.fifo_limit - area.fifo_size;
+    }
+
     inline uint32_t chain_address(uint32_t offset) {
         const LocalCBInterface& buffer = get_local_cb_interface(kChainBuffer);
         return buffer.fifo_limit - buffer.fifo_size + offset;
@@ -582,6 +588,48 @@ namespace km {
         uint32_t tiles;
         uint32_t tile_bytes;
     };
+
+    // A reading core's landing area in a direct record: its L1 address (0: the record
+    // is not direct, read DRAM), the K index of its first tile, its tiles' bytes.
+    struct DirectArea {
+        uint32_t base;
+        uint32_t first;
+        uint32_t page_bytes;
+    };
+
+    // A direct-declared tensor's read: page p from this core's landing area (base +
+    // (p - first) x page bytes) in a direct record, else from DRAM.
+    template <typename Accessor>
+    struct DirectOr {
+        Accessor tensor;
+        DirectArea area;
+
+        uint64_t get_noc_addr(
+            uint32_t id, uint32_t offset = 0, uint8_t noc = noc_index
+        ) const {
+            if (area.base != 0) {
+                return (
+                    ::get_noc_addr(
+                        area.base + (id - area.first) * area.page_bytes + offset, noc
+                    )
+                );
+            }
+            return tensor_accessor::detail::transfer_noc_addr(tensor, id, offset, noc);
+        }
+
+        uint32_t get_aligned_page_size() const {
+            return area.base != 0 ? area.page_bytes : tensor.get_aligned_page_size();
+        }
+    };
+
+    template <typename T>
+    inline auto direct_or(const T& tensor, const DirectArea& area) {
+        if constexpr (kIsTensor<T>) {
+            static_assert(T::kLocal, "a direct input reads one island's tensor");
+        }
+        using Accessor = std::decay_t<decltype(accessor_of(tensor))>;
+        return DirectOr<Accessor>{accessor_of(tensor), area};
+    }
 
     // A root, a kChainDataMark next: tiles low .. high - 1 of its output (at
     // direct.source) into each next core's K range, its trid's acks waited.

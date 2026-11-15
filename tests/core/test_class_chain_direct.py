@@ -1,16 +1,17 @@
 """km.direct(t) at a chain's call: only an input the handler declares
-(km.handler(direct=(...))), only the call before's output; the class's kernels do not
-take a direct input in this version, so a call that may have one is refused saying so
-(no card)."""
+(km.handler(direct=(...))), only the call before's output read by a K share; each root
+sends its block's part to every core whose share meets it, the tensor then refused to a
+host read and to a later call of the chain (no card)."""
 
 import pytest
-from chain_fixture import CORES, WIDTH, Steps, bits, made, run_of, tensors
+from chain_fixture import CORES, TILES, WIDTH, Steps, bits, made, run_of, tensors
 
 import komorebi as km
 from komorebi import chain as kc
+from komorebi import tensor as tensor_module
 
 GIVEN = tensors()
-X, Y, Z, S = (GIVEN[name] for name in "xyzs")
+X, Y, Z, S, T = (GIVEN[name] for name in "xyzst")
 
 
 def chain_of(calls):
@@ -43,12 +44,45 @@ def test_a_direct_input_is_the_call_befores_output():
         )
 
 
-def test_the_classs_kernels_do_not_take_a_direct_input_yet():
-    why = (
-        r"Steps.add: a direct input is declared, and the class's kernels do not take "
-        r"an input from the arrival area in this version"
-    )
+def test_a_direct_input_read_by_each_rank_s_range_is_refused():
+    why = r"call 1 \(Steps.add\): .*a direct input is the call before's output, read by"
     with pytest.raises(kc.ChainRefused, match=why):
         chain_of(
             [Steps.scale(X, Z, bits(2), WIDTH), Steps.add(X, km.direct(Z), S, WIDTH)]
+        )
+
+
+class DirectSum(Steps):
+    """Steps whose sum may take s direct: a K share of it a core."""
+
+    sum = km.handler(direct=("s",))(Steps.sum.function)
+
+
+def test_a_k_share_from_several_roots_is_sent_by_each_and_not_read_from_dram():
+    program = made(DirectSum, GIVEN)
+    assert program.direct_area == (TILES, 4096, [("add", "b"), ("sum", "s")])
+    run = run_of(program)
+    chain = run.chain(
+        [DirectSum.add(X, Y, S, WIDTH), DirectSum.sum(km.direct(S), T, TILES)],
+        cores=(0, CORES),
+    )
+    assert chain.report == {1: [(WIDTH * 4096, 1)] * CORES}  # a root to one core
+    assert chain.direct == [(S, "call 0 (DirectSum.add) of a chain")]
+    assert chain.written == [T]
+    tensor_module.sent_direct(chain.written, chain.direct)
+    with pytest.raises(RuntimeError, match=r"sent direct by call 0 \(DirectSum.add\)"):
+        S.read_bytes()
+    tensor_module.sent_direct([S], [])  # a later chain that writes it
+    assert S.sent is None
+    with pytest.raises(
+        kc.ChainRefused,
+        match=r"call 2 \(DirectSum.add\): reads out .*, which call 1 .* takes direct",
+    ):
+        run.chain(
+            [
+                DirectSum.add(X, Y, S, WIDTH),
+                DirectSum.sum(km.direct(S), T, TILES),
+                DirectSum.add(km.past(S), Y, Z, WIDTH),
+            ],
+            cores=(0, CORES),
         )

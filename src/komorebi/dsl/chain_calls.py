@@ -509,6 +509,7 @@ class Described:
     body_reads: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
     body_writes: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
     unranged: dict = field(default_factory=dict)  # tensor -> why it is no range
+    program: object = None  # the program whose handler it calls
 
 
 def describe(run, call, group):
@@ -560,6 +561,7 @@ def describe(run, call, group):
             f"{label}, {error}; it still runs as a command (run.submit)"
         ) from None
     described.handler, described.words = handler, words
+    described.program = program
     tensors = [p for p, kind in method.words if kind == "tensor"]
     described.tensor_bits = [
         (id(given[p]), 1 << i) for i, p in enumerate(tensors) if p in given
@@ -864,10 +866,71 @@ def chain_calls(run, calls, group, prefetch=True):
     written = {id(one.output) for one in described if one.output is not None}
     written |= {id(tensor) for one in described for tensor, _ in one.outputs}
     written |= {key for one in described for key in one.body_writes}
-    return [
+    calls = [
         placed(described, index, one, names, written, prefetch)
         for index, one in enumerate(described)
     ]
+    direct_checked(described, calls, names)
+    made = Calls(calls)
+    for index, call in enumerate(calls):
+        if call.direct is not None:  # the call before's output: in no DRAM
+            label = f"call {index - 1} ({described[index - 1].name}) of a chain"
+            made.direct.append((described[index - 1].output, label))
+    made.written = [
+        one.output
+        for index, one in enumerate(described)
+        if one.output is not None
+        and not (index + 1 < len(calls) and calls[index + 1].direct is not None)
+    ]
+    return made
+
+
+class Calls(list):
+    """A chain's calls, with the tensors it sends direct ((tensor, the call that sends
+    it): no DRAM copy) and those its calls write to DRAM."""
+
+    def __init__(self, calls):
+        super().__init__(calls)
+        self.direct, self.written = [], []
+
+
+def direct_checked(described, calls, names):
+    """A chain's direct input: one in a chain (one landing area a core), not from an
+    overlay handler (its part writes its block to DRAM), and its tensor read by no
+    later call (it has no DRAM copy)."""
+    sent = [index for index, call in enumerate(calls) if call.direct is not None]
+    if len(sent) > 1:
+        raise kc.ChainRefused(
+            f"calls {sent[0]} and {sent[1]} ({calls[sent[0]].name}, "
+            f"{calls[sent[1]].name}) both take a direct input: a core has one landing "
+            "area, which a later call's roots could write while an earlier reader "
+            "still reads it (send one through DRAM)"
+        )
+    for index in sent:
+        before = described[index - 1]
+        method = getattr(before.handler, "method", before.handler)
+        if method.name in (getattr(before.program, "overlays", None) or {}):
+            raise kc.ChainRefused(
+                f"call {index} ({calls[index].name}): a direct input from call "
+                f"{index - 1} ({before.name}), an overlay handler: its part writes its "
+                "block to DRAM (make it resident, or drop km.direct)"
+            )
+        bytes_ = getattr(before.output, "page_bytes", None)
+        if bytes_ is not None and bytes_ != calls[index].direct.tile_bytes:
+            raise kc.ChainRefused(
+                f"call {index} ({calls[index].name}): its direct input "
+                f"{tensor_name(before.output, names)} has tiles of {bytes_} bytes, its "
+                f"landing area tiles of {calls[index].direct.tile_bytes}"
+            )
+        key = id(before.output)
+        for later in range(index + 1, len(described)):
+            if key in described[later].reads or key in described[later].body_reads:
+                raise kc.ChainRefused(
+                    f"call {later} ({calls[later].name}): reads "
+                    f"{tensor_name(before.output, names)}, which call {index} "
+                    f"({calls[index].name}) takes direct: it has no DRAM copy (drop "
+                    "km.direct, or read it in this chain's direct call only)"
+                )
 
 
 def placed(described, index, one, names, written, prefetch):
@@ -904,6 +967,7 @@ def placed(described, index, one, names, written, prefetch):
             call_input, k, ranges = name, read_k, tuple(read_ranges)
             if mark == "direct":
                 direct = True
+                k, ranges = direct_share(one, k, ranges)
             continue
         if key in one.unranged and writers:
             raise kc.ChainRefused(
@@ -1015,13 +1079,29 @@ def covered(before, one, k, ranges, others):
     return True
 
 
+def direct_share(one, k, ranges):
+    """(k, ranges) of a direct input: a group of one core reading the whole range
+    base .. base + width of the call before's output is the K share (base, width),
+    the same marks; the send writes a K range (km_chain.hpp chain_send)."""
+    if k is None and one.size == 1 and len(ranges) == 1:
+        (only,) = ranges
+        if only.step == 0 and not only.root_only:
+            return (only.base, only.width), ()
+    return k, ranges
+
+
 def direct_area(one):
-    """A direct input's landing area: not in the class's kernels in this version."""
-    raise kc.ChainRefused(
-        f"{one.name}: a direct input is declared, and the class's kernels do not take "
-        "an input from the arrival area in this version (its read is a stream from "
-        "DRAM); send it through DRAM (drop km.direct)"
-    )
+    """A direct input's landing area: the program's (its tiles and their bytes),
+    refused when the class has none."""
+    area = getattr(one.program, "direct_area", None)
+    if area is None:
+        raise kc.ChainRefused(
+            f"{one.name}: a direct input, and its program has no landing area (a "
+            "class with the chain's walk has one when a handler declares "
+            f"{spelling('direct')}=(...) and the make gives that tensor); send it "
+            "through DRAM (drop km.direct)"
+        )
+    return kc.Direct(area[0], area[1])
 
 
 # The in-class form: a km.chain method ------------------------------------------------
