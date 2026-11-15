@@ -51,6 +51,11 @@ NAMES = {
     "own": Name("own", "f: km.L1[...] = km.own(push=): a field only bodies use", None),
     "tensor": Name("Tensor", "km.Tensor: a parameter that is a tensor", "tensor"),
     "pattern": Name("Pattern", "km.Pattern: a parameter that is a pattern", "pattern"),
+    "region": Name(
+        "Region",
+        "km.Region: a parameter that is an X280 thread's region, given by its name",
+        "region",
+    ),
     "args": Name("args", "a handler's command words from its arguments", "argument"),
     "plan": Name("plan", "the program's sizes, given or solved at build", None),
     # what a core is in the command
@@ -124,6 +129,29 @@ NAMES = {
         None,
     ),
     "item_size": Name("size", "items(..., size=B): the bytes an item", None),
+    "item_step": Name(
+        "step",
+        "items(first=, size=, count=, step=s): item first, first + s, ...: one item "
+        "every s",
+        None,
+    ),
+    "put": Name(
+        "put",
+        "t.items(size=B).put(source, at=i): B bytes of L1 at item i of t, by a mover",
+        None,
+    ),
+    "put_at": Name("at", "put(source, at=i): the item the bytes go to", None),
+    "stream_end": Name(
+        "end",
+        "out.end(): compute's line, no page of drained stream out follows",
+        None,
+    ),
+    "bump": Name(
+        "bump",
+        "slot = self.f.bump(i): word i of field f, then one more, on the CPU that "
+        "takes it",
+        None,
+    ),
     "tiles": Name(
         "tiles",
         "tensor.tiles[r0:r1, c0:c1]: a rectangle of tiles, row-major; [r0:r1:s, "
