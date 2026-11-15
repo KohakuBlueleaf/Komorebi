@@ -1,6 +1,6 @@
 """The room a program's code gets: the kernel buffer that follows the build (kept and
 refused when given), the tensors made again on a reopened card, the service overlay's
-own slot, slots lowered to what the L1 left allows. No card and no compiler."""
+slot (its own or the reader's), slots lowered to what the L1 left allows."""
 
 import gc
 
@@ -126,31 +126,44 @@ def test_a_tensor_at_another_address_is_refused():
 def built(service=9088, reader=(2, 1024), compute=(1, 4096)):
     slots = {"reader": reader, "unpack": compute, "math": compute, "pack": compute}
     images = {(1, "reader"): bytes(1024), (63, "reader"): bytes(9088)}
-    return overlay.Built(images, slots, service)
+    return overlay.Built(images, slots, service, service)
 
 
-def test_the_service_has_its_own_slot_zero():
+def test_the_service_slot_is_one_record_more():
     c = overlay.constants()
-    made = built()
-    assert made.slot_bytes == 9088 + 2 * 1024 + 3 * 4096
+    made = built(reader=(4, 1024))
+    assert made.slot_bytes == 9088 + 4 * 1024 + 3 * 4096
     rows, placed = overlay.dram_rows(made)
     words = overlay.area_words(made, placed, 0x1000, 9088, 0x20000)
     assert words[c["kOverlayServiceSlot"] // 4] == 9088
-    assert words[c["kOverlaySlots"]] == 3 and words[c["kOverlaySlotBytes"]] == 1024
+    own = c["kOverlayServiceRecord"] // 4 + c["kOverlayAddress"]
+    assert words[own] == 0x20000  # its own slot first
+    assert words[c["kOverlaySlots"]] == 4 and words[c["kOverlaySlotBytes"]] == 1024
     record = c["kOverlayRecords"] // 4 + c["kOverlayAddress"]
-    addresses = [words[record + 4 * slot] for slot in range(3)]
-    assert addresses == [0x20000, 0x20000 + 9088, 0x20000 + 9088 + 1024]
+    addresses = [words[record + 4 * slot] for slot in range(4)]
+    assert addresses == [0x20000 + 9088 + 1024 * slot for slot in range(4)]
     unpack = record + 4 * c["kOverlaySlotsMax"] * 2
-    assert words[unpack] == 0x20000 + 9088 + 2048
-    assert session.slot_rows(made.slots, made.service)[0] == (
-        "slots: service (reader), 1 x 9,088 B",
-        9088,
-    )
+    assert words[unpack] == 0x20000 + 9088 + 4096
+    shared = overlay.area_words(overlay.shared(made), placed, 0x1000, 9088, 0x20000)
+    assert shared[c["kOverlayServiceSlot"] // 4] == 0 and shared[own] == 0
+    assert shared[c["kOverlaySlotBytes"]] == 9088  # the reader slots hold it
 
 
-def test_the_reader_has_one_slot_fewer_beside_the_service():
-    assert overlay.service_beside(4, None) == (3, None)
-    assert overlay.service_beside(2, 512) == (2, 512)
+def test_the_load_chooses_the_service_slot():
+    made = built(reader=(4, 8000))
+    room = 9088 + 4 * 8000 + 3 * 4096
+    own = overlay.choose(made, overlay.Slots(), room)
+    assert own.service == 9088 and own.slots["reader"] == (4, 8000)
+    assert own.why == "the L1 left has the room"
+    shared = overlay.choose(made, overlay.Slots(), room - 4000)
+    assert shared.service == 0 and shared.slots["reader"] == (4, 9088)
+    assert shared.why == "it holds 7 program slots, not 6"
+    asked = overlay.choose(made, overlay.Slots(service="shared"), room)
+    assert asked.service == 0 and asked.why == "as slots() asks"
+    assert session.slot_rows(own.slots, own.service, own.why)[:2] == [
+        ("slots: service (reader), its own: the L1 left has the room", 0),
+        ("slots: service (reader), 1 x 9,088 B", 9088),
+    ]
 
 
 def test_slots_not_asked_are_lowered_to_what_the_l1_left_allows():

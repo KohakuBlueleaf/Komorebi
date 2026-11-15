@@ -503,10 +503,13 @@ def _transfer_chunk_of(session, held, switch, trace_cap, control_bytes):
     return channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
 
 
-def slot_rows(slots, service=0):
+def slot_rows(slots, service=0, why=""):
     """The L1 budget table's rows of overlay slots ({part: (count, bytes)}) and of the
-    service overlay's own reader slot (`service` bytes, 0: none)."""
+    service overlay's own reader slot (`service` bytes; 0: the reader's, `why`)."""
     rows = [(f"slots: service (reader), 1 x {service:,} B", service)] if service else []
+    if why:
+        place = "its own" if service else "in the reader slots"
+        rows = [(f"slots: service (reader), {place}: {why}", 0)] + rows
     return rows + [
         (f"slots: {part}, {count} x {size:,} B", count * size)
         for part, (count, size) in slots.items()
@@ -518,7 +521,7 @@ def fit_slots(built, declared, free, rows, log):
     """`built` with the undeclared slot counts lowered until `rows` (the L1 table's
     rows besides the slots) and the slots fit `free` bytes, where they can."""
     room = free - sum(size for _, size in rows)
-    return overlay.fitted(built, declared, room, log)
+    return overlay.choose(built, declared, room, log)
 
 
 def read_tensors(device, module, tensors, first=0, pages=None):
@@ -1862,8 +1865,7 @@ def _start_loads(run, placed, part=False):
 
 def _common_slots(placed, declared, built):
     """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most kOverlaySlotsMax, the reader one fewer beside the service
-    overlay's own slot) of the largest part any program has there."""
+    program, at most kOverlaySlotsMax) of the largest part any program has there."""
     most = overlay.constants()["kOverlaySlotsMax"]
     slots = {}
     for made in built:
@@ -1876,9 +1878,7 @@ def _common_slots(placed, declared, built):
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
         out[part] = (wanted or min(len(placed.programs), most), size)
-        if part == "reader" and service:
-            out[part] = overlay.service_beside(*out[part])
-    return overlay.Built({}, out, service)
+    return overlay.Built({}, out, service, service)
 
 
 def _program_cbs(buffers):
@@ -2840,7 +2840,7 @@ class _Backend:
             built, program.overlay_slots, session.l1()[1], rows, session.log
         )
         program.overlays_built = built
-        rows[2:2] = slot_rows(built.slots, built.service)
+        rows[2:2] = slot_rows(built.slots, built.service, built.why)
         table, fits = overlay.budget(session.l1()[1], rows)
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
@@ -2995,7 +2995,7 @@ class _Backend:
                 )
                 if not placed.switch:  # a switch's slots are common: sized below
                     made = fit_slots(made, declared, session.l1()[1], rows, session.log)
-                rows[2:2] = slot_rows(made.slots, made.service)
+                rows[2:2] = slot_rows(made.slots, made.service, made.why)
                 table, fits = overlay.budget(session.l1()[1], rows)
                 names = ", ".join(program.name for program in held)
                 session.log(f"L1 budget of a core of {names}:\n{table}")
@@ -3030,7 +3030,7 @@ class _Backend:
                 overlay.Built(made.images, common.slots, common.service)
                 for made in built
             ]
-            rows[2:2] = slot_rows(common.slots, common.service)
+            rows[2:2] = slot_rows(common.slots, common.service, common.why)
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
             if not fits:

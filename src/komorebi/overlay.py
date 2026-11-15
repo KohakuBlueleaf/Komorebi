@@ -10,7 +10,7 @@ import os
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -607,6 +607,7 @@ class Slots:
 
     count: object = None
     bytes: object = None
+    service: object = None  # "own", "shared" or None: the load chooses
 
     def of(self, kernel, overlays):
         """(count, bytes or None) of `kernel` for `overlays` (with a part there)."""
@@ -632,11 +633,13 @@ class Slots:
 class Built:
     """A program's overlays built: images by (number, part), the programs' slots by
     part {part: (count, bytes)}, the service overlay's own reader slot (its bytes, 0:
-    none), every slot's bytes in L1 per core."""
+    it shares the reader's), its part's bytes, why, every slot's bytes in L1 a core."""
 
     images: dict
     slots: dict
     service: int = 0
+    service_part: int = 0
+    why: str = ""
 
     @property
     def slot_bytes(self):
@@ -673,8 +676,6 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
             kernel in overlay.sources for overlay in own
         ):
             declared[kernel] = declared_slots.of(kernel, own)
-    if len(own) < len(overlays) and "reader" in declared:
-        declared["reader"] = service_beside(*declared["reader"], log)
     for overlay in overlays:
         for kernel, part in overlay.parts():
             # the service part sizes its own slot; a program's part meets its slots
@@ -703,16 +704,7 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
         for part in KERNEL_PARTS[kernel]:
             largest = -(-max(extents.get(part, [ALIGN])) // ALIGN) * ALIGN
             slots[part] = (count, size if size is not None else largest)
-    return Built(images, slots, service)
-
-
-def service_beside(count, size, log=lambda message: None):
-    """The reader's (count, bytes) of a program beside the service overlay's own slot:
-    a part has kOverlaySlotsMax slots, so at most one fewer than that."""
-    most = constants()["kOverlaySlotsMax"] - 1
-    if count > most:
-        log(f"reader slots: {count} asked, {most} beside the service overlay's own")
-    return min(count, most), size
+    return Built(images, slots, service, service)
 
 
 def fitted(built, declared_slots, room, log=lambda message: None):
@@ -734,7 +726,59 @@ def fitted(built, declared_slots, room, log=lambda message: None):
         part = max(lowered, key=lambda each: slots[each][1])
         slots[part] = (slots[part][0] - 1, slots[part][1])
         log(f"{part} slots lowered to {slots[part][0]}: the L1 left allows no more")
-    return Built(built.images, slots, built.service)
+    return replace(built, slots=slots)
+
+
+def shared(built):
+    """`built` with the service overlay in the reader's slots (as large as its part
+    at least, one at least) instead of a slot of its own."""
+    slots = dict(built.slots)
+    count, size = slots.get("reader", (1, 0))
+    slots["reader"] = (count, max(size, built.service_part))
+    return replace(built, slots=slots, service=0)
+
+
+def held(built, alone):
+    """The program parts `built`'s slots hold at once: its slots' count (a reader slot
+    there only for the service, `alone`, holds none)."""
+    return sum(count for count, _ in built.slots.values()) - alone
+
+
+def choose(built, declared_slots, room, log=lambda message: None):
+    """The service overlay's slot: its own (one more record) or the reader's shared,
+    as `declared_slots.service` says, else as the L1 left (`room`) chooses; each
+    fitted to the room, with why."""
+    if not built.service_part:
+        return fitted(built, declared_slots, room, log)
+    alone = "reader" not in built.slots
+    quiet = lambda message: None  # noqa: E731
+    own = fitted(
+        replace(built, service=built.service_part), declared_slots, room, quiet
+    )
+    common = fitted(shared(built), declared_slots, room, quiet)
+    asked = declared_slots.service
+    if asked not in (None, "own", "shared"):
+        raise ValueError(f"service slot {asked!r}: 'own' or 'shared'")
+    largest = max((size for _, size in built.slots.values()), default=0)
+    if asked is not None:
+        pick, why = asked, "as slots() asks"
+    elif own.slot_bytes <= room and own.slots == built.slots:
+        pick, why = "own", "the L1 left has the room"
+    elif held(common, alone) != held(own, False):
+        more = held(common, alone) > held(own, False)
+        pick = "shared" if more else "own"
+        why = f"it holds {max(held(common, alone), held(own, False))} program slots"
+        why += f", not {min(held(common, alone), held(own, False))}"
+    elif room - common.slot_bytes != room - own.slot_bytes:
+        pick = "shared" if common.slot_bytes < own.slot_bytes else "own"
+        why = f"it leaves {abs(common.slot_bytes - own.slot_bytes):,} B more of L1"
+    else:
+        pick = "own" if built.service_part > largest else "shared"
+        why = "its part is the largest" if pick == "own" else "no slot is larger"
+    made = fitted(own if pick == "own" else common, declared_slots, room, log)
+    log(f"service overlay: {'its own slot' if pick == 'own' else 'the reader slots'}"
+        f" ({why})")  # fmt: skip
+    return replace(made, why=why)
 
 
 def dram_rows(built, reserve=0):
@@ -763,19 +807,18 @@ def area_words(built, placed, image_address, image_page_bytes, slot_base):
     words[c["kOverlayCount"]] = max(numbers) + 1 if numbers else 0
     words[c["kOverlayServiceSlot"] // 4] = built.service
     at = slot_base
+    if built.service:  # its own slot first, its record one more than the reader's
+        words[c["kOverlayServiceRecord"] // 4 + c["kOverlayAddress"]] = at
+        at += built.service
     for index, part in enumerate(PARTS):
         count, size = built.slots.get(part, (0, 0))
-        # the reader's slot 0 is the service overlay's own, when it has one
-        sizes = [size] * count
-        if part == "reader" and built.service:
-            sizes.insert(0, built.service)
-        words[c["kOverlayBase"] + index] = at if sizes else 0
-        words[c["kOverlaySlots"] + index] = len(sizes)
+        words[c["kOverlayBase"] + index] = at if count else 0
+        words[c["kOverlaySlots"] + index] = count
         words[c["kOverlaySlotBytes"] + index] = size
-        for slot, bytes_ in enumerate(sizes):  # each record's slot address
+        for slot in range(count):  # each record's slot address
             record = c["kOverlayRecords"] + 16 * (c["kOverlaySlotsMax"] * index + slot)
             words[record // 4 + c["kOverlayAddress"]] = at
-            at += bytes_
+            at += size
     for (number, part), (row, size) in placed.items():
         entry = (
             c["kOverlayTable"] + 8 * (c["kOverlayParts"] * number + PARTS.index(part))
