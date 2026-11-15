@@ -414,13 +414,116 @@ Refused at the line:
 - a take on one compute CPU or on a mover;
 - a take outside the block of lines where the stream was made.
 
+### Items with a step
+
+`t.items(first=f, count=n, size=B, step=s)` is items f, f + s, ..., n of them, of B
+bytes in t's pages (the keywords of `.entries`; `step=` left out is 1, the run of
+`t.items(first, n, size=B)`). A stream of them is a `km::Walk` of one item a row and
+a row pitch of s items over `km::items`: one item of each of several pages, as a slice
+of every core's counters page. From the rasterizer's SUM
+([region_class](../../experiments/language/raster_class/region_class.py)), slice
+`part` of each counting core's page of 128 items:
+
+```python
+entries = km.Stream(counters.items(first=part, count=counting, size=64, step=128))
+```
+
+`count=` and `step=` are each an int or a word of the handler (a parameter, an entry's
+word); their most is n where n is an int, and none otherwise (refused where a most is
+needed, as a rectangle's rows are). Refused at the line: a missing `first=`, `count=`
+or `size=`, another keyword, an item size that does not divide the page, a count or
+step that is an expression (`n * 2`: the build bounds an int or a word, not this), and
+a count or step under 1.
+
+### An item put, a word bumped
+
+`t.items(size=B).put(self.f, at=i)` writes B bytes of own field f (from its start, or
+item k of it: `self.f[k]`, at k x B) to item i of t, i / P of t's pages at byte (i % P)
+x B, P = page bytes / B: one `km::put_bytes` by a mover (`on="mover_a"`, mover B when
+not given). The put is not waited for at its line: each mover that put waits for its
+puts once, at the handler's end (`km::put_wait`). A body that rewrites a source it put
+waits for the write first (`noc_async_writes_flushed()`). `slot = self.f.bump(i)` is
+word i of field f, then one more: on the mover an own field's `push=` names (its words
+in L1), or on the unpack CPU for a field of `km.u32` words; `slot` is a word of that
+CPU. The two lines stand alone or together (SETUP's record to its list's next slot):
+
+```python
+slot = self.next_slots.bump(page[1])
+lists.items(size=128).put(page, at=slot)
+```
+
+Refused: a put on a compute CPU; a source that is not an own field (or a drained
+stream's page, below); a size that is not whole words or does not divide the page;
+`at=` a word of another CPU; a bump of a field whose words are no one CPU's (an own
+field of `push=None` or found, a filled field).
+
+### A word handed between the movers
+
+A word a body gives on one mover, taken by a body on the other, is handed over by the
+line: both CPUs are written (`on=` of each), never inferred.
+
+```python
+pages = km.cxx("...pages = ...;", gives=int, on="mover_a")
+km.cxx("...use(pages);", takes=[pages], on="mover_b")
+```
+
+The giver writes the taking body's words into one 64 B page of a buffer of its own
+(`kHandover`) and pushes it before the taker's place; the taker waits for the page,
+gets the words by name and frees the page after its body. The build's report names
+each: `hand-over: count, line 16: pages from mover A to mover B by the hand-over
+buffer`. Refused: more than 16 words of the other mover in one body (the most a page
+holds), words of both movers handed into one body, and a taker with no `on=` (a word
+of a mover taken on compute).
+
+### A stream compute fills and a mover drains
+
+`out = km.Stream(self.f, mover="B")`, f an own field, is pages compute's bodies fill
+and the mover named drains, a page a turn. A body on compute (on pack, or compute's
+three) that takes `out` gets `out`, the L1 address of a page reserved before it (0
+when compute gave up), and `out_buffer`; the line pushes the page after the body and
+counts it. `out.end()` is compute's line saying no page follows: pack hands the count
+of pages pushed to the mover in one page of the stream's end buffer (`kEndOut`).
+Leaving a `with` block is exactly an `.end()` at that place:
+
+```python
+with km.Stream(self.out, mover="B") as out:
+    for tri in range(count):
+        km.cxx("bin(tri, out);", takes=[out, tri], on="pack")
+for page in out:  # mover B: until the end's count
+    slot = self.next_slots.bump(page[1])
+    lists.items(size=128).put(page, at=slot)
+```
+
+`for page in out:` is the mover's loop: it waits for a page or the end's count (a
+timed poll), stops when it has taken as many pages as the count says, and frees each
+page once the writes that read it have read it. `page` is the page's L1 address (a
+put's source, a body's on that mover) and `page[i]` its word i, an int of that mover.
+The loop holds what a mover's lines may be: puts, bumps, writes, bodies on that mover.
+The end costs 0.1 us a command: a command that fills no page, ends and drains takes
+2.20 us beside 2.10 us of one with a pack body alone, and 64 pages a core filled,
+drained and put take 14.24 us, on 120 cores
+([drain_cost](../../experiments/language/raster_class/drain_cost.py)).
+
+Refused, each at its line: a drain of a stream no line ends above (neither `.end()`
+nor a `with`); `.end()` twice, or inside its own `with`; a body that takes the stream
+after its end, or on a mover; no `mover=`; a field a mover pushes, or not an own field;
+a drain of a stream no compute body fills; lines of another CPU in the drain loop.
+
 ## Tables of entries
 
 A page of words can be a table: `t.pages(i, 1).entries(Job, first=F, size=S,
-count=C)` is page i of t read on every CPU of the handler, its entries S words each
+count=C)` is page i of t read on the CPUs of the handler that use it, its entries S words each
 from word F, as many as word C says; `fixed=N` in place of `count=` says N entries,
 known at build. `Job` is a class of int annotations, `class Job(km.Entry)`, its words
 0, 1, ... of an entry in order (an entry may have more words than it names).
+
+Where the page is read follows from the lines inside the loop: when only one mover's
+lines use the entries (a body on that mover, a put, a bump), that mover reads the page
+alone and compute and the other mover skip the loop; when compute's lines use them,
+mover A reads it for compute and mover B its own copy, as below. The rasterizer's HIST,
+whose tile list only mover B's body reads, went from 33.06 us (the page read on all
+CPUs) to 24.80 us, beside the hand's 23.96 us
+([raster_class](../../experiments/language/raster_class/README.md)).
 
 ```python
 class Job(km.Entry):
@@ -1040,6 +1143,25 @@ with `kmx_submit` and waits with `kmx_wait`. From
 #define WORKCLUSTER_SUM_RESULT 1u /* KM_FLAG_RESULT */
 ```
 
+### A thread's region as a parameter
+
+A handler's parameter `counts: km.Region` is an X280 thread's region: two command
+words, its bank address and its bank (the bank's word after the others). In the
+handler it is a tensor of the region's pages of 4,096 B in that one bank
+(`km::RegionPages`, km_region.hpp): `.pages(...)`, `.items(...)`, streams, fills,
+puts and bodies on a mover take it as they take a tensor parameter. `Run.submit`
+takes it by the region's name, the region of the run's thread that has it (refused
+when none or more than one has), or as (bank, bank address), what
+`run.threads[c].regions.address(name)` gives:
+
+```python
+run.submit(RegionPasses.sum_tiles, (0, cores), args=(counters, prefixes, "sums", cores))
+```
+
+A region is in its island's DRAM: a program made with island tensors, whose other
+islands' cores would read it, is refused at the parameter, naming the region's island
+(`km.Region(bank, address, island=1)` as its example).
+
 ## Islands
 
 The same class runs on `km.Session(cards=[0, 1])`, made with the island session's
@@ -1153,10 +1275,9 @@ from words of three CPUs (the ray tracer's profile page: the walk's counters fro
 the reader's from mover A, the writer's from mover B, written by mover B): it would
 need a mover-to-mover hand-over and a body on mover B over a write stream's page before
 the movers write it, more than 40 lines of the compiler; the class's profile page holds
-the pack CPU's words. Items with a step (one item of each of several pages, as a slice
-of every core's counters), items written one at a time to scattered places (a record
-to its list's next slot), and items of a tensor on two islands (refused when the
-kernel is built: no call moves part of another island's page).
+the pack CPU's words. Items of a tensor on two islands (refused when the kernel is
+built: no call moves part of another island's page). A range loop whose count is one
+mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
 A group switched to a class's program (`kmx_load`): a load switches between programs
 in the runtime's form, parts on the runtime's reader, writer and compute, and a class

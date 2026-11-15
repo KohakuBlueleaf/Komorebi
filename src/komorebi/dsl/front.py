@@ -266,7 +266,28 @@ class HandlerMethod:
 
     def parameters(self):
         """The (name, kind) of each parameter, in order, without page counts."""
-        return [(p, kind) for p, kind in self.words if kind != "pages"]
+        return [(p, kind) for p, kind in self.words if kind not in ("pages", "bank")]
+
+
+class Region:
+    """km.Region, a handler parameter's type: an X280 thread's region, its bank address
+    and bank two command words. `Run.submit` takes it by the region's name, or as
+    (bank, bank address), what a run's `threads[c].regions.address(name)` gives."""
+
+    def __init__(self, bank, address, island=0):
+        self.bank, self.address, self.island = int(bank), int(address), int(island)
+
+
+def region_words(handler, parameter, value):
+    """A region argument's (bank address, bank)."""
+    if isinstance(value, Region):
+        return value.address, value.bank
+    if isinstance(value, tuple) and len(value) == 2:
+        return int(value[1]), int(value[0])
+    raise ProgramError(
+        f"{handler}: {parameter} is a region: give its name (Run.submit) or "
+        f"(bank, address), got {value!r}"
+    )
 
 
 def is_tensor(value):
@@ -285,6 +306,9 @@ def word_of(handler, parameter, kind, value):
         return int(value.address) & abi.M32
     if kind == "pages":
         return int(value.pages) & abi.M32
+    if kind in ("region", "bank"):
+        address, bank = region_words(handler, parameter, value)
+        return (address if kind == "region" else bank) & abi.M32
     if kind == "pattern":
         pattern = value if isinstance(value, Pattern) else Pattern(value)
         return pattern.word
@@ -387,6 +411,7 @@ def exports():
         "tile_value": Tile,
         "startup": Startup,
         "tensor": Tensor,
+        "region": Region,
         "stream": line_only("stream"),
         "reduce": line_only("reduce"),
         "broadcast": line_only("broadcast"),

@@ -317,7 +317,7 @@ class Run:
         if isinstance(handler, HandlerMethod | ClassHandler):
             method = handler if isinstance(handler, HandlerMethod) else handler.method
             result = result or method.returns
-            args = handler.args(*args)
+            args = handler.args(*self._regions_named(method, args))
         if cluster is not None:
             handler, group = self._to_thread(handler, cluster, group, exclusive, queued)
         else:
@@ -360,6 +360,29 @@ class Run:
             self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
         return handle
+
+    def _regions_named(self, method, args):
+        """A class handler's arguments with each region parameter given by its name
+        made (bank, bank address): the region of this run's thread that has it."""
+        out = list(args)
+        for index, ((parameter, kind), value) in enumerate(
+            zip(method.parameters(), args)
+        ):
+            if kind != "region" or not isinstance(value, str):
+                continue
+            found = [
+                thread.regions.address(value)
+                for thread in self.threads.values()
+                if thread.regions is not None and value in thread.regions.keys
+            ]
+            if len(found) != 1:
+                raise ValueError(
+                    f"{method.name}: {parameter} names region {value!r}, which "
+                    f"{'no' if not found else 'more than one'} thread of this run "
+                    "has; give (bank, address)"
+                )
+            out[index] = found[0]
+        return out
 
     def _check_rectangle(self, method, program_field, group):
         """Refuses a broadcast's command of a class whose group is not the group of
