@@ -116,7 +116,7 @@ does not leave the host waiting without a reason.
   "lost" and stops watching; the host stops the run with that reason.
 
 Measured on a p150a, X280 at 1350 MHz, with a stall made on purpose (a debug image's
-command; [dispatcher_watch](../../experiments/dispatcher_watch/README.md)): the stall
+command; [dispatcher_watch](../../experiments/recovery/dispatcher_watch/README.md)): the stall
 was seen after 100.009 ms, core 0 was back in its loop 1.2 microseconds after the
 interrupt, and the MAP commands sent after it were exact. A core 0 that stopped
 executing (an access that never completes) takes no interrupt: that one still needs

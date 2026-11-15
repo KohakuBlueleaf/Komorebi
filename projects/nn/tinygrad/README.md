@@ -143,7 +143,7 @@ Model A has no class (b) item of its own: both of its kernels are products. The
 smallest expression in it that the tile compiler renders and that is not a decode
 kernel is kernel 0's epilogue, tinygrad's `a * 1/(1 + 2^(-a log2 e)) * b`. It runs as a
 program of its own in its own session: `epilogue.py card`, kernels in `kernels/`. The
-form is the tile experiments' (`experiments/tile_rules`): a stream of two operand tiles
+form is the tile experiments' (`experiments/language/tile_rules`): a stream of two operand tiles
 in from DRAM, the emitted body, and one tile out. The operands are tinygrad's own
 products a = x W1 and b = x W3, 32 x 6144 fp32 (192 tiles), each computed by its own
 tinygrad kernel. Fed to tinygrad's elementwise kernel, they give the fused kernel's

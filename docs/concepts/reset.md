@@ -22,7 +22,7 @@ for finding the missing call in a kernel,
 A step is tried only when the one before it was not enough. Every number is from one
 Blackhole p150a (card 0) or two (cards 0 and 1 as islands), slow dispatch, on the date
 given; the experiment that made it is in
-[core_reset](../../experiments/core_reset/README.md).
+[core_reset](../../experiments/recovery/core_reset/README.md).
 
 | Step | What it does on the card | Run on | Cost |
 |---|---|---|---|
@@ -235,4 +235,4 @@ The dispatcher resetting a link core by itself is not built: the host does it, w
   [inspecting a run](../reference/host.md#inspecting-a-run) and
   [the watch on the dispatcher](dispatch.md#the-watch).
 - [Islands](islands.md#when-a-core-stops) and the [islands reference](../reference/islands.md#the-run).
-- [core_reset](../../experiments/core_reset/README.md): every run behind these numbers.
+- [core_reset](../../experiments/recovery/core_reset/README.md): every run behind these numbers.

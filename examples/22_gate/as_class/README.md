@@ -55,7 +55,7 @@ rule and step form, `python gate_class.py --cores 12 --tiles 64 --formats float3
 The math CPU's span of a call, 768 calls on 12 cores, less the empty span (10): the
 body above 1,596 cycles a tile (median 1,606), against the 1,597.6 the build prints;
 the first body 1,656 (median 1,666), against 1,657.6 printed and the 1,656.5 of the
-same body in [tile_rules](../../../experiments/tile_rules/README.md) (the hand body
+same body in [tile_rules](../../../experiments/language/tile_rules/README.md) (the hand body
 there: 1,901.5). With one tile an acquire, the class's bfloat16 command was 14 % longer than the
 hand program's. Its error is smaller: the hand program multiplies by b on the matrix
 unit at its default fidelity, the emitted body in fp32 on the vector unit.

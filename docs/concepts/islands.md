@@ -142,7 +142,7 @@ Two p150a cards are joined by four Ethernet links. A core that sends over a link
 connection to the router that tt-metal's fabric starts on that link's Ethernet core. The
 sending core's place makes no difference to the rate: a corner, a middle row and the row
 under the Ethernet tiles sent the same
-([link_rate](../../experiments/link_rate/README.md#6-where-the-sender-sits)). A router has
+([link_rate](../../experiments/islands/link_rate/README.md#6-where-the-sender-sits)). A router has
 one channel for a core of its own card, so one core at a time holds a link's connection;
 sharing a link between cores at once needs tt-metal's mux cores.
 
@@ -179,8 +179,8 @@ What a link carries, measured. Two Blackhole p150a cards joined by four Ethernet
 one process holding both with tt-metal's 1-D fabric in slow dispatch, AICLK 1350 MHz.
 The rate is payload bytes over the receiver's span from its first counted packet to its
 last; every packet was checked exact; each row ran once. The senders are experiment
-kernels, one sending core a link ([link_rate](../../experiments/link_rate/README.md),
-[two_cards](../../experiments/two_cards/README.md)), not a call of a program: a program
+kernels, one sending core a link ([link_rate](../../experiments/islands/link_rate/README.md),
+[two_cards](../../experiments/islands/two_cards/README.md)), not a call of a program: a program
 sends pages with the page calls, whose rates are in
 [islands](../reference/islands.md#pages-across-a-link).
 
@@ -203,7 +203,7 @@ what one core can issue, not what the link carries. Where the link itself stops,
 A packet's header is 48 bytes (routes of up to 16 hops; 64 bytes for longer ones) and its
 payload up to 4352 bytes, so a 64-byte message is one packet. The card address in the
 header is a route (which link, how many hops) beside the core's NoC address on its own
-card. One sending core sent 2.8 million 64-byte packets a second. In [islands_mesh](../../experiments/islands_mesh/README.md) a handler on one island
+card. One sending core sent 2.8 million 64-byte packets a second. In [islands_mesh](../../experiments/islands/islands_mesh/README.md) a handler on one island
 held a fabric connection across commands and wrote 64 bytes into the L1 of a core of the
 other, exact in both directions, 1.685 µs a command from island 0 to island 1 and 1.585
 the other way (1,000 pipelined to one core).
@@ -237,7 +237,7 @@ replay, 27 of the 64 forwards across. 10^6 forwards: 302.0 ms with one service (
 link), 80.1 to 80.4 ms with four (`message_links=True`, every link about 62,500
 messages each way); one card: 11.77 ms. Measured before the service moved onto the link
 cores (a link core of its own as a rank, one link,
-[link_service](../../experiments/link_service/README.md)): 6.5 µs a crossing for a single
+[link_service](../../experiments/islands/link_service/README.md)): 6.5 µs a crossing for a single
 message, 4.7 µs in a run of 1000 round trips; about 4.7 million 64-byte messages a second
 each way when messages wait to be batched, 0.6 million a packet a message.
 

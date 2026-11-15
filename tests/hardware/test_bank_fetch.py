@@ -8,7 +8,13 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-SCRIPT = Path(__file__).resolve().parents[2] / "experiments" / "bank_fetch" / "fetch.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[2]
+    / "experiments"
+    / "x280"
+    / "bank_fetch"
+    / "fetch.py"
+)
 
 
 def test_a_thread_fetches_another_banks_range_and_stores_it_back():

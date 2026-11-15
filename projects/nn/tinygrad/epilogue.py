@@ -37,7 +37,8 @@ CB_A, CB_B, CB_OUT, CB_INFO = 0, 1, 16, 24  # kernels/layout.hpp
 NONCE, ERROR, TILES, STREAM, SYNC, SYNCS, BODY = 0, 1, 2, 4, 16, 16, 256
 TILE_WORDS = 1024
 LOG2E = 1.4426950408889634
-TOLERANCE = 1e-6  # the tile compiler's gate against float64 (experiments/tile_rules)
+# The tile compiler's gate against float64 (experiments/language/tile_rules).
+TOLERANCE = 1e-6
 CALLS = 4  # runs of the kept program a job: the first loads it, the rest are calls
 
 

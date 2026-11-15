@@ -49,7 +49,7 @@ changes hands explicitly:
   writes the cached lines back to DRAM.
 
 Both are a sweep of the cache controller's flush register over the region's lines
-(`experiments/x280_threads/` measures what happens without them and what they cost).
+(`experiments/x280/x280_threads/` measures what happens without them and what they cost).
 
 **Decisions travel as result words and events; bulk data after the stop.** A value
 that steers the program while it runs (the one that ends a loop, a count that sizes
@@ -92,7 +92,7 @@ Measured with the X280 at 1,000 MHz, four cores per cluster: each cluster reads 
 writes its bank at about 1.2 GB/s, alone or with the others (the limit is per cluster,
 not per bank: clusters 2 and 3 together move 2.3 GB/s of bank 7, all three 3.5 GB/s);
 one cluster wakes another and gets an answer in 0.66 µs through a flag in the other's
-local memory, in 1.2 µs through a shared bank-7 region. See `experiments/work_clusters/`.
+local memory, in 1.2 µs through a shared bank-7 region. See `experiments/x280/work_clusters/`.
 
 ## The command ring
 
@@ -201,7 +201,7 @@ What it costs, measured at 1750 MHz (the experiment sets it; the session's defau
 about 1.3 GB/s and writes it at about 1.3 to 1.8 GB/s with four cores, and a flush or invalidate
 sweep runs at 5 to 8 GB/s of region. Prefix sums over 119 x 1,024 counters take about
 1.7 ms on four cores (a decision per frame, not per handler); see
-`experiments/x280_threads/`.
+`experiments/x280/x280_threads/`.
 
 Where data lives matters as much as the rate. A thread's stack is in the cluster's local
 memory and slower than a region: the rasterizer's heap of core loads took 355 us on the
@@ -348,7 +348,7 @@ reader.run([&](const km_command_t& command) {
 ```
 
 **Costs** (one Blackhole p150a, AICLK 1350 MHz, X280 1000 MHz;
-`experiments/x280_ports/`): an ask is answered in 0.94 µs with one Tensix core on its
+`experiments/x280/x280_ports/`): an ask is answered in 0.94 µs with one Tensix core on its
 X280 core; with ten each, 9.1 µs at full load and 13.1 M asks a second over twelve X280
 cores. The X280 core's loop bounds it, about 0.9 µs a served message, not the NoC (NoC 1
 measured the same). Its image, data and stack live in its local memory, 30 cycles a

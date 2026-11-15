@@ -583,7 +583,7 @@ runs at about 1 MB/s.
 
 - Small triangles as lanes: an entry whose box, clipped to its tile, is at most 4 x 4
   pixels (73 % of the entries at 10^6) filled 32 at a time, one per lane, took a tile's
-  fill to 0.49 to 0.78 of row by row on one core (`experiments/raster_passes`, probe 4).
+  fill to 0.49 to 0.78 of row by row on one core (`experiments/programs/raster_passes`, probe 4).
   It is not in the frame: the lists would have to carry those entries as runs of their
   own per item (COUNT and SUM counting them apart, PLACE's directory naming them, SETUP's
   writer sending them there), and the fill would take each run of 32 into Dst in lane

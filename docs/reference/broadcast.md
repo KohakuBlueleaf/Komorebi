@@ -189,7 +189,7 @@ core loaded the overlay and 1.67 µs when every core held it
 
 One caster a rectangle is the protocol: the sender alone multicasts each block, and the
 other cores hand it their rows first. Several casters into one rectangle at once were
-measured in [experiments/casters](../../experiments/casters/README.md), with the counted
+measured in [experiments/noc/casters](../../experiments/noc/casters/README.md), with the counted
 VALID kept inside that experiment. The chip's NoC documentation
 (`BlackholeA0/NoC/MemoryMap.md`, `NOC_CMD_PATH_RESERVE`) warns that such unlinked
 broadcasts "can lose a flit and hang the NoC". The probe was clean (800,000 casts, 1.44

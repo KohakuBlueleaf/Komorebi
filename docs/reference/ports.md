@@ -60,7 +60,7 @@ if (!km::reduce_result(writer, kCbOut, 1)) return false;  // then write the resu
   calls count at ([islands](islands.md)), so a reduce never shares a count with them. Ports are
   cleared at start-up and by the wait that consumed them. A sender counts the atomic's
   acknowledgement and never reads its returned value, so a lost answer
-  ([atomic_answers](../../experiments/atomic_answers/)) cannot affect a port.
+  ([atomic_answers](../../experiments/noc/atomic_answers/)) cannot affect a port.
 - **The arrival buffer** is one circular buffer of `pages` pages, `per` to a slot
   (`km::Arrival {cb, pages, per}`, `per` = 1 by default): slot `slot` is pages
   `slot * per` to `slot * per + per - 1`, and a part sent with `emit` is at most `per`

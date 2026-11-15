@@ -212,7 +212,7 @@ with reason 3 (`group`).
 
 **From a thread.** `kmx_submit` with `group = KM_GROUP_CLUSTER(c)` commands another
 cluster's thread: 4.74 µs one at a time against 3.60 µs for a NOP to one grid core, 2.02
-µs a command with 8 in flight (`experiments/thread_commands`). `kmx_program` may submit
+µs a command with 8 in flight (`experiments/x280/thread_commands`). `kmx_program` may submit
 commands to core groups and wait for them inside the call (`kmx_wait`); while it waits
 the thread answers no other command, so the dispatcher keeps up to 8 more as above.
 At depth: a command to the thread's own cluster, or to a thread that is waiting for
@@ -288,7 +288,7 @@ it. A page that crosses is at most one fabric packet (4,352 bytes); a larger one
 the copy's command up. On one island the calls are what they
 were.
 
-Measured (`experiments/bank_fetch/islands.py`, two cards, four links, 2026-11-14, 16
+Measured (`experiments/x280/bank_fetch/islands.py`, two cards, four links, 2026-11-14, 16
 cores, 4 KiB pages, best of 3, every word checked): from island 0's work cluster 1,
 `kmx_fetch` of 1 MiB and 64 MiB 51 µs and 1.30 ms from island 0's tensor, 204 µs and
 11.0 ms (6.10 GB/s) from island 1's; `kmx_store` 47 µs and 1.30 ms into island 0's,
@@ -437,7 +437,7 @@ if (kmx_fetch(0, 0, &from, bytes, 0, 4, kmx_time() + KMX_TICKS_PER_SECOND, &even
 - **What the cores do meanwhile.** The copy is a command: the cores take it in their
   turn behind earlier commands and run nothing else while they copy.
 
-[bank_fetch](../../experiments/bank_fetch/README.md) has the rates;
+[bank_fetch](../../experiments/x280/bank_fetch/README.md) has the rates;
 [08_parallel_thread](../../examples/08_parallel_thread/README.md) `--fetch` runs its
 prefix sum on an input fetched from bank 7, which cluster 1 cannot read.
 
@@ -584,10 +584,10 @@ clusters' tiles and their banks' DRAM tiles for every thread on the card.
 
 On work cluster 1 of a p150a at 1,750 MHz: the bank read at about 1.3 GB/s and written
 at 1.3 to 1.8 GB/s with four cores; a flush or invalidate sweep at 5 to 8 GB/s of region
-(`experiments/x280_threads/`). At 1,000 MHz on each of clusters 1 to 3:
+(`experiments/x280/x280_threads/`). At 1,000 MHz on each of clusters 1 to 3:
 about 1.2 GB/s read and written per cluster, alone or together (three at once 3.5 GB/s);
 a push into the other bank 2.3 GB/s, a pull 0.024 GB/s; invalidate 4.6 GB/s, flush 4.3 GB/s
-(`experiments/work_clusters/`).
+(`experiments/x280/work_clusters/`).
 An empty `kmx_parallel` call: 0.71 µs; `kmx_parallel_all` over three clusters, the map, heavy
 map and prefix sum on 1, 4, 8 and 12 cores: [X280 threads](../threads.md#twelve-cores)
 and `examples/08_parallel_thread/` (`--twelve`).

@@ -235,7 +235,7 @@ The build's report names each value handed between compute CPUs, and each kept f
 ```
 
 What each line costs, beside the hand-written form of the same move (measured on the
-ray tracer's trace pass, [raytrace_class](../../experiments/raytrace_class/README.md)):
+ray tracer's trace pass, [raytrace_class](../../experiments/language/raytrace_class/README.md)):
 
 | Line | Lowering's cost |
 |---|---|
@@ -250,7 +250,7 @@ ray tracer's trace pass, [raytrace_class](../../experiments/raytrace_class/READM
 
 A field whose value is `km.own()` is a buffer that only bodies use, as a hand kernel's
 scratch space: a FIFO between compute's CPUs, a tile written in place, a constant
-built once. From [own_buffer](../../experiments/own_buffer/README.md):
+built once. From [own_buffer](../../experiments/language/own_buffer/README.md):
 
 ```python
 total: km.L1[km.fp32, 1, 32, 32] = km.own(push=None)  # written in place
@@ -280,7 +280,7 @@ body gets its L1 address and adds its words, and the movers write the page after
 body. Mover A's words reach mover B through an own field that mover A pushes
 (`km.own(push="mover_a")`). The time words come from the loop's move: a mover's body
 after a stream loop takes the loop's name and gets `name_tiles` and `name_cycles`. From
-[raytrace_class](../../experiments/raytrace_class/trace_class.py):
+[raytrace_class](../../experiments/language/raytrace_class/trace_class.py):
 
 ```python
 handoff: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_a")  # the reader's words
@@ -356,7 +356,7 @@ compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows 
 streams, its last the fields it holds as resident rows, and its arithmetic the row
 form's, the sum of a row (`km.reduce_sum`) and a value a row (`.col()`) or a column
 (`.row()`) among it. From
-[tile rules](../../experiments/tile_rules/as_class/norm_class.py), the row norm:
+[tile rules](../../experiments/language/tile_rules/as_class/norm_class.py), the row norm:
 
 ```python
 class RowNorm(km.Program):
@@ -383,7 +383,7 @@ class RowNorm(km.Program):
 ```
 
 The weight's tile is the row form's per-column operand, laid out by the host
-(`p_tile` of [rules.py](../../experiments/tile_rules/rules.py)): the tile compiler's
+(`p_tile` of [rules.py](../../experiments/language/tile_rules/rules.py)): the tile compiler's
 row form reads it so. This layout is temporary: a plain weight row, laid out on the
 card, is the tile compiler's to take.
 
@@ -415,7 +415,7 @@ after `mm_no_mop_init_short` once a loop, the body issues the products' words be
 its vector code, nothing is copied into a product's `Dst` tile, and the compute
 kernel's fidelity is the function's (`fidelity=`, HiFi4 if not given). A product of one
 32 x 32 tile a side is lowered; the function called on a row (a K loop) is refused.
-From experiments/tile_rules/as_class (`mm_gate_class.py`, card 0, 12 cores, 64 tiles a
+From experiments/language/tile_rules/as_class (`mm_gate_class.py`, card 0, 12 cores, 64 tiles a
 core): within 5.6e-4 of float64 (2^-7 stated), 1,706 cycles a call less the empty span
 against the tile experiment's BODY 29 at 1,707 and the build's 1,678.6.
 
@@ -489,7 +489,7 @@ rectangle's pages, the build needs a side's most: a side `c:c + n` is n, and
 `@km.tile_function(fidelity="HiFi2")` sets the matrix unit's fidelity, tt-metal's word
 (LoFi, HiFi2, HiFi3, HiFi4): the compute kernel's `math_fidelity`, so a class's
 products take one; HiFi4 when no product gives one. From
-[the dense project's linear layer as a class](../../experiments/dense_class/linear_class.py),
+[the dense project's linear layer as a class](../../experiments/language/dense_class/linear_class.py),
 the dense project's two plans, picked by the shape (the K split for one row tile of X,
 the grid form for more):
 
@@ -589,7 +589,7 @@ mock device):
 
 The account beside the first version's, whose terms were measured by the plans' parts
 run as commands of their own
-([linear_parts.py](../../experiments/dense_class/linear_parts.py), the first version's
+([linear_parts.py](../../experiments/language/dense_class/linear_parts.py), the first version's
 plans), against the card's DRAM ceiling of 495.6 GB/s:
 
 | K split, 32 x 4096 x 4096 | First version | Now | Whose |
@@ -876,12 +876,12 @@ the packed text of the five CPUs, of 70,656 B.
 | [12 overlays](../../examples/12_overlays/as_class/README.md) | the same: every mix word and scaled value | 33,296 / 28,016 B (mock), and the parts above | a turn from the host, one command each: scale 1,353 / 1,731 us, mix 1,940 / 2,095 us |
 | [22 gate](../../examples/22_gate/as_class/README.md) | the hand program's bound: 0 wrong of 786,432; float32 against float64: 2.46e-7 (tolerance 1e-6) | 37,632 / 38,640 B (mock) | 83.70 / 76.24 us a command (bfloat16, 12 cores, 64 tiles a core, 2 tiles an acquire; one tile an acquire and the first body 86.68 / 76.06); the emitted body 1,597 cycles a tile on the math CPU, 1,597.6 printed (the first body 1,656, 1,657.6 printed; the hand body 1,901.5 in the one-core harness) |
 | [14 message handlers](../../examples/14_message_handlers/as_class/README.md) | the same: exact in 3 of 3 runs, 1,013,360 messages of three handlers | 42,640 / 43,568 B (mock) | 10,987 / 11,149 us a run (median of 3) |
-| [linear layer](../../experiments/dense_class/README.md), 32 x 4096 x 4096, the K split | Y equal to the host's product (integers); 4.38e-3 relative RMS (normal bfloat16, HiFi2) | 90,192 / 61,584 B (mock) | 94.2 / 92.4 us a command (112 cores, the hand's groups of 14 and blocks of 16) |
-| [linear layer](../../experiments/dense_class/README.md), 1024 x 4096 x 4096, the grid form | the same | 90,192 / 69,296 B (mock) | 358.6 / 382.4 us (12 x 8 cores, as the hand's) |
-| [tile rules](../../experiments/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
-| [ray tracer's trace pass](../../experiments/raytrace_class/README.md) (TRACE, tiny scene, the tree in L1) | the hand program's hit pages word for word: 0 of 18,874,368 words differ (the cycles vector apart), the walk's counts equal on every core; against numpy's trace 658,018 hits, none differs | 48,240 / 85,808 B (mock) | 3,294.9 / 3,259.9 us a command (120 cores, 32,768 packets; the tree loaded once, 23.7 us) |
-| [tile rules](../../experiments/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,248 B (stamped) | the emitted body 687.0 cycles a row of 2 tiles on the math CPU, 677.0 printed, 689.5 in the one-core harness (the first body 771.0, 753.0 printed); the hand norm 3,201.5 |
-| [tile rules](../../experiments/tile_rules/as_class/README.md): silu(a @ w1) (a @ w3), two products in the body | float32 against float64: 5.64e-4 (tolerance 2^-7) | 40,800 B (stamped) | the emitted body 1,706 cycles a tile on the math CPU, 1,678.6 printed, BODY 29's 1,707 in the one-core harness; 92.96 us a command (12 cores, 64 tiles a core) |
+| [linear layer](../../experiments/language/dense_class/README.md), 32 x 4096 x 4096, the K split | Y equal to the host's product (integers); 4.38e-3 relative RMS (normal bfloat16, HiFi2) | 90,192 / 61,584 B (mock) | 94.2 / 92.4 us a command (112 cores, the hand's groups of 14 and blocks of 16) |
+| [linear layer](../../experiments/language/dense_class/README.md), 1024 x 4096 x 4096, the grid form | the same | 90,192 / 69,296 B (mock) | 358.6 / 382.4 us (12 x 8 cores, as the hand's) |
+| [tile rules](../../experiments/language/tile_rules/as_class/README.md): add and scale, load macro | float32 against float64: 5.96e-8 and 5.95e-8 (tolerance 2^-23) | 47,520 B (two stamped handlers) | the emitted bodies 91.0 and 59.0 cycles a tile on the math CPU, 91.6 and 59.5 printed; 93 and 62 in the one-core harness |
+| [ray tracer's trace pass](../../experiments/language/raytrace_class/README.md) (TRACE, tiny scene, the tree in L1) | the hand program's hit pages word for word: 0 of 18,874,368 words differ (the cycles vector apart), the walk's counts equal on every core; against numpy's trace 658,018 hits, none differs | 48,240 / 85,808 B (mock) | 3,294.9 / 3,259.9 us a command (120 cores, 32,768 packets; the tree loaded once, 23.7 us) |
+| [tile rules](../../experiments/language/tile_rules/as_class/README.md): the row norm, row form | float32 against float64: 2.33e-7 (tolerance 1e-5) | 41,248 B (stamped) | the emitted body 687.0 cycles a row of 2 tiles on the math CPU, 677.0 printed, 689.5 in the one-core harness (the first body 771.0, 753.0 printed); the hand norm 3,201.5 |
+| [tile rules](../../experiments/language/tile_rules/as_class/README.md): silu(a @ w1) (a @ w3), two products in the body | float32 against float64: 5.64e-4 (tolerance 2^-7) | 40,800 B (stamped) | the emitted body 1,706 cycles a tile on the math CPU, 1,678.6 printed, BODY 29's 1,707 in the one-core harness; 92.96 us a command (12 cores, 64 tiles a core) |
 
 ## Not in this version
 

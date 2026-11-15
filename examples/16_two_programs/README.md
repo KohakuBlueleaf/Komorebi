@@ -110,7 +110,7 @@ What the numbers say:
 - On one core the sum of 16 tiles costs 360 cycles more in the runtime's form (1,038 when
   the program's slots lay above 1 MB of L1, where code runs slower).
 - A command that names the other program loads its five parts: 2,818 cycles on one core,
-  3,953 on 120 at once. [overlay_costs](../../experiments/overlay_costs/README.md) measured
+  3,953 on 120 at once. [overlay_costs](../../experiments/code/overlay_costs/README.md) measured
   0.79 µs for a held program and 7 µs for a change of program on 120 cores.
 - A load command (`run.load`) costs about 3,100 to 3,500 cycles (2.3 to 2.6 µs) on one
   core or on 120, whether or not the program changes: the five cores meet, wait for their

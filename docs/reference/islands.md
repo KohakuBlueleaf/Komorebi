@@ -463,7 +463,7 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   (`KM_PUT_CPUS`).
 - 512 MiB from island 0 into a tensor of island 1 (`session.cross`, four links,
   packets of 8,192 bytes, the link cores' own chunks): 5.35 ms by the command's own
-  ticks, 100.4 GB/s, every page exact (`experiments/islands_pages`, 2026-11-15). The
+  ticks, 100.4 GB/s, every page exact (`experiments/islands/islands_pages`, 2026-11-15). The
   host's own wait adds about 0.45 ms whatever the size (64 MiB in 1.05 ms by the
   host's clock, 512 MiB in 5.85 ms): `pages.py --shapes` reports both.
 - A kernel reads a tensor's pages wherever they live with one call (`km_ask.hpp`):
@@ -560,12 +560,12 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   counted) the far read 606.5 µs (214.1) and the put 401.1 µs (split 342.6). Two
   tiles a rank are one or no page a page CPU: these are the lines' latency, not the
   links' rate.
-- Pages at the links' rate (`experiments/islands_pages/pages.py`, island 0's 118 ranks,
+- Pages at the links' rate (`experiments/islands/islands_pages/pages.py`, island 0's 118 ranks,
   or both islands' at once, four links, packets of 8,192 bytes, pages of 4 KiB, every
   page read back exact, 2026-11-15). The put is the linear kernel's: a core's run of
   pages from its own L1 (`km::put_pages` and `put_piece`, pieces of 4 pages into the
   rings). One link's ceiling, a plain sender from L1 slots at the same packet size
-  (`experiments/link_rate`): 40.2 GB/s (204 ns a packet, the router's pace), 155.6 on
+  (`experiments/islands/link_rate`): 40.2 GB/s (204 ns a packet, the router's pace), 155.6 on
   four links with a sender a core, 144.6 with two senders a core.
 
   | Move | 64 MiB | 512 MiB |
@@ -586,7 +586,7 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   answers, confirmations). The host's send through the same page CPUs reads DRAM:
   without the reads its loop does 117.7 GB/s (29 a CPU), with them 99.3.
 - `kmx_fetch` and `kmx_store` of island 0's work cluster 1 thread on 16 cores, of a
-  tensor of 4 KiB pages each island holds (`experiments/bank_fetch/islands.py`, four
+  tensor of 4 KiB pages each island holds (`experiments/x280/bank_fetch/islands.py`, four
   links, 2026-11-14, every word checked, best of 3 for a fetch):
 
   | Call | 1 MiB | 64 MiB |
@@ -661,14 +661,14 @@ p150a cards, one page link, 2026-11-15:
   confirmation a batch), PLACE 5.99 ms, 0.091 µs a key for the island, both exact.
   The same with a line of its own for every key (12 bytes inside the line) was
   112.9 ms.
-- `experiments/islands_bytes` (four links): island 0's 118 ranks each read 64 ranges,
+- `experiments/islands/islands_bytes` (four links): island 0's 118 ranks each read 64 ranges,
   each at a page and offset of its own, of a 1 MiB tensor island 1 holds (4,096-byte
   pages), of 4, 64, 128 and 2,048 bytes, one in flight and 32: every word exact and
   the 16 bytes either side untouched. Island 1 answers a range in 1.70 µs (4 bytes) to
   1.95 µs (2,048 bytes) however many a rank keeps in flight, so at this load a rank
   waits 190 to 220 µs a range; read from island 0's own DRAM, a range takes 0.48 to
   0.54 µs one in flight and 0.18 to 0.30 µs with 32.
-- `experiments/islands_bytes/forms.py` (four links): a 1 MiB tensor island 1 holds,
+- `experiments/islands/islands_bytes/forms.py` (four links): a 1 MiB tensor island 1 holds,
   read and written by all 236 ranks of both islands with `km::SizedTensor`: two pages
   a rank in pages of 1,024 and of 192 bytes (`km::read_pages`, then `km::write_pages`
   xor a mark, 0.51 and 0.50 ms a command), and four 128-byte items a rank of pages of
@@ -884,7 +884,7 @@ slowest island) and on the host (from the call to its return):
 
 The rows of 16 and 64 MiB are from a kernel, the median of 3 calls, each island's copy
 checked by sample (the first, middle and last 8 pages of every share)
-(`experiments/islands_collectives/account`). An all-gather of 64 MiB moves 32 MiB each
+(`experiments/islands/islands_collectives/account`). An all-gather of 64 MiB moves 32 MiB each
 way in 381.7 µs, 87.9 GB/s each way; from 16 to 64 MiB, 25.2 MB more each way take
 249.3 µs, 101 GB/s each way (the links' rate the host's sends reach, 100.4 GB/s): the
 bytes cross at the path's rate, and the rest, about 49 µs, is the fixed part of 2
@@ -1006,7 +1006,7 @@ NOP or 2,000 MAP, one host thread submitting to both islands):
 | MAP on (0, 120) and (120, 120) in turn | 2.691 |
 
 A NOP on one island costs what it costs on a card opened alone (1.131 to 1.159 µs
-in `experiments/islands_mesh`). A 240-rank ticket costs two commands of host work, one
+in `experiments/islands/islands_mesh`). A 240-rank ticket costs two commands of host work, one
 an island, from one host thread: 1.21 µs a part. MAP commands alternating between the
 islands cost what MAP on one island costs, so the islands run at once. MAP on one
 group of all 240 ranks (rank r adds input tiles 2r and 2r + 1, which lie in its own

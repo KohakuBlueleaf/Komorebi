@@ -17,7 +17,14 @@ from komorebi.engines import stream as stream_engine
 from komorebi.engines.graph import Graph
 
 GRAPHS = os.path.join(
-    dispatch_card.HERE, "..", "..", "..", "experiments", "graph_checks", "graphs"
+    dispatch_card.HERE,
+    "..",
+    "..",
+    "..",
+    "experiments",
+    "checks",
+    "graph_checks",
+    "graphs",
 )
 HANDLER_SUM = 5  # kernels/dk_test.h DK_HANDLER_SUM: result a0 + count
 REJECT_HANDLER = dispatch_card.REJECT_HANDLER

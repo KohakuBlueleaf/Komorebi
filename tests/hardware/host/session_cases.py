@@ -184,7 +184,7 @@ def case_read(session):
     """Tensors read by banks equal what was written and a whole-buffer read (a uint32
     row-major one of 37 pages over every bank, two bfloat16 ones of 6 tiles, one
     barrier), also while a run is loaded. The read's speed is an experiment
-    (experiments/dram_read)."""
+    (experiments/host/dram_read)."""
     rng = np.random.default_rng(3)
     words = rng.integers(0, 1 << 32, (37, 24), dtype=np.uint64).astype(np.uint32)
     x = rng.integers(-4, 5, (96, 64)).astype(np.float32)  # exact in bfloat16

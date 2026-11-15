@@ -387,7 +387,7 @@ address that changes from call to call): the add lands, the answer never does. W
 core kept its own tail, 2 to 12 of 50 runs of 10^6 forwards ended with reason 32 (two
 builds). A tile that
 only answers lost none in the 21.4 M reservations of the probe runs that found the
-condition ([atomic_answers](../../experiments/atomic_answers/)). This is an empirical condition of
+condition ([atomic_answers](../../experiments/noc/atomic_answers/)). This is an empirical condition of
 the atomic unit; its cause is not known. Ports and group completion are not affected: they
 count acknowledgements and never use a returned value.
 

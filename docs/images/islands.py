@@ -8,7 +8,7 @@ kernel that acts by island).
 usage: python docs/images/islands.py [output folder]    (needs Pillow, as patterns.py)
 
 Every code line is read from the file it names when the figure is drawn. The numbers
-are the pages': experiments/bank_fetch/README.md, docs/reference/islands.md and
+are the pages': experiments/x280/bank_fetch/README.md, docs/reference/islands.md and
 docs/concepts/islands.md.
 """
 
@@ -34,7 +34,7 @@ from patterns import (
     width,
 )
 
-FETCH = "../experiments/bank_fetch/thread/islands.c"
+FETCH = "../experiments/x280/bank_fetch/thread/islands.c"
 
 
 def path(s, points, stroke, sw=2.0, dash=None):
@@ -111,7 +111,7 @@ def panel_fetch_card(s, y):
         y,
         height,
         "one call, and Tensix cores bring the range to the thread",
-        "08_parallel_thread, experiments/bank_fetch",
+        "08_parallel_thread, experiments/x280/bank_fetch",
         "w",
     )
 
@@ -208,7 +208,7 @@ def panel_fetch_time(s, y):
 
     top = axis + 16
     rows = [
-        ("head", "experiments/bank_fetch/thread/islands.c 58 to 60, 70 to 72"),
+        ("head", "experiments/x280/bank_fetch/thread/islands.c 58 to 60, 70 to 72"),
         ("code", code[0], False, "from", "the tensor and the range, never the island"),
         ("code", "    " + code[1], False),
         ("code", code[2], False),
@@ -417,7 +417,7 @@ def panel_crossings(s, y):
             "km::read_pages, km::write_pages, km::put_pages: each run of pages another "
             "island holds is one line",
             "512 MiB: puts 72.5 GB/s each way with both islands putting, reads 40.6 "
-            "to 48.3 GB/s (experiments/islands_pages)",
+            "to 48.3 GB/s (experiments/islands/islands_pages)",
         ),
         (
             "p",

@@ -313,13 +313,13 @@ sets of commands where it is not.
 
 ## Reference streams
 
-`experiments/stream_checks/streams/` holds about ninety named streams as `.bin` uploads, each with
+`experiments/checks/stream_checks/streams/` holds about ninety named streams as `.bin` uploads, each with
 a `.json` beside it giving the parameters of the simulation and the simulator's answer:
 the check result, every submitted command (`sequence`, `slot`, submit `pass`, `pc`, `queued`,
 `handler`, `first`, `count`, `flags`, `args`), the events, the status, the error, the halt
 value and whether the grid was stopped. Each file's notes say how completions are
 modelled. They exist so that another implementation, such as the kernel's interpreter,
 can replay them, and they are chosen so that a deliberate slip in the simulator is
-noticed: `experiments/stream_checks/mutants.py` applies about a hundred small patches to
+noticed: `experiments/checks/stream_checks/mutants.py` applies about a hundred small patches to
 it and requires every one to change some saved answer. `stream_reference.py` in the same
 folder rewrites the files, and with `--check` compares them with what the simulator gives.

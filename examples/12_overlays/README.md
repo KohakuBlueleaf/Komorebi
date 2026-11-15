@@ -112,6 +112,6 @@ What the numbers say:
   loaded or held. The slots sit below 1 MB of L1: a loop run from above it takes
   about 4 cycles more an iteration (815 cycles here, 25,900 for scale, before they moved).
 
-[overlay_costs](../../experiments/overlay_costs/README.md) and
-[overlay_probe](../../experiments/overlay_probe/README.md) are the experiments these
+[overlay_costs](../../experiments/code/overlay_costs/README.md) and
+[overlay_probe](../../experiments/code/overlay_probe/README.md) are the experiments these
 numbers stand beside.

@@ -159,7 +159,7 @@ A step is tried only when the one before it was not enough.
    on island 0's link core 0: the give-up came 20.2 ms after the deadline, the
    held-up command's 0.1 to 2.9 ms later, the host's reset took 102 to 104 ms and
    0.3 ms to open again, and the next read across and the next crossed command were
-   exact (`experiments/core_reset/links.py`).
+   exact (`experiments/recovery/core_reset/links.py`).
 
 ## When a card reset is still the only way
 

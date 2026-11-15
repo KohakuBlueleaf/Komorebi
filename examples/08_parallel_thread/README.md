@@ -75,7 +75,7 @@ the compiler then reads the field again on every word (the map took 2.46 ms inst
 of 0.72 ms on 65,536 words until `map_range` did this).
 
 **Chunks, not quarters, and where arrays lie.** The cluster's L3 is one cache way of
-128 KiB (`experiments/x280_threads/`): two addresses a multiple of 128 KiB apart take
+128 KiB (`experiments/x280/x280_threads/`): two addresses a multiple of 128 KiB apart take
 the same place in it, and a loop that reads one such address and writes the other
 runs many times slower, as one way would explain: the map with its output a whole
 number of ways from its input (`map_aliased`) took 90.6 ms instead of 2.85 ms. So:
@@ -193,7 +193,7 @@ best of 3, host load 5.0 to 5.8, 2026-11-14; every output exact against numpy in
 The fetch's 0.49 ms was mostly the two sweeps of the region's cache lines around the
 copy; the call then swept once, before it (0.19 ms on card 0, every output exact), and
 now empties the cluster's cache instead (`kmx_evict`): 0.04 ms for the MiB, of which
-the cores' copy takes 0.02 ms ([bank_fetch](../../experiments/bank_fetch/README.md)).
+the cores' copy takes 0.02 ms ([bank_fetch](../../experiments/x280/bank_fetch/README.md)).
 
 ## The thread
 

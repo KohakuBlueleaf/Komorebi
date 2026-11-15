@@ -14,7 +14,7 @@ the counters back only after the X280 runtime is closed.
 | Its test handlers, argument function and counter indices | `kernels/dk_test.h` |
 | Driver, one case or the regression set per run | `dispatch_card.py` |
 | The graph executor's cases on the same harness (`SCRIPT=graph_card.py` for `run.sh`) | `graph_card.py` |
-| Builds the kernel image, the test image (`KMD_VERIFY_LINES` and `KMD_TRACE`), the measuring image of `experiments/dispatcher` and the host module | `build.py` |
+| Builds the kernel image, the test image (`KMD_VERIFY_LINES` and `KMD_TRACE`), the measuring image of `experiments/x280/dispatcher` and the host module | `build.py` |
 | One run under a hang watcher | `run.sh` |
 
 ## Cases
@@ -55,7 +55,7 @@ one for the set, whose `ok` is true when every case's is. It takes about 13 seco
 | `verify` (set) | The test image built with `KMD_VERIFY_LINES`, under load: `--n` commands, mostly NOP commands whose header, group and argument words are functions of the command number, with a PING every 7th and a rejected command (handler 245) every 11th | the kernel checked every command and found no word wrong; every event's kind, reason and ticks are what its command must produce |
 | `result` (set) | `--n` commands of the worker's result handler with `KM_FLAG_RESULT`, groups of `--group` cores (1 if 0) rotating over the grid, streamed a million at a time | every `KM_EVENT_DONE` event carries the result of its own command (`dk_result` of its key), the kernel counted `--n` results, every core ran exactly its commands |
 | `upload` (set) | The `KMD_VERIFY_LINES` image: the whole upload region written twice through the host window with a pattern of whole lines, then `KMD_HANDLER_CHECK_UPLOAD` over the region, single lines, a middle range, a wrong seed, one changed word, and two ranges outside the region | the ready block names the region after the layout; every check finds exactly the differing words (none, 16, or the one changed word at its index); the two outside ranges are rejected with reason 5 |
-| `streams` (set) | The test image: `KM_HANDLER_RUN` and `KM_HANDLER_CANCEL` rejections and range errors with four looping streams at once, every reference stream of `experiments/stream_checks/streams` that submits no command, then a stream of `--n` result commands one at a time | every rejection and error is the expected one; every reference's events equal the simulator's; the commands reach the grid in the simulated order with the simulated groups; a PING answers after each part |
+| `streams` (set) | The test image: `KM_HANDLER_RUN` and `KM_HANDLER_CANCEL` rejections and range errors with four looping streams at once, every reference stream of `experiments/checks/stream_checks/streams` that submits no command, then a stream of `--n` result commands one at a time | every rejection and error is the expected one; every reference's events equal the simulator's; the commands reach the grid in the simulated order with the simulated groups; a PING answers after each part |
 | `replay` (set) | The test image: every reference stream that submits commands and does not rest on the simulator's passes (a deadline or cancel in passes, a command never acknowledged), its handlers set to `DK_HANDLER_RESULT`, each simulated on this grid under several completion models | where all models agree, the stream's events and its groups in submit order equal the simulator's; otherwise its command counts and its last event do; every queued command got the lowest group free at its submit; every core ran exactly the traced groups; a PING answers after each |
 | `stream-deadline` (set) | A stream whose second command has a core waiting for the stop flag, header deadline `--deadline-microseconds` | one `KM_EVENT_STREAM_ERROR` with reason 8 at that `SUBMIT`; the kernel ends with the deadline error; every core gave up on the stop flag |
 | `engine-busy` (set) | A host DELAY of `--delay-microseconds` on the grid's first half, then a stream with one `KM_FLAG_EXCLUSIVE` command on that half and a stream of `--n` commands one at a time on the other half | the second stream ends before the DELAY's `KM_EVENT_DONE` and the first after it, both with their halt values: the blocked command was rejected busy and sent again (the engine sent more commands than the two streams have), and did not hold up the other stream |
@@ -70,7 +70,7 @@ result word the reference graphs assume.
 
 | case | what it does | `ok` when |
 |---|---|---|
-| `graphs` | The test image: two graphs of a long DELAY running, then a third `RUN`, `a2 = 3`, a kept `RUN` of an unknown req, both cancelled; a graph over a running stream's range, an unaligned one; seven kept graphs, `kept_graph`, its drop, an eighth, `kept_table_full`, every drop; every saved reference of `experiments/graph_checks/graphs` that ends by itself, its templates on `DK_HANDLER_SUM`; the documented loop kept and run again by its req with another binding | every rejection, error and drop is the expected one; every graph's events (rounds, end with registers 0 and 1, error with reason and node) equal the simulator's on this grid; the engine's commands in the trace are each graph's simulated groups (a queued command's count); every core ran exactly those; a PING answers after each part |
+| `graphs` | The test image: two graphs of a long DELAY running, then a third `RUN`, `a2 = 3`, a kept `RUN` of an unknown req, both cancelled; a graph over a running stream's range, an unaligned one; seven kept graphs, `kept_graph`, its drop, an eighth, `kept_table_full`, every drop; every saved reference of `experiments/checks/graph_checks/graphs` that ends by itself, its templates on `DK_HANDLER_SUM`; the documented loop kept and run again by its req with another binding | every rejection, error and drop is the expected one; every graph's events (rounds, end with registers 0 and 1, error with reason and node) equal the simulator's on this grid; the engine's commands in the trace are each graph's simulated groups (a queued command's count); every core ran exactly those; a PING answers after each part |
 | `graph-deadline` | A graph whose second command has rank `--core` waiting for the stop flag, header deadline `--deadline-microseconds` | one `KM_EVENT_GRAPH_ERROR` with reason 8 at that node; the kernel ends with the deadline error; every core gave up on the stop flag |
 
 The harness always launches the grid before it starts the image, so a compile error is
@@ -78,7 +78,7 @@ raised before any image exists. `--image-first` reverses the order, to test that
 error path stops a running image.
 
 Throughput, host store cost, the memory cost per operation and the stream engine's pass
-are measured by `experiments/dispatcher/measure.py` on this harness.
+are measured by `experiments/x280/dispatcher/measure.py` on this harness.
 
 ## Build and run
 

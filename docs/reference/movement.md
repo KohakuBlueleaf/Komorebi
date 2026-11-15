@@ -236,7 +236,7 @@ word (`kStReader` on mover A, `kStWriter` on mover B) at `data`, like `reserve` 
 ## Choosing a pattern
 
 There is no automatic choice: the program gives the pattern. The measured rules, from
-`experiments/movement_probe` (one p150a, AICLK 1,350 MHz, 32 tiles a block, 256 tiles
+`experiments/core/movement_probe` (one p150a, AICLK 1,350 MHz, 32 tiles a block, 256 tiles
 a core, GB/s over all cores):
 
 **The ratio follows the routes.** NoC 0 and NoC 1 reach DRAM at different rates, and

@@ -12,7 +12,7 @@ Status: experimental, nothing in the runtime imports it. The bodies emitted from
 functions for SiLU, a residual add, a scale, the SwiGLU gate, the row norm, attention's
 exponent step and its online softmax step ran on one Blackhole core against the hand
 bodies they stand in for; each computes the same expression as its hand body within the
-stated tolerance ([tile_rules](../../experiments/tile_rules/README.md)). The matrix
+stated tolerance ([tile_rules](../../experiments/language/tile_rules/README.md)). The matrix
 unit's words of a tile product, emitted from the library's no-MOP order, gave the
 library call's result bit for bit, and a body with tile products inside it
 (`silu(a @ w1) * (a @ w3)`) ran within its tolerance.
@@ -84,7 +84,7 @@ tile's, unchanged.
   at nothing, as the card ran them (the core's loop and test run ahead of the words it
   hands the unit). At 32 rows a band body is priced as the whole tile.
 
-On the card (`experiments/tile_rules`, bodies 24 to 26, math cycles a tile less the
+On the card (`experiments/language/tile_rules`, bodies 24 to 26, math cycles a tile less the
 sync; the estimate in brackets):
 
 | Body | 1 row | 9 rows | 17 rows | 32 rows | Whole tile |
@@ -131,7 +131,7 @@ between the products and the gate.
 - **The band.** With `rows=True` the vector code runs the live rows; the products run
   the whole tile.
 
-On the card ([tile_rules](../../experiments/tile_rules/README.md), bf16 operands at
+On the card ([tile_rules](../../experiments/language/tile_rules/README.md), bf16 operands at
 HiFi4, cycles a unit less the sync): silu(a @ w1) 1579 against 1548.6 estimated, within
 3.0e-4 of float64; silu(a @ w1) (a @ w3) 1707 against 1678.6, within 4.6e-4, and 356
 against 349.3 with the band at one live row. The gate less its vector code as that ran
@@ -288,7 +288,7 @@ or the pack CPU pushes has one producer). The rules no check covers yet are prin
 `cost(cpu)` adds up a price for each instruction, each loop pass and each stall it
 predicts; the calls (`copy_tile`, `pack_tile`, the syncs) are listed and not priced.
 Every price names the one-core measurement it comes from
-([tile_probes](../../experiments/tile_probes/README.md), section 8):
+([tile_probes](../../experiments/core/tile_probes/README.md), section 8):
 
 | Term | Cycles |
 |---|---|

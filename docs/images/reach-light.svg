@@ -5,7 +5,7 @@
 <rect x="16.0" y="10.0" width="798.0" height="371.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <rect x="16.0" y="391.0" width="798.0" height="511.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="30.0" y="32.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">one call, and Tensix cores bring the range to the thread</text>
-<text x="800.0" y="32.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">08_parallel_thread, experiments/bank_fetch</text>
+<text x="800.0" y="32.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">08_parallel_thread, experiments/x280/bank_fetch</text>
 <rect x="46.0" y="56.0" width="21.0" height="21.0" rx="3" fill="#d5dde6" stroke="none" stroke-width="1"/>
 <text x="56.5" y="70.5" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">D0</text>
 <rect x="70.0" y="56.0" width="21.0" height="21.0" rx="3" fill="none" stroke="#d1d9e0" stroke-width="1" stroke-dasharray="3 3"/>
@@ -271,7 +271,7 @@
 <text x="190.1" y="446.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">evict, 21 µs</text>
 <text x="299.1" y="480.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">2 the command; the event comes back the same way</text>
 <text x="790.0" y="563.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">time (schematic)</text>
-<text x="40.0" y="592.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">experiments/bank_fetch/thread/islands.c 58 to 60, 70 to 72</text>
+<text x="40.0" y="592.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">experiments/x280/bank_fetch/thread/islands.c 58 to 60, 70 to 72</text>
 <text x="40.0" y="612.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">const kmx_dram from = {</text>
 <text x="220.2" y="612.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">from</text>
 <text x="258.1" y="612.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the tensor and the range, never the island</text>

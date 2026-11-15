@@ -255,7 +255,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   free to the stream's next submit over the ring [1.34]; with three looping streams
   beside it, 23.9 [12.8]. A host command at depth 16 to one core costs 1.24
   microseconds host-fed [0.641], 1.26 with all 64 commands preloaded [0.669]. The
-  commands are in `experiments/dispatcher/README.md`.
+  commands are in `experiments/x280/dispatcher/README.md`.
 - **Dynamic runs.** The argument block's `messages_handler` names the program's dynamic
   handler (0: none). A command of it is a dynamic run's `RUN`; one runs at a time. A
   second one from the host waits until the first and its end command have completed;

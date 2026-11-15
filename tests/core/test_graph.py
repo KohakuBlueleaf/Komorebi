@@ -18,7 +18,7 @@ from komorebi.engines.graph import Graph, check
 ROOT = Path(__file__).resolve().parents[2]
 INCLUDE = ROOT / "src" / "komorebi_native" / "include"
 ENGINE = ROOT / "src" / "komorebi_native" / "x280" / "engines" / "km_graph_engine.c"
-REFERENCES = ROOT / "experiments" / "graph_checks" / "graphs"
+REFERENCES = ROOT / "experiments" / "checks" / "graph_checks" / "graphs"
 DEFINE = re.compile(r"^#define\s+(KM_\w+)\s+(0x[0-9A-Fa-f]+|\d+)u?\b", re.M)
 GRAPH_CONSTANTS = {
     k: int(v, 0)
