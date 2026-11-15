@@ -1,0 +1,28 @@
+// Shared layout of the tile-rules experiment: buffers, the info page's words, the
+// bound of the pack CPU's wait. Must match rules.py.
+#pragma once
+
+#include <stdint.h>
+
+namespace rules {
+
+    constexpr uint32_t kCbA = 0, kCbB = 1, kCbP = 2, kCbOut = 16, kCbInfo = 24;
+    // The hand norm's one-page buffers and its P pages (decode's constant tiles).
+    constexpr uint32_t kCbSquares = 3, kCbScale = 4;
+    constexpr uint32_t kPIdentity = 0, kPMean = 1, kPWeight = 2;
+    constexpr uint32_t kMaxUnits = 32;
+
+    // Info page words: kNonce is written last; kBody + u the body of unit u (a tile,
+    // or a row of tiles), kLoop + u the whole unit; kSync + i an empty timed span.
+    constexpr uint32_t kNonce = 0, kError = 1, kUnits = 2, kMathDone = 3;
+    constexpr uint32_t kBody = 64, kLoop = 128, kSync = 192, kSyncs = 16;
+
+    constexpr uint32_t kErrorSpin = 1;           // the pack CPU's wait for math gave up
+    constexpr uint32_t kSpinLimit = 1u << 24;    // about a second of polls
+    constexpr uint32_t kWallClock = 0xFFB121F0;  // RISCV_DEBUG_REG_WALL_CLOCK_L
+
+    inline uint32_t wall() {
+        return *reinterpret_cast<volatile uint32_t*>(kWallClock);
+    }
+
+}  // namespace rules

@@ -1,19 +1,22 @@
 """A traced tile expression over a stream of tiles to its unit program: the chain
 compiler's vector function (`chain.Chain`) is written as vector-unit instructions on
 named values, the rules run as passes (algebra, schedule, layout), then the hazard
-checks. Built: the fp32-Dst SiLU chain (operands, constants, +, *, -, sigmoid)."""
+checks. Built on fp32 Dst: whole-tile operands, constants, +, -, *, sigmoid, rsqrt."""
 
 import struct
 
 from komorebi.dsl.tile import chain as chains
+from komorebi.dsl.tile import macro
 from komorebi.dsl.tile.ir import BF16, F32, PlanError, fail
 from komorebi.dsl.tile.unit import (
     FIXED,
     IADD_IMM,
     IADD_NO_CC,
+    IADD_SUB,
     OPS,
     PROGRAMMABLE,
     REPLAY_ENTRIES,
+    SHIFT_IMM_VC,
     WORK,
     Call,
     Check,
@@ -27,9 +30,13 @@ from komorebi.dsl.tile.unit import (
     insns,
 )
 
-# Dst access through ADDR_MOD_7 (no increments), the format the registers hold.
-ADDR_MOD = 7
+# Dst access through ADDR_MOD_7 (no increments), the format the registers hold;
+# ADDR_MOD_6 steps Dst by 2 (one row group) after a load macro.
+ADDR_MOD, MACRO_ADDR_MOD = 7, 6
 ROWS, FACES = 8, 4
+TILE = 64  # Dst address units of one fp32 tile: 4 faces of 16 rows
+# Operand tiles a whole-tile stream body reads (Dst tiles 0 ..).
+OPERANDS = 3
 # The readers of a MAD-class result that the unit does not hold back (rule
 # mad-reader; SFPGT and SFPLE added from tt-metal's ckernel_sfpu_recip.h).
 NOT_HELD = ("SFPIADD", "SFPSHFT", "SFPAND", "SFPOR", "SFPSWAP", "SFPGT", "SFPLE")
@@ -56,7 +63,7 @@ class Body:
 
     def __init__(self):
         self.code, self.count, self.depth = [], 0, 0
-        self.prog = {}
+        self.prog, self.bits = {}, {}
 
     def fresh(self):
         self.count += 1
@@ -74,15 +81,22 @@ class Body:
         written = insn.writes()
         return written[0] if written else None
 
-    def load(self):
-        return self.op("SFPLOAD", "x from Dst", instr_mod0=0, sfpu_addr_mode=ADDR_MOD)
+    def load(self, address=0, note=""):
+        return self.op(
+            "SFPLOAD",
+            note or f"Dst + {address}",
+            instr_mod0=0,
+            sfpu_addr_mode=ADDR_MOD,
+            dest_reg_addr=address,
+        )
 
-    def store(self, value):
+    def store(self, value, address=0, note="the result to Dst"):
         self.op(
             "SFPSTORE",
-            "the result to Dst",
+            note,
             lreg_ind=value,
             sfpu_addr_mode=ADDR_MOD,
+            dest_reg_addr=address,
         )
 
     def const(self, value, note=""):
@@ -103,16 +117,20 @@ class Body:
         self.op("SFPLOADI", note, lreg_ind=out, instr_mod0=8, imm16=bits >> 16)
         return out
 
-    def register_const(self, value):
-        """A programmable constant register holding `value` (set once by the setup,
-        after the schedule pass hoists it): its name until the layout pass."""
+    def register_const(self, value, bits=None):
+        """A programmable constant register holding fp32 `value` (or the integer
+        `bits`), set once by the setup after the schedule pass hoists it: its name
+        until the layout pass."""
+        if bits is None:
+            bits = struct.unpack("<I", struct.pack("<f", value))[0]
+        if bits in self.bits:
+            return self.bits[bits]
+        if len(self.prog) == len(PROGRAMMABLE):
+            raise UnitError("more constants than the 3 programmable registers")
         name = f"p{len(self.prog)}"
-        self.prog[name] = value
-        bits = struct.unpack("<I", struct.pack("<f", value))[0]
-        if bits & 0xFFFF:
-            raise UnitError(f"a constant register value {value!r} is not bf16")
-        self.op("SFPLOADI", f"{value!r}", lreg_ind="L0", instr_mod0=0, imm16=bits >> 16)
-        self.op("SFPCONFIG", f"constant register {name}", config_dest=name)
+        self.bits[bits] = name
+        self.prog[name] = value if value is not None else hex(bits)
+        self.code += _config(name, bits, f"{self.prog[name]}")
         return name
 
     def mad(self, a, b, c, note="", neg_a=False, neg_c=False, into=None):
@@ -148,6 +166,22 @@ class Body:
         self.depth = 0
         imm, mod = CC_RESET
         self.op("SFPENCC", "every lane on", imm12_math=imm, instr_mod1=mod)
+
+
+def _config(name, bits, note):
+    """SFPLOADI of `bits` into LReg 0 (one word when the low half is 0) and the
+    SFPCONFIG that copies it into constant register `name`."""
+    out = []
+    if bits & 0xFFFF:
+        args = {"lreg_ind": "L0", "instr_mod0": 2, "imm16": bits & 0xFFFF}
+        out.append(Insn("SFPLOADI", args, note))
+        args = {"lreg_ind": "L0", "instr_mod0": 8, "imm16": bits >> 16}
+    else:
+        args = {"lreg_ind": "L0", "instr_mod0": 0, "imm16": bits >> 16}
+    out.append(Insn("SFPLOADI", args, note))
+    config = {"imm16_math": 0, "config_dest": name, "instr_mod1": 0}
+    out.append(Insn("SFPCONFIG", config, f"constant register {name}"))
+    return out
 
 
 def _fp32(value):
@@ -220,27 +254,62 @@ def sigmoid(b, x):
     return recip(b, b.add(exp(b, b.neg(x)), "one", "1 + e^-x"))
 
 
-FUNCTIONS = {"sigmoid": sigmoid}
+def rsqrt(b, x):
+    """1 / sqrt(x) for a positive finite x (tt-metal's `_calculate_sqrt_body_`, its
+    23-bit reciprocal form, without the guards for 0, infinity and x < 0): the
+    initial guess from x's bits, a degree-2 correction, then one Newton step."""
+    magic = b.register_const(None, bits=0x5F1110A0)
+    c1, c2 = b.register_const(2.2825186), b.register_const(2.2533049)
+    i = b.op(
+        "SFPSHFT",
+        "x's bits >> 1",
+        imm12_math=(-1) & 0xFFF,
+        lreg_c=x,
+        instr_mod1=SHIFT_IMM_VC,
+    )
+    y = b.op(
+        "SFPIADD",
+        "y = magic - (x >> 1)",
+        lreg_c=magic,
+        lreg_dest=i,
+        instr_mod1=IADD_SUB | IADD_NO_CC,
+    )
+    xy = b.mul(x, y, "x y")
+    c = b.mad(y, xy, "zero", "c = -y x y", neg_a=True)
+    y = b.mul(y, b.mad(c, b.add(c, c2, "c2 + c"), c1, "c1 + c (c2 + c)"), "y")
+    xy = b.mul(x, y, "x y")
+    e = b.mad(y, xy, "one", "1 - y x y", neg_a=True)
+    half = b.op("SFPDIVP2", "y / 2", imm12_math=0xFF, lreg_c=y, instr_mod1=1)
+    return b.mad(e, half, y, "y + (1 - y x y) y / 2")
 
 
-def _value(b, node, done):
-    """The value of sfpu node `node` (an operand, a constant, an operation)."""
+FUNCTIONS = {"sigmoid": sigmoid, "rsqrt": rsqrt}
+
+
+def _value(b, node, done, source=None):
+    """The value of sfpu node `node` (an operand, a constant, an operation);
+    `source(index)` gives operand `index` (default: a load of Dst tile `index`)."""
     key = id(node)
     if key in done:
         return done[key]
     k = node.kind
     if k == "operand":
-        if node.value != (0, None) or node.along:
-            fail("the unit program reads one whole-tile operand")
-        out = b.load()
+        if node.value[1] is not None or node.along:
+            fail("the unit program reads whole-tile operands")
+        if source is None:
+            if node.value[0] >= OPERANDS:
+                fail(f"the unit program reads at most {OPERANDS} operand tiles")
+            out = b.load(TILE * node.value[0], f"operand {node.value[0]}")
+        else:
+            out = source(node.value[0])
     elif k == "const":
         out = b.const(node.value)
     elif k == "call":
         if node.value not in FUNCTIONS:
             fail(f"vector function {node.value} is not built in the unit program")
-        out = FUNCTIONS[node.value](b, _value(b, node.args[0], done))
+        out = FUNCTIONS[node.value](b, _value(b, node.args[0], done, source))
     elif k in ("mul", "add", "sub", "neg"):
-        args = [_value(b, a, done) for a in node.args]
+        args = [_value(b, a, done, source) for a in node.args]
         if k == "mul":
             out = b.mul(*args, "x sigmoid(x)" if node.args[1].kind == "call" else "")
         elif k == "add":
@@ -291,15 +360,116 @@ def fold_negation(code):
     return done
 
 
+def fuse_mad(code):
+    """Algebra: a product read only by an add becomes one multiply-add (one rounding
+    in place of two). Returns what it did."""
+    done, i = [], 0
+    while i < len(code):
+        insn = code[i]
+        if insn.op != "SFPMUL" or insn.args["lreg_src_c"] != "zero":
+            i += 1
+            continue
+        out = insn.args["lreg_dest"]
+        users = [x for x in code if out in x.reads()]
+        made = [x for x in code if out in x.writes()]
+        add = users[0] if len(users) == 1 and len(made) == 1 else None
+        if add is None or add.op != "SFPADD" or add.args["lreg_src_a"] != "one":
+            i += 1
+            continue
+        b, c = add.args["lreg_src_b"], add.args["lreg_src_c"]
+        if (b == out) == (c == out):
+            i += 1
+            continue
+        add.op = "SFPMAD"
+        add.args["lreg_src_a"] = insn.args["lreg_src_a"]
+        add.args["lreg_src_b"] = insn.args["lreg_src_b"]
+        add.args["lreg_src_c"] = c if b == out else b
+        add.args["instr_mod1"] |= insn.args["instr_mod1"] & 1
+        add.note = f"{insn.note or 'a b'} + c, one rounding".strip()
+        done.append(f"a product into its add ({add.note})")
+        del code[i]
+    return done
+
+
+def constant_registers(code, prog):
+    """Layout: the constants the row code loads (SFPLOADI) move into the free
+    programmable registers, most loader words saved first; equal constants share
+    one. Returns what it did."""
+    found = {}
+    for insn in code:
+        if insn.op == "SFPLOADI" and isinstance(insn.args["lreg_ind"], str):
+            value = insn.args["lreg_ind"]
+            if value.startswith("v"):
+                found.setdefault(value, []).append(insn)
+    by_bits = {}
+    for value, words in found.items():
+        writers = [x for x in code if value in x.writes()]
+        if len(writers) != len(words) or any(x.op != "SFPLOADI" for x in writers):
+            continue
+        bits = _bits_of(words)
+        if bits is None:
+            continue
+        by_bits.setdefault(bits, []).append(value)
+    saved = {
+        bits: sum(len(found[v]) for v in values) for bits, values in by_bits.items()
+    }
+    done = []
+    for bits in sorted(saved, key=lambda b: -saved[b]):
+        if len(prog) == len(PROGRAMMABLE):
+            break
+        name = f"p{len(prog)}"
+        values = by_bits[bits]
+        note = found[values[0]][0].note
+        prog[name] = note
+        for value in values:
+            for word in found[value]:
+                code.remove(word)
+            for insn in code:
+                for arg, _ in OPS[insn.op].args:
+                    if insn.args[arg] == value:
+                        insn.args[arg] = name
+        code[:0] = _config(name, bits, note)
+        done.append(f"{note} in {name} ({saved[bits]} words a row)")
+    return done
+
+
+def _bits_of(words):
+    """The 32-bit value SFPLOADI words build (FLOATB, FLOATA, USHORT, then UPPER),
+    or None for another form."""
+    bits = None
+    for w in words:
+        mod, imm = w.args["instr_mod0"], w.args["imm16"]
+        if mod == 0:
+            bits = imm << 16
+        elif mod == 1:
+            half = struct.unpack("<e", struct.pack("<H", imm))[0]
+            bits = struct.unpack("<I", struct.pack("<f", half))[0]
+        elif mod == 2:
+            bits = imm
+        elif mod == 8 and bits is not None:
+            bits = (bits & 0xFFFF) | imm << 16
+        else:
+            return None
+    return bits
+
+
 def hoist(code, setup):
     """Schedule: the constant registers' setup (SFPLOADI into L0, SFPCONFIG) moves
     out of the per-row code into the setup, once per stream."""
     done = []
-    for i in range(len(code) - 1, -1, -1):
+    i = len(code) - 1
+    while i >= 0:
         if code[i].op == "SFPCONFIG":
-            setup[:0] = [code[i - 1], code[i]]
+            j = i
+            while j > 0 and code[j - 1].op == "SFPLOADI":
+                if code[j - 1].args["lreg_ind"] != "L0":
+                    break
+                j -= 1
+            setup[:0] = code[j : i + 1]
             done.append(f"constant register {code[i].args['config_dest']}")
-            del code[i - 1 : i + 1]
+            del code[j : i + 1]
+            i = j
+        i -= 1
     return list(reversed(done))
 
 
@@ -401,8 +571,9 @@ def check_config_nop(code):
     return repairs
 
 
-def _checks(unit, row):
-    """The hazard checks of the math CPU's program (`row`: the per-row loop body)."""
+def _checks(unit, row, plan=None):
+    """The hazard checks of the math CPU's program (`row`: the per-row loop body;
+    `plan`: its load-macro plan, or None)."""
     math_init, math_tile = unit.init["math"], unit.tile["math"]
     n = check_mad_readers([row])
     unit.checks.append(
@@ -453,7 +624,7 @@ def _checks(unit, row):
         )
     )
     flat = list(_order(math_tile))
-    first = next(i for i, x in enumerate(flat) if x.op == "SFPLOAD")
+    first = next(i for i, x in enumerate(flat) if x.op in ("SFPLOAD", "SFPLOADMACRO"))
     stalled = any(
         x.op == "STALLWAIT" and x.args["stall_res"] & STALL_SFPU for x in flat[:first]
     )
@@ -506,13 +677,17 @@ def stream_chain(ir):
     return compiler.chain(ir.stores[0].value, leaf_of)
 
 
-def unit_program(ir, dest="fp32"):
-    """The unit program of stream kernel `ir` on `dest` (fp32) Dst registers."""
+def unit_program(ir, dest="fp32", load_macro=False):
+    """The unit program of stream kernel `ir` on `dest` (fp32) Dst registers: operand
+    k read from Dst tile k (relative to the caller's `dst`), the result stored into
+    tile 0. `load_macro`: try the load-macro rule (a refusal is a pass's record)."""
     if dest != "fp32":
         raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
     chain = stream_chain(ir)
-    if len(chain.operands) != 1 or chain.values or chain.prev is not None:
-        fail(f"{ir.name}: the unit program takes one operand and no scalars")
+    if chain.values or chain.prev is not None:
+        fail(f"{ir.name}: the unit program takes no runtime scalars")
+    if len(chain.operands) > OPERANDS:
+        fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     dtypes = {t.dtype for t in ir.tensors}
     if not dtypes <= {BF16, F32}:
         fail(f"{ir.name}: tensors are bf16 or fp32")
@@ -520,21 +695,24 @@ def unit_program(ir, dest="fp32"):
     result = _value(body, chain.fn.result, {})
     body.store(result)
     unit = UnitProgram(ir.name, dest)
+    unit.operands = [leaf.source.attrs["view"].tensor.name for leaf in chain.operands]
     setup = []
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
+    unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
+    done = constant_registers(body.code, body.prog)
+    unit.passes.append(Pass("layout", "constant_registers", done))
     unit.passes.append(Pass("schedule", "hoist", hoist(body.code, setup)))
     unit.passes.append(Pass("layout", "allocate", allocate(body.code, body.prog)))
     allocate(setup, body.prog)
     unit.constants = {
         PROGRAMMABLE[i]: value for i, value in enumerate(body.prog.values())
     }
-    row = [*body.code, Insn("INCRWC", _rwc(rwc_d=2), "next 4 rows")]
-    face = Loop("row", ROWS, row, unroll=True)
-    step = Insn(
-        "SETRWC",
-        {**_setrwc(), "rwc_cr": CR_D, "rwc_d": 8, "BitMask": SET_D},
-        "Dst + 8 rows",
-    )
+    plan = None
+    if load_macro:
+        try:
+            plan = macro.fit(body.code)
+        except macro.Refused as e:
+            unit.passes.append(Pass("schedule", "load_macro", [f"refused: {e}"]))
     unit.init["math"] = [
         Insn(
             "SFPCONFIG",
@@ -549,14 +727,50 @@ def unit_program(ir, dest="fp32"):
         Insn("SETRWC", {**_setrwc(), "BitMask": 0xF}, "reset the counters"),
         *setup,
     ]
+    if plan is None:
+        row = [*body.code, Insn("INCRWC", _rwc(rwc_d=2), "next 4 rows")]
+        face = Loop("row", ROWS, row, unroll=True)
+        drained = []
+    else:
+        row = macro.rows(plan, MACRO_ADDR_MOD)
+        if ROWS % plan.rows:
+            raise UnitError(f"{plan.rows} rows a macro turn do not divide a face")
+        face = Loop("row", ROWS // plan.rows, row, unroll=True)
+        unit.init["math"] += [
+            Call(
+                "ckernel::addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, "
+                ".dest = {.incr = 2}}.set(ADDR_MOD_6)",
+                "address mode 6: Dst + 2 after a macro (3 SETC16)",
+            ),
+            *macro.setup(plan),
+        ]
+        drained = macro.drain(plan)
+        unit.passes.append(
+            Pass(
+                "schedule",
+                "load_macro",
+                [
+                    f"{len(plan.chain)} operation(s) and the store in one SFPLOADMACRO "
+                    f"a row (store delay {plan.store_delay}); {len(plan.others)} "
+                    f"plain load(s) a row; registers in turns of {plan.loaded_turns} "
+                    f"(loaded) and {plan.plain_turns} (plain)"
+                ],
+            )
+        )
+    step = Insn(
+        "SETRWC",
+        {**_setrwc(), "rwc_cr": CR_D, "rwc_d": 8, "BitMask": SET_D},
+        "Dst + 8 rows",
+    )
+    copies = [f"copy_tile(in{k}, 0, dst + {k})" for k in range(len(chain.operands))]
     unit.tile["unpack"] = [
-        Sync("unpack", "reader", "cb_wait_front(in, 1)", "an input tile"),
-        Call("copy_tile(in, 0, dst)", "the tile into Dst (fp32, unpacked to Dst)"),
-        Call("cb_pop_front(in, 1)", "frees the input tile"),
+        Sync("unpack", "reader", "cb_wait_front(in, 1)", "the input tiles"),
+        *[Call(c, "the tile into Dst (fp32, unpacked to Dst)") for c in copies],
+        Call("cb_pop_front(in, 1)", "frees the input tiles"),
     ]
     unit.tile["math"] = [
         Sync("math", "pack", "tile_regs_acquire()", "a free Dst half"),
-        Call("copy_tile(in, 0, dst)", "the math part of the copy (none to Dst)"),
+        *[Call(c, "the math part of the copy (none to Dst)") for c in copies],
         Call(
             "ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, "
             "UnpackDestination::SrcRegs>(dst)",
@@ -568,6 +782,7 @@ def unit_program(ir, dest="fp32"):
             "SFPU waits for the matrix unit",
         ),
         Loop("face", FACES, [face, step, Insn(step.op, dict(step.args), step.note)]),
+        *drained,
         Insn("SETRWC", {**_setrwc(), "BitMask": SET_D}, "Dst counter back to 0"),
         Sync("math", "pack", "tile_regs_commit()", "hands Dst to the pack CPU"),
     ]
@@ -577,12 +792,12 @@ def unit_program(ir, dest="fp32"):
         Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
         Sync("pack", "writer", "cb_push_back(out, 1)", "an output tile"),
     ]
-    _checks(unit, row)
+    _checks(unit, row, plan)
     rows, done = replay(face)
     unit.passes.append(Pass("schedule", "replay", done))
     faces = next(x for x in unit.tile["math"] if isinstance(x, Loop))
     faces.body[:1] = rows
-    unit.not_checked = list(NOT_CHECKED)
+    unit.not_checked = [r for r in NOT_CHECKED if plan is None or "load-macro" not in r]
     return unit
 
 
