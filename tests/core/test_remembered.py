@@ -54,3 +54,8 @@ def test_code_without_a_file_keeps_nothing(cache, monkeypatch):
     assert made.script is None and "no script file" in said[0]
     made.wanted(92496)
     assert remembered.read()["scripts"] == {}
+
+
+def test_a_load_of_a_dict_or_a_list_has_no_program_key():
+    assert remembered.program_key({object(): (0, 60)}, "card") is None
+    assert remembered.program_key([object()], "card") is None

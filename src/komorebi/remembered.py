@@ -25,6 +25,8 @@ def script_key(shape):
 def program_key(program, shape):
     """A program's key: its kernels' source bytes, defines and compile args, the
     package's native kernels, the session's `shape`."""
+    if not hasattr(program, "sources"):  # a dict, a list or a plan: none of its own
+        return None
     digest = hashlib.sha256(f"{program.name}|{shape}".encode())
     try:
         sources = program.sources()
