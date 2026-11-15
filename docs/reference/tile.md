@@ -280,6 +280,13 @@ Each rule is a pass; `dump()` prints what each one did.
 | emit: "W (...) has VD v: with the back door open it stores template v - 12 and runs nothing" | any vector word but `SFPCONFIG` and `SFPLOADMACRO` with a `VD` of 12 or more is a template store while `LaneConfig`'s back door is open (the ISA's `SFPCONFIG` page); only the init's template stores may have one |
 | emit: "buffer B is pushed by X and Y" | a buffer's received counter takes one producer's count: a second producer's pages never reach the wait (a state kept in place is neither pushed nor popped) |
 
+What the limits above would take, where a user would write the line: a slice or a
+broadcast operand in the whole-tile form (`x * w.row()` in the stream form) needs the
+row form's per-column load inside the stream form, about 100 lines; two stores of one
+call need a second result tile in `Dst` and a second pack, about 60 lines; `>=` and
+`<=` are the swapped `SFPGT` with its flags inverted, about 10 lines; tanh needs
+tt-metal's fp32 polynomial lowered and its error checked, about 40 lines.
+
 A refused load macro is not an error: the pass records "refused: reason" and the rows
 stay plain.
 

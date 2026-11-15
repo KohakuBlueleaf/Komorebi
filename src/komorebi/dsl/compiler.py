@@ -4708,6 +4708,8 @@ class HandlerCompiler:
             and all(self.field_name(arg) in self.summed for arg in summed.args)
         ):
             return self.write_function_of_sums(node, pages, summed)
+        if self.tile_function_of(summed) is not None and self.dst_sums_of(summed):
+            return self.write_function_of_dst(node, call, summed)
         if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
             self.refuse(node, "write one tile", "write pages.write(total)")
         name = call.args[0].id
@@ -4943,6 +4945,43 @@ class HandlerCompiler:
         return [Line(movement, range_uses(pages, self), mover="B")], [
             Line(compute, {"km_ok"})
         ]
+
+    def dst_sums_of(self, call):
+        """The name of the DST sums a tile function's call takes (`f(acc)`, acc a
+        km.tile.zeros sum compute holds), or None."""
+        if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
+            return None
+        value = self.scope.get(call.args[0].id)
+        if value is None or value.kind != "tile" or value.batch is not None:
+            return None
+        return call.args[0].id
+
+    def write_function_of_dst(self, node, write, call):
+        """`pages.write(f(acc))`, acc DST sums (a product's over K, added in the
+        loop): f's body run on each of acc's DST tiles in place on the math CPU, then
+        acc written as `pages.write(acc)` writes it."""
+        function = self.tile_function_of(call)
+        name = self.dst_sums_of(call)
+        value = self.scope[name]
+        unit, cxx = self.tile_unit(node, function, ["float32"])
+        if unit.products:
+            self.refuse(
+                node,
+                f"{function.name} has a matrix product (`@`), and its operand here is "
+                f"{name}, sums in DST that the matrix unit does not read",
+                f"add the product in the loop and write {function.name}({name}) of "
+                "its sums",
+            )
+        calls = "\n".join(
+            f"MATH((km_tile::{cxx}({value.dst + k})));" for k in range(value.width)
+        )
+        body = f"MATH((km_tile::{cxx}_init()));  // {function.name}'s setup\n{calls}"
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        write.args[0] = ast.Name(id=name, ctx=ast.Load())
+        movement, compute = self.write(node, write)
+        return movement, [Line(body), *compute]
 
     def write_function_of_sums(self, node, pages, call):
         """`t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of
