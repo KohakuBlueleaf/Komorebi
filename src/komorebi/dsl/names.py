@@ -233,6 +233,12 @@ NAMES = {
         "defines= too",
         None,
     ),
+    "program_form": Name(
+        "form",
+        'P(..., form="runtime"): the class built as a program in the runtime\'s form '
+        '(km_program parts under the runtime\'s kernels); "kernel" the default',
+        None,
+    ),
     "startup": Name(
         "Startup",
         'class P(km.Program, startup=km.Startup("a", "b", "out", order="reverse")): '
