@@ -1060,11 +1060,13 @@ class Session:
         return self._region.bytes if self.channel is not None else 0
 
     @staticmethod
-    def _words_arrived(words, want, timeout):
+    def _words_arrived(words, want, timeout, spin=None):
         """Waits (bounded) until every rank's sequence word is the one expected:
-        looks without a pause for the first WORDS_SPIN_S, then every 200 us."""
+        looks without a pause for the first `spin` seconds (None: WORDS_SPIN_S), then
+        every 200 us."""
         started = time.monotonic()
-        deadline, spin = started + timeout, started + WORDS_SPIN_S
+        spin = WORDS_SPIN_S if spin is None else spin
+        deadline, spin = started + timeout, started + spin
         while not np.array_equal(words[:, :4], want):
             now = time.monotonic()
             if now > deadline:

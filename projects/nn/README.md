@@ -464,14 +464,44 @@ words' wait (200 us a look): a plain write or read of 72 pages went from 261.0 /
 us (mean; medians 221.5 / 224.5) to 214.6 / 219.5 (210.9 / 216.7) with the spin, of 64
 pages 211.6 / 215.6 to 211.4 / 216.2 (the words most often land before the event).
 
-What is left, largest first:
-- Making the pages in Python (A 440, B 363 us): bf16 rounding, the squares and the
-  tiling of x in numpy; y's untilize 90 more. Not the card's.
-- B's wait outlasts the 300 us of spin (the thread takes 386): it then looks every
-  200 us, and the wait is 182 us longer than the thread's run (A's: 44). A wait that
-  spins as long as the call's own card time would take most of that.
-- The submit (58 us, Python and the store), then the 44 us between the host and the
-  thread.
+Then four removals, in order, each measured on the card (8 calls a model, both right
+as before; `results/torch-one-submission-spin.json` for the first three,
+`results/torch-one-submission-removals.json` for the copies). Microseconds a call:
+
+| Term | A first | A after | B first | B after |
+|---|---:|---:|---:|---:|
+| x and its squares into the region | 440.2 + 18.8 | 184.3 | 363.0 + 19.2 | 131.8 |
+| RUN: submit and store | 58.7 | 13.5 + 36.3 + 8.5 | 57.2 | 13.2 + 35.6 + 7.4 |
+| the wait for y's words | 281.6 | 281.6 | 567.7 | 428.9 |
+| y read and made a tensor | 13.6 + 93.8 | 73.1 | 13.2 + 88.4 | 72.2 |
+| Python of the call | 92.5 | 8.8 | 94.4 | 8.7 |
+| outside it (torch's wrappers, the bench) | (in the above) | 80.4 | (in the above) | 70.6 |
+| a call | 999.2 | 686.6 | 1,203.1 | 768.4 |
+
+- The pages of x and y. The slow part was this project's own path, not the framework's
+  formats (whose rounding, tiling and untilizing are whole-array already): x went from
+  torch to float numpy, was rounded to bf16 again and joined with its squares in float
+  before tiling. Now x's own bf16 bits are tiled into a host copy, the squares made from
+  the bits (a bf16 product is exact in float32, the sum is taken in float64: the same
+  bytes, compared on 300 random inputs of 32, 7 and 1 rows), and the copy goes into the
+  region whole; y's pages come out whole and their bits become the bf16 tensor. A
+  strided numpy copy straight into or out of the channel's memory was slower than the
+  old path (y 113 us): a copy of the channel's memory is made whole, then tiled.
+- The long spin. The call waits for y's words spinning 5 ms before it sleeps (a plain
+  transfer still spins 300 us): B's last sleeping look cost 134.8 us (921.3 with the
+  short spin against 786.5); A's call is under 300 and does not change.
+- The submit. What a call built (RUN's handler number and words) is made at compile;
+  a call sets the slot and the nonce. Of the 58.7: the queue 13.5, the hand of the
+  command to the dispatcher in Python 36.3, the native store 8.5.
+- Other Python (92.5 first). It is mostly outside the call, about 75 us: torch's
+  compile wrappers (dynamo and AOT, 17 us a call measured off the card), the bench's
+  conversion of y to float numpy (18), and the bench's loop. The call's own is 8.8, its span computation now done after the
+  calls.
+
+What is left, largest first: the card's own time in the wait (A 238 of 282, B 384 of
+429; the 44 us between them is the host's store to the thread's first entry and the
+push's last word to the host seeing it); tiling x on the host (A 184, B 132; 130 off the
+card); y's 64 pages out and untilized (73); the hand of RUN in Python (36).
 
 ### What a kernel had to provide by hand
 

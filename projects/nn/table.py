@@ -377,6 +377,40 @@ def tensor_pages(tensor, values):
     return md.tile_pages(formats.bf16_bits(flat))
 
 
+class TileWriter:
+    """Writes bf16 bits [rows, columns] into tile pages (a OneSubmission.tiles view of
+    a [32, columns] tensor), and with `squares` the rows' sums of squares in the 8
+    tiles after them (md.squares: the first tile's diagonal): one strided copy."""
+
+    def __init__(self, rows, columns, squares):
+        self.rows, self.columns, self.squares = rows, columns, squares
+        self.padded = np.zeros((TILE, columns), np.uint16)
+        self.wide = np.zeros((rows, columns, 2), np.uint16)  # the bits as float32
+        diagonal = np.arange(TILE)
+        self.face, self.at = diagonal // 16, diagonal % 16
+
+    def __call__(self, tiles, bits):
+        padded, n = self.padded, self.columns // TILE
+        padded[: self.rows] = bits
+        tiles[:, :n] = padded.reshape(1, 2, 16, n, 2, 16).transpose(0, 3, 1, 4, 2, 5)
+        if self.squares:
+            self.wide[..., 1] = bits
+            values = self.wide.view(np.float32).reshape(self.rows, self.columns)
+            sums = np.zeros(TILE, np.float64)  # bf16 products are exact in float32
+            sums[: self.rows] = np.add.reduce(values * values, axis=1, dtype=np.float64)
+            tiles[:, n:] = 0
+            tiles[0, n, self.face, self.face, self.at, self.at] = formats.bf16_bits(
+                sums.astype(np.float32)
+            )
+
+
+def tile_bits(tiles, rows):
+    """The first `rows` rows of tile pages (a tiles() view) as bf16 bits, a copy."""
+    r, c = tiles.shape[:2]
+    flat = tiles.transpose(0, 2, 4, 1, 3, 5).reshape(r * TILE, c * TILE)
+    return np.ascontiguousarray(flat[:rows])
+
+
 class Device:
     """Komorebi-nn on one card: the decode program with the executor (Card), the
     tensors, an open list the calls are appended to (synced on a host read only), the
@@ -618,6 +652,7 @@ class Device:
 # A compiled call as one host submission (OneSubmission)
 PUSH_SALT = 0x5A5A0001  # a push's stored nonce: its words differ from the pull's
 WORDS_TIMEOUT_S = 2.0  # a call's wait for y's sequence words
+SPIN_S = 5e-3  # a call's spin before its looks pause: longer than a call
 
 
 class Move(NamedTuple):
@@ -673,6 +708,17 @@ class OneSubmission:
         self.words = self.channel_words(last.words, last.count)
         self.pending = []  # (handle, slot) of RUNs not collected
         self.nonce = 0
+        self.want = last.want.copy()  # y's words, the nonce set a call
+        self.mark = h["KM_TRANSFER_MARK"]
+        self.local = (
+            {  # each move's pages on the host, copied to or from the region whole
+                id(move): np.zeros(move.tensor.pages * move.tensor.page_bytes, np.uint8)
+                for move in self.moves
+            }
+        )
+        thread = run.thread_program.threads[nn.CLUSTER]
+        self.handler = thread.handler("run")  # RUN's words, the slot and nonce a call
+        self.args = [device.executor.address(out.first), 1, 0, 0]
         self.spans = []  # cycles from the first pull's start to the last push's end
         device.ones.append(self)
 
@@ -708,52 +754,76 @@ class OneSubmission:
         raw = self.session.channel[move.offset : move.offset + tensor.pages * page]
         return raw.reshape(tensor.pages, page)[:, : tensor.page_bytes]
 
-    def __call__(self, pages):
-        """One call: `pages` (each input's [pages, page_bytes] uint8) in, the outputs'
-        pages out (copies). KomorebiError with RUN's answer if y does not arrive."""
+    def tiles(self, move):
+        """A move's pages as bf16 bits [R, C, 2, 2, 16, 16] (tile rows, tile columns,
+        faces, face rows and columns), a view of its host copy: the region itself is
+        copied whole (a strided read or write of the channel costs three times)."""
+        tensor = move.tensor
+        rows, columns = tensor.shape
+        if tensor.page_bytes != tensor.aligned_page_bytes:
+            raise ValueError("tiles() takes pages without padding")
+        raw = self.local[id(move)]
+        return raw.view(np.uint16).reshape(rows // TILE, columns // TILE, 2, 2, 16, 16)
+
+    def __call__(self, fill, take, spin=SPIN_S):
+        """One call: fill() writes the inputs into the region (self.tiles), the nonce,
+        one RUN, the spin (`spin` s without a pause), take() reads the outputs from
+        it. KomorebiError with RUN's answer if y's words do not arrive."""
         clock = self.device.clock
         started = time.perf_counter()
-        for move, data in zip(self.pulls, pages, strict=True):
-            self.rows(move)[:] = data
+        fill()
+        for move in self.pulls:
+            self.rows(move)[:] = self.local[id(move)].reshape(move.tensor.pages, -1)
         self.nonce = (self.nonce + 1) & 0xFFFFFFFF or 1
-        push = self.pushes[-1]
-        want = push.want.copy()
         nonce = self.nonce ^ PUSH_SALT
-        want[:, 0] = nonce
-        want[:, 3] ^= nonce
+        self.want[:, 0] = nonce
+        self.want[:, 3] = self.mark ^ nonce
         self.words[:] = 0
         copied = time.perf_counter()
-        executor = self.device.executor
+        executor, run = self.device.executor, self.device.decode.run
         if executor.slot == nn.NN["NN_SLOTS"]:
             executor.slot = 0
-        handle, slot = executor.start(self.entries, 1, self.nonce)
+        slot = executor.next_slot()
+        self.args[2], self.args[3] = slot, self.nonce
+        handle = run.submit(
+            self.handler, cluster=nn.CLUSTER, args=self.args, result=True
+        )
+        queued = time.perf_counter()
+        run._hand()  # run.store() in its two parts, timed apart: the Python, the store
+        handed = time.perf_counter()
+        run.store()
         submitted = time.perf_counter()
-        arrived = self.session._words_arrived(self.words, want, WORDS_TIMEOUT_S)
+        arrived = self.session._words_arrived(
+            self.words, self.want, WORDS_TIMEOUT_S, spin
+        )
         seen = time.perf_counter()
         self.pending.append((handle, slot))
         if not arrived:
-            event = self.device.decode.run.wait(handle, timeout=WORDS_TIMEOUT_S)
+            event = run.wait(handle, timeout=WORDS_TIMEOUT_S)
             raise KomorebiError(f"y's sequence words did not arrive; RUN: {event}")
-        out = [self.rows(move).copy() for move in self.pushes]
+        for move in self.pushes:
+            self.local[id(move)].reshape(move.tensor.pages, -1)[:] = self.rows(move)
+        out = take()
         done = time.perf_counter()
         for name, span in (
             ("copy_in", copied - started),
-            ("submit", submitted - copied),
+            ("submit_queue", queued - copied),
+            ("submit_hand", handed - queued),
+            ("submit_store", submitted - handed),
             ("spin", seen - submitted),
             ("copy_out", done - seen),
         ):
             clock[name] += span
-        first = self.channel_words(self.pulls[0].words, self.pulls[0].count)
-        starts = first[:, 4].astype(np.int64) | first[:, 5].astype(np.int64) << 32
-        ends = (
-            self.words[:, 6].astype(np.int64) | self.words[:, 7].astype(np.int64) << 32
-        )
-        self.spans.append(int(ends.max() - starts.min()))
         return out
 
     def collect(self, timeout=10.0):
         """RUN's events of the calls so far (off a call's path): each run noted."""
         run = self.device.decode.run
+        if len(self.pending) == 1:  # the last call's span on the cores, from its words
+            first = self.channel_words(self.pulls[0].words, self.pulls[0].count)
+            last = self.words.astype(np.int64)
+            starts = first[:, 4].astype(np.int64) | first[:, 5].astype(np.int64) << 32
+            self.spans.append(int((last[:, 6] | last[:, 7] << 32).max() - starts.min()))
         for handle, slot in self.pending:
             ticks = nn.ended(run.wait(handle, timeout=timeout))
             self.device.runs.append(("one", slot, ticks, self.entries))
