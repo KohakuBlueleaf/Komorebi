@@ -14,7 +14,7 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi, added, overlay
+from komorebi import abi, added, added_program, overlay
 from komorebi import chain as chain_module
 from komorebi import state as device_state
 from komorebi.dsl import front
@@ -33,7 +33,7 @@ from komorebi.errors import (
     describe_core,
 )
 from komorebi.merge import lifted, merged_holds
-from komorebi.program import Handler
+from komorebi.program import Handler, Program
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
 NO_LIST = 0xFF  # a core with no kept reset list (KMD_RESET_DIRECTORY)
@@ -286,9 +286,9 @@ class Run:
         end = max(call.group[0] + call.group[1] for call in calls)
         tensor = self.backend.block(
             bytes(64 * len(calls)),
-            lambda address: chain_module.records(calls, address, handlers)
-            .view(np.uint8)
-            .ravel(),
+            lambda address: (
+                chain_module.records(calls, address, handlers).view(np.uint8).ravel()
+            ),
         )
         self._unfenced = True
         handler = self.field_handler(*numbers[0]) if walk is None else walk
@@ -678,7 +678,7 @@ class Run:
     def addon(
         self,
         name,
-        parts,
+        parts=None,
         handler=False,
         number=None,
         defines=None,
@@ -686,11 +686,14 @@ class Run:
         message=False,
         compile_args=None,
     ):
-        """Adds overlay `name` to the live run: `parts` as Program.overlay's, built
-        against the loaded kernels (`compile_args` {kernel: [words]} in place of
-        theirs), written into the room the load reserved, its table entry given to
-        every core by a command. Returns its number (a handler's, a dynamic handler's).
-        """
+        """Adds overlay `name` (`parts` as Program.overlay's, built against the loaded
+        kernels, `compile_args` in place of theirs) to the live run; returns its number.
+        A class `name` in the runtime's form becomes one more program of a run loaded
+        as a dict (komorebi.added_program); returns its program field."""
+        if isinstance(name, Program):
+            return added_program.add(self, name)
+        if parts is None:
+            raise TypeError(f"run.addon({name!r}): parts, as Program.overlay's")
         return added.addon(
             self, name, parts, handler, number, defines, timeout, message, compile_args
         )
