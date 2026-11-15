@@ -257,3 +257,46 @@ command more in the runtime's form; the chain still removes three of its four ro
 A run whose groups switch program (`run.load(program, group=)`) sets up buffers 0 to 31
 only, so it refuses a program that declares buffer 32: a chain runs in a run whose
 cores hold their programs from the start.
+
+## Over islands: not built
+
+A chain runs on one island. Over two, most of what a chain moves already crosses with
+the existing calls; its marks and credits do not:
+
+| What crosses | How | Cost, by the [islands' measurements](islands.md#measured) |
+|---|---|---|
+| the chain command | one ticket, a part an island | 2.41 us a command over 240 ranks against 1.195 on one island |
+| the records | do not cross: each island's DRAM holds its copy, at one address for both parts (the command's a7 is one word) | none on the card; a block on each island at the same address on the host (not built) |
+| a record's input through the page calls | `km::read_pages` and `km::write_pages` ask or put what the other island holds | an ask line answered in 1.7 to 1.95 us at the far island; a put line of one page out and confirmed in 5.1 us |
+| a tree's parts (`sends`) | the port's emit takes the relay (`relay_put`) for a rank of the other island | example 26: 165.9 us a round on two cards, 158.0 on one |
+| the marks and the credits | none: each is an atomic add into a word of buffer 32 on the target core, which a rank of the other island has no NoC place for | |
+
+The relay writes bytes into a far core's L1 and adds 1 to one of its ports only. The
+chain counts four things a core waits for (marks and credits, a word for each record
+parity), so a chain over islands needs either a relay ask that adds 1 to an L1 word it
+names (a change to the link cores' service) or four port slots of the runtime's for the
+chain (64 bytes more of every core's control block). Neither is built.
+
+## A record of another program's handler: what it would need
+
+Not built; a record names a handler of the chain's own program only. To name one of
+another program held by the same cores (a run loaded with a list):
+
+- **The record.** A program field per record: the 16 words have no free bits (the
+  info word is full, the group word and the range words too, the next word's low bits
+  are the stamp row), so the record grows to 32 words or the stamp row gives up bits.
+  `run.chain` would take calls of several programs, check that every core of each
+  call holds its program, and keep refusing a run whose groups switch program.
+- **The walk.** In the runtime's form the walk runs inside one program's part, and the
+  runtime's kernels load a program's part per command, not per record (a part loading
+  another program's part has not been tried). The walk would move into the
+  runtime's three kernels (`program_reader.cpp`, `program_writer.cpp`,
+  `program_compute.cpp`): for each record, load the part of the record's program on
+  every kernel of the core (as a command to that program does) and call it with the
+  record's command. The marks, the credits and the record slots stay as they are.
+- **The buffers.** Both programs' buffers in the run's one layout, as a list's
+  programs already share it (an index two programs declare differently is refused);
+  buffer 32 once for both.
+- **The cost.** A record whose program the slots hold: a load of 72 cycles a part; one
+  they do not hold: the five parts loaded, 2,919 cycles on one core and 3,971 on 120
+  ([a program as an overlay](overlays.md#a-program-as-an-overlay)).
