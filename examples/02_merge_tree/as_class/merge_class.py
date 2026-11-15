@@ -44,7 +44,21 @@ class MergeTree(km.Program):
             mine += tile
         whole = km.reduce(mine, form=form)
         if self.rank == self.leader:
+            # the result word: the sum's 1,024 32-bit words added (merge.py's checksum)
+            checksum = km.cxx(
+                """
+                const volatile tt_l1_ptr uint32_t* words =
+                    reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(whole));
+                for (uint32_t word = 0; word < 1024; word++) {
+                    checksum += words[word];
+                }
+                """,
+                takes=[whole],
+                gives=int,
+                on="mover_b",
+            )
             output.pages(first_page, 1).write(whole)
+            return checksum
 
 
 def launch(session, args, jobs, inputs, output):
@@ -57,16 +71,14 @@ def launch(session, args, jobs, inputs, output):
     start = time.perf_counter()
     try:
         for job, (first, count, form, source) in enumerate(jobs):
-            words = MergeTree.merge.args(
-                inputs[source % 2],
-                args.tiles,
-                output,
-                job % args.out_pages,
-                form,
-                source,
-            )
+            arguments = (inputs[source % 2], args.tiles, output, job % args.out_pages)
             handles.append(
-                run.submit(program.merge, (first, count), words, exclusive=True)
+                run.submit(
+                    MergeTree.merge,
+                    (first, count),
+                    args=(*arguments, form, source),
+                    exclusive=True,
+                )
             )
         hand.log(f"{run.drain(timeout=30.0)} events")
     except km.CommandTimeout as error:
@@ -124,16 +136,12 @@ def run(session, args, generator):
     inputs = [tiles(array) for array in input_arrays]
     output = tiles(np.zeros((args.out_pages * TILE, TILE), dtype=np.float32))
     events, summary = launch(session, args, jobs, inputs, output)
-    done = np.array([event is not None and event.kind == "done" for event in events])
     result = {
         "jobs": len(jobs),
         "tiles": args.tiles,
         "form": args.form,
         **summary,
-        **merge_fed.check(args, jobs, done, output, input_arrays),
-        # the class asks for no result word (the leader's checksum of the sum)
-        "results_checked": 0,
-        "results_bad": 0,
+        **hand.checked(args, jobs, events, output, input_arrays),
     }
     result["ok"] = hand.verdict(result, len(jobs), grid_width * grid_height)
     return result

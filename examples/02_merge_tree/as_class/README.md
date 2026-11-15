@@ -12,12 +12,17 @@ python merge_class.py --beside                   # 20 groups of 8, owner and tre
 
 `--beside` runs the hand program first in the same session and from the same seed.
 The class sums parts of one tile (`--part 1`) and stalls no rank (`--stall-rank`
-is refused), and it asks for no result word: the hand program's checksum of the sum
-is not in it.
+is refused). Its leader returns the hand program's result word, the sum's 1,024
+32-bit words added, by a `km.cxx` body on mover B (`gives=int`) and `return`.
 
 Measured on one Blackhole card (`--beside`): both ok, 40 jobs, every exact job equal
 to numpy and each owner and tree pair equal bit for bit, the random ones at relative
-RMS 8.6e-08; kernel text 43,360 B against the hand program's 36,176 B (the hand
-program's reader and writer read and write pages directly; the class moves streams).
-A job, exclusive: host 42.0 us against 35.4 us (the hand program's asks for a result
-word).
+RMS 8.6e-08, and all 40 result words right. Kernel text 42,240 B against the hand
+program's 36,176 B: the class's read is a stream (`km::move`), 9,648 B of it (BRISC
+3,288, NCRISC 2,944, TRISC0 2,452, TRISC1 936, TRISC2 44), where the hand program's
+reader reads its pages; its write is a page write, as the hand writer's. On the cores
+(trace stamps, the same 40 jobs), a command from its first core seeing it to the
+leader's sent: 15.33 us against 15.14 us (median, +1.3%); the 40 commands 643.4 us
+against 638.5 us. From the host, 49.6 us a job against 29.5 us: the fixed costs of a
+40-job loop (the hand program alone gave 43.5 us and 29.5 us in two runs) and the
+class's words, 3.2 us a job (made in Python by `submit`).
