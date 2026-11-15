@@ -2850,6 +2850,7 @@ class HandlerCompiler:
         if node.orelse:
             self.refuse(node, "a loop with an else", "write the else after it")
         iterator = node.iter
+        self.held_not_iterated(node, iterator)
         if self.self_call(iterator, "arrive_messages"):
             return self.arrive_loop(node)
         if (
@@ -3288,6 +3289,7 @@ class HandlerCompiler:
         program reads them, the emitted body on the math CPU, the result in DST 0 (a
         row: 0 .. width - 1). Returns (no movement, compute's lines)."""
         function = self.tile_function_of(call)
+        self.held_not_traced(node, call, function)
         if not self.loop_states:
             self.refuse(
                 node,
@@ -5920,6 +5922,34 @@ class HandlerCompiler:
         if not nodes:
             return []
         return [Group("the end of the held streams' lines: their blocks freed", nodes)]
+
+    def held_not_iterated(self, node, iterator):
+        """Refuses a loop over a held stream: it is one block, taken or iterated."""
+        if isinstance(iterator, ast.Name) and (
+            self.scope.get(iterator.id, Value("")).kind == "held"
+        ):
+            self.refuse(
+                node,
+                f"{iterator.id} is a read stream that bodies take, one block: it is "
+                "not iterated too",
+                f"iterate a stream of its own, `for tile in km.{spelling('stream')}"
+                "(...)`, or take this one in a body",
+            )
+
+    def held_not_traced(self, node, call, function):
+        """Refuses a tile function's call on a held stream: its operands are a
+        stream loop's tiles, and a held block has no loop of its tiles."""
+        for arg in call.args:
+            if isinstance(arg, ast.Name) and (
+                self.scope.get(arg.id, Value("")).kind == "held"
+            ):
+                self.refuse(
+                    node,
+                    f"{arg.id} is a read stream that bodies take, one block: the tile "
+                    f"function {function.name} takes a stream loop's tiles",
+                    f"take {arg.id} in a body, or iterate its pages with "
+                    f"`for tile in km.{spelling('stream')}(...)`",
+                )
 
     def take_held(self, node, name, value, where, bound):
         """A held stream's block for a body on compute's three: `name_buffer` its
