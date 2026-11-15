@@ -19,6 +19,12 @@ slot, and how many values a wait expects all follow from the command (`first`, `
 the arguments) and the core's rank. Nothing is queued and nothing is addressed by
 content.
 
+A group's port commands do not overlap: a port's count and its arrival slots belong to
+one command at a time. `run.submit` refuses a command of a program's `port_handlers` (a
+class's handlers that reduce are its own) on cores that such a command without its
+event still holds, naming both handles, unless it is submitted `exclusive=True`; a
+thread's submits are not checked.
+
 ```c++
 #include "komorebi/device/km_port.hpp"
 

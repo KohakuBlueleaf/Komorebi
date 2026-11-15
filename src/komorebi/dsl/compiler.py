@@ -192,6 +192,7 @@ class Compiled:
     broadcast_lines: dict = field(default_factory=dict)
     # handler -> (the size of its reduce's groups, the reduce's line)
     reduce_groups: dict = field(default_factory=dict)
+    port_handlers: set = field(default_factory=set)  # handlers whose cores use ports
     stamps: dict = field(default_factory=dict)  # overlay handler -> (tensor, word)
     dynamic: str | None = None  # the handler whose lines are a message loop
     # The other dynamic handlers, each its message loop alone: name -> method; their
@@ -4634,6 +4635,7 @@ class HandlerCompiler:
             width,
         )
         self.compiled.includes |= {"port", "add", "pack"}
+        self.compiled.port_handlers.add(self.method.name)
         uses = uses_group | form_uses
         moving = group.format(cpu="movement")
         movement = [
@@ -4727,6 +4729,7 @@ class HandlerCompiler:
         self.compiled.unpack_fp32.add(arrival.name)
         buffer = f"kField{camel(field_)}"
         self.compiled.includes |= {"port", "pack"}
+        self.compiled.port_handlers.add(self.method.name)
         uses = uses_group | form_uses
         moving = group.format(cpu="movement")
         movement = [
