@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass, field
 
 from komorebi.dsl.tile import sfpu as f
-from komorebi.dsl.tile.ir import BF16, Int, Node, PlanError, fail
+from komorebi.dsl.tile.ir import BF16, BF16_EXACT, Int, Node, PlanError, fail
 
 # Destination register slots of one half with fp32 registers.
 SLOTS = 4
@@ -116,7 +116,7 @@ class Design:
 def _is_bf16_exact(node):
     """True when the value is a bf16 load (rounding it to bf16 changes nothing)."""
     if node.kind in ("load", "resident"):
-        return node.attrs["view"].tensor.dtype == BF16
+        return node.attrs["view"].tensor.dtype in BF16_EXACT
     if node.kind == "cast":
         return node.attrs["dtype"] == BF16 or _is_bf16_exact(node.args[0])
     return False
