@@ -323,6 +323,13 @@ Gate.gate with size=4: no handler was built for it, and a first use (km.ANY) is 
 
 Without `km.ANY` the refusal of a set not built is the one above, unchanged.
 
+In the runtime's form (`form="runtime"`) a set is compiled at the buffer indices the
+class was made to leave (`beside=`) and added with the program's compile arguments and
+its args' place, as its own parts are built; it runs in a list and in a group that
+switches program, on the cores that hold its program. A set added in a load of
+`{program: group}` is refused on a group that switched to another program ("does not
+hold").
+
 The gate ([22_gate/as_class](../../examples/22_gate/as_class/README.md)) on 120 cores,
 64 tiles a core, made with block 8 listed and `km.ANY(block=16)`. Blocks 4, 16 and 2
 ran by first use, 0 wrong. The time of a command at each step, beside the same block
@@ -1382,9 +1389,11 @@ Not merged, each refused with its reason: a dynamic handler (its message loop is
 program's own kernels); a handler with constant parameters (built once a set in its own
 program), and `handlers=` on a merged class; classes whose compute options or start-ups
 differ; a define or the rectangle given two values; a merged program as a source; a
-class with a hand program (a class is in the kernel form, a hand program merges in the
-runtime's form: [Programs merged into one](host.md#programs-merged-into-one)). A chain
-over handlers of several classes is not built: a class has no chain on this version.
+class in the kernel form with a hand program, and `form=` or `beside=` at the make of a
+class merging classes (it is built in the kernel form). Classes made with
+`form="runtime"` merge with each other and with hand programs, in the runtime's form
+([Programs merged into one](host.md#programs-merged-into-one)). A chain over handlers
+of several classes is not built: a class has no chain on this version.
 
 ## Dynamic handlers and messages
 

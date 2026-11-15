@@ -148,7 +148,9 @@ def make(
     reserved = beside_indices(cls.__name__, beside)
     compiled = compiler.compile_class(cls, plan, tensors, room, values, sets, reserved)
     if found:
-        first_use.reserve(cls, compiled, found, plan, tensors, room, values, sets)
+        first_use.reserve(
+            cls, compiled, found, plan, tensors, room, values, sets, reserved
+        )
     walked = chain_made(self, cls, compiled, chain)
     # what km.merge builds this program's handlers again with (komorebi.dsl.merged)
     self.make_given = {
@@ -257,7 +259,7 @@ def make(
     if compiled.overlays:
         self.slots()
     if found:
-        made_with = (plan, tensors, room, values, sets)
+        made_with = (plan, tensors, room, values, sets, reserved)
         first_use.kept(self, compiled, found, made_with, built, session, l1, trace)
     if session is not None:
         l1_checked(self, session, l1, trace, log)
@@ -1397,7 +1399,7 @@ def parts(compiled):
                     [
                         made,
                         "// its part on compute.",
-                        *compute_includes(compiled),
+                        *part_includes(compute_includes(compiled)),
                         f'#include "../{header_name(compiled)}"',
                         "",
                         "void km_overlay(",
@@ -1410,6 +1412,12 @@ def parts(compiled):
                 + "\n"
             )
     return files
+
+
+def part_includes(lines):
+    """A part's include lines: the tile functions' headers from the build folder, one
+    up (a part built against the runtime's kernels has no class folder to search)."""
+    return [line.replace('#include "tile_', '#include "../tile_') for line in lines]
 
 
 def dynamic_source(compiled):
