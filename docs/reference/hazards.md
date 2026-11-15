@@ -468,6 +468,28 @@ neither `.end()` nor a `with` ends above it, and `.end()` twice).
 
 Described in [Programs written as classes, a stream compute fills and a mover drains](classes.md#a-stream-compute-fills-and-a-mover-drains).
 
+### Sets of a handler on one ring, with blocks that do not divide each other's
+
+**The hazard.** A handler's sets compiled on their first use (`km.ANY`) run on the
+template's buffers. Several sets with different blocks then use one ring, and its
+position carries over from one command to the next. A block is one item, and an item
+never wraps the ring's end (`km::item_fits`). If a mover's earlier commands left the
+position at a place that is not a multiple of the next set's block, and the block
+does not fit before the end, the mover gives up (`move_offer`) and the command misses
+its deadline. Nothing is written wrong.
+
+**The rule.** The pages each half takes in a command are a multiple of the largest
+block among the sets in use. For example, a command's tiles split by its pattern into
+blocks whose count per half keeps every half's position at a multiple of that block.
+Or the sets that differ that way are listed at the make, each with buffers of its own.
+
+**The guard.** At the first submit a set is refused when its pages exceed the load's or
+do not divide them (so the ring holds whole blocks). The position across commands is
+not checked: the rule is the programmer's. The gate's sets (blocks 2 to 16, 64 tiles
+a core, `AAAB`) keep every half at a multiple of 16 pages.
+
+Described in [Programs written as classes, a set compiled on its first use](classes.md#a-set-compiled-on-its-first-use).
+
 ## Tile formats and the matrix unit
 
 ### A compute loop that does not check the stop word

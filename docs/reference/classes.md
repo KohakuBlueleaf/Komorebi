@@ -243,8 +243,113 @@ Gate.gate with size=2: no handler was built for it (built: size=4; size=8); list
 
 Refused besides: a constant parameter without a default (at its line), `handlers=`
 naming no handler of the class or one without constant parameters, a parameter a set
-names that is not one, a value of another type, and a set listed twice. A set compiled
-when a submit first names it is not built.
+names that is not one, a value of another type, and a set listed twice.
+
+### A set compiled on its first use
+
+```python
+sets = [{"block": 8}, km.ANY(block=16)]  # block 8 built; any other at its first use
+program = GateBlocks(a=a, b=b, out=out, handlers={"gate": sets})
+run = session.load(program)
+words = (a, b, out, tiles, pattern, 4)  # block 4: compiled, added, submitted
+run.submit(program.gate, (0, cores), args=words)
+```
+
+`km.ANY` among a handler's sets (`{"gate": km.ANY}` alone, or after listed sets) lets
+`run.submit` take any set of that handler's constant parameters. A set that was built
+runs as above. A set that was not is compiled at the submit by the class compiler,
+from the make's own inputs (plan, tensors, constants, the L1 left), with the wanted
+set in place of the handler's first set, its **template** (the first listed set, or
+the defaults). So it gets the template's number and its buffers' indices. Its code
+becomes the handler's overlay parts (`<set>/movement.cpp`, `<set>/compute.cpp`), which
+are added to the run by `run.addon(..., handler=True)`
+([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
+with the added number. Later submits of the set find it added. The files go into
+`build/<class>-use<key>/`: the key holds the load's build key, the handler, the set's
+values and the class's source files. A later process that makes the same program finds
+them there and reads the set's words from `first_use.json`, so nothing is compiled.
+Its parts are then found in the parts' cache, so nothing is built either.
+
+What the opt-in costs and requires, checked at the make:
+
+- The kernels get the added handlers' path (`KM_ADDED_HANDLERS`, with
+  `Program.slots(bytes=)`). On the gate's kernels it costs 5,072 B of text
+  (BRISC 408, NCRISC 1,064, TRISC0 1,160, TRISC1 1,240, TRISC2 1,228; 2,560 B on the
+  decode program). The kernels' sizes are checked when they are built, at the load,
+  before any submit.
+- Each kernel part gets a slot of 16 KiB (`first_use.SLOT_BYTES`; the reader's beside
+  the service part, the larger), 80 KiB of L1. A make with `session=` whose buffers
+  and those slots do not fit is refused there (`L1BudgetError`, with the table).
+- `km.ANY(p=n)` also sizes the template's buffers for the set with `p=n`: each buffer
+  takes the larger page count of the two compiles. `km.ANY` alone sizes them for the
+  template only. Buffers that no longer fit the L1 left are refused at the make, with
+  their bytes.
+
+A set compiled this way may use only what the load has: the buffers, fields and
+streams of the class's L1 layout. It is refused at its first submit, naming the buffer
+or field and why, when its compile needs any of these:
+
+- a buffer the load does not have;
+- a buffer of another format or page size;
+- more pages than the load's buffer holds;
+- a page count that the load's pages are not a multiple of (a block must not wrap);
+- a field of another shape.
+
+The message says to list the set or to name it in `km.ANY(...)`:
+
+```text
+Gate.gate_size16: buffer kWrite0 (index 16): it would hold 32 + 32 pages, the load's holds 16 + 16; the L1 layout is the load's: list the set at the make, or make it with km.ANY(...) naming the largest set
+```
+
+A handler with `stamps=` or a broadcast is resident only, so a set of one is refused.
+So are: `km.ANY` twice for one handler; `km.ANY(p=n)` naming no constant parameter;
+and the opt-in on a handler without constant parameters. A first use is reached from
+`run.submit` only. `submit_many`, `Graph.command`, a stream's `submit` and a chain's
+call take command words today and cannot name a set, so they run the template. Once
+they take a handler's constants, an unbuilt set reaching them is refused with:
+
+```text
+Gate.gate with size=4: no handler was built for it, and a first use (km.ANY) is reached from run.submit only, not from this submit; submit it once with run.submit first, or list the set
+```
+
+Without `km.ANY` the refusal of a set not built is the one above, unchanged.
+
+The gate ([22_gate/as_class](../../examples/22_gate/as_class/README.md)) on 120 cores,
+64 tiles a core, made with block 8 listed and `km.ANY(block=16)`. Blocks 4, 16 and 2
+ran by first use, 0 wrong. The time of a command at each step, beside the same block
+listed in a load of its own:
+
+| Step | Block 4 | Block 16 | Block 2 |
+|---|---|---|---|
+| the class compile (a fresh process; found built: 0.3 ms) | 13.9 ms | 13.9 ms | 14.1 ms |
+| the parts' build (fresh; found in the cache: 49 to 52 ms) | 7.25 s | 7.07 s | 7.31 s |
+| the parts' write, the entry commands | 0.6, 3.4 ms | 0.6, 3.5 ms | 0.5, 3.3 ms |
+| the first submit, warm cache (compile look, add) | 54.6 ms | 56.8 ms | 53.6 ms |
+| the first command (loads the parts) | 174.86 µs | 169.48 µs | 171.66 µs |
+| later commands, median | 169.70 µs | 158.62 µs | 169.74 µs |
+| the block listed, later commands, median | 171.80 µs | 156.78 µs | 167.02 µs |
+
+The later commands run as the listed block's, within 1.6 %. Block 16's row is from 20
+commands of each kind in one process, and the same block resident in kernels with the
+added handlers' path took 158.08 µs. Five commands of each, in another process, gave
+166.36 against 155.41 µs, so five is too few to tell 16's difference from the card's
+spread (150 to 169 µs over the 20). The first-use load's block 8 took 161.68 µs.
+
+Sets with different blocks share the template's ring. A block never wraps the ring's
+end, so a ring left at a position that is not a multiple of the next set's block makes
+that command give up ([hazards](hazards.md#sets-of-a-handler-on-one-ring-with-blocks-that-do-not-divide-each-others)).
+
+A handler of **another** class added to a live run is not built. It would need:
+
+1. its own buffers and fields, which the load's L1 layout does not have, placed in L1
+   the load left free and given to every core's circular buffer table by a command;
+2. its streams' buffer indices free in the loaded kernels, and its fields' L1
+   addresses as command words, not program arguments;
+3. its tensors' compile arguments (`km::Tensor<n>`) equal to the loaded kernel's, or
+   carried as words;
+4. its class's header (handlers, buffers, formats) built against the loaded kernels'
+   recipe, the formats in one exponent family with the load's;
+5. its compute options (fidelity, accumulation) equal to the load's, set once a kernel.
 
 ## The lines of a handler
 

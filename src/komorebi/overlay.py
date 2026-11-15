@@ -64,6 +64,14 @@ RESETS = (
     "_ZN7ckernel4mathL22src_zero_flag_srca_fmtE",
     "_ZN7ckernel4mathL22src_zero_flag_srcb_fmtE",
 )
+# The build's constant tables of the buffers' formats (genfiles.cpp, `constexpr`): a
+# part built against the kernel has the same bytes, a copy that is not state.
+TABLES = (
+    "_ZL17unpack_src_format",
+    "_ZL17unpack_dst_format",
+    "_ZL15pack_src_format",
+    "_ZL15pack_dst_format",
+)
 DROPPED_COMPILE = ("-MMD",)
 DROPPED_DEFINE = "-DFULL_KERNEL_NAME="
 DROPPED_LINK = ("-T", "-Wl,--just-symbols=", "-Wl,--emit-relocs")
@@ -338,7 +346,7 @@ def check(name, part, first, second, persistent, slot_bytes=None):
         for symbol, (_, kind, _) in first.symbols.items()
         if kind == "OBJECT"
         and symbol in persistent.symbols
-        and not (persistent.symbols[symbol][2] == "LOCAL" and symbol in RESETS)
+        and not (persistent.symbols[symbol][2] == "LOCAL" and symbol in RESETS + TABLES)
     ]
     if copies:
         raise OverlayError(

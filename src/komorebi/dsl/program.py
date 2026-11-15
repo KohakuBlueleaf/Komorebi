@@ -10,7 +10,7 @@ from types import MappingProxyType
 
 from komorebi import _env, abi, formats, layout, overlay
 from komorebi import program as km_program
-from komorebi.dsl import compiler, front
+from komorebi.dsl import compiler, first_use, front
 from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
@@ -131,6 +131,7 @@ def make(
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
     values, tensors = constants_given(cls, plan, tensors)
+    handlers, found = first_use.opted(cls, handlers)  # km.ANY: first use allowed
     sets = handler_sets(cls, handlers)
     if session is not None:
         l1 = reserve_of(session)[0].l1()[1] if l1 is None else l1
@@ -139,6 +140,8 @@ def make(
         room = l1
     reserved = beside_indices(cls.__name__, beside)
     compiled = compiler.compile_class(cls, plan, tensors, room, values, sets, reserved)
+    if found:
+        first_use.reserve(cls, compiled, found, plan, tensors, room, values, sets)
     constants_made(self, cls, values, compiled)
     self.constant_handlers = compiled.variants
     refused = runtime_refused(compiled)
@@ -160,6 +163,8 @@ def make(
             (name, [sorted(one.items()) for one in listed])
             for name, listed in sets.items()
         )
+    if found:
+        keyed[spelling("first_use")] = first_use.keyed(found)
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}
     key = sources_key(plan, tensors, solved, depth, rect, nocs, broadcast_wait, keyed)
     key = form_key(key, form, reserved)
@@ -234,6 +239,9 @@ def make(
         self.overlay(name, sources, defines=self.defines or None)
     if compiled.overlays:
         self.slots()
+    if found:
+        made_with = (plan, tensors, room, values, sets)
+        first_use.kept(self, compiled, found, made_with, built, session, l1, trace)
     if session is not None:
         l1_checked(self, session, l1, trace, log)
 
@@ -345,10 +353,11 @@ def handler_sets(cls, handlers):
     return sets
 
 
-def constant_handler(program, method, given):
+def constant_handler(program, method, given, run=None):
     """The handler of `program` built for `method`'s constant parameters at `given`
     (by name; a parameter not given takes its default): (its number, the built
-    method). A set not built is refused, naming the sets that were."""
+    method). A set not built is refused, naming the sets that were; with km.ANY at
+    the make, compiled and added to `run` (komorebi.dsl.first_use)."""
     built = getattr(program, "constant_handlers", {}).get(method.name, [])
     parameters = front.constant_parameters(method.function)
     unknown = sorted(set(given) - set(parameters))
@@ -366,8 +375,9 @@ def constant_handler(program, method, given):
     sets = "; ".join(
         ", ".join(f"{k}={v}" for k, v in values.items()) for values, _ in built
     )
+    if method.name in getattr(getattr(program, "first_use", None), "opted", {}):
+        return first_use.handler(run, program, method, wanted)
     asked = ", ".join(f"{k}={v}" for k, v in wanted.items())
-    # A set compiled on first use (placed as an overlay) is not built: refused here.
     raise ProgramError(
         f"{type(program).__name__}.{method.name} with {asked}: no handler was built "
         f"for it (built: {sets}); list it at the make, "
