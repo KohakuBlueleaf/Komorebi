@@ -441,6 +441,7 @@ and 9.42 µs loaded at the start; the gate 22.84 µs before the add, 22.40 after
 | `km.Broadcast(self, ..., unread=word)` | when the word is not 0, each core's mover takes each block's slot and pushes it as it is (no read, cast or arrival), padding to the window at the end | the blocks taken as cast ones |
 | `if b.sender():` `v = b.cast(t.pages(first, n).read())` `else:` `v = b.arrive()` | the sender's reserve, read and cast, the others' arrival, block by block of the loop around it; the last block's finish | |
 | the same inside more than one loop, or a loop not from 0 | the blocks counted over every loop around the cast (`km_blocks_b`, on the mover and compute), the finish after the outermost loop by the count | the padding by the count |
+| the same outside every loop | one block (block 0), its finish at the cast | the padding (the window's other pages) after the block's last use, at the end of compute's handler |
 | `v = b.cast(k.tiles[k0:k1, 0:D].T, w.tiles[k0:k1, 0:E])` | several parts into one block, in order, each at its most's place (Several ranges into one block) | |
 | `for tile in v:` | | the block received, each page of it, then freed; the padding after the last |
 | `km.cxx("...", takes=[v])`, v a broadcast's block | | the block received before the body, `v_buffer` its buffer and `v` its first page there (0), freed after the body: the body indexes the block's pages itself |
@@ -491,7 +492,11 @@ count is the job's), or in a loop not from 0, the blocks are counted over every 
 around it: a word `km_blocks_b` on the broadcast's mover and on compute, from 0 at the
 handler's top, the block's number at each cast or arrival and one more after it; the
 finish and compute's padding (`km::broadcast_end`) come after the outermost loop, by
-the count. Casts in two loops at the handler's top are refused.
+the count. A cast outside every loop is one block: the mover's finish stands at the
+cast (it waits for compute to pop the block) and compute's padding pop stands at the
+end of the handler, after the block's last use; a second cast of the same broadcast
+outside a loop, or in a loop after one outside, is refused. Casts in two loops at the
+handler's top are refused.
 
 `unread=word` (a word of the handler) runs the same command with no broadcast: when
 the word is not 0, each core's mover takes each block's slot and pushes it as it is,

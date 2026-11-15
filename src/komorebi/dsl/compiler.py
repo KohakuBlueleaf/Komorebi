@@ -1064,6 +1064,7 @@ class HandlerCompiler:
         self.reduced = []
         self.in_leader = False
         self.loops = []  # the range loops around the statement, innermost last
+        self.cast_flat = set()  # the broadcasts that cast once outside every loop
         self.movers = {}  # mover -> the broadcast it runs
         self.allow_words = False  # a body's word is read by the return only
         self.field_line = False  # a word field's words are read in a line setting one
@@ -6676,6 +6677,13 @@ class HandlerCompiler:
                 "cast the same pages each time",
             )
         counted = self.counted_cast(node, name, broadcast)  # None: the one loop's
+        if name in self.cast_flat:
+            self.refuse(
+                node,
+                f"{name} casts outside a loop already: its one block was finished "
+                "there, and another cast would be block 0 again",
+                "cast once outside a loop, or every time in one loop",
+            )
         if counted is not None:
             block = counted
         elif self.loops:
@@ -6696,6 +6704,7 @@ class HandlerCompiler:
             self.refuse(node, f"{name} casts in a loop already", "cast in one loop")
         else:
             block = "0"
+            self.cast_flat.add(name)
         address = f"km_address{buffer.index_a}"
         read_text = self.cast_reads(parts, address, page_bytes)
         text = (
@@ -6725,9 +6734,17 @@ class HandlerCompiler:
             movement.append(Line(f"{counted}++;", {counted}, mover=broadcast.mover))
             compute.append(Line(f"{counted}++;", {counted}))
         if not self.loops:
-            movement_end, compute = self.broadcast_end(name, "1", set())
-            movement += movement_end
+            movement += self.end_outside_loop(name)
         return movement, compute
+
+    def end_outside_loop(self, name):
+        """The ends of a cast outside any loop (one block): the mover's finish, which
+        stays at the cast, and compute's padding pop, which goes to compute's end
+        (`closing`) after the block's last use: the finish pushes the padding only once
+        compute popped the block, and the pop waits for it."""
+        movement_end, compute_end = self.broadcast_end(name, "1", set())
+        self.closing += compute_end
+        return movement_end
 
     def unread_push(self, broadcast, text, uses):
         """`unread=word`: when the word is not 0, each core's mover takes the block's
