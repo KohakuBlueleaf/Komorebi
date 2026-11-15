@@ -32,7 +32,8 @@ from komorebi.program import Handler
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
 NO_LIST = 0xFF  # a core with no kept reset list (KMD_RESET_DIRECTORY)
 LINK_EVENTS = ("gave", "hung", "lost")  # KMD_LINK_*: what a link event says
-RESET_STATUS = ("BAD_LIST", "NO_WINDOW", "NO_FIRMWARE", "NO_LIST")  # KMD_RESET_*
+# KMD_RESET_*, from 1
+RESET_STATUS = ("BAD_LIST", "NO_WINDOW", "NO_FIRMWARE", "NO_LIST", "HELD")
 
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
@@ -445,12 +446,21 @@ class Run:
         groups = list(launch.reset_groups())[: self.cores]
         excluded = set(exclude)
         lists, owner = [], {}
+        # A reset ends once the reader's start-up cleared the ring and wrote its magic.
+        magic = self.h["kStateMagic"]
+        ready = {
+            "ready": self.backend.control_addr
+            + self.h["KM_CONTROL_STATE"]
+            + 4 * self.h["kStMagic"],
+            "ready_mask": 0xFF000000,
+            "ready_value": magic & 0xFF000000,
+        }
         try:  # one list a group, built on its first core
             for core, group in enumerate(groups):
                 if group >= 0 and core not in excluded and group not in owner:
                     owner[group] = len(lists)
                     x, y = core % self.grid[0], core // self.grid[0]
-                    lists.append(launch.reset_list(x, y, every=True))
+                    lists.append(launch.reset_list(x, y, every=True, **ready))
         except (ValueError, RuntimeError) as error:  # semaphores
             self.recovery_refused = str(error)
             return False
@@ -1543,11 +1553,14 @@ class Run:
         core, status = self._reset_failed
         if core >= 0:  # a give-up's reset that failed left the command in its core
             names = {self.h[f"KMD_RESET_{name}"]: name for name in RESET_STATUS}
-            error.args = (
-                f"{error.args[0]}; the dispatcher's reset of core {core} failed "
-                f"({names.get(status, status)})",
-                *error.args[1:],
-            )
+            why = f"the dispatcher's reset of core {core} failed"
+            why += f" ({names.get(status, status)})"
+            if status == self.h["KMD_RESET_HELD"]:
+                why = (
+                    f"core {core} was not reset: other commands in flight are in "
+                    "its ring, which a reset would clear"
+                )
+            error.args = (f"{error.args[0]}; {why}", *error.args[1:])
         raise self._remember(error)
 
     def _fail_kernel(self, why):

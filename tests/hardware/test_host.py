@@ -55,7 +55,8 @@ def all_checked(out, jobs, stalled=0):
 @pytest.mark.parametrize("count", [1, 120])
 def test_fixed_group_is_exact(session, count):
     out = example(session, "--jobs", 20, "--count", count, "--out-tensors", 2)
-    assert out["kernel"]["error_name"] == "none" and out["kernel"]["events"] == 21
+    # one of the events answers the reset lists the load hands the dispatcher
+    assert out["kernel"]["error_name"] == "none" and out["kernel"]["events"] == 22
     assert all_checked(out, 20) and out["exact_jobs_checked"] == 10
     assert out["compute_wrong"] == 0 and counts_match(out)
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
@@ -116,9 +117,10 @@ def test_a_start_error_carries_the_result_and_the_host_stops_the_grid(session):
 def test_a_stalled_rank_ends_in_the_timeout_exception(session):
     stall = ["--stall", 3, "--stall-rank", 2, "--deadline", 0.02]
     out = example(session, "--jobs", 10, "--count", 8, "--first", 4, *stall)
-    timed_out = out["timed_out"]
-    assert out["kernel"]["error_name"] == "deadline"
-    assert timed_out["handle"] == 4 and timed_out["group"] == [4, 8]
+    timed_out = out["timed_out"]  # jobs 4 to 6 are in core 6's ring: no reset
+    assert out["kernel"]["error_name"] == "deadline" and out["recoveries"] == []
+    assert "core 6 was not reset: other commands in flight" in timed_out["message"]
+    assert timed_out["handle"] == 5 and timed_out["group"] == [4, 8]
     named = {core_entry["core"]: core_entry for core_entry in timed_out["not_reported"]}
     assert sorted(named) == [4, 6]
     assert (

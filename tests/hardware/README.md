@@ -32,29 +32,31 @@ after a kernel change pays the build.
 
 ## Expected time
 
-Seconds of the tests themselves, after the one device open (about 13 s, once), with the
-kernel cache warm. Read from one run of each file before the folder was shared, minus
-the kernel builds that run paid; the cases removed or shortened since are taken off.
-They are estimates until the folder has run once as it is now.
+Seconds of each file in one run of the folder in a new checkout (a cold kernel cache),
+read from the timestamps of its log, to a few seconds; the first file's include the
+device open (about 13 s). Two files with no line of their own in the log are counted
+together. The kernel and overlay builds of a cold cache are about a third of the total
+(68 s and 142 s of the first 600 s); a warm cache does not pay them.
 
 | File | s | | File | s |
 | --- | ---: | --- | --- | ---: |
-| `test_host.py` | 19 | | `test_movement.py` | 4 |
-| `test_engines.py` | 2 | | `test_overlays.py` | 5 |
-| `test_mapcollect_fed.py` | 11 | | `test_programs.py` | 10 |
-| `test_host_transfer.py` | 2 | | `test_swiglu_host.py` | 4 |
-| `test_raster_card.py` | 10 | | `test_thread_commands.py` | 6 |
-| `test_attention_host.py` | 3 | | `test_thread.py` | 10 |
-| `test_bank_fetch.py` | 3 | | `test_thread_lifecycle.py` | 11 |
-| `test_broadcast_host.py` | 10 | | `test_x280_ports.py` | 6 |
-| `test_dense_host.py` | 11 | | `test_thread_split.py` | 6 |
-| `test_forward_host.py` | 5 | | `test_uop_stream.py` | 3 |
-| `test_kernel_buffer.py` | 2 | | `test_raytrace_card.py` | 6 |
-| `test_give_up.py` | 7 | | | |
-| `test_graph_host.py` | 11 | | | |
-| `test_leader.py` | 8 | | | |
-| `test_leader_overlay.py` | 3 | | | |
-| `test_message_handlers.py` | 6 | | **the folder** | **about 184 + 13** |
+| `test_attention_host.py` (the open) | 24 | | `test_movement.py` | 8 |
+| `test_bank_fetch.py` | 6 | | `test_overlays.py` | 15 |
+| `test_broadcast_host.py` | 17 | | `test_page_calls.py` | 227 |
+| `test_dense_host.py` | 30 | | `test_programs.py` | 40 |
+| `test_engines.py` | 7 | | `test_raster_card.py` | 27 |
+| `test_forward_host.py` | 10 | | `test_raytrace_card.py` | 20 |
+| `test_give_up.py` | 11 | | `test_swiglu_host.py` | 12 |
+| `test_graph_host.py` | 14 | | `test_thread.py` | 19 |
+| `test_host.py` | 26 | | `test_thread_commands.py` | 10 |
+| `test_host_transfer.py` | 1 | | `test_thread_lifecycle.py` | 10 |
+| `test_kernel_buffer.py` | 2 | | `test_thread_split.py` | 31 |
+| `test_leader.py` | 9 | | `test_uop_stream.py` | 17 |
+| `test_leader_overlay.py`, `test_mapcollect_fed.py` | 27 | | `test_x280_ports.py` | 10 |
+| `test_message_handlers.py` | 11 | | **the folder** | **about 640** |
+
+The folder no longer fits one ten-minute job: run it in parts (a list of files a
+process), each part sized from this table.
 
 A file run alone also pays the open. `test_raytrace_card.py` asks for a smaller kernel
 buffer than the others and `test_kernel_buffer.py` asks for 128 KiB, so the device is

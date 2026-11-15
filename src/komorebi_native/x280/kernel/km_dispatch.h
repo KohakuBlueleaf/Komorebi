@@ -198,6 +198,7 @@
 #define KMD_RESET_NO_WINDOW 2u   /* a window did not read back as programmed */
 #define KMD_RESET_NO_FIRMWARE 3u /* a WAIT ran out */
 #define KMD_RESET_NO_LIST 4u     /* a give-up's core with no kept list (a link core) */
+#define KMD_RESET_HELD 5u        /* a give-up's core another command in flight holds */
 /* A core's state word of its kernels' end bytes (km::kStEnds): not 0 once one ended */
 #define KMD_STATE_ENDS (2u * KM_RING_SLOTS + 12u)
 /* A kernel's live word of its runtime wait (km::kLvWhere + role) when it waits for an

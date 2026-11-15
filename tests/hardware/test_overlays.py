@@ -23,6 +23,7 @@ def test_two_overlays_in_turn_are_exact():
         "2-unpack",
         "2-math",
         "2-pack",
+        "63-reader",  # the runtime's service overlay
     }
     assert {
         name: value[0] for name, value in out["slots_bytes"].items()

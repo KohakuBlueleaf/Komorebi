@@ -101,8 +101,10 @@ for that one core, because a RISC reset alone does not bring a core back:
    firmware to report.
 4. The core's part of the launch is written (kernel binaries, buffer configuration,
    runtime arguments, launch message, go), and the kernels' start-up clears its ring and
-   state words. A core that is not a column leader tells nothing else in the run that it
-   restarted.
+   state words. The dispatcher's reset ends only when the reader's start-up wrote its
+   state magic again (the list zeroes it first): a command placed before that would be
+   cleared from the ring. A core that is not a column leader tells nothing else in the
+   run that it restarted.
 
 The writes are kept as a list for each group of cores with the same kernels, which
 `session.load(program, recover=True)` (the default) hands to the dispatcher at load: 68,864
