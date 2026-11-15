@@ -37,7 +37,7 @@ A program runs chains with three things of its own; the rest is the framework's.
 | What | Where |
 |---|---|
 | a chain mode: a value of a4 that its handler takes as "this command is a chain" | the program's header; `run.chain(calls, mode)` |
-| buffer index 31, one page of at least 1,808 bytes: the chain's words and two record slots on each core | the program's buffers; it is the runtime's trace buffer's index, so a chain's program runs untraced |
+| buffer index 32 (`kChainBuffer`), one page of at least 1,808 bytes: the chain's words and two record slots on each core | the program's buffers; the index is the runtime's, kept for the chain, so a chain's program is traced as any program |
 | in each kernel, the chain command handed to the framework's walk, and in the step, the wait for its input and the marks after its output | the kernels (below) |
 
 Each record names its handler, one of the chain's program: a core goes from one
@@ -199,14 +199,17 @@ The decode project, a whole token of 28 layers (140 records) as one chain on 120
 10 tokens: 314.9 / 287.0 / 278.5 us a layer at T 4096 / 1024 / 256 on the framework's
 chain, within the spread of its own chain before (315.0 to 315.2, 287.1 to 288.2, 278.6
 to 279.9), the token equal to a command a step at 2 and 28 layers, the real prompt's 16
-tokens equal to the reference. The chain's words take one page of buffer 31 on each
-core.
+tokens equal to the reference. The chain's words take one page of buffer 32 on each
+core; the index past 31 adds one buffer's 16 bytes to the kernel config, nothing to a
+kernel's text.
 
 | Decode, 28 layers, 10 tokens | T 4096 | T 1024 | T 256 | kernels (of 86,016 B) |
 |---|---:|---:|---:|---:|
 | its own chain before the move, us a layer | 315.2 | 287.1 | 278.6 | 85,488 |
 | the framework's chain, one handler a chain | 314.9 | 287.0 | 278.5 | 85,568 |
 | the framework's chain, a record names its handler | 315.2 | 286.9 | 278.7 | 85,856 |
+| the chain's words on buffer 32, untraced | 315.1 | 287.1 | 278.5 | 85,872 |
+| the chain's words on buffer 32, traced (512 commands a core) | 315.3 | 286.8 | 278.7 | 85,872 |
 
 A record naming its handler costs decode nothing measurable (the last two rows differ
 by +0.3 / -0.1 / +0.2 us, inside the run-to-run spread) and 288 bytes of kernel code:
@@ -215,7 +218,8 @@ record's command or its next address is read, in all five kernels. With the chai
 stamps compiled in (`KM_CHAIN_STAMPS`) the decode kernels are 90,240 bytes, 128 over
 88 K (90,112), so the stamped build alone takes a 92 K kernel buffer (94,208 B); its
 L1 still fits with the plans of T 4096 to 256, 112 bytes left. The plain build keeps
-84 K.
+84 K. Traced (`trace=512`, 8,192 bytes of buffer 31 a core), the plain build's L1 fits
+with 112 bytes left; `run.trace()` after the stop holds each core's commands.
 
 ## A handler as an overlay
 

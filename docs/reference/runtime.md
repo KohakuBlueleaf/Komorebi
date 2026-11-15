@@ -392,7 +392,7 @@ them.
 
 Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing
-is on.
+is on. Buffer 32 (`kChainBuffer`) holds a chain's words in a program that runs chains.
 
 ## Islands
 

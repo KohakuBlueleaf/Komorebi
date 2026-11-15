@@ -153,8 +153,6 @@ class Decode:
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.chain = chain
         self.stamps = stamps and chain  # SPLIT_CHAIN_STAMPS: chain_stamps() reads them
-        if chain and trace:  # its words take the trace buffer's index (chain.h)
-            raise ValueError("the chain's program runs untraced (trace=0)")
         self.bodies = tuple(bodies)
         if not set(self.bodies) <= set(BODIES):
             raise ValueError(f"bodies {self.bodies}: of {BODIES}")
