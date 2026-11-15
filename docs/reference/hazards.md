@@ -617,7 +617,15 @@ The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the 
 `ok && room`.
 
 **The guard.** A class's generated compute follows the rule at every reserve (a test
-checks the generated text). A hand kernel: nothing.
+checks the generated text: the products, the field reduce, a write stream's push of a
+copy, of a tile function's result and of a body's tile, a tile or a sum written to a
+page, a drained stream and its end). A body on compute that takes a written page gets
+its word as pack's (the page's address, 0 once pack's reserve gave up; the address on
+unpack and math): the class compiler refuses a body where that word steers a section,
+a copy, a product or a way out (`return`, `break`), and lets it guard `pack_tile`. A
+body that packs without testing the word packs into a buffer it holds no room in: the
+three threads stay in step, and the pages are the given-up command's, cleared at its
+end. A hand kernel: nothing.
 
 Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
 
