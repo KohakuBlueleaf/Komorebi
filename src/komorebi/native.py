@@ -166,12 +166,15 @@ def thread_image(thread, tree=None, programs=()):
     key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]
     out = cache_directory() / f"thread-{key}" / "thread.bin"
     if not out.is_file():
-        build.build_image(
-            tree,
+        build_whole(
             out,
-            sources,
-            includes=[kmx_directory(), *includes(), *extra],
-            defines=defines,
+            lambda path: build.build_image(
+                tree,
+                path,
+                sources,
+                includes=[kmx_directory(), *includes(), *extra],
+                defines=defines,
+            ),
         )
     return out
 
