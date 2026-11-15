@@ -1,6 +1,7 @@
 """The tile layer: instruction words, SiLU's unit program (passes, checks, cost), the
 emitted header, the load-macro rule and the row form's lane checks."""
 
+import math
 import random
 
 import pytest
@@ -134,7 +135,7 @@ def test_softmax_step_state_lanes_and_word():
             x = trace.load(ss.tiles[t, :]) * 0.18
             state = trace.load_state(sts.tiles[t])
             m_new = trace.maximum(state[0], trace.reduce_max(x, exact=True))
-            prob = trace.exp2(x - m_new.col())
+            prob = trace.exp2(x - m_new.col(), error=2e-3, over=(-math.inf, 0.0))
             l_new = state[1] + trace.reduce_sum(prob, exact=True)
             trace.store(ps.tiles[t, :], prob)
             moved = trace.word_max(m_new - state[0])

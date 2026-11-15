@@ -5,6 +5,7 @@ against float64 and cycles of each body."""
 
 import argparse
 import json
+import math
 import os
 import secrets
 import statistics
@@ -48,6 +49,10 @@ TOLERANCE = {
 }
 # The hand bodies held to their own bound: attention's exp polynomial is 1.75e-3.
 HAND_TOLERANCE = {"exp": 2e-3}
+# The exp the program states (the hand body's: 2e-3 over s scale - m <= 0); the
+# "stated" form is emitted at it, held to it, the accurate one beside it.
+STEP_EXP = {"error": 2e-3, "over": (-math.inf, 0.0)}
+STATED_TOLERANCE = {"exp": STEP_EXP["error"]}
 # The softmax step (base 2, both bodies' exp2 polynomial): P, the rescale factor and
 # the sum within 2e-3, the reference m within 1e-6, the word's sign exact.
 STEP_TOLERANCE = {"p": 2e-3, "alpha": 2e-3, "l": 2e-3, "m": 1e-6, "m_abs": 1e-4}
@@ -57,9 +62,14 @@ STEP_TILE = 3  # the state's Dst tile (the hand body's ST)
 ATTENTION = HERE.parents[1] / "projects" / "attention" / "kernels"
 EXP_SCALE = 0.125  # 1 / sqrt(64), exact in fp32
 EXP_A = EXP_SCALE * 1.4426950408889634  # the hand body's A = scale log2 e
-EXP_TILE = {12: 3, 13: 1}  # the row state's Dst tile: the hand body's, the emitted
+EXP_TILE = {
+    12: 3,
+    13: 1,
+    16: 1,
+}  # the row state's Dst tile: the hand body's, the emitted
 
-# BODY: (case, form "hand", "emitted" or "macro": emitted with the load-macro rule).
+# BODY: (case, form "hand", "emitted" or "macro": emitted with the load-macro rule;
+# "stated": emitted at STEP_EXP where "emitted" is accurate; "accurate" the reverse).
 # Hand: tt-metal's vector library (silu, add, scale), projects/decode (gate, norm).
 BODIES = {
     0: ("silu", "hand"),
@@ -78,7 +88,10 @@ BODIES = {
     13: ("exp", "emitted"),
     14: ("softmax", "hand"),
     15: ("softmax", "emitted"),
+    16: ("exp", "stated"),
+    17: ("softmax", "accurate"),
 }
+FORMS = ("hand", "emitted", "macro", "stated", "accurate")
 CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax")
 # Run on the card already, over the same inputs (the tile-front experiment): built
 # and checked here, not run again.
@@ -127,27 +140,28 @@ def norm_ir():
     return ir
 
 
-def expstep_ir():
+def expstep_ir(name="expstep", **exp):
     """p = exp(s scale - m), m a per-row value: the row state tile (each row's scaled
-    reference in all its lanes), broadcast along the row with .col()."""
+    reference in all its lanes), broadcast along the row with .col(); `exp`: the
+    error the program states (trace.exp's error and over)."""
     s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
     p = TensorParam("p", True, F32)
-    ir = KernelIR("expstep", [s, m, p], [], {})
+    ir = KernelIR(name, [s, m, p], [], {})
     with trace.Tracer(ir):
         ss, ms, ps = (trace.TensorProxy(t) for t in (s, m, p))
         for t in trace.grid(trace.num_tiles(ss)):
             x, state = trace.load(ss.tiles[t]), trace.load(ms.tiles[t])
-            trace.store(ps.tiles[t], trace.exp(x * EXP_SCALE - state.col()))
+            trace.store(ps.tiles[t], trace.exp(x * EXP_SCALE - state.col(), **exp))
     return ir
 
 
-def softmax_ir():
+def softmax_ir(name="softstep", exp=STEP_EXP):
     """The online softmax step in base 2 over a row of STEP_WIDTH score tiles: the
     new reference (lagging by up to STEP_LAG), the old state's rescale factor, P and
     the new sum; the state tile in and out (m, l, alpha) and whether a row moved."""
     s, st = TensorParam("s", False, F32), TensorParam("st", False, F32)
     p, out = TensorParam("p", True, F32), TensorParam("out", True, F32)
-    ir = KernelIR("softstep", [s, st, p, out], [], {})
+    ir = KernelIR(name, [s, st, p, out], [], {})
     with trace.Tracer(ir):
         ss, sts, ps, outs = (trace.TensorProxy(t) for t in (s, st, p, out))
         for t in trace.grid(trace.num_tile_rows(ss)):
@@ -156,8 +170,8 @@ def softmax_ir():
             m_old, l_old = state[0], state[1]
             r = trace.reduce_max(x, exact=True)
             m_new = trace.lagging_max(m_old, r, STEP_LAG)
-            alpha = trace.exp2(m_old - m_new)
-            prob = trace.exp2(x - m_new.col())
+            alpha = trace.exp2(m_old - m_new, **exp)
+            prob = trace.exp2(x - m_new.col(), **exp)
             l_new = alpha * l_old + trace.reduce_sum(prob, exact=True)
             trace.store(ps.tiles[t, :], prob)
             moved = trace.word_max(m_new - m_old)
@@ -182,7 +196,10 @@ def units():
         out[f"{name}_macro"] = unit
     out["norm"] = row_program(norm_ir(), WIDTH, ROWS_TILE, P_TILE)
     out["expstep"] = unit_program(expstep_ir())
+    out["expstep_flash"] = unit_program(expstep_ir("expstep_flash", **STEP_EXP))
     out["softstep"] = step_program(softmax_ir(), STEP_WIDTH, STEP_TILE)
+    accurate = softmax_ir("softstep_accurate", {})
+    out["softstep_accurate"] = step_program(accurate, STEP_WIDTH, STEP_TILE)
     return out
 
 
@@ -220,7 +237,7 @@ def aiclk_mhz():
 def p_pages(body):
     """Pages of P: the emitted norm's per-column operand tile; the hand norm's
     identity, mean and weight tiles (decode's constant tiles, and g in every row)."""
-    return {10: 2 + WIDTH, 11: 1, 12: 1, 13: 1, 14: 1, 15: 1}.get(body, 0)
+    return {10: 2 + WIDTH, 11: 1}.get(body, int(body >= 12))
 
 
 def setting(body):
@@ -284,7 +301,7 @@ def launch(session, body, data):
     unpack = {CB_A: "UnpackToDestFp32"}
     if defines["COPY_B"]:
         unpack[CB_B] = "UnpackToDestFp32"
-    if body in (11, 12, 13, 14, 15):
+    if body == 11 or body >= 12:
         unpack[CB_P] = "UnpackToDestFp32"
     options = {
         "math_fidelity": "HiFi4",
@@ -590,6 +607,8 @@ def check(case, data, outputs, infos, nonces):
         bound = TOLERANCE[case]
         if form == "hand":
             bound = HAND_TOLERANCE.get(case, bound)
+        elif form == "stated":
+            bound = STATED_TOLERANCE[case]
         got["ok"] = (
             got["nonce_ok"]
             and got["error"] == 0
@@ -675,7 +694,8 @@ def card(args):
             rec = check(case, data, outputs, infos, nonces)
             saved.update({f"{case}_{BODIES[b][1]}": out for b, out in outputs.items()})
             saved.update({f"{case}_input_{k}": v for k, v in data.items()})
-            rec["estimates"] = {k: v for k, v in costs.items() if k.startswith(case)}
+            unit = {"softmax": "softstep"}.get(case, case)
+            rec["estimates"] = {k: v for k, v in costs.items() if k.startswith(unit)}
             log(json.dumps(rec))
             records.append(rec)
     if args.save:
@@ -685,7 +705,7 @@ def card(args):
     clean = all(
         r[form]["nonce_ok"] and r[form]["error"] == 0
         for r in records
-        for form in ("hand", "emitted", "macro")
+        for form in FORMS
         if form in r
     )
     return 0 if clean else 1

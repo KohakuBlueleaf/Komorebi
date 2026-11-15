@@ -17,6 +17,7 @@ from komorebi.dsl.tile.lower import (
     WAIT_MATH,
     Body,
     _checks,
+    _templates,
     _value,
     allocate,
     check_mad_readers,
@@ -121,6 +122,7 @@ def step_program(ir, width, state_tile, dest="fp32"):
         plan.reductions.append((r, operand, chain_of(operand), scale))
     plan.store = (row_store, chain_of(row_store))
     plan.per_row = [(n, chain_of(n)) for n in held]
+    unit.passes.append(Pass("algebra", "templates", _templates(compiler.templates)))
     scaled = sum(1 for *_, s in plan.reductions if s is not None)
     unit.passes.append(
         Pass(

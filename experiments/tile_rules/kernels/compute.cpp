@@ -34,6 +34,10 @@
 #include "expstep.hpp"
 #elif BODY == 15
 #include "softstep.hpp"
+#elif BODY == 16
+#include "expstep_flash.hpp"
+#elif BODY == 17
+#include "softstep_accurate.hpp"
 #endif
 #if (BODY == 12 || BODY == 14) && defined(TRISC_MATH)
 #include "sfpu.hpp"  // projects/attention/kernels
@@ -168,6 +172,10 @@ namespace {
         MATH((flash::addr_init()));
 #elif BODY == 15
         MATH((km_tile::softstep_init()));
+#elif BODY == 16
+        MATH((km_tile::expstep_flash_init()));
+#elif BODY == 17
+        MATH((km_tile::softstep_accurate_init()));
 #endif
     }
 
@@ -229,6 +237,10 @@ namespace {
         MATH((flash::exp_step<3>()));
 #elif BODY == 15
         MATH((km_tile::softstep(0)));
+#elif BODY == 16
+        MATH((km_tile::expstep_flash(0)));
+#elif BODY == 17
+        MATH((km_tile::softstep_accurate(0)));
 #endif
     }
 

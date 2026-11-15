@@ -3,6 +3,7 @@ over at most four register slots. Moved from Kohaku-TT's `dsl/tile/plan.py` (sam
 Apache 2.0) with its names changed; Kohaku-TT's forms, plans and lowerings stay there.
 """
 
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -190,6 +191,8 @@ class _Compiler:
     def __init__(self, name, shapes, scalars):
         self.name, self.shapes, self.scalars = name, shapes, scalars
         self.count = 0
+        # {line: the template chosen for a transcendental, its bound and range}
+        self.templates = {}
 
     def scalar(self, node, recip=False):
         """The Scalar of runtime scalar node `node`, registered once."""
@@ -376,6 +379,10 @@ class _Compiler:
             if k == "lagmax":
                 m, r = args
                 return f.select(r > m + node.attrs["lag"], r, m)
+            if k in TEMPLATES:
+                t = template(node)
+                self.templates[f"{k} (line {node.line})"] = t.describe(node)
+                return t.build(*args)
             return _VECTOR[k](*args)
 
         self.checks = []
@@ -390,6 +397,7 @@ class _Compiler:
             fail(str(e).replace("komorebi.dsl.tile: ", ""), root.line)
         chain = Chain(operands, fn, 0, pairs, ops, values)
         chain.checks = self.checks
+        chain.templates = self.templates
         if prev is not None:
             chain.prev = prev[1]
             chain.checks = prev[1].checks + chain.checks
@@ -398,13 +406,67 @@ class _Compiler:
         return chain
 
 
+@dataclass(frozen=True)
+class Template:
+    """One way to compute a transcendental: its relative error bound over inputs in
+    `over` (below its low end the result may be 0: an absolute error under 2^-126)."""
+
+    name: str
+    error: float
+    over: tuple
+    build: object
+
+    def describe(self, node):
+        lo, hi = node.attrs.get("over", (-math.inf, math.inf))
+        asked = node.attrs.get("error")
+        return (
+            f"{self.name}, relative error {self.error:.3g} over [{self.over[0]:g}, "
+            f"{self.over[1]:g}] (asked: {'default' if asked is None else f'{asked:g}'}"
+            f" over [{lo:g}, {hi:g}])"
+        )
+
+
+LOG2E, LN2 = 1.4426950408889634, 0.6931471805599453
+# Each transcendental's templates, cheapest first; the default is the last (accurate).
+# flash: Kohaku-TT's flash attention 2^(u - 639), u = x + 639 (exponent and a degree-2
+# polynomial of the fraction), exp2's exactly 1 at x = 0 (exp2(m - m) rescales none).
+TEMPLATES = {
+    "exp": (
+        Template(
+            "flash", 1.75e-3, (-87.0, 88.0), lambda a: f.flash_exp2(a * LOG2E + 639.0)
+        ),
+        Template("accurate", 3e-7, (-math.inf, math.inf), f.exp),
+    ),
+    "exp2": (
+        Template(
+            "flash",
+            1.75e-3,
+            (-126.0, 127.0),
+            lambda a: f.select(a == 0.0, 1.0, f.flash_exp2(a + 639.0)),
+        ),
+        Template("accurate", 6e-6, (-math.inf, math.inf), lambda a: f.exp(a * LN2)),
+    ),
+}  # fmt: skip
+
+
+def template(node):
+    """The cheapest template of `node` meeting its stated error over its stated input
+    range (the inputs above the range's high end are never taken); else the default."""
+    options = TEMPLATES[node.kind]
+    error = node.attrs.get("error")
+    if error is None:
+        return options[-1]
+    lo, hi = node.attrs.get("over", (-math.inf, math.inf))
+    for t in options:
+        if t.error <= error and hi <= t.over[1]:
+            return t
+    asked = f"relative error {error:g} over [{lo:g}, {hi:g}]"
+    fail(f"{node.kind}: no template meets {asked}", node.line)
+
+
 _VECTOR = {
     "neg": lambda a: -a,
     "abs": abs,
-    "exp": f.exp,
-    # Kohaku-TT's flash attention 2^(u - 639) with u = x + 639, exactly 1 at x = 0 (so
-    # a rescale by exp2(m - m) is none).
-    "exp2": lambda a: f.select(a == 0.0, 1.0, f.flash_exp2(a + 639.0)),
     "sigmoid": f.sigmoid,
     "silu": f.silu,
     "tanh": f.tanh,

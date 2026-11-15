@@ -386,12 +386,28 @@ def _unary(kind, doc):
     return fn
 
 
-exp = _unary("exp", "e^x on the vector unit.")
-exp2 = _unary(
+def _transcendental(kind, doc):
+    def fn(x, error=None, over=None):
+        attrs = {} if error is None else {"error": float(error)}
+        if over is not None:
+            if error is None:
+                fail(f"{kind}: an input range is stated with an error")
+            attrs["over"] = (float(over[0]), float(over[1]))
+        return _op(kind, x, **attrs)
+
+    fn.__name__, fn.__doc__ = kind, doc
+    return fn
+
+
+exp = _transcendental(
+    "exp",
+    "e^x on the vector unit; `error`: the relative error the program accepts over "
+    "inputs in `over` (lo, hi), the cheapest template meeting it (default accurate).",
+)
+exp2 = _transcendental(
     "exp2",
-    "2^x as Kohaku-TT's flash attention computes it under default numerics (its "
-    "exponent and a degree-2 polynomial of the fraction, relative error up to "
-    "1.75e-3), exactly 1 at 0; 0 for x below -127, x below 129.",
+    "2^x on the vector unit; `error`, `over` as for exp (2e-3 over (-inf, 0]: "
+    "Kohaku-TT's flash attention exp, exactly 1 at 0).",
 )
 sigmoid = _unary("sigmoid", "1 / (1 + e^-x) on the vector unit.")
 silu = _unary("silu", "x * sigmoid(x) on the vector unit.")

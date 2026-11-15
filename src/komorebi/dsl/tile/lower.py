@@ -889,6 +889,11 @@ def stream_chain(ir):
     return compiler.chain(ir.stores[0].value, leaf_of)
 
 
+def _templates(chosen):
+    """The templates record: each transcendental's chosen form and its bound."""
+    return [f"{k}: {v}" for k, v in chosen.items()]
+
+
 def unit_program(ir, dest="fp32", load_macro=False):
     """The unit program of stream kernel `ir` on `dest` (fp32) Dst registers: operand
     k read from Dst tile k (relative to the caller's `dst`), the result stored into
@@ -929,8 +934,17 @@ def unit_program(ir, dest="fp32", load_macro=False):
     unit = UnitProgram(ir.name, dest)
     unit.operands = [leaf.source.attrs["view"].tensor.name for leaf in chain.operands]
     setup = []
+    unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
+    if per_row:
+        # The even and odd vectors of a block are two independent chains.
+        from komorebi.dsl.tile.rows import interleave  # noqa: PLC0415 (rows imports us)
+
+        unit.passes.append(Pass("algebra", "drop_copies", drop_copies(body.code)))
+        moved = interleave(body.code, 0, len(body.code))
+        done = [f"{moved} instructions moved in the even and odd chains"]
+        unit.passes.append(Pass("schedule", "interleave", done))
     unit.passes.append(Pass("algebra", "negated_zero", negated_zero(body.code)))
     done = constant_registers(body.code, body.prog)
     unit.passes.append(Pass("layout", "constant_registers", done))
