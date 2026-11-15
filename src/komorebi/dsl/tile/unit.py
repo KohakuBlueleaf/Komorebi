@@ -11,6 +11,9 @@ KINDS = ("algebra", "layout", "schedule")
 # Fixed vector-unit registers: 0.0, 1.0, -1.0; 12 to 14 are set by SFPCONFIG.
 FIXED = {"zero": 9, "one": 10, "neg_one": 11}
 PROGRAMMABLE = (12, 13, 14)
+# LReg 11 as a fourth constant register: set at the start of a unit's body and set
+# back to -1.0 at its end (rule constant_registers, the step form).
+SAVED = 11
 WORK = 8  # LReg 0 .. 7 hold values
 REPLAY_ENTRIES = 32  # entries of one thread's replay buffer
 # Cycles (AICLK) of the math CPU's vector code: one-core Blackhole measurements
@@ -170,6 +173,12 @@ OPS = {
         kind="replay",
     ),
     "STALLWAIT": Op(0xA2, (("stall_res", 9), ("wait_res", 15)), kind="stall"),
+    # Dst[8 rows] += SrcB[8 rows] @ SrcA[16 x 16]; the address mode steps the counters
+    "MVMUL": Op(
+        0x26,
+        (("clear_dvalid", 2), ("instr_mod19", 3), ("addr_mode", 5), ("dst", 14)),
+        kind="matrix",
+    ),
 }
 # SFPIADD's immediate form reads only lreg_c; mod1 bit 1: lreg_c - lreg_dest; bit 2
 # set: no flags. SFPSHFT mod1 5: lreg_c shifted by the immediate.
@@ -211,10 +220,13 @@ class Insn:
     op: str
     args: dict
     note: str = ""
+    # registers it reads and writes beside its fields (a load macro's loaded register
+    # and the register its template names), LReg numbers
+    uses: tuple = ()
 
     def reads(self):
         """The register arguments read (value names or LReg numbers)."""
-        return [self.args[n] for n in self.read_fields()]
+        return [self.args[n] for n in self.read_fields()] + list(self.uses)
 
     def read_fields(self):
         """The names of the register fields read."""
@@ -235,7 +247,7 @@ class Insn:
         out = [self.args[n] for n in OPS[self.op].writes]
         if self.op == "SFPSWAP":
             out = [v for v in out if _work_register(v)]
-        return out
+        return out + list(self.uses)
 
     def sets_flags(self):
         """True when it changes the lanes' condition flags."""
@@ -268,6 +280,19 @@ class Call:
 
     text: str
     note: str
+
+
+@dataclass(eq=False)
+class Product:
+    """Matrix-unit words issued by a library call (`text`): their (op, Dst block) in
+    issue order, priced by `matrix_cost`; `synced`: a sync follows the last. With
+    `insns` the words are emitted (their instructions) in place of the call."""
+
+    text: str
+    words: list
+    note: str
+    synced: bool = True
+    insns: list = field(default_factory=list)
 
 
 @dataclass(eq=False)
@@ -324,6 +349,9 @@ class UnitProgram:
     operands: list = field(default_factory=list)
     init: dict = field(default_factory=lambda: {cpu: [] for cpu in CPUS})
     tile: dict = field(default_factory=lambda: {cpu: [] for cpu in CPUS})
+    # the math CPU's later parts of a unit (`<name>_<part>(dst)`), after the matrix
+    # unit's work between them; priced with the tile's math program
+    parts: dict = field(default_factory=dict)
     constants: dict = field(default_factory=dict)
     clobbers: list = field(default_factory=list)
     passes: list = field(default_factory=list)
@@ -337,6 +365,10 @@ class UnitProgram:
         terms = []
         state = {"previous": None, "recording": None, "buffer": {}}
         _price(self.tile[cpu], 1, terms, state)
+        if cpu == "math":
+            for items in self.parts.values():
+                state["previous"] = None
+                _price(items, 1, terms, state)
         priced = [t for t in terms if t[2] is not None]
         count = sum(t[1] for t in priced if t[0].split()[0] in OPS)
         return count, round(sum(t[2] for t in priced), 1), terms
@@ -357,6 +389,10 @@ class UnitProgram:
                 lines += _dump(self.init[cpu], 4)
             lines.append(f"  {cpu} per tile:")
             lines += _dump(self.tile[cpu], 4)
+            if cpu == "math":
+                for part, items in self.parts.items():
+                    lines.append(f"  math per tile, part {part}:")
+                    lines += _dump(items, 4)
         for p in self.passes:
             lines.append(f"  pass {p.kind} {p.name}: {'; '.join(p.done) or 'nothing'}")
         lines += [f"  check {c.rule} ({c.text}): {c.verdict}" for c in self.checks]
@@ -389,6 +425,10 @@ def _dump(items, depth):
         elif isinstance(item, Sync):
             out.append(
                 f"{pad}sync {item.cpu} <- {item.other}: {item.text}  ; {item.note}"
+            )
+        elif isinstance(item, Product):
+            out.append(
+                f"{pad}product {item.text}: {len(item.words)} words  ; {item.note}"
             )
         else:
             out.append(f"{pad}call {item.text}  ; {item.note}")
@@ -428,6 +468,13 @@ def _price(items, times, terms, state):
                     state["recording"] = None
         elif isinstance(item, Call):
             terms.append((item.text, times, None, "library call, not priced"))
+        elif isinstance(item, Product):
+            cycles = matrix_cost(item.words, item.synced)
+            source = "matrix_cost of the expanded words (probe 11)"
+            terms.append(
+                ("matrix words", times * len(item.words), times * cycles, source)
+            )
+            state["previous"] = None
         else:
             terms.append((f"sync {item.text}", times, None, "sync, not priced"))
 

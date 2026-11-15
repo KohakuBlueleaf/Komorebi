@@ -22,8 +22,9 @@ import numpy as np
 import komorebi as km
 from komorebi import native
 from komorebi import session as km_session
-from komorebi.dsl.tile import emit, trace, unit_program
+from komorebi.dsl.tile import emit, row_operand, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
+from komorebi.dsl.tile.matrix import product_program
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.unit import matrix_cost
@@ -31,11 +32,15 @@ from komorebi.dsl.tile.unit import matrix_cost
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
 GENERATED = KERNELS / "generated"
+# The runtime's kernel cache: `build` fills it on the mock device, a card job reads it
+# (the same build key on the card), so that no kernel is compiled inside a card job.
+JIT_CACHE = HERE.parents[1] / ".logs" / "jit-rules" / "mock"
 # rules.hpp's layout.
 CB_A, CB_B, CB_P, CB_OUT, CB_INFO, MAX_UNITS = 0, 1, 2, 16, 24, 32
 CB_SQUARES, CB_SCALE, CB_Y = 3, 4, 5  # the hand norm's
 CB_KV, CB_Q, CB_PROB, CB_ST, CB_ONES = 0, 1, 2, 3, 4  # the attention body's
 NONCE, ERROR, UNITS, BODY, LOOP, SYNC, SYNCS = 0, 1, 2, 64, 128, 192, 16
+SUM_PART = 256  # BODY 20: per unit the products and the sum part (rules.hpp kSumPart)
 TILE_WORDS = 1024
 DESCRIPTOR = (
     "tt_metal/third_party/umd/tests/cluster_descriptor_examples/blackhole_P150.yaml"
@@ -49,7 +54,11 @@ P_TILE, ROWS_TILE = 4, 2  # the norm's Dst tiles: per-column operand, per-row va
 TOLERANCE = {
     **{"silu": 1e-6, "add": 2**-23, "scale": 2**-23, "gate": 1e-6, "norm": 1e-5},
     "exp": 1e-5,
+    # the dense project's product: bf16 operands at HiFi2 (SrcA's top 5 bits in its
+    # first phase); the emitted words are held to the library's bits
+    "product": 2**-4,
 }
+PRODUCT_FIDELITY = "HiFi2"  # projects/dense's
 # The hand bodies held to their own bound: attention's exp polynomial is 1.75e-3.
 HAND_TOLERANCE = {"exp": 2e-3}
 # The exp the program states (the hand body's: 2e-3 over s scale - m <= 0); the
@@ -69,6 +78,7 @@ EXP_TILE = {
     12: 3,
     13: 1,
     16: 1,
+    21: 1,
 }  # the row state's Dst tile: the hand body's, the emitted
 
 # BODY: (case, form); "macro": the load-macro rule, "stated": at STEP_EXP, "accurate":
@@ -94,16 +104,24 @@ BODIES = {
     17: ("softmax", "accurate"),
     18: ("attn", "hand"),
     19: ("attn", "emitted"),
+    20: ("softmax", "ruled"),
+    21: ("exp", "ruled"),
+    22: ("product", "hand"),
+    23: ("product", "emitted"),
 }
-FORMS = ("hand", "emitted", "macro", "stated", "accurate")
-CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax", "attn")
+FORMS = ("hand", "emitted", "macro", "stated", "accurate", "ruled")
+CASES = ("silu", "add", "scale", "gate", "norm", "exp", "softmax", "attn", "product")
 # Run on the card already, over the same inputs (the tile-front experiment): built
 # and checked here, not run again.
 ALREADY_RUN = {0, 12}
+# Run on the card with the compiler before the rules of the vector-gap work (their
+# headers now hold the rules' code; their numbers stay in the README): not run again.
+EARLIER_CODE = {15, 16}
 INPUTS = {
     **{"silu": 1, "add": 2, "scale": 1, "gate": 2, "norm": 1, "exp": 1},
     "softmax": 1,
     "attn": 1,
+    "product": 2,
 }
 # The per-core attention body (kernels/attention.cpp): one query row of tiles, steps
 # of 3 key tiles (--units steps), head and value dims of 2 tiles.
@@ -215,6 +233,8 @@ def units():
     out["softstep"] = step_program(softmax_ir(), STEP_WIDTH, STEP_TILE)
     accurate = softmax_ir("softstep_accurate", {})
     out["softstep_accurate"] = step_program(accurate, STEP_WIDTH, STEP_TILE)
+    name = f"product_{PRODUCT_FIDELITY.lower()}"
+    out[name] = product_program(name, PRODUCT_FIDELITY)
     return out
 
 
@@ -249,6 +269,10 @@ def generate():
         (GENERATED / f"{name}.hpp").write_text(emit(unit))
         log(unit.dump())
         costs[name] = unit.cost("math")[1]
+        if unit.parts:
+            parts, unit.parts = unit.parts, {}
+            costs[f"{name} first part"] = unit.cost("math")[1]
+            unit.parts = parts
     refused = {}
     for name, inputs, fn in (
         ("silu", 1, trace.silu),
@@ -283,15 +307,21 @@ def setting(body):
     """The compile-time setting of BODY `body`."""
     case, form = BODIES[body]
     unit_tiles = {"norm": WIDTH, "softmax": STEP_WIDTH}.get(case, 1)
-    copy_b = INPUTS[case] == 2 and (case, form) != ("gate", "hand")
+    # BODY 20: B is the tile of ones for the row sums' products, not copied
+    inputs = 2 if body == 20 else INPUTS[case]
+    copy_b = inputs == 2 and (case, form) not in (
+        ("gate", "hand"),
+        ("softmax", "ruled"),
+    )
+    copy_b = copy_b and case != "product"
     return {
         "BODY": body,
         "UNIT_TILES": unit_tiles,
         "PACK_STATE": int(case == "softmax"),
         "STEP_THRESHOLD": f"{bits(639.0 + STEP_LAG)}u",
-        "INPUTS": INPUTS[case],
+        "INPUTS": inputs,
         "COPY_B": int(copy_b),
-        "HAS_P": p_pages(body),
+        "HAS_P": 0 if case == "product" else p_pages(body),
         "P_TILE": STEP_TILE if case == "softmax" else EXP_TILE.get(body, P_TILE),
         "EXP_A": f"{float(np.float32(EXP_A))!r}f",
         "SCALE_BITS": f"{bits(SCALE)}u",
@@ -366,13 +396,63 @@ def launch_attn(session, body, data, stage=3):
     return run, t_out, t_info, nonce
 
 
-def launch(session, body, data):
+def launch_product(session, body, data):
+    """The product (BODY 22, 23) on core (0, 0): per unit one tile of A times one of
+    B, bf16 operands as the dense project's, in `kernels/product.cpp`."""
+    count = len(data["a"])
+    nonce = secrets.randbits(32) | 1
+
+    def bf16_tiles(words):  # fp32 tiles in face order as a bf16 tile tensor
+        tiles = words.view(np.float32)
+        return session.tensor(
+            np.concatenate([matrix_of(t[None]) for t in tiles]), "bfloat16", "tile"
+        )
+
+    tensors = [bf16_tiles(data["a"]), bf16_tiles(data["b"])]
+    tensors.append(session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32"))
+    t_out = session.tensor(np.zeros((count, TILE_WORDS), np.uint32), "uint32")
+    t_info = session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32")
+    core, page = [(0, 0, 0, 0)], 4 * TILE_WORDS
+    run = session.launch()
+    run.cb(core, CB_A, "bfloat16", page // 2, 2 * page // 2)
+    run.cb(core, CB_B, "bfloat16", page // 2, 2 * page // 2)
+    run.cb(core, CB_OUT, "float32", page, 2 * page)
+    run.cb(core, CB_INFO, "float32", page, page)
+    accessors = [w for t in tensors for w in t.accessor_args()]
+    words = [t.address for t in tensors] + [count, 1, 2, 0, 0]
+    run.kernel(str(KERNELS / "reader.cpp"), core, 1, accessors, [], [], [(0, 0, words)])
+    accessors = t_out.accessor_args() + t_info.accessor_args()
+    words = [t_out.address, t_info.address, count]
+    run.kernel(str(KERNELS / "writer.cpp"), core, 0, accessors, [], [], [(0, 0, words)])
+    options = {"math_fidelity": PRODUCT_FIDELITY, "fp32_dest_acc_en": True}
+    run.kernel(
+        str(KERNELS / "product.cpp"),
+        core,
+        2,
+        [],
+        [("BODY", str(body))],
+        [str(GENERATED)],
+        [(0, 0, [nonce, count])],
+        **km_session.compute_config(options),
+    )
+    return run, t_out, t_info, nonce
+
+
+def launch(session, body, data, stage=None):
     """One program on core (0, 0) running BODY `body` over `data` (a, b, p: uint32
-    words of fp32 tiles); returns (the Launch, the output, the info tensor, nonce)."""
+    words of fp32 tiles); returns (the Launch, the output, the info tensor, nonce).
+    `stage`: (number, folder) of headers found before kernels/generated (a STAGE
+    define keeps the stage's kernel apart in the runtime's cache)."""
     case, form = BODIES[body]
     if case == "attn":
         return launch_attn(session, body, data)
+    if case == "product":
+        return launch_product(session, body, data)
     defines = setting(body)
+    headers = [str(GENERATED), str(ATTENTION)]
+    if stage is not None:
+        defines["STAGE"] = stage[0]
+        headers.insert(0, str(stage[1]))
     unit_tiles = defines["UNIT_TILES"]
     count = len(data["a"]) // unit_tiles
     nonce = secrets.randbits(32) | 1
@@ -398,7 +478,8 @@ def launch(session, body, data):
 
     accessors = [w for t in tensors for w in t.accessor_args()]
     words = [t.address for t in tensors]
-    words += [count, unit_tiles, INPUTS[case], defines["HAS_P"], int(body == 10)]
+    # The reader's input count is the kernel's (BODY 20 waits for a B tile a unit).
+    words += [count, unit_tiles, defines["INPUTS"], defines["HAS_P"], int(body == 10)]
     run.kernel(str(KERNELS / "reader.cpp"), core, 1, accessors, [], [], args(words))
     accessors = t_out.accessor_args() + t_info.accessor_args()
     words = [t_out.address, t_info.address, out_tiles]
@@ -410,6 +491,8 @@ def launch(session, body, data):
         unpack[CB_B] = "UnpackToDestFp32"
     if body == 11 or body >= 12:
         unpack[CB_P] = "UnpackToDestFp32"
+    if body == 20:
+        unpack[CB_SQUARES] = "UnpackToDestFp32"  # the state, back into Dst
     options = {
         "math_fidelity": "HiFi4",
         "fp32_dest_acc_en": True,
@@ -423,7 +506,7 @@ def launch(session, body, data):
         2,
         [],
         [(k, str(v)) for k, v in defines.items()],
-        [str(GENERATED), str(ATTENTION)],
+        headers,
         args([nonce, count]),
         **km_session.compute_config(options),
     )
@@ -454,13 +537,9 @@ def matrix_of(tiles):
 
 
 def p_tile(g):
-    """The per-column operand tile of weight row g (64 values): face c, rows 8 t ..
-    8 t + 3 hold g's columns 32 t + 16 c .. + 15; the rows below (beta) are 0."""
-    out = np.zeros((4, 16, 16), np.float32)
-    for t in range(WIDTH):
-        for c in range(2):
-            out[c, 8 * t : 8 * t + 4, :] = g[32 * t + 16 * c : 32 * t + 16 * c + 16]
-    return out.reshape(1, TILE_WORDS)
+    """The per-column operand tile of weight row g (64 values), placed by the tile
+    compiler (`row_operand`)."""
+    return np.asarray(row_operand(g, WIDTH), np.float32).reshape(1, TILE_WORDS)
 
 
 def state_tile(slots):
@@ -623,9 +702,10 @@ def inputs_of(case, count, seed):
         l_old = rng.uniform(1, 5, 32).astype(np.float32).astype(np.float64)
         a = np.concatenate([tiles_of(s[u]) for u in range(count)])
         hand = tiles_of(np.broadcast_to((639.0 - m)[:, None], (32, 32)))
+        ones = np.ones((count, TILE_WORDS), np.float32)  # BODY 20's row-sum operand
         return {
             "a": a.view(np.uint32),
-            "b": one.view(np.uint32),
+            "b": ones.view(np.uint32),
             "p": state_tile({0: m, 1: l_old}).view(np.uint32),
             "p_hand": hand.astype(np.float32).view(np.uint32),
             "s": s,
@@ -648,6 +728,15 @@ def inputs_of(case, count, seed):
             "p_hand": hand.view(np.uint32),
             "x": x,
             "g": g,
+        }
+    if case == "product":
+        # bf16 values (the operands' format) in [0.5, 1.5): no cancellation in a sum
+        a = bf16(rng.uniform(0.5, 1.5, (count, TILE_WORDS)))
+        b = bf16(rng.uniform(0.5, 1.5, (count, TILE_WORDS)))
+        return {
+            "a": a.view(np.uint32),
+            "b": b.view(np.uint32),
+            "p": one.view(np.uint32),
         }
     if case == "exp":
         # Scores; m each row's max over every unit (the state tile is one page).
@@ -754,6 +843,14 @@ def check_softmax(data, outputs, infos, nonces):
             got["word_ok"] = bool(np.array_equal(word > 0, ref["word"] > 0))
             got["word_rel"], _ = _rel(word, ref["word"])
             got["lane_spread"] = spread
+        if form == "ruled":
+            n = min(int(info[UNITS]), MAX_UNITS)
+            spans = [int(v) for v in info[SUM_PART : SUM_PART + n]]
+            if spans:
+                got["sum_part"] = {
+                    "median": statistics.median(spans),
+                    "with_first": statistics.median(spans) + got["body"]["less_sync"],
+                }
         got["errors"], got["not_finite"] = errs, bad
         within = all(v <= STEP_TOLERANCE[k] for k, v in errs.items())
         flags = got.get("flag_ok", True) and got.get("word_ok", True)
@@ -796,6 +893,12 @@ def reference(case, data):
             return a * float(np.float32(SCALE))
         if case == "gate":
             return a / (1 + np.exp(-a)) * b
+    if case == "product":
+        out = [
+            tiles_of(matrix_of(a[u : u + 1]) @ matrix_of(b[u : u + 1]))[0]
+            for u in range(len(a))
+        ]
+        return np.stack(out)
     if case == "exp":
         shift = tiles_of(np.broadcast_to(data["m"][:, None], (32, 32)))
         return np.exp(EXP_SCALE * (a - shift))
@@ -831,7 +934,7 @@ def check(case, data, outputs, infos, nonces):
         bound = TOLERANCE[case]
         if form == "hand":
             bound = HAND_TOLERANCE.get(case, bound)
-        elif form == "stated":
+        elif form in ("stated", "ruled"):
             bound = STATED_TOLERANCE[case]
         got["ok"] = (
             got["nonce_ok"]
@@ -850,7 +953,7 @@ def check(case, data, outputs, infos, nonces):
 
 def bodies_of(cases, card=False):
     out = [b for b, (case, _) in BODIES.items() if case in cases]
-    return [b for b in out if not (card and b in ALREADY_RUN)]
+    return [b for b in out if not (card and b in ALREADY_RUN | EARLIER_CODE)]
 
 
 def build(args):
@@ -859,7 +962,7 @@ def build(args):
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
     km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
-    os.environ["TT_METAL_CACHE"] = str(HERE.parents[1] / ".logs" / "jit-rules" / "mock")
+    os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     generate()
     sizes = {}
     with km.Session() as session:
@@ -896,6 +999,8 @@ def build(args):
 def card(args):
     """One core: each body of `args.cases` over the same inputs; values, cycles."""
     costs = generated_costs()
+    os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
+    log(f"kernels from the build's cache {JIT_CACHE}")
     with open("/proc/loadavg") as f:
         load = f.read().split()[:3]
     started = time.time()

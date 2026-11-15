@@ -659,8 +659,11 @@ The cause is in the load macro's setup: a template is written through the back d
 writes a plain operand's register (square_add's and mad's: VD 4 and 5), the setup's
 renaming of the plain registers renames VD too, so the word is executed instead of
 stored and the macro runs the template the previous body left (add's or mul's).
-`bodies.py` keeps a load macro only when every template write has VD 12 or more
-(`templates_stored`); square_add and mad run plain. Each body is followed by the matrix
+`bodies.py` kept a load macro only when every template write had VD 12 or more;
+square_add and mad ran plain in the results here. The tile compiler's setup now keeps
+VD, and `emit` refuses a macro whose template its setup does not store: the other
+bodies' headers are unchanged, square_add and mad take the load macro again (not run on
+a card). Each body is followed by the matrix
 unit's wait for the vector unit (`DC_VECTOR_DONE`; the headers leave the wait to the
 caller); on the card it changed no value.
 

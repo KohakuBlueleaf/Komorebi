@@ -32,9 +32,9 @@
 #include "norm.hpp"
 #elif BODY == 13
 #include "expstep.hpp"
-#elif BODY == 15
+#elif BODY == 15 || BODY == 20
 #include "softstep.hpp"
-#elif BODY == 16
+#elif BODY == 16 || BODY == 21
 #include "expstep_flash.hpp"
 #elif BODY == 17
 #include "softstep_accurate.hpp"
@@ -139,6 +139,36 @@ namespace {
     }
 #endif
 
+#if BODY == 20
+    // BODY 20's second half: P (packed to Y) times the ones (B) into Dst 0, the state
+    // (packed to Squares) into Dst 1, the sum part; timed from the products' issue.
+    inline void sum_part(uint32_t u, volatile uint32_t* info) {
+        cb_wait_front(rules::kCbY, kUnitTiles);
+        cb_wait_front(rules::kCbSquares, 1);
+        tile_regs_acquire();
+        reconfig_data_format_srca(rules::kCbSquares);
+        copy_init(rules::kCbSquares);
+        copy_tile(rules::kCbSquares, 0, 1);
+        reconfig_data_format(rules::kCbB, rules::kCbY);
+        matmul_init(rules::kCbY, rules::kCbB, 0);
+        MATH(const uint32_t start = rules::wall());
+        for (uint32_t t = 0; t < kUnitTiles; ++t) {
+            matmul_tiles(rules::kCbY, rules::kCbB, t, 0, 0);
+        }
+        MATH((km_tile::softstep_sum(0)));
+        MATH(tensix_sync(); info[rules::kSumPart + u] = rules::wall() - start);
+        tile_regs_commit();
+        cb_pop_front(rules::kCbY, kUnitTiles);
+        cb_pop_front(rules::kCbSquares, 1);
+        cb_pop_front(rules::kCbB, 1);
+        tile_regs_wait();
+        cb_reserve_back(rules::kCbOut, 1);
+        pack_tile(1, rules::kCbOut);  // the new state
+        tile_regs_release();
+        cb_push_back(rules::kCbOut, 1);
+    }
+#endif
+
     // Once per stream (bodies whose units re-initialise per unit do it in body()).
     inline void body_init() {
 #if BODY == 0
@@ -170,9 +200,9 @@ namespace {
         MATH((flash::init(EXP_A)));
         MATH((flash::macro_init()));
         MATH((flash::addr_init()));
-#elif BODY == 15
+#elif BODY == 15 || BODY == 20
         MATH((km_tile::softstep_init()));
-#elif BODY == 16
+#elif BODY == 16 || BODY == 21
         MATH((km_tile::expstep_flash_init()));
 #elif BODY == 17
         MATH((km_tile::softstep_accurate_init()));
@@ -235,9 +265,9 @@ namespace {
         MATH((flash::state_max<3>()));
         MATH((flash::state_update<false>(STEP_THRESHOLD)));
         MATH((flash::exp_step<3>()));
-#elif BODY == 15
+#elif BODY == 15 || BODY == 20
         MATH((km_tile::softstep(0)));
-#elif BODY == 16
+#elif BODY == 16 || BODY == 21
         MATH((km_tile::expstep_flash(0)));
 #elif BODY == 17
         MATH((km_tile::softstep_accurate(0)));
@@ -279,7 +309,7 @@ void kernel_main() {
         cb_pop_front(rules::kCbA, kUnitTiles);
 #else
         tile_regs_acquire();
-#if BODY == 8
+#if BODY == 8 || BODY == 20
         reconfig_data_format(rules::kCbA, rules::kCbA);
         copy_init(rules::kCbA);
 #endif
@@ -297,10 +327,28 @@ void kernel_main() {
         MATH(tensix_sync(); info[rules::kBody + u] = rules::wall() - start);
         tile_regs_commit();
         cb_pop_front(rules::kCbA, kUnitTiles);
-#if INPUTS == 2
+#if INPUTS == 2 && BODY != 20
         cb_pop_front(rules::kCbB, 1);
 #endif
         tile_regs_wait();
+#if BODY == 20
+        // P out and again for the products; the state for the sum part.
+        cb_reserve_back(rules::kCbOut, kUnitTiles);
+        cb_reserve_back(rules::kCbY, kUnitTiles);
+        cb_reserve_back(rules::kCbSquares, 1);
+        for (uint32_t t = 0; t < kUnitTiles; ++t) {
+            pack_tile(t, rules::kCbOut);
+        }
+        for (uint32_t t = 0; t < kUnitTiles; ++t) {
+            pack_tile(t, rules::kCbY);
+        }
+        pack_tile(P_TILE, rules::kCbSquares);
+        tile_regs_release();
+        cb_push_back(rules::kCbOut, kUnitTiles);
+        cb_push_back(rules::kCbY, kUnitTiles);
+        cb_push_back(rules::kCbSquares, 1);
+        sum_part(u, info);
+#else
         cb_reserve_back(rules::kCbOut, kUnitTiles + PACK_STATE);
         for (uint32_t t = 0; t < kUnitTiles; ++t) {
             pack_tile(t, rules::kCbOut);
@@ -310,6 +358,7 @@ void kernel_main() {
 #endif
         tile_regs_release();
         cb_push_back(rules::kCbOut, kUnitTiles + PACK_STATE);
+#endif
 #endif
         PACK(info[rules::kLoop + u] = rules::wall() - started);
     }
