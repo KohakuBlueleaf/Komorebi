@@ -33,6 +33,6 @@ def test_define_against_the_keyword_refused():
 
 
 def test_class_key_differs_on_and_keeps_its_value_off():
-    made = ({"BLOCK": 4}, {}, 1000, 4, None, None)
+    made = ({"BLOCK": 4}, {}, {"W": 1000}, 4, None, None)
     assert sources_key(*made) == sources_key(*made, False)
     assert sources_key(*made) != sources_key(*made, True)
