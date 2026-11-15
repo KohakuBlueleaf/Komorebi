@@ -17,8 +17,9 @@ KERNELS = md.HERE / "kernels"
 CLUSTER = 1
 TICKS_PER_MICROSECOND = 50  # kmx_time() and the dispatcher count the 50 MHz timer
 EXCLUSIVE = km.abi.headers().constants["KM_FLAG_EXCLUSIVE"]
-ACTIVATIONS = ("x", "h", "q", "k", "v", "up", "gated")
+ACTIVATIONS = ("x", "h", "qkv", "k", "v", "gated", "sums")
 PARTS = {"reader": OP["kOpReader"], "compute": OP["kOpCompute"]}
+GATE_PARTS = {"compute": OP["kOpCompute"], "writer": OP["kOpWriter"]}
 NORM_PARTS = PARTS | {"writer": OP["kOpWriter"]}
 
 
@@ -39,6 +40,7 @@ def buffers(plan):
         (D["DC_CB_SQUARES"], 1),
         (D["DC_CB_SCALE"], 1),
         (D["DC_CB_NORMED"], D["DC_NORM_SHARE"]),
+        (D["DC_CB_UP"], block),
     ]
     return [km.Buffer(*buffer) for buffer in plan.buffers()] + [
         km.Buffer(index, "bfloat16", tile, pages) for index, pages in own
@@ -54,17 +56,20 @@ class Decode:
         self.plans = md.plans(model)
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
         hidden = model.hidden
-        widths = {"x": hidden, "h": hidden, "up": model.mlp, "gated": model.mlp}
-        widths |= {name: model.shapes()[name][1] for name in ("q", "k", "v")}
+        products = model.products()
+        widths = {"x": hidden, "h": hidden, "gated": model.mlp}
+        widths |= {"qkv": products["qkv"][1], "sums": products["gate_up"][1]}
+        widths |= {name: model.shapes()[name][1] for name in ("k", "v")}
         self.tensors = {
             name: session.empty((md.TILE, widths[name]), "bfloat16", "tile")
             for name in ACTIVATIONS
         }
         self.tensors["constants"] = dense_card.bf16_tensor(session, md.constants())
+        shapes = products | {name: model.shapes()[name] for name in md.APART}
         self.weights = [
             {
                 name: session.empty(shape, "bfloat16", "tile")
-                for name, shape in model.shapes().items()
+                for name, shape in shapes.items()
             }
             | {
                 name: session.empty((md.TILE, hidden), "bfloat16", "tile")
@@ -105,7 +110,10 @@ class Decode:
         )
         program.overlay(
             "gate",
-            {"reader": reader, "compute": KERNELS / "gate" / "compute.cpp"},
+            {
+                "compute": KERNELS / "gate" / "compute.cpp",
+                "writer": KERNELS / "gate" / "writer.cpp",
+            },
             number=D["DC_OVERLAY_GATE"],
         )
         program.overlay("norm", KERNELS / "norm", number=D["DC_OVERLAY_NORM"])
@@ -143,18 +151,18 @@ class Decode:
             S["kHandlerSplit"],
             pl.REDUCE_FORMS["tree"],
             EXCLUSIVE,
-            *(self.plan_word(name) for name in ("q", "k", "up", "down")),
+            *(self.plan_word(name) for name in ("qkv", "q", "k", "gate_up", "down")),
             operation_word(D["DC_OVERLAY_ADD"], PARTS),
-            operation_word(D["DC_OVERLAY_GATE"], PARTS),
+            operation_word(D["DC_OVERLAY_GATE"], GATE_PARTS),
             operation_word(D["DC_OVERLAY_NORM"], NORM_PARTS),
             int(epsilon),
         ]
 
     def write_layer(self, layer, weights):
-        """Layer `layer`'s weights ({name: (pages, values)}) into DRAM through the host
-        channel: seconds taken."""
+        """Layer `layer`'s weights (layer_weights(): {name: (pages, values)}) into DRAM
+        through the host channel, as the card's products take them: seconds taken."""
         seconds = 0.0
-        for name, (pages, _) in weights.items():
+        for name, pages in md.fused(weights).items():
             seconds += self.write(self.weights[layer][name], pages)
         return seconds
 
@@ -180,15 +188,17 @@ class Decode:
         first=0,
         bare=False,
         parts=False,
+        apart=False,
         overlap=False,
         timeout=10.0,
     ):
         """One LAYERS command to the thread (`bare`: the products only; `parts`: their
-        parts only, no sum and nothing written; `overlap`: q, k, v, o two in flight):
-        its result word and stats slot."""
+        parts only, no sum and nothing written; `apart`: q, k and v as three products;
+        `overlap`: and q, k, v, o two in flight): its result word and stats slot."""
         slot = self.slot
         self.slot += 1
-        mode = (3 if parts else int(bare)) | (4 if overlap else 0)
+        mode = 3 if parts else int(bare)
+        mode |= (4 if apart or overlap else 0) | (8 if overlap else 0)
         args = [tokens, layers, slot, first, mode]
         handle = self.run.submit("layers", cluster=CLUSTER, args=args, result=True)
         event = self.run.wait(handle, timeout=timeout)
@@ -203,7 +213,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
-STEPS = ("norm1", "q", "k", "v", "o", "norm2", "up", "gate", "down")  # DC_STEP_*
+STEPS = ("norm1", "qkv", "q", "k", "v", "o", "norm2", "gate_up", "down")  # DC_STEP_*
 
 
 def decode_slot(words):

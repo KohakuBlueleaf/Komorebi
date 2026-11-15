@@ -10,16 +10,16 @@ model lets a decode step run at that floor, and where every microsecond above it
 The shapes are Qwen3-1.7B's (`model.py`, from its `config.json`): hidden 2048, MLP 6144,
 16 query heads and 8 KV heads of 128, 28 layers, RMS norm with eps 1e-6. The weights are
 random (bf16, variance 1 / K; the two output projections also / sqrt(2 x layers) so the
-residual keeps its scale; the norm weights in [0.5, 1.5)). A layer, in order:
+residual keeps its scale; the norm weights in [0.5, 1.5)). A layer, in order, as the
+card runs it since stage 2 (one product for q, k and v, one for gate and up):
 
 | Step | What | Weight (K x N) |
 |---|---|---|
 | norm1 | h = rmsnorm(x) w1 | 2048 |
-| q, k, v | q, k, v = h Wq, h Wk, h Wv | 2048 x 2048, 2048 x 1024 (twice) |
+| qkv | [q k v] = h [Wq Wk Wv] | 2048 x 4096 |
 | o | x = x + a Wo | 2048 x 2048 |
 | norm2 | h = rmsnorm(x) w2 | 2048 |
-| up | u = h Wu | 2048 x 6144 |
-| gate | g = silu(h Wg) u | 2048 x 6144 |
+| gate_up | g = silu(h Wg) (h Wu) | 2048 x 12288 |
 | down | x = x + g Wd | 6144 x 2048 |
 
 Attention over the cache is not here yet: `a` (attention's output) is q itself, a marked
@@ -34,21 +34,22 @@ DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) 
 
 - Every product is the dense project's K split (`../dense/kernels/split`): a group of s
   cores per 1 x 8 block of output tiles, each core reading 1/s of K in chunks of 2 tiles
-  on both movers, the parts summed by a tree over the cores' ports. The four shapes of a
-  layer are four plans in one table in the program's arguments; a command's a5 picks one.
-  The plans share every buffer; a group has at most 16 cores (a sum of 4 rounds, half
-  of a core's 8 ports): q, o and down 8 groups of 15, up and gate 24 of 5 (120 cores),
-  k and v 4 groups of 16 (64 cores).
+  on both movers, the parts summed by a tree over the cores' ports. The shapes are plans
+  in one table in the program's arguments; a command's a5 picks one. The plans share
+  every buffer; a group has at most 16 cores (a sum of 4 rounds, half of a core's 8
+  ports): qkv 16 groups of 7 (112 cores), o and down 8 of 15 (120), gate_up 48 of 2
+  (96); for q, k, v apart, q as o, k and v 4 groups of 16 (64 cores).
 - What a layer does besides the products is an overlay (`kernels/`), called once at the
   hook after the sum (`split_op.hpp`): `add` (the residual: the sum plus a block of x),
-  `gate` (silu of the sum times a block of u) and `norm` (on 16 cores in the split's
+  `gate` (a gate_up block is 4 tiles of the gate and 4 of up: silu of the first times
+  the second, written by its own writer part) and `norm` (on 16 cores in the split's
   operation-only mode: each core reads the whole row for the sums of squares and writes
   its 4 tiles of h).
 - An X280 thread (`thread/layers.c`) walks the layers: one host command (`layers`) runs
-  T tokens of L layers, each layer's nine commands in order, and records each command's
-  time from its event. Every command is waited for before the next, except q, k, v and o
-  with the overlap on (stage 2): two of them in flight, each sum in its own set of
-  ports and arrival slots.
+  T tokens of L layers, each layer's six commands in order, and records each command's
+  time from its event. Every command is waited for before the next, except with q, k
+  and v apart and the overlap on (stage 2): q, k, v and o two in flight, each sum in its
+  own set of ports and arrival slots.
 
 ## Run
 
@@ -60,14 +61,15 @@ python projects/decode/bench.py --tokens 10 --cases overlap --no-check
 
 It writes each layer's weights through the host channel (6.2 GB/s), checks one layer
 from a known x against `model.layer()` (numpy, float64, each output rounded to bf16 as
-the card stores it), twice from the same x, waited and then overlapped (the second run
-after every core's change of role), then runs each case as one `layers` command and prints one JSON line
+the card stores it), twice from the same x, fused and waited, then apart and overlapped
+(the second run after every core's change of role), then runs each case as one `layers` command and prints one JSON line
 with the thread's times and the account. The bound is loose (rms error / rms <= 2e-2,
 largest error / largest value <= 5e-2 a tensor); bf16 alone gives 5e-3 a product and
 1e-2 for the gate. The cases: `full`, the layer; `bare`, the products only (no
 operation, no norm); `parts`, the products' parts only (each core reads and multiplies
 its share, nothing is summed or written: the split's mode 1); `overlap`, the layer
-with q, k, v and o two in flight.
+with q, k and v apart and q, k, v and o two in flight; `parts_apart`, the parts with q, k
+and v apart.
 
 The thread builds each command from its words and the layer's row of addresses
 (`thread/layers.c`):
@@ -178,6 +180,44 @@ is about o's own (7.8 us waited), which nothing follows inside the span. The thr
 term falls by 8.4 us: three of its submits a layer happen while a product runs. The "q,
 k, v, o" rows come from the span the thread measures (q's submit to o's event, 88.8 us)
 less those products' parts and o's add; the other rows as in stage 1.
+
+### The fused products
+
+q, k and v read the same h, gate and up too: as one product each they pay one
+boundary, one command and one thread round trip instead of three and two
+(`model.fused`: [Wq Wk Wv] side by side; gate_up takes 4 tiles of the gate's columns,
+then the same 4 of up's, so a 1 x 8 block holds both halves of its 4 output tiles and
+the gate needs nothing from another group). The gate's compute part packs up's half in
+bf16 (as the reference stores u), then silu of the gate's half times it; its writer
+part writes the 4 tiles where Y's write would have written 8 (`kernels/gate/`). gate_up
+is 384 tiles wide: 48 blocks of 1 x 8 leave groups of 2, 96 cores; the plans share
+their buffers, so a wider block is not open to it. qkv cannot overlap o, which reads
+q: the fused layer is waited throughout. The program holds both forms, so one run
+measures both (`results/qwen3-1.7b-x10-fused.json`; both check runs exact):
+
+| Term | Kind | apart, overlapped (before) | fused |
+|---|---|---:|---:|
+| the weights read at 495.6 GB/s | HARDWARE | 203.1 | 203.1 |
+| q, k, v (or qkv) and o: the read below the ceiling | OURS | 28.3 | 16.2 |
+| q, k, v and o: the boundary left (overlapped); qkv 6.8 + o 7.9 (fused) | OURS | 8.6 | 14.7 |
+| gate_up: the read below the ceiling (96 cores; up and gate apart: 24.3) | OURS | 26.3 | 26.3 |
+| gate_up: the boundary (one round; up and gate apart: 14.6) | OURS | 4.6 | 4.6 |
+| down: the read below the ceiling, the boundary | OURS | 20.4 | 20.4 |
+| the operations: o's add, the gate (5.7; apart 11.6), down's add | OURS | 8.2 | 8.0 |
+| norm1, norm2 | OURS | 28.0 | 28.0 |
+| the thread between commands | OURS | 8.1 | 12.2 |
+| total | | 335.5 | 333.4 |
+| unaccounted | | 0.0 | 0.0 |
+
+The fused layer: 333.4 us, **9.34 ms a token, 107.1 tokens a second, 302 GB/s** of
+weights (stage 2 (1) gave 351.6 us with up and gate apart). gate_up saves 14.0 us
+against up and gate (138.1 against 70.4 + 81.7): one boundary of 7.3 and a sum of 3
+rounds become a sum of one (4.6), the gate's op halves (each of 48 roots takes 4 tiles,
+not each of 24 roots 8), and the command and its round trip go; its read on 96 cores
+costs 2.0 us more than on 120. qkv against q, k, v overlapped: the three reads' fixed
+costs go (16.2 against 28.3 below the ceiling) but the overlap of o goes too; fused
+is 2.1 us ahead. The account takes the fused case's own bare and parts runs, and for
+the overlapped column the parts of q, k, v apart (`parts_apart`).
 
 ## What the framework lacked
 

@@ -13,6 +13,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
+import numpy as np  # noqa: E402
+
 import komorebi as km  # noqa: E402
 from komorebi import power  # noqa: E402
 from komorebi.session import visible_card  # noqa: E402
@@ -23,16 +25,19 @@ from projects.dense import bench as dense_bench  # noqa: E402
 CEILING_GBS = 495.6  # the card's DRAM read, 120 cores on both movers (dense ceilings)
 # a loose bound on a layer of bf16 steps (bf16 alone: 6e-3 a product, 1e-2 the gate)
 CHECK_RMS, CHECK_MAX = 2e-2, 5e-2
-CHECK_RUNS = 2  # the layer twice from one x: waited, then overlapped (after every role)
-CHECKED = ("h1", "q", "k", "v", "x1", "h", "up", "gated", "x")
-READ_BACK = ("q", "k", "v", "h", "up", "gated", "x")  # h1 and x1 are overwritten
+# The layer twice from one x: fused and waited, then q, k, v apart and overlapped (the
+# second after every core's change of role). Checked: what the card keeps of a layer.
+CHECK_RUNS = 2
+CHECKED = ("q", "k", "v", "h", "gated", "x")
 CASES = {
     "full": {},
     "bare": {"bare": True},
     "parts": {"parts": True},
     "overlap": {"overlap": True},
+    "parts_apart": {"parts": True, "apart": True},
 }
-PRODUCT_STEPS = ("q", "k", "v", "o", "up", "gate", "down")
+PRODUCT_STEPS = ("qkv", "o", "gate_up", "down")
+SPANNED = ("q", "k", "v", "o")  # overlapped: one span
 STARTED = time.monotonic()
 
 
@@ -61,11 +66,22 @@ def check(decode, model, weights, seed):
     start = md.start(seed, model)
     want = md.layer(model, start, weights)
     out = {}
+    width = {name: model.shapes()[name][1] for name in ("q", "k", "v")}
     for run in range(CHECK_RUNS):
         decode.write_activation("x", start)
         decode.job(1, 1, overlap=run == 1)
-        for name in READ_BACK:
-            errors = md.errors(decode.read_activation(name), want[name])
+        got = {
+            name: decode.read_activation(name) for name in ("qkv", "h", "gated", "x")
+        }
+        got["q"] = got["qkv"][:, : width["q"]]
+        if run == 1:  # apart: k and v in their own tensors
+            got |= {name: decode.read_activation(name) for name in ("k", "v")}
+        else:
+            got["k"], got["v"] = np.split(
+                got["qkv"][:, width["q"] :], [width["k"]], axis=1
+            )
+        for name in CHECKED:
+            errors = md.errors(got[name], want[name])
             if name in out:
                 errors = {key: max(out[name][key], errors[key]) for key in errors}
             out[name] = errors
@@ -112,8 +128,11 @@ def account(model, cases):
     if not {"full", "bare", "parts"} <= cases.keys():
         return {}
     full, bare, parts = (cases[name]["steps"] for name in ("full", "bare", "parts"))
+    if "parts_apart" in cases:  # q, k, v's parts, apart
+        parts = parts | {name: cases["parts_apart"]["steps"][name] for name in md.APART}
     ceiling = {
-        name: 2 * k * n / (CEILING_GBS * 1e3) for name, (k, n) in model.shapes().items()
+        name: 2 * k * n / (CEILING_GBS * 1e3)
+        for name, (k, n) in (model.shapes() | model.products()).items()
     }
 
     def product(step, own):
@@ -128,7 +147,7 @@ def account(model, cases):
             ("OURS", f"{step}: the boundary", bare[step] - parts[step]),
         ]
         operation = (
-            "its operation" if step in ("o", "gate", "down") else "full less bare"
+            "its operation" if step in ("o", "gate_up", "down") else "full less bare"
         )
         return terms + [("OURS", f"{step}: {operation}", own - bare[step])]
 
@@ -138,7 +157,7 @@ def account(model, cases):
             continue
         case = cases[name]
         steps, terms = case["steps"], []
-        spanned = PRODUCT_STEPS[:4] if name == "overlap" else ()
+        spanned = SPANNED if name == "overlap" else ()
         if spanned:
             own = sum(parts[step] for step in spanned) + full["o"] - bare["o"]
             terms += [
@@ -160,7 +179,7 @@ def account(model, cases):
                 ),
             ]
         for step in PRODUCT_STEPS:
-            if step not in spanned:
+            if step not in spanned and not (spanned and step == "qkv"):
                 terms += product(step, steps[step])
         terms += [
             ("OURS", f"{step}: the command", steps[step]) for step in ("norm1", "norm2")

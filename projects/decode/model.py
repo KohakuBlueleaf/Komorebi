@@ -20,11 +20,14 @@ OP = abi.constants(SPLIT_OP, known=abi.headers().constants)
 TILE = 32
 CORES = 120
 BLOCK_WIDTH, CHUNK = 8, 2  # every plan's output block (1 x 8 tiles) and K chunk
+GATE_TILES = BLOCK_WIDTH // 2  # a gate_up block: 4 tiles of the gate, then 4 of up
 # A sum's tree takes at most half of a core's 8 ports (the other half is the set of
 # the product in flight beside it): 4 rounds, groups of at most 16 cores.
 SETS, GROUP_MOST = 2, 16
-# The layer's products: (weight, its name in the config's shapes, plan); in order.
-PRODUCTS = ("q", "k", "v", "o", "up", "gate", "down")
+# The card's products of a layer, in order: q, k, v as one; gate and up as one. APART:
+# q, k and v as three products (the overlapped form), q's plan o's.
+PRODUCTS = ("qkv", "o", "gate_up", "down")
+APART = ("q", "k", "v")
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,17 @@ class Model:
             "up": (self.hidden, self.mlp),
             "gate": (self.hidden, self.mlp),
             "down": (self.mlp, self.hidden),
+        }
+
+    def products(self):
+        """{product: (K, N)} of the card's products: qkv = [Wq | Wk | Wv], gate_up the
+        gate's and up's columns in turns of GATE_TILES tiles each."""
+        shapes = self.shapes()
+        return {
+            "qkv": (self.hidden, sum(shapes[name][1] for name in ("q", "k", "v"))),
+            "o": shapes["o"],
+            "gate_up": (self.hidden, 2 * self.mlp),
+            "down": shapes["down"],
         }
 
     def layer_bytes(self):
@@ -86,8 +100,8 @@ def plans(model, cores=CORES):
     chunks of 2 K tiles, groups as large as the cores allow up to GROUP_MOST, one
     arrival buffer of two sets (two products in flight), each a slot per round."""
     shapes = {}
-    for k, n in model.shapes().values():
-        shapes.setdefault((k // TILE, n // TILE), None)
+    for name in PRODUCTS + APART:
+        shapes.setdefault(plan_of(model, name), None)
     sizes = {
         shape: min(shape[0], cores // pl.cdiv(shape[1], BLOCK_WIDTH), GROUP_MOST)
         for shape in shapes
@@ -102,9 +116,9 @@ def plans(model, cores=CORES):
     }
 
 
-def plan_of(model, weight):
-    """The (K tiles, N tiles) key of `weight`'s plan."""
-    k, n = model.shapes()[weight]
+def plan_of(model, product):
+    """The (K tiles, N tiles) key of `product`'s plan (a product or a weight)."""
+    k, n = (model.products() | model.shapes())[product]
     return k // TILE, n // TILE
 
 
@@ -138,6 +152,27 @@ def layer_weights(model, seed, layer):
         rows = np.repeat(bits, TILE, axis=0)
         out[name] = (tile_pages(rows), formats.bf16_values(bits)[0])
     return out
+
+
+def fused(weights):
+    """The card's weights of a layer from layer_weights(): {name: pages} of qkv, o,
+    gate_up (the gate's GATE_TILES tiles, then up's, a block), down, the norms, APART.
+    """
+    values = {name: value for name, (_, value) in weights.items()}
+    qkv = np.concatenate([values[name] for name in ("q", "k", "v")], axis=1)
+    k, n = values["gate"].shape
+    turn = GATE_TILES * TILE
+    pair = np.stack(
+        [
+            values["gate"].reshape(k, n // turn, turn),
+            values["up"].reshape(k, n // turn, turn),
+        ],
+        axis=2,
+    )
+    out = {"qkv": qkv, "gate_up": pair.reshape(k, 2 * n)}
+    pages = {name: tile_pages(formats.bf16_bits(value)) for name, value in out.items()}
+    kept = ("o", "down", "norm1", "norm2") + APART
+    return pages | {name: weights[name][0] for name in kept}
 
 
 def constants():
