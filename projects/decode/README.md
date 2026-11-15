@@ -35,8 +35,8 @@ DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) 
 
 - Every product is the dense project's K split (`../dense/kernels/split`): a group of s
   cores per 1 x 8 block of output tiles, each core reading 1/s of K in chunks of 2 tiles
-  on both movers (AB, gate_up AAAB), the parts summed by a tree over the cores' ports. The shapes are plans
-  in one table in the program's arguments; a command's a5 picks one. The plans share
+  on both movers (AB, gate_up AAAB), the parts summed by a tree over the cores' ports.
+  The shapes are plans in one table in the program's arguments; a command's a5 picks one. The plans share
   every buffer; a group has at most 16 cores (a sum of 4 rounds, half of a core's 8
   ports): qkv 16 groups of 7 (112 cores), o and down 8 of 15 (120), gate_up 48 of 2
   (96); for q, k, v apart, q as o, k and v 4 groups of 16 (64 cores).
@@ -339,6 +339,26 @@ sum, in series at each root: its 8 tiles are read only once the root's own read 
 done, then it computes 1 / rms on one tile. That is most of the scale's time, and it is
 left in the operations' term.
 
+### What is left: the thread and the operations
+
+These are the layer's terms after (4) (`results/qwen3-1.7b-x10-norms.json`; the same at
+the head after the merge of main, 304.7 us). None of them is changed here.
+
+- The thread, 8.4 us: 2.1 us for each of the 4 commands. A norm's stamps showed 3.0 us
+  from one command's completion to the next command's first core: the event reaching
+  the X280, the thread's wait returning, its submit, and the ring to the cores. The 1.0
+  us between the last core's report and the thread's event is in each product's term.
+  Removing these gaps needs the next command in the cores' queue before the one ahead
+  completes. That works only where A is not the one ahead's output, which is the
+  overlap of stage 2 (1); in the fused layer every product reads what the one ahead
+  writes.
+- The operations, 15.6 us: qkv's scale 3.4 and gate_up's 9.3 (the gate 4.7 and the
+  scale 4.5), o's add 1.5 and down's 1.4 (each with 0.35 of squares). They run at the
+  root after its sum, in series. The scale reads its 8 tiles of squares only after the
+  root's own read, then computes 1 / rms on one tile, though none of that depends on
+  the sum. The hook after the sum is the only place an operation is called (a
+  condition of the design), so this is left as it is.
+
 ## What the framework lacked
 
 - A buffer read by two kinds of kernel on one core (unpack on some commands, the writer
@@ -351,3 +371,13 @@ left in the operations' term.
   itself (`sets.hpp`), which halves what a sum may use: 4 rounds of the tree.
 - The read takes a chunk of A with its chunk of W, so a product whose A is the step
   before's output cannot start its weight's read early; only q, k, v and o overlap.
+- A runtime trace gives a core four stamps a command (its reader's take, its writer's
+  end, its report), so a command's read cannot be told from its compute. A norm's 12.6
+  us was taken apart by its sizes, not by stamps.
+- The movement engine moves one block a stream on a mover in a pass, then waits at a
+  barrier. A pattern that gives one mover more chunks (AAAB) gains only when that
+  mover's half is deep enough not to wait on compute, so the split sizes it by hand
+  (the plan's depth).
+- An operation is called only after the sum. A norm's scale needs only the squares, not
+  the sum, so it could run while the root waits for its parts if there were a hook
+  before the sum.
