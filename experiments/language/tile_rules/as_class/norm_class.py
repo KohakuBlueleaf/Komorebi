@@ -21,7 +21,6 @@ import rules  # noqa: E402  (the harness: its values, weight tile and reference)
 
 STARTED = time.monotonic()
 WIDTH = rules.WIDTH  # tiles a row
-BLOCK = 2 * WIDTH  # tiles a block: two rows
 SPANS_EMPTY, SPANS_FIRST = 16, 18  # a stamps page: the empty spans, then each call's
 TOLERANCE = rules.TOLERANCE["norm"]
 
@@ -35,6 +34,7 @@ class RowNorm(km.Program):
     """norm: each core's `rows` rows of WIDTH tiles of x from rank x rows, y = x
     rsqrt(mean(x^2) + eps) g into the same pages of out; g's tile filled from w."""
 
+    BLOCK = km.constant(2 * WIDTH)  # tiles a block: two rows
     weight: km.L1[km.fp32, 1, 32, 32]
 
     @km.tile_function(tolerance=TOLERANCE)
@@ -49,8 +49,10 @@ class RowNorm(km.Program):
     ):
         first = self.rank * rows * WIDTH
         self.weight.fill(km.Stream(w.pages(0, 1)))
-        results = km.Stream(out.pages(first, rows * WIDTH), write=True, block=BLOCK)
-        for row in km.Stream(x.pages(first, rows * WIDTH), block=BLOCK, row=WIDTH):
+        results = km.Stream(
+            out.pages(first, rows * WIDTH), write=True, block=self.BLOCK
+        )
+        for row in km.Stream(x.pages(first, rows * WIDTH), block=self.BLOCK, row=WIDTH):
             results.push(self.norm(row, self.weight))
 
 
