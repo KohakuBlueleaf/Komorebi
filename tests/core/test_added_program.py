@@ -127,7 +127,7 @@ def test_a_class_beside_the_added_one_takes_it_and_the_refusals_name_each_cause(
         added_program.add(run_of(loaded, switch=False), other)
 
 
-def test_per_core_args_go_in_a_row_a_core_and_word_fields_and_overlays_are_refused():
+def test_per_core_args_and_word_fields_go_in_a_row_a_core_and_dynamic_is_refused():
     other = project(form="runtime")
     loaded = twice(form="runtime", beside=other)
     other.args = lambda core: ([core, 7], [core + 100], [2 * core, 3, 4])
@@ -145,11 +145,14 @@ def test_per_core_args_go_in_a_row_a_core_and_word_fields_and_overlays_are_refus
     )
     other.args = None
     assert added_program.args_defines(other, 3) == ([], 0)
-    other.word_fields = {"counts": 1}
-    assert "word fields" in added_program.refused(run_of(loaded), other)
-    other.word_fields = {}
-    other.overlays = {"extra": object()}
-    assert "overlays of its own" in added_program.refused(run_of(loaded), other)
+    other.word_fields = {"counts": 4}  # its tensor's address: compute's word 0
+    other.args = lambda core: ([], [], [0x1F000])
+    assert added_program.refused(built, other) == ""
+    assert added_program.args_defines(other, 2) == ([[0x1F000]] * 2, programs.CB_ALIGN)
+    assert other.defines["KM_ARGS_COMPUTE"] == "0"
+    other.args, other.word_fields = None, {}
+    other.messages = SimpleNamespace(handlers={}, parts={})
+    assert "a dynamic handler" in added_program.refused(run_of(loaded), other)
 
 
 class Descriptor:
@@ -307,3 +310,65 @@ def test_an_add_raises_the_count_a_live_thread_s_kmx_load_reads():
     assert (cluster, offset) == (1, thread.layout()["KMX_LIM_RING"])
     assert line == thread.ring_line(ring, 0, (0x100, 0x40, 2))
     assert np.frombuffer(line[-12:], np.uint32).tolist() == [0x100, 0x40, 2]
+
+
+def test_a_command_of_an_added_class_to_cores_that_did_not_load_it_is_refused():
+    """The host refuses it (its holdings row starts empty); the dispatcher refuses it
+    from any source by its per-core table (reason 13, KMD_REJECT_PROGRAM), so no CPU of
+    a core that does not hold the class takes it."""
+    other = project(form="runtime")
+    loaded = twice(form="runtime", beside=other)
+    run = run_of(loaded, check_programs=True, _nop=0)
+    run._holds = [np.ones(120, bool), np.zeros(120, bool)]
+    run.programs = [loaded, other]
+    run._part = lambda first, count: (first, first + count)
+    with pytest.raises(ValueError, match=r"group \(60, 60\) does not hold project"):
+        km.run.Run._check_holds(run, 1, 1, 60, 60)
+    run._holds[1][60:] = True  # its load on cores 60 to 119
+    km.run.Run._check_holds(run, 1, 1, 60, 60)
+    dispatch = Path(native.__file__).parent.parent / "komorebi_native" / "x280"
+    text = (dispatch / "kernel" / "main.c").read_text()
+    assert "reject = KMD_REJECT_PROGRAM;" in text and "program_held(" in text
+    held = (dispatch / "kernel" / "kernel.h").read_text()
+    assert "#define KMD_PROGRAMS_MAX 64u" in held  # every field an add may take
+
+
+class Overlaid(km.Program):
+    """An added class with two overlay handlers of its own."""
+
+    @km.handler(overlay=True)
+    def first(self, a: km.Tensor, out: km.Tensor):
+        results = km.Stream(out.pages(self.rank, 1), write=True, block=1)
+        for x in km.Stream(a.pages(self.rank, 1), block=1):
+            results.push(doubled(x))
+
+    @km.handler(overlay=True)
+    def second(self, a: km.Tensor, out: km.Tensor):  # the same body, another overlay
+        results = km.Stream(out.pages(self.rank, 1), write=True, block=1)
+        for x in km.Stream(a.pages(self.rank, 1), block=1):
+            results.push(doubled(x))
+
+
+def test_an_added_class_s_own_overlays_take_free_numbers_below_every_field():
+    other = Overlaid(l1=1 << 20, log=quiet, a=grid(2, 1), out=grid(2, 1),
+                     form="runtime")  # fmt: skip
+    loaded = twice(form="runtime", beside=other).ahead(other)
+    assert "need the entry command's code" in added_program.refused(
+        run_of(loaded), other
+    )
+    ready = run_of(loaded, backend=backend(added_entry=True))
+    assert added_program.refused(ready, other) == ""
+    placed = programs.plan({loaded: (0, 60)}, 120)
+    assert added_program.ahead_own_kernels(placed) == {"reader", "writer", "compute"}
+    assert added_program.ahead_programs(placed) == [other]
+    assert (other.program_field, other.overlay_shift) == (1, 0)
+    assert [each.number for each in added_program.own_overlays(other)] == [1, 2]
+    service = overlay.constants()["kOverlayService"]
+    assert added_program.spare_fields(placed) == range(1, service - 1 - 2)
+    made = backend(added_own={1, 2})
+    made.room = SimpleNamespace(groups=[SimpleNamespace(numbers={1, 2, 62})], added={})
+    run = run_of(loaded, backend=made)
+    assert added_program._own_shift(run, other, 2) == 2  # numbers 3 and 4
+    made.added_own = set(range(1, service - 3))
+    with pytest.raises(added.AddError, match=r"no overlay numbers left"):
+        added_program._own_shift(run, other, 2)

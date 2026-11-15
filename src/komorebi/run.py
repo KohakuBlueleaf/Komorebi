@@ -599,13 +599,34 @@ class Run:
             program = self.programs[field]
             values = getattr(program, "constant_values", None) or {}
             given = ", ".join(f"{k}={v}" for k, v in values.items())
-            named.append(f"{type(program).__name__}({given}) at field {field}")
+            named.append(
+                f"{type(program).__name__}({given}) at field {field}"
+                f"{self._program_told(program, field)}"
+            )
         owner = handler.owner.__name__ if handler.owner else "its class"
         return (
             f"{owner}.{handler.name}: the run holds {len(fields)} programs of the "
             f"class ({'; '.join(named)}), and the class's handler does not say which; "
             f"name it through the program (program.{handler.name})"
         )
+
+    def _program_told(self, program, field):
+        """What tells a program of the run from another of its class: added live or
+        not, and the ranks holding it now (when the run tracks them)."""
+        told = ["added live"] if getattr(program, "added_live", False) else []
+        holds = getattr(self, "_holds", None)
+        if holds is not None and field < len(holds):
+            ranks = np.flatnonzero(holds[field])
+            spans = np.split(ranks, np.flatnonzero(np.diff(ranks) != 1) + 1)
+            told.append(
+                "held by ranks "
+                + ", ".join(
+                    f"{s[0]}-{s[-1]}" if len(s) > 1 else f"{s[0]}" for s in spans
+                )
+                if len(ranks)
+                else "held by no core yet"
+            )
+        return f" ({', '.join(told)})" if told else ""
 
     def field_handler(self, number, program_field):
         """What submit takes for handler `number` of the program with field
