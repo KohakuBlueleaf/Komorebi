@@ -13,6 +13,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import chain as kc
+from komorebi import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 C = km.abi.constants(KERNELS / "steps.h", known=km.abi.headers().constants)
@@ -221,7 +222,7 @@ def main():
         and result["refused"] is not None
     )
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 

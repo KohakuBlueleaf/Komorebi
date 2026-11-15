@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 from komorebi.dsl.program import lines_of
 
 HERE = Path(__file__).resolve().parent
@@ -167,7 +168,7 @@ def main():
         hand.log(f"class: ok {report['runs']['class']['ok']}")
     report["ok"] = all(each["ok"] for each in report["runs"].values())
     report["wall_s"] = round(time.monotonic() - hand.STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

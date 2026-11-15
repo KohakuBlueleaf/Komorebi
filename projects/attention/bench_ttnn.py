@@ -15,9 +15,9 @@ import ttnn
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
-
 import numpy as np  # noqa: E402
 
+from komorebi import power  # noqa: E402
 from projects import ttnn_reference  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
 from projects.attention.reference import sdpa  # noqa: E402
@@ -195,7 +195,7 @@ def main():
     report["layout"] = "bf16, TILE_LAYOUT, DRAM interleaved; output the same"
     report["load_avg"] = os.getloadavg()[0]
     report["date"] = time.strftime("%Y-%m-%d %H:%M")
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report))
 

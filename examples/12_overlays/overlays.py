@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 from komorebi.session import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
@@ -195,7 +196,7 @@ def main():
         "slots_bytes": {part: list(value) for part, value in built.slots.items()},
         "medians": table,
     }
-    print(json.dumps(out, default=float), flush=True)
+    print(json.dumps(power.clocked(out), default=float), flush=True)
     if rounds.wrong:
         raise SystemExit(1)
 

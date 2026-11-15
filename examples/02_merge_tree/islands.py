@@ -12,6 +12,7 @@ import numpy as np
 from merge import CONSTANTS, TILE, checksum, program
 
 import komorebi as km
+from komorebi import power
 
 STARTED = time.monotonic()
 
@@ -134,7 +135,7 @@ def main():
         for case in report["cases"].values()
     ) and set(report.get("kernel_errors", ["?"])) == {"none"}
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

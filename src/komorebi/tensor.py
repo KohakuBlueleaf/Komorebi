@@ -5,7 +5,7 @@ tile), or one row in the L1 of every core of a grid.
 
 import numpy as np
 
-from komorebi import formats
+from komorebi import formats, prebuild
 
 
 class Tensor:
@@ -91,6 +91,8 @@ class Tensor:
     def read_bytes(self):
         """The whole buffer's bytes (uint8), read as read() reads them."""
         in_dram(self)
+        if prebuild.active():  # a mock run computed nothing: zeros
+            return np.zeros(self.buffer.size, np.uint8)
         return np.asarray(self.buffer.read())
 
     def free(self):

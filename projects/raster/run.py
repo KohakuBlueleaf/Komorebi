@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 from projects.raster import card, lists, pictures, stress
 from projects.raster.reference import harness
 from reference import native, raster, results, scenes
@@ -213,7 +214,7 @@ def main():
     if args.out and args.tiles is None and frame is not None:
         save_result(args.out, report, frame, prepared["counts"])
     report["ok"] = bool(succeeded)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         np.savez(
             args.json.replace(".json", "_prof.npz"),

@@ -12,6 +12,7 @@ import time
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 
 WORDS = 1024  # float32 words a page: one tile's
 STARTED = time.monotonic()
@@ -260,7 +261,7 @@ def main():
         and all(not any(bad.values()) for bad in checks.values())
     )
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 

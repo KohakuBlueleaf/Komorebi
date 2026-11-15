@@ -19,7 +19,7 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, formats  # noqa: E402
+from komorebi import abi, formats, power  # noqa: E402
 from komorebi import session as session_module  # noqa: E402
 from projects.decode import model as md  # noqa: E402
 from projects.decode import real  # noqa: E402
@@ -431,7 +431,7 @@ def main():
             if isinstance(way, dict)
         )
     )
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

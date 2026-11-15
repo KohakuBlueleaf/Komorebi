@@ -237,3 +237,17 @@ def test_kmr_power_says_so_when_nothing_is_available(monkeypatch, tmp_path, caps
     code, out = run_power(capsys, "--gpu", "0", "--cpu", "--seconds", "0.1")
     assert code == 1
     assert "gpu 0: not available" in out and "cpu package: not available" in out
+
+
+def test_the_clock_is_read_from_the_card_s_entry_and_put_beside_a_result(
+    monkeypatch, tmp_path
+):
+    entry = tmp_path / "class" / "tenstorrent" / "tenstorrent!1"
+    entry.mkdir(parents=True)
+    (entry / "tt_aiclk").write_text("1350\n")
+    monkeypatch.setattr(power, "SYS", tmp_path)
+    monkeypatch.setenv("TT_VISIBLE_DEVICES", "1")
+    assert power.aiclk_mhz() == 1350 and power.aiclk_mhz(0) is None
+    assert power.clocked({"us": 2.0}) == {"us": 2.0, power.CLOCK_KEY: 1350}
+    assert power.clocked({"aiclk_mhz": [800]}) == {"aiclk_mhz": [800]}  # its own kept
+    assert power.clocked([1, 2]) == [1, 2]

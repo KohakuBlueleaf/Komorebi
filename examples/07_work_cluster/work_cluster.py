@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import abi, native
+from komorebi import abi, native, power
 
 HERE = Path(__file__).resolve().parent
 STARTED = time.monotonic()
@@ -384,7 +384,7 @@ def main():
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     checks.append(set(got) == set(args.paths))  # every path asked for ran
     report["ok"] = all(checks)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

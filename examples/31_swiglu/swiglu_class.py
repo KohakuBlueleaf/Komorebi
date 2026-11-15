@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import power
 
 
 @km.tile_function
@@ -216,7 +217,7 @@ def card():
             "microseconds": times[form],
             "median_us": float(np.median(times[form])),
         }
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     (HERE / "results").mkdir(exist_ok=True)
     with open(HERE / "results" / "swiglu_class.json", "w") as f:
         json.dump(result, f)

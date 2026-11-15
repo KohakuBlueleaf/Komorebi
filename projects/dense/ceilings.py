@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import abi  # noqa: E402
+from komorebi import abi, power  # noqa: E402
 
 KERNELS = Path(__file__).resolve().parent / "kernels" / "ceilings"
 HEADER = KERNELS / "ceilings.h"
@@ -120,7 +120,7 @@ def main():
         log(f"matmul: {row}")
         run.stop()
     report["load_avg"] = Path("/proc/loadavg").read_text().split()[:3]
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1))
 

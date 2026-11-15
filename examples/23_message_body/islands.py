@@ -23,6 +23,7 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi import power  # noqa: E402
 
 WORDS = feeder_commands.constants(HERE / "kernels" / "chain.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
@@ -218,7 +219,7 @@ def main():
         "runs": runs,
         "wall_s": round(time.monotonic() - STARTED, 1),
     }
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 
