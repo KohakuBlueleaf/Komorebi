@@ -13,7 +13,7 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi
+from komorebi import abi, overlay
 from komorebi import chain as chain_module
 from komorebi import state as device_state
 from komorebi.dsl.front import ClassHandler, HandlerMethod
@@ -96,6 +96,19 @@ def _sequence_number(number):
     """The kernel's sequence number of the n-th command: it counts in 32 bits and skips
     0 (it also skips a slot's last value, which only a wrap can repeat)."""
     return (number - 1) % M32 + 1
+
+
+def with_area(writes, address, area, h):
+    """A reset list (whole 64-byte lines, ASSERT first) with the words `area` written
+    to L1 `address` right after its ASSERT, while the core's CPUs are held."""
+    entry = h["KMD_RESET_ENTRY"]
+    if int.from_bytes(writes[:4], "little") != h["KMD_RESET_ASSERT"]:
+        raise ValueError("a reset list that does not start with its ASSERT")
+    data = np.asarray(area, "<u4").tobytes()
+    data += bytes(-len(data) % 16)
+    line = array("I", [h["KMD_RESET_WRITE"], address, 4 * len(area), 0]).tobytes()
+    out = bytes(writes[:entry]) + line + data + bytes(writes[entry:])
+    return out + bytes(-len(out) % 64)
 
 
 class Run:
@@ -558,6 +571,24 @@ class Run:
         )
         return self.wait(handle, timeout)
 
+    def _area_resets(self, lists, core_list):
+        """Adds the overlay area as the load wrote it (load_overlays) to each reset
+        list, so a reset core's slots, parks and meets start again from there; the
+        reason it cannot when the cores of one list hold different areas."""
+        rows = getattr(self.backend, "control_rows", None)
+        start = self.backend.control_offset + self.h["KM_CONTROL_BYTES"] // 4
+        words = overlay.constants()["kOverlayAreaBytes"] // 4
+        if rows is None or rows.shape[1] < start + words:
+            return None  # no overlay area after the control blocks
+        numbers = np.frombuffer(bytes(core_list), np.uint8)
+        address = self.backend.control_addr + self.h["KM_CONTROL_BYTES"]
+        for number, writes in enumerate(lists):
+            area = rows[np.flatnonzero(numbers == number), start : start + words]
+            if (area != area[0]).any():
+                return f"the overlay areas of reset list {number}'s cores differ"
+            lists[number] = with_area(writes, address, area[0], self.h)
+        return None
+
     def keep_resets(self, exclude=(), timeout=10.0):
         """Hands the dispatcher a reset list a group of cores with the same kernels and
         each core's list number (load(recover=True)): a give-up then resets and loads
@@ -593,6 +624,10 @@ class Run:
         for core, group in enumerate(groups):
             if group in owner and core not in excluded:
                 core_list[core] = owner[group]
+        refused = self._area_resets(lists, core_list)
+        if refused:
+            self.recovery_refused = refused
+            return False
         head = self.h["KMD_RESET_DIRECTORY_ENTRIES"]
         at = -(-(head + 16 * len(lists)) // 64) * 64
         entries, body = [], b""
