@@ -11,7 +11,7 @@ tags:
 A **hazard** is something that goes wrong on the card or in the framework, that a page of
 this documentation has seen or states, and that a program never meets when it follows a
 rule. It is a category of its own. The README's
-[sizes a program works within](../../README.md#sizes-a-program-works-within) are fixed
+[sizes a program works within](../../README.md#limits) are fixed
 sizes of the runtime and limits of the card, which a program is written to fit; a hazard
 is not a size but something a program does, or does in a certain order. What each page
 lists under "Not in this version" is what is not built; a hazard is built, and works
@@ -789,7 +789,7 @@ and safe use is the caller's claim. What the default gives up: a host-fed comman
 depth 16 costs 1.228 µs at 1,000 MHz and 0.726 at 1,750.
 
 Described in [Host API, `Session`](host.md#session) and the README's
-[sizes](../../README.md#sizes-a-program-works-within).
+[sizes](../../README.md#limits).
 
 ## Islands and links
 
