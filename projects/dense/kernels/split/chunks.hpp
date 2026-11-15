@@ -51,6 +51,54 @@ inline km::Pattern pattern_from(const km::Pattern& pattern, uint32_t first) {
             mask
     };
 }
+
+// The W stream of `command` on this core from chunk `skip` on, kc x ow tiles a block
+// (no blocks: `on` false, or no K here).
+template <typename Runtime, typename AccessorW>
+auto chunk_w_stream(
+    const Runtime& core,
+    const km_command_t& command,
+    const AccessorW& w_matrix,
+    uint32_t skip,
+    bool on
+) {
+    const auto plan = [&](uint32_t word) {
+        return core.arg(plan_words(command) + word);
+    };
+    const uint32_t k_tiles = plan(kSpKt), n_tiles = plan(kSpNt);
+    const uint32_t block_width = plan(kSpOw), chunk_tiles = plan(kSpKc);
+    const uint32_t blocks_per_row = plan(kSpNbw), group_size = plan(kSpS);
+    const km::Group group = km::digit_group(command, core.me(), 1, group_size);
+    const uint32_t group_index = (core.me() - km::first(command)) / group_size;
+    const uint32_t first_column = group_index % blocks_per_row * block_width;
+    const km::Partition k_part = km::partition(k_tiles, group.rank, group.size);
+    const uint32_t chunks = (k_part.len + chunk_tiles - 1) / chunk_tiles;
+    const uint32_t last_length = (
+        chunks == 0 ? chunk_tiles : k_part.len - (chunks - 1) * chunk_tiles
+    );
+    const uint32_t columns = (
+        n_tiles - first_column < block_width ? n_tiles - first_column : block_width
+    );
+    const km::Walk walk = {
+        ((k_part.start + skip * chunk_tiles) * n_tiles) + first_column,
+        on && skip < chunks ? chunks - skip : 0,
+        chunk_tiles * n_tiles,
+        chunk_tiles,
+        n_tiles,
+        columns,
+        1,
+        block_width,
+        chunk_tiles * block_width,
+        last_length,
+        columns
+    };
+    const km::Pattern pattern = chunk_pattern(plan(kSpPattern));
+    return (
+        km::Stream(
+            km::kMoveRead, w_matrix, walk, 1, kChunksW, pattern_from(pattern, skip)
+        )
+    );
+}
 #endif
 
 // This mover's K chunks of its core's partition: A's oh x kc and W's kc x ow tiles, the
@@ -100,35 +148,31 @@ bool move_chunks(
         last_length
     };
 #if defined(SPLIT_CHAIN)
-    // a chain's record: W's blocks while its input is not yet marked, then A's chunks
-    // with the rest of W (two streams; chain.hpp)
-    const auto w_from = [&](uint32_t skip) {
-        const km::Walk walk = {
-            ((k_part.start + skip * chunk_tiles) * n_tiles) + first_column,
-            chunks - skip,
-            chunk_tiles * n_tiles,
-            chunk_tiles,
-            n_tiles,
-            columns,
-            1,
-            block_width,
-            chunk_tiles * block_width,
-            last_length,
-            columns
-        };
-        return (
-            km::Stream(
-                km::kMoveRead, w_matrix, walk, 1, kChunksW, pattern_from(pattern, skip)
-            )
-        );
-    };
-    uint32_t skip = 0;
-    if (!chain_weight_first(core, w_from(0), skip)) {
+    // a chain's record: W's blocks while its input is not yet marked (then the next
+    // record's), then A's chunks with the rest of W (two streams; chain.hpp)
+    const uint32_t ahead = chain_ahead_taken();
+    uint32_t words[kChainWords];
+    const bool next = chain_next(core, words);
+    const km_command_t after = chain_command(command, words);
+    uint32_t skip = 0, after_skip = 0;
+    if (!chain_weight_first(
+        core,
+        chunk_w_stream(core, command, w_matrix, ahead, true),
+        chunk_w_stream(core, after, AccessorW(after.a1), 0, next),
+        ahead != 0,
+        skip,
+        after_skip
+    )) {
         return false;
     }
+    chain_ahead_keep(next ? after_skip : 0);
     SPLIT_STAMP(kChainStampWeight);  // no block before the mark: W's first is now
     const km::Stream a_chunks(km::kMoveRead, a_matrix, a_walk, 1, kChunksA, pattern);
-    const bool moved = km::move(core, a_chunks, w_from(skip));
+    const bool moved = (
+        km::move(
+            core, a_chunks, chunk_w_stream(core, command, w_matrix, ahead + skip, true)
+        )
+    );
     SPLIT_STAMP(kChainStampMoved);
     return moved;
 #else

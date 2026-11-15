@@ -161,13 +161,16 @@ struct ChainRange {
     uint32_t count;
 };
 
-// The running chain on this mover: the record, the one before it (its input's
-// writer), the record's index and its tag's base (not in a chain: off).
+// The running chain on this mover: the record, the one before (its input's writer), its
+// index, its tag's base (off: no chain); the next W early: allowed, its tag and block.
 struct ChainNow {
     bool on;
     bool has_before;
+    bool ahead_on;
     uint32_t record;
     uint32_t tag_base;
+    uint32_t ahead_tag;
+    uint32_t ahead_block;
     uint32_t now[kChainWords];
     uint32_t before[kChainWords];
 };
@@ -280,29 +283,38 @@ bool chain_input(const Kernel& core) {
     return code == km::kGaveNone;
 }
 
-// Until the record's input is marked: its W blocks into this mover's half once A has
-// freed it, a block a pass. `skip`: the chunks W's stream starts after. False: gave up.
+// Until the input is marked: W's blocks once A freed the half (`held`: some are in),
+// then the next record's (`after`); `skip`, `after_skip` the blocks. False: gave up.
 template <typename Kernel, typename Accessor>
 bool chain_weight_first(
-    const Kernel& core, const km::Stream<Accessor>& weights, uint32_t& skip
+    const Kernel& core,
+    const km::Stream<Accessor>& weights,
+    const km::Stream<Accessor>& after,
+    bool held,
+    uint32_t& skip,
+    uint32_t& after_skip
 ) {
     skip = 0;
+    after_skip = 0;
     uint32_t target = 0;
     if (!chain_target(core, target)) {
         CHAIN_STAMP(chain_stamp(kChainStampMarked));
         return true;
     }
     CHAIN_STAMP(uint32_t full_at = 0);
-    km::MoveCursor cursor;
+    km::MoveCursor cursor, later;
     uint32_t filled = 0, drained = 0;
-    if (!km::move_begin(weights, cursor, filled, drained)) {
+    if (
+        !km::move_begin(weights, cursor, filled, drained) ||
+        !km::move_begin(after, later, filled, drained)
+    ) {
         core.gave_up(km::kStMover, km::kGaveBadItem, km::kWhereData, 0, 0);
         return false;
     }
     const uint32_t half = weights.pair.half(km::kMover);
     const uint64_t limit = static_cast<uint64_t>(core.args().wait_limit) << 10;
     uint64_t deadline = km::wall64() + limit;
-    bool freed = false;
+    bool freed = held, any_after = false;
     for (uint32_t pass = 0; !chain_marked(target); pass++) {
         freed = (
             freed ||
@@ -311,19 +323,29 @@ bool chain_weight_first(
             )
         );
         bool issued = false, open = false, reads = false, writes = false;
+        bool later_issued = false;
         if (
             freed && !km::move_offer(core, weights, cursor, issued, open, reads, writes)
         ) {
             core.gave_up(km::kStMover, km::kGaveBadItem, km::kWhereData, 0, 0);
             return false;
         }
-        if (issued) {
+        if (
+            freed && !open &&
+            !km::move_offer(core, after, later, later_issued, open, reads, writes)
+        ) {
+            core.gave_up(km::kStMover, km::kGaveBadItem, km::kWhereData, 0, 0);
+            return false;
+        }
+        if (issued || later_issued) {
             CHAIN_STAMP(chain_stamp_once(kChainStampWeight));
             if (!km::move_settle(core, true, false)) {
                 return false;
             }
             km::Moved moved = {0, 0};
             km::move_hand_on(weights, cursor, issued, moved);
+            any_after = any_after || later_issued;
+            km::move_hand_on(after, later, later_issued, moved);
             deadline = km::wall64() + limit;
             continue;
         }
@@ -344,6 +366,9 @@ bool chain_weight_first(
     );
     CHAIN_STAMP(chain_stamp(kChainStampMarked));
     skip = cursor.block < cursor.blocks ? cursor.block : cursor.blocks;
+    after_skip = (
+        any_after ? (later.block < later.blocks ? later.block : later.blocks) : 0
+    );
     return true;
 }
 
@@ -371,6 +396,42 @@ inline void chain_copy(uint32_t tag, uint32_t* record) {
     for (uint32_t word = 0; word < kChainWords; word++) {
         record[word] = slot[word];
     }
+}
+
+// The record after this one when this mover may read its W early: a product this core
+// is in, already in the ring (`words`). False: none (`words` this record's).
+template <typename Kernel>
+bool chain_next(const Kernel& core, uint32_t* words) {
+    const uint32_t tag = chain_now.tag_base + chain_now.record + 1;
+    for (uint32_t word = 0; word < kChainWords; word++) {  // none: this record's
+        words[word] = chain_now.now[word];
+    }
+    invalidate_l1_cache();
+    if (
+        !chain_now.on || !chain_now.ahead_on || chain_now.now[kChainNext] == 0 ||
+        static_cast<int32_t>(*chain_word(kChainReady) - tag) < 0
+    ) {
+        return false;
+    }
+    chain_copy(tag, words);
+    return (
+        chain_member(words, core.me()) && words[kChainArguments + 4] != kSplitOp &&
+        words[kChainArguments + 5] < kSplitPlans
+    );
+}
+
+// This record's W blocks this mover read in the record before (0: none).
+inline uint32_t chain_ahead_taken() {
+    const uint32_t tag = chain_now.tag_base + chain_now.record;
+    const uint32_t block = chain_now.ahead_tag == tag ? chain_now.ahead_block : 0;
+    chain_now.ahead_tag = 0;
+    return block;
+}
+
+// The next record's W read early up to block `block` (0: none).
+inline void chain_ahead_keep(uint32_t block) {
+    chain_now.ahead_tag = block != 0 ? chain_now.tag_base + chain_now.record + 1 : 0;
+    chain_now.ahead_block = block;
 }
 
 // Waits until the word at `offset` has reached `tag`. False: gave up (recorded).
@@ -421,6 +482,8 @@ void chain_records(km::Reader& reader, const km_command_t& command, Product prod
         return;
     }
     CHAIN_STAMP(chain_stamp_start = km::wall());
+    chain_now.ahead_on = (command.a1 & kChainAheadOff) == 0;
+    chain_now.ahead_tag = 0;
     for (uint32_t record = 0; record < kChainRecordsMax; record++) {
         uint32_t words[kChainWords];
         chain_copy(base + record, words);
@@ -567,6 +630,8 @@ bool chain_writer(km::Writer& writer, const km_command_t& command, Product produ
     const uint32_t base = chain_tag(command.sequence, 0);
     bool ok = true;
     CHAIN_STAMP(chain_stamp_start = km::wall());
+    chain_now.ahead_on = (command.a1 & kChainAheadOff) == 0;
+    chain_now.ahead_tag = 0;
     for (uint32_t record = 0; ok && record < kChainRecordsMax; record++) {
         if (!chain_reached(writer, kChainReady, base + record, km::kStWriter)) {
             ok = false;

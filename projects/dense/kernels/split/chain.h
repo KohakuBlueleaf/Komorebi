@@ -2,8 +2,9 @@
  * in DRAM, each one command and the next one's address. Plain C: the X280 writes. */
 #pragma once
 
-/* SPLIT's a4 kChainMode: the first record at a7, its DRAM bank in a8 as a block's. */
-enum { kChainMode = 3 };
+/* SPLIT's a4 kChainMode: the first record at a7, its DRAM bank in a8 as a block's; a1
+ * kChainAheadOff: no record's W read in the record before (else once its own is in). */
+enum { kChainMode = 3, kChainAheadOff = 1 };
 
 /* A record: 16 words, 64 bytes, 64-byte aligned. */
 enum {
