@@ -1,0 +1,504 @@
+{
+ "model": "Qwen/Qwen3-1.7B",
+ "layers": 28,
+ "tokens": 10,
+ "check": {
+  "hand_commands": {
+   "qkv": true,
+   "a": true,
+   "x1": true,
+   "gated": true,
+   "x": true,
+   "cache_row": true
+  },
+  "hand_chain": {
+   "qkv": true,
+   "a": true,
+   "x1": true,
+   "gated": true,
+   "x": true,
+   "cache_row": true
+  },
+  "list_commands": {
+   "qkv": true,
+   "a": true,
+   "x1": true,
+   "gated": true,
+   "x": true,
+   "cache_row": true
+  },
+  "list_chain": {
+   "qkv": true,
+   "a": true,
+   "x1": true,
+   "gated": true,
+   "x": true,
+   "cache_row": true
+  },
+  "open_commands": {
+   "qkv": true,
+   "a": true,
+   "x1": true,
+   "gated": true,
+   "x": true,
+   "cache_row": true
+  },
+  "host_commands": {
+   "qkv": true,
+   "a": true,
+   "x1": true,
+   "gated": true,
+   "x": true,
+   "cache_row": true
+  }
+ },
+ "costs": [
+  {
+   "cores": 1,
+   "write_list_us": 300.0,
+   "closed_host_us": 4.194,
+   "open": {
+    "fenced": {
+     "host_us": {
+      "build": 13.978,
+      "store": 4.144,
+      "fence": 51.703,
+      "link": 4.187
+     },
+     "append_us": 76.708,
+     "sync_us": 190.2,
+     "thread": {
+      "total": 77.118,
+      "fetch": 0.274,
+      "submit": 0.518,
+      "wait": 2.916,
+      "command": 1.935,
+      "wake": 0.981,
+      "rest": 0.322,
+      "idle": 71.758,
+      "check": 1.329,
+      "polls": 69.25,
+      "stale": 0
+     }
+    },
+    "checked": {
+     "host_us": {
+      "build": 12.365,
+      "store": 3.987,
+      "fence": 0.083,
+      "link": 4.144
+     },
+     "append_us": 23.117,
+     "sync_us": 132.2,
+     "thread": {
+      "total": 23.253,
+      "fetch": 0.274,
+      "submit": 0.511,
+      "wait": 2.859,
+      "command": 1.89,
+      "wake": 0.969,
+      "rest": 0.317,
+      "idle": 17.976,
+      "check": 1.317,
+      "polls": 17.39,
+      "stale": 0
+     }
+    }
+   },
+   "host_us": {
+    "submit": 11.761,
+    "wait": 128.562,
+    "command": 1.856,
+    "total": 140.624
+   },
+   "read_tile_us": 239.3,
+   "read_x_us": 408.7,
+   "closed_first": {
+    "total": 4.358,
+    "fetch": 0.544,
+    "submit": 0.515,
+    "wait": 3.025,
+    "command": 1.89,
+    "wake": 1.135,
+    "rest": 0.275,
+    "idle": 0.0,
+    "check": 0.0
+   },
+   "closed": {
+    "total": 3.99,
+    "fetch": 0.309,
+    "submit": 0.512,
+    "wait": 2.896,
+    "command": 1.889,
+    "wake": 1.007,
+    "rest": 0.272,
+    "idle": 0.0,
+    "check": 0.0
+   }
+  },
+  {
+   "cores": 120,
+   "write_list_us": 222.2,
+   "closed_host_us": 4.607,
+   "open": {
+    "fenced": {
+     "host_us": {
+      "build": 13.866,
+      "store": 4.145,
+      "fence": 51.867,
+      "link": 4.314
+     },
+     "append_us": 76.807,
+     "sync_us": 187.3,
+     "thread": {
+      "total": 77.204,
+      "fetch": 0.274,
+      "submit": 0.518,
+      "wait": 3.297,
+      "command": 2.3,
+      "wake": 0.997,
+      "rest": 0.32,
+      "idle": 71.472,
+      "check": 1.323,
+      "polls": 68.89,
+      "stale": 0
+     }
+    },
+    "checked": {
+     "host_us": {
+      "build": 12.417,
+      "store": 4.108,
+      "fence": 0.08,
+      "link": 3.835
+     },
+     "append_us": 23.034,
+     "sync_us": 131.0,
+     "thread": {
+      "total": 23.171,
+      "fetch": 0.274,
+      "submit": 0.51,
+      "wait": 3.282,
+      "command": 2.265,
+      "wake": 1.016,
+      "rest": 0.319,
+      "idle": 17.47,
+      "check": 1.315,
+      "polls": 16.89,
+      "stale": 0
+     }
+    }
+   },
+   "host_us": {
+    "submit": 11.714,
+    "wait": 128.896,
+    "command": 2.264,
+    "total": 140.904
+   },
+   "read_tile_us": 212.9,
+   "read_x_us": 360.2,
+   "closed_first": {
+    "total": 4.516,
+    "fetch": 0.54,
+    "submit": 0.513,
+    "wait": 3.184,
+    "command": 2.259,
+    "wake": 0.924,
+    "rest": 0.279,
+    "idle": 0.0,
+    "check": 0.0
+   },
+   "closed": {
+    "total": 4.402,
+    "fetch": 0.312,
+    "submit": 0.513,
+    "wait": 3.299,
+    "command": 2.249,
+    "wake": 1.049,
+    "rest": 0.278,
+    "idle": 0.0,
+    "check": 0.0
+   }
+  }
+ ],
+ "decode": [
+  {
+   "way": "commands",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1154,
+   "slot": 11,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "layer_us": 410.94,
+   "commands_us": 399.19,
+   "thread_us": 11.75,
+   "terms_us": {
+    "total": 410.942,
+    "fetch": 2.743,
+    "submit": 2.57,
+    "wait": 404.242,
+    "command": 399.193,
+    "wake": 5.049,
+    "rest": 1.386,
+    "idle": 0.0,
+    "check": 0.0
+   },
+   "status": 0,
+   "entries_run": 1400,
+   "steps_us": {
+    "qkv": 64.17,
+    "attend": 96.71,
+    "o": 33.99,
+    "gate_up": 131.78,
+    "down": 72.53
+   }
+  },
+  {
+   "way": "chain",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0977,
+   "slot": 12,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "layer_us": 347.28,
+   "commands_us": 344.74,
+   "thread_us": 2.54,
+   "terms_us": {
+    "total": 347.28,
+    "fetch": 0.726,
+    "submit": 0.522,
+    "wait": 345.747,
+    "command": 344.74,
+    "wake": 1.007,
+    "rest": 0.285,
+    "idle": 0.0,
+    "check": 0.0
+   },
+   "status": 0,
+   "entries_run": 280
+  },
+  {
+   "way": "host",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.3271,
+   "slot": null,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "layer_us": 1168.05,
+   "steps_us": {
+    "qkv": 64.1,
+    "attend": 96.64,
+    "o": 33.98,
+    "gate_up": 131.74,
+    "down": 72.6
+   },
+   "host_submit_us": 67.6,
+   "host_wait_us": 1098.92
+  },
+  {
+   "way": "commands",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1049,
+   "slot": 13,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1343,
+    1345.3,
+    1350
+   ],
+   "layer_us": 373.5,
+   "commands_us": 361.8,
+   "thread_us": 11.7,
+   "terms_us": {
+    "total": 373.5,
+    "fetch": 2.739,
+    "submit": 2.58,
+    "wait": 366.779,
+    "command": 361.797,
+    "wake": 4.982,
+    "rest": 1.402,
+    "idle": 0.0,
+    "check": 0.0
+   },
+   "status": 0,
+   "entries_run": 1400,
+   "steps_us": {
+    "qkv": 64.05,
+    "attend": 59.4,
+    "o": 33.99,
+    "gate_up": 131.78,
+    "down": 72.58
+   }
+  },
+  {
+   "way": "chain",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0895,
+   "slot": 14,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "layer_us": 318.22,
+   "commands_us": 315.69,
+   "thread_us": 2.53,
+   "terms_us": {
+    "total": 318.217,
+    "fetch": 0.729,
+    "submit": 0.52,
+    "wait": 316.684,
+    "command": 315.69,
+    "wake": 0.995,
+    "rest": 0.283,
+    "idle": 0.0,
+    "check": 0.0
+   },
+   "status": 0,
+   "entries_run": 280
+  },
+  {
+   "way": "host",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.3216,
+   "slot": null,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "layer_us": 1148.62,
+   "steps_us": {
+    "qkv": 64.14,
+    "attend": 59.42,
+    "o": 33.97,
+    "gate_up": 131.79,
+    "down": 72.59
+   },
+   "host_submit_us": 69.85,
+   "host_wait_us": 1077.04
+  },
+  {
+   "way": "commands",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1025,
+   "slot": 15,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "layer_us": 364.85,
+   "commands_us": 353.09,
+   "thread_us": 11.76,
+   "terms_us": {
+    "total": 364.848,
+    "fetch": 2.744,
+    "submit": 2.577,
+    "wait": 358.15,
+    "command": 353.091,
+    "wake": 5.059,
+    "rest": 1.376,
+    "idle": 0.0,
+    "check": 0.0
+   },
+   "status": 0,
+   "entries_run": 1400,
+   "steps_us": {
+    "qkv": 64.03,
+    "attend": 50.63,
+    "o": 34.02,
+    "gate_up": 131.71,
+    "down": 72.71
+   }
+  },
+  {
+   "way": "chain",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0866,
+   "slot": 16,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "layer_us": 307.92,
+   "commands_us": 305.38,
+   "thread_us": 2.54,
+   "terms_us": {
+    "total": 307.92,
+    "fetch": 0.726,
+    "submit": 0.523,
+    "wait": 306.385,
+    "command": 305.381,
+    "wake": 1.003,
+    "rest": 0.285,
+    "idle": 0.0,
+    "check": 0.0
+   },
+   "status": 0,
+   "entries_run": 280
+  },
+  {
+   "way": "host",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.3124,
+   "slot": null,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "layer_us": 1115.85,
+   "steps_us": {
+    "qkv": 64.08,
+    "attend": 50.62,
+    "o": 33.99,
+    "gate_up": 131.74,
+    "down": 72.61
+   },
+   "host_submit_us": 66.85,
+   "host_wait_us": 1047.48
+  }
+ ],
+ "load_avg": [
+  "1.15",
+  "2.43",
+  "15.59"
+ ],
+ "ok": true
+}
