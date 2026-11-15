@@ -457,6 +457,58 @@ stream's page, below); a size that is not whole words or does not divide the pag
 `at=` a word of another CPU; a bump of a field whose words are no one CPU's (an own
 field of `push=None` or found, a filled field).
 
+### A word handed between the movers
+
+A word a body gives on one mover, taken by a body on the other, is handed over by the
+line: both CPUs are written (`on=` of each), never inferred.
+
+```python
+pages = km.cxx("...pages = ...;", gives=int, on="mover_a")
+km.cxx("...use(pages);", takes=[pages], on="mover_b")
+```
+
+The giver writes the taking body's words into one 64 B page of a buffer of its own
+(`kHandover`) and pushes it before the taker's place; the taker waits for the page,
+gets the words by name and frees the page after its body. The build's report names
+each: `hand-over: count, line 16: pages from mover A to mover B by the hand-over
+buffer`. Refused: more than 16 words of the other mover in one body (the most a page
+holds), words of both movers handed into one body, and a taker with no `on=` (a word
+of a mover taken on compute).
+
+### A stream compute fills and a mover drains
+
+`out = km.Stream(self.f, mover="B")`, f an own field, is pages compute's bodies fill
+and the mover named drains, a page a turn. A body on compute (on pack, or compute's
+three) that takes `out` gets `out`, the L1 address of a page reserved before it (0
+when compute gave up), and `out_buffer`; the line pushes the page after the body and
+counts it. `out.end()` is compute's line saying no page follows: pack hands the count
+of pages pushed to the mover in one page of the stream's end buffer (`kEndOut`).
+Leaving a `with` block is exactly an `.end()` at that place:
+
+```python
+with km.Stream(self.out, mover="B") as out:
+    for tri in range(count):
+        km.cxx("bin(tri, out);", takes=[out, tri], on="pack")
+for page in out:  # mover B: until the end's count
+    slot = self.next_slots.bump(page[1])
+    lists.items(size=128).put(page, at=slot)
+```
+
+`for page in out:` is the mover's loop: it waits for a page or the end's count (a
+timed poll), stops when it has taken as many pages as the count says, and frees each
+page once the writes that read it have read it. `page` is the page's L1 address (a
+put's source, a body's on that mover) and `page[i]` its word i, an int of that mover.
+The loop holds what a mover's lines may be: puts, bumps, writes, bodies on that mover.
+The end costs 0.1 us a command: a command that fills no page, ends and drains takes
+2.20 us beside 2.10 us of one with a pack body alone, and 64 pages a core filled,
+drained and put take 14.24 us, on 120 cores
+([drain_cost](../../experiments/language/raster_class/drain_cost.py)).
+
+Refused, each at its line: a drain of a stream no line ends above (neither `.end()`
+nor a `with`); `.end()` twice, or inside its own `with`; a body that takes the stream
+after its end, or on a mover; no `mover=`; a field a mover pushes, or not an own field;
+a drain of a stream no compute body fills; lines of another CPU in the drain loop.
+
 ## Tables of entries
 
 A page of words can be a table: `t.pages(i, 1).entries(Job, first=F, size=S,

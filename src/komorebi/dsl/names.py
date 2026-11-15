@@ -129,6 +129,11 @@ NAMES = {
         None,
     ),
     "put_at": Name("at", "put(source, at=i): the item the bytes go to", None),
+    "stream_end": Name(
+        "end",
+        "out.end(): compute's line, no page of drained stream out follows",
+        None,
+    ),
     "bump": Name(
         "bump",
         "slot = self.f.bump(i): word i of field f, then one more, on the CPU that "

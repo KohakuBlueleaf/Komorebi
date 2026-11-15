@@ -629,6 +629,7 @@ class HandlerCompiler:
         self.counts = {}  # tensor parameter -> its page-count word name
         self.putters = []  # the movers ("A", "B") that put items: waited at the end
         self.handed = {}  # a body's node id -> the words it takes of the other mover
+        self.drained = {}  # a drained stream's name -> its field, end line, fills
         self.reads = 0
         self.writes = 0
         self.arrivals = 0
@@ -1375,6 +1376,8 @@ class HandlerCompiler:
             return self.augmented(node)
         if isinstance(node, ast.For):
             return self.loop(node)
+        if isinstance(node, ast.With):
+            return self.drained_with(node)
         if isinstance(node, ast.If):
             return self.branch(node)
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
@@ -1429,6 +1432,8 @@ class HandlerCompiler:
             return self.partition(node, name, value)
         if call == "zeros":
             return self.zeros(node, name, value)
+        if call == "stream" and self.field_name(value.args[0] if value.args else None):
+            return self.drained_stream(node, name, value)
         if call == "stream" and not self.write_keyword(value):
             return self.held_stream(node, name, value)
         if call == "stream":
@@ -2978,6 +2983,11 @@ class HandlerCompiler:
             and self.scope.get(iterator.id, Value("")).kind == "arrived"
         ):
             return self.block_loop(node, self.scope[iterator.id])
+        if (
+            isinstance(iterator, ast.Name)
+            and self.scope.get(iterator.id, Value("")).kind == "drained"
+        ):
+            return self.drain_loop(node, iterator.id)
         if self.construct(iterator) == "stream":
             return self.read_loop(node, iterator)
         streams = self.zipped(node)
@@ -3326,6 +3336,13 @@ class HandlerCompiler:
             return self.write(node, call)
         if isinstance(func, ast.Attribute) and func.attr == spelling("put"):
             return self.put_line(node, call)
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == spelling("stream_end")
+            and isinstance(func.value, ast.Name)
+            and getattr(self.scope.get(func.value.id), "kind", None) == "drained"
+        ):
+            return self.drained_end(node, func.value.id)
         if (
             isinstance(func, ast.Attribute)
             and func.attr == spelling("fill")
@@ -5644,6 +5661,223 @@ class HandlerCompiler:
         )
         return [movement], [compute]
 
+    def drained_stream(self, node, name, call):
+        """`out = km.Stream(self.f, mover="B")`: pages of own field f that compute's
+        bodies fill and the line pushes, drained by the mover named (drain_loop), up
+        to the end compute states (drained_end)."""
+        field_ = self.field_name(call.args[0])
+        keywords = {k.arg: k.value for k in call.keywords}
+        named = keywords.get("mover")
+        mover = named.value if isinstance(named, ast.Constant) else None
+        if mover not in ("A", "B") or set(keywords) != {"mover"} or len(call.args) != 1:
+            self.refuse(
+                node,
+                "a stream of an own field's pages is compute's to fill and one "
+                "mover's to drain: mover= names it",
+                f'write `{name} = km.{spelling("stream")}(self.f, mover="B")`',
+            )
+        if field_ not in self.compiled.own or self.compiled.own[field_] in (
+            "mover_a",
+            "mover_b",
+        ):
+            self.refuse(
+                node,
+                f"self.{field_} is no own field compute fills (a mover pushes it, or "
+                "it is filled by a line)",
+                f'declare it km.{spelling("own")}(push="pack")',
+            )
+        self.check_name(node, name)
+        self.scope[name] = Value("drained", name, mover=mover)
+        self.drained[name] = {"field": field_, "ended": None, "taken": False}
+        self.drained[name]["within"] = False
+        pushed = Line(f"uint32_t km_pushed_{name} = 0;  // the pages pushed")
+        return [], [pushed]
+
+    def take_drained(self, node, name, where, bound, before, after):
+        """A drained stream a compute body fills: its page reserved before the body,
+        pushed after it and counted for the end."""
+        state = self.drained[name]
+        if where in ("A", "B"):
+            self.refuse(
+                node,
+                f"{name}'s pages are compute's to fill; mover {self.scope[name].mover} "
+                f"drains them",
+                f"take it on compute, and drain it with `for page in {name}:`",
+            )
+        if state["ended"] is not None:
+            self.refuse(
+                node,
+                f"{name} ended at line {state['ended']}: no page follows",
+                "take it before its end",
+            )
+        state["taken"] = True
+        buffer = f"kField{camel(state['field'])}"
+        room = f"km_room_{name}{node.lineno}"
+        before.append(Line(f"const bool {room} = compute.reserve_back({buffer}, 1);"))
+        bound.append(
+            f"const uint32_t {name} = {room} ? "
+            f"get_local_cb_interface({buffer}).fifo_wr_ptr << 4 : 0;"
+        )
+        bound.append(f"const uint32_t {name}{spelling('tile_buffer')} = {buffer};")
+        after.append(
+            Line(
+                f"if ({room}) {{\n    cb_push_back({buffer}, 1);\n"
+                f"    ++km_pushed_{name};\n}}"
+            )
+        )
+        return set()
+
+    def end_buffer(self, node, name):
+        """The page of a drained stream's end: the count of pages compute pushed."""
+        return self.other_buffer(
+            f"kEnd{camel(name)}",
+            "word",
+            "uint32",
+            16,
+            1,
+            f"line {node.lineno}: the end of {name} (pack's, to mover "
+            f"{self.scope[name].mover})",
+        ).name
+
+    def drained_end(self, node, name):
+        """`out.end()`: compute's line saying no page follows, a hand-over of the
+        count of pages pushed to the mover that drains them."""
+        state = self.drained[name]
+        if state["within"]:
+            self.refuse(
+                node,
+                f"{name} ends where its with block closes",
+                f"drop {name}.{spelling('stream_end')}(), or the with",
+            )
+        if state["ended"] is not None:
+            self.refuse(
+                node,
+                f"{name} ended at line {state['ended']} already",
+                "end it once",
+            )
+        state["ended"] = node.lineno
+        end = self.end_buffer(node, name)
+        text = (
+            f"if (compute.reserve_back({end}, 1)) {{\n"
+            f"    PACK((reinterpret_cast<volatile uint32_t*>(get_local_cb_interface("
+            f"{end}).fifo_wr_ptr << 4)[0] = km_pushed_{name}));\n"
+            f"    cb_push_back({end}, 1);\n}}"
+        )
+        return [], [Line(text)]
+
+    def drained_with(self, node):
+        """`with km.Stream(self.f, mover="B") as out:`: the stream, its block's
+        lines, and its end where the block closes."""
+        item = node.items[0] if len(node.items) == 1 else None
+        if (
+            item is None
+            or not isinstance(item.optional_vars, ast.Name)
+            or self.construct(item.context_expr) != "stream"
+            or not self.field_name(
+                item.context_expr.args[0] if item.context_expr.args else None
+            )
+        ):
+            self.refuse(
+                node,
+                "a with block is a drained stream's, ended where it closes",
+                f'write `with km.{spelling("stream")}(self.f, mover="B") as out:`',
+            )
+        name = item.optional_vars.id
+        movement, compute = self.drained_stream(node, name, item.context_expr)
+        self.drained[name]["within"] = True
+        body_m, body_c = self.statements(node.body)
+        self.drained[name]["within"] = False
+        end_m, end_c = self.drained_end(node, name)
+        self.drained[name]["ended"] = node.end_lineno
+        return movement + body_m + end_m, compute + body_c + end_c
+
+    def drain_loop(self, node, stream):
+        """`for page in out:` the mover's loop over a drained stream's pages, a page
+        a turn, until the count compute's end handed over."""
+        state = self.drained[stream]
+        mover = self.scope[stream].mover
+        if state["ended"] is None:
+            self.refuse(
+                node,
+                f"no line ends {stream} above: the mover would wait for pages forever",
+                f"end it: {stream}.{spelling('stream_end')}() after the loop that "
+                "fills it, or fill it in a with block",
+            )
+        if not state["taken"]:
+            self.refuse(
+                node,
+                f"nothing pushes {stream}'s pages: no compute body takes it",
+                f"fill it: km.{spelling('cxx')}(..., takes=[{stream}])",
+            )
+        if not isinstance(node.target, ast.Name):
+            self.refuse(node, "one name a page", f"write `for page in {stream}:`")
+        buffer = f"kField{camel(state['field'])}"
+        end = self.end_buffer(node, stream)
+        taken, total = f"km_taken_{stream}", f"km_total_{stream}"
+        opening = (
+            f"if (movement.poll([&] {{\n    if ({total} == 0xFFFFFFFFu && "
+            f"cb_pages_available_at_front({end}, 1)) {{\n        "
+            f"invalidate_l1_cache();\n        {total} = km::l1(get_read_ptr({end}))[0];"
+            f"\n        cb_pop_front({end}, 1);\n    }}\n    return {taken} == {total} "
+            f"|| cb_pages_available_at_front({buffer}, 1);\n}}, "
+            "movement.args().wait_limit) != km::kGaveNone) {\n    return false;\n}\n"
+            f"if ({taken} == {total}) {{\n    break;\n}}"
+        )
+        counts = Line(
+            f"uint32_t {taken} = 0, {total} = 0xFFFFFFFFu;  // the end's count",
+            mover=mover,
+        )
+        loop = self.page_loop(
+            node, node.target.id, state["field"], mover, opening, f"++{taken};", ""
+        )
+        return [counts, *loop[0]], []
+
+    def page_loop(self, node, name, field_, mover, opening, closing, _):
+        """A mover's loop over pages of own field f, a page a turn: `opening` waits
+        for one (or breaks), the body's lines (the mover's alone), the page freed
+        once its writes read it, then `closing`; `name` the page's L1 address."""
+        self.check_name(node, name)
+        self.scope[name] = Value("page", name, mover=mover)
+        body_m, body_c = self.statements(node.body)
+        self.scope.pop(name)
+
+        def movers(nodes, inherited=None):  # the mover of each line of the nodes
+            for item in nodes:
+                held = getattr(item, "mover", None) or inherited
+                if isinstance(item, Line):
+                    yield held
+                else:
+                    yield from movers(getattr(item, "children", []), held)
+
+        if any(has_line(n) for n in body_c) or set(movers(body_m)) - {mover}:
+            self.refuse(
+                node.body[0],
+                f"inside a stream mover {mover} drains, mover {mover}'s lines alone",
+                "move the other CPU's lines before or after the loop",
+            )
+        self.wait(node, f"mover {mover}", WAIT_DATA)
+        buffer = f"kField{camel(field_)}"
+        loop = Block(
+            "for (;;) {",
+            "}",
+            [
+                Line(
+                    f"{opening}\ninvalidate_l1_cache();\nconst uint32_t {name} = "
+                    f"get_read_ptr({buffer});\nvolatile tt_l1_ptr uint32_t* "
+                    f"{name}_words = km::l1({name});",
+                    mover=mover,
+                ),
+                *body_m,
+                Line(
+                    "noc_async_writes_flushed();  // the page read by its writes\n"
+                    f"cb_pop_front({buffer}, 1);\n{closing}",
+                    mover=mover,
+                ),
+            ],
+            mover=mover,
+        )
+        return [loop], []
+
     def block_loop(self, node, value):
         """`for tile in v:` over a block a broadcast brought: compute waits for it,
         takes its pages in order, frees its slot."""
@@ -5890,6 +6124,16 @@ class HandlerCompiler:
         value = self.scope[item.id]
         if value.kind in ("int", "partition", "pattern"):
             return {item.id}
+        if value.kind == "page" and where == value.mover:  # its L1 address
+            return {item.id}
+        if value.kind == "drained":
+            return self.take_drained(node, item.id, where, bound, before, after)
+        if value.kind == "page":
+            self.refuse(
+                node,
+                f"{item.id} is a page mover {value.mover} reads",
+                f'take it in a body on="mover_{value.mover.lower()}"',
+            )
         if value.kind in ("entry", "entries"):
             return self.take_entry(node, item.id, value, bound)
         if value.kind == "arrived":
