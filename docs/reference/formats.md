@@ -142,11 +142,26 @@ builds the **turned** product: it computes (X W)^T = W^T X^T, so
 
 A block-float W stored with transposed tiles shares an exponent along 16 rows of W's
 column instead of 16 columns of its row; "W stored" in the table below is each layout's
-own loss. The turn is built for the three product forms of a class: the field product,
-the stream product into `Dst` and the field sums. A product of two broadcasts' blocks
-refuses a turned marker, and a tile function the tile compiler traces is refused when
-it holds a marker ("km.srcb marks an operand of a tile function `return a @ b` that a
-handler's product line adds").
+own loss. The turn is built for the four product forms of a class: the field product,
+the stream product into `Dst`, the field sums and the product of two broadcasts' blocks
+(W's tiles of the block's columns into SrcB, each row of X's subblock read transposed,
+the subblock's `Dst` turned back before its pack; the W the build checks is the tensor
+the block casts).
+
+A tile function the tile compiler traces (vector code with its products, as
+`km.silu(a @ w1) * (a @ w3)`) takes a plain marker (`km.srcb(a) @ w1`), which moves
+nothing, and refuses a turning one at the call's line: its vector code runs on the
+products in `Dst` within one body, where a turned product would leave (A W)^T, and the
+transpose back is a library call between the body's words. Write that product as a
+tile function `return a @ km.srcb(w)` of its own.
+
+The command is checked too: a command's tensor that a product reads as W (by the
+handler's parameter) is refused at submit when its `transposed_tiles` differs from the
+product's placement, naming the tensor and the product's line:
+
+```text
+apply: tensor w is not stored with its tiles transposed, and Sums.apply, line 153: self.sums += self.turned(xb, wb) reads it as W of a turned product; write it with session.tensor(..., transposed_tiles=True)
+```
 
 The build prints both placements of every product with the bits each operand keeps,
 whether or not it is marked:
@@ -193,14 +208,33 @@ The turn costs 0.5 to 2 µs a command here (the `Dst` transposes, about 180 cycl
 tile, and the matrix unit set up again after them). The build does not choose a
 placement: it prints both, and the marker is the program's choice.
 
+The A family's turn and the broadcasts' turn, measured the same way
+([placement_more.py](../../experiments/core/formats/README.md#the-turns-other-forms-float16-and-two-broadcasts-blocks)):
+float16 X and W with the sums in the 16-bit `Dst` (32 x 1024 x 1024, 8 cores), and two
+broadcasts' blocks on a 2 x 2 rectangle (X bfloat16, W bfp8_b, K 1024):
+
+| Product | Fidelity | Form | RMS rel. | Max / RMS | µs |
+| --- | --- | --- | --- | --- | --- |
+| float16 | LoFi | no marker | 3.00e-2 | 0.141 | 17.0 |
+| float16 | LoFi | `km.srcb(w)` | 2.99e-2 | 0.119 | 17.2 |
+| float16 | HiFi2 | no marker | 6.71e-3 | 0.040 | 17.1 |
+| float16 | HiFi2 | `km.srcb(w)` | 6.73e-3 | 0.034 | 17.4 |
+| float16 | HiFi4 | no marker | 3.53e-3 | 0.022 | 17.4 |
+| float16 | HiFi4 | `km.srcb(w)` | 3.51e-3 | 0.021 | 17.5 |
+| broadcasts | HiFi4 | no marker | 7.17e-3 | 0.029 | 24.6 |
+| broadcasts | HiFi4 | `km.srcb(w)` | 7.23e-3 | 0.029 | 24.7 |
+
+Each turn equals its plain product within the sums' noise. Two float16 operands carry
+11 bits each, so the two placements cut alike (one keeps 5 and the other 7 at LoFi);
+the marker matters when the operands' bits differ.
+
 ## Not in this version
 
 - **lf8** (an 8-bit float the packer can write) is not built: no buffer, tensor or
   class format names it.
 - **A choice of placement by the build.** The build prints both placements' bits; it
   does not pick one.
-- **A turned product of two broadcasts' blocks**, and markers in a tile function the
-  tile compiler traces.
+- **A turned product in a tile function the tile compiler traces** (above).
 - **A fidelity a product.** One a compute kernel (above).
 - **The A family in a tile function**, which runs on an fp32 `Dst`.
 - **The card's packer on the host.** `formats.bfp_encode` is tt-metal's encode, not the

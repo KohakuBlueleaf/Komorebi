@@ -446,8 +446,27 @@ class HandlerMethod:
                     "(the example tensor's): make the program with a tensor of this "
                     "width"
                 )
+            self.placed_check(parameter, value)
             words.append(word_of(self.name, parameter, kind, value))
         return words
+
+    def placed_check(self, parameter, value):
+        """Refuses a command's tensor that a product reads as its W stored otherwise
+        than the product's placement takes it (transposed tiles: turned)."""
+        placed = getattr(self.owner, "placed_parameters", {}).get(
+            (self.name, parameter)
+        )
+        if placed is None or not isinstance(value, Tensor):
+            return
+        turned, where = placed
+        if value.transposed_tiles != turned:
+            stored = "stored" if value.transposed_tiles else "not stored"
+            raise ProgramError(
+                f"{self.name}: tensor {parameter} is {stored} with its tiles "
+                f"transposed, and {where} reads it as W of a "
+                f"{'turned' if turned else 'plain'} product; write it with "
+                f"session.tensor(..., transposed_tiles={turned})"
+            )
 
     def places(self):
         """The names of the parameters after self in order, constant ones too."""
@@ -601,9 +620,12 @@ def line_only(kind):
 
 def placement(side):
     """km.srcb / km.srca: marks a product's operand for that source register; read by
-    the compiler in a tile function `return a @ b`, never run."""
+    the compiler from the source, and its operand itself while a tile function is
+    traced (the compiler has refused a marker that turns a traced product)."""
 
     def call(*args, **kwargs):
+        if trace._STACK and len(args) == 1 and not kwargs:
+            return args[0]
         raise ProgramError(
             f"km.{spelling(side)} marks an operand of a tile function `return a @ b` "
             "that a handler's product line adds; the compiler reads it, Python never "

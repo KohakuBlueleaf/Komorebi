@@ -141,6 +141,32 @@ than 7) less than they cut X. The turn costs 0.5 to 2 us a command (each subbloc
 Dst transposed back, the matrix unit set up again). bfp4_b is its storage's error at
 every fidelity. The commands are not bound by the weight's bytes at this size.
 
+### The turn's other forms: float16, and two broadcasts' blocks
+
+`placement_more.py`: (a) Y = X W of float16 tiles, 32 x 1024 x 1024 on 8 cores as
+above, the A family's 16-bit Dst, the sums in Dst (`acc`), X float16 values, W normal /
+32 stored float16, at each fidelity; (b) two broadcasts' blocks on a 2 x 2 rectangle,
+each core a 2 x 2 block of Y's tiles over K 1024 in casts of 2 K tiles, X bf16 and W
+bfp8_b, HiFi4, the sums in an fp32 field. Each with no marker and with `km.srcb(w)`;
+error against float64, time the median of 3 commands.
+
+| product | fidelity | form | rms rel | max / rms | us |
+| --- | --- | --- | --- | --- | --- |
+| float16 | LoFi | no marker | 3.00e-2 | 0.141 | 17.0 |
+| float16 | LoFi | km.srcb(w) | 2.99e-2 | 0.119 | 17.2 |
+| float16 | HiFi2 | no marker | 6.71e-3 | 0.040 | 17.1 |
+| float16 | HiFi2 | km.srcb(w) | 6.73e-3 | 0.034 | 17.4 |
+| float16 | HiFi4 | no marker | 3.53e-3 | 0.022 | 17.4 |
+| float16 | HiFi4 | km.srcb(w) | 3.51e-3 | 0.021 | 17.5 |
+| broadcasts | HiFi4 | no marker | 7.17e-3 | 0.029 | 24.6 |
+| broadcasts | HiFi4 | km.srcb(w) | 7.23e-3 | 0.029 | 24.7 |
+
+Both turns are right: each marked row equals its unmarked row within the sums' noise.
+Both float16 operands carry 11 bits, so the two placements cut the same bits, one off
+each operand (5 and 7 kept at LoFi, 7 and 10 at HiFi2), and measure alike; at HiFi4
+the 16-bit Dst's sums are the error. The 16-bit Dst's transpose back costs about
+0.2 us a command here, the broadcasts' 0.1 us.
+
 ## Running it
 
     python experiments/core/formats/probe.py build [--set 2]   # mock device: builds every case
@@ -152,3 +178,5 @@ cache, runs each case once and writes `results/card<set>.json`.
 
     python experiments/core/formats/placement.py build   # mock device: the three programs
     python experiments/core/formats/placement.py card    # one card: results/placement.json
+    python experiments/core/formats/placement_more.py build   # mock device: the five programs
+    python experiments/core/formats/placement_more.py card    # one card: results/placement_more.json
