@@ -435,10 +435,49 @@ each call the marks of the call before it.
 **The guard.** Refused when the chain is made: `run.chain` proves every input and refuses,
 naming the call, the tensor, the tile and the core, a core that reads before anything
 tells it complete. It refuses an outside tensor that a call of the chain writes, and, over
-islands, a record whose input waits for a mark from a root on another island.
+islands, a record whose input waits for a mark from a root on another island. A chain of
+a class's handler calls refuses a read of a tensor an earlier call wrote unless the call
+marks it `km.past(t)`, which is then proven.
 
-Described in [The chain, the earlier input](chain.md#the-earlier-input-and-the-direct-input)
-and [what is refused](chain.md#what-is-refused).
+Described in [The chain, the earlier input](chain.md#the-earlier-input-and-the-direct-input),
+[what is refused](chain.md#what-is-refused) and
+[Programs written as classes, chains](classes.md#chains).
+
+### A chain's read started before its input's marks
+
+**The hazard.** In a chain of a class's handler calls, a read of a tensor that no call of
+the chain writes goes before the record's input is marked (prefetch). A tensor that some
+call does write, read so, could be read before that call's cores have written it: you
+would see stale words, and no error.
+
+**The rule.** Let the build choose: it prefetches only the tensors no call of the chain
+writes. State `prefetch=True` on a read only of such a tensor; `prefetch=False` (on the
+chain or on a stream) when a read must wait anyway.
+
+**The guard.** Refused when the chain is made: a read stated `prefetch=True` of a tensor
+a call of the chain writes, naming the call, the line and the tensor; a handler whose
+inline body takes a tensor (what it reads is its own C++), and a `kc.Call` among the
+class's calls (its tensors are names the build cannot compare). The automatic prefetch
+is on by default and costs nothing; off, every read waits for the input's marks.
+
+Described in [Programs written as classes, chains](classes.md#chains).
+
+### A slice of a constant set's words
+
+**The hazard.** `program.gate.args(..., 4)` gives words that carry the constant values
+they state, so `submit_many`, `Graph.command`, a stream's submit and a chain's call run
+the handler built for them. A slice or a concatenation of those words is a plain list:
+it carries nothing and means the defaults, so the command runs the default set's
+handler on words laid out for another. You see wrong results, or a command that reads
+past its tensors, and no error.
+
+**The rule.** Hand on the words `args` gave, whole; to change one, call `args` again.
+
+**The guard.** Nothing: a plain list of words is how every caller stated words before
+constant sets, and it means the defaults.
+
+Described in [Programs written as classes, a constant parameter of a
+handler](classes.md#a-constant-parameter-of-a-handler).
 
 ### Unsigned word arithmetic that wraps
 

@@ -30,6 +30,10 @@ chain = run.chain(steps, C["kChainMode"])  # proven, then written once
 run.wait(run.submit(chain, factor=5))  # one command
 ```
 
+A class's handlers can state the calls themselves, each call's description derived
+from its handler's lines, in a list or a `km.chain` method:
+[Programs written as classes, chains](classes.md#chains).
+
 ## What a program states
 
 A program runs chains with three things of its own; the rest is the framework's.

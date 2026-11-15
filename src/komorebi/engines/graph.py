@@ -383,6 +383,7 @@ class Graph:
         if (group is None) == (count is None):
             raise ValueError("give either group=(first, count) or count")
         result_register = _register_or_none(result, "result")
+        handler = stream_module.built_for(handler, args, "a graph")
         index = self._template(
             handler, group, count, list(args), exclusive, result_register
         )

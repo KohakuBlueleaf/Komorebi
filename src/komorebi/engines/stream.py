@@ -3,6 +3,7 @@
 The constants repeat `km_stream.h`; a test compares them.
 """
 
+import importlib
 import struct
 from collections import namedtuple
 from dataclasses import dataclass
@@ -382,12 +383,14 @@ class Stream:
         to the X280 thread of work cluster `cluster` (1 to 3; never exclusive)."""
         if cluster is not None:
             group = cluster_group(cluster, group, exclusive)
+        handler = built_for(handler, args, "a stream")
         index = self._template(handler, group, list(args), exclusive, result)
         self._add(OP_SUBMIT, immediate=index)
 
     def enqueue(self, handler, count, args=(), exclusive=False, result=False):
         """ENQUEUE: a job of `count` cores (int or register); first is chosen."""
         register = count if isinstance(count, Register) else self.const(count)
+        handler = built_for(handler, args, "a stream")
         index = self._template(handler, (0, 0), list(args), exclusive, result)
         self._add(OP_ENQUEUE, _register(register, "count"), immediate=index)
 
@@ -468,6 +471,15 @@ class Stream:
     def simulate(self, **options):
         """`simulate` on this stream's upload."""
         return simulate(self.encode(), **options)
+
+
+def built_for(handler, args, where):
+    """A class's handler given its words (`program.h.args(...)`): the handler built
+    for the constant values they carry (plain words: the defaults). Others: itself."""
+    if not hasattr(handler, "method") and not hasattr(handler, "function"):
+        return handler  # not a class's handler: nothing to pick
+    made = importlib.import_module("komorebi.dsl.program")
+    return made.words_handler(handler, [args], None, where)
 
 
 def program_field(handler):
