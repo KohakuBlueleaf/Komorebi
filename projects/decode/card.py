@@ -8,7 +8,7 @@ import time
 import numpy as np
 
 import komorebi as km
-from komorebi import formats
+from komorebi import abi, formats
 from projects.decode import bodies as emitted_bodies
 from projects.decode import model as md
 from projects.dense import card as dense_card
@@ -31,6 +31,12 @@ ATTEND_MODES = {None: 0, "read": 16, "local": 32, "exp_twice": 64}  # LAYERS' a4
 # default: each is right on the card and slower than the hand body (README, stage 5).
 BODIES = ("add", "norm", "gate", "qk")
 DEFAULT_BODIES = ()
+# The layer as one command: each core goes on to the next product by itself (stage 6;
+# the split's SPLIT_CHAIN), its records written by the thread; off: a command a step.
+CHAIN = abi.constants(dense_card.SPLIT_KERNELS / "chain.h")
+# The kernel buffer with the chain: its code takes 78,128 B (mock build), the
+# runtime's own 70,656; the L1 it takes is from the 217 K no buffer uses.
+CHAIN_KERNEL_BYTES = 80 * 1024
 
 
 def scale_fp32(bodies):
@@ -50,9 +56,10 @@ def keys_most(context, group):
     return math.ceil((context // md.TILE - 1) / group) + 1
 
 
-def buffers(plan, most, bodies=DEFAULT_BODIES):
+def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
     """The K split's buffers (every plan shares them) and the operations'; attend's
-    for `most` key tiles a core; DC_CB_SCALE fp32 by scale_fp32(bodies)."""
+    for `most` key tiles a core; DC_CB_SCALE fp32 by scale_fp32(bodies); with `chain`
+    the chain's words and record slots (one page)."""
     tile = pl.TILE_BYTES
     block = plan.oh * plan.ow
     head = D["DC_HEAD_TILES"]
@@ -83,6 +90,8 @@ def buffers(plan, most, bodies=DEFAULT_BODIES):
         (D["DC_CB_PART"], 1),
     ]
     (state if scale_fp32(bodies) else own).append((D["DC_CB_SCALE"], 1))
+    if chain:
+        own.append((CHAIN["kChainBuffer"], 1))
     return (
         [km.Buffer(*buffer) for buffer in plan.buffers()]
         + [km.Buffer(index, "bfloat16", tile, pages) for index, pages in own + attend]
@@ -92,9 +101,10 @@ def buffers(plan, most, bodies=DEFAULT_BODIES):
 
 class Decode:
     """The model's layers loaded on a session: tensors, the program and its thread.
-    `layers` distinct layers of weights in DRAM, written by write_layer(); `trace`:
-    the commands each core stamps (the runtime's trace, 0: none); `chunk`, `patterns`:
-    md.plans()'s; `context`: the cache's rows a KV head and layer; `bodies`: BODIES'."""
+    `layers` layers of weights in DRAM (write_layer()); `trace`: the commands a core
+    stamps (0: none); `chunk`, `patterns`: md.plans()'s; `context`: the cache's rows a
+    KV head and layer; `bodies`: BODIES'; `chain`: the layer as one command (stage 6).
+    """
 
     def __init__(
         self,
@@ -108,8 +118,12 @@ class Decode:
         patterns=None,
         context=4096,
         bodies=DEFAULT_BODIES,
+        chain=True,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
+        self.chain = chain
+        if chain and trace:  # its words take the trace buffer's index (chain.h)
+            raise ValueError("the chain's program runs untraced (trace=0)")
         self.bodies = tuple(bodies)
         if not set(self.bodies) <= set(BODIES):
             raise ValueError(f"bodies {self.bodies}: of {BODIES}")
@@ -186,8 +200,9 @@ class Decode:
         program = km.Program(
             "decode",
             kernels=dense_card.SPLIT_KERNELS,
-            buffers=buffers(plans[0], self.keys_most, self.bodies),
+            buffers=buffers(plans[0], self.keys_most, self.bodies, self.chain),
             args=lambda core: (table, table, table),
+            defines={"SPLIT_CHAIN": 1} if self.chain else {},
             compile_args={"reader": tile_args * 2, "writer": tile_args * 3},
             compute={
                 "math_fidelity": "HiFi2",
@@ -226,7 +241,8 @@ class Decode:
             "attend",
             KERNELS / "attend",
             number=D["DC_OVERLAY_ATTEND"],
-            defines={"DC_KEYS_MOST": self.keys_most},
+            defines={"DC_KEYS_MOST": self.keys_most}
+            | ({"SPLIT_CHAIN": 1} if self.chain else {}),
         )
         weights = np.zeros((self.layers, D["DC_LAYER_WORDS"]), np.uint32)
         for layer, tensors in enumerate(self.weights):
@@ -238,11 +254,12 @@ class Decode:
         program.thread(
             cluster=CLUSTER,
             sources=[md.HERE / "thread" / "layers.c"],
-            includes=[md.HERE],
+            includes=[md.HERE, dense_card.SPLIT_KERNELS],
             regions={
                 "weights": weights.reshape(-1),
                 "tensors": addresses,
                 "stats": 4 * D["DC_STATS_WORDS"] * D["DC_STATS_SLOTS"],
+                "records": CHAIN["kChainRecordBytes"] * CHAIN["kChainRecordsMax"],
             },
             words=self.words(),
             handlers={"layers": D["DC_HANDLER_LAYERS"]},
@@ -274,6 +291,22 @@ class Decode:
             self.plan_word("o"),
             operation_word(D["DC_OVERLAY_ATTEND"], ATTEND_PARTS),
             self.context // md.TILE,
+            md.GATE_TILES,
+            *self.attend_needs(),
+        ]
+
+    def attend_needs(self):
+        """attend's three ranges of qkv for the chain (chain.h): a KV head's group reads
+        its query heads' tiles, its root also the head's key and value tiles."""
+        model, head = self.model, D["DC_HEAD_TILES"]
+        query = D["DC_HEAD_GROUP"] * head
+        keys = model.heads * model.head_dim // md.TILE
+        values = keys + model.kv_heads * head
+        root = 1 << 31
+        return [
+            0 | query << 12 | query << 20,
+            keys | head << 12 | head << 20 | root,
+            values | head << 12 | head << 20 | root,
         ]
 
     def attend(self, groups, position, rows=1, layer=0, timeout=5.0):
@@ -366,16 +399,23 @@ class Decode:
         position=None,
         attend=None,
         rows=1,
+        chain=None,
+        pair=False,
     ):
         """One LAYERS command: its result word and stats slot. `bare` products only,
-        `parts` their parts only, `apart` q, k, v as three (no attention), `overlap` two
-        in flight; `position` the first token's (default: the last ends the cache);
-        `attend` a cut-down attention of ATTEND_MODES; `rows` tokens a step."""
+        `parts` their parts only, `apart` q, k, v as three, `overlap` two in flight;
+        `position` the first token's (default: the cache's end); `attend` ATTEND_MODES';
+        `rows` tokens a step; `chain` the layer as one command, `pair` its first two."""
         slot = self.slot
         self.slot += 1
         mode = 3 if parts else int(bare)
         mode |= (4 if apart or overlap else 0) | (8 if overlap else 0)
         mode |= ATTEND_MODES[attend]
+        chain = self.chain and not (apart or overlap) if chain is None else chain
+        if chain and (apart or overlap or not self.chain):
+            raise ValueError("the chain: the fused layer, on a program built for it")
+        mode |= D["DC_LAYERS_CHAIN"] if chain else 0
+        mode |= D["DC_LAYERS_PAIR"] if chain and pair else 0
         steps = tokens * rows
         position = self.context - steps if position is None else position
         if not 0 <= position <= self.context - steps or not 1 <= rows <= md.TILE:
@@ -394,7 +434,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
-STEPS = ("qkv", "q", "k", "v", "attend", "o", "gate_up", "down")  # DC_STEP_*
+STEPS = ("qkv", "q", "k", "v", "attend", "o", "gate_up", "down", "chain")  # DC_STEP_*
 
 
 def decode_slot(words):

@@ -10,6 +10,13 @@
 constexpr km::BufferPair kChunksA = {kCbSa, kCbSaMoverB};
 constexpr km::BufferPair kChunksW = {kCbSw, kCbSwMoverB};
 
+// A kernel's product: the chain's records and a plain command call one copy of it.
+#if defined(SPLIT_CHAIN)
+#define SPLIT_PRODUCT __attribute__((noinline))
+#else
+#define SPLIT_PRODUCT
+#endif
+
 // The pattern a plan's kSpPattern word names.
 inline km::Pattern chunk_pattern(uint32_t word) {
     return word == kSplitAAAB ? km::kPatternAAAB : km::kPatternAB;
@@ -18,6 +25,24 @@ inline km::Pattern chunk_pattern(uint32_t word) {
 #if !defined(COMPILE_FOR_TRISC)
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_port.hpp"
+
+#if defined(SPLIT_CHAIN)
+#include "chain.hpp"
+
+// `pattern` from chunk `first` on: chunk first + b is its block b.
+inline km::Pattern pattern_from(const km::Pattern& pattern, uint32_t first) {
+    const uint32_t shift = first % pattern.length;
+    if (shift == 0) {
+        return pattern;
+    }
+    const uint32_t mask = (1u << pattern.length) - 1u;
+    return {
+        pattern.length,
+        ((pattern.owners >> shift) | (pattern.owners << (pattern.length - shift))) &
+            mask
+    };
+}
+#endif
 
 // This mover's K chunks of its core's partition: A's oh x kc and W's kc x ow tiles, the
 // last chunk ragged. False: gave up (recorded).
@@ -65,6 +90,36 @@ bool move_chunks(
         rows,
         last_length
     };
+#if defined(SPLIT_CHAIN)
+    // a chain's record: W's blocks while its input is not yet marked, then A's chunks
+    // with the rest of W (two streams; chain.hpp)
+    const auto w_from = [&](uint32_t skip) {
+        const km::Walk walk = {
+            ((k_part.start + skip * chunk_tiles) * n_tiles) + first_column,
+            chunks - skip,
+            chunk_tiles * n_tiles,
+            chunk_tiles,
+            n_tiles,
+            columns,
+            1,
+            block_width,
+            chunk_tiles * block_width,
+            last_length,
+            columns
+        };
+        return (
+            km::Stream(
+                km::kMoveRead, w_matrix, walk, 1, kChunksW, pattern_from(pattern, skip)
+            )
+        );
+    };
+    uint32_t skip = 0;
+    if (!chain_weight_first(core, w_from(0), skip)) {
+        return false;
+    }
+    const km::Stream a_chunks(km::kMoveRead, a_matrix, a_walk, 1, kChunksA, pattern);
+    return km::move(core, a_chunks, w_from(skip));
+#else
     const km::Walk w_walk = {
         (k_part.start * n_tiles) + first_column,
         chunks,
@@ -81,5 +136,6 @@ bool move_chunks(
     const km::Stream a_chunks(km::kMoveRead, a_matrix, a_walk, 1, kChunksA, pattern);
     const km::Stream w_chunks(km::kMoveRead, w_matrix, w_walk, 1, kChunksW, pattern);
     return km::move(core, a_chunks, w_chunks);
+#endif
 }
 #endif

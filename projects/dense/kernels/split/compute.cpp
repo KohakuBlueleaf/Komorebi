@@ -11,6 +11,9 @@
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
 #include "chunks.hpp"
+#if defined(SPLIT_CHAIN)
+#include "chain.hpp"
+#endif
 #include "komorebi/device/km_port.hpp"
 #include "sets.hpp"
 #include "split.h"
@@ -36,7 +39,7 @@ namespace {
 void kernel_main() {
     km::Compute compute;
     compute_kernel_hw_startup<SrcOrder::Reverse>(kCbSa, kCbSw, kCbSum);
-    compute.run([&](const km_command_t& command) {
+    const auto product = [&](const km_command_t& command) SPLIT_PRODUCT {
         if (km::handler(command) != kHandlerSplit || command.a5 >= kSplitPlans) {
             return;
         }
@@ -178,5 +181,16 @@ void kernel_main() {
             }
         }
         reconfig_data_format_srca(kCbArrive, kCbSw);
+    };
+#if defined(SPLIT_CHAIN)
+    compute.run([&](const km_command_t& command) {
+        if (km::handler(command) == kHandlerSplit && command.a4 == kChainMode) {
+            chain_compute(compute, command, product);
+        } else {
+            product(command);
+        }
     });
+#else
+    compute.run(product);
+#endif
 }

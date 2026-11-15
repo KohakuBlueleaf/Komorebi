@@ -1,0 +1,3218 @@
+{
+ "model": "Qwen/Qwen3-1.7B",
+ "layers": 28,
+ "tokens": 10,
+ "bodies": [],
+ "chain": true,
+ "layer_bytes": 100671488,
+ "plans": {
+  "64x128": [
+   1,
+   64,
+   128,
+   7,
+   1,
+   8,
+   2,
+   1,
+   4,
+   16,
+   64,
+   0
+  ],
+  "64x64": [
+   1,
+   64,
+   64,
+   15,
+   1,
+   8,
+   2,
+   1,
+   4,
+   8,
+   64,
+   0
+  ],
+  "64x384": [
+   1,
+   64,
+   384,
+   2,
+   1,
+   8,
+   2,
+   1,
+   4,
+   48,
+   64,
+   1
+  ],
+  "192x64": [
+   1,
+   192,
+   64,
+   15,
+   1,
+   8,
+   2,
+   1,
+   4,
+   8,
+   64,
+   0
+  ],
+  "64x32": [
+   1,
+   64,
+   32,
+   16,
+   1,
+   8,
+   2,
+   1,
+   4,
+   4,
+   64,
+   0
+  ]
+ },
+ "write_gbs": 5.37,
+ "account": {
+  "4096": {
+   "weights_us": 203.13,
+   "cache_us": 33.82,
+   "cases": {
+    "full": {
+     "layer_us": 356.57,
+     "commands_us": 345.42,
+     "thread_us": 11.14
+    },
+    "bare": {
+     "layer_us": 338.42,
+     "commands_us": 327.41,
+     "thread_us": 11.01
+    },
+    "parts": {
+     "layer_us": 314.72,
+     "commands_us": 303.72,
+     "thread_us": 11.0
+    },
+    "attend_read": {
+     "layer_us": 331.14,
+     "commands_us": 320.0,
+     "thread_us": 11.14
+    },
+    "attend_local": {
+     "layer_us": 338.45,
+     "commands_us": 327.28,
+     "thread_us": 11.16
+    },
+    "attend_exp_twice": {
+     "layer_us": 360.04,
+     "commands_us": 348.88,
+     "thread_us": 11.15
+    },
+    "full/commands": {
+     "layer_us": 410.26,
+     "commands_us": 399.02,
+     "thread_us": 11.24
+    },
+    "bare/commands": {
+     "layer_us": 388.98,
+     "commands_us": 377.88,
+     "thread_us": 11.1
+    },
+    "parts/commands": {
+     "layer_us": 358.49,
+     "commands_us": 347.45,
+     "thread_us": 11.04
+    },
+    "attend_read/commands": {
+     "layer_us": 361.2,
+     "commands_us": 349.99,
+     "thread_us": 11.21
+    },
+    "attend_local/commands": {
+     "layer_us": 388.83,
+     "commands_us": 377.62,
+     "thread_us": 11.21
+    },
+    "attend_exp_twice/commands": {
+     "layer_us": 414.21,
+     "commands_us": 403.01,
+     "thread_us": 11.21
+    }
+   },
+   "commands": {
+    "full": {
+     "layer_us": 410.26,
+     "ceiling_us": 203.13,
+     "terms": [
+      {
+       "kind": "HARDWARE",
+       "term": "qkv: W at the ceiling",
+       "us": 33.85
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: the read below the ceiling",
+       "us": 9.43
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: the boundary",
+       "us": 7.03
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: its operation",
+       "us": 13.78
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "o: W at the ceiling",
+       "us": 16.93
+      },
+      {
+       "kind": "OURS",
+       "term": "o: the read below the ceiling",
+       "us": 6.91
+      },
+      {
+       "kind": "OURS",
+       "term": "o: the boundary",
+       "us": 8.58
+      },
+      {
+       "kind": "OURS",
+       "term": "o: its operation",
+       "us": 1.57
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "gate_up: W at the ceiling",
+       "us": 101.56
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: the read below the ceiling",
+       "us": 19.7
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: the boundary",
+       "us": 6.31
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: its operation",
+       "us": 4.21
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "down: W at the ceiling",
+       "us": 50.78
+      },
+      {
+       "kind": "OURS",
+       "term": "down: the read below the ceiling",
+       "us": 11.63
+      },
+      {
+       "kind": "OURS",
+       "term": "down: the boundary",
+       "us": 8.56
+      },
+      {
+       "kind": "OURS",
+       "term": "down: its operation",
+       "us": 1.65
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: the cache's K and V at the ceiling (4091.5 rows)",
+       "us": 33.82
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: 164 tile products, busiest core",
+       "us": 4.19
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: 18 exponent tiles, measured",
+       "us": 4.02
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: the read below the ceiling (q a core, the append, the command)",
+       "us": 13.97
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: compute not under the read",
+       "us": 19.3
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: the merge's rounds",
+       "us": 21.28
+      },
+      {
+       "kind": "OURS",
+       "term": "the thread between commands (submit, wait)",
+       "us": 11.24
+      }
+     ],
+     "unaccounted_us": -0.04
+    }
+   }
+  },
+  "1024": {
+   "weights_us": 203.13,
+   "cache_us": 8.43,
+   "cases": {
+    "full": {
+     "layer_us": 326.41,
+     "commands_us": 315.27,
+     "thread_us": 11.15
+    },
+    "bare": {
+     "layer_us": 308.73,
+     "commands_us": 297.72,
+     "thread_us": 11.0
+    },
+    "parts": {
+     "layer_us": 284.03,
+     "commands_us": 273.04,
+     "thread_us": 10.99
+    },
+    "attend_read": {
+     "layer_us": 305.31,
+     "commands_us": 294.18,
+     "thread_us": 11.13
+    },
+    "attend_local": {
+     "layer_us": 311.34,
+     "commands_us": 300.17,
+     "thread_us": 11.17
+    },
+    "attend_exp_twice": {
+     "layer_us": 327.5,
+     "commands_us": 316.37,
+     "thread_us": 11.12
+    },
+    "full/commands": {
+     "layer_us": 373.0,
+     "commands_us": 361.77,
+     "thread_us": 11.23
+    },
+    "bare/commands": {
+     "layer_us": 351.77,
+     "commands_us": 340.67,
+     "thread_us": 11.09
+    },
+    "parts/commands": {
+     "layer_us": 321.24,
+     "commands_us": 310.16,
+     "thread_us": 11.08
+    },
+    "attend_read/commands": {
+     "layer_us": 336.7,
+     "commands_us": 325.48,
+     "thread_us": 11.22
+    },
+    "attend_local/commands": {
+     "layer_us": 352.0,
+     "commands_us": 340.79,
+     "thread_us": 11.21
+    },
+    "attend_exp_twice/commands": {
+     "layer_us": 374.39,
+     "commands_us": 363.16,
+     "thread_us": 11.23
+    }
+   },
+   "commands": {
+    "full": {
+     "layer_us": 373.0,
+     "ceiling_us": 203.13,
+     "terms": [
+      {
+       "kind": "HARDWARE",
+       "term": "qkv: W at the ceiling",
+       "us": 33.85
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: the read below the ceiling",
+       "us": 9.44
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: the boundary",
+       "us": 6.99
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: its operation",
+       "us": 13.72
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "o: W at the ceiling",
+       "us": 16.93
+      },
+      {
+       "kind": "OURS",
+       "term": "o: the read below the ceiling",
+       "us": 6.9
+      },
+      {
+       "kind": "OURS",
+       "term": "o: the boundary",
+       "us": 8.58
+      },
+      {
+       "kind": "OURS",
+       "term": "o: its operation",
+       "us": 1.56
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "gate_up: W at the ceiling",
+       "us": 101.56
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: the read below the ceiling",
+       "us": 19.76
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: the boundary",
+       "us": 6.25
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: its operation",
+       "us": 4.21
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "down: W at the ceiling",
+       "us": 50.78
+      },
+      {
+       "kind": "OURS",
+       "term": "down: the read below the ceiling",
+       "us": 11.73
+      },
+      {
+       "kind": "OURS",
+       "term": "down: the boundary",
+       "us": 8.6
+      },
+      {
+       "kind": "OURS",
+       "term": "down: its operation",
+       "us": 1.53
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: the cache's K and V at the ceiling (1019.5 rows)",
+       "us": 8.43
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: 56 tile products, busiest core",
+       "us": 1.43
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: 6 exponent tiles, measured",
+       "us": 1.33
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: the read below the ceiling (q a core, the append, the command)",
+       "us": 14.79
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: compute not under the read",
+       "us": 12.51
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: the merge's rounds",
+       "us": 20.9
+      },
+      {
+       "kind": "OURS",
+       "term": "the thread between commands (submit, wait)",
+       "us": 11.23
+      }
+     ],
+     "unaccounted_us": -0.01
+    }
+   }
+  },
+  "256": {
+   "weights_us": 203.13,
+   "cache_us": 2.08,
+   "cases": {
+    "full": {
+     "layer_us": 317.61,
+     "commands_us": 306.47,
+     "thread_us": 11.14
+    },
+    "bare": {
+     "layer_us": 299.83,
+     "commands_us": 288.83,
+     "thread_us": 11.0
+    },
+    "parts": {
+     "layer_us": 274.75,
+     "commands_us": 263.74,
+     "thread_us": 11.01
+    },
+    "attend_read": {
+     "layer_us": 298.56,
+     "commands_us": 287.42,
+     "thread_us": 11.14
+    },
+    "attend_local": {
+     "layer_us": 300.04,
+     "commands_us": 288.91,
+     "thread_us": 11.14
+    },
+    "attend_exp_twice": {
+     "layer_us": 317.81,
+     "commands_us": 306.67,
+     "thread_us": 11.14
+    },
+    "full/commands": {
+     "layer_us": 364.22,
+     "commands_us": 353.0,
+     "thread_us": 11.22
+    },
+    "bare/commands": {
+     "layer_us": 343.09,
+     "commands_us": 331.97,
+     "thread_us": 11.12
+    },
+    "parts/commands": {
+     "layer_us": 312.62,
+     "commands_us": 301.55,
+     "thread_us": 11.07
+    },
+    "attend_read/commands": {
+     "layer_us": 330.68,
+     "commands_us": 319.5,
+     "thread_us": 11.17
+    },
+    "attend_local/commands": {
+     "layer_us": 342.68,
+     "commands_us": 331.45,
+     "thread_us": 11.23
+    },
+    "attend_exp_twice/commands": {
+     "layer_us": 364.71,
+     "commands_us": 353.5,
+     "thread_us": 11.21
+    }
+   },
+   "commands": {
+    "full": {
+     "layer_us": 364.22,
+     "ceiling_us": 203.13,
+     "terms": [
+      {
+       "kind": "HARDWARE",
+       "term": "qkv: W at the ceiling",
+       "us": 33.85
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: the read below the ceiling",
+       "us": 9.48
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: the boundary",
+       "us": 6.99
+      },
+      {
+       "kind": "OURS",
+       "term": "qkv: its operation",
+       "us": 13.72
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "o: W at the ceiling",
+       "us": 16.93
+      },
+      {
+       "kind": "OURS",
+       "term": "o: the read below the ceiling",
+       "us": 6.92
+      },
+      {
+       "kind": "OURS",
+       "term": "o: the boundary",
+       "us": 8.56
+      },
+      {
+       "kind": "OURS",
+       "term": "o: its operation",
+       "us": 1.58
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "gate_up: W at the ceiling",
+       "us": 101.56
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: the read below the ceiling",
+       "us": 19.74
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: the boundary",
+       "us": 6.25
+      },
+      {
+       "kind": "OURS",
+       "term": "gate_up: its operation",
+       "us": 4.25
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "down: W at the ceiling",
+       "us": 50.78
+      },
+      {
+       "kind": "OURS",
+       "term": "down: the read below the ceiling",
+       "us": 11.71
+      },
+      {
+       "kind": "OURS",
+       "term": "down: the boundary",
+       "us": 8.6
+      },
+      {
+       "kind": "OURS",
+       "term": "down: its operation",
+       "us": 1.48
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: the cache's K and V at the ceiling (251.5 rows)",
+       "us": 2.08
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: 20 tile products, busiest core",
+       "us": 0.51
+      },
+      {
+       "kind": "HARDWARE",
+       "term": "attend: 2 exponent tiles, measured",
+       "us": 0.49
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: the read below the ceiling (q a core, the append, the command)",
+       "us": 15.12
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: compute not under the read",
+       "us": 10.87
+      },
+      {
+       "kind": "OURS",
+       "term": "attend: the merge's rounds",
+       "us": 21.54
+      },
+      {
+       "kind": "OURS",
+       "term": "the thread between commands (submit, wait)",
+       "us": 11.22
+      }
+     ],
+     "unaccounted_us": -0.01
+    }
+   }
+  }
+ },
+ "ceiling_ms_per_token": 5.688,
+ "cases": [
+  {
+   "thread_ticks": 4991911,
+   "stats_slot": 0,
+   "case": "full",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1004,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 99838.22,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 96718.5,
+      "most_us": 376.94,
+      "least_us": 340.54
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.984,
+   "tokens_per_second": 100.2,
+   "weight_gbs": 282.3
+  },
+  {
+   "thread_ticks": 4737911,
+   "stats_slot": 1,
+   "case": "bare",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0952,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 94758.22,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 91675.14,
+      "most_us": 335.06,
+      "least_us": 323.68
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.476,
+   "tokens_per_second": 105.5,
+   "weight_gbs": 297.5
+  },
+  {
+   "thread_ticks": 4406115,
+   "stats_slot": 2,
+   "case": "parts",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0885,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1343,
+    1344.8,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 88122.3,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 85041.22,
+      "most_us": 310.26,
+      "least_us": 297.26
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.812,
+   "tokens_per_second": 113.5,
+   "weight_gbs": 319.9
+  },
+  {
+   "thread_ticks": 4635965,
+   "stats_slot": 3,
+   "case": "attend_read",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0931,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 92719.3,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 89599.34,
+      "most_us": 323.78,
+      "least_us": 315.84
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.272,
+   "tokens_per_second": 107.9,
+   "weight_gbs": 304.0
+  },
+  {
+   "thread_ticks": 4738274,
+   "stats_slot": 4,
+   "case": "attend_local",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0952,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 94765.48,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 91639.78,
+      "most_us": 331.48,
+      "least_us": 323.5
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.477,
+   "tokens_per_second": 105.5,
+   "weight_gbs": 297.5
+  },
+  {
+   "thread_ticks": 5040490,
+   "stats_slot": 5,
+   "case": "attend_exp_twice",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1013,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 100809.8,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 97686.98,
+      "most_us": 354.84,
+      "least_us": 344.86
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.081,
+   "tokens_per_second": 99.2,
+   "weight_gbs": 279.6
+  },
+  {
+   "thread_ticks": 5743605,
+   "stats_slot": 6,
+   "case": "full/commands",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1152,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 114872.1,
+    "steps": {
+     "qkv": {
+      "sum_us": 17944.74,
+      "most_us": 65.28,
+      "least_us": 62.5
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 27037.88,
+      "most_us": 98.84,
+      "least_us": 95.56
+     },
+     "o": {
+      "sum_us": 9513.9,
+      "most_us": 34.5,
+      "least_us": 33.6
+     },
+     "gate_up": {
+      "sum_us": 36895.92,
+      "most_us": 133.2,
+      "least_us": 130.64
+     },
+     "down": {
+      "sum_us": 20332.2,
+      "most_us": 74.6,
+      "least_us": 70.88
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 11.487,
+   "tokens_per_second": 87.1,
+   "weight_gbs": 245.4
+  },
+  {
+   "thread_ticks": 5445768,
+   "stats_slot": 7,
+   "case": "bare/commands",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1092,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 108915.36,
+    "steps": {
+     "qkv": {
+      "sum_us": 14087.38,
+      "most_us": 51.6,
+      "least_us": 49.1
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 27056.88,
+      "most_us": 98.46,
+      "least_us": 95.26
+     },
+     "o": {
+      "sum_us": 9074.66,
+      "most_us": 33.04,
+      "least_us": 32.0
+     },
+     "gate_up": {
+      "sum_us": 35717.62,
+      "most_us": 128.74,
+      "least_us": 126.38
+     },
+     "down": {
+      "sum_us": 19869.9,
+      "most_us": 73.88,
+      "least_us": 69.54
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.892,
+   "tokens_per_second": 91.8,
+   "weight_gbs": 258.8
+  },
+  {
+   "thread_ticks": 5018900,
+   "stats_slot": 8,
+   "case": "parts/commands",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1008,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 100378.0,
+    "steps": {
+     "qkv": {
+      "sum_us": 12119.44,
+      "most_us": 44.3,
+      "least_us": 41.76
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 27068.88,
+      "most_us": 98.6,
+      "least_us": 95.42
+     },
+     "o": {
+      "sum_us": 6672.94,
+      "most_us": 24.52,
+      "least_us": 23.44
+     },
+     "gate_up": {
+      "sum_us": 33951.3,
+      "most_us": 122.48,
+      "least_us": 120.18
+     },
+     "down": {
+      "sum_us": 17473.88,
+      "most_us": 63.9,
+      "least_us": 61.42
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.038,
+   "tokens_per_second": 99.6,
+   "weight_gbs": 280.8
+  },
+  {
+   "thread_ticks": 5056787,
+   "stats_slot": 9,
+   "case": "attend_read/commands",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1014,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 101135.74,
+    "steps": {
+     "qkv": {
+      "sum_us": 17920.8,
+      "most_us": 65.16,
+      "least_us": 62.5
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 13378.98,
+      "most_us": 49.46,
+      "least_us": 46.42
+     },
+     "o": {
+      "sum_us": 9496.44,
+      "most_us": 34.66,
+      "least_us": 33.5
+     },
+     "gate_up": {
+      "sum_us": 36883.06,
+      "most_us": 133.2,
+      "least_us": 130.12
+     },
+     "down": {
+      "sum_us": 20316.74,
+      "most_us": 75.22,
+      "least_us": 70.98
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.114,
+   "tokens_per_second": 98.9,
+   "weight_gbs": 278.7
+  },
+  {
+   "thread_ticks": 5443642,
+   "stats_slot": 10,
+   "case": "attend_local/commands",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1093,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 108872.84,
+    "steps": {
+     "qkv": {
+      "sum_us": 17931.2,
+      "most_us": 65.48,
+      "least_us": 62.8
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 21080.24,
+      "most_us": 77.24,
+      "least_us": 73.22
+     },
+     "o": {
+      "sum_us": 9513.28,
+      "most_us": 34.7,
+      "least_us": 33.58
+     },
+     "gate_up": {
+      "sum_us": 36885.26,
+      "most_us": 133.2,
+      "least_us": 130.36
+     },
+     "down": {
+      "sum_us": 20324.18,
+      "most_us": 75.9,
+      "least_us": 70.9
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.887,
+   "tokens_per_second": 91.9,
+   "weight_gbs": 258.9
+  },
+  {
+   "thread_ticks": 5798983,
+   "stats_slot": 11,
+   "case": "attend_exp_twice/commands",
+   "length": 4096,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1164,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 115979.66,
+    "steps": {
+     "qkv": {
+      "sum_us": 17944.64,
+      "most_us": 65.46,
+      "least_us": 62.66
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 28162.38,
+      "most_us": 102.44,
+      "least_us": 99.14
+     },
+     "o": {
+      "sum_us": 9512.32,
+      "most_us": 34.86,
+      "least_us": 33.42
+     },
+     "gate_up": {
+      "sum_us": 36908.96,
+      "most_us": 133.54,
+      "least_us": 130.16
+     },
+     "down": {
+      "sum_us": 20313.94,
+      "most_us": 74.76,
+      "least_us": 71.04
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 11.598,
+   "tokens_per_second": 86.2,
+   "weight_gbs": 243.0
+  },
+  {
+   "thread_ticks": 4569805,
+   "stats_slot": 12,
+   "case": "full",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0918,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 91396.1,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 88274.22,
+      "most_us": 321.66,
+      "least_us": 309.92
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.14,
+   "tokens_per_second": 109.4,
+   "weight_gbs": 308.4
+  },
+  {
+   "thread_ticks": 4322181,
+   "stats_slot": 13,
+   "case": "bare",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0868,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 86443.62,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 83362.88,
+      "most_us": 303.86,
+      "least_us": 291.14
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.644,
+   "tokens_per_second": 115.7,
+   "weight_gbs": 326.1
+  },
+  {
+   "thread_ticks": 3976488,
+   "stats_slot": 14,
+   "case": "parts",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0798,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 79529.76,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 76452.42,
+      "most_us": 278.6,
+      "least_us": 266.92
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 7.953,
+   "tokens_per_second": 125.7,
+   "weight_gbs": 354.4
+  },
+  {
+   "thread_ticks": 4274377,
+   "stats_slot": 15,
+   "case": "attend_read",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0858,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 85487.54,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 82370.3,
+      "most_us": 297.9,
+      "least_us": 291.74
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.549,
+   "tokens_per_second": 117.0,
+   "weight_gbs": 329.7
+  },
+  {
+   "thread_ticks": 4358757,
+   "stats_slot": 16,
+   "case": "attend_local",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0876,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 87175.14,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 84047.02,
+      "most_us": 305.76,
+      "least_us": 294.42
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.718,
+   "tokens_per_second": 114.7,
+   "weight_gbs": 323.3
+  },
+  {
+   "thread_ticks": 4584968,
+   "stats_slot": 17,
+   "case": "attend_exp_twice",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0921,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 91699.36,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 88584.84,
+      "most_us": 323.4,
+      "least_us": 310.62
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.17,
+   "tokens_per_second": 109.1,
+   "weight_gbs": 307.4
+  },
+  {
+   "thread_ticks": 5222006,
+   "stats_slot": 18,
+   "case": "full/commands",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1049,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 104440.12,
+    "steps": {
+     "qkv": {
+      "sum_us": 17919.24,
+      "most_us": 65.48,
+      "least_us": 62.64
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 16628.74,
+      "most_us": 60.66,
+      "least_us": 58.56
+     },
+     "o": {
+      "sum_us": 9510.26,
+      "most_us": 34.64,
+      "least_us": 33.58
+     },
+     "gate_up": {
+      "sum_us": 36897.96,
+      "most_us": 132.92,
+      "least_us": 130.48
+     },
+     "down": {
+      "sum_us": 20339.12,
+      "most_us": 74.96,
+      "least_us": 70.54
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.444,
+   "tokens_per_second": 95.7,
+   "weight_gbs": 269.9
+  },
+  {
+   "thread_ticks": 4924723,
+   "stats_slot": 19,
+   "case": "bare/commands",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0988,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 98494.46,
+    "steps": {
+     "qkv": {
+      "sum_us": 14077.98,
+      "most_us": 51.74,
+      "least_us": 49.1
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 16606.72,
+      "most_us": 60.52,
+      "least_us": 58.52
+     },
+     "o": {
+      "sum_us": 9072.36,
+      "most_us": 33.04,
+      "least_us": 31.98
+     },
+     "gate_up": {
+      "sum_us": 35720.14,
+      "most_us": 128.68,
+      "least_us": 126.2
+     },
+     "down": {
+      "sum_us": 19911.2,
+      "most_us": 73.36,
+      "least_us": 69.04
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.849,
+   "tokens_per_second": 101.5,
+   "weight_gbs": 286.2
+  },
+  {
+   "thread_ticks": 4497310,
+   "stats_slot": 20,
+   "case": "parts/commands",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0904,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 89946.2,
+    "steps": {
+     "qkv": {
+      "sum_us": 12121.88,
+      "most_us": 44.12,
+      "least_us": 42.32
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 16580.08,
+      "most_us": 60.52,
+      "least_us": 58.36
+     },
+     "o": {
+      "sum_us": 6670.76,
+      "most_us": 24.5,
+      "least_us": 23.44
+     },
+     "gate_up": {
+      "sum_us": 33969.3,
+      "most_us": 122.66,
+      "least_us": 120.38
+     },
+     "down": {
+      "sum_us": 17502.46,
+      "most_us": 64.92,
+      "least_us": 61.36
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.995,
+   "tokens_per_second": 111.2,
+   "weight_gbs": 313.4
+  },
+  {
+   "thread_ticks": 4713799,
+   "stats_slot": 21,
+   "case": "attend_read/commands",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0947,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 94275.98,
+    "steps": {
+     "qkv": {
+      "sum_us": 17914.2,
+      "most_us": 65.26,
+      "least_us": 62.66
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 6500.1,
+      "most_us": 24.56,
+      "least_us": 22.52
+     },
+     "o": {
+      "sum_us": 9497.54,
+      "most_us": 34.66,
+      "least_us": 33.44
+     },
+     "gate_up": {
+      "sum_us": 36898.58,
+      "most_us": 133.04,
+      "least_us": 130.58
+     },
+     "down": {
+      "sum_us": 20323.42,
+      "most_us": 75.98,
+      "least_us": 70.66
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.428,
+   "tokens_per_second": 106.1,
+   "weight_gbs": 299.0
+  },
+  {
+   "thread_ticks": 4927952,
+   "stats_slot": 22,
+   "case": "attend_local/commands",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.099,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 98559.04,
+    "steps": {
+     "qkv": {
+      "sum_us": 17930.04,
+      "most_us": 65.48,
+      "least_us": 62.62
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 10776.08,
+      "most_us": 39.7,
+      "least_us": 37.7
+     },
+     "o": {
+      "sum_us": 9507.56,
+      "most_us": 34.52,
+      "least_us": 33.44
+     },
+     "gate_up": {
+      "sum_us": 36891.38,
+      "most_us": 133.2,
+      "least_us": 130.5
+     },
+     "down": {
+      "sum_us": 20315.72,
+      "most_us": 75.0,
+      "least_us": 71.0
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.856,
+   "tokens_per_second": 101.5,
+   "weight_gbs": 286.0
+  },
+  {
+   "thread_ticks": 5241442,
+   "stats_slot": 23,
+   "case": "attend_exp_twice/commands",
+   "length": 1024,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1052,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1343,
+    1343.0,
+    1343
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 104828.84,
+    "steps": {
+     "qkv": {
+      "sum_us": 17929.56,
+      "most_us": 65.4,
+      "least_us": 62.48
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 17001.3,
+      "most_us": 61.96,
+      "least_us": 59.98
+     },
+     "o": {
+      "sum_us": 9516.5,
+      "most_us": 34.64,
+      "least_us": 33.58
+     },
+     "gate_up": {
+      "sum_us": 36897.62,
+      "most_us": 133.04,
+      "least_us": 130.26
+     },
+     "down": {
+      "sum_us": 20339.3,
+      "most_us": 75.62,
+      "least_us": 71.04
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.483,
+   "tokens_per_second": 95.4,
+   "weight_gbs": 268.9
+  },
+  {
+   "thread_ticks": 4446478,
+   "stats_slot": 24,
+   "case": "full",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0892,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 88929.56,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 85810.76,
+      "most_us": 314.08,
+      "least_us": 301.54
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.893,
+   "tokens_per_second": 112.4,
+   "weight_gbs": 317.0
+  },
+  {
+   "thread_ticks": 4197614,
+   "stats_slot": 25,
+   "case": "bare",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0844,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 83952.28,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 80873.38,
+      "most_us": 295.8,
+      "least_us": 283.04
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.395,
+   "tokens_per_second": 119.1,
+   "weight_gbs": 335.8
+  },
+  {
+   "thread_ticks": 3846441,
+   "stats_slot": 26,
+   "case": "parts",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0774,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 76928.82,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 73845.88,
+      "most_us": 269.0,
+      "least_us": 257.24
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 7.693,
+   "tokens_per_second": 130.0,
+   "weight_gbs": 366.4
+  },
+  {
+   "thread_ticks": 4179873,
+   "stats_slot": 27,
+   "case": "attend_read",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0838,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 83597.46,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 80478.38,
+      "most_us": 290.7,
+      "least_us": 284.42
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.36,
+   "tokens_per_second": 119.6,
+   "weight_gbs": 337.2
+  },
+  {
+   "thread_ticks": 4200628,
+   "stats_slot": 28,
+   "case": "attend_local",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0844,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 84012.56,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 80894.02,
+      "most_us": 300.28,
+      "least_us": 285.02
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.401,
+   "tokens_per_second": 119.0,
+   "weight_gbs": 335.5
+  },
+  {
+   "thread_ticks": 4449334,
+   "stats_slot": 29,
+   "case": "attend_exp_twice",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0895,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 280,
+    "microseconds": 88986.68,
+    "steps": {
+     "qkv": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "o": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "gate_up": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "down": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "chain": {
+      "sum_us": 85866.32,
+      "most_us": 315.94,
+      "least_us": 301.94
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.899,
+   "tokens_per_second": 112.4,
+   "weight_gbs": 316.8
+  },
+  {
+   "thread_ticks": 5099119,
+   "stats_slot": 30,
+   "case": "full/commands",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1025,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 101982.38,
+    "steps": {
+     "qkv": {
+      "sum_us": 17932.02,
+      "most_us": 65.16,
+      "least_us": 62.98
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 14170.88,
+      "most_us": 51.32,
+      "least_us": 50.1
+     },
+     "o": {
+      "sum_us": 9513.0,
+      "most_us": 34.86,
+      "least_us": 33.6
+     },
+     "gate_up": {
+      "sum_us": 36902.38,
+      "most_us": 132.92,
+      "least_us": 130.32
+     },
+     "down": {
+      "sum_us": 20321.88,
+      "most_us": 75.62,
+      "least_us": 71.2
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.198,
+   "tokens_per_second": 98.1,
+   "weight_gbs": 276.4
+  },
+  {
+   "thread_ticks": 4803282,
+   "stats_slot": 31,
+   "case": "bare/commands",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0966,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 96065.64,
+    "steps": {
+     "qkv": {
+      "sum_us": 14089.42,
+      "most_us": 51.76,
+      "least_us": 48.88
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 14170.98,
+      "most_us": 51.3,
+      "least_us": 50.14
+     },
+     "o": {
+      "sum_us": 9071.84,
+      "most_us": 32.92,
+      "least_us": 31.8
+     },
+     "gate_up": {
+      "sum_us": 35711.82,
+      "most_us": 128.78,
+      "least_us": 126.06
+     },
+     "down": {
+      "sum_us": 19907.04,
+      "most_us": 73.9,
+      "least_us": 69.24
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.607,
+   "tokens_per_second": 104.1,
+   "weight_gbs": 293.4
+  },
+  {
+   "thread_ticks": 4376734,
+   "stats_slot": 32,
+   "case": "parts/commands",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0882,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 87534.68,
+    "steps": {
+     "qkv": {
+      "sum_us": 12132.6,
+      "most_us": 44.26,
+      "least_us": 41.98
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 14166.54,
+      "most_us": 51.24,
+      "least_us": 49.96
+     },
+     "o": {
+      "sum_us": 6675.82,
+      "most_us": 24.38,
+      "least_us": 23.44
+     },
+     "gate_up": {
+      "sum_us": 33962.32,
+      "most_us": 122.26,
+      "least_us": 120.36
+     },
+     "down": {
+      "sum_us": 17497.86,
+      "most_us": 64.56,
+      "least_us": 61.38
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 8.753,
+   "tokens_per_second": 114.2,
+   "weight_gbs": 322.0
+  },
+  {
+   "thread_ticks": 4629452,
+   "stats_slot": 33,
+   "case": "attend_read/commands",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.093,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 92589.04,
+    "steps": {
+     "qkv": {
+      "sum_us": 17932.14,
+      "most_us": 65.52,
+      "least_us": 62.82
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 4814.82,
+      "most_us": 17.92,
+      "least_us": 16.34
+     },
+     "o": {
+      "sum_us": 9495.8,
+      "most_us": 34.68,
+      "least_us": 33.54
+     },
+     "gate_up": {
+      "sum_us": 36883.24,
+      "most_us": 132.94,
+      "least_us": 130.38
+     },
+     "down": {
+      "sum_us": 20335.22,
+      "most_us": 74.92,
+      "least_us": 71.18
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.259,
+   "tokens_per_second": 108.0,
+   "weight_gbs": 304.4
+  },
+  {
+   "thread_ticks": 4797541,
+   "stats_slot": 34,
+   "case": "attend_local/commands",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.0963,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 95950.82,
+    "steps": {
+     "qkv": {
+      "sum_us": 17933.28,
+      "most_us": 65.2,
+      "least_us": 62.72
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 8140.44,
+      "most_us": 30.04,
+      "least_us": 28.24
+     },
+     "o": {
+      "sum_us": 9506.18,
+      "most_us": 34.6,
+      "least_us": 33.58
+     },
+     "gate_up": {
+      "sum_us": 36894.64,
+      "most_us": 133.18,
+      "least_us": 130.5
+     },
+     "down": {
+      "sum_us": 20331.56,
+      "most_us": 75.62,
+      "least_us": 70.78
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 9.595,
+   "tokens_per_second": 104.2,
+   "weight_gbs": 293.8
+  },
+  {
+   "thread_ticks": 5106003,
+   "stats_slot": 35,
+   "case": "attend_exp_twice/commands",
+   "length": 256,
+   "tokens": 10,
+   "layers": 28,
+   "host_seconds": 0.1027,
+   "mean_w": null,
+   "aiclk_mhz": [
+    1350,
+    1350.0,
+    1350
+   ],
+   "thread": {
+    "status": 0,
+    "done": 1400,
+    "microseconds": 102120.06,
+    "steps": {
+     "qkv": {
+      "sum_us": 17943.98,
+      "most_us": 65.16,
+      "least_us": 62.82
+     },
+     "q": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "k": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "v": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     },
+     "attend": {
+      "sum_us": 14309.0,
+      "most_us": 51.74,
+      "least_us": 50.54
+     },
+     "o": {
+      "sum_us": 9510.18,
+      "most_us": 34.5,
+      "least_us": 33.44
+     },
+     "gate_up": {
+      "sum_us": 36897.46,
+      "most_us": 133.18,
+      "least_us": 130.64
+     },
+     "down": {
+      "sum_us": 20319.78,
+      "most_us": 75.62,
+      "least_us": 70.98
+     },
+     "chain": {
+      "sum_us": 0.0,
+      "most_us": 0.0,
+      "least_us": 0.0
+     }
+    },
+    "span_us": 0.0
+   },
+   "ms_per_token": 10.212,
+   "tokens_per_second": 97.9,
+   "weight_gbs": 276.0
+  }
+ ],
+ "load_avg": [
+  "12.04",
+  "5.95",
+  "4.42"
+ ],
+ "ok": true
+}

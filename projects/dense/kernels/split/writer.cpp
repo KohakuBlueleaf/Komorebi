@@ -14,7 +14,7 @@ void kernel_main() {
     using A = km::Tensor<Y::next_compile_time_args_offset()>;
     using W = km::Tensor<A::next_compile_time_args_offset()>;
     km::Writer writer;
-    writer.run([&](const km_command_t& command) {
+    const auto product = [&](const km_command_t& command) SPLIT_PRODUCT {
         const uint32_t y_address = command.a2, reduce_form = split_form(command);
         const uint32_t mode = command.a4;
         if (km::handler(command) != kHandlerSplit) {
@@ -27,7 +27,21 @@ void kernel_main() {
             return writer.arg(plan_words(command) + word);
         };
         if (mode == kSplitOp) {
+#if defined(SPLIT_CHAIN)
+            // a chain's record: its input marked first; the root marks the next's
+            if (
+                !chain_input(writer) ||
+                !(!split_op_part(command, kOpWriter) || split_op(writer, command))
+            ) {
+                return false;
+            }
+            return (
+                km::digit_group(command, writer.me(), 1, plan(kSpS)).rank != 0 ||
+                chain_mark(writer, command)
+            );
+#else
             return !split_op_part(command, kOpWriter) || split_op(writer, command);
+#endif
         }
         if (!move_chunks(writer, command, A(command.a0), W(command.a1))) {
             return false;
@@ -42,6 +56,11 @@ void kernel_main() {
         const km::Group group = km::digit_group(command, writer.me(), 1, group_size);
         const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
         if (group.rank != 0) {
+#if defined(SPLIT_CHAIN)
+            if (!chain_credit(writer)) {  // its receiver has ended the record before
+                return false;
+            }
+#endif
             return (
                 emit_set(
                     writer, command, arrival, group, reduce_form, kCbSum, block_tiles
@@ -49,7 +68,11 @@ void kernel_main() {
             );
         }
         if (split_op_part(command, kOpWriter)) {  // the operation writes the block
+#if defined(SPLIT_CHAIN)
+            return split_op(writer, command) && chain_mark(writer, command);
+#else
             return split_op(writer, command);
+#endif
         }
         if (!km::reduce_result(writer, kCbSplitOut, block_tiles)) {
             return false;
@@ -85,6 +108,20 @@ void kernel_main() {
             return false;
         }
         cb_pop_front(kCbSplitOut, block_tiles);
+#if defined(SPLIT_CHAIN)
+        return chain_mark(writer, command);
+#else
         return true;
+#endif
+    };
+#if defined(SPLIT_CHAIN)
+    writer.run([&](const km_command_t& command) {
+        if (km::handler(command) == kHandlerSplit && command.a4 == kChainMode) {
+            return chain_writer(writer, command, product);
+        }
+        return product(command);
     });
+#else
+    writer.run(product);
+#endif
 }

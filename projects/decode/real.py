@@ -41,6 +41,11 @@ def parse():
         choices=list(card.BODIES),
         help="the operations whose vector bodies are emitted (bodies.py)",
     )
+    parser.add_argument(
+        "--no-chain",
+        action="store_true",
+        help="a command a step (before stage 6), not the layer as one command",
+    )
     return parser.parse_args()
 
 
@@ -132,8 +137,10 @@ def main():
         raise ValueError(f"{steps} positions past a cache of {args.context}")
     report = {"model": model.name, "prompt_tokens": len(prompt), "steps": steps}
     report["bodies"] = args.bodies
+    report["chain"] = not args.no_chain
     tokens, per_layer, step_us = list(prompt), [], []
-    with km.Session(log=log) as session:
+    kernel_bytes = None if args.no_chain else card.CHAIN_KERNEL_BYTES
+    with km.Session(log=log, kernel_bytes=kernel_bytes) as session:
         decode = card.Decode(
             session,
             model,
@@ -142,6 +149,7 @@ def main():
             log,
             context=args.context,
             bodies=args.bodies,
+            chain=not args.no_chain,
         )
         written = 0.0
         empty = np.zeros((model.kv_heads, 0, model.head_dim), np.float32)

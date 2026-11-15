@@ -1,6 +1,9 @@
 // Attend, writer: this core's cached values (the root appends the token's value), then
 // its state up the group's tree; the root writes the group's block of a.
 #include "attend.hpp"
+#if defined(SPLIT_CHAIN)
+#include "../../../dense/kernels/split/chain.hpp"
+#endif
 
 uint32_t km_overlay(km::Writer& writer, const SplitBlock& block) {
     const km_command_t& command = *block.command;
@@ -22,6 +25,13 @@ uint32_t km_overlay(km::Writer& writer, const SplitBlock& block) {
     }
     if (at.rank != 0 && merges(at)) {
         const km::ReduceStep step = km::reduce_send(at.group, split_form(command));
+#if defined(SPLIT_CHAIN)
+        if (!chain_credit(
+            writer
+        )) {  // in a chain: its receiver has ended the record before
+            return 0;
+        }
+#endif
         return (
             km::emit(
                 writer,
