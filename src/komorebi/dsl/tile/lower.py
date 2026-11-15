@@ -9,6 +9,7 @@ import struct
 from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile import macro, sfpu
 from komorebi.dsl.tile.ir import BF16, F32, PlanError, fail
+from komorebi.dsl.tile.matrix import PHASES, tile_products
 from komorebi.dsl.tile.unit import (
     FIXED,
     IADD_IMM,
@@ -25,9 +26,11 @@ from komorebi.dsl.tile.unit import (
     Insn,
     Loop,
     Pass,
+    Product,
     Runtime,
     Sync,
     UnitError,
+    UnitProduct,
     UnitProgram,
     encode,
     insns,
@@ -1041,24 +1044,138 @@ def _order(items):
             yield item
 
 
+def products_of(ir, shapes, nodes):
+    """The tile products (`a @ w`) of a stream kernel, each refused unless the unpack
+    can feed it: both operands a 32 x 32 tile the unpacker reads from a buffer (a
+    load or a resident view, not a value the vector unit computed)."""
+    out = []
+    for n in nodes:
+        if n.kind != "matmul":
+            continue
+        for side, arg in zip(("left", "right"), n.args):
+            if arg.kind not in ("load", "resident"):
+                made = (
+                    "a product, its result in Dst"
+                    if arg.kind == "matmul"
+                    else f"a {arg.kind}, computed on the vector unit"
+                )
+                fail(
+                    f"{ir.name}: a product after vector code: the {side} operand of "
+                    f"`@` is {made}, and the matrix unit reads its operands unpacked "
+                    "from a buffer into SrcA and SrcB; give that value to a second "
+                    "body (pack, then unpack)",
+                    n.line,
+                )
+            if shapes(arg) != "tile":
+                fail(
+                    f"{ir.name}: the unpack feeds a product one 32 x 32 tile a side "
+                    f"(x.tiles[t]); the {side} operand of `@` is a row block",
+                    n.line,
+                )
+        out.append(n)
+    return out
+
+
 def stream_chain(ir):
     """The Chain of a stream kernel's one store (tile in, tile out), as the stream
-    form plans it: each load is a register operand."""
+    form plans it: each load is a register operand, and so is each tile product (its
+    result in a Dst tile of its own, `products_of`)."""
     if len(ir.stores) != 1:
         fail(f"{ir.name}: the unit program takes one store")
     shapes = chains._Shapes(False)
     nodes = ir.nodes()
+    products = {id(n): n for n in products_of(ir, shapes, nodes)}  # refused first
     for n in nodes:
         shapes(n)
     loads = {id(n): n for n in nodes if n.kind in ("load", "resident")}
 
     def leaf_of(node, offset, kind):
+        if id(node) in products and kind == "copy" and not offset:
+            return chains.Leaf(node, kind, offset)
         if id(node) not in loads or kind not in ("copy", "bcast_col") or offset:
             return None
         return chains.Leaf(node, kind, offset)
 
     compiler = chains._Compiler(ir.name, shapes, {})
-    return compiler.chain(ir.stores[0].value, leaf_of)
+    return compiler.chain(ir.stores[0].value, leaf_of, stops=set(products))
+
+
+def _dst_base(index):
+    """The RISC-V's write of the Dst base: tile `index` (C++ text) of the caller's."""
+    return Call(
+        "ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, "
+        f"UnpackDestination::SrcRegs>({index})",
+        (
+            "Dst base of tile dst (RISC-V writes)"
+            if index == "dst"
+            else f"Dst base of tile {index} (RISC-V writes)"
+        ),
+    )
+
+
+def _products(unit, leaves, fidelity):
+    """The math CPU's lines of the unit's tile products (`leaves`: (Dst tile, the
+    matmul node)), in operand order, each the no-MOP product's words after the Dst
+    base of its tile; records unit.products and the unpack CPU's calls."""
+    lines = []
+    for i, (k, node) in enumerate(leaves):
+        a, w = (arg.attrs["view"].tensor.name for arg in node.args)
+        pairs = tile_products(fidelity, 1, 1, k)
+        unit.products.append(UnitProduct(k, a, w))
+        lines += [
+            _dst_base("dst" if k == 0 else f"dst + {k}"),
+            Product(
+                f"{a} @ {w} into Dst tile dst + {k} at {fidelity}",
+                [x for x, _ in pairs],
+                "1 cycle a word; a block's two words 8 apart",
+                synced=i == len(leaves) - 1,  # the vector unit's stall waits for it
+                insns=[insn for _, insn in pairs],
+            ),
+        ]
+        unit.tile["unpack"].append(
+            Call(
+                f"llk_unpack_AB_matmul({a}, {w}, 0, 0, 1, 1, 1)",
+                f"{a} into SrcB, {w} into SrcA (the product of Dst tile {k})",
+            )
+        )
+    unit.fidelity = fidelity
+    unit.init["unpack"].append(
+        Call(
+            f"mm_no_mop_init_short({leaves[0][1].args[0].attrs['view'].tensor.name}, "
+            f"{leaves[0][1].args[1].attrs['view'].tensor.name}, false, 1, 1, 1)",
+            f"the products' unpack and address modes, at math_fidelity {fidelity}",
+        )
+    )
+    return lines
+
+
+def _product_alone(ir, node, fidelity, band):
+    """The unit program of a tile function that is one product (`a @ w` stored): the
+    no-MOP product's words alone, as `matrix.product_program` emits them."""
+    if band:
+        fail(f"{ir.name}: the band runs vector code; a product alone runs whole tiles")
+    unit = UnitProgram(ir.name, "fp32")
+    unit.operands = [None]
+    unit.tile["unpack"] = [
+        Sync("unpack", "reader", "cb_wait_front(in, 1)", "the operand tiles")
+    ]
+    lines = _products(unit, [(0, node)], fidelity)
+    unit.tile["math"] = [
+        Sync("math", "pack", "tile_regs_acquire()", "a free Dst half"),
+        *lines,
+        Sync("math", "pack", "tile_regs_commit()", "hands Dst to the pack CPU"),
+    ]
+    unit.tile["pack"] = [
+        Sync("pack", "math", "tile_regs_wait()", "Dst from the math CPU"),
+        Call("pack_tile(dst, out)", "Dst tile dst to the output buffer"),
+        Sync("pack", "math", "tile_regs_release()", "frees (and clears) the Dst half"),
+        Sync("pack", "writer", "cb_push_back(out, 1)", "an output tile"),
+    ]
+    words = len(unit.tile["math"][2].words)
+    unit.passes.append(
+        Pass("schedule", "products", [f"1 product at {fidelity}: {words} words"])
+    )
+    return unit
 
 
 def _templates(chosen):
@@ -1163,15 +1280,30 @@ def _step_mode(incr):
     )
 
 
-def unit_program(ir, dest="fp32", load_macro=False, rows=False):
-    """The unit program of stream kernel `ir` on `dest` (fp32) Dst registers: operand
-    k read from Dst tile k (relative to the caller's `dst`), the result stored into
-    tile 0. `load_macro`: try the load-macro rule (a refusal is a pass's record);
-    `rows`: the band, the body's live rows a runtime argument (`band_faces`)."""
+def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"):
+    """The unit program of stream kernel `ir` on fp32 Dst: operand k (a load, or a
+    tile product `a @ w` issued first at `fidelity`) in Dst tile k of the caller's
+    `dst`, the result in tile 0. `load_macro`: try the load-macro rule (a refusal is a
+    pass's record); `rows`: the band, live rows a runtime argument (`band_faces`)."""
     if dest != "fp32":
         raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
+    if fidelity not in PHASES:
+        fail(f"{ir.name}: no fidelity {fidelity!r}: one of {', '.join(PHASES)}")
     band = bool(rows)
     chain = stream_chain(ir)
+    root = ir.stores[0].value
+    if root.kind == "matmul":
+        return _product_alone(ir, root, fidelity, band)
+    leaves = [
+        (k, leaf.source)
+        for k, leaf in enumerate(chain.operands)
+        if leaf.source.kind == "matmul"
+    ]
+    if len(leaves) > OPERANDS:
+        fail(
+            f"{ir.name}: {len(leaves)} products: Dst holds {OPERANDS} operand tiles "
+            "of a body (a product's result stays in Dst for the vector code)"
+        )
     if chain.values or chain.prev is not None:
         fail(f"{ir.name}: the unit program takes no runtime scalars")
     if len(chain.operands) > OPERANDS:
@@ -1203,7 +1335,10 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False):
         result = _value(body, chain.fn.result, {})
         body.store(result)
     unit = UnitProgram(ir.name, dest)
-    unit.operands = [leaf.source.attrs["view"].tensor.name for leaf in chain.operands]
+    unit.operands = [
+        None if leaf.source.kind == "matmul" else leaf.source.attrs["view"].tensor.name
+        for leaf in chain.operands
+    ]
     setup = []
     unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
@@ -1327,24 +1462,41 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False):
         {**_setrwc(), "rwc_cr": CR_D, "rwc_d": 8, "BitMask": SET_D},
         "Dst + 8 rows",
     )
-    copies = [f"copy_tile(in{k}, 0, dst + {k})" for k in range(len(chain.operands))]
+    copies = [
+        f"copy_tile(in{k}, 0, dst + {k})"
+        for k, name in enumerate(unit.operands)
+        if name is not None
+    ]
     unit.tile["unpack"] = [
-        Sync("unpack", "reader", "cb_wait_front(in, 1)", "the input tiles"),
+        Sync("unpack", "reader", "cb_wait_front(in, 1)", "the input tiles")
+    ]
+    multiplied = _products(unit, leaves, fidelity) if leaves else []
+    unit.tile["unpack"] += [
         *[Call(c, "the tile into Dst (fp32, unpacked to Dst)") for c in copies],
         Call("cb_pop_front(in, 1)", "frees the input tiles"),
     ]
+    if leaves:
+        words = sum(len(x.words) for x in multiplied if isinstance(x, Product))
+        unit.passes.append(
+            Pass(
+                "schedule",
+                "products",
+                [
+                    f"{len(leaves)} product(s) at {fidelity} before the vector code "
+                    f"({words} matrix words), the vector unit's stall on the matrix "
+                    "unit after them"
+                ],
+            )
+        )
     unit.tile["math"] = [
         Sync("math", "pack", "tile_regs_acquire()", "a free Dst half"),
+        *multiplied,
         *[Call(c, "the math part of the copy (none to Dst)") for c in copies],
-        Call(
-            "ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, "
-            "UnpackDestination::SrcRegs>(dst)",
-            "Dst base of tile dst (RISC-V writes)",
-        ),
+        _dst_base("dst"),
         Insn(
             "STALLWAIT",
             {"stall_res": STALL_SFPU, "wait_res": WAIT_MATH},
-            "SFPU waits for the matrix unit",
+            "SFPU waits for the matrix unit" + (" (the products)" if leaves else ""),
         ),
         *saved["head"],
         *([] if pre is None else _prepass_loop(pre, body.prog, unit)),
@@ -1375,6 +1527,8 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False):
         ]
         if pre is not None:
             done.append("the per-row pass runs the whole tile")
+        if leaves:
+            done.append("the products run the whole tile")
         unit.passes.append(Pass("schedule", "band", done))
     else:
         faces.body[:1] = rows

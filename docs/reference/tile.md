@@ -14,7 +14,8 @@ exponent step and its online softmax step ran on one Blackhole core against the 
 bodies they stand in for; each computes the same expression as its hand body within the
 stated tolerance ([tile_rules](../../experiments/tile_rules/README.md)). The matrix
 unit's words of a tile product, emitted from the library's no-MOP order, gave the
-library call's result bit for bit.
+library call's result bit for bit, and a body with tile products inside it
+(`silu(a @ w1) * (a @ w3)`) ran within its tolerance.
 
 A **tile function** is a Python function traced into the tile IR. `komorebi.dsl.tile`
 turns it into a **unit program**: the vector-unit (SFPU) instructions the math CPU
@@ -45,7 +46,7 @@ header = emit(unit)  # km_tile::gate_init(), km_tile::gate(dst)
 
 | Call | What it does |
 |---|---|
-| `unit_program(ir, dest="fp32", load_macro=False, rows=False)` | the stream form: one store a tile, of an expression over up to 3 whole input tiles (`Dst` tiles 0, 1, 2). `load_macro=True` adds the load-macro rule (below); `rows=True` the band (below) |
+| `unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4")` | the stream form: one store a tile, of an expression over up to 3 whole input tiles or tile products (`Dst` tiles 0, 1, 2). `load_macro=True` adds the load-macro rule (below); `rows=True` the band (below); `fidelity` the products' (below) |
 | `rows.row_program(ir, width, rows_tile, cols_tile, rows=False)` | the row form: a row of `width` tiles (1 or 2) in `Dst` tiles 0 .. width - 1, a per-row value in `Dst` tile `rows_tile`, a per-column operand in `Dst` tile `cols_tile`; `rows=True` the band |
 | `steps.step_program(ir, width, state_tile, fidelity="HiFi4")` | the step form: a row of `width` tiles (1 to 3) in `Dst` tiles 0 .. width - 1, stored over them, and a state tile of per-row values in `Dst` tile `state_tile`, read and written in place; `fidelity` is the matrix unit's, for a row sum the cost model gives it |
 | `row_operand(row, width)` | the per-column operand tile `.row()` reads, placed from a plain row of 32 `width` values (1024 values in face order, written once by the host) |
@@ -102,6 +103,45 @@ The estimate is low by about 10 cycles a body at every row count (add 35.0 again
 |---|---|
 | load macro: "a macro turn of N row steps; a band is 2" | a macro's register turn would cross a band; the row stays plain |
 | row form: "the row form's band takes no lane flags" | a flag set in a run that does not run would change the lanes of the next |
+
+## A product in the trace
+
+`a @ w` of two tiles the unit reads (`trace.load(x.tiles[t])` or a resident tile) is an
+operand of the stream form like a load: its result is a `Dst` tile the vector code
+after it reads, so `silu(a @ w1) * (a @ w3)` is one body, with no pack and no unpack
+between the products and the gate.
+
+- **The words.** Each product is the library's no-MOP product at the unit's
+  `fidelity` (`matrix.tile_products`, one K step of one 32 x 32 tile a side: 16 `MVMUL`
+  a fidelity phase and two `SETRWC`), after the RISC-V's write of its tile's `Dst`
+  base, in operand order, before the vector code. The vector code's first word is the
+  stall of the vector unit on the matrix unit (`STALLWAIT`), so it reads the products
+  complete. A product stored as it is (`y = a @ w`) emits the product's words alone,
+  the words `matrix.product_program` emits.
+- **The caller.** The unpack CPU unpacks each product's operands in the same order,
+  `llk_unpack_AB_matmul(a, w, ...)` (a into SrcB, w into SrcA), after
+  `mm_no_mop_init_short(a, w, ...)` once and the body's `_init()`; the compute kernel's
+  `math_fidelity` is the unit's. `Dst` is clear when the body starts (the pack's release
+  clears it): a product adds into its tile. `unit.products` names each product's tile
+  and operands (`UnitProduct(dst, a, w)`); `unit.operands` holds `None` at a product's
+  tile, the name of the input copied into `Dst` at the others; the header names the
+  products in its comment.
+- **The cost.** The products' words are priced with the vector code
+  (`matrix_cost`: a word a cycle, the last product's result 8 cycles to the stall).
+- **The band.** With `rows=True` the vector code runs the live rows; the products run
+  the whole tile.
+
+On the card ([tile_rules](../../experiments/tile_rules/README.md), bf16 operands at
+HiFi4, cycles a unit less the sync): silu(a @ w1) 1579 against 1548.6 estimated, within
+3.0e-4 of float64; silu(a @ w1) (a @ w3) 1707 against 1678.6, within 4.6e-4, and 356
+against 349.3 with the band at one live row. The gate less its vector code as that ran
+alone (1568) is 139.0 cycles: the two products' estimate.
+
+| Refused | Why |
+|---|---|
+| "a product after vector code: the left operand of `@` is a silu, computed on the vector unit" (or a product, its result in `Dst`) | the matrix unit reads its operands unpacked from a buffer into SrcA and SrcB: the value has to be packed and given to a second body |
+| "the unpack feeds a product one 32 x 32 tile a side (x.tiles[t]); the left operand of `@` is a row block" | one unpack call feeds one tile a side; a K loop over a row is not lowered |
+| "N products: Dst holds 3 operand tiles of a body" | each product's result stays in its own `Dst` tile for the vector code |
 
 ## What a tile function may contain
 

@@ -4,13 +4,14 @@ lane checks and operand layout, and the matrix unit's words and prices."""
 
 import math
 import random
+import re
 
 import pytest
 
 from komorebi.dsl.tile import UnitError, emit, row_operand, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.macro import macro_setup, max_macro
-from komorebi.dsl.tile.matrix import block_cost, tile_products
+from komorebi.dsl.tile.matrix import block_cost, product_program, tile_products
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import (
@@ -29,7 +30,7 @@ from komorebi.dsl.tile.unit import (
 
 
 def stream(name, inputs, fn, **options):
-    params = [TensorParam(n, False, F32) for n in "ab"[:inputs]]
+    params = [TensorParam(n, False, F32) for n in "abc"[:inputs]]
     y = TensorParam("y", True, F32)
     ir = KernelIR(name, [*params, y], [], {})
     with trace.Tracer(ir):
@@ -302,3 +303,36 @@ def test_band_in_the_row_form_guards_each_band():
     words = sum(1 for _ in insns(whole.tile["math"]))
     assert sum(1 for _ in insns(unit.tile["math"])) == words
     assert unit.cost("math", 1)[1] < unit.cost("math", 9)[1] < unit.cost("math", 32)[1]
+
+
+def code(text, name):
+    """The C++ lines of `name` in an emitted header, without comments."""
+    body = text.split(f"inline void {name}(", 1)[1].split("\n    }", 1)[0]
+    return [x for x in body.splitlines()[1:] if not x.lstrip().startswith("//")]
+
+
+def test_product_in_a_trace_is_one_body():
+    alone = stream("mm", 2, lambda a, b: a @ b, fidelity="HiFi2")
+    assert code(emit(alone), "mm") == code(emit(product_program("mm", "HiFi2")), "mm")
+    gate = stream("g", 3, lambda a, b, c: trace.silu(a @ b) * (a @ c))
+    assert gate.operands == [None, None] and [p.dst for p in gate.products] == [0, 1]
+    text = emit(gate)
+    assert text.count("TTI_MVMUL") == 2 * 64 and "(dst + 1);" in text
+    vector = stream("v", 2, lambda a, b: trace.silu(a) * b)
+    # the words of two HiFi4 products (66 a product; the last 8 cycles to the stall)
+    assert gate.cost("math")[1] == vector.cost("math")[1] + 66 + 73
+    band = stream("gb", 3, lambda a, b, c: trace.silu(a @ b) * (a @ c), rows=True)
+    assert band.cost("math", 1)[1] < band.cost("math", 32)[1] == gate.cost("math")[1]
+
+
+@pytest.mark.parametrize(
+    "fn, refusal",
+    [
+        (lambda a, b, c: trace.silu(a) @ b, "a product after vector code"),
+        (lambda a, b, c: (a @ b) @ c, "a product, its result in Dst"),
+        (lambda a, b, c: (a @ b) * (b @ c) + (a @ c) * (c @ a), "4 products"),
+    ],
+)
+def test_product_refusals(fn, refusal):
+    with pytest.raises(PlanError, match=re.escape(refusal)):
+        stream("refused", 3, fn)

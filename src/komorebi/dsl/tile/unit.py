@@ -359,6 +359,16 @@ class UnitError(ValueError):
     """A unit program that breaks a hazard rule the checks cannot repair."""
 
 
+@dataclass(frozen=True)
+class UnitProduct:
+    """A tile product of a unit: its result in Dst tile `dst` (of the caller's), of
+    `a` (unpacked into SrcB) by `w` (into SrcA), one 32 x 32 tile each."""
+
+    dst: int
+    a: str
+    w: str
+
+
 @dataclass(eq=False)
 class UnitProgram:
     """One tile function on one core: per CPU its setup (`init`, once per stream) and
@@ -379,6 +389,10 @@ class UnitProgram:
     not_checked: list = field(default_factory=list)
     # the band: the body takes its live rows, `<name>(dst, rows)`
     band: bool = False
+    # the tile products the body issues first (UnitProduct, in issue order; the
+    # caller unpacks their operands in that order) and their fidelity
+    products: list = field(default_factory=list)
+    fidelity: str | None = None
 
     def cost(self, cpu, rows=32):
         """(instructions, cycles, terms) of one tile on `cpu` at `rows` live rows (a

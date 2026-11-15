@@ -135,6 +135,12 @@ def emit(unit):
             if unit.band
             else []
         ),
+        *[
+            f"// Product into Dst tile dst + {p.dst}: {p.a} @ {p.w} at "
+            f"{unit.fidelity}; the caller unpacks llk_unpack_AB_matmul({p.a}, "
+            f"{p.w}, ...)."
+            for p in unit.products
+        ],
         "#pragma once",
         "",
         "#include <stdint.h>",
