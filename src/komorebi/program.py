@@ -144,6 +144,9 @@ class Program:
     opt: dict = field(default_factory=dict)  # kernel -> optimisation level
     noc: dict = field(default_factory=dict)  # "reader" / "writer" -> 0 or 1
     x280_ports: dict | None = None  # Program.ports(): {"serve": ..., "noc": ...}
+    # handlers (names or numbers) whose commands use the cores' ports: run.submit
+    # refuses one on cores a command of them still holds unless it is exclusive
+    port_handlers: set = field(default_factory=set)
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
     pairs: list = field(default_factory=list, init=False)  # the BufferPairs given
     overlays: dict = field(default_factory=dict, init=False)  # name -> Overlay

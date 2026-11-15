@@ -13,7 +13,7 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi
+from komorebi import abi, overlay
 from komorebi import chain as chain_module
 from komorebi import state as device_state
 from komorebi.dsl.front import ClassHandler, HandlerMethod
@@ -96,6 +96,19 @@ def _sequence_number(number):
     """The kernel's sequence number of the n-th command: it counts in 32 bits and skips
     0 (it also skips a slot's last value, which only a wrap can repeat)."""
     return (number - 1) % M32 + 1
+
+
+def with_area(writes, address, area, h):
+    """A reset list (whole 64-byte lines, ASSERT first) with the words `area` written
+    to L1 `address` right after its ASSERT, while the core's CPUs are held."""
+    entry = h["KMD_RESET_ENTRY"]
+    if int.from_bytes(writes[:4], "little") != h["KMD_RESET_ASSERT"]:
+        raise ValueError("a reset list that does not start with its ASSERT")
+    data = np.asarray(area, "<u4").tobytes()
+    data += bytes(-len(data) % 16)
+    line = array("I", [h["KMD_RESET_WRITE"], address, 4 * len(area), 0]).tobytes()
+    out = bytes(writes[:entry]) + line + data + bytes(writes[entry:])
+    return out + bytes(-len(out) % 64)
 
 
 class Run:
@@ -231,6 +244,7 @@ class Run:
         self._ticks = np.zeros(0, np.uint32)
         self._has = np.zeros(0, bool)  # the event arrived
         self._gone = np.zeros(0, bool)  # returned by wait() or forgotten
+        self._ports = {}  # a port command without its event yet: handle -> group
         self._unsent()
 
     def _unsent(self):
@@ -312,6 +326,7 @@ class Run:
             raise ValueError(
                 f"handler {handler}: not NOP and not in 1..KM_HANDLER_USER_MAX"
             )
+        ports = False
         if cluster is None and queued:
             if exclusive:
                 raise ValueError("a queued command cannot be exclusive")
@@ -320,6 +335,7 @@ class Run:
         elif cluster is None:
             group = self._group(group)
             self._check_holds(program_field, handler, *group)
+            ports = self._check_ports(program_field, handler, group, exclusive)
             if method is not None:
                 self._check_rectangle(method, program_field, group)
                 self._check_reduce_groups(method, program_field, group)
@@ -338,6 +354,8 @@ class Run:
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
         )
+        if ports:
+            self._ports[handle] = group
         if kept is not None:
             self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
@@ -381,6 +399,35 @@ class Run:
                 f"{rectangle['group']}, fixed at load; submit it to that group "
                 f"(not {tuple(group)}), or make the program with rect="
             )
+
+    def _port_numbers(self, program_field):
+        """The handler numbers of the program's port_handlers."""
+        program = self.programs[program_field] if self.programs else None
+        return {
+            program.handlers.get(name, -1) if isinstance(name, str) else int(name)
+            for name in getattr(program, "port_handlers", ())
+        }
+
+    def _check_ports(self, program_field, handler, group, exclusive, handle=None):
+        """Whether `handler` is one of its program's port_handlers; such a command on
+        cores a port command without its event still holds is refused unless it is
+        exclusive (a group's port commands do not overlap: ports.md)."""
+        if handler not in self._port_numbers(program_field):
+            return False
+        handle = self._next if handle is None else int(handle)
+        first, count = group
+        for held, (low, cores) in list(self._ports.items()):
+            row = held - self._base
+            if held < self._base or (held < self._handed and self._has[row]):
+                del self._ports[held]  # its event came: the cores are free
+            elif not exclusive and low < first + count and first < low + cores:
+                raise ValueError(
+                    f"command {handle} (handler {handler}, cores {first} to "
+                    f"{first + count - 1}) uses ports on cores that command {held} "
+                    f"(cores {low} to {low + cores - 1}) still holds; submit it "
+                    f"exclusive=True, or wait for command {held} first"
+                )
+        return True
 
     def _check_reduce_groups(self, method, program_field, group):
         """Refuses a command of a class's handler that reduces in groups of S ranks
@@ -547,6 +594,24 @@ class Run:
         )
         return self.wait(handle, timeout)
 
+    def _area_resets(self, lists, core_list):
+        """Adds the overlay area as the load wrote it (load_overlays) to each reset
+        list, so a reset core's slots, parks and meets start again from there; the
+        reason it cannot when the cores of one list hold different areas."""
+        rows = getattr(self.backend, "control_rows", None)
+        start = self.backend.control_offset + self.h["KM_CONTROL_BYTES"] // 4
+        words = overlay.constants()["kOverlayAreaBytes"] // 4
+        if rows is None or rows.shape[1] < start + words:
+            return None  # no overlay area after the control blocks
+        numbers = np.frombuffer(bytes(core_list), np.uint8)
+        address = self.backend.control_addr + self.h["KM_CONTROL_BYTES"]
+        for number, writes in enumerate(lists):
+            area = rows[np.flatnonzero(numbers == number), start : start + words]
+            if (area != area[0]).any():
+                return f"the overlay areas of reset list {number}'s cores differ"
+            lists[number] = with_area(writes, address, area[0], self.h)
+        return None
+
     def keep_resets(self, exclude=(), timeout=10.0):
         """Hands the dispatcher a reset list a group of cores with the same kernels and
         each core's list number (load(recover=True)): a give-up then resets and loads
@@ -582,6 +647,10 @@ class Run:
         for core, group in enumerate(groups):
             if group in owner and core not in excluded:
                 core_list[core] = owner[group]
+        refused = self._area_resets(lists, core_list)
+        if refused:
+            self.recovery_refused = refused
+            return False
         head = self.h["KMD_RESET_DIRECTORY_ENTRIES"]
         at = -(-(head + 16 * len(lists)) // 64) * 64
         entries, body = [], b""
@@ -776,6 +845,23 @@ class Run:
                 self._check_holds(
                     program_field, int(handlers[i]), int(first[i]), int(count[i])
                 )
+        numbers = self._port_numbers(program_field)
+        rows = np.flatnonzero(np.isin(handlers, list(numbers))) if numbers else []
+        try:  # each port row checked against those before it too
+            for row in rows:
+                group = (int(first[row]), int(count[row]))
+                self._check_ports(
+                    program_field,
+                    int(handlers[row]),
+                    group,
+                    exclusive,
+                    self._next + row,
+                )
+                self._ports[self._next + int(row)] = group
+        except ValueError:
+            for row in rows:
+                self._ports.pop(self._next + int(row), None)
+            raise
         words = np.zeros((shape[0], 16), np.uint32)
         words[:, self._hdr] = handlers & 0xFF | program_field << 24
         words[:, self._group_at] = first | count << 16
