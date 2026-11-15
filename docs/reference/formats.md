@@ -208,6 +208,26 @@ The turn costs 0.5 to 2 µs a command here (the `Dst` transposes, about 180 cycl
 tile, and the matrix unit set up again after them). The build does not choose a
 placement: it prints both, and the marker is the program's choice.
 
+The A family's turn and the broadcasts' turn, measured the same way
+([placement_more.py](../../experiments/core/formats/README.md#the-turns-other-forms-float16-and-two-broadcasts-blocks)):
+float16 X and W with the sums in the 16-bit `Dst` (32 x 1024 x 1024, 8 cores), and two
+broadcasts' blocks on a 2 x 2 rectangle (X bfloat16, W bfp8_b, K 1024):
+
+| Product | Fidelity | Form | RMS rel. | Max / RMS | µs |
+| --- | --- | --- | --- | --- | --- |
+| float16 | LoFi | no marker | 3.00e-2 | 0.141 | 17.0 |
+| float16 | LoFi | `km.srcb(w)` | 2.99e-2 | 0.119 | 17.2 |
+| float16 | HiFi2 | no marker | 6.71e-3 | 0.040 | 17.1 |
+| float16 | HiFi2 | `km.srcb(w)` | 6.73e-3 | 0.034 | 17.4 |
+| float16 | HiFi4 | no marker | 3.53e-3 | 0.022 | 17.4 |
+| float16 | HiFi4 | `km.srcb(w)` | 3.51e-3 | 0.021 | 17.5 |
+| broadcasts | HiFi4 | no marker | 7.17e-3 | 0.029 | 24.6 |
+| broadcasts | HiFi4 | `km.srcb(w)` | 7.23e-3 | 0.029 | 24.7 |
+
+Each turn equals its plain product within the sums' noise. Two float16 operands carry
+11 bits each, so the two placements cut alike (one keeps 5 and the other 7 at LoFi);
+the marker matters when the operands' bits differ.
+
 ## Not in this version
 
 - **lf8** (an 8-bit float the packer can write) is not built: no buffer, tensor or
