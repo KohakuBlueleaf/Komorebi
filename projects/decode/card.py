@@ -434,7 +434,7 @@ class Decode:
         chain=None,
         pair=False,
         token=False,
-        ahead=False,
+        ahead=True,
     ):
         """One LAYERS command: its result word and stats slot. `bare` products only,
         `parts` their parts only, `apart` q, k, v as three, `overlap` two in flight;

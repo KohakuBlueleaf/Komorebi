@@ -130,8 +130,8 @@ def parse():
         "--beside",
         nargs="*",
         default=[],
-        choices=("layer", "ahead"),
-        help="each case also as CASE/FORM: the chain a layer, the next W read early",
+        choices=("layer", "no_ahead"),
+        help="each case also as CASE/FORM: the chain a layer, no W read a record early",
     )
     parser.add_argument(
         "--commands",
@@ -277,11 +277,11 @@ def measure(decode, case, tokens, layers, index, length, token=False):
         meter.mark("job")
         started = time.perf_counter()
         position = length - tokens
-        name, _, form = case.partition("/")  # CASE/commands, /layer, /ahead
+        name, _, form = case.partition("/")  # CASE/commands, /layer, /no_ahead
         job = CASES[name] | (
             {"chain": False}
             if form == "commands"
-            else {"token": token and form != "layer", "ahead": form == "ahead"}
+            else {"token": token and form != "layer", "ahead": form != "no_ahead"}
         )
         got = decode.job(tokens, layers, timeout=60.0, position=position, **job)
         seconds = time.perf_counter() - started
