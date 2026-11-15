@@ -220,14 +220,25 @@ def handler(function=None, *, overlay=False, stamps=None):
     return HandlerMethod(function, overlay, stamps)
 
 
+# The matrix unit's fidelities (tt-metal's MathFidelity) and their phases.
+FIDELITIES = {"LoFi": 1, "HiFi2": 2, "HiFi3": 3, "HiFi4": 4}
+
+
 class TileFunction:
     """A function decorated with `km.tile_function`: tile arithmetic the tile
     compiler traces and emits for compute when a handler calls it on a stream's
-    tiles; `tolerance` its stated bound against float64 (printed at the build)."""
+    tiles; `tolerance` its stated bound against float64 (printed at the build);
+    `fidelity` a product's matrix-unit fidelity (tt-metal's word)."""
 
-    def __init__(self, function, tolerance=None):
+    def __init__(self, function, tolerance=None, fidelity=None):
+        if fidelity not in (None, *FIDELITIES):
+            raise ProgramError(
+                f"{function.__name__}: fidelity={fidelity!r} is not one of "
+                f"{', '.join(FIDELITIES)}"
+            )
         self.function = function
         self.tolerance = tolerance
+        self.fidelity = fidelity
         self.name = function.__name__
 
     def __get__(self, program, owner=None):
@@ -240,13 +251,14 @@ class TileFunction:
         )
 
 
-def tile_function(function=None, *, tolerance=None):
+def tile_function(function=None, *, tolerance=None, fidelity=None):
     """Makes a function of tiles a tile function: called from a handler on the tiles
     of its streams, traced and emitted for compute by the tile compiler;
-    `tolerance`: its stated largest relative error against float64."""
+    `tolerance`: its stated largest relative error against float64; `fidelity`: a
+    product's ("HiFi4" when not given)."""
     if function is None:
-        return lambda function: TileFunction(function, tolerance)
-    return TileFunction(function, tolerance)
+        return lambda function: TileFunction(function, tolerance, fidelity)
+    return TileFunction(function, tolerance, fidelity)
 
 
 def line_only(kind):
