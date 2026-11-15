@@ -4,8 +4,9 @@ Question: do the compute bodies that `komorebi.dsl.tile` emits for SiLU, a resid
 a scale by a constant, the SwiGLU gate `silu(a) * b` and the row norm
 `x * rsqrt(mean(x^2) + eps) * w` compute the same expression as the hand bodies they
 stand in for, what does a unit cost on one core with each, and how close is the printed
-cost to the card? Two rules are new here: the load-macro chain (schedule) and "a
-per-row value is lanes of one tile" (layout, the row form). The page for the tile layer
+cost to the card? Then the same for attention's exponent step and its online softmax
+step at the error the program states, and the whole per-core attention body assembled
+from the library's matrix calls and the emitted softmax step. The page for the tile layer
 is [docs/reference/tile.md](../../docs/reference/tile.md).
 
 ## Bodies
@@ -24,6 +25,14 @@ is [docs/reference/tile.md](../../docs/reference/tile.md).
 | 9 | gate | emitted | `trace.silu(a) * b` |
 | 10 | norm | hand | the decode project's norm: the squares as a product `y y^T` over the row's tiles times the identity, `rms_scale` (a product with the mean tile, + eps, `rsqrt_tile`), the row times the scale tile, then times the weight tile (decode folds the weight into the next product's matrix) |
 | 11 | norm | emitted | the row form, a row of 2 tiles |
+| 12 | exp | hand | the attention project's `exp_step<1>`: p = exp(s scale - m), degree-2 polynomial, its state tile in `Dst` 3 |
+| 13 | exp | emitted | `trace.exp(s * scale - m.col())`, accurate |
+| 16 | exp | stated | the same at `error=2e-3` (the flash template) |
+| 14 | softmax | hand | the attention project's `state_max<3>`, `state_update`, `exp_step<3>` on 3 score tiles and the state tile |
+| 15 | softmax | emitted | the step form at `error=2e-3` (the tile function on the reference page) |
+| 17 | softmax | accurate | the same with the accurate exp2 |
+| 18 | attn | hand | the per-core body (`kernels/attention.cpp`): per step of 3 key tiles the score products, BODY 14's step, P packed bf16, P V and l = P 1 added into O |
+| 19 | attn | emitted | the same with BODY 15's step (l from the step's state) |
 
 The hand norm keeps decode's sequence with fp32 buffers where decode has bf16, and
 reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.
@@ -36,6 +45,7 @@ reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.
 | compute: per unit the copies into `Dst`, the body (define `BODY`), the pack | `kernels/compute.cpp` |
 | writer (RISCV_0): the output tiles, then the info page | `kernels/writer.cpp` |
 | shared layout of buffers and the info page | `kernels/rules.hpp` |
+| the per-core attention body (BODY 18, 19) and its reader | `kernels/attention.cpp`, `kernels/attn_reader.cpp` |
 | driver: emits `kernels/generated/*.hpp`, builds, runs, checks | `rules.py` |
 
 ```
@@ -83,13 +93,63 @@ Card 0, one core, AICLK 1350 MHz. Cycles a unit (a tile; a row of 2 tiles for th
   starts when it is done with the previous unit. The whole-unit column is the
   comparable one: 2640 against 1277.
 
+Attention's steps, the same core, cycles a unit (a tile for exp, 3 score tiles and the
+state for softmax):
+
+| case | hand | emitted, first rules | emitted, now | estimate now | max rel. error: hand / emitted |
+|---|---|---|---|---|---|
+| exp, accurate | 351.5 | 1210 | 1115 | 1113.5 | 1.77e-3 / 3.0e-7 |
+| exp at 2e-3 | 351.5 | 542.5 | 444 | 443.2 | 1.77e-3 / 1.77e-3 |
+| softmax at 2e-3 | 1590.5 | 2818.5 | 2369 | 2350.0 | p, alpha, l within 2e-3 both |
+| softmax, accurate | - | - | 5630 | 4950.0 | p 8.2e-7 |
+| norm (for the rules' effect) | - | 771.5 | 689.5 | 677.0 | - / 1.8e-7 |
+
+What the hand exp step has that the emitted one at 2e-3 does not (19 against 24
+instructions a 4-row block, 351.5 against 443.2 cycles a tile):
+
+| hand | emitted | cycles a tile |
+|---|---|---|
+| the state tile holds `b = 639 - A m`, computed once a step | a multiply-add for `639 - m log2 e` each block | 16 |
+| `log2 e` and 639 folded into that state | `SFPLOADI` of both each block (3 words) | 48 |
+| the address step in the store's address mode | an `SFPINCRWC` each block | 16 |
+| the same clamp (`SFPSWAP`) and its stall | the same | 0 |
+
+Not built: the rule that closes the first two keeps a per-row value that depends only
+on the state in the state tile, computed once a step; the third needs the emitter to
+own the address modes (the follow-up form that lowers the matrix words too).
+
+What the hand softmax step has that the emitted one does not (1590.5 against 2369 on
+the card; the emitted side's cycles are its estimate's terms, 2350 in all):
+
+| hand | emitted | emitted cycles a step |
+|---|---|---|
+| l = P 1 as one more product on the matrix unit, after the step | the row sum on the vector unit: 112 `SFPADD`, 119 `SFPSHFT2` lane rotations and their 119 stalls | 350 |
+| the row max by `SFPLOADMACRO`, load and swap in one word a vector | 112 `SFPSWAP` and their stall slots | 224 |
+| the polynomial's constants in programmable registers (LReg 11 used too, restored to -1.0 at the end) | `SFPLOADI` of the two constants each block, with 639 and the lag | 88 |
+| other work in the multiply-add stall slots | 128 `SFPNOP` the mad-reader check inserts | 128 |
+| the state tile already in the exp's form (`b`, a flag) | the selects of alpha's `exact_at_zero` and of the lagging max (56 words) and the word's running max (21) | 77 |
+
+The interleave rule finds independent work for few of the stall slots: the step holds 9
+to 11 live values where the 8 work registers allow 3 more. The emitted vector part
+stays 1.48 times the hand's.
+
+**The per-core body did not run.** BODY 18 stopped the core both times it was
+launched ("waiting for physical cores to finish", the host's 20 s timeout), first with
+fp32 operands and `tensix_sync` around each product, then with bf16 operands and no
+sync where the unpacker can be ahead. BODY 19 was never launched. The cause is not
+found; its cycles and values on the card are not measured. Off the card (the host's
+model of the products with the step's instructions emulated, bf16 inputs and P): O / l
+within 3.1e-3 of float64 (tolerance 4e-3); estimate a step 2350 for the vector part and
+199 (6 or more `Dst` blocks rotating) to 1154 (none) for each product set.
+
 ## The cost model against the card
 
 Each price is a one-core measurement (`../tile_probes/README.md`, section 8). The
 first run showed every plain add and scale estimate 32 cycles over: exactly the 32
 stalls priced where an `SFPSTORE` reads the multiply-add result just before it. Without
 a stall before a store, every body is within 4% (table on the reference page); the old
-SiLU code shape estimates 1721.6 against 1720.
+SiLU code shape estimates 1721.6 against 1720. Attention's steps are within 1%, except
+the accurate softmax step (-12%: 26 KB of straight-line code, unexplained).
 
 ## What the card showed that the off-card checks did not
 
