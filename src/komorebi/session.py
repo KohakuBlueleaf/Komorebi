@@ -424,6 +424,44 @@ def _words(session, rows, shard_grid=None):
     return session.tensor(data, "uint32", shard_grid=shard_grid)
 
 
+def _control_bytes():
+    """A core's control block and overlay area (Run._control_blocks's words)."""
+    abi_headers = abi.headers()
+    area = overlay.constants()["kOverlayAreaBytes"]
+    return (abi_headers["KM_CONTROL_BYTES"] + area + CONTROL_ALIGN) // 4 * 4
+
+
+def _transfer_chunk_of(session, held, switch, trace_cap, control_bytes):
+    """The chunk of a run's transfer buffer: CHUNK_DEFAULT, or the largest page of the
+    session's DRAM tensors when two of them take at most half of what a core has left
+    after its buffers. A run with overlays, or whose groups switch program, keeps the
+    default: it has slots to place."""
+    page = session.largest_page
+    if switch or any(each.overlays for each in held):
+        return channel_module.CHUNK_DEFAULT
+    buffers = max(
+        sum(buffer.page_bytes * buffer.pages for buffer in each.buffers)
+        for each in held
+    )
+    buffers += 2 * abi.headers()["kTokenBytes"] + trace_cap * 16
+    spare = session.l1()[1] - buffers - control_bytes
+    asked = session.transfer_chunk  # a session over two cards: LINK_CHUNK
+    word = abi.headers()["KM_TRANSFER_WORD_BYTES"]
+    if asked and asked >= page and 2 * asked + word <= spare // 2:
+        return asked
+    if page <= channel_module.CHUNK_DEFAULT:
+        return channel_module.CHUNK_DEFAULT
+    return channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
+
+
+def slot_rows(slots):
+    """The L1 budget table's rows of overlay slots ({part: (count, bytes)})."""
+    return [
+        (f"slots: {part}, {count} x {size:,} B", count * size)
+        for part, (count, size) in slots.items()
+    ]
+
+
 def read_tensors(device, module, tensors, first=0, pages=None):
     """The raw pages first .. first + pages - 1 (pages=None: to the end) of interleaved
     DRAM tensors as [pages, page_bytes] uint8 each: one DRAM barrier, one read per bank
@@ -739,6 +777,29 @@ class Session:
         self._module = self._module or native.load_module(self.tree)
         kernel, free, _ = self._module.kernel_buffer(self.device)
         return int(kernel), int(free)
+
+    def l1_rows(self, program, trace=0, placed=None, buffers=None):
+        """A core's L1 budget rows for `program` loaded with `trace`, the slots aside:
+        its buffers (`buffers` bytes if given) with the token and trace pages, the
+        control block and overlay area, the host transfer buffer, what the session
+        keeps. The load's table is these and the slots; a class's build checks them."""
+        abi_headers = abi.headers()
+        trace_cap = (trace + 3) // 4 * 4 if trace else 0
+        if buffers is None:
+            buffers = sum(b.page_bytes * b.pages for b in program.buffers)
+        buffers += 2 * abi_headers["kTokenBytes"] + trace_cap * 16
+        control = _control_bytes()
+        rows = [
+            ("circular buffers", buffers),
+            ("control block and overlay area", control),
+        ]
+        if self.channel is not None or program.threads:
+            held = placed.programs if placed else [program]
+            switch = bool(placed and placed.switch)
+            chunk = _transfer_chunk_of(self, held, switch, trace_cap, control)
+            size = 2 * chunk + abi_headers["KM_TRANSFER_WORD_BYTES"] + NOC_ALIGN
+            rows.append(("host transfer buffer", size))
+        return rows + list(self.l1_held())
 
     def _hand_nocs(self, program):
         """A program written as a class whose rectangle needs the grid's NoCs gets
@@ -2326,28 +2387,11 @@ class _Backend:
         return owners, groups
 
     def _transfer_chunk(self, program, placed, cores):
-        """The chunk of the run's transfer buffer: CHUNK_DEFAULT, or the largest page
-        of the session's DRAM tensors when two of them take at most half of what a core
-        has left after its buffers. A run with overlays, or whose groups switch
-        program, keeps the default: it has slots to place."""
-        page = self.session.largest_page
+        """The chunk of the run's transfer buffer (_transfer_chunk_of)."""
         held = placed.programs if placed else [program]
-        if (placed and placed.switch) or any(each.overlays for each in held):
-            return channel_module.CHUNK_DEFAULT
-        buffers = max(
-            sum(buffer.page_bytes * buffer.pages for buffer in each.buffers)
-            for each in held
-        )
-        buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
-        spare = self.session.l1()[1] - buffers - self.control.nbytes // cores
-        asked = self.session.transfer_chunk  # a session over two cards: LINK_CHUNK
-        word = abi.headers()["KM_TRANSFER_WORD_BYTES"]
-        if asked and asked >= page and 2 * asked + word <= spare // 2:
-            return asked
-        if page <= channel_module.CHUNK_DEFAULT:
-            return channel_module.CHUNK_DEFAULT
-        return (
-            channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
+        switch = bool(placed and placed.switch)
+        return _transfer_chunk_of(
+            self.session, held, switch, self.trace_cap, self.control.nbytes // cores
         )
 
     def _link_core_rects(self, grid):
@@ -2417,12 +2461,6 @@ class _Backend:
         self.io.append(tensor)
         address = -(-tensor.address // NOC_ALIGN) * NOC_ALIGN
         return _TransferBuffer(address, chunk, size + NOC_ALIGN)
-
-    def _transfer_rows(self):
-        """The L1 budget table's row of the transfer buffer, if the run has one."""
-        if self.transfer is None:
-            return []
-        return [("host transfer buffer", self.transfer.bytes)]
 
     def _held_rows(self):
         """The L1 budget table's rows of what the session's owner keeps at the top of
@@ -2625,19 +2663,8 @@ class _Backend:
             session.log,
         )
         program.overlays_built = built
-        grid = (self.port.grid_x, self.port.grid_y)
-        cores = grid[0] * grid[1]
-        buffers = sum(buffer.page_bytes * buffer.pages for buffer in program.buffers)
-        buffers += 2 * abi_headers["kTokenBytes"] + self.trace_cap * 16
-        rows = [
-            ("circular buffers", buffers),
-            ("control block and overlay area", self.control.nbytes // cores),
-        ]
-        rows += [
-            (f"slots: {part}, {count} x {size:,} B", count * size)
-            for part, (count, size) in built.slots.items()
-        ]
-        rows += self._transfer_rows() + self._held_rows()
+        rows = session.l1_rows(program, self.trace_cap)
+        rows[2:2] = slot_rows(built.slots)
         table, fits = overlay.budget(session.l1()[1], rows)
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
@@ -2730,8 +2757,6 @@ class _Backend:
         session, abi_headers = self.session, abi.headers()
         started = time.perf_counter()
         by_group = _group_recipes(descriptor.recipes(), len(placed.groups))
-        grid = (self.port.grid_x, self.port.grid_y)
-        cores = grid[0] * grid[1]
         declared = placed.programs[0].overlay_slots
         built, symbols = [], []
         for number, group in enumerate(placed.groups):
@@ -2770,16 +2795,10 @@ class _Backend:
                 buffer.page_bytes * buffer.pages
                 for buffer in self.group_buffers[number]
             )
-            buffers += 2 * abi_headers["kTokenBytes"] + self.trace_cap * 16
-            rows = [
-                ("circular buffers", buffers),
-                ("control block and overlay area", self.control.nbytes // cores),
-            ]
-            rows += [
-                (f"slots: {part}, {count} x {size:,} B", count * size)
-                for part, (count, size) in made.slots.items()
-            ]
-            rows += self._transfer_rows() + self._held_rows()
+            rows = session.l1_rows(
+                placed.programs[0], self.trace_cap, placed, buffers=buffers
+            )
+            rows[2:2] = slot_rows(made.slots)
             table, fits = overlay.budget(session.l1()[1], rows)
             names = ", ".join(program.name for program in held)
             session.log(f"L1 budget of a core of {names}:\n{table}")
@@ -2800,16 +2819,10 @@ class _Backend:
         if placed.switch:  # one set of slots, every program's parts fit any core's
             common = _common_slots(placed, declared, built)
             built = [overlay.Built(made.images, common.slots) for made in built]
-            buffers = self.switch_reserve  # the runtime's buffers included
-            rows = [
-                ("circular buffers (the largest program)", buffers),
-                ("control block and overlay area", self.control.nbytes // cores),
-            ]
-            rows += [
-                (f"slots: {part}, {count} x {size:,} B", count * size)
-                for part, (count, size) in common.slots.items()
-            ]
-            rows += self._transfer_rows() + self._held_rows()
+            rows = session.l1_rows(placed.programs[0], self.trace_cap, placed)
+            # the runtime's buffers included
+            rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
+            rows[2:2] = slot_rows(common.slots)
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
             if not fits:

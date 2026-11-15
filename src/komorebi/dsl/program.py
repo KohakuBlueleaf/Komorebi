@@ -14,7 +14,7 @@ from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
 from komorebi.dsl.tile import emit
 from komorebi.dsl.tile.unit import matrix_cost
-from komorebi.errors import ProgramError
+from komorebi.errors import L1BudgetError, ProgramError
 
 BUILD = "build"
 # A core's kernels as a CommandTimeout names them, and the CPU a class's wait is on.
@@ -77,14 +77,30 @@ def prepare(cls, compute=None):
     cls.overlays_built = property(overlays_built, set_overlays_built)
 
 
-def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **tensors):
-    """Compiles the class: `tensors` an example tensor of each tensor parameter (by
-    name), `plan` sizes by name, `l1` the L1 left for buffers (Session.l1()[1]); with
-    broadcasts, `rect` (x, y, columns, rows; the whole grid when not given) and `nocs`
-    (Session.load gives the session's when not given)."""
+def make(
+    self,
+    plan=None,
+    l1=None,
+    depth=4,
+    log=print,
+    rect=None,
+    nocs=None,
+    session=None,
+    trace=0,
+    **tensors,
+):
+    """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
+    by name; `session` (its load's L1 table checked, l1_checked; `trace` the load's) or
+    `l1` (Session.l1()[1], the buffers alone); with broadcasts, `rect` (x, y, columns,
+    rows; the whole grid if not given) and `nocs` (Session.load gives the session's)."""
     cls = type(self)
     plan = dict(plan or {})
-    compiled = compiler.compile_class(cls, plan, tensors, l1)
+    if session is not None:
+        l1 = session.l1()[1] if l1 is None else l1
+        room = l1 - runtime_bytes(session, trace)
+    else:
+        room = l1
+    compiled = compiler.compile_class(cls, plan, tensors, room)
     program_args = None
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
@@ -94,7 +110,7 @@ def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **t
         program_args = rectangle_of(self, compiled)
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
-    built = write(cls, compiled, l1)
+    built = write(cls, compiled, room)
     for line in built.report:
         log(line)
     report = may_cross(compiled, tensors)
@@ -151,6 +167,39 @@ def make(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None, **t
         self.overlay(name, sources)
     if compiled.overlays:
         self.slots()
+    if session is not None:
+        l1_checked(self, session, l1, trace, log)
+
+
+class Unbuilt:
+    """A program of no buffers, threads or overlays: what the runtime takes of a core's
+    L1 whatever the program's buffers (runtime_bytes)."""
+
+    buffers, threads, overlays = (), {}, {}
+
+
+def runtime_bytes(session, trace):
+    """The L1 the load takes besides a class's buffers, at least: its table's rows for
+    a program of none (Session.l1_rows) and the service overlay's slot at its most. A
+    field's symbol is solved against what is left; l1_checked checks the class."""
+    return sum(size for _, size in session.l1_rows(Unbuilt(), trace)) + (
+        overlay.SERVICE_SLOT_MOST
+    )
+
+
+def l1_checked(program, session, l1, trace, log):
+    """The load's L1 table of a core for the built program (Session.l1_rows), the
+    service overlay's slot at its most (the load refuses a larger one), refused
+    (L1BudgetError) as the load refuses it; a class's own overlays' slots are the
+    load's."""
+    rows = session.l1_rows(program, trace)
+    most = overlay.SERVICE_SLOT_MOST
+    rows[2:2] = [(f"slots: reader, 1 x {most:,} B (at most)", most)]
+    table, fits = overlay.budget(l1, rows)
+    log(f"L1 budget of a core (the build's, as the load's):\n{table}")
+    if not fits:
+        held = sum(size for _, size in session.l1_held())
+        raise L1BudgetError(program.name, table, held)
 
 
 def code_table(program, built):

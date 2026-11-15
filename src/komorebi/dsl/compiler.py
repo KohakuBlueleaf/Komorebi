@@ -431,7 +431,7 @@ def bind_fields(compiled, plan, l1):
                 compiled,
                 user[symbol],
                 f"{symbol} is solved against the L1 the buffers leave",
-                "make the program with l1=session.l1()[1]",
+                "make the program with session=session (or l1=session.l1()[1])",
             )
         solved[symbol] = solve(compiled, symbol, plan, l1, user[symbol])
     for name, value in compiled.fields.items():

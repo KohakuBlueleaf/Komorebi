@@ -117,5 +117,5 @@ def made(session, tree_pages, tensors, log):
     """The class made with the scene's tree pages and example tensors of each name,
     one command at a time as the hand program."""
     return TracePass(
-        log=log, plan={"TREE": tree_pages}, l1=session.l1()[1], depth=1, **tensors
+        log=log, plan={"TREE": tree_pages}, session=session, depth=1, **tensors
     )
