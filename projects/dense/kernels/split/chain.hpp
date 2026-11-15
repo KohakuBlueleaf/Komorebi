@@ -8,18 +8,20 @@
 #include "komorebi/device/km_group.hpp"
 #include "split.h"
 
-// The chain's words in buffer kChainBuffer (bytes): marks and credits that other cores
-// count up (16-byte slots), the record ring, the counts each kernel has waited for.
+// The chain's words in buffer kChainBuffer (bytes): marks and credits (one a record
+// parity) that other cores count up (16-byte slots), the ring, the counts waited for.
 constexpr uint32_t kChainMarks = 0;
-constexpr uint32_t kChainCredits = 16;
+constexpr uint32_t kChainCredits = 16;         // even records'; odd records' at 112
 constexpr uint32_t kChainReady = 32;           // the reader: the last record read's tag
 constexpr uint32_t kChainWriterTaken = 48;     // the writer: the last record it took
 constexpr uint32_t kChainComputeTaken = 64;    // unpack: the last record compute took
 constexpr uint32_t kChainReaderWanted = 80;    // marks the reader waited for, in all
 constexpr uint32_t kChainWriterWanted = 96;    // marks the writer waited for
-constexpr uint32_t kChainCreditsWanted = 100;  // credits the writer waited for
+constexpr uint32_t kChainCreditsWanted = 100;  // credits the writer waited for (even)
 constexpr uint32_t kChainCreditDue = 104;  // 1: this record's emit waits for a credit
-constexpr uint32_t kChainSlots = 128;      // record r in slot r % 2
+constexpr uint32_t kChainCreditsWantedOdd = 108;
+constexpr uint32_t kChainCreditsOdd = 112;
+constexpr uint32_t kChainSlots = 128;  // record r in slot r % 2
 constexpr uint32_t kChainBytes = kChainSlots + 2 * kChainRecordBytes;
 
 // A record's tag in the ring: the chain command's sequence and its index.
@@ -116,6 +118,17 @@ inline uint32_t chain_address(uint32_t offset) {
     return buffer.fifo_limit - buffer.fifo_size + offset;
 }
 
+// The credit words of the record the writer took last (its tag's parity): a credit
+// for the record after cannot meet this one's wait.
+inline uint32_t chain_credits_at(bool odd) {
+    return odd ? kChainCreditsOdd : kChainCredits;
+}
+
+inline volatile tt_l1_ptr uint32_t* chain_credits_wanted() {
+    const bool odd = (*chain_word(kChainWriterTaken) & 1u) != 0;
+    return chain_word(odd ? kChainCreditsWantedOdd : kChainCreditsWanted);
+}
+
 // Writer, before an emit of a chain's record: its receiver's credit (none due: at
 // once). False: gave up (recorded).
 template <typename Writer>
@@ -126,14 +139,17 @@ bool chain_credit(const Writer& writer) {
         return true;
     }
     *due = 0;
-    volatile tt_l1_ptr uint32_t* wanted = chain_word(kChainCreditsWanted);
+    const uint32_t credits = (
+        chain_credits_at((*chain_word(kChainWriterTaken) & 1u) != 0)
+    );
+    volatile tt_l1_ptr uint32_t* wanted = chain_credits_wanted();
     const uint32_t target = *wanted + 1;
     *wanted = target;
     const uint32_t code = writer.poll_at(
         km::kWhereEmit,
         [&] {
             invalidate_l1_cache();
-            return static_cast<int32_t>(*chain_word(kChainCredits) - target) >= 0;
+            return static_cast<int32_t>(*chain_word(credits) - target) >= 0;
         },
         writer.args().wait_limit
     );
@@ -554,7 +570,7 @@ void chain_credits(const Writer& writer, const km_command_t& command) {
             noc_semaphore_inc(
                 writer.core_noc(
                     writer.core_of(km::core_of(group, rank)),
-                    chain_address(kChainCredits)
+                    chain_address(chain_credits_at((chain_now.record & 1u) != 0))
                 ),
                 1
             );
@@ -650,7 +666,7 @@ bool chain_writer(km::Writer& writer, const km_command_t& command, Product produ
             invalidate_l1_cache();
             if (*chain_word(kChainCreditDue) != 0) {  // no emit came: its credit kept
                 *chain_word(kChainCreditDue) = 0;
-                *chain_word(kChainCreditsWanted) += 1;
+                *chain_credits_wanted() += 1;
             }
         }
         if (words[kChainNext] == 0) {
