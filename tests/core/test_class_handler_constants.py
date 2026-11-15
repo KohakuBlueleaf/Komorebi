@@ -10,6 +10,7 @@ import komorebi as km
 from komorebi.dsl.compiler import Refused, compile_class
 from komorebi.dsl.program import constant_handler
 from komorebi.errors import ProgramError
+from komorebi.run import Run
 from komorebi.tensor import Tensor
 
 
@@ -131,3 +132,34 @@ def test_a_constant_parameter_takes_a_default():
 def test_a_constant_parameter_is_of_int_float_or_bool():
     with pytest.raises(ProgramError, match="a constant parameter is of int, float or"):
         km.constant[str]
+
+
+class FakeRun:
+    """What Run._built_for reads of a run: its programs."""
+
+    def __init__(self, programs):
+        self.programs = programs
+
+    _built_for = Run._built_for
+    _handler = Run._handler
+    _class_form_refused = Run._class_form_refused
+    program_field = Run.program_field
+
+
+def test_a_submit_gives_the_values_at_their_places_or_leaves_them_out():
+    program = made(handlers={"gate": [{"size": 4}, {"size": 8}]})
+    run = FakeRun([program])
+    a, out = TENSORS["a"], TENSORS["out"]
+    built = run._built_for(Gate.gate, (a, out, 3, 4))  # size 4, at its place
+    assert int(built) == 1 and built.method.name == "gate_size4"
+    assert built.args(a, out, 3, 4) == built.args(a, out, 3)  # no word of it
+    assert len(built.args(a, out, 3, 4)) == 3
+    built = run._built_for(program.gate, (a, out, 3))  # left out: the default, 8
+    assert int(built) == 3 and built.method.name == "gate_size8"
+    why = (
+        r"Gate.gate with size=2: no handler was built for it \(built: size=4; "
+        r"size=8\)"
+    )
+    with pytest.raises(ProgramError, match=why):
+        run._built_for(Gate.gate, (a, out, 3, 2))
+    assert run._built_for(Gate.other, (a,)) is Gate.other  # no constant parameter

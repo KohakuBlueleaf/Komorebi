@@ -396,13 +396,15 @@ class HandlerMethod:
     def args(self, *values, **named):
         """The command words of a call: a tensor gives its reference word (and its
         page count, if the handler counts its pages), an int itself, a pattern its
-        word."""
+        word; a constant parameter's value, at its place, is no word."""
         if self.words is None:
             raise ProgramError(f"{self.name}: its program is not made yet")
-        given = dict(zip([p for p, _ in self.parameters()], values))
+        given = dict(zip(self.places(), values))
         if len(values) > len(given):
             raise ProgramError(f"{self.name}: {len(values)} arguments, too many")
         given.update(named)
+        for constant in constant_parameters(self.function):
+            given.pop(constant, None)
         words = []
         for parameter, kind in self.words:
             value = given.get(parameter)
@@ -419,6 +421,22 @@ class HandlerMethod:
                 )
             words.append(word_of(self.name, parameter, kind, value))
         return words
+
+    def places(self):
+        """The names of the parameters after self in order, constant ones too."""
+        return list(inspect.signature(self.function).parameters)[1:]
+
+    def constants_given(self, values, named=None):
+        """The constant parameters' values a call gives at their places (or by
+        name), by name; one left out takes its default."""
+        constants = constant_parameters(self.function)
+        given = {
+            name: value
+            for name, value in zip(self.places(), values)
+            if name in constants
+        }
+        given.update({k: v for k, v in (named or {}).items() if k in constants})
+        return given
 
     def parameters(self):
         """The (name, kind) of each parameter, in order, without page counts."""
