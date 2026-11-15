@@ -100,3 +100,44 @@ run.submit(program.gate, (0, cores), args=(a, b, out, tiles, pattern, 4))
 tiles, AAAB, one load of both handlers (46,640 B of kernel text), each command's output
 cleared before it: block 8 0 of 786,432 values wrong, 81.72 µs; block 4 0 wrong,
 80.60 µs; the largest relative error 3.89e-3 for both, as the class's row above.
+
+### A block compiled on its first use
+
+`km.ANY` among the sets lets a submit name a block that was not listed: it is compiled
+then, as the handler's overlay parts on the load's buffers, and added to the live run
+([a set compiled on its first use](../../../docs/reference/classes.md#a-set-compiled-on-its-first-use)).
+`km.ANY(block=16)` sizes the load's buffers for block 16 too, so blocks up to 16 run on
+them. With `km.ANY` alone, block 16 is refused at its first submit, because block 8's
+buffers hold 16 + 16 pages for the write and block 16 needs 32 + 32.
+
+```python
+sets = [{"block": 8}, km.ANY(block=16)]  # block 8 built; any other at its first use
+program = GateBlocks(a=a, b=b, out=out, handlers={"gate": sets})
+run.submit(program.gate, (0, cores), args=(a, b, out, tiles, pattern, 4))
+```
+
+`python gate_class.py --formats --first-use 4 16 2 --reserve 16 --repeat 5` makes it,
+submits block 8 and then 4, 16 and 2, five commands each, every output cleared before
+and judged after. Then it makes each of 4, 16 and 2 listed alone, in a load of its own,
+for the same commands' times. On card 0, 120 cores of 64 tiles, AAAB, host load 9.1, it
+was a second process: the build off the card had compiled the three blocks and built
+their parts, so the card's process found them built (0.3 to 0.4 ms) and their parts
+cached (49 to 52 ms):
+
+| Block | Wrong (of 5 x 7,864,320) | First command | Later, median | Listed alone, later | First submit (look, add) |
+|---|---|---|---|---|---|
+| 8 (listed) | 0 | 160.16 µs | 161.68 µs | | 0.3 ms |
+| 4 | 0 | 174.86 µs | 169.70 µs | 171.80 µs | 54.6 ms |
+| 16 | 0 | 169.48 µs | 166.36 µs | 155.41 µs | 56.8 ms |
+| 2 | 0 | 171.66 µs | 169.74 µs | 167.02 µs | 53.6 ms |
+
+Block 16 was measured again with 20 commands of each kind in one process
+(`--first-use 16 --reserve 16 --repeat 20 --listed-opted`, host load 7.6). By first use
+it took 158.62 µs, listed alone 156.78 µs, and listed in a load made with `km.ANY`
+158.08 µs, each with 0 wrong and medians of the later commands. The spread over those
+commands was 150 to 169 µs, so five commands could not tell block 16's 7 % above. The
+added block runs as the listed one, within 1.2 %. The kernels of a load made with
+`km.ANY` hold the added handlers' path: 43,184 B of text against 38,112 B.
+
+Off the card, a fresh process took 13.9 to 14.1 ms to compile a block and 7.1 to 7.3 s
+to build its five parts (5,184 B the largest, in 16 KiB slots).

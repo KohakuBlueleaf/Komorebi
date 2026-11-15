@@ -31,6 +31,7 @@ from komorebi.errors import (
     ThreadFailed,
     WaitTimeout,
 )
+from komorebi.merge import lifted
 from komorebi.program import Handler
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
@@ -507,6 +508,7 @@ class Run:
         """(number, program field) of `handler`: a Handler names its program; a name
         or a number is a handler of the run's first program."""
         if isinstance(handler, Handler):
+            handler = lifted(handler, self.programs)  # a merged source's own
             return int(handler), self.program_field(handler.program)
         if isinstance(handler, HandlerMethod):
             fields = [
@@ -518,6 +520,9 @@ class Run:
                 raise ValueError(f"{handler.name}: no program of its class in the run")
             if len(fields) > 1:
                 raise ValueError(self._class_form_refused(handler, fields))
+            merged = getattr(self.programs[fields[0]], "merged_number", None)
+            if merged is not None:  # a merged class's: its number there
+                return merged(handler), fields[0]
             return int(handler), fields[0]
         if handler.__class__ is not int:
             handler = (
@@ -540,7 +545,7 @@ class Run:
             program = self.programs[self._handler(handler)[1]]
         made = importlib.import_module("komorebi.dsl.program")
         number, built = made.constant_handler(
-            program, method, method.constants_given(args)
+            program, method, method.constants_given(args), run=self
         )
         return ClassHandler(number, program, built)
 

@@ -59,6 +59,7 @@ script builds one on purpose; the text is in the output below).
 | `kernels/compute.cpp` | the movers do the work; in a chain command compute takes each record in turn (`km::chain_compute`), as every kernel of a core does |
 | TOTAL (`kernels/reader.cpp`) | `km::all_reduce` of a copy's page 0 over the islands, then a token to the writer, whose root marks the next record |
 | `kernels/runtime/` | the same program in the runtime's form: each part's `km_program` calls the kernel form's function for a command; the runtime's reader zeroes the chain's words before its first command |
+| `--form merged` | the runtime's form as two programs merged into one (`km.merge`): `sums` holds SUM (its 3 kept), `maps` SCALE and ADD (1 and 2 become 4 and 5); the chain's records name handlers of both ([the chain](../../docs/reference/chain.md#a-record-of-another-programs-handler)) |
 
 Each record names its handler (the info word's top byte), so a core goes from SCALE to
 ADD to SUM by itself; the chain command is sent to the first call's handler with a4 the
@@ -72,6 +73,7 @@ program and the decode project's.
 ```
 python chain_steps.py                 # 8 cores, 2 tiles a core, 200 timed runs a way
 python chain_steps.py --form runtime  # the same as parts the runtime's kernels call
+python chain_steps.py --form merged   # SUM one program, SCALE and ADD another, merged
 ```
 
 The script runs a command a step with factor 2, the chain with 5, then 7 and 3, and
@@ -101,6 +103,12 @@ In the runtime's form (card 1, 2026-11-16) every word is exact again; the card t
 the same job), the host 838.9 / 302.8 (the kernel form 704.5 / 266.9). In the decode project
 the same chain runs a whole token (140 records) as one command; its layer is 315 us
 at T 4096, within the spread of its own chain before the move to the framework.
+
+Merged (`--form merged`, card 1, 2026-11-16): every word exact in all five checks, and
+the chain's four records name handlers of both sources (SUM of `sums`, SCALE and ADD of
+`maps`). The card takes 127.7 / 127.1 us a run, the host 824.9 / 305.9: within the
+spread of the runtime's form above, so the dispatcher's switch and the 64-B copy of a
+command for the second source do not show at this size.
 
 ## As a class
 

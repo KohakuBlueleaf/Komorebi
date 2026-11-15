@@ -131,6 +131,11 @@ what an overlay costs and what an address costs a loop.
   measurable and one copy serves any slot. Checking the program before a command costs
   0.1 µs; a switch of five 4 KiB parts 0.79 µs. A live core sets its circular buffers
   up again in 0.68 µs (240,000 switches, every value checked).
+- [overlay_shift](code/overlay_shift/README.md): two programs in the runtime's form,
+  each with overlays of its own numbered from 1, and an overlay added to the live run, in
+  one run on 120 cores. The second program's 1 is the run's 3 (its shift 2) and the
+  added overlay is 4: 16 commands, 0 wrong; a command after the other program's costs
+  about 1.5 µs more, the program's switch.
 - [code_address](code/code_address/README.md): loops of assembly copied to chosen L1
   addresses and timed. A taken branch or jump whose target is at or above 1 MB costs 4
   cycles more (about 7.5 to a line that is not the next), a branch never taken and
