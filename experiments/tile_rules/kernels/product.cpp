@@ -1,5 +1,5 @@
-// Tile-rules product (BODY 22: matmul_block_no_mop; 23: its unpack and the emitted math
-// words), timed on the math CPU from its issue to a tensix_sync after it.
+// Tile-rules product (22: matmul_block_no_mop; 23: the emitted words; 27: the same
+// through the trace), timed on the math CPU from its issue to a tensix_sync.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -12,6 +12,8 @@
 #include "rules.hpp"
 #if BODY == 23
 #include "product_hifi2.hpp"
+#elif BODY == 27
+#include "mm_hifi2.hpp"
 #endif
 
 void kernel_main() {
@@ -42,7 +44,11 @@ void kernel_main() {
         matmul_block_no_mop(rules::kCbA, rules::kCbB, 0, 0, 0, false, 1, 1, 1);
 #else
         UNPACK((llk_unpack_AB_matmul(rules::kCbA, rules::kCbB, 0, 0, 1, 1, 1)));
+#if BODY == 23
         MATH((km_tile::product_hifi2(0)));
+#else
+        MATH((km_tile::mm_hifi2(0)));
+#endif
 #endif
         MATH(tensix_sync(); info[rules::kBody + u] = rules::wall() - start);
         tile_regs_commit();

@@ -1,5 +1,5 @@
 // Tile-rules reader (RISCV_1): the P pages once, then per unit its tiles of A (and,
-// for the hand norm, of Y again) and, with two inputs, one tile of B.
+// for the hand norm, of Y again), with two inputs one tile of B, with three one of P.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -43,8 +43,11 @@ void kernel_main() {
                 read(a, u * unit_tiles + t, rules::kCbY);
             }
         }
-        if (inputs == 2) {
+        if (inputs >= 2) {
             read(b, u, rules::kCbB);
+        }
+        if (inputs == 3) {  // a product's third operand (P carries no pages then)
+            read(p, u, rules::kCbP);
         }
     }
 }

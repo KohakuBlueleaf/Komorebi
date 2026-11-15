@@ -42,6 +42,10 @@ the tile layer is [docs/reference/tile.md](../../docs/reference/tile.md).
 | 24 | add | band | BODY 4 emitted with `rows=True`: the live rows a runtime argument (`--rows`) |
 | 25 | gate | band | `trace.silu(a) * b` with the load macro and `rows=True` |
 | 26 | norm | band | BODY 11's norm with `rows=True` (the row form's guarded groups) |
+| 27 | product | trace | `a @ w` through the trace at HiFi2: BODY 23's words (`build` refuses it otherwise); not run again |
+| 28 | mm_silu | emitted | `trace.silu(a @ w1)`: the product's words and the vector code in one body, HiFi4 (`kernels/fused.cpp`) |
+| 29 | mm_gate | emitted | `trace.silu(a @ w1) * (a @ w3)`: two products and the gate in one body, HiFi4 |
+| 30 | mm_gate | band | BODY 29 with `rows=True`: the vector code on the live rows, the products whole |
 
 The hand norm keeps decode's sequence with fp32 buffers where decode has bf16, and
 reads the squares from a second copy of the row as decode reads its `DC_CB_Y`.
@@ -204,6 +208,30 @@ BODY 22 and 23 over 16 units of bf16 tiles with values in [0.5, 1.5) at HiFi2: B
 unit measured 1147.0 cycles against 1145.5 (math CPU, from the product's issue to a
 `tensix_sync` after it, less the empty span). Both are bound by the reader's tile reads:
 the 34 words are priced 41.0 (`matrix.block_cost`) and are not seen under that wait.
+
+### A product inside the body
+
+BODY 28 to 30 over 16 units, A in [0.5, 1.5) and W1, W3 in [0.5, 1.5) / 16, all bf16,
+at HiFi4; every unit's tiles are in L1 before the first unit (`kernels/fused.cpp`), so
+the span is the body's (math CPU, from the products' issue to a `tensix_sync` after
+the body, less the empty span). Tolerances, stated before the run: 2^-8 for
+silu(a @ w1), 2^-7 for the gate (each term exact at HiFi4; the matrix unit's sum is not
+one rounding; two products' errors add).
+
+| Body | Cycles a unit | Estimate | Whole unit | Max rel. error vs float64 |
+|---|---:|---:|---:|---:|
+| silu(a @ w1) | 1579 | 1548.6 | 1598 | 3.0e-4 |
+| silu(a @ w1) (a @ w3) | 1707 | 1678.6 | 1726 | 4.6e-4 |
+| the same, band, 32 rows | 1707 | 1678.6 | 1726 | 4.6e-4 |
+| the same, band, 1 row | 356 | 349.3 | 454 | 3.8e-4 (past the band: a @ w1, 2.4e-4) |
+
+Beside the same work as separate bodies (rows already measured): the gate's vector code
+alone ran 1568 cycles a tile (BODY 25 at 32 rows) and 220 at one row; BODY 29 less it is
+139.0, the two products' estimate exactly (66 + 73 words' cycles), and the band at one row
+less 139 is 217. The 28.4 over the estimate is the gate code's own (1568 against
+1539.6). Separate bodies would also pay the products' packs and the gate's two copies
+into `Dst`: the emitted gate's whole unit was 1921 against its 1656.5 body (two copies and
+a pack, 264.5), and each product alone was a unit of its own (1147, bound by the reader).
 
 ## The cost model against the card
 
