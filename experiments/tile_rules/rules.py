@@ -306,23 +306,31 @@ def launch_attn(session, body, data):
     columns = VALUE_TILES + (1 if BODIES[body][1] == "hand" else 0)
     nonce = secrets.randbits(32) | 1
     first = data["st_hand"] if BODIES[body][1] == "hand" else data["st"]
-    tensors = [session.tensor(data[k], "uint32") for k in ("kv", "q")]
-    tensors += [session.tensor(first, "uint32"), session.tensor(data["ones"], "uint32")]
+
+    def bf16_tiles(words):  # fp32 tiles in face order as a bf16 tile tensor
+        tiles = words.view(np.float32)
+        return session.tensor(
+            np.concatenate([matrix_of(t[None]) for t in tiles]), "bfloat16", "tile"
+        )
+
+    tensors = [bf16_tiles(data["kv"]), bf16_tiles(data["q"])]
+    tensors += [session.tensor(first, "uint32"), bf16_tiles(data["ones"])]
     t_out = session.tensor(np.zeros((columns + 1, TILE_WORDS), np.uint32), "uint32")
     t_info = session.tensor(np.zeros((1, TILE_WORDS), np.uint32), "uint32")
     core, page = [(0, 0, 0, 0)], 4 * TILE_WORDS
     block = 3 * (HEAD_TILES + VALUE_TILES)
     run = session.launch()
-    for cb, pages in (
-        (CB_KV, 2 * block),
-        (CB_Q, HEAD_TILES),
-        (CB_PROB, 6),
-        (CB_ST, 2),
-        (CB_ONES, 1),
-        (CB_OUT, columns + 1),
-        (CB_INFO, 1),
+    for cb, pages, dtype in (
+        (CB_KV, 2 * block, "bfloat16"),
+        (CB_Q, HEAD_TILES, "bfloat16"),
+        (CB_PROB, 6, "bfloat16"),
+        (CB_ST, 2, "float32"),
+        (CB_ONES, 1, "bfloat16"),
+        (CB_OUT, columns + 1, "float32"),
+        (CB_INFO, 1, "float32"),
     ):
-        run.cb(core, cb, "float32", page, pages * page)
+        size = page if dtype == "float32" else page // 2
+        run.cb(core, cb, dtype, size, pages * size)
     accessors = [w for t in tensors for w in t.accessor_args()]
     words = [t.address for t in tensors] + [steps, block, HEAD_TILES]
     run.kernel(
@@ -484,14 +492,21 @@ def state_slot(tile, k):
     return out, spread
 
 
+def bf16(values):
+    """fp32 values rounded to bf16 (nearest even), as fp32."""
+    u = np.asarray(values, np.float32).view(np.uint32).astype(np.uint64)
+    u = (u + 0x7FFF + ((u >> 16) & 1)) & 0xFFFF0000
+    return u.astype(np.uint32).view(np.float32)
+
+
 def attn_inputs(steps, seed):
     """The query row, the steps' K and V blocks (pages in the hand body's order),
-    the ones tile and the first state of each body, as uint32 words of fp32 tiles."""
+    the ones tile (bf16 tiles as fp32 words) and the first state of each body."""
     rng = np.random.default_rng(seed)
     d = 32 * HEAD_TILES
-    q = rng.standard_normal((32, d)).astype(np.float32)
-    k = rng.standard_normal((96 * steps, d)).astype(np.float32)
-    v = rng.standard_normal((96 * steps, 32 * VALUE_TILES)).astype(np.float32)
+    q = bf16(rng.standard_normal((32, d)))
+    k = bf16(rng.standard_normal((96 * steps, d)))
+    v = bf16(rng.standard_normal((96 * steps, 32 * VALUE_TILES)))
     pages = []
     for s in range(steps):
         keys = range(3 * s, 3 * s + 3)
@@ -565,7 +580,9 @@ def check_attn(data, outputs, infos, nonces):
         steps = min(int(info[UNITS]), MAX_UNITS)
         for name, at in (("score", 64), ("vector", 256), ("pv", 320), ("step", LOOP)):
             spans = [int(x) for x in info[at + 1 : at + steps]] or [int(info[at])]
-            got[name] = statistics.median(spans) - got.get("sync_span", 0)
+            # Only the vector step sits between two syncs; the products run from issue.
+            less = got.get("sync_span", 0) if name == "vector" else 0
+            got[name] = statistics.median(spans) - less
         out = outputs[body].view(np.float32)
         o = matrix_of(out[:VALUE_TILES]).astype(np.float64)
         if form == "hand":

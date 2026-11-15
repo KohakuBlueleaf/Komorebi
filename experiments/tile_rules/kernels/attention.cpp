@@ -1,7 +1,5 @@
-// The per-core attention body on one core, one query row: per step of 3 key tiles the
-// score products into Dst 0-2 (the row state in Dst 3), the softmax step (BODY 18:
-// projects/attention's; 19: the emitted one), P packed, then P V added into O by the
-// packer's L1 accumulation. All on the math CPU in turn, each part timed.
+// The per-core attention body, one query row: score products, the softmax step (BODY 18
+// hand, 19 emitted), P packed (bf16), P V added into O (fp32) by L1 accumulation.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -28,6 +26,20 @@ namespace {
     constexpr uint32_t kBlockPages = kFirstValue + kKeys * kValueTiles;
     // O's columns, then (the hand body) the row sum l from the ones tile.
     constexpr uint32_t kColumns = kValueTiles + (BODY == 18 ? 1 : 0);
+
+    // Packer output format: fp32 (state, O) or bf16 (P), changed on transitions only
+    // (projects/attention's pack_format).
+    bool pack_fp32 = false;
+
+    inline void pack_format(bool fp32) {
+        if (fp32 != pack_fp32) {
+            pack_reconfig_data_format(
+                fp32 ? rules::kCbProb : rules::kCbOut,
+                fp32 ? rules::kCbOut : rules::kCbProb
+            );
+            pack_fp32 = fp32;
+        }
+    }
 
     inline void vector_step(bool first) {
 #if BODY == 18
@@ -70,12 +82,6 @@ void kernel_main() {
 #else
     MATH((km_tile::softstep_init()));
 #endif
-    for (uint32_t i = 0; i < rules::kSyncs; ++i) {
-        MATH(
-            const uint32_t start = rules::wall(); tensix_sync();
-            info[rules::kSync + i] = rules::wall() - start
-        );
-    }
     cb_wait_front(rules::kCbQ, kHeadTiles);
     cb_wait_front(rules::kCbOnes, 1);
     PACK((cb_reserve_back(rules::kCbOut, kColumns + 1)));
@@ -91,7 +97,8 @@ void kernel_main() {
         copy_tile(rules::kCbSt, 0, 3);
         reconfig_data_format_srca(rules::kCbSt, rules::kCbKv);
         mm_no_mop_init_short(rules::kCbQ, rules::kCbKv, true, kKeys, 1, kHeadTiles);
-        MATH(tensix_sync(); const uint32_t t0 = rules::wall());
+        // No sync before a product: the unpacker is ahead holding both Src banks.
+        MATH(const uint32_t t0 = rules::wall());
         for (uint32_t h = 0; h < kHeadTiles; ++h) {
             matmul_block_no_mop(
                 rules::kCbQ, rules::kCbKv, h, h * kKeys, 0, true, kKeys, 1, kHeadTiles
@@ -104,11 +111,13 @@ void kernel_main() {
         tile_regs_commit();
         cb_pop_front(rules::kCbSt, 1);
         tile_regs_wait();
+        pack_format(false);
         cb_reserve_back(rules::kCbProb, kKeys);
         for (uint32_t t = 0; t < kKeys; ++t) {
             pack_tile(t, rules::kCbProb);
         }
         cb_push_back(rules::kCbProb, kKeys);
+        pack_format(true);
         if (last) {
             PACK((pack_reconfig_l1_acc(0)));
             pack_tile<true>(3, rules::kCbOut, kColumns);  // the last row state
@@ -124,7 +133,7 @@ void kernel_main() {
         mm_no_mop_init_short(
             rules::kCbProb, rules::kCbKv, false, kValueTiles, 1, kKeys
         );
-        MATH(tensix_sync(); const uint32_t t3 = rules::wall());
+        MATH(info[rules::kProduct + s] = rules::wall());
         for (uint32_t key = 0; key < kKeys; ++key) {
             matmul_block_no_mop(
                 rules::kCbProb,
@@ -146,9 +155,16 @@ void kernel_main() {
             );
         }
 #endif
-        MATH(tensix_sync(); info[rules::kProduct + s] = rules::wall() - t3);
+        MATH(asm volatile("fence" :: : "memory"));
         tile_regs_commit();
         tile_regs_wait();
+        // The product's end on the packer: the math CPU's sync here would let the
+        // unpacker run into the next step's products.
+        PACK(
+            asm volatile("fence" :: : "memory");
+            info[rules::kProduct + s] = rules::wall() - info[rules::kProduct + s]
+        );
+        pack_format(true);
         PACK((pack_reconfig_l1_acc(first ? 0 : 1)));
         for (uint32_t t = 0; t < kColumns; ++t) {
             pack_tile<true>(t, rules::kCbOut, t);
@@ -160,6 +176,14 @@ void kernel_main() {
         MATH(info[rules::kLoop + s] = rules::wall() - started);
     }
     PACK((cb_push_back(rules::kCbOut, kColumns + 1)));
+    // The empty span, after the steps: a sync while the unpacker runs ahead never
+    // returns.
+    for (uint32_t i = 0; i < rules::kSyncs; ++i) {
+        MATH(
+            const uint32_t start = rules::wall(); tensix_sync();
+            info[rules::kSync + i] = rules::wall() - start
+        );
+    }
 #if BODY == 18
     MATH((flash::restore_constants()));
 #endif
