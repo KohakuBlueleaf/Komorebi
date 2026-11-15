@@ -93,10 +93,12 @@ transfer buffer 82,000 B in both (the build counted 32,848 B before).
 
 The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` eight hex
 digits of what changes the generated sources (the plan, each tensor's format, page
-bytes, shape and layout, the L1 and the trace depth, the rectangle and the NoCs, the
-class's constants by name and value, the listed sets of the constant parameters): two
-instances of one class built differently have a folder each, and two built alike share
-one. In it: `<name>.h` (the
+bytes, shape and layout, the field sizes solved from the L1 (not the L1 itself) and the
+trace depth, the rectangle and the NoCs, the class's constants by name and value, the
+listed sets of the constant parameters): two instances of one class built differently
+have a folder each, and two built alike share one. So a class built on a mock device is
+the card's build: the mock session's L1 left is the card's (it counts the host transfer
+buffer the card's channel takes), and a job that loads it compiles no kernel. In it: `<name>.h` (the
 handler numbers, the buffers, the patterns), `movement.cpp`, `compute.cpp`, an overlay
 handler's parts in `<handler>/`, and `program.txt`, the report it also prints: each
 buffer with its indices, format, pages, bytes and the Python line that made it, and the
