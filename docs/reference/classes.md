@@ -125,7 +125,7 @@ and a name of the handler's with that prefix is refused.
 | `part = b.partition(pages)` | `km::partition` by the core's column of the rectangle (a row's broadcast) or its row (a column's) | the same |
 | `total = km.tile.zeros(km.fp32)` | | DST held, tile 0 filled with zeros |
 | `for tile in km.Stream(pages, block=8, pattern="AB", repeat=n):` | one read stream in a buffer pair, moved with the write streams the loop pushes to (`movement.move`) | each block from the half its mover filled, each tile of it |
-| `q = km.Stream(pages, block=b)` (read, outside a for line) | the read stream moved at its line | its one block waited for at the line, taken whole by bodies, freed at the end of the lines it stands in (A read stream bodies take) |
+| `q = km.Stream(pages, block=b)` (read, not iterated) | its one block moved at its line | the block waited for at the line, taken whole by bodies in the loops inside its block of lines, freed when that block's pass ends (A read stream bodies take) |
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
 | `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items`, an address generator over t's accessor); the pair's pages are B bytes; t on one island | each item a page of the pair (a body takes it: Inline bodies) |
 | `first, count = t.pages(i, 1).read()[0:2]` | mover A: page i read into a page it pushes to compute; mover B: page i read into its word page; both take words 0 and 1 | unpack waits for mover A's page, takes the words, hands them to math and pack by mailbox, frees it |
@@ -370,12 +370,22 @@ for row in range(rows):
 
 ### A read stream bodies take
 
-A read stream made outside a for line, `q = km.Stream(pages, block=b)`, is one block
-that bodies take whole, held across the lines after it: the movers move it at its
-line (mover A reads it before the lines after it), compute waits for its block at the
-line, and frees it at the end of the lines the stream stands in, after the last body.
-The loops in between may hold movers' lines too (a broadcast's casts), as the
-attention pass's job holds its Q rows across its K / V blocks
+A read stream that is not iterated is one block, the read twin of a write stream bodies
+fill: `q = km.Stream(pages, block=b)`, made on a line of its own and not in a for line.
+
+- The movers move it at its line: mover A reads its block before the lines after it.
+- Compute waits for the block at the line.
+- A body on compute's three CPUs takes it (`takes=[q]`): `q_buffer` is the half mover A
+  filled, `q` its first page there (0). The body may be in any loop inside the block
+  of lines where the stream was made, and those loops may hold movers' lines too (a
+  broadcast's casts).
+- Compute frees the block when that block of lines' pass ends: made in a loop, at the
+  end of each pass; made at the handler's top level, at the handler's end.
+- A stream of no pages is one block too, pushed by mover A unread (compute waits for
+  one block a stream). The pair holds one block a half: no block is read ahead into
+  it while one is held.
+
+The attention pass holds each job's Q rows through its K / V blocks
 ([attention_class](../../experiments/language/attention_class/README.md)):
 
 ```python
@@ -390,19 +400,19 @@ for job in jobs[first_job:end]:
     for b in range((job.keys + KB - 1) // KB):
         ...  # the cast or the arrival of kv
         km.cxx("...matmul_block_no_mop(qs_buffer, kv_buffer, ...)...", takes=[qs, kv])
-    # qs's block is freed here, at the end of the job's lines
+    # qs's block is freed here, at the end of each job's pass
 ```
 
-A body takes it on compute's three CPUs: `name_buffer` is the half its mover filled,
-`name` its first page there (0). The block is mover A's, in a pair of one block a half (no block is read ahead
-into it while one is held); a stream of no pages (a job
-of no rows) is one block too, pushed by mover A unread, as the hand reader pushes such
-a job's Q block. Refused at the line: a pattern whose block 0 is not mover A's; a
-stream whose most pages the
-build does not know (a side `r:min(r + n, e)`, rows `r:min(r + n * s, e):s`, or a
-known count says it), or more than its block; `row=`, `repeat=` and items; a body on
-one compute CPU or a mover that takes it; a line after the lines it stands in that
-takes it.
+Refused at the line:
+
+- a stream both iterated and taken (`for t in q:` after it);
+- a tile function that takes it: a tile function's operands are a stream loop's
+  tiles, and a held block has no loop of its tiles;
+- a block the build cannot bound: its most pages unknown (a side `r:min(r + n, e)`,
+  rows `r:min(r + n * s, e):s`, or a known count says it) or more than its block;
+- `row=`, `repeat=` and items, and a pattern whose block 0 is not mover A's;
+- a take on one compute CPU or on a mover;
+- a take outside the block of lines where the stream was made.
 
 ## Tables of entries
 
