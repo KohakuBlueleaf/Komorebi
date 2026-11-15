@@ -193,7 +193,7 @@ def check_exact(session, plan, args):
     times = []
 
     def finish():
-        got = ty.read().astype(np.float64)
+        got = read(session, ty)
         want = x.astype(np.float64) @ w.astype(np.float64)
         return {
             "microseconds": times,
@@ -251,13 +251,13 @@ def check_random(session, plan, args, swiglu):
 
     def finish():
         want = x @ weights[0]
-        got = tys[0].read().astype(np.float64)
+        got = read(session, tys[0])
         record["relative_rms"] = rms(got, want)
         if swiglu:
-            h1, h3 = (t.read().astype(np.float64) for t in tys)
+            h1, h3 = (read(session, t) for t in tys)
             gate = h1 / (1 + np.exp(-h1)) * h3  # of the card's bfloat16 products
             whole = want / (1 + np.exp(-want)) * (x @ weights[1])
-            got = out.read().astype(np.float64)
+            got = read(session, out)
             record["gate_relative_rms"] = rms(got, gate)
             record["swiglu_relative_rms"] = rms(got, whole)
         return record
@@ -292,6 +292,13 @@ def islands_args(session, args):
     # tiles are exactly its groups' columns (km::partition of the command's 112 is not)
     split = {"split": 1, "group": (edge - tiles // 2, tiles)}
     return {"x": {"copy": True}, "w": split, "y": split}, group
+
+
+def read(session, tensor):
+    """A bfloat16 tile tensor as float64 (an island tensor through its session)."""
+    if hasattr(session, "graph"):
+        return session.read_bf16(tensor)[0].astype(np.float64)
+    return tensor.read().astype(np.float64)
 
 
 def rms(got, want):

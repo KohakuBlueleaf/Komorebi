@@ -79,9 +79,18 @@ class Nothing:
 NOTHING = Nothing()
 
 
+class Done(Nothing):
+    """What a mock run's wait gives: a done event (its kind "done"), else Nothing."""
+
+    kind = "done"
+
+
+DONE = Done()
+
+
 class Run:
     """The run a prebuild's load returns in place of the card's: every call returns
-    at once with Nothing; stop and abort end it and its `parts` (an island's)."""
+    at once with Nothing, a wait with a done event; stop and abort end its `parts`."""
 
     def __init__(self, counted=True, parts=()):
         self.stopped, self.parts = False, list(parts)
@@ -100,7 +109,7 @@ class Run:
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return NOTHING
+        return (lambda *args, **kwargs: DONE) if name.startswith("wait") else NOTHING
 
 
 def active():
