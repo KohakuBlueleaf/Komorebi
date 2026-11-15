@@ -429,8 +429,9 @@ static uint32_t layers(const km_command_t* command) {
         weights == 0 || tensors == 0 || stats == 0 || args->nwords < DC_WORDS ||
         command->a2 >= DC_STATS_SLOTS || command->a6 == 0u || command->a6 > 32u ||
         4ull * DC_STATS_WORDS * DC_STATS_SLOTS > stats_bytes || count == 0 ||
-        4ull * DC_LAYER_WORDS * (first + count) > weight_bytes ||
-        first + count > DC_QK_LAYERS || 4ull * DC_TENSORS > tensor_bytes
+        count > DC_QK_LAYERS || first > DC_QK_LAYERS - count ||
+        4ull * DC_LAYER_WORDS * ((uint64_t)first + count) > weight_bytes ||
+        4ull * DC_TENSORS > tensor_bytes
     ) {
         return 0xFFFFFFFFu;
     }
