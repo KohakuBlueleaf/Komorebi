@@ -18,6 +18,22 @@ constexpr uint32_t kHandlerLinear = 1;
 #define LINEAR_EXCHANGES true
 #endif
 
+// Built for the input dim sharded form's addition (LINEAR_ADD: two islands, Y a copy):
+// partials to S, the other's gathered here (km::gather_pages), added in fp32, to Y.
+#if defined(LINEAR_ADD)
+#define LINEAR_ADDS true
+#else
+#define LINEAR_ADDS false
+#endif
+// The other island's partial of this rank's blocks, counted here (km::keeper).
+constexpr uint32_t kPortAdd = 7;
+
+// S's set of island `island`'s partial in a command of `parity` (two, so that a
+// command's partial never lands on the one the other island still reads).
+inline uint32_t add_set(uint32_t parity, uint32_t island) {
+    return parity * km::islands() + island;
+}
+
 // Buffers: the grid plan's (row and column broadcasts, bf16 output subblocks, fp32
 // partial sums), then a block of the columns put across, the subblocks put here.
 constexpr uint32_t kCbRow = 0;
@@ -94,8 +110,9 @@ constexpr uint32_t kCbKwB = 10;      // the writer's W chunks
 constexpr uint32_t kCbKArrive = 11;  // fp32, a slot of oh x ow tiles a sender
 constexpr uint32_t kCbKSum = 25;     // fp32, this rank's part: oh x ow tiles
 constexpr uint32_t kCbKOut = 18;     // bf16, the group's sum at its first rank
+constexpr uint32_t kCbKAdd = 12;     // bf16, its block of both partials (LINEAR_ADD)
 // Its words (every CPU's, from 0): S, oh, ow, kc, subblock sh x sw, blocks a row of the
-// window, the arrival buffer's pages, the reduce form, M tiles.
+// window, the arrival buffer's pages, the reduce form, M tiles, a set of S's pages.
 constexpr uint32_t kKsS = 0;
 constexpr uint32_t kKsOh = 1;
 constexpr uint32_t kKsOw = 2;
@@ -106,7 +123,8 @@ constexpr uint32_t kKsNbw = 6;
 constexpr uint32_t kKsArrive = 7;
 constexpr uint32_t kKsForm = 8;
 constexpr uint32_t kKsMt = 9;
-constexpr uint32_t kKsWords = 10;
+constexpr uint32_t kKsSetPages = 10;
+constexpr uint32_t kKsWords = 11;
 // T's words of the K-split plan (with the account): the movers' chunks moved (reader,
 // writer), the reduce (writer: its part sent, or the sum taken), Y written.
 constexpr uint32_t kAcKMoveA = 16;

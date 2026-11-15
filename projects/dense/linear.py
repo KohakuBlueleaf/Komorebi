@@ -32,9 +32,9 @@ G = pl.G
 # (IslandSession.held_bytes): the host transfer buffer, control block and overlay, slot.
 L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
-# The kernel buffer the linear kernels' code takes (five CPUs, mock builds): 79,936 B
-# without puts; the K form or the K-split plan on two cards up to 108,240 B.
-KERNEL_BYTES = {"one": 88 * 1024, "two": 108 * 1024}
+# The kernel buffer the linear kernels' code takes (mock builds): 79,936 B without puts;
+# K form or K split on two cards up to 108,240 B; the kernels' addition 118,000 B.
+KERNEL_BYTES = {"one": 88 * 1024, "two": 108 * 1024, "add": 116 * 1024}
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
 SUBBLOCK = None
@@ -48,6 +48,9 @@ VALID_SENT = False
 ACCOUNT = False
 # the K-split plan's reduce inside a group (--reduce)
 SPLIT_REDUCE = "tree"
+# input dim sharded: the addition across in the kernels (kernel) or the all-reduce of Y
+# after the product (reduce) (--add)
+ADD = "kernel"
 # The account's words (kernels/linear/linear.h kAcWFree ..), by name: cycles, but the
 # tiles and products (counts) and the ends and start (wall clocks)
 ACCOUNT_WORDS = (
@@ -212,11 +215,14 @@ SPLIT_CHUNK_PAGES = 16
 REDUCED_CALLS = 20
 
 
-def split_buffers(plan):
+def split_buffers(plan, adds=False):
     """(index, format, page bytes, pages) of the K-split plan's buffers (two chunks a
-    mover), T's slot last."""
+    mover; `adds`: both partials of a block), T's slot last."""
     block_tiles = plan.oh * plan.ow
-    return [
+    both = (
+        [(L["kCbKAdd"], "bfloat16", L["kBf16Bytes"], 2 * block_tiles)] if adds else []
+    )
+    return both + [
         (L["kCbKa"], "bfloat16", L["kBf16Bytes"], 2 * plan.oh * plan.kc),
         (L["kCbKaB"], "bfloat16", L["kBf16Bytes"], 2 * plan.oh * plan.kc),
         (L["kCbKw"], "bfloat16", L["kBf16Bytes"], 2 * plan.kc * plan.ow),
@@ -237,7 +243,7 @@ def split_ns(plan, ranks):
     return 1e9 * (w_bytes * ranks / DRAM_BYTES_PER_S + reduce)
 
 
-def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget):
+def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget, adds=False):
     """The K-split plan of the island's part with the least split_ns on `ranks` ranks
     inside `budget`: one block height (all the rows), every block width, the largest
     group the ranks allow; K chunks of at most SPLIT_CHUNK_PAGES pages of W."""
@@ -251,7 +257,8 @@ def split_choice(m_tiles, k_tiles, n_tiles, ranks, budget):
         chunk = max(1, min(pl.cdiv(k_tiles, size), SPLIT_CHUNK_PAGES // width))
         sh, sw = pl.subblock(m_tiles, width)
         plan = pl.Split(m_tiles, k_tiles, n_tiles, size, m_tiles, width, chunk, sh, sw)
-        if sum(page * pages for _, _, page, pages in split_buffers(plan)) > budget:
+        buffers = split_buffers(plan, adds)
+        if sum(page * pages for _, _, page, pages in buffers) > budget:
             continue
         cost = (split_ns(plan, ranks), groups)
         if best is None or cost < best[0]:
@@ -593,6 +600,12 @@ class Linear:
         self.k_parts = k_spans(tensors["w"].placement, k_tiles)
         self.w_columns = w_column_spans(tensors["w"].placement, n_tiles)
         self.tensors_y_copy = self.islands > 1 and tensors["y"].placement.copy
+        # the one addition across made by the kernels (LINEAR_ADD), two islands
+        self.adds = self.tensors_y_copy and ADD == "kernel"
+        if self.adds and self.islands != 2:
+            raise SystemExit(
+                f"the kernels' addition is for two islands: {self.islands}"
+            )
         self.made = made_spans(tensors["x"].placement, m_tiles)
         self.kept = kept_spans(tensors["y"].placement, m_tiles, n_tiles)
         if not all(count for _, count in self.k_parts):
@@ -611,8 +624,10 @@ class Linear:
             if to != here
         )
         one_card = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.nocs.grid)
-        # S and T; R, the all-reduce's scratch, when Y is each island's partial
-        self.budget = l1_budget(session, self.islands, extra=2 + self.tensors_y_copy)
+        # S and T; R, the all-reduce's scratch, when Y is each island's partial and
+        # the all-reduce adds
+        reduces = self.tensors_y_copy and not self.adds
+        self.budget = l1_budget(session, self.islands, extra=2 + reduces)
         grid, planned = self.nocs.grid, ranks  # the grid and ranks planned on
         if COLUMNS is not None:
             if self.islands != 1 or not 0 < COLUMNS <= grid[0]:
@@ -621,7 +636,9 @@ class Linear:
         # a few rows and nothing put: the K-split plan
         self.split = None
         if part_m <= SPLIT_ROWS and not self.exchange and COLUMNS is None:
-            self.split = split_choice(part_m, part_k, part_n, planned, self.budget)
+            self.split = split_choice(
+                part_m, part_k, part_n, planned, self.budget, self.adds
+            )
         self.pieces = (
             []
             if self.split is not None
@@ -662,13 +679,15 @@ class Linear:
             if self.exchange and self.split is None
             else 1  # nothing put
         )
+        if self.adds:  # a set an island a command parity: each island's partial
+            pages = 2 * self.islands * self.set_pages()
         tensors["s"] = session.empty(
             (pages * pl.TILE, pl.TILE), "bfloat16", "tile", copy=True
         )
         tensors["t"] = session.empty(
             (ranks, L["kStampBytes"] // 4), "uint32", "row", copy=True
         )
-        if self.tensors_y_copy:  # the one addition across: twice Y's pages
+        if reduces:  # the all-reduce's scratch: twice Y's pages
             m_rows, _, n_columns = dimensions
             tensors["r"] = session.empty(
                 (2 * m_rows, n_columns), "bfloat16", "tile", copy=True
@@ -707,6 +726,7 @@ class Linear:
             ("kKsArrive", plan.arrive_pages()),
             ("kKsForm", pl.REDUCE_FORMS[SPLIT_REDUCE]),
             ("kKsMt", plan.mt if self.islands == 1 else self.m_tiles),
+            ("kKsSetPages", self.set_pages() if self.adds else 0),
         ):
             words[L[name]] = value
         fp32 = "UnpackToDestFp32"
@@ -714,14 +734,15 @@ class Linear:
         return km.Program(
             "dense_linear",
             kernels=KERNELS,
-            buffers=[km.Buffer(*buffer) for buffer in split_buffers(plan)],
+            buffers=[km.Buffer(*buffer) for buffer in split_buffers(plan, self.adds)],
             args=lambda core: (words, words, words),
             compile_args={
                 "reader": x.tensor_args() + w.tensor_args(),
                 "writer": y.tensor_args()
                 + x.tensor_args()
                 + w.tensor_args()
-                + tensors["t"].accessor_args(),
+                + tensors["t"].accessor_args()
+                + tensors["s"].tensor_args(),
                 "compute": [],
             },
             compute={
@@ -731,6 +752,7 @@ class Linear:
             },
             handlers=LINEAR_H,
             defines={"LINEAR_SPLIT": 1, "LINEAR_OWN": 1}
+            | ({"LINEAR_ADD": 1} if self.adds else {})
             | ({"LINEAR_ACCOUNT": 1} if ACCOUNT else {}),
         )
 
@@ -757,7 +779,8 @@ class Linear:
                 "reader": x.accessor_args() + s.accessor_args(),
                 "writer": w.accessor_args()
                 + y.accessor_args()
-                + tensors["t"].accessor_args(),
+                + tensors["t"].accessor_args()
+                + s.accessor_args(),
                 "compute": [],
             },
             compute={
@@ -769,9 +792,18 @@ class Linear:
             noc=dict(zip(("reader", "writer"), NOCS, strict=True)),
             # nothing exchanged: kernels without the puts and the sync (smaller)
             defines=({} if self.exchange else {"LINEAR_OWN": 1})
+            | ({"LINEAR_ADD": 1} if self.adds else {})
             | ({"LINEAR_VALID_SENT": 1} if VALID_SENT else {})
             | ({"LINEAR_ACCOUNT": 1} if ACCOUNT else {}),
         )
+
+    def set_pages(self):
+        """S's pages a set (LINEAR_ADD): every core's output blocks of the grid plan;
+        a block a group of the K split."""
+        if self.split is None:
+            return sent_pages(self.pieces, self.nocs.grid)
+        plan = self.split
+        return pl.cdiv(plan.mt, plan.oh) * pl.cdiv(plan.nt, plan.ow) * plan.oh * plan.ow
 
     def words(self):
         addresses = [self.tensors[name].address for name in "xwys"]
@@ -811,12 +843,15 @@ class Linear:
                     # every core's, in core order (the spread of each phase)
                     "cores": {name: ran[:, L[w]].tolist() for name, w in names},
                 }
-            stamped = ran[:, L["kStampPut"]].all()
+            # the cores that stamped the puts (or the addition's gather): all of the
+            # K form's; the K split's first ranks, the grid's ranks with blocks
+            has = ran[:, L["kStampPut"]] != 0
+            stamped = bool(has.any())
             # the 32-bit clock as signed cycles from the first core's start
             ran = (ran - ran[0, L["kStampStart"]] + 2**31) % 2**32 - 2**31
             start = ran[:, L["kStampStart"]].min()
-            put = ran[:, L["kStampPut"]].max() if stamped else start
-            synced = ran[:, L["kStampSynced"]].max() if put != start else start
+            put = ran[has, L["kStampPut"]].max() if stamped else start
+            synced = ran[has, L["kStampSynced"]].max() if put != start else start
             end = ran[:, L["kStampEnd"]].max()
             cycles = {"put": put - start, "sync": synced - put, "own": end - synced}
             # the cores' spread: the first to the last taking the command, ending
@@ -825,7 +860,7 @@ class Linear:
             cycles["end_spread"] = end - ran[:, L["kStampEnd"]].min()
             if stamped:  # inside the sync: the last core's each step, from the last put
                 at = {
-                    name: ran[:, L[stamp]].max()
+                    name: ran[has, L[stamp]].max()
                     for name, stamp in (
                         ("settled", "kStampSettled"),
                         ("up", "kStampUp"),
@@ -839,7 +874,7 @@ class Linear:
                     "go": synced - at["down"],
                 }
                 # each core's own wait for its last put's confirmation
-                waits = ran[:, L["kStampSettled"]] - ran[:, L["kStampPut"]]
+                waits = ran[has, L["kStampSettled"]] - ran[has, L["kStampPut"]]
                 cycles["settle_median"] = int(np.median(waits))
             out.append(
                 {
@@ -1072,7 +1107,7 @@ def measure(product, cards, seconds):
         },
     }
     log(f"loop: {report['microseconds_per_call']} us per call")
-    if getattr(product, "tensors_y_copy", False):  # last: Y holds the sum
+    if getattr(product, "tensors_y_copy", False) and not product.adds:  # Y the sum
         report["reduced"] = product.reduced(REDUCED_CALLS)
         log(f"with the all-reduce: {report['reduced'][-1]}")
     return report
@@ -1240,6 +1275,13 @@ def main():
         help="the K-split plan's reduce in a group",
     )
     parser.add_argument(
+        "--add",
+        choices=["kernel", "reduce"],
+        default="kernel",
+        help="input dim sharded: the kernels add the other island's partial, or the "
+        "all-reduce of Y after the product",
+    )
+    parser.add_argument(
         "--shapes",
         default=None,
         help='several products in one session: "M,K,N[:place];..."',
@@ -1261,8 +1303,8 @@ def main():
     if dimensions and any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
-    global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE
-    ACCOUNT, SPLIT_REDUCE = args.account, args.reduce
+    global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD
+    ACCOUNT, SPLIT_REDUCE, ADD = args.account, args.reduce, args.add
     NOCS = tuple(int(value) for value in args.nocs.split(","))
     VALID_SENT = args.valid == "sent"
     if args.subblock:
@@ -1285,7 +1327,10 @@ def main():
     puts = len(cards) > 1 and any(
         place == "k" or dims[0] <= SPLIT_ROWS * pl.TILE for dims, place in products
     )
-    kernel_bytes = args.kernel_bytes or KERNEL_BYTES["two" if puts else "one"]
+    adds = len(cards) > 1 and ADD == "kernel" and any(p == "in" for _, p in products)
+    kernel_bytes = (
+        args.kernel_bytes or KERNEL_BYTES["add" if adds else "two" if puts else "one"]
+    )
     options = {"links": args.links, "kernel_bytes": kernel_bytes}
     options = {key: value for key, value in options.items() if value}
     reports = []

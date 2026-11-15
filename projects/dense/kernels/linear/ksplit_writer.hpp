@@ -9,7 +9,9 @@ void kernel_main() {
     using X = km::Tensor<Y::next_compile_time_args_offset()>;
     using W = km::Tensor<X::next_compile_time_args_offset()>;
     constexpr auto t_args = TensorAccessorArgs<W::next_compile_time_args_offset()>();
+    using S = km::Tensor<t_args.next_compile_time_args_offset()>;
     km::Writer writer;
+    uint32_t parity = 0;  // LINEAR_ADD: the command's set of S
     const auto plan = [&](uint32_t word) {
         return writer.arg(word);
     };
@@ -57,6 +59,91 @@ void kernel_main() {
                 LINEAR_ACCOUNT_DO(lap(account[kAcKReduce - kAcKMoveB], since));
                 const uint32_t n_whole = command.a5;
                 const Y y_matrix(command.a2);
+                // LINEAR_ADD (two islands, Y a copy): the island's sum is its partial
+                if (LINEAR_ADDS && km::islands() == 2 && copied(command.a2)) {
+                    const S s_matrix(command.a3);
+                    const uint32_t here = km::island(), far = island_at(here, 1);
+                    const uint32_t set_pages = plan(kKsSetPages);
+                    const uint32_t mine = add_set(parity, here) * set_pages;
+                    const uint32_t theirs = add_set(parity, far) * set_pages;
+                    const uint32_t offset = index * block_tiles;
+                    const uint32_t rank = (
+                        km::group_of(command, writer.me()).local().rank
+                    );
+                    km::Gather posted = {};
+                    if (!km::write_pages(
+                        writer,
+                        command,
+                        s_matrix,
+                        mine + offset,
+                        block_tiles,
+                        get_read_ptr(kCbKOut)
+                    )) {
+                        return false;
+                    }
+                    const uint32_t code = writer.poll_at(
+                        km::kWhereData,
+                        [] {
+                            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                        },
+                        writer.args().wait_limit
+                    );
+                    if (code != km::kGaveNone) {
+                        writer.gave_up(
+                            km::kStWriter,
+                            code,
+                            km::kWhereData,
+                            km::slot(command),
+                            command.sequence
+                        );
+                        return false;
+                    }
+                    cb_pop_front(kCbKOut, block_tiles);
+                    if (!km::gather_pages(
+                        writer,
+                        command,
+                        command.a3,
+                        mine + offset,
+                        block_tiles,
+                        far,
+                        posted,
+                        km::keeper(rank, kPortAdd)
+                    )) {
+                        return false;
+                    }
+                    stamps[kStampPut] = km::wall();
+                    if (!km::gathered(writer, command, kPortAdd, block_tiles)) {
+                        return false;
+                    }
+                    stamps[kStampSettled] = km::wall();
+                    stamps[kStampUp] = stamps[kStampSettled];
+                    stamps[kStampDown] = stamps[kStampSettled];
+                    writer.produce(kCbKAdd);  // empty here: compute took the last
+                    cb_reserve_back(kCbKAdd, 2 * block_tiles);
+                    const uint32_t both = get_write_ptr(kCbKAdd);
+                    if (!km::read_pages(
+                        writer, command, s_matrix, mine + offset, block_tiles, both
+                    ) ||
+                        !km::read_pages(
+                            writer,
+                            command,
+                            s_matrix,
+                            theirs + offset,
+                            block_tiles,
+                            both + block_tiles * kBf16Bytes
+                        ) ||
+                        !flushed(writer, km::kStWriter, km::kFlushReads)) {
+                        return false;
+                    }
+                    cb_push_back(kCbKAdd, 2 * block_tiles);
+                    stamps[kStampSynced] = km::wall();
+                    if (
+                        !km::gather_wait(writer, command, posted) ||
+                        !writer.wait_front(kCbKOut, block_tiles)
+                    ) {
+                        return false;
+                    }
+                }
                 const uint32_t source = get_read_ptr(kCbKOut);
                 for (uint32_t row = 0; row < at.rows; ++row) {
                     // a row's columns: consecutive pages of Y
@@ -79,6 +166,7 @@ void kernel_main() {
             }
         }
         stamps[kStampEnd] = km::wall();
+        parity ^= 1u;
         LINEAR_ACCOUNT_DO(for (uint32_t word = kAcKMoveB; word <= kAcKWrite; ++word) {
             stamps[word] = account[word - kAcKMoveB];
         });

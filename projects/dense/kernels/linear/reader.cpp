@@ -24,6 +24,7 @@ void kernel_main() {
     const auto plan = [&](uint32_t word) {
         return core(kCorePlan + word);
     };
+    uint32_t parity = 0;  // LINEAR_ADD: the command's set of S
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerLinear) {
             return;
@@ -211,7 +212,38 @@ void kernel_main() {
             if (!broadcast.finish()) {
                 return;
             }
+            // LINEAR_ADD (two islands, Y a copy): told both partials are in S, each
+            // subblock of this island's then of the other's to compute
+            if (LINEAR_ADDS && islands == 2 && copied(y)) {
+                if (!km::port_wait(reader, command, kPortGo, 1)) {
+                    return;
+                }
+                const uint32_t sets[2] = {
+                    add_set(parity, here), add_set(parity, island_at(here, 1))
+                };
+                for (
+                    uint32_t tile = 0; tile < blocks_high * blocks_wide * block_tiles;
+                    tile += subblock_tiles
+                ) {
+                    for (const uint32_t set : sets) {
+                        if (!reader.reserve(kCbSent, subblock_tiles)) {
+                            return;
+                        }
+                        const uint32_t at = get_write_ptr(kCbSent);
+                        for (uint32_t k = 0; k < subblock_tiles; ++k) {
+                            noc_async_read_page(
+                                sent.page(set, tile + k), s_matrix, at + k * kBf16Bytes
+                            );
+                        }
+                        if (!flushed(reader, km::kStReader, km::kFlushReads)) {
+                            return;
+                        }
+                        cb_push_back(kCbSent, subblock_tiles);
+                    }
+                }
+            }
         }
+        parity ^= 1u;
         if (!waited) {
             km::port_wait(reader, command, kPortGo, 1);
         }

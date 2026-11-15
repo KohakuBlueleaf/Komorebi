@@ -66,6 +66,25 @@ namespace {
         );
     }
 
+    // This CPU's writes have landed (acknowledged), so other cores may read them from
+    // DRAM. False: gave up (recorded).
+    bool landed(const km::Writer& writer, const km_command_t& command) {
+        const uint32_t code = writer.poll_at(
+            km::kWhereData,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            writer.args().wait_limit
+        );
+        if (code != km::kGaveNone) {
+            writer.gave_up(
+                km::kStWriter, code, km::kWhereData, km::slot(command), command.sequence
+            );
+            return false;
+        }
+        return true;
+    }
+
     // Every island's partial sums are in its DRAM once this returns on every core:
     // up the island's tree, its leader to the other leaders, down the tree.
     bool everywhere(
@@ -143,6 +162,9 @@ void kernel_main() {
     constexpr auto t_args = (
         TensorAccessorArgs<y_args.next_compile_time_args_offset()>()
     );
+    constexpr auto s_args = (
+        TensorAccessorArgs<t_args.next_compile_time_args_offset()>()
+    );
     km::Writer writer;
     const auto core = [&](uint32_t word) {
         return writer.arg(kArgCore + word);
@@ -154,6 +176,7 @@ void kernel_main() {
     // put never crosses the buffer's end)
     const uint32_t chunk = put_chunk(plan(kPlSh) * plan(kPlSw));
     uint32_t ring_at = 0;
+    uint32_t parity = 0;  // LINEAR_ADD: the command's set of S
     writer.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerLinear) {
             return true;
@@ -184,6 +207,9 @@ void kernel_main() {
         };
         const Holding y_here = holding(y, here, m_tiles * n_whole);
         const auto y_matrix = TensorAccessor(y_args, y_here.address);
+        // the input-dim-sharded form's addition here: two islands, Y a copy
+        const bool adding = LINEAR_ADDS && islands == 2 && copied(y);
+        const auto s_matrix = TensorAccessor(s_args, holding(s, here, 1).address);
         // this core's pages put and not yet counted (their tiles already freed)
         uint32_t outstanding = 0, holder = here;
         km::PutRun run;
@@ -225,6 +251,7 @@ void kernel_main() {
             const Holding w_here = holding(w, here, k_whole * n_whole);
             const auto w_matrix = TensorAccessor(w_args, w_here.address);
             uint32_t step = 0;
+            bool finished = false;  // the column broadcast (LINEAR_ADD: before the sum)
             for (uint32_t turn = 1; turn <= islands; ++turn) {
                 const uint32_t to = island_at(here, turn);
                 const Span window = window_of(to);
@@ -395,6 +422,38 @@ void kernel_main() {
                     return true;
                 };
 
+                // LINEAR_ADD: output block `block` made, its partial to this island's
+                // set of S, a subblock at a time.
+                const auto to_s = [&](uint32_t block) {
+                    for (
+                        uint32_t tile = 0; tile < block_tiles; tile += subblock_tiles
+                    ) {
+                        LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
+                        if (!writer.wait_front(kCbYOut, subblock_tiles)) {
+                            return false;
+                        }
+                        LINEAR_ACCOUNT_DO(lap(account[kAcYWait - 16], since));
+                        const uint32_t first = (
+                            sent.page(add_set(parity, here), block * block_tiles + tile)
+                        );
+                        const uint32_t source = get_read_ptr(kCbYOut);
+                        for (uint32_t k = 0; k < subblock_tiles; ++k) {
+                            noc_async_write_page(
+                                first + k, s_matrix, source + k * kBf16Bytes
+                            );
+                        }
+                        if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
+                            return false;
+                        }
+                        LINEAR_ACCOUNT_DO(lap(account[kAcYWrite - 16], since));
+                        cb_pop_front(kCbYOut, subblock_tiles);
+                    }
+                    return true;
+                };
+                const auto made = [&](uint32_t block, uint32_t row, uint32_t column) {
+                    return adding ? to_s(block) : put(block, row, column);
+                };
+
                 bool pending = false;
                 uint32_t pending_block = 0, pending_row = 0, pending_column = 0;
                 for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
@@ -465,7 +524,7 @@ void kernel_main() {
                             LINEAR_ACCOUNT_DO(lap(account[kAcWCast - 16], since));
                         }
                         if (k_block == 0 && pending) {
-                            if (!put(pending_block, pending_row, pending_column)) {
+                            if (!made(pending_block, pending_row, pending_column)) {
                                 return false;
                             }
                             pending = false;
@@ -476,11 +535,60 @@ void kernel_main() {
                     pending_row = block_row;
                     pending_column = block_column;
                 }
-                if (pending && !put(pending_block, pending_row, pending_column)) {
+                if (pending && !made(pending_block, pending_row, pending_column)) {
+                    return false;
+                }
+                if (!adding) {
+                    continue;
+                }
+                // The partial in S goes to the other island's S, its partial of these
+                // blocks comes here; the reader is told, and compute's sums become Y.
+                const uint32_t tiles = blocks_high * blocks_wide * block_tiles;
+                const uint32_t rank = km::group_of(command, writer.me()).local().rank;
+                km::Gather posted = {};
+                // the column broadcast ends first: compute pops its padding before the
+                // addition
+                finished = true;
+                if (
+                    !broadcast.finish() || !landed(writer, command) ||
+                    !km::gather_pages(
+                        writer,
+                        command,
+                        s,
+                        sent.page(add_set(parity, here), 0),
+                        tiles,
+                        island_at(here, 1),
+                        posted,
+                        km::keeper(rank, kPortAdd)
+                    )
+                ) {
+                    return false;
+                }
+                stamps[kStampPut] = km::wall();
+                if (!km::gathered(writer, command, kPortAdd, tiles)) {
+                    return false;
+                }
+                stamps[kStampSettled] = km::wall();
+                stamps[kStampUp] = stamps[kStampSettled];
+                stamps[kStampDown] = stamps[kStampSettled];
+                if (!tell(writer, command, writer.me(), kPortGo)) {
+                    return false;
+                }
+                stamps[kStampSynced] = km::wall();
+                for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
+                    if (!put(
+                        block,
+                        first_row + block / blocks_wide * block_height,
+                        first_column + block % blocks_wide * block_width
+                    )) {
+                        return false;
+                    }
+                }
+                if (!km::gather_wait(writer, command, posted)) {
                     return false;
                 }
             }
-            if (!settle() || !broadcast.finish()) {
+            if (!settle() || (!finished && !broadcast.finish())) {
                 return false;
             }
         }
@@ -493,6 +601,7 @@ void kernel_main() {
             stamps[kStampSynced] = km::wall();
         }
         stamps[kStampEnd] = km::wall();
+        parity ^= 1u;
         LINEAR_ACCOUNT_DO(for (uint32_t word = kAcWFree; word <= kAcYWrite; ++word) {
             stamps[word] = account[word - kAcWFree];
         });

@@ -796,6 +796,45 @@ sizes: the bf16 adds are made by the ranks' movers in software (integer instruct
 few pages at a time, between the gathers. "Product + all-reduce" takes the slower
 island's.
 
+Input dim sharded, the addition in the kernels (the default; `--add reduce` gives the
+all-reduce above). Still the standard form: each island makes its partial of the whole
+Y, then one addition across. Each rank writes its blocks of the partial (bf16) to its
+island's set of a scratch tensor S (a copy on each island), then posts them to the same
+pages of the other island's S (`km::gather_pages`: the link cores' page CPUs read them
+from this island's DRAM and write them to the other's), naming the rank that makes the
+same blocks there as their keeper. Once its keeper count says the other island's
+partial of its blocks has landed, its reader hands each subblock of both partials to
+compute, which sums them in fp32 (the second packed onto the first in L1) and packs
+bf16 for Y; the writer writes Y. Nothing crosses in the product, and the add is the
+ranks' own matrix engine's, not a mover's. S has a set an island for each of two
+command parities, so that a call's partial never lands on the set the other island is
+still reading. Every check passed (relative RMS 3.87e-3: both partials rounded to bf16
+once, the sum once; Y equal on both islands).
+
+| M x K x N | Measured | Product, S written, posted | Wait for the other partial (Y's bytes, GB/s each way) | Add pass, Y written | Way in and out | All-reduce form (above) |
+|---|---|---|---|---|---|---|
+| 32 x 4096 x 4096 | 162.6 | 51.6 | 105.6 (262 KB, 2.5) | 3.0 | 2.4 | 260.2 |
+| 32 x 8192 x 8192 | 327.0 | 174.5 | 149.4 (524 KB, 3.5) | 3.3 | -0.3 | 463.8 |
+| 32 x 17408 x 5120 | 324.8 | 214.0 | 105.9 (328 KB, 3.1) | 3.6 | 1.3 | 429.8 |
+| 32 x 15360 x 3840 | 240.1 | 158.9 | 75.5 (246 KB, 3.3) | 3.4 | 2.4 | 370.7 |
+| 32 x 9216 x 2560 | 143.2 | 68.3 | 69.1 (164 KB, 2.4) | 3.3 | 2.5 | 274.0 |
+| 1024 x 4096 x 4096 | 1,215.8 | 214.5 | 968.3 (8.4 MB, 8.7) | 22.3 | 10.8 | 1,840.2 |
+| 1024 x 8192 x 8192 | 2,048.9 | 756.2 | 1,276.3 (16.8 MB, 13.1) | 44.3 | -27.9 | 3,782.9 |
+| 1024 x 17408 x 5120 | 2,150.5 | 960.8 | 1,158.5 (10.5 MB, 9.1) | 28.7 | 2.4 | 2,925.0 |
+
+The slower island's terms (island 0's, at every shape), median single calls. The
+product is the product of the table above (51.6 against 52.5 us at 32 x 4096 x 4096).
+The add pass is small (3 to 44 us). What is left is the crossing, and it is OURS: Y's
+bytes move at 2.4 to 3.5 GB/s at decode, where 16 to 30 ranks each post a line of 8 to
+13 pages and the lines' fixed cost is the time (inferred: the link core's lead page CPU
+takes the lines one after another); and at 8.7 to 13.1 GB/s at prefill, 80 ranks a line of 44
+to 88 pages each, against the 23.4 GB/s each way the same calls reach with lines of 139
+pages from 118 ranks (64 MiB) and 72.5 GB/s for ring puts on the same links. Island 1
+waits 14 to 95 us at decode where island 0 waits 69 to 149: the direction 1 to 0 is
+the slower (measured, not explained). Against the one-card call the two-card call is
+0.77 to 1.73 at decode (0.77 at 32 x 17408 x 5120, 1.73 at 32 x 4096 x 4096) and 1.16 to
+3.18 at prefill (1,215.8 against 382.4 us at 1024 x 4096 x 4096): that crossing.
+
 ### The four cells: plain kernel and aware kernel
 
 The plain kernel knows nothing of islands: `flat.py` runs the dense project's grid
@@ -834,6 +873,8 @@ nothing in the product.
 Measured on 2026-11-15 between 06:20 and 07:15, X280 at 1,350 MHz. JSON:
 `results/ceilings-0.json`, `results/linear-shapes-0.json` (one card),
 `results/linear-forms-0x1.json` (two cards, with the all-reduce's twenty calls),
+`results/linear-in-add-0x1.json` (the addition in the kernels, measured at 08:11 and
+08:14),
 `results/flat-forms-0x1.json`.
 
 ```

@@ -146,6 +146,52 @@ void kernel_main() {
                 cb_pop_front(kCbKSum, block_tiles);
             }
         }
+        // LINEAR_ADD (two islands, Y a copy): that sum was the island's partial; both
+        // islands' blocks (bf16) come back, summed in fp32, the sum in bf16 for Y
+        if (
+            ok && group.rank == 0 && LINEAR_ADDS && km::islands() == 2 &&
+            copied(command.a2)
+        ) {
+            ok = compute.wait_front(kCbKAdd, 2 * block_tiles, km::kBehindPort);
+            const bool held = ok && compute.reserve_back(kCbKSum, block_tiles);
+            reconfig_data_format_srca(kCbKSum, kCbKAdd);
+            copy_init(kCbKAdd);
+            pack_reconfig_data_format(kCbKSum);
+            for (uint32_t half = 0; ok && half < 2; ++half) {
+                pack_reconfig_l1_acc(half);
+                for (uint32_t tile = 0; held && tile < block_tiles; ++tile) {
+                    move_tile(kCbKAdd, half * block_tiles + tile, kCbKSum, tile);
+                }
+            }
+            pack_reconfig_l1_acc(0);
+            if (ok) {
+                cb_pop_front(kCbKAdd, 2 * block_tiles);
+            }
+            if (ok && held) {
+                cb_push_back(kCbKSum, block_tiles);
+            }
+            ok = ok && compute.wait_front(kCbKSum, block_tiles);
+            const bool out = ok && compute.reserve_back(kCbKOut, block_tiles);
+            reconfig_data_format_srca(kCbKAdd, kCbKSum);
+            pack_reconfig_data_format(kCbKOut);
+            copy_init(kCbKSum);
+            for (uint32_t tile = 0; ok && tile < block_tiles; ++tile) {
+                tile_regs_acquire();
+                copy_tile(kCbKSum, tile, 0);
+                tile_regs_commit();
+                tile_regs_wait();
+                if (out) {
+                    pack_tile(0, kCbKOut);
+                }
+                tile_regs_release();
+            }
+            if (ok && out) {
+                cb_push_back(kCbKOut, block_tiles);
+            }
+            if (ok) {
+                cb_pop_front(kCbKSum, block_tiles);
+            }
+        }
         reconfig_data_format_srca(kCbKArrive, kCbKw);
     });
 }

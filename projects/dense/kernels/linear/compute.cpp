@@ -250,6 +250,69 @@ void kernel_main() {
                 km::broadcast_end(compute, kCbCol, w_block_tiles, column_window, taken)
             )
         );
+        // LINEAR_ADD (two islands, Y a copy): a block's two partials, a subblock of
+        // each in turn, summed in fp32 (the second packed on the first), bf16 to Y
+        if (ok && LINEAR_ADDS && islands == 2 && copied(y)) {
+            reconfig_data_format_srca(kCbCol, kCbSent);
+            for (uint32_t block = 0; ok && block < block_count; ++block) {
+                LINEAR_ACCOUNT_DO(since = km::wall());
+                copy_init(kCbSent);
+                pack_reconfig_data_format(kCbPart);
+                const bool held = compute.reserve_back(kCbPart, block_tiles);
+                for (uint32_t at = 0; ok && at < block_tiles; at += subblock_tiles) {
+                    for (uint32_t half = 0; ok && half < 2; ++half) {
+                        ok = (
+                            compute.wait_front(kCbSent, subblock_tiles, km::kBehindPort)
+                        );
+                        if (!ok) {
+                            break;
+                        }
+                        pack_reconfig_l1_acc(half);
+                        tile_regs_acquire();
+                        copy_block(kCbSent, 0, 0, subblock_tiles);
+                        tile_regs_commit();
+                        tile_regs_wait();
+                        for (uint32_t tile = 0; held && tile < subblock_tiles; ++tile) {
+                            pack_tile<true>(tile, kCbPart, at + tile);
+                        }
+                        tile_regs_release();
+                        cb_pop_front(kCbSent, subblock_tiles);
+                    }
+                }
+                pack_reconfig_l1_acc(0);
+                if (!ok) {
+                    break;
+                }
+                if (held) {
+                    cb_push_back(kCbPart, block_tiles);
+                }
+                ok = compute.wait_front(kCbPart, block_tiles);
+                if (!ok) {
+                    break;
+                }
+                reconfig_data_format_srca(kCbSent, kCbPart);
+                copy_init(kCbPart);
+                pack_reconfig_data_format(kCbYOut);
+                for (uint32_t tile = 0; tile < block_tiles; tile += subblock_tiles) {
+                    tile_regs_acquire();
+                    copy_block(kCbPart, tile, 0, subblock_tiles);
+                    tile_regs_commit();
+                    const bool room = compute.reserve_back(kCbYOut, subblock_tiles);
+                    tile_regs_wait();
+                    for (uint32_t index = 0; room && index < subblock_tiles; ++index) {
+                        pack_tile(index, kCbYOut);
+                    }
+                    tile_regs_release();
+                    if (room) {
+                        cb_push_back(kCbYOut, subblock_tiles);
+                    }
+                }
+                cb_pop_front(kCbPart, block_tiles);
+                reconfig_data_format_srca(kCbPart, kCbSent);
+                LINEAR_ACCOUNT_DO(lap(account[kAcPack - kAcInputWait], since));
+            }
+            reconfig_data_format_srca(kCbSent, kCbCol);
+        }
 #if defined(LINEAR_ACCOUNT) && !defined(TRISC_MATH)  // the math thread: no buffers
         account[kAcComputeEnd - kAcInputWait] = km::wall();
         volatile uint32_t* stamps = (
