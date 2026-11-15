@@ -2623,8 +2623,13 @@ namespace km {
             if (x0 > x1 || y0 > y1 || x1 >= columns || y1 >= rows) {
                 continue;  // empty
             }
-            const uint32_t low = table[base + y0 * columns + x0];
-            const uint32_t high = table[base + y1 * columns + x1];
+            const uint32_t control = core.args().control;
+            const uint32_t low = (
+                core_entry(table, base + y0 * columns + x0, control, core.role())
+            );
+            const uint32_t high = (
+                core_entry(table, base + y1 * columns + x1, control, core.role())
+            );
             const uint32_t from = noc_index == 0 ? low
                                                  : high;  // NoC1: from the far end
             const uint32_t to = noc_index == 0 ? high : low;

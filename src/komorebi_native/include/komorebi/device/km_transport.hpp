@@ -473,7 +473,14 @@ namespace km {
 
     // The NoC address of `address` on core `core` of this card.
     inline uint64_t forward_core(uint32_t core, uint32_t address) {
-        const uint32_t xy = l1(forward_held.control + KM_CONTROL_CORES)[core];
+        const uint32_t xy = (
+            core_entry(
+                l1(forward_held.control + KM_CONTROL_CORES),
+                core,
+                forward_held.control,
+                kRoles
+            )
+        );
         return get_noc_addr(xy & 0xFFFFu, xy >> 16, address);
     }
 

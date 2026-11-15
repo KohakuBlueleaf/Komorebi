@@ -1323,7 +1323,12 @@ OURS. At decode it is the tree and X's second read, which Kohaku-TT's form has n
 the read under the ceiling; where the picker takes Kohaku-TT's form, its tail and W's
 rate at the last core; and at five two-card shapes and one one-card shape the picker's
 miss, 0.4 to 11.9 us. At prefill it is the step of a broadcast: the hand-over into the
-sender, then the cast.
+sender, then the cast. Casting every rank's share itself, each into every core's slot
+(several casters a block), was tried and is slower: 1024 x 4096 x 4096 went from 126.3
+to 260.9 us and 4096 x 4096 x 4096 from 430.8 to 565.0 on two cards, because each step
+then waits for the slot to be free on every core and for every caster's increment
+([experiments/casters](../../experiments/casters/README.md#tried-in-the-linear-prefill),
+`results/linear-counted-0x1.json`).
 
 Measured on 2026-11-15 between 10:26 and 11:06, the whole-K plan between 12:05 and
 12:16, with W on both movers between 12:47 and 12:59. JSON:
