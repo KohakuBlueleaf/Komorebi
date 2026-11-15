@@ -5553,15 +5553,9 @@ class HandlerCompiler:
             self.compiled.full_dst = True
         number = self.arrivals
         self.arrivals += 1
-        arrival = self.other_buffer(
-            f"kArrival{number}",
-            "arrival",
-            "float32",
-            PAGE_BYTES["float32"],
-            slots * width,
-            f"line {node.lineno}: {self.text(node)}",
+        arrival = self.arrival_buffer(
+            number, slots, width, f"line {node.lineno}: {self.text(node)}"
         )
-        arrival.block = width
         self.compiled.unpack_fp32.add(arrival.name)
         out = self.out_buffer(
             "float32",
@@ -5652,15 +5646,9 @@ class HandlerCompiler:
             )
         number = self.arrivals
         self.arrivals += 1
-        arrival = self.other_buffer(
-            f"kArrival{number}",
-            "arrival",
-            "float32",
-            PAGE_BYTES["float32"],
-            slots * tiles,
-            f"line {node.lineno}: {self.text(node)}",
+        arrival = self.arrival_buffer(
+            number, slots, tiles, f"line {node.lineno}: {self.text(node)}"
         )
-        arrival.block = tiles
         self.compiled.unpack_fp32.add(arrival.name)
         buffer = f"kField{camel(field_)}"
         self.compiled.includes |= {"port", "pack"}
@@ -5782,6 +5770,24 @@ class HandlerCompiler:
             f"to mover {where} by the hand-over buffer"
         )
         return set()
+
+    def arrival_buffer(self, number, slots, per, what):
+        """kArrival<number>, which the handlers' reduces of that number share: a slot
+        of the largest part (`per` pages) and as many slots as the most a reduce takes.
+        """
+        name = f"kArrival{number}"
+        found = next((b for b in self.compiled.buffers if b.name == name), None)
+        if found is not None:
+            per, slots = max(per, found.block), max(
+                slots, found.pages[0] // found.block
+            )
+            found.block, found.pages = per, (slots * per,)
+            return found
+        arrival = self.other_buffer(
+            name, "arrival", "float32", PAGE_BYTES["float32"], slots * per, what
+        )
+        arrival.block = per
+        return arrival
 
     def other_buffer(self, name, role, dtype, page_bytes, pages, what):
         for buffer in self.compiled.buffers:

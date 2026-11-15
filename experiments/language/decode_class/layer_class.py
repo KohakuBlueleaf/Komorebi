@@ -47,8 +47,6 @@ class Layer(km.Program):
     def project(x, w):
         return x @ w
 
-    # first: the class's reduces share one arrival, sized by the first handler's (a
-    # tree of 15 needs 4 slots, qkv's of 7 only 3)
     @km.handler
     def o(
         self,

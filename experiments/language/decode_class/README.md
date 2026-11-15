@@ -78,9 +78,12 @@ The class's text is 79,840 B (mover A 18,704, mover B 16,060, unpack 13,308, mat
 15,248, pack 15,836), the hand's program 62,224 B with its four operations as overlays.
 
 Found on the way: the class's reduces share one arrival buffer (`kArrival0`), and the
-build sizes it by the first handler's reduce. A later handler whose tree has more rounds
-gets too few slots, and its reader gives up (`bad_item` in a port) on every core. `o` is
-the first handler for that reason: its tree of 15 has four rounds, qkv's of 7 three.
+build sized it by the first handler's reduce (its slots) and the last one's (its slot's
+pages). A later handler whose tree had more rounds got too few slots, and its reader
+gave up (`bad_item` in a port) on every core; a reduce of fewer tiles after one of more
+made the slots overlap. It is now sized for the largest reduce
+(`tests/core/test_class_reduce_arrival.py`). The runs above had `o` first, so four slots
+of 8 tiles for all four products: that is not what made gate_up and down wrong.
 
 ```bash
 python layer_class.py                   # the hand's four products, then the class's
