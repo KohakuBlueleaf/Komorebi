@@ -34,10 +34,9 @@ L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
 # on islands the reader's slot holds the larger service overlay (the collectives')
 L1_RUNTIME_ISLANDS = 17_024 + 40_896
-# The kernel buffer the linear kernels' code takes: one card 72 K, two 106 K, the
+# The kernel buffer of two cards (one card's follows the kernels): 106 K, the
 # addition or gather 118,000 B (mock builds); two-card decode 115,248 B (the cards).
 KERNEL_BYTES = {
-    "one": 88 * 1024,
     "two": 108 * 1024,
     "add": 116 * 1024,
     "decode": 116 * 1024,
@@ -1706,7 +1705,7 @@ def main():
         or GATHER == "kernel"
         and any(p == "chain" for _, p in products)
     )
-    kernel_bytes = KERNEL_BYTES["add" if adds else "two" if two else "one"]
+    kernel_bytes = KERNEL_BYTES["add" if adds else "two"] if two else None
     if two and any(dims[0] <= SPLIT_ROWS * pl.TILE for dims, _ in products):
         kernel_bytes = max(kernel_bytes, KERNEL_BYTES["decode"])
     kernel_bytes = args.kernel_bytes or kernel_bytes

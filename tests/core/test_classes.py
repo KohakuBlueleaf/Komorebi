@@ -488,6 +488,9 @@ class Budget:
     def l1_held(self):
         return []
 
+    def l1_taken(self):
+        return []
+
 
 def test_a_class_built_for_a_session_leaves_the_loads_rows():
     alone = made(Unsolved, l1=1_000_000, source=tensor("bfloat16"))

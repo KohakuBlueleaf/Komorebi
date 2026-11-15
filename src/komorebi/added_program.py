@@ -33,6 +33,18 @@ SIZES = ("unpack_tile_size", "pack_tile_size")
 DESCRIPTORS = "chlkc_descriptors.h"
 
 
+def spare_fields(placed):
+    """The program fields an added class may take in a run loaded as a dict: every
+    field after the loaded ones whose overlay number stays above the programs' own
+    overlays (field p is overlay kOverlayService - 1 - p), each a record row."""
+    service = overlay.constants()["kOverlayService"]
+    last = placed.programs[-1]
+    shift = last.overlay_shift + max(
+        (each.number for each in last.overlays.values()), default=0
+    )
+    return range(len(placed.programs), service - 1 - shift)
+
+
 def buffers_given(buffers):
     """session.load's `buffers=`: None (the area grows into the L1 left) or bytes."""
     if buffers is not None and (not isinstance(buffers, int) or buffers < 0):
@@ -381,9 +393,15 @@ def add(run, program):
     if why:
         raise added.AddError(why)
     run._check_alive()
+    field = len(run.programs)
+    if field not in run._switch.get("spare", {}):
+        raise added.AddError(
+            f"{program.name}: field {field} is past the record rows the load reserved "
+            f"(fields to {len(run.programs) + len(run._switch.get('spare', {})) - 1}; "
+            "a program's own overlays take the numbers above them)"
+        )
     backend, started = run.backend, time.perf_counter()
     session = backend.session
-    field = len(run.programs)
     program.program_field, program.overlay_shift, program.args_at = field, 0, 0
     layout, end = layout_of(backend, program)
     start = backend.switch_start + backend.switch_shift
@@ -410,17 +428,19 @@ def add(run, program):
     placed = added._place(run, made, [images])[0]
     table = [placed.get(part, (0, 0)) for part in overlay.PARTS]
     words = programs.record_words(field, layout, table)
-    rows, at = overlay.dram_rows(
-        overlay.Built({(field, "record"): words.tobytes()}, {})
-    )
-    tensor = importlib.import_module("komorebi.session")._words(session, rows)
-    backend.io.append(tensor)
-    row = at[(field, "record")][0]
+    address, row = run._switch["spare"].pop(field)
+    banks = overlay.constants()["kOverlayBanks"]
+    tensor = run._switch["tensor"]
+    page = np.zeros((banks, tensor.page_bytes), np.uint8)
+    page[:, : words.nbytes] = np.frombuffer(words.tobytes(), np.uint8)
+    session.write(tensor, page, first=banks * row)  # a copy in each bank, as loaded
     backend.switch_layouts[field] = layout
-    run._switch["records"][field] = tensor.address + row * tensor.aligned_page_bytes
+    run._switch["records"][field] = address
     run.programs.append(program)
     if run._holds is not None:
         run._holds.append(np.zeros(run.cores, bool))
+    for thread in run.threads.values():  # kmx_load reaches it
+        thread.write_records(run._switch)
     session.log(
         f"added program {program.name} as field {field}: parts "
         f"{ {p: len(i) for p, i in images.items()} } built in {built_s * 1e3:.1f} ms"

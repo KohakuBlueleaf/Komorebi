@@ -153,8 +153,7 @@ def main():
     report["token"] = args.token
     report["data"] = args.data
     tokens, per_layer, step_us = list(prompt), [], []
-    kernel_bytes = None if args.no_chain else card.CHAIN_KERNEL_BYTES
-    with km.Session(log=log, kernel_bytes=kernel_bytes) as session:
+    with km.Session(log=log) as session:  # its kernel buffer follows the kernels
         decode = card.Decode(
             session,
             model,

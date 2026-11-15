@@ -197,6 +197,24 @@ class RingPlacement(NamedTuple):
     remote: int | None = None
 
 
+def ring_line(ring, buffer, records):
+    """The ring's 64-byte line of the LIM block (kmx_ring_descriptor): its addresses,
+    depths, flags, the copy buffer and load_records()'s (record 0, step, programs)."""
+    constants = layout()
+    flags = constants["KMX_RING_CACHED"] if ring.cached else 0
+    flags |= constants["KMX_RING_REMOTE"] if ring.remote is not None else 0
+    return struct.pack(
+        "<4Q3I5I",
+        *ring[:4],
+        ring.command_depth,
+        ring.event_depth,
+        flags,
+        ring.remote or 0,
+        buffer,
+        *(records or (0, 0, 0)),
+    )
+
+
 def load_records(switch):
     """(record of program field 0, step, programs) for kmx_load, from a Run's switch
     ({"records": {field: DRAM address}, "refused": why}); None: no switch."""
@@ -205,7 +223,8 @@ def load_records(switch):
     records = switch["records"]
     if sorted(records) != list(range(len(records))):
         raise ValueError(f"program records {records}: not one step apart")
-    step = records[1] - records[0] if len(records) > 1 else 0
+    rows = {**records, **{f: a for f, (a, _) in switch.get("spare", {}).items()}}
+    step = rows[1] - rows[0] if len(rows) > 1 else 0
     if any(address != records[0] + field * step for field, address in records.items()):
         raise ValueError(f"program records {records}: not one step apart")
     return records[0], step, len(records)
@@ -411,19 +430,7 @@ def args_block(
     offset = constants["KMX_LIM_ARGS"] + constants["KMX_ARGS_WORDS"]
     block[offset : offset + len(words)] = words
     if ring is not None:
-        flags = constants["KMX_RING_CACHED"] if ring.cached else 0
-        flags |= constants["KMX_RING_REMOTE"] if ring.remote is not None else 0
-        tile = ring.remote or 0
-        line = struct.pack(
-            "<4Q3I5I",
-            *ring[:4],
-            ring.command_depth,
-            ring.event_depth,
-            flags,
-            tile,
-            buffer,
-            *(records or (0, 0, 0)),
-        )
+        line = ring_line(ring, buffer, records)
         block[constants["KMX_LIM_RING"] : constants["KMX_LIM_RING"] + 64] = line
         if ring.remote is not None:
             block += bytes(ring_area_bytes(ring))  # its events start zeroed
@@ -570,6 +577,16 @@ class ThreadRun:
             self.port.work_write(
                 self.thread.cluster, ports_at(self.ring), ports_area(self.ports)
             )
+
+    def write_records(self, switch):
+        """Raises the programs kmx_load can load to the run's (`switch`, after an
+        added class's record is in its row): the ring's line written to the live LIM."""
+        if self.records is None or self.ring is None:
+            return
+        self.records = load_records(switch)
+        if self.on_card and self.running:
+            line = ring_line(self.ring, self.buffer, self.records)
+            self.port.work_write(self.thread.cluster, layout()["KMX_LIM_RING"], line)
 
     def write_ranks(self):
         """Writes the X280 ranks' area into the cluster's LIM (Ranks; before any

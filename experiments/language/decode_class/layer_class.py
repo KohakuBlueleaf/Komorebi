@@ -20,7 +20,6 @@ from projects.dense import plan as pl
 STARTED = time.monotonic()
 PRODUCTS = ("qkv", "o", "gate_up", "down")
 GROUPS = {"qkv": 7, "o": 15, "gate_up": 2, "down": 15}  # md.plans' on 120 cores
-KERNEL_BYTES = 84 * 1024  # the hand's program, as its bench opens it with the chain
 
 
 def log(message):
@@ -235,7 +234,7 @@ def main():
     rng = np.random.default_rng(args.seed)
     result = {"model": args.model, "context": args.context, "products": {}}
     plans = md.plans(model, halves=(md.DEPTH, 1))  # the hand's, a command a step
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         made = {name: operands(session, model, name, rng) for name in PRODUCTS}
         tensors = {name: made[name] for name in args.products}
         result["hand_kernel"], hand_us = "none", {}
