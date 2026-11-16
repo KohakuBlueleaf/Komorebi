@@ -2144,9 +2144,9 @@ def _start_loads(run, placed, part=False):
 
 def _common_slots(placed, declared, built):
     """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most kOverlaySlotsMax, and one more in a kernel where a class named
-    ahead has an own overlay: its part loads it into another slot) of the largest part
-    any program has there."""
+    program, at most kOverlaySlotsMax, one more in a kernel where a class named ahead
+    has an own overlay, and at least two where a loaded program has one: its part
+    loads it into another slot) of the largest part any program has there."""
     most = overlay.constants()["kOverlaySlotsMax"]
     slots = {}
     for made in built:
@@ -2155,13 +2155,49 @@ def _common_slots(placed, declared, built):
     count = declared.count
     service = max(made.service for made in built)
     own = added_program.ahead_own_kernels(placed)
+    loaded = _loaded_own_kernels(placed)
     out = {}
     for part, size in slots.items():
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
+        if wanted == 1 and kernel in own | loaded:
+            raise ProgramError(
+                f"Program.slots(count=1) for the {kernel}: a program of this run has "
+                f"an overlay of its own with a {kernel} part, which its part loads "
+                "into another slot while it runs; give it 2 or more"
+            )
         more = 1 if kernel in own else 0
-        out[part] = (wanted or min(len(placed.programs) + more, most), size)
+        default = min(len(placed.programs) + more, most)
+        if kernel in loaded:
+            default = max(default, 2)
+        out[part] = (wanted or default, size)
     return overlay.Built({}, out, service, service)
+
+
+def _own_slots_kept(placed, common):
+    """Refuses slots the L1 lowered to one in a kernel where a program's own overlay
+    loads beside its program overlay: its first call would find no slot."""
+    own = added_program.ahead_own_kernels(placed) | _loaded_own_kernels(placed)
+    for part, (count, _) in common.slots.items():
+        kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
+        if kernel in own and count < 2:
+            raise ProgramError(
+                f"the {part} slots lowered to {count}: a program of this run loads an "
+                f"overlay of its own there beside its program overlay, which needs 2; "
+                "the L1 left allows no more (fewer or smaller buffers, or smaller "
+                "parts)"
+            )
+
+
+def _loaded_own_kernels(placed):
+    """The kernels where a program the run loads has a part of an overlay of its own
+    (its handlers' overlays, besides its program overlay)."""
+    return {
+        kernel
+        for program in placed.programs
+        for each in program.overlays.values()
+        for kernel in each.sources
+    }
 
 
 def _program_cbs(buffers):
@@ -3343,6 +3379,7 @@ class _Backend:
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
             common = fit_slots(common, declared, session.l1()[1], rows, session.log)
+            _own_slots_kept(placed, common)
             built = [
                 overlay.Built(made.images, common.slots, common.service)
                 for made in built

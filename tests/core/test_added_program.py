@@ -22,6 +22,7 @@ from komorebi import (
     programs,
     thread,
 )
+from komorebi import session as session_module
 from komorebi.build import BuildError
 from komorebi.errors import ProgramError
 
@@ -423,3 +424,26 @@ def test_an_add_whose_parts_do_not_fit_the_room_is_refused_before_any_write():
     added_program._check_room(room, other, [{"reader": b"a" * 150}, {"x": b"b" * 50}])
     with pytest.raises(added.AddError, match=r"400 B of the room .*4 rows of 100 B"):
         added_program._check_room(room, other, [{"r": b"a" * 250, "w": b"c" * 10}])
+
+
+def test_a_loaded_program_with_own_overlays_gets_two_slots_in_their_kernels():
+    own = Overlaid(l1=1 << 20, log=quiet, a=grid(2, 1), out=grid(2, 1),
+                   form="runtime")  # fmt: skip
+    plain = twice(form="runtime")
+    built = [SimpleNamespace(slots={"reader": (1, 4160), "writer": (1, 4032)},
+                             service=8640)]  # fmt: skip
+    declared = SimpleNamespace(count=None)
+    alone = programs.plan({own: (0, 120)}, 120)
+    made = session_module._common_slots(alone, declared, built)
+    assert made.slots == {"reader": (2, 4160), "writer": (2, 4032)}
+    plain_alone = programs.plan({plain: (0, 120)}, 120)
+    made = session_module._common_slots(plain_alone, declared, built)
+    assert made.slots == {"reader": (1, 4160), "writer": (1, 4032)}  # pays nothing
+    with pytest.raises(ProgramError, match=r"slots\(count=1\) for the reader"):
+        session_module._common_slots(alone, SimpleNamespace(count=1), built)
+    lowered = SimpleNamespace(slots={"reader": (1, 4160), "writer": (2, 4032)})
+    with pytest.raises(ProgramError, match=r"reader slots lowered to 1"):
+        session_module._own_slots_kept(alone, lowered)
+    session_module._own_slots_kept(
+        plain_alone, lowered
+    )  # no own overlay: one is enough

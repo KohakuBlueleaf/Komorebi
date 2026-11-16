@@ -235,7 +235,11 @@ and the same on the writer (which completes the command unless the program's
   reads from the buffers' own pointers or the command.
 - **The slots.** By default a slot a program on each kernel (at most 4), each as large as
   the largest part; the first program's `slots()` sets them. With fewer slots than
-  programs, a command to a program the tile does not hold loads its five parts.
+  programs, a command to a program the tile does not hold loads its five parts. A
+  kernel where a program has a part of an overlay of its own (a class's handler) has 2
+  at least, even in a dict of one program: that overlay loads into a slot beside the
+  running program's. A `slots(count=1)` there is refused by name at the load, and so
+  are slots the L1 left lowers to 1 there.
 - **The compute start-up.** The runtime's compute kernel calls
   `compute_kernel_hw_startup(in, out)` once, on the group's first buffer below index 16 and
   its first from 16 on (0 and 16 when there is none); in a run loaded with a dict, each
