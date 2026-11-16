@@ -1,8 +1,7 @@
 """A row longer than its stream's block, and a per-row operand in the stream form (no
-card): the range read once a pass, each sum pass's values and sums through a page
-pair of the row's, the writes in the last pass alone; a field read by `.col()` unpacked
-with column 0 broadcast, a stream tile's `.row()` from its block's half; what the
-passes do not take refused by name."""
+card): the range read once a pass, the values and sums through a page pair a row, the
+writes in the last pass; a field's `.col()` broadcast from column 0, a stream tile's
+`.row()` from its block's half; what the passes do not take refused by name."""
 
 import pytest
 from test_class_lines import Pages
