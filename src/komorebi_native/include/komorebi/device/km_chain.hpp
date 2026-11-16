@@ -1093,23 +1093,13 @@ namespace km {
     template <typename Writer>
     bool chain_marks_zero(const Writer& writer, uint32_t record) {
         const uint32_t due = *chain_word(kChainMarksDue + 4 * (record & 1u));
-        volatile tt_l1_ptr uint32_t* marks = chain_word(chain_marks_at(record));
-        const uint32_t code = writer.poll_at(
-            kWherePort,
-            [&] {
-                invalidate_l1_cache();
-                return *marks >= due;
-            },
-            writer.args().wait_limit
-        );
-        if (code != kGaveNone || *marks != due) {
-            writer.gave_up(
-                kStWriter,
-                code != kGaveNone ? code : kGaveBadItem,
-                kWherePort,
-                code != kGaveNone ? 0xC0u : 0xC6u,
-                record
-            );
+        const uint32_t at = chain_marks_at(record);
+        if (!chain_reached(writer, at, due, kStWriter)) {
+            return false;
+        }
+        volatile tt_l1_ptr uint32_t* marks = chain_word(at);
+        if (*marks != due) {
+            writer.gave_up(kStWriter, kGaveBadItem, kWherePort, 0xC6u, record);
             return false;
         }
         *marks = 0;
