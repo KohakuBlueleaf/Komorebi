@@ -51,8 +51,7 @@ static inline int kmx_chain_record(
     uint32_t* records = (uint32_t*)kmx_region(region, &bytes);
     km_command_t place;
     if (
-        records == 0 || index >= kChainRecordsMax ||
-        (uint64_t)(index + 1u) * kChainRecordBytes > bytes ||
+        records == 0 || (uint64_t)(index + 1u) * kChainRecordBytes > bytes ||
         call->word > kChainTokenMask || call->size > kChainSizeMask ||
         call->width > kChainWidthMask || call->row > kChainRowMask ||
         call->handler > 0xFFu || next % kChainRecordBytes != 0u ||
@@ -119,4 +118,14 @@ static inline int kmx_chain_command(
     chain->a1 = a1;
     chain->a4 = mode;
     return KMX_OK;
+}
+
+/* A chain command of `records` records: past kChainRecordsMax it takes one sequence
+ * number for each kChainRecordsMax (KM_FLAG_SPAN, a9), else the reader refuses it. */
+static inline void kmx_chain_span(km_command_t* chain, uint32_t records) {
+    const uint32_t span = (records + kChainRecordsMax - 1u) / kChainRecordsMax;
+    if (span > 1u) {
+        chain->hdr |= KM_FLAG_SPAN << 8;
+        chain->a9 = span - 1u;
+    }
 }

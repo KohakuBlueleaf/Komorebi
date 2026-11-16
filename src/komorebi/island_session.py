@@ -459,7 +459,12 @@ class IslandRun:
             one = chain.chains[island]
             try:
                 handle = self.runs[island].submit(
-                    one.handler, one.group, one.args(words), exclusive=True, part=True
+                    one.handler,
+                    one.group,
+                    one.args(words),
+                    exclusive=True,
+                    part=True,
+                    span=one.span,
                 )
             except KomorebiError as error:
                 raise self._error(error, island) from None

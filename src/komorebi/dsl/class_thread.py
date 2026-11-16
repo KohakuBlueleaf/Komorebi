@@ -847,6 +847,7 @@ def chain_functions(chain, upper, lower):
         "    }",
         f"    chain->hdr |= {upper}_PROGRAM << 24 | KM_FLAG_EXCLUSIVE << 8;",
         f"    chain->group = {name}_FIRST | {name}_CORES << 16;",
+        f"    kmx_chain_span(chain, {len(chain.calls)}u);",
         "    return KMX_OK;",
         "}",
     ]

@@ -557,7 +557,10 @@ KMD_STATIC_ASSERT(
     KMD_FLAG_DISPATCHER <= 0x80u &&
         (
             KMD_FLAG_DISPATCHER &
-            (1u | KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT | KM_FLAG_QUEUE | KM_FLAG_PART)
+            (
+                1u | KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT | KM_FLAG_QUEUE | KM_FLAG_PART |
+                KM_FLAG_SPAN
+            )
         ) == 0,
     "the dispatcher's flag: one bit of the header's flag byte, no command flag's"
 );
