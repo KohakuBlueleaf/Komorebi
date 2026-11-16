@@ -2644,7 +2644,7 @@ class _Backend:
     def describe(self, *args, **options):
         """_describe's descriptor with the slots' buffer declared first, its size
         set once the overlays are built (_slot_buffer): what is built is launched."""
-        self.link_cb = None
+        self.link_cb, self.link_bytes = None, 0  # the link cores' buffer, its bytes
         self.link_kernels, self.link_queue_at, self.queue_after_slots = 0, None, False
         launch = self._describe(*args, **options)
         # below the highest index of the ranks' own: the link cores' buffer is above
@@ -2933,7 +2933,7 @@ class _Backend:
             + 2 * chunk
         )
         launch.cb(rects, index, "uint32", size, size)
-        self.link_cb = index
+        self.link_cb, self.link_bytes = index, size
         return [("KM_LINK_QUEUE", "1")]
 
     def _link_chunk(self, program, cores, apart=0):
@@ -3206,7 +3206,7 @@ class _Backend:
             session.log,
             self.slots_most,
         )
-        rows = session.l1_rows(program, self.trace_cap)
+        rows = session.l1_rows(program, self.trace_cap) + sizes.link_rows(self)
         built = fit_slots(
             built, own_slot_declared(program), session.l1()[1], rows, session.log
         )
@@ -3380,7 +3380,7 @@ class _Backend:
                 )
                 rows = session.l1_rows(
                     placed.programs[0], self.trace_cap, placed, buffers=buffers
-                )
+                ) + sizes.link_rows(self)
                 if not placed.switch:  # a switch's slots are common: sized below
                     made = fit_slots(made, declared, session.l1()[1], rows, session.log)
                 rows[2:2] = slot_rows(made.slots, made.service, made.why)
@@ -3412,7 +3412,9 @@ class _Backend:
             stored.append(mine)
         if placed.switch:  # one set of slots, every program's parts fit any core's
             common = _common_slots(placed, declared, built, self.slots_most)
-            rows = session.l1_rows(placed.programs[0], self.trace_cap, placed)
+            rows = session.l1_rows(
+                placed.programs[0], self.trace_cap, placed
+            ) + sizes.link_rows(self)
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
             common = fit_slots(common, declared, session.l1()[1], rows, session.log)

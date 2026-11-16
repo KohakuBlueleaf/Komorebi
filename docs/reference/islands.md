@@ -149,7 +149,11 @@ written for islands runs on one card unchanged.
   them with the program's message kernels) and a card split into islands (one launch
   for the whole card). Their link CPUs take two chunks of that least (no more) where
   they fit after the program's buffers, the transfer buffer, what the session keeps,
-  the put queue and the margin, so a `km::put_bytes` batch has its ring.
+  the put queue and the margin, so a `km::put_bytes` batch has its ring. There the put
+  queue and what follows it (the chunks included) lie above the slots on the link
+  cores alone, and the load's L1 budget has a row for them ("link cores: their put
+  queue"): the slots are fitted around it, and a load that still does not fit is
+  refused by name with the table.
 - **The put queue at one place.** A put line's sender writes its arrival into the far
   link core's queue at the place of its own, so the queue must sit at the same offset on
   every island. The link cores take no overlay slots when they run the link kernels:
