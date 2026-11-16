@@ -236,38 +236,6 @@ def step_of_field(frame, call):
     return (field_, state, slot.slice, index) if field_ and state else None
 
 
-def step_on_carried(frame, node, write, call, value, carried):
-    """`pages.write(f(acc, self.s[r]))`, acc started from a row of a field with
-    state r (`acc = g(self.m[i], self.s[r])`): state r is in DST after acc's
-    tiles already, so f runs on it there, and acc's write packs it back."""
-    function = tile_lookup.tile_function_of(frame, call)
-    name, field_, index = step_of_dst(frame, call)
-    if carried[0] != f"kField{camel(field_)}" or ast.dump(carried[4]) != ast.dump(
-        index
-    ):
-        refuse(
-            frame.where,
-            node,
-            f"{name} holds a state of its start in DST, and this step takes "
-            f"self.{field_}[{ast.unparse(index)}]",
-            f"step on the state {name} started with",
-        )
-    unit, cxx = step_unit(frame, node, function, value.width)
-    before = (
-        f"// {function.name}'s step on the state in DST {value.width}\n"
-        "if (km_ok) {\n"
-        f"{tile_functions.step_calls(frame, cxx)}"
-        "}"
-    )
-    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
-    frame.compiled.tile_calls.append(
-        (frame.method.name, node.lineno, line_text(frame.where, node), function, cxx)
-    )
-    write.args[0] = ast.Name(id=name, ctx=ast.Load())
-    movement, compute = frame.write(node, write)
-    return movement, [Line(before, {"km_ok"}), *compute]
-
-
 def step_state(frame, node, field_, index, width=None):
     """State `index` of a step's field (or row `index` of a field of rows of
     `width` tiles): (its buffer, its token, the index's C++, a run-time bound
@@ -481,44 +449,3 @@ def write_state(frame, node, pages, field_):
     return [Line(movement, range_uses(pages, frame), mover="B")], [
         Line(compute, {"km_ok"})
     ]
-
-
-def write_step_of_dst(frame, node, write, call):
-    """`pages.write(f(acc, self.s[r]))`, f a step-form function of acc (1 to 3 DST
-    tiles) and state r of the fp32 field self.s: the state into the DST tile after
-    the row, f, the row written as acc is and the state packed back into page r,
-    ordered by a token pack pushes and unpack takes (primed at the handler's start).
-    """
-    function = tile_lookup.tile_function_of(frame, call)
-    name, field_, index = step_of_dst(frame, call)
-    value = frame.scope[name]
-    width = value.width
-    if value.dst != 0 or not 1 <= width <= 3:
-        refuse(
-            frame.where,
-            node,
-            f"{name} is {width} tile(s) of DST from tile {value.dst}; a step takes "
-            "a row of 1 to 3 tiles from DST 0 and its state in the tile after them",
-            "sum the row in km.tile.zeros(km.fp32, n), n at most 3",
-        )
-    carried = getattr(value, "state", None)
-    if carried is not None:
-        return step_on_carried(frame, node, write, call, value, carried)
-    buffer, token, slot, bound = step_state(frame, node, field_, index)
-    unit, cxx = step_unit(frame, node, function, width)
-    before = (
-        f"{bound}"
-        f"// {function.name}'s step: self.{field_}[{ast.unparse(index)}] into "
-        f"DST {width}\n"
-        f"{state_taken(buffer, token, slot, width)}"
-        f"{tile_functions.step_calls(frame, cxx)}"
-        "}"
-    )
-    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
-    frame.compiled.tile_calls.append(
-        (frame.method.name, node.lineno, line_text(frame.where, node), function, cxx)
-    )
-    write.args[0] = ast.Name(id=name, ctx=ast.Load())
-    movement, compute = frame.write(node, write)
-    state_packed(frame, compute, buffer, token, slot, width, index)
-    return movement, [Line(before, {"km_ok"} | scope.uses(frame, index)), *compute]

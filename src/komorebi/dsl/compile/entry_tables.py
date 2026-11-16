@@ -4,7 +4,14 @@ over its entries, an entry's words."""
 import ast
 
 from komorebi.dsl import front
-from komorebi.dsl.compile import broadcasts, handler_buffers, layout, ranges, scope
+from komorebi.dsl.compile import (
+    broadcasts,
+    handler_buffers,
+    layout,
+    ranges,
+    scope,
+    tile_writes,
+)
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -131,7 +138,7 @@ def entries_loop(frame, node):
         compute += c
     m, c = broadcasts.counted_ends(frame, loop)
     movement, compute = movement + m, compute + c
-    movement += frame.fed_moves(node, loop, body_m)
+    movement += tile_writes.fed_moves(frame, node, loop, body_m)
     return movement, compute
 
 

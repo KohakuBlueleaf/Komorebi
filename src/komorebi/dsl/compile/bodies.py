@@ -14,6 +14,7 @@ from komorebi.dsl.compile import (
     layout,
     scope,
     tile_lookup,
+    tile_writes,
 )
 from komorebi.dsl.compile.cxx import camel, pattern_uses
 from komorebi.dsl.compile.records import Value
@@ -410,7 +411,7 @@ def take(frame, node, item, where, bound, before, after):
         cpu_address(frame, node, item.id, address, where, bound, before, after, True)
         return set()
     if value.kind == "write" and where in ("pack", "compute"):
-        return frame.take_write(node, item.id, value, bound, before, after)
+        return tile_writes.take_write(frame, node, item.id, value, bound, before, after)
     if value.kind == "write" and where == "B":
         take_page(frame, node, item.id, value, bound, before, after)
         return set()
