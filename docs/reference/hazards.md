@@ -1193,14 +1193,29 @@ places: two cores write the same page and another stays unwritten (120 ranks acr
 edge wrote 118 pages, 2026-11-16).
 
 **The rule.** Submit a handler that reads `self.x` or `self.y` on one
-island's ranks;
-start a reduce in groups of S where an island's first rank begins a group.
+island's ranks.
 
 **The guard.** Refused at submit, naming the handler's line: a handler that reads
-`self.x` or `self.y` on a group past this island's ranks, a reduce group of S across
-the edge, and a broadcast whose group is not one island's rectangle. `self.rank` and
-`self.size` are the group's and `self.core` the flat rank, so a class that works by them
-is exact across it.
+`self.x` or `self.y` on a group past this island's ranks, and a broadcast whose group
+is not one island's rectangle. `self.rank` and `self.size` are the group's and
+`self.core` the flat rank, so a class that works by them is exact across it, and so is
+a reduce in groups of S (`km.reduce`, `km.all_reduce`) whose group spans islands.
+
+Described in [Islands, classes on islands](islands.md#classes-on-islands).
+
+### A float reduce whose group spans islands
+
+**The hazard.** A reduce in groups of S (`km.reduce`, `km.all_reduce`) whose group spans
+islands folds each island's part and then crosses once, so its float sums are added in
+another order than one island's tree and may round differently: the decode layer on two
+cards with groups of 15 across rank 118 had 996 of 65,536 output words differ from one
+card (the largest 0.0065 relative; an example, not a bound).
+
+**The rule.** Where words must equal one island's, place the groups so none spans an
+island's edge (start the command so an island's first rank begins a group), or reduce
+integers or with an exact combine.
+
+**The guard.** None: the result is a correct sum in another order.
 
 Described in [Islands, classes on islands](islands.md#classes-on-islands).
 

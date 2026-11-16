@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from komorebi.errors import KomorebiError
-from komorebi.islands.session import check_link_queues
+from komorebi.islands.parts.load import check_link_queues
 from komorebi.program import several as programs
 from komorebi.session.backend import backend as card_backend
 

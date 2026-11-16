@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi import abi
-from komorebi.dsl import front, island_place
+from komorebi.dsl import front, island_place, island_reduce
 from komorebi.dsl.compile import (
     broadcasts,
     drained,
@@ -8005,11 +8005,11 @@ class HandlerCompiler(Frame):
         return set()
 
     def tree_slots(self, size):
-        """A tree reduce's arrival slots: a round each over a group of `size`; the
-        command's group (None): TREE_ROUNDS, and over islands the root part's rounds
-        and a slot each other part (km::reduce_slots), whichever is more."""
+        """A tree reduce's arrival slots: a round each over a group of `size` (on
+        islands island_reduce's); the command's group (None): TREE_ROUNDS, and over
+        islands the root part's rounds and a slot each other part, whichever is more."""
         if size is not None:
-            return max(1, (size - 1).bit_length())
+            return island_reduce.group_slots(size, self.compiled.islands)
         parts, most = self.compiled.islands
         if parts <= 1:
             return TREE_ROUNDS
