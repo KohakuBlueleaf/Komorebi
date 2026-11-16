@@ -177,19 +177,17 @@ class LinkPlanMixin:
 
     def _landings(self, h):
         """Each island's landing of km::put_bytes' batches, in DRAM: a page an island
-        and put line owner (a split card: island 0's for every island). Three or more
-        cards: at one address, as a batch is sent to its neighbour's one."""
+        and put line owner, then an island, source and far place (a split card: island
+        0's for every island). Three or more cards: at one address on each island."""
         size = h["KM_PUT_BATCH_BYTES"]
+        n = len(self.sessions)
+        pages = n * h["KM_QUEUE_LINES"] + (n * n * h["KM_FAR_LINES"] if n > 2 else 0)
         landings = []
         for island, session in enumerate(self.sessions):
             if self.split > 1 and island:
                 landings.append(landings[0])
                 continue
-            landings.append(
-                session.empty(
-                    (len(self.sessions) * h["KM_QUEUE_LINES"], size // 4), "uint32"
-                )
-            )
+            landings.append(session.empty((pages, size // 4), "uint32"))
             wrong = None
             if landings[-1].aligned_page_bytes != size:
                 wrong = f"{landings[-1].aligned_page_bytes} bytes a page"

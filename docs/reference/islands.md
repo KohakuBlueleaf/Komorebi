@@ -57,6 +57,7 @@ below give each run):
 | `kmx_fetch` of 64 MiB | 1.30 ms | 1.128 ms, 59.5 GB/s, of the other island's |
 | A dynamic run's message | | about 2.9 µs a delivery; 10^6 forwards 1,531.5 ms by deliveries, 307.4 ms with `hold_links=True` on one link |
 | `km::all_gather` / `km::all_reduce` of 256 pages over two cards | return at once | 21.3 µs / 180.0 µs |
+| A ring put of 32 pages of 4 KiB a rank from 16 ranks (2 MiB), a split card, 2026-11-17 | | 188 µs one link away (11.1 GB/s); two links away 1,085 µs (1.93 GB/s) on the 2 x 2, 1,185 µs (1.77 GB/s) on the doubled line of 3: one lead page CPU's rate |
 
 A program that knows its islands crosses less: example 26 folds each island to its
 leader and sends one part across (238 ranks summed in 165.9 µs a round), and a
@@ -102,10 +103,8 @@ only without the chunks is built without them ([the session](#the-session)).
 
 What is still refused because two ranks sit on different islands, each by name:
 
-- A `km::put_bytes` batch and a put through a page CPU's ring go one link only: two
-  links away the command gives up (`bad_item` at `ask`). A command's page writes
-  (`km::write_pages`) reach any island. On a split card whose load fits only without
-  the link cores' chunks, a batch to them is refused by name.
+- A `km::put_bytes` batch needs the page CPUs' rings: on a split card whose load fits
+  only without the link cores' chunks, a batch to them is refused by name.
 - `km::read_bytes` and `km::ask_bytes` across reach a link apart, a page a packet
   holds (`bad_item` at `ask`).
 - A class's rectangle (its `km.Broadcast`, `self.x` and `self.y`) spans two islands at
@@ -1084,7 +1083,14 @@ and one open.
   built when the diameter is over one) is sent by the asker's link core: its pages
   forwarded to the holder's island, then its line into one of `KM_FAR_LINES` (8) far
   places a source island there, with credits back; the holder confirms to the asker
-  as for a neighbour's. A batch or ring put still goes one link only. On a split card
+  as for a neighbour's. A ring put (`km::put_pages` with a run) two links or more
+  away is such a line a piece, each waited for, so it moves at the far put's rate of
+  one lead page CPU, not the ring's. A `km::put_bytes` batch two links or more away is
+  one far line whose page is the batch: it lands on its own page of the holder's
+  landing (a page an island, source island and far place: `n * n * 8` pages of 2 KiB on
+  each holder's DRAM past the `n * 512` of the neighbours' batches, n islands), and the
+  holder's lead page CPU writes its records before it confirms; the putting CPU waits
+  for that confirmation before it takes its next record. On a split card
   the last link's write is made by that link core's CPU 0 (the one that takes the
   rooms' packets on), so a forwarded page's DRAM address is built for that CPU's NoC
   (a bank's NoC place differs between the two NoCs).
