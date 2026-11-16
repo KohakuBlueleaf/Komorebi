@@ -533,6 +533,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
+| `acc += f(xs[r], w[i][:, c0:c0 + n])`, xs a held stream, w a broadcast's block | as before | k products of row r's tiles by the block's rows, between the block's wait at its cast and its free at the end of its lines (A held stream's row by a broadcast's block) |
 | `acc += f(self.h, w[i][r0:r0 + n, :])`, w a broadcast's block | the cast as before | the block waited for at the cast; the field waited for, n products by rows of the block; the block freed at the end of the cast's lines (A field by a broadcast's block) |
 | `acc = f(self.o[i], self.s[r])`; `self.o[j].write(acc)`, self.o a filled field of rows | the fill | row i copied into DST in place after the field's token; acc packed into row j by index, the token pushed, then the state (Sums started from a field) |
 | `acc = f(self.o, self.s[r])`, f a step function, self.o an fp32 field compute writes | none | the field's tiles into DST 0 .., state r after them, f's body; acc's write packs the row, then the state (Sums started from a field) |
@@ -1326,6 +1327,33 @@ tiles, a part not of acc's columns or cast turned, a product inside a stream loo
 and, for a block cast outside a loop, a stream, a page write or a fill on the cast's
 mover after it (the mover waits at the cast for compute to free the block, at the end
 of its lines).
+
+### A held stream's row by a broadcast's block
+
+`acc += f(xs[r], w[i][:, c0:c0 + n])` (or `w`), f `return a @ b`, xs a held stream
+(`xs = km.Stream(x.tiles[r0:r0 + R, 0:k], block=R k)`, waited for at its line and
+freed at the end of its lines) and w a block a broadcast brought, takes tile j of
+xs's row r by row j of w's part (acc's width of columns, transposed where the cast
+turned it): k products of the library's, outside a stream loop. The block is waited
+for at its cast and freed at the end of the cast's lines, as for a field's products.
+Rows of X kept in L1 while blocks of W^T come down the column:
+
+```python
+xs = km.Stream(x.tiles[self.y * R : self.y * R + R, 0:K], block=X_BLOCK)
+for b in range(B):
+    if column.sender():
+        wb = column.cast(wt.tiles[b * N : b * N + N, 0:K].T)
+    else:
+        wb = column.arrive()
+    for r in range(R):
+        acc = km.tile.zeros(km.fp32, N)
+        acc += project(xs[r], wb)
+        y.pages(...).write(acc)
+```
+
+Refused at the line: a part not of acc's columns, a constant row past the held
+block's (a word is checked at run time), a stream whose rows' tiles the build does
+not know, and a product inside a stream loop.
 
 ### Sums started from a field
 

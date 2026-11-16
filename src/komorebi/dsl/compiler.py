@@ -2823,6 +2823,10 @@ class HandlerCompiler:
                 f"write {function.name} as `return a @ b`, a the stream's block, b a "
                 "field",
             )
+        held = len(call.args) == 2 and self.held_row(call.args[0])
+        arrived = held and self.arrived_operand(node, call.args[1])
+        if arrived:
+            return self.held_block_product(node, value, function, held, arrived)
         left = len(call.args) == 2 and self.field_name(call.args[0])
         rows = left and self.arrived_rows(node, call.args[1])
         if rows:
@@ -8581,7 +8585,10 @@ class HandlerCompiler:
             if (
                 isinstance(node, ast.Call)
                 and len(node.args) == 2
-                and self.field_name(node.args[0]) is not None
+                and (
+                    self.field_name(node.args[0]) is not None
+                    or self.held_row(node.args[0]) is not None
+                )
                 and any(
                     isinstance(n, ast.Name) and n.id == name
                     for n in ast.walk(node.args[1])
@@ -8615,6 +8622,110 @@ class HandlerCompiler:
                             "the loop around this line"
                         ),
                     )
+
+    def held_row(self, arg):
+        """(the held stream's Value, the row's C++) of `qs[r]`, qs a held stream;
+        else None."""
+        if not (isinstance(arg, ast.Subscript) and isinstance(arg.value, ast.Name)):
+            return None
+        value = self.scope.get(arg.value.id)
+        if value is None or value.kind != "held":
+            return None
+        return value, arg.slice
+
+    def held_block_product(self, node, value, function, held, arrived):
+        """`acc += f(qs[r], w)` (or `w[i][:, c0:c0 + n]`), qs a held stream (its
+        rows of k tiles) and w a block a broadcast brought that products take: tile
+        j of qs's row r by row j of w's part (acc's width of columns, transposed
+        where the cast turned it) into acc's DST, outside a stream loop."""
+        stream, row = held
+        block_value, (offset, _, pitch, transposed), first, columns, name = arrived
+        width = value.width
+        if self.loop_states:
+            self.refuse(
+                node,
+                "a product of a held stream's row runs on its own, and this stream "
+                "loop holds the matrix unit's setup for its own products",
+                "write it after the loop",
+            )
+        k = stream.columns
+        if k is None:
+            self.refuse(
+                node,
+                f"{ast.unparse(node.value.args[0])}'s stream has rows of tiles the "
+                "build does not know",
+                "stream a rectangle whose columns are a constant: t.tiles[r:..., 0:k]",
+            )
+        if columns is None:
+            columns = pitch
+        if columns != width or pitch is None:
+            self.refuse(
+                node,
+                f"the block's part is {columns or 'a word of'} columns and "
+                f"{ast.unparse(node.target)} holds {width}",
+                f"take a window of {width}: w[i][:, c0:c0 + {width}]",
+            )
+        if not getattr(block_value, "held", False):
+            self.refuse(
+                node,
+                f"{name} is not waited for at its cast",
+                "cast it in the lines around this product",
+            )
+        buffer = block_value.buffer
+        left = stream.buffer.dtype
+        why = product_refusal(left, buffer.dtype)
+        if why is not None:
+            self.refuse(node, why, "cast tiles of a matrix format of the stream's")
+        fidelity = self.product_fidelity(node, function)
+        if self.placed(
+            node, {}, function, left, buffer.dtype, ("tensor", block_value.tensor)
+        ):
+            self.refuse(
+                node,
+                f"{function.name} turns the product, and a held stream's product is "
+                "built plain",
+                "drop the marker",
+            )
+        most = stream.buffer.block // k
+        line = self.integer(row)
+        bound = (
+            ""
+            if line.rstrip("u").isdigit()
+            else (
+                f"if (!(({line}) < {most})) {{  // the held block's rows\n"
+                "    compute.gave_up(km::kGaveBadItem, km::kWhereCInput);\n"
+                "    return;\n}\n"
+            )
+        )
+        if line.rstrip("u").isdigit() and not int(line.rstrip("u")) < most:
+            self.refuse(
+                node,
+                f"the held block has {most} rows, 0 .. {most - 1}",
+                f"index it below {most}",
+            )
+        self.compiled.includes.add("matmul")
+        self.compiled.products.append(
+            (self.method.name, node.lineno, self.text(node), function, width, str(k))
+            + (fidelity,)
+        )
+        q, w = stream.cxx, buffer.name
+        flip = "true" if transposed else "false"
+        calls = "\n".join(
+            f"    matmul_block({q}, {w}, ({line}) * {k} + {j}, {offset} + {j} * "
+            f"{pitch} + {first}, {value.dst}, {flip}, {width}, 1, {k});"
+            for j in range(k)
+        )
+        text = (
+            f"{bound}"
+            "if (km_ok) {\n"
+            "    // the sums' setup (vector unit) done before the matrix unit adds\n"
+            "    MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
+            f"    KM_UNPACK_FORMATS({w}, {q});\n"
+            f"    matmul_block_init({q}, {w}, {flip}, {width}, 1, {k});\n"
+            f"{calls}\n"
+            "}"
+        )
+        return [], [Line(text, {"km_ok"} | self.uses(row) | text_uses(first, self))]
 
     def held_block_ends(self, body):
         """compute's frees of the blocks products took (taken_by_field_products),
@@ -9146,6 +9257,10 @@ class HandlerCompiler:
             )
         )
         self.scope[name] = Value("held", half, buffer=buffer)
+        bounds = getattr(pages, "bounds", None)  # a row's tiles, for products
+        self.scope[name].columns = (
+            bounds[1] if bounds and isinstance(bounds[1], int) else None
+        )
         self.held.setdefault(self.blocks[-1], []).append((name, node))
         return movement, compute
 
