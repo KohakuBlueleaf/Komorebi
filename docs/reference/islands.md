@@ -47,7 +47,7 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False,
 host_reaches=None, card_dram=False, line=False, packet=None, message_links=False,
 tensors=None`, are optional limits and choices: `packet` is the bytes of a link packet,
 whole 64-byte lines (default 8,192, from 4,352 to 15,232), `tensors` the tensor table's
-entries (1 to 32, default 32: [tensors](#tensors)), and `host_reaches`, `card_dram` and `line` are
+entries (default 32, more as L1 allows: [tensors](#tensors)), and `host_reaches`, `card_dram` and `line` are
 described [below](#tensors) and under [a card split into
 islands](#a-card-split-into-islands).
 With one card it has the same calls over one island: no mesh and no fabric, the card's
@@ -250,7 +250,8 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   onto island 0 refused.
 - `run.addon(program)` on an `IslandRun` adds a class to the live run on every island
   at once, all or none, with one program field (classes.md, "Another class added to a
-  live run", item 8); its tensors are ones made before the load.
+  live run", item 8); its tensors may be made before the load or while the run lives
+  (each later tensor's table row is written by the ranks, below).
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
@@ -312,6 +313,21 @@ small DRAM tensor the host reads: it waits behind a command a link core runs, so
 a dynamic run's messages are served, its links' counts are read after its RUN. On one
 island, `crossings()` has no row.
 
+The first command of each (handler, group) on an island run is bracketed so, without
+waiting: `run.submit` reads the counts before it queues the command and returns, and
+`run.wait` (or `run.drain`) reads them again when it has the command's event; when
+pages, asks or puts crossed the session's log then says so as a fact, `cross.cross on
+ranks 0..39 moved 40 pages across the link (asks 0, puts 80); if that is not meant, see
+its tensors' group=` (a gather is meant to cross; a weight placed over another group
+than the handler's is not). The first use costs two reads (a `COUNTS` command to each
+island's link cores, each) and later commands of the same (handler, group) nothing.
+`run.crossing_line` is `"log"` (the default), `"error"` (raised by that wait after the
+command has run, its events on the error's `events`) or `"off"`; a run whose messages
+cross is not read (its counts wait behind its RUN). The counts are a link's, so the line
+cannot name the tensor or the ranks that fetched across; commands in flight in the
+same span are counted with it, and the line says how many (`with 2 other commands in
+flight`).
+
 Measured on two Blackhole p150a cards, every link (4), 2026-11-14:
 [05_forward](../../examples/05_forward/README.md) (16 messages of 4 forwards over 232
 message ranks) sent 15 messages from island 0 and 7 from island 1, the replay's 22
@@ -353,9 +369,13 @@ DRAM takes now.
 `tensor.address` is the tensor's reference word, what a script passes in a command and
 a kernel hands to Komorebi's page calls. On one card it is the bank address, as without
 islands. Over islands it is the index of the tensor's entry in the tensor table
-(`km.Session(cards=..., tensors=n)` entries, 32 by default and at most: `KM_TENSORS_MAX`
-splits the word's values into entries below it and bank addresses above, in every
-kernel), which the session writes into every core of every island at the load; the word
+(`km.Session(cards=..., tensors=n)` entries, 32 by default: `KM_TENSORS_MAX` splits the
+word's values into entries below it and bank addresses above, in every kernel; a session
+of n over 32 builds its kernels, link kernels and X280 threads with `KM_TENSORS_MAX=n`,
+and those of 32 or fewer are built as without the knob. Every DRAM bank address lies
+above the allocator's base, over 1 MiB, so n may go to 65,536; what bounds it is the
+table's L1 on every core, a row of the load's budget: 100 tensors take 4,800 B a core on
+two islands), which the session writes into every core of every island at the load; the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,
@@ -554,6 +574,12 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   line's place in the queue: a get's 32 in flight, the put queue's page CPUs),
   `ask_slot` (room in a page CPU's ring), `ask_sent` (its writes leaving), `ask_count`
   (its port's count of the pages); the give-up word itself names `ask`.
+- A page line refused before it holds anything (toward the core's own island, a size
+  or an alignment that does not fit, a port out of range), under `guard` in an island
+  build, gives up that command alone (`refused` at `ask`, as a deadline's give-up is
+  recorded). The core's kernels do not end, so it is never reset. The command is given
+  up at its deadline, the row names the refusal, and the core takes its next command
+  and the stop's EXIT. Without the guard it is `bad_item`, and the core's kernels end.
 - A command given up while a page line is out (under `guard`): each reader and writer
   counts the pages its lines asked or put and no wait counted yet (the page port's
   word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait
