@@ -1191,6 +1191,21 @@ class RowNorm(km.Program):
             results.push(self.norm(row, self.weight))
 ```
 
+Several sums in turn and several fields take the row form in levels
+([tile compiler](tile.md)): the layer norm, from
+[tile levels](../../experiments/language/tile_levels/tile_levels.py), a weight and a bias
+field filled as the weight above (field k copied into DST 2 width + k), at most 4 values
+a row kept by `.col()` (the rows tile's slots):
+
+```python
+@km.tile_function
+def layer_norm(row, weight, bias):
+    mean = km.reduce_sum(row, exact=True) * (1.0 / (32 * WIDTH))
+    d = row - mean.col()
+    var = km.reduce_sum(d * d, exact=True) * (1.0 / (32 * WIDTH))
+    return d * km.rsqrt(var + EPS).col() * weight.row() + bias.row()
+```
+
 The weight's tile is the row form's per-column operand, laid out by the host
 (`p_tile` of [rules.py](../../experiments/language/tile_rules/rules.py)): the tile compiler's
 row form reads it so. This layout is temporary: a plain weight row, laid out on the
@@ -1204,6 +1219,31 @@ not priced), the rules that fired, and the tolerance the decorator states
 (`tolerance=`, the largest relative error against float64). A loop that calls a tile
 function holds no other tile line: the body's setup holds the vector unit's constant
 registers for the loop.
+
+A tile function may return several tiles (a state and an output): the call names each,
+and each is pushed into its own write stream in the loop. Result k is DST k of the call;
+the commit and the packs run at the last push of the call's results. From
+[tile levels](../../experiments/language/tile_levels/tile_levels.py):
+
+```python
+@km.tile_function
+def decay(x, h):
+    h = DECAY * h + x
+    return h, km.silu(h)
+
+
+for x, s in zip(
+    km.Stream(a.pages(first, TILES), block=8),
+    km.Stream(h.pages(first, TILES), block=8),
+):
+    s2, y = decay(x, s)
+    states.push(s2)
+    results.push(y)
+```
+
+A call holds 4 DST tiles (half of the fp32 DST), so a function returns at most 4 tiles.
+Refused by name: the results pushed without a name (`out.push(decay(x, s))`), a result
+left unpushed in the loop, several results in the row form.
 
 `@km.handler(stamps="t")` on a handler that calls a tile function makes the math CPU
 read the wall clock around each call between two `tensix_sync()`, as the tile
