@@ -1,7 +1,7 @@
 // The compute kernel of a dynamic handler: a message visits a core, changes its value,
 // and is forwarded to the core that the new value names, until its hops are used up.
 #include "api/compute/common.h"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 

@@ -6,7 +6,7 @@
 
 #include "../x280_ports.h"
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_x280.hpp"
+#include "komorebi/device/core/km_x280.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 // Busy for `cycles` on the wall clock: a unit of the pass.

@@ -27,7 +27,7 @@ the writer writes the sum. The words then ride in the same VALID write as the ti
 
 ## How it maps onto the runtime
 
-| Step | Kernel | Call (`komorebi/device/km_broadcast.hpp`) |
+| Step | Kernel | Call (`komorebi/device/movement/km_broadcast.hpp`) |
 |---|---|---|
 | the leader casts its choice | reader, NoC0 | `broadcast.cast(cast, word)` (with `CARRY`: `reserve`, the tile's read, then the same cast) |
 | the others take it | reader | `broadcast.arrive(cast)`, `broadcast.word()` |

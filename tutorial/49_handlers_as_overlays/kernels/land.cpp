@@ -1,7 +1,7 @@
 // The land handler: a message is counted into this core's notes and consumed.
 #include <stdint.h>
 
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "handlers.h"
 
 // --8<-- [start:land]

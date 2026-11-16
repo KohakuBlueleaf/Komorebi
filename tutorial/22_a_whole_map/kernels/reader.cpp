@@ -1,7 +1,7 @@
 // The reader kernel: for each tile of this core's share, copies tile i of the first
 // half of the source and tile i of the second half into the two input buffers.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 

@@ -52,7 +52,7 @@ go against the direction; a window of two or more hides them.
 ## Device calls
 
 ```c++
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 
 // Reader or writer, inside the handler body, once per command:
 // reader: the km::Reader or km::Writer; command: the command;

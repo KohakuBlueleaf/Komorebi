@@ -10,7 +10,7 @@ that a host-chosen pattern gives it.
 
 | part | file |
 |---|---|
-| The pattern and the engine, first written here, now Komorebi's `km::Movement` ([reference](../../../docs/reference/movement.md)): a pattern word (its length, 1 to 24, and one bit per position, set when mover B owns that block), streams (direction, tensor, blocks, repetitions, buffer pair, pattern), run by one loop that issues every stream whose half has room or data, one barrier, then push or pop | `komorebi/device/km_movement.hpp` |
+| The pattern and the engine, first written here, now Komorebi's `km::Movement` ([reference](../../../docs/reference/movement.md)): a pattern word (its length, 1 to 24, and one bit per position, set when mover B owns that block), streams (direction, tensor, blocks, repetitions, buffer pair, pattern), run by one loop that issues every stream whose half has room or data, one barrier, then push or pop | `komorebi/device/movement/km_movement.hpp` |
 | One data-movement source compiled for both movers, plus the classic layout for comparison | `kernels/movement.cpp` |
 | Compute: takes block k from the half of its owner, so tile order is kept | `kernels/compute.cpp` |
 | Driver: read, write and copy programs, exact against numpy before timing | `probe.py` |

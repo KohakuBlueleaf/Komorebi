@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 
 // ATTEND: a0 q_address, a1 k_address, a2 v_address, a3 o_address (bf16 tiles), a4
 // job_tables, a5 mode, a6 requested_passes (0: one), a7 first_job, a8 job_count.
@@ -107,7 +107,7 @@ constexpr uint32_t kArgWindow = 0;
 
 #if !defined(COMPILE_FOR_TRISC)
 
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 
 // Timed wait until this kernel's reads have landed (km::kFlushReads) or its writes
 // have left L1 (km::kFlushSent); a give-up goes into state word `word`.

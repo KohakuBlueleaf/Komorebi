@@ -85,7 +85,7 @@ def test_two_links_that_differ_are_refused():
         check(second=moved)
 
 
-DEVICE = Path(__file__).parents[2] / "src/komorebi_native/include/komorebi/device"
+DEVICE = Path(__file__).parents[3] / "src/komorebi_native/include/komorebi/device"
 
 
 def test_the_device_headers_clear_the_put_structs_a_field_at_a_time():
@@ -96,7 +96,7 @@ def test_the_device_headers_clear_the_put_structs_a_field_at_a_time():
     block = re.compile(r"\bPut(Rings|Run)\s+\w+\s*(=\s*)?\{\s*\}")
     found = [
         f"{path.name}:{number}"
-        for path in sorted(DEVICE.glob("*.hpp"))
+        for path in sorted(DEVICE.rglob("*.hpp"))
         for number, line in enumerate(path.read_text().splitlines(), 1)
         if block.search(line.split("//")[0])
     ]

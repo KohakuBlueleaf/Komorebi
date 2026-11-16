@@ -27,7 +27,7 @@ buffers, and compute takes the blocks in order, each from the half its owner fil
 ## Device calls
 
 ```c++
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 
 constexpr km::BufferPair kInput = {kInputMoverA, kInputMoverB};  // two buffer indices
 

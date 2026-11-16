@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include "../ops.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 
 // DC_KEYS_MOST (the overlay's define): key tiles a core holds at most, its buffers'
 // size in key tiles (keys and values 4 pages each, scores 2, P 1).

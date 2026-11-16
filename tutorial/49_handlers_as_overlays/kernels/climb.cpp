@@ -2,7 +2,7 @@
 // when its hops are used up it goes to this core again, as land. The RUN command seeds.
 #include <stdint.h>
 
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "handlers.h"
 
 // --8<-- [start:climb]

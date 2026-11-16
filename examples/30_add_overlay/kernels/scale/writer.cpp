@@ -1,7 +1,7 @@
 // SCALE's writer part: writes the tiles compute made to the core's pages of the
 // tensor the command names.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "../add.h"
 

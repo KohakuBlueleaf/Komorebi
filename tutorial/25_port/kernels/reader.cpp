@@ -1,8 +1,8 @@
 // The reader kernel: the sending core (rank 1) reads a tile from DRAM; the receiving
 // core (rank 0) waits for the tile to arrive.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "handlers.h"
 
 void kernel_main() {

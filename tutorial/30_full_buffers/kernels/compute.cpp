@@ -1,7 +1,7 @@
 // The compute kernel of a dynamic handler: rank 0 sends messages until send says no
 // more, and every core consumes what it receives and notes how much quota it has left.
 #include "api/compute/common.h"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 

@@ -69,7 +69,7 @@ device open wrote, and the run has since covered part of it:
 `Launch.reset_core(x, y, timeout_s)` (the host module) makes those writes from the
 host, through the runtime's reset call. `Launch.reset_list(x, y)` gives the same writes
 as a write list, which the dispatcher's reset command (`KMD_HANDLER_RESET`,
-`x280/kernel/reset.h`) runs on the X280: the soft-reset register through a strict NoC
+`x280/kernel/grid/reset.h`) runs on the X280: the soft-reset register through a strict NoC
 window, the list from the upload region into the core's L1, a wait of at most a second
 for the firmware, then the go.
 
@@ -114,9 +114,9 @@ or in all three compute threads driving the units.
 - `komorebi_native/csrc/host/km_host.cpp`: `Launch.reset_core` (the host's reset) and
   `Launch.reset_list` (the write list; `every=True` for every core's arguments).
 - `komorebi/session/session.py`: the backend keeps the launch (`backend.launch`).
-- `komorebi_native/x280/kernel/reset.h`, `main.c`, `km_dispatch.h`, `kernel.h`: the
+- `komorebi_native/x280/kernel/grid/reset.h`, `main.c`, `km_dispatch.h`, `kernel.h`: the
   reset command (`KMD_HANDLER_RESET`), the kept list, the soft-reset constants.
-- `komorebi_native/x280/kernel/inspect.h`: at the end of a give-up's wait, the cores
+- `komorebi_native/x280/kernel/grid/inspect.h`: at the end of a give-up's wait, the cores
   still in the command reset from the kept list (`KMD_INSPECT_RESET`).
 - `komorebi/session/state.py`, `komorebi/errors.py`, `komorebi/session/run.py`: the inspect's reset
   flags, `CommandTimeout.recovered`, `Run.keep_resets`, `Run.reset_core`,

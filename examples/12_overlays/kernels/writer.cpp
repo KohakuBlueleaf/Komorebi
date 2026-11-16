@@ -1,7 +1,7 @@
 // The writer: for scale, loads and calls the overlay's writer part, which writes the
 // tiles compute made to the core's pages in DRAM.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "overlays.h"
 
 void kernel_main() {

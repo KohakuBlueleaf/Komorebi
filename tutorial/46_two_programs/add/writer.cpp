@@ -1,5 +1,5 @@
 // Program add, its writer: APPLY answers a0 + a1.
-#include "komorebi/device/km_program.hpp"
+#include "komorebi/device/core/km_program.hpp"
 #include "../handlers.h"
 
 // --8<-- [start:program]
