@@ -184,6 +184,7 @@ def make(
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
+    self.rect_lines = compiled.rect_lines
     self.reduce_groups = compiled.reduce_groups
     self.port_handlers = set(compiled.port_handlers)
     if compiled.rectangle:

@@ -49,6 +49,22 @@ def test_a_broadcast_s_rectangle_is_its_island_s_flat_ranks():
     )
 
 
+def test_self_x_and_y_on_a_group_across_two_islands_is_refused_by_name():
+    run = island_run(119)
+    run.programs[0].rect_lines = {"place": "line 40"}
+    place = SimpleNamespace(name="place")
+    Run._check_places(run, place, 0, (119, 60))  # on island 1 alone
+    Run._check_places(run, SimpleNamespace(name="grid"), 0, (60, 120))  # no self.x
+    with pytest.raises(ValueError) as refused:
+        Run._check_places(run, place, 0, (60, 120))
+    assert str(refused.value) == (
+        "SimpleNamespace.place, line 40: self.x and self.y are a core's place in its "
+        "own island's rectangle, and the group 60..179 spans more than this island's "
+        "ranks 119..237, whose places the next island's ranks repeat: submit it on "
+        "one island's ranks"
+    )
+
+
 class Linear:
     reduce_groups = {"split": (14, "line 70: km.reduce(self.sums, group=14)")}
 
