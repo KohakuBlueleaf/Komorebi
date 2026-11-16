@@ -75,7 +75,7 @@ as on one card), all at 32 x 4096 x 4096:
 | | Exact | Relative RMS | us a command (median of 3) | Each island's part, us |
 |---|---|---|---|---|
 | The class, one card | 0 wrong | 4.38e-3 | 94.2 | |
-| The class, two cards | 0 wrong | 4.38e-3 | 65.1 | 61.6 to 61.9 and 64.8 to 65.2 |
+| The class, two cards | 0 wrong | 4.38e-3 | 65.3 (65.1 on 2026-11-15) | 61.9 to 63.5 and 64.3 to 65.4 |
 | The dense project's hand program, two cards, output form | | | 53.7 (one call) | |
 
 The command's time is its slower part's. Island 1's part ends 3.2 to 3.4 us after
