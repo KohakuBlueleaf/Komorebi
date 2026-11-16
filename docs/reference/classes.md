@@ -1077,8 +1077,8 @@ A **tile function** is a Python function of tiles that the tile compiler
 `@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
 called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
 stream form: `+`, `-`, `*`, `/`, `abs`, number constants, `km.silu`, `km.sigmoid`,
-`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.exp`
-(`error=`, `over=`) of up to four tiles, one result. From
+`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.exp`,
+`km.tanh`, `km.erf`, `km.log` (`error=`, `over=`) of up to four tiles, one result. From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
