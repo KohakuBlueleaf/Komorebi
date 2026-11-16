@@ -281,8 +281,8 @@ namespace km {
     }
 #endif
 
-    // `bytes` (4s) from L1 `from` into L1 `address` of `rank` (both 16-aligned), then 1
-    // at its port (port >= 0). Done at return. False: gave up (`far`).
+    // `bytes` (4s, any count) from L1 `from` into L1 `address` of `rank` (16-aligned),
+    // then 1 at its port (port >= 0). At return landed, `from` free. False: gave up.
     template <typename Kernel>
     inline bool write_l1(
         const Kernel& core,
