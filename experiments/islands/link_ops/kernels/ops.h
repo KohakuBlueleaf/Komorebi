@@ -5,10 +5,8 @@
 
 // CLEAR (reader): the rank's area and its count at port a0 set to 0.
 constexpr uint32_t kHandlerClear = 1;
-// OPS (reader, a group of one rank): a1 calls to rank a0. Each call, by kind a5 (bit
-// kKindWrite, kKindAdd or both): km::l1_write of a4 bytes into ring slot call % a3 of
-// the rank's area, counted at port a2 (kNoPort: none); km::word_add of 1 to its
-// counter word. The writer's result: calls done.
+// OPS (reader, one rank): a1 calls to rank a0, kind a5 (kKind*): km::write_l1 of a4
+// bytes into ring slot call % a3, port a2 (kNoPort: none); km::add_word of 1 (counter).
 constexpr uint32_t kHandlerOps = 2;
 // REPORT (reader, a group of one rank): its area, its count at port a2 in word
 // kAreaPort, written into page a1 of tensor a0.

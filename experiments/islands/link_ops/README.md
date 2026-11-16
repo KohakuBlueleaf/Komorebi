@@ -3,10 +3,11 @@
 Two calls a kernel makes with a flat rank, wherever that rank runs
 (`komorebi/device/km_far.hpp`):
 
-- `km::l1_write(core, command, rank, address, from, bytes, port)`: `bytes` from this
-  core's L1 at `from` into the rank's L1 at `address` (the same offset in 16 bytes);
-  with `port` 0 or more, 1 is added to that port of the rank after the bytes landed.
-- `km::word_add(core, command, rank, address, value)`: `value` added to the 4-byte word
+- `km::write_l1(core, command, rank, address, from, bytes, port)`: `bytes` (whole 4s)
+  from this core's L1 at `from` into the rank's L1 at `address` (both 16-aligned, on
+  any island: a guarded build refuses others by name); with `port` 0 or more, 1 is
+  added to that port of the rank after the bytes landed.
+- `km::add_word(core, command, rank, address, value)`: `value` added to the 4-byte word
   at `address` of the rank's L1.
 
 Each is done when it returns, so what one rank sends to one rank arrives in the order
