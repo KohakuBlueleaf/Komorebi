@@ -4,7 +4,7 @@ over its entries, an entry's words."""
 import ast
 
 from komorebi.dsl import front
-from komorebi.dsl.compile import broadcasts, handler_buffers, layout, scope
+from komorebi.dsl.compile import broadcasts, handler_buffers, layout, ranges, scope
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -25,7 +25,7 @@ def entries_call(frame, node):
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == spelling("entries")
-        and frame.is_range(node.func.value)
+        and ranges.is_range(frame, node.func.value)
     ):
         return node
     return None
@@ -204,7 +204,7 @@ def entries_table(frame, node, call):
         )
     size = frame.constant_int(keys[size_key])
     first = frame.constant_int(keys[first_key]) if first_key in keys else 0
-    pages = frame.range_of(call.func.value)
+    pages = ranges.range_of(frame, call.func.value)
     handler_buffers.pages_only(frame, node, pages)
     if pages.count != "1":
         refuse(frame.where, node, "a table of entries is one page", "read pages(i, 1)")

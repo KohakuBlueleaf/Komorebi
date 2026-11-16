@@ -25,6 +25,7 @@ from komorebi.dsl.compile import (
     messages,
     page_words,
     puts,
+    ranges,
     scope,
     stamp_pages,
     tile_products,
@@ -1479,10 +1480,10 @@ class HandlerCompiler(Frame):
             and value.func.attr == spelling("read")
             and not value.args
             and not value.keywords
-            and self.is_range(value.func.value)
+            and ranges.is_range(self, value.func.value)
         ):
             return page_words.read_word(
-                self, node, name, self.range_of(value.func.value)
+                self, node, name, ranges.range_of(self, value.func.value)
             )
         if entry_tables.entries_call(self, value) is not None:
             return entry_tables.entries_made(self, node, name, value)
@@ -1497,7 +1498,7 @@ class HandlerCompiler(Frame):
             return messages.direct_call(self, node, name, value)
         call = self.construct(value)
         if call == "partition":
-            return self.partition(node, name, value)
+            return ranges.partition(self, node, name, value)
         if call == "zeros":
             return self.zeros(node, name, value)
         if call == "stream" and scope.field_name(
@@ -1523,8 +1524,8 @@ class HandlerCompiler(Frame):
                 f"km.{spelling(call)} gives no value to name",
                 "write it on a line of its own",
             )
-        if self.is_range(value):
-            self.scope[name] = self.range_of(value)
+        if ranges.is_range(self, value):
+            self.scope[name] = ranges.range_of(self, value)
             return [], []
         text = self.integer(value)
         declared = "uint32_t" if name in self.assigned else "const uint32_t"
@@ -1970,217 +1971,6 @@ class HandlerCompiler(Frame):
 
     # Ranges, partitions ------------------------------------------------------------
 
-    def is_range(self, node):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            return node.func.attr in (
-                spelling("pages"),
-                spelling("items"),
-            ) and self.is_tensor(node.func.value)
-        if isinstance(node, ast.Subscript):
-            return self.is_tensor(node.value) or self.is_tiles(node.value)
-        if isinstance(node, ast.Attribute):
-            return node.attr == spelling("pages") and self.is_tensor(node.value)
-        if isinstance(node, ast.Name):
-            return self.scope.get(node.id, Value("")).kind == "range"
-        return False
-
-    def is_tiles(self, node):
-        """`tensor.tiles`, a tensor's tiles as a grid."""
-        return (
-            isinstance(node, ast.Attribute)
-            and node.attr == spelling("tiles")
-            and self.is_tensor(node.value)
-        )
-
-    def rectangle(self, node):
-        """`t.tiles[r0:r1, c0:c1]`: the range of the rectangle's tiles, row-major (a
-        row: one run of pages; rows: runs of its columns, a row of t apart);
-        `t.tiles[r0:r1:s, c0:c1]` its rows s rows of t apart (stepped_side)."""
-        tensor = node.value.value.id
-        example = self.tensors.get(tensor)
-        sides = node.slice.elts if isinstance(node.slice, ast.Tuple) else []
-        if (
-            len(sides) != 2
-            or not all(isinstance(side, ast.Slice) for side in sides)
-            or sides[1].step is not None
-            or not all(
-                side.lower is not None and side.upper is not None for side in sides
-            )
-        ):
-            refuse(
-                self.where,
-                node,
-                "a rectangle of tiles is two slices, rows then columns, each with "
-                "its start and end, a step on the rows alone",
-                f"write {tensor}.{spelling('tiles')}[r0:r1, c0:c1] or [r0:r1:s, "
-                "c0:c1]",
-            )
-        if (
-            not front.is_tensor(example)
-            or example.layout != "tile"
-            or len(example.shape) < 2
-        ):
-            refuse(
-                self.where,
-                node,
-                f"{tensor}'s tiles: the program is made without an example tensor "
-                "in tiles of at least two dimensions",
-                f'make it with {tensor}=a tensor of the shape, layout "tile"',
-            )
-        columns_of = getattr(self, "column_words", {}).get(tensor)
-        if columns_of is None:
-            columns_of = example.shape[-1] // 32
-            self.method.widths[tensor] = columns_of  # the host's check at submit
-        texts, lengths, bounds = [], [], []
-        for side in sides:
-            low, high = self.integer(side.lower), self.integer(side.upper)
-            texts.append(low)
-            known = self.side_length(side)
-            lengths.append((known, f"(({high}) - ({low}))"))
-            bounds.append(known if known is not None else self.side_bound(side))
-        step = self.row_step(node, sides[0], columns_of)
-        if step is not None:  # rows s apart: their count, its most
-            lengths[0], bounds[0] = self.stepped_side(sides[0])
-        rows, columns = lengths
-        first = f"(({texts[0]}) * {columns_of} + ({texts[1]}))"
-        if rows[0] is not None and columns[0] is not None:
-            count = str(rows[0] * columns[0])
-        elif rows[0] == 1:  # one row: its columns
-            count = columns[1]
-        else:
-            count = (
-                f"({rows[1] if rows[0] is None else rows[0]} * "
-                f"{columns[1] if columns[0] is None else columns[0]})"
-            )
-        used = {columns_of} if isinstance(columns_of, str) else set()
-        for side in sides:
-            used |= scope.uses(self, side.lower) | scope.uses(self, side.upper)
-        for part in (sides[0].step,) if step is not None else ():
-            used |= scope.uses(self, part)
-        if step is None and (rows[0] == 1 or columns[0] == columns_of):  # one run
-            # (a width given at each submit is never known to equal a side)
-            rect = None
-        else:  # rows of columns; either side a word, read at run time
-            rect = (
-                rows[1] if rows[0] is None else str(rows[0]),
-                columns[1] if columns[0] is None else columns[0],
-                columns_of if step is None else step,
-            )
-        return Value(
-            "range",
-            first=first,
-            count=count,
-            tensor=tensor,
-            cxx=" ".join(sorted(used)),
-            rect=rect,
-            bounds=tuple(bounds),
-            sides=(
-                rows[1] if rows[0] is None else str(rows[0]),
-                columns[1] if columns[0] is None else columns[0],
-            ),
-        )
-
-    def side_bound(self, side):
-        """The most a slice whose length is a word can be, where the build knows it:
-        n of `c:min(c + n, e)` (either order of min's ints), else None."""
-        upper = side.upper
-        if not (
-            isinstance(upper, ast.Call)
-            and isinstance(upper.func, ast.Name)
-            and upper.func.id == spelling("min")
-        ):
-            return None
-        found = [
-            self.known_int(arg.right)
-            for arg in upper.args
-            if isinstance(arg, ast.BinOp)
-            and isinstance(arg.op, ast.Add)
-            and ast.dump(arg.left) == ast.dump(side.lower)
-        ]
-        known = [n for n in found if n is not None]
-        return min(known) if known else None
-
-    def row_step(self, node, side, columns_of):
-        """A rectangle's rows' step, s of `r0:r1:s` (an int or a word): the tensor
-        pages from one of its rows to the next (s x t's columns), or None for no step
-        or a step of 1."""
-        if side.step is None or self.known_int(side.step) == 1:
-            return None
-        known = self.known_int(side.step)
-        if known is not None and known < 1:
-            refuse(
-                self.where, node, "a rectangle's rows' step is 1 or more", "give s >= 1"
-            )
-        if known is not None and isinstance(columns_of, int):
-            return known * columns_of
-        if known is not None:  # the tensor's width given at each submit
-            return f"({known} * {columns_of})"
-        return f"(({self.integer(side.step)}) * {columns_of})"
-
-    def stepped_side(self, side):
-        """The rows of `r0:r1:s`, (their count where the build knows it, its C++),
-        and their most where the build knows it: r1 = r0 + n * s (n rows), r1 =
-        min(r0 + n * s, e) (at most n), or a step known and r1 - r0 known or bound
-        (the rows of that many)."""
-        low, high = self.integer(side.lower), self.integer(side.upper)
-        step = self.integer(side.step)
-        text = f"(((({high}) - ({low})) + ({step}) - 1) / ({step}))"
-
-        def rows_of(end):  # n of r0 + n * s (either order of the product), or None
-            if not (
-                isinstance(end, ast.BinOp)
-                and isinstance(end.op, ast.Add)
-                and ast.dump(end.left) == ast.dump(side.lower)
-                and isinstance(end.right, ast.BinOp)
-                and isinstance(end.right.op, ast.Mult)
-            ):
-                return None
-            factors = (end.right.left, end.right.right)
-            for factor, other in (factors, factors[::-1]):
-                if ast.dump(other) == ast.dump(side.step):
-                    return self.known_int(factor)
-            return None
-
-        known = rows_of(side.upper)
-        if known is not None:
-            return (known, text), known
-        upper = side.upper
-        if (
-            isinstance(upper, ast.Call)
-            and isinstance(upper.func, ast.Name)
-            and upper.func.id == spelling("min")
-        ):
-            found = [n for n in map(rows_of, upper.args) if n is not None]
-            if found:
-                return (None, text), min(found)
-        each = self.known_int(side.step)
-        length = self.side_length(side)
-        if each is not None and length is not None:
-            return (-(-length // each), text), -(-length // each)
-        bound = self.side_bound(side)
-        if each is not None and bound is not None:
-            return (None, text), -(-bound // each)
-        return (None, text), None
-
-    def side_length(self, side):
-        """A slice's length where the build knows it: both ends ints, or `a:a + n`."""
-        ends = []
-        for end in (side.lower, side.upper):
-            try:
-                ends.append(ast.literal_eval(end))
-            except ValueError:
-                ends.append(self.known_int(end))
-        if all(isinstance(end, int) for end in ends):
-            return ends[1] - ends[0]
-        upper = side.upper
-        if (
-            isinstance(upper, ast.BinOp)
-            and isinstance(upper.op, ast.Add)
-            and ast.dump(upper.left) == ast.dump(side.lower)
-        ):
-            return self.known_int(upper.right)
-        return None
-
     def known_int(self, node):
         """An int the build knows (a literal, a module constant, a plan value), or
         None."""
@@ -2192,159 +1982,6 @@ class HandlerCompiler(Frame):
             value = self.plan.get(node.id, self.names.get(node.id))
             return value if isinstance(value, int) else None
         return None
-
-    def is_tensor(self, node):
-        return (
-            isinstance(node, ast.Name)
-            and self.scope.get(node.id, Value("")).kind == "tensor"
-        )
-
-    def range_of(self, node):
-        """A page range: tensor.pages, tensor.pages(first, count), tensor[part]."""
-        if isinstance(node, ast.Name):
-            return self.scope[node.id]
-        if isinstance(node, ast.Attribute):
-            tensor = node.value.id
-            return Value(
-                "range", first="0", count=self.counts[tensor], tensor=tensor, cxx=tensor
-            )
-        if isinstance(node, ast.Call) and node.func.attr == spelling("items"):
-            return self.items_of(node)
-        if isinstance(node, ast.Call):
-            tensor = node.func.value.id
-            if len(node.args) != 2 or node.keywords:
-                refuse(self.where, node, "pages(first, count)", "give both")
-            first, count = (self.integer(arg) for arg in node.args)
-            used = scope.uses(self, node.args[0]) | scope.uses(self, node.args[1])
-            return Value(
-                "range",
-                first=first,
-                count=count,
-                tensor=tensor,
-                cxx=" ".join(sorted(used)),
-            )
-        if self.is_tiles(node.value):
-            return self.rectangle(node)
-        tensor = node.value.id
-        part = node.slice
-        if isinstance(part, ast.Name) and part.id in self.scope:
-            value = self.scope[part.id]
-            if value.kind == "partition":
-                return Value(
-                    "range",
-                    first=value.first_text(value.cxx),
-                    count=f"{value.cxx}.len",
-                    tensor=tensor,
-                    cxx=part.id,
-                )
-        refuse(
-            self.where,
-            node,
-            "a tensor is in DRAM: a slice is not a value",
-            f"take a part: {tensor}[self.{spelling('partition')}(...)], or use a "
-            f"stream or {spelling('read')}()",
-        )
-
-    def items_of(self, node):
-        """`t.items(first, count, size=B)`: items of B bytes packed in t's pages, a
-        whole number a page; a stream moves them as pages of B bytes."""
-        tensor = node.func.value.id
-        if not node.args:  # first=, count=, size=, step=: the keyword form
-            return self.stepped_items(node, tensor)
-        sizes = [k.value for k in node.keywords if k.arg == spelling("item_size")]
-        if len(node.args) != 2 or len(sizes) != 1 or len(node.keywords) != 1:
-            refuse(
-                self.where,
-                node,
-                f"{spelling('items')}(first, count, {spelling('item_size')}=bytes)",
-                "give first, count and the bytes an item",
-            )
-        size = self.constant_int(sizes[0])
-        _, page_bytes = handler_buffers.tensor_format(self, node, tensor)
-        if size < 1 or page_bytes % size:
-            refuse(
-                self.where,
-                node,
-                f"items of {size} B in pages of {page_bytes} B: a page holds a whole "
-                "number of items",
-                f"give a {spelling('item_size')} that divides {page_bytes}",
-            )
-        first, count = (self.integer(arg) for arg in node.args)
-        used = scope.uses(self, node.args[0]) | scope.uses(self, node.args[1])
-        return Value(
-            "range",
-            first=first,
-            count=count,
-            tensor=tensor,
-            cxx=" ".join(sorted(used)),
-            items=(size, page_bytes // size),
-        )
-
-    def stepped_items(self, node, tensor):
-        """`t.items(first=f, count=n, size=B, step=s)`: items f, f + s, ... (n of
-        them), a `km::Walk` of one item a row and a row pitch of s items."""
-        names = ("entries_first", "entries_count", "item_size", "item_step")
-        given = {k.arg: k.value for k in node.keywords}
-        words = [spelling(n) for n in names]
-        if set(given) - set(words) or not set(words[:3]) <= set(given):
-            refuse(
-                self.where,
-                node,
-                f"{spelling('items')}({', '.join(w + '=' for w in words)}): the first "
-                "item, their count, the bytes an item and the items from one to the "
-                f"next ({spelling('item_step')}= 1 if left out)",
-                "give first=, count= and size= (and step=), and no other keyword",
-            )
-        size = self.constant_int(given[words[2]])
-        _, page_bytes = handler_buffers.tensor_format(self, node, tensor)
-        if size < 1 or page_bytes % size:
-            refuse(
-                self.where,
-                node,
-                f"items of {size} B in pages of {page_bytes} B: a page holds a whole "
-                "number of items",
-                f"give a {spelling('item_size')} that divides {page_bytes}",
-            )
-        bounded = {}
-        for word in (words[1], words[3]):
-            if word not in given:
-                continue
-            value = given[word]
-            known = self.known_int(value)
-            if known is None and not self.is_word(value):
-                refuse(
-                    self.where,
-                    node,
-                    f"{word}= {ast.unparse(value)}: the build bounds an int or a word "
-                    "of the handler, not this",
-                    f"give {word}= an int or a word (a parameter, an entry's word)",
-                )
-            if known is not None and known < 1:
-                refuse(
-                    self.where,
-                    node,
-                    f"{word}= {known}: 1 or more",
-                    f"give {word}= >= 1",
-                )
-            bounded[word] = known
-        first = self.integer(given[words[0]])
-        count = self.integer(given[words[1]])
-        step = self.integer(given[words[3]]) if words[3] in given else "1"
-        used = set()
-        for value in given.values():
-            used |= scope.uses(self, value)
-        rect = None if step == "1" else (count, 1, step)
-        return Value(
-            "range",
-            first=first,
-            count=count,
-            tensor=tensor,
-            cxx=" ".join(sorted(used)),
-            items=(size, page_bytes // size),
-            rect=rect,
-            bounds=(bounded[words[1]], 1),
-            sides=(count, 1),
-        )
 
     def is_word(self, node):
         """Whether `node` is a name or attribute the handler holds as an int word."""
@@ -2360,41 +1997,6 @@ class HandlerCompiler(Frame):
                 or node.value.id == "self"
             )
         )
-
-    def partition(self, node, name, call):
-        """`part = self.partition(pages)`: this core's part by rank; `part =
-        b.partition(pages)`: by its place along broadcast b's row or column."""
-        index, length = "km_rank", "km_size"
-        if isinstance(call.func.value, ast.Name) and call.func.value.id != "self":
-            along = self.scope[call.func.value.id].pattern
-            index, length = (
-                ("km_self_x", "km_rect_columns")
-                if along == "row"
-                else ("km_self_y", "km_rect_rows")
-            )
-        if len(call.args) != 1 or call.keywords:
-            refuse(self.where, node, "partition(pages) takes one range", "give one")
-        argument = call.args[0]
-        if self.is_range(argument):
-            pages = self.range_of(argument)
-            handler_buffers.pages_only(self, node, pages)
-            if pages.rect is not None and str(pages.rect[0]) != "1":
-                refuse(
-                    self.where,
-                    node,
-                    "a part is a run of pages, and a rectangle of rows is not one",
-                    f"partition one row ({spelling('tiles')}[r:r + 1, c0:c1]), whole "
-                    "rows, or a page range",
-                )
-            first, count = pages.first, pages.count
-        else:
-            first, count = "0", self.integer(argument)
-        self.scope[name] = Value("partition", name, first=first)
-        text = (
-            f"const km::Partition {name} = km::partition({count}, {index}, {length});"
-        )
-        uses = text_uses(count, self) | {index, length}
-        return [Glue(text, {name}, uses)], [Glue(text, {name}, uses)]
 
     # Tiles -------------------------------------------------------------------------
 
@@ -2518,14 +2120,14 @@ class HandlerCompiler(Frame):
     def stream_options(self, node, call, write):
         """The stream's StreamOptions: its range, block, pattern C++, pattern letters
         or None, repeat C++, a read's tiles a row (`row=`), its block's word."""
-        if len(call.args) != 1 or not self.is_range(call.args[0]):
+        if len(call.args) != 1 or not ranges.is_range(self, call.args[0]):
             refuse(
                 self.where,
                 node,
                 "a stream of a page range",
                 "write km.Stream(tensor[part], block=8)",
             )
-        pages = self.range_of(call.args[0])
+        pages = ranges.range_of(self, call.args[0])
         block, pattern, letters, repeat = None, None, None, "1"
         row = 1
         word = None  # a block given at each submit: its parameter
@@ -4294,14 +3896,14 @@ class HandlerCompiler(Frame):
             return self.write_row(
                 node, call, scope.field_name(self, target.value), target.slice
             )
-        if not self.is_range(target):
+        if not ranges.is_range(self, target):
             refuse(
                 self.where,
                 node,
                 "write to a page range",
                 "write tensor.pages(first, 1).write(tile)",
             )
-        pages = self.range_of(target)
+        pages = ranges.range_of(self, target)
         handler_buffers.pages_only(self, node, pages)
         summed = call.args[0] if len(call.args) == 1 else None
         if scope.field_name(self, summed) in self.summed:
@@ -5133,7 +4735,7 @@ class HandlerCompiler(Frame):
             self.construct(stream) == "stream"
             and len(stream.args) == 1
             and not stream.keywords
-            and self.is_range(stream.args[0])
+            and ranges.is_range(self, stream.args[0])
         ):
             refuse(
                 self.where,
@@ -5148,7 +4750,7 @@ class HandlerCompiler(Frame):
                 f"self.{field} is filled above and no body took it",
                 "fill it once, before the body that takes it",
             )
-        pages = self.range_of(stream.args[0])
+        pages = ranges.range_of(self, stream.args[0])
         handler_buffers.pages_only(self, node, pages)
         dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
         value = self.compiled.fields[field]

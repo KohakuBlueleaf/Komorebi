@@ -6,7 +6,7 @@ import ast
 
 from komorebi import abi
 from komorebi.dsl import island_place
-from komorebi.dsl.compile import handler_buffers, layout, scope
+from komorebi.dsl.compile import handler_buffers, layout, ranges, scope
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -443,19 +443,19 @@ def cast_parts(frame, cast, drawn):
             isinstance(source, ast.Attribute)
             and source.attr == spelling("transposed")
             and isinstance(source.value, ast.Subscript)
-            and frame.is_tiles(source.value.value)
+            and ranges.is_tiles(frame, source.value.value)
         )
         if transposed:
             source = source.value
         if not (
             isinstance(source, ast.Call)
-            and frame.is_range(source)
+            and ranges.is_range(frame, source)
             and len(source.args) == 2
             or isinstance(source, ast.Subscript)
-            and frame.is_tiles(source.value)
+            and ranges.is_tiles(frame, source.value)
         ):
             refuse(frame.where, cast, "a cast sends pages read from a tensor", drawn)
-        pages = frame.range_of(source)
+        pages = ranges.range_of(frame, source)
         handler_buffers.pages_only(frame, cast, pages)
         pitch = None  # a row's pages in the slot, where the columns are a word
         if isinstance(source, ast.Subscript):

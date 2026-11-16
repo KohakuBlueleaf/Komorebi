@@ -3,7 +3,7 @@ word written as one page."""
 
 import ast
 
-from komorebi.dsl.compile import handler_buffers, layout
+from komorebi.dsl.compile import handler_buffers, layout, ranges
 from komorebi.dsl.compile.cxx import camel, range_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -62,7 +62,7 @@ def read_words(frame, node, target, value):
         and call.func.attr == spelling("read")
         and not call.args
         and not call.keywords
-        and frame.is_range(call.func.value)
+        and ranges.is_range(frame, call.func.value)
         and isinstance(part, ast.Slice)
         and part.step is None
         and part.upper is not None
@@ -78,7 +78,7 @@ def read_words(frame, node, target, value):
     lower = 0 if part.lower is None else frame.constant_int(part.lower)
     upper = frame.constant_int(part.upper)
     names = [name.id for name in target.elts]
-    pages = frame.range_of(call.func.value)
+    pages = ranges.range_of(frame, call.func.value)
     handler_buffers.pages_only(frame, node, pages)
     if pages.count != "1":
         refuse(frame.where, node, "words are of one page", "read pages(first, 1)")
