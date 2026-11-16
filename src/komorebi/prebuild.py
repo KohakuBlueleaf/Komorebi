@@ -24,9 +24,9 @@ REFUSED = 75  # the script's exit: its load refused by size, the size now kept
 PASSES = 6  # passes at most: each opens at a size the passes before it did not
 MHZ = 1000  # a mock has no clock: the cycles of a limit, never compiled in
 LIMIT = (
-    "a mock run's calls return at once, its reads give zeros and what it returns "
-    "equals whatever it is compared with (the success path): a script that branches "
-    "on what it read may build other loads than on the card"
+    "a prebuild follows the path of a run in which every command succeeds (its reads "
+    "give zeros): a script that branches on what it read may build other loads than "
+    "on the card"
 )
 LOADS = [0]  # the loads this process built
 
@@ -35,20 +35,11 @@ CHILD = "import sys, komorebi.prebuild as p; sys.exit(p.main())"
 
 
 class Nothing(float):
-    """What a mock run's call gives: any field, call or item is itself, 0.0 as a number
-    (JSON too), equal to whatever it is compared with (a script's success checks
-    pass), it iterates over nothing and is true (a loop waiting for it ends)."""
+    """What a mock run's call of no known shape gives: any field, call or item is
+    itself, 0.0 as a number (JSON too), it iterates over nothing and is true."""
 
     def __new__(cls):
         return super().__new__(cls, 0.0)
-
-    def __eq__(self, other):
-        return True
-
-    def __ne__(self, other):
-        return False
-
-    __hash__ = float.__hash__
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -91,23 +82,16 @@ class Nothing(float):
 NOTHING = Nothing()
 
 
-class Done(Nothing):
-    """What a mock run's wait gives: a done event (its kind "done"; an island run's
-    parts, itself), else Nothing."""
-
-    kind = "done"
-    parts = property(lambda self: (self,))
-
-
-DONE = Done()
+TICKS = 50  # a mock command's time: 1 us of the X280's 50 MHz timer
 
 
 class Run:
-    """The run a prebuild's load returns in place of the card's: every call returns
-    at once with Nothing, a wait with a done event; stop and abort end its `parts`."""
+    """The run a prebuild's load returns in place of the card's: what a run in which
+    every command succeeds answers (done events, a clean result block, empty state and
+    trace); what has no known shape, Nothing. `parts`: an island run's runs."""
 
     def __init__(self, counted=True, parts=()):
-        self.stopped, self.parts = False, list(parts)
+        self.stopped, self.parts, self._next = False, list(parts), 1
         LOADS[0] += int(counted)
 
     def stop(self, timeout=None):
@@ -120,10 +104,74 @@ class Run:
     def alive(self):
         return not self.stopped
 
+    def submit(self, *args, **kwargs):
+        self._next += 1
+        return self._next - 1
+
+    load = submit  # an added program's ticket
+
+    def submit_many(self, handler, firsts, *args, **kwargs):
+        count = len(np.atleast_1d(firsts))
+        self._next += count
+        return range(self._next - count, self._next)
+
+    def event(self, handle):
+        """A done event of 1 us; an island run's, one part an island."""
+        from komorebi.island_session import IslandEvent  # noqa: PLC0415 (it imports us)
+        from komorebi.run import Event  # noqa: PLC0415 (run imports us)
+
+        done = Event(int(handle), "done", 0, TICKS)
+        return IslandEvent([done] * len(self.parts)) if self.parts else done
+
+    def wait(self, handles, timeout=None):
+        if isinstance(handles, int | np.integer):
+            return self.event(handles)
+        return [self.event(handle) for handle in handles]
+
+    def wait_any(self, handles, timeout=None):
+        return self.event(min(handles))
+
+    def transfer(self, *args, **kwargs):
+        return self.event(0)
+
+    wait_engine = transfer
+
+    def drain(self, timeout=None):
+        return 0
+
+    def given_up(self, handle):
+        return None
+
+    def holds(self):
+        return None
+
+    def result(self):
+        """The result block of a run that ended clean: state done, error none."""
+        from komorebi import abi, state  # noqa: PLC0415 (state imports abi only)
+
+        h = abi.headers()
+        words = np.zeros(h["KMD_R_WORDS"], np.uint32)
+        words[h["KMD_R_STATE"]] = h["KMD_STATE_DONE"]
+        block = state.result_block(words, h)
+        return [dict(block) for _ in self.parts] if self.parts else block
+
+    def state(self):
+        return []
+
+    def inspect(self, *args, **kwargs):
+        return []
+
+    def trace(self):
+        """An empty trace: no core, no command."""
+        from komorebi import abi, state  # noqa: PLC0415
+
+        h = abi.headers()
+        return state.Trace(np.zeros((0, 0, h["kTraceWords"])), {}, {}, MHZ, h)
+
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return (lambda *args, **kwargs: DONE) if name.startswith("wait") else NOTHING
+        return NOTHING
 
 
 def active():

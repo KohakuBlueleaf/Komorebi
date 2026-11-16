@@ -68,21 +68,33 @@ def test_a_compiled_kernel_is_logged_with_its_own_defines(tmp_path):
     assert logged[1] == "compiled: reader.cpp brisc (KM_LINK_CHUNK=65536 LINEAR_OWN=1)"
 
 
-def test_a_mock_run_s_calls_return_at_once_with_nothing():
+def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
     before = prebuild.LOADS[0]
     run = prebuild.Run()
     assert prebuild.LOADS[0] == before + 1 and run.alive()
     event = run.wait(run.submit("twice", a=1))
-    assert event.kind == "done" and run.wait_any([1]).kind == "done"
-    assert event.parts == (event,)
-    assert float(event.microseconds) == 0.0 and f"{event.microseconds:.2f}" == "0.00"
-    assert list(event.values) == [] and event and int(event + 1) == 0
-    error = run.result()["error_name"]  # a script's success check passes
-    assert error == "none" and "none" == error  # noqa: SIM300 (both sides)
-    assert (error != "none") is False
-    assert json.dumps({"us": event.microseconds}) == '{"us": 0.0}'
+    assert event.kind == "done" and event.microseconds == 1.0
+    assert [e.kind for e in run.wait([run.submit(), run.submit()])] == ["done"] * 2
+    assert run.wait_any([3, 2]).handle == 2
+    taken = []  # a script's own checks: the card's success path
+    if event.kind != "done" or event.kind == "rejected":
+        taken.append("failure")
+    if run.result()["error_name"] == "none" and run.result()["state_name"] == "done":
+        taken.append("success")
+    assert taken == ["success"]
+    assert run.state() == [] and run.inspect() == [] and run.drain() == 0
+    assert json.dumps({"us": run.chain().report}) == '{"us": 0.0}'  # no known shape
     run.stop()
     assert run.stopped and not run.alive()
+
+
+def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
+    run = prebuild.Run(parts=[prebuild.Run(counted=False) for _ in range(2)])
+    event = run.wait(run.submit())
+    assert event.kind == "done" and len(event) == 2 and event.parts[1].kind == "done"
+    assert [block["error_name"] for block in run.result()] == ["none", "none"]
+    run.stop()
+    assert all(part.stopped for part in run.parts)
 
 
 def passes(monkeypatch, tmp_path, refusals):
