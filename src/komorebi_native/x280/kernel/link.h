@@ -46,8 +46,8 @@ typedef struct {
 #define KMD_LINK_POLLS 4u    /* inbox parts read a pass, in turn */
 #define KMD_ISLAND_NONE 0xFFFFFFFFu /* no island */
 
-/* Everything sized by the session's islands is in the link area (LIM, the host's):
- * its island entries, the counts, the crossings' bits and the inbox parts. */
+/* Sized by the session: the inbox parts (link cores write them) in LIM; the entries,
+ * counts and crossings' bits, this dispatcher's alone, in its cached state tail. */
 typedef struct {
     /* the link ring (source KMD_SRC_LINK): lines, events, its words */
     uint64_t commands[KMD_LINK_DEPTH][8];
@@ -62,10 +62,9 @@ typedef struct {
     uint8_t slot_crossing[KM_RING_SLOTS]; /* 1 + the crossing of a local part */
     uint8_t slot_stage[KM_RING_SLOTS];    /* 1 + the stage of a LINK command */
     uint8_t out_to[KMD_LINK_OUT];         /* the island each queued packet goes to */
-    volatile const uint32_t* entries;     /* the area's island entries */
-    volatile uint32_t*
-        counts; /* island i: packets sent to it at 2 i, read at 2 i + 1 */
-    volatile uint32_t* pending;    /* crossing e's bits at e * words */
+    const uint32_t* entries;              /* the island entries (the state tail) */
+    uint32_t* counts;  /* island i: packets sent to it at 2 i, read at 2 i + 1 */
+    uint32_t* pending; /* crossing e's bits at e * words */
     volatile const uint8_t* inbox; /* the inbox parts, here */
     volatile uint8_t* window;      /* the link core's area */
     uint32_t inbox_noc;  /* the inbox's NoC address, the same on every island */
@@ -173,15 +172,28 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
         block < KMD_LIM_UPLOAD + dispatcher->upload_bytes || block > lim_end ||
         bytes > lim_end - block || counts < link->islands * KMD_LINK_ENTRY_BYTES ||
         pending < counts + 8u * link->islands ||
-        inbox < pending + 4u * KMD_CROSSINGS * link->words || inbox > bytes ||
+        pending + 4u * KMD_CROSSINGS * link->words > KMD_STATE_TAIL ||
+        inbox < link->islands * KMD_LINK_ENTRY_BYTES || inbox > bytes ||
         (link->islands - 1u) * link->part_bytes > bytes - inbox
     ) {
         return KMD_ERROR_ARGS;
     }
     volatile uint8_t* at = dispatcher->lim + block;
-    link->entries = (volatile const uint32_t*)at;
-    link->counts = (volatile uint32_t*)(at + counts);
-    link->pending = (volatile uint32_t*)(at + pending);
+    /* the tables in the tail, through a volatile pointer: a plain loop may become a
+     * memcpy or memset call, and the image has no C library */
+    uint32_t* tables = (uint32_t*)((uint8_t*)dispatcher + KMD_STATE_BYTES);
+    volatile uint32_t* filled = tables;
+    for (uint32_t i = 0; i < 4u * link->islands; i++) {
+        filled[i] = ((volatile const uint32_t*)at)[i];
+    }
+    for (
+        uint32_t i = counts / 4u; i < pending / 4u + KMD_CROSSINGS * link->words; i++
+    ) {
+        filled[i] = 0;
+    }
+    link->entries = tables;
+    link->counts = tables + counts / 4u;
+    link->pending = tables + pending / 4u;
     link->inbox = at + inbox;
     link->inbox_noc = words[KMD_L_LIM] + block + inbox;
     /* each part's unread packets: a crossing's command and a DONE of the far one's */

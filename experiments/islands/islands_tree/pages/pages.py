@@ -38,6 +38,9 @@ def parse():
     parser.add_argument("--pages", type=int, default=64, help="tiles")
     parser.add_argument("--calls", nargs="+", default=sorted(CALLS), choices=CALLS)
     parser.add_argument("--root", type=int, default=None, help="default: the last")
+    parser.add_argument(
+        "--tree", type=int, nargs="+", default=None, help="a parent an island"
+    )
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--wait", type=float, default=0.5, help="wait limit, seconds")
     return parser.parse_args()
@@ -104,7 +107,9 @@ def main():
     with km.Session(**opened, log=log) as session:
         ranks, islands = session.ranks, len(session.sessions)
         root = islands - 1 if args.root is None else args.root
-        report["root"] = root
+        if args.tree is not None:  # its root: the island that is its own parent
+            root = next(i for i, parent in enumerate(args.tree) if parent == i)
+        report.update(root=root, tree=args.tree)
         # small integers: every sum exact in float32, in any order
         inputs = [
             generator.integers(-8, 9, (args.pages * TILE, TILE)).astype(np.float32)
@@ -118,15 +123,17 @@ def main():
         )
         run = session.load(program(), wait=args.wait)
         log(f"loaded, {islands} islands, {ranks} ranks")
+        tree = args.tree
         hosts = {
             "gather": lambda: run.all_gather(tensor),
-            "reduce": lambda: run.all_reduce(tensor, scratch),
-            "reduce_to": lambda: run.reduce_to(tensor, scratch, root),
-            "broadcast": lambda: run.broadcast_from(tensor, root),
+            "reduce": lambda: run.all_reduce(tensor, scratch, tree=tree),
+            "reduce_to": lambda: run.reduce_to(tensor, scratch, root, tree=tree),
+            "broadcast": lambda: run.broadcast_from(tensor, root, tree=tree),
         }
+        packed = sum(parent << 4 * i for i, parent in enumerate(tree or ()))
         for call in args.calls:
             words = [tensor.address, 0, args.pages, scratch.address, 1, CALLS[call]]
-            words.append(root)
+            words += [root, int(tree is not None), packed & 0xFFFFFFFF, packed >> 32]
 
             def kernel(words=words):
                 return run.wait(run.submit("tree", (0, ranks), words))
