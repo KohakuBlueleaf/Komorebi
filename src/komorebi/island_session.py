@@ -395,6 +395,16 @@ class IslandEvent(tuple):
     result = property(lambda self: self[0].result)
 
 
+def _handler_label(handler):
+    """A handler as a line names it: program.method, the method, or its number."""
+    method = getattr(handler, "method", handler)
+    if hasattr(method, "name"):
+        program = getattr(handler, "program", None)
+        return f"{program.name}.{method.name}" if program else method.name
+    program = getattr(handler, "program", None)
+    return f"{program.name} handler {int(handler)}" if program else f"handler {handler}"
+
+
 class IslandRun:
     """The runs of one program on every island, as one run over flat ranks. A ticket
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
@@ -504,7 +514,7 @@ class IslandRun:
             raise ValueError(
                 f"crossing_line={self.crossing_line!r}: 'log', 'error' or 'off'"
             )
-        key = (getattr(handler, "name", handler), group)
+        key = (_handler_label(handler), group)
         if self.crossing_line == "off" or self._counts is None:
             return None
         if key in self._crossed_seen:
@@ -519,7 +529,7 @@ class IslandRun:
         moved = (self.crossings() - before).total()
         if not (moved["pages"] or moved["asks"] or moved["puts"]):
             return
-        name = getattr(handler, "name", handler)
+        name = _handler_label(handler)
         line = (
             f"{name} on ranks {group[0]}..{group[0] + group[1] - 1} moved "
             f"{moved['pages']} pages across the link (asks {moved['asks']}, puts "

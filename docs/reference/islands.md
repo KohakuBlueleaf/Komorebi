@@ -315,8 +315,8 @@ island, `crossings()` has no row.
 The first command of each (handler, group) on an island run is bracketed so by itself:
 `run.submit` reads the counts, sends the command, waits for it (its error is then raised
 by the submit) and reads them again, and when pages, asks or puts crossed the session's
-log says so as a fact, `cross on ranks 0..39 moved 40 pages across the link (asks 0,
-puts 40); if that is not meant, see its tensors' group=` (a gather is meant to cross; a
+log says so as a fact, `cross.cross on ranks 0..39 moved 40 pages across the link
+(asks 0, puts 80); if that is not meant, see its tensors' group=` (a gather is meant to cross; a
 weight placed over another group than the handler's is not). That first use costs two
 reads (two `COUNTS` commands, one an island each) and the wait; later commands of the
 same (handler, group) cost nothing. `run.crossing_line` is `"log"` (the default),

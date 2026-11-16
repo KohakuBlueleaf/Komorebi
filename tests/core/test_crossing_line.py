@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from komorebi.errors import KomorebiError
-from komorebi.island_session import Crossings, IslandRun
+from komorebi.island_session import Crossings, IslandRun, _handler_label
+from komorebi.program import Handler
 
 FIELDS = dict.fromkeys(Crossings.FIELDS + Crossings.CYCLES, 0)
 
@@ -84,3 +85,11 @@ def test_error_is_raised_after_the_command_ran_and_its_events_kept():
     run.crossing_line = "loud"
     with pytest.raises(ValueError, match="'log', 'error' or 'off'"):
         run.submit(SimpleNamespace(name="gather"), (0, 16))
+
+
+def test_the_line_names_a_handler_by_program_and_method():
+    named = SimpleNamespace(name="Cross")
+    method = SimpleNamespace(method=SimpleNamespace(name="cross"), program=named)
+    assert _handler_label(method) == "Cross.cross"
+    assert _handler_label(Handler(3, named)) == "Cross handler 3"
+    assert _handler_label(7) == "handler 7"
