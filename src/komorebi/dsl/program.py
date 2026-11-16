@@ -1755,9 +1755,17 @@ def summary(compiled, folder, files, l1):
     room = "" if l1 is None else f" of {l1} B left for buffers"
     report.append(f"  L1: the buffers take {total} B{room}")
     if l1 is not None and total > l1:
+        sizes = sorted(
+            ((sum(b.pages) * b.page_bytes, b) for b in compiled.buffers),
+            key=lambda pair: -pair[0],
+        )
+        largest = "; ".join(  # by name, so the line that holds it is plain
+            f"{b.name} {size} B ({b.dtype}, {b.what})" for size, b in sizes[:4]
+        )
         raise ProgramError(
             f"{compiled.name}: its buffers take {total} B, {l1} B left: "
-            "give smaller blocks in the plan"
+            f"give smaller blocks in the plan, or smaller fields; the largest: "
+            f"{largest}"
         )
     return report
 

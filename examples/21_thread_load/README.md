@@ -104,6 +104,25 @@ What the numbers say:
 - So the rounds that move the boundary run about nine times faster from the thread
   (1.8 ms against 17 ms for 40 rounds), the host sending one command.
 
+## As classes
+
+[as_class/thread_load_class.py](as_class/thread_load_class.py) writes a smaller load as
+two classes, both made with `form="runtime"`. `Adder` declares the thread
+([as_class/thread/adder.c](as_class/thread/adder.c)) and `Doubler` does not. They are
+loaded as `session.load({adder: (0, 4), doubler: (4, 4)})`. At that load, Adder's
+`adder_thread.h` also gets Doubler's parts: `doubler_double(...)`, whose command
+carries Doubler's program field, Doubler's tensors as thread words after Adder's own,
+and `doubler_load(first, count, deadline, &event)`, which is `kmx_load` of that field.
+Every class program gets a `<name>_load`. The thread loads Doubler on Adder's cores,
+doubles x on all eight, loads Adder back and adds x to the doubled. Adder's C names
+Doubler's functions, so the make does not build it (it logs "built at a load of
+several programs"); the load builds it. On card 0 at 1,350 MHz: d and s each had 0
+wrong words of 16,384, and the thread ran for 40.6 us.
+
+```
+python as_class/thread_load_class.py --dump outputs.npz
+```
+
 ## What this example does not do
 
 - A command's program and cores are fixed when it is submitted: the load moves cores
