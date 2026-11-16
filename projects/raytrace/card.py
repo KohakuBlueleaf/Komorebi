@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import session as km_session
+from komorebi.session import process
 from projects.raytrace import packets
 
 K = packets.K
@@ -26,7 +26,7 @@ def log(message):
 
 def aiclk_mhz():
     """AICLK of the card this process uses, from the driver (MHz)."""
-    return km_session.aiclk_mhz()
+    return process.aiclk_mhz()
 
 
 def hwmon(card):

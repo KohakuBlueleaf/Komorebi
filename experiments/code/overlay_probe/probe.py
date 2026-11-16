@@ -23,8 +23,8 @@ import builder  # noqa: E402
 import numpy as np  # noqa: E402
 
 from komorebi.device import native  # noqa: E402
-from komorebi.session import Session  # noqa: E402
 from komorebi.session.process import aiclk_mhz  # noqa: E402
+from komorebi.session.session import Session  # noqa: E402
 from komorebi.session.sizes import KERNEL_BUFFER_BASE  # noqa: E402
 
 T0 = time.monotonic()

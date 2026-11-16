@@ -13,8 +13,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import session as session_module
 from komorebi.device import channel as channel_module
+from komorebi.session import session as session_module
 
 ROOT = Path(__file__).resolve().parents[3]
 KERNELS = ROOT / "examples" / "01_mapcollect" / "kernels"
