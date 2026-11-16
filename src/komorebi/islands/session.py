@@ -34,6 +34,7 @@ from komorebi.program import several as programs_module
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.description import Program
+from komorebi.session import process, sizes
 from komorebi.session import session as session_module
 from komorebi.session import state as device_state
 
@@ -1322,7 +1323,7 @@ class IslandSession:
         if kernel_bytes is None and (len(self.cards) == 2 or self.split > 1):
             kernel_bytes = self._remembered(expect)  # the page links' code
         self.kernel_bytes = kernel_bytes
-        self._worker_l1 = session_module.worker_l1_size(kernel_bytes)
+        self._worker_l1 = sizes.worker_l1_size(kernel_bytes)
         self.tree = tree
         self.mesh = None
         self.chips = None
@@ -1378,7 +1379,7 @@ class IslandSession:
                     link_slots(self.graph, island, lambda there, k: 0)
                     for island in range(self.split)
                 )
-                session_module._LIVE.add(self)
+                process._LIVE.add(self)
                 self.log(
                     f"card {self.cards[0]} as {self.split} islands, "
                     f"pairs {self.graph.pairs()}"
@@ -1400,27 +1401,27 @@ class IslandSession:
         """open() over two or more cards, TT_VISIBLE_DEVICES set: the mesh, the X280
         runtime and a Session on each island's device."""
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
-        if session_module.exit_timeout(os.environ, self.log) == 0:
+        if process.exit_timeout(os.environ, self.log) == 0:
             self.log(
-                f"{session_module.OP_TIMEOUT}=0: an exit after a grid that did not "
+                f"{process.OP_TIMEOUT}=0: an exit after a grid that did not "
                 "return hangs"
             )
         for card in self.cards:
-            holder = session_module.chip_holder(card)
+            holder = process.chip_holder(card)
             if holder is not None:
                 raise CardBusy(
                     f"card {card} is held by process {holder} "
-                    f"({session_module._command(holder)}): an open would wait until "
+                    f"({process._command(holder)}): an open would wait until "
                     "that process exits",
                     pid=holder,
                 )
-        session_module.refuse_reopen("mesh", self.cards)
+        process.refuse_reopen("mesh", self.cards)
         module = native.load_module(self.tree)
         self.log(f"opening cards {listed} as one 1 x {len(self.cards)} fabric mesh")
         self.log(f"routers told: packets of {self.packet} bytes")
         self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
-        session_module._hook_exit()
-        session_module._LIVE.add(self)
+        process._hook_exit()
+        process._LIVE.add(self)
         try:
             self.chips = list(self.mesh.chips())
             if sorted(self.chips) != sorted(self.cards):
@@ -2168,7 +2169,7 @@ class IslandSession:
             return
         if self.split > 1:
             nocs = self.sessions[0].nocs()
-            rows = session_module._split_rows(self.graph, self.sessions[0].grid)
+            rows = sizes._split_rows(self.graph, self.sessions[0].grid)
             split = tuple(
                 (first, count, self.graph.count(island), self.graph.first(island))
                 for island, (first, count) in enumerate(rows)
@@ -2984,7 +2985,7 @@ class IslandSession:
             "KM_DELIVER_SLOT_BYTES": slot,
             "KM_DELIVER_BODY_AT": body_at,
         }
-        size = session_module.deliver_bytes(delivered.defines)
+        size = sizes.deliver_bytes(delivered.defines)
         self.log(
             f"deliveries: {slots} slot(s) a source island of {slot:,} B, "
             f"{size:,} B of each link core's L1 over {islands_count} islands"
@@ -3127,7 +3128,7 @@ class IslandSession:
                 )
                 held = {"own words": [own], "island table": [self._table_of(session)]}
                 if apart:  # the link cores' buffers' base, the same on every island
-                    area = session_module.L1_BYTES - session.l1()[1]
+                    area = sizes.L1_BYTES - session.l1()[1]
                 else:
                     words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
                     words[:, h["KM_PUT_CPUS"] // 4] = cpus
@@ -3240,7 +3241,7 @@ class IslandSession:
         size = self._memory.opened or KERNEL_BYTES
         if self.message_links:
             size = max(size, KERNEL_BYTES_SERVICES)
-        return min(size, session_module.KERNEL_BUFFER_MAX)
+        return min(size, sizes.KERNEL_BUFFER_MAX)
 
     def _remember(self, program):
         """The kernel buffer the islands' load needed (its largest), kept for the
@@ -3295,11 +3296,11 @@ class IslandSession:
                 self.log("closing the mesh")
                 self.mesh.close()
                 self.mesh = None
-                session_module._LIVE.discard(self)
+                process._LIVE.discard(self)
             elif stuck and self.mesh is not None:
                 self.log(f"mesh not closed: the grid of islands {stuck} did not return")
             if self.mesh is None and not stuck:
-                session_module._LIVE.discard(self)
+                process._LIVE.discard(self)
         if first is not None:
             raise first
 

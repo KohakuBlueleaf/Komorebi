@@ -7,15 +7,15 @@ import komorebi as km
 from komorebi.device import native
 from komorebi.errors import KomorebiError
 from komorebi.islands import session as island_session
-from komorebi.session import session as session_module
+from komorebi.session import process
 
 
 @pytest.fixture
 def opened(monkeypatch):
     """A clean record of what this process opened; no device is ever opened."""
     record = {"mesh": [], "alone": []}
-    monkeypatch.setattr(session_module, "_OPENED", record)
-    monkeypatch.setattr(session_module, "chip_holder", lambda card, path=None: None)
+    monkeypatch.setattr(process, "_OPENED", record)
+    monkeypatch.setattr(process, "chip_holder", lambda card, path=None: None)
     monkeypatch.delenv("TT_VISIBLE_DEVICES", raising=False)
 
     def no_device(*args, **kwargs):
@@ -48,12 +48,12 @@ def test_mesh_after_alone_refused(opened):
 
 
 def test_same_kind_again_allowed(opened):
-    session_module.refuse_reopen("alone", [0])
-    session_module.refuse_reopen("alone", [1])
+    process.refuse_reopen("alone", [0])
+    process.refuse_reopen("alone", [1])
     assert opened["alone"] == [(0,), (1,)]
     opened["alone"].clear()
-    session_module.refuse_reopen("mesh", [0, 1])
-    session_module.refuse_reopen("mesh", [0, 1])
+    process.refuse_reopen("mesh", [0, 1])
+    process.refuse_reopen("mesh", [0, 1])
     assert opened["mesh"] == [(0, 1), (0, 1)]
 
 

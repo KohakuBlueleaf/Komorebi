@@ -26,7 +26,9 @@ import numpy as np  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi.device import native  # noqa: E402
-from komorebi.session import KERNEL_BUFFER_BASE, Session, aiclk_mhz  # noqa: E402
+from komorebi.session import Session  # noqa: E402
+from komorebi.session.process import aiclk_mhz  # noqa: E402
+from komorebi.session.sizes import KERNEL_BUFFER_BASE  # noqa: E402
 
 T0 = time.monotonic()
 CONTROL_WORDS = 128  # remote.cpp: control words per core
