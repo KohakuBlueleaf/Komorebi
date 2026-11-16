@@ -285,7 +285,7 @@ messages.send(destination, message, km::Body{address, bytes});  // a new one, fr
 | Call | What it does |
 |---|---|
 | `packet.body(index)` | the body of message `index`: `address` (L1, 64-byte aligned), `bytes` (0: the message has none) and `words()` |
-| `forward(destination, message, body)`, `forward(destination, message, handler, body)` | as `forward`, with `body` beside the message; returns on all three compute threads once the body has left, so its L1 can be written again |
+| `forward(destination, message, body)`, `forward(destination, message, handler, body)` | as `forward`, with `body` beside the message. A body from a buffer of the program: returns on all three compute threads once it has left, so its L1 can be written again; a body of the packet in hand: returns at once, and `done(packet)` waits until the packet's bodies have left |
 | `send(destination, message, body)`, `send(destination, message, handler, body)` | the same for a new message (false, and nothing is sent, without quota) |
 
 `body_bytes` is 0 (the default: no bodies) or a multiple of 64 up to 4096. In a program
@@ -304,7 +304,8 @@ positions and 4 KiB). The writer takes a message with a body as any other, then 
 bin at once: after the reservation it writes the body to the page of the message's
 position and the lines, and the packet's commit waits for both, so a reader that sees the
 mark finds the body landed. The writer then counts the body as written, which is what the
-pack thread waits for before `forward` returns. The reader reads the bodies of a packet's
+pack thread waits for before `forward` returns (or `done`, for bodies of the packet in
+hand). The reader reads the bodies of a packet's
 messages into the packet's page after its lines; a packet of a program with bodies holds
 at most 4 messages (`kMessagesBodyPacket`), so the incoming buffer's page is 18,496 bytes
 for 64-byte lines and 4 KiB bodies (two pages).
@@ -329,10 +330,12 @@ Changing the 1024 words on the three compute threads takes the rest.
 No core copies a body: the writer sends it from where it lies in L1 (the program's
 buffer, or the packet it arrived in), and the reader reads it into the packet page.
 Over the grid, 2048 messages forwarding their bodies as they arrived to ranks drawn
-from a ray tracer's traffic move 30.3 million 2 KiB bodies a second, 29.4 million of
+from a ray tracer's traffic move 34.6 million 2 KiB bodies a second, 33.8 million of
 4 KiB ([ray_moves](../../experiments/programs/ray_moves/README.md#part-b-the-transport-card)).
 The bound there is each core's writer: a body is one reservation, its writes and one
-commit, and `forward` with a body returns once they are done (about 2,100 cycles).
+commit. The writer overlaps them across bins: it commits the last bin while the next
+bin's reservation travels, and a forward of a body that arrived does not wait for its
+bin (before both: 30.3 and 29.4 million, `forward` waiting about 2,100 cycles).
 
 ## A direct message
 
@@ -357,6 +360,7 @@ if (!messages.direct(to, message)) {  // false: the slot is busy, nothing was se
 | Call | What it does |
 |---|---|
 | `direct(destination, message)`, `direct(destination, message, handler)` | as `forward` (quota unchanged), through this core's slot at rank `destination`; true on all three compute threads when it went, false on all three when the slot is busy |
+| `direct(destination, message, body)`, `direct(destination, message, handler, body)` | the same with a [body](#a-message-with-a-body) beside the line, in a program with `body_bytes`; true once the body has left this core's L1 |
 
 `direct=` takes rank offsets (each rank r to (r + d) mod n, n the load's message ranks:
 its cores without the counter tiles; 0 is the core itself), a list of (sender,
@@ -367,7 +371,7 @@ number of receivers and senders; the bound is the L1 it costs.
 (an L1 tensor): a table of its declared receivers (each one's rank and the place of this
 core's slot there) and of its senders (each one's rank and its credit line), a 16-byte
 credit line per receiver, two counts per receiver, a taken line per sender, and a slot
-of `message_bytes` per sender. `direct()` finds the receiver in the table (a linear
+of `message_bytes` + `body_bytes` per sender. `direct()` finds the receiver in the table (a linear
 search: one L1 load and one compare an entry, not measured apart) and compares the
 receiver's count on the credit line with its own count of lines sent; equal, the slot is
 free: pack counts one more and hands the line to the writer. The writer writes the line
@@ -375,13 +379,17 @@ into the slot with mark 0, waits for the write, then writes its first 16 bytes w
 mark (the pair's count as a lap, as a queue position's), the queue's commit. The
 receiver's reader looks at its senders' slots before its queue; it copies a slot whose
 mark is the next one into a packet page, as it does the X280 ranks' inbox, and hands the
-slot back at once by writing its own count to the sender's credit line. Compute sees a
+slot back by writing its own count to the sender's credit line. A body goes into the
+slot after the line's place, before the line and its mark; the reader reads it by the
+NoC from the slot into the packet page after the lines, as a queued body, then hands
+the slot back. Compute sees a
 direct message as any other: `next()`, `packet[index]`, the handler named in its word 0
 (handlers as parts group it as an inbox packet; not yet run on a card).
 
-**L1.** A core's area is 48 bytes, 28 bytes a receiver and 20 + `message_bytes` a
-sender, rounded to 16; the load's L1 table lists the largest core's as "direct messages
-(tables, slots)". A ring of 118 ranks with 64-byte messages: 176 bytes a core.
+**L1.** A core's area is 48 bytes, 28 bytes a receiver and 20 + `message_bytes` +
+`body_bytes` a sender, rounded to 16; the load's L1 table lists the largest core's as
+"direct messages (tables, slots)". A ring of 118 ranks with 64-byte messages: 176 bytes
+a core; with 2 KiB bodies, 2,224.
 
 **The run's end.** A direct line counts in its sender's `sent` once its commit has
 landed, and in its receiver's `consumed` at `done()`, as a queued one. The reader's idle
@@ -389,20 +397,21 @@ test looks at the slots too, so the two passes cannot both see every core idle w
 line is in a slot.
 
 **What is refused.** At the load: a pair given twice, a rank outside the message ranks,
-`direct=` beside X280 ranks or `body_bytes`, and a group across islands (a direct line
+`direct=` beside X280 ranks, and a group across islands (a direct line
 across islands would follow the link service's write into a far core's L1; not in this
 version). The tables hold ranks of runs whose group starts at core 0: a run whose group
 starts elsewhere gives up with reason 77 (`direct`), and so does `direct()` to a rank
 that is not a declared receiver of this core.
 
-**What it costs.** Card 1, 2026-11-16, AICLK 1,350 MHz, host load 5.6 to 5.8, one
+**What it costs.** Card 1, 2026-11-16, AICLK 1,350 MHz, host load 3.9 to 6.2, one
 token a rank, 8475 hops each (1,000,050 hops), every token replayed on the host and
 exact ([direct_ring](../../experiments/programs/direct_ring/README.md)):
 
 | 118 ranks | direct, forward when busy | queue only |
 |---|---|---|
-| a ring, r to r + 1 | 15.72 ms, 1.85 µs a hop; 77 % of hops direct | 90.34 ms, 10.66 µs a hop |
-| pairs, r to 5r + 1 or r² + 3 (mod 118) | 25.73 ms, 3.04 µs a hop; 67 % direct | 27.05 ms, 3.19 µs a hop |
+| a ring, r to r + 1 | 16.44 ms, 1.94 µs a hop; 75 % of hops direct | 97.93 ms, 11.55 µs a hop |
+| pairs, r to 5r + 1 or r² + 3 (mod 118) | 26.20 ms, 3.09 µs a hop; 67 % direct | 26.93 ms, 3.18 µs a hop |
+| a ring with a 2 KiB body each token | 22.32 ms, 2.63 µs a hop; 72 % direct | 43.99 ms, 5.19 µs a hop |
 
 ## How a message travels
 
@@ -598,7 +607,7 @@ runs 12 cores and four X280 ranks with every message checked.
 
 - A direct path the runtime chooses by itself, with DRAM as overflow: a
   [direct message](#a-direct-message) is the program's call, and a false is the
-  program's to handle. A direct message with a body.
+  program's to handle.
 - A body that asks for a DRAM fetch decided by a message: a dynamic program keeps what its
   body reads in L1.
 - Quota moving between cores; dynamic handlers with different message sizes in one

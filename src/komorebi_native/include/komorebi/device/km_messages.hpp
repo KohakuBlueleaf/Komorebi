@@ -96,6 +96,8 @@ namespace km {
     constexpr uint32_t kMessagesOutBodyShift = 16;
     constexpr uint32_t kMessagesOutBodyBytes = 0xFFFF;
     constexpr uint32_t kMessagesFlagBodies = 2;  // writer's flag word: bodies written
+    constexpr uint32_t kMessagesNoBin = 0xFFFFFFFF;  // the writer: no bin awaits its commit
+    constexpr uint32_t kMessagesSettlePolls = 32;  // empty polls before it is committed
 
     // A core's direct messages (Program.dynamic(direct=)): an L1 area the host writes;
     // its header words are byte offsets in it (program.direct_layout).
@@ -823,12 +825,13 @@ namespace km {
             where = where != 0 ? where
                                : kWhereMessagesDirect;  // tables of ranks from 0
         }
+        const uint32_t slot_bytes = (
+            messages_arguments.message_bytes + messages_arguments.body_bytes
+        );
         auto direct_valid = [&](uint32_t sender) {
             return (
-                (
-                    l1(direct.slot(sender, messages_arguments.message_bytes))[0] &
-                    kMessagesMarkMask
-                ) == messages_mark(l1(direct.taken(sender))[0], 0)
+                (l1(direct.slot(sender, slot_bytes))[0] & kMessagesMarkMask) ==
+                messages_mark(l1(direct.taken(sender))[0], 0)
             );
         };
         auto direct_arrived = [&] {
@@ -964,17 +967,23 @@ namespace km {
             const uint32_t page = get_write_ptr(kCbMessagesIn);
             if (from_direct != 0) {  // the slots first: each sender waits for its own
                 const uint32_t words = messages_arguments.message_bytes / 4;
+                const uint32_t most = (
+                    messages_arguments.body_bytes != 0
+                        ? kMessagesBodyPacket
+                        : from_direct
+                );
+                uint16_t senders[kMessagesPacket];
                 uint32_t taken = 0;
-                for (
-                    uint32_t sender = 0; sender < direct_senders && taken < from_direct;
-                    sender++
-                ) {
+                const uint32_t wanted = from_direct < most ? from_direct : most;
+                for (uint32_t sender = 0; sender < direct_senders; sender++) {
+                    if (taken == wanted || where != 0) {
+                        break;
+                    }
                     if (!direct_valid(sender)) {
                         continue;
                     }
-                    volatile tt_l1_ptr uint32_t* message = (
-                        l1(direct.slot(sender, messages_arguments.message_bytes))
-                    );
+                    const uint32_t slot = direct.slot(sender, slot_bytes);
+                    volatile tt_l1_ptr uint32_t* message = l1(slot);
                     volatile tt_l1_ptr uint32_t* to = (
                         l1(
                             page + kMessagesHeader +
@@ -984,14 +993,47 @@ namespace km {
                     for (uint32_t word = 0; word < words; word++) {
                         to[word] = message[word];
                     }
-                    // The slot goes back: this reader's count to the sender's credit
-                    // line for this core.
-                    volatile tt_l1_ptr uint32_t* line = l1(direct.taken(sender));
+                    // A body: from the slot into the packet page, by the NoC.
+                    const uint32_t bytes = (
+                        messages_arguments.body_bytes != 0
+                            ? message[kMessagesBodyWord]
+                            : 0
+                    );
+                    if (bytes > messages_arguments.body_bytes) {
+                        where = kWhereMessagesBody;
+                    } else if (bytes != 0) {
+                        noc_async_read(
+                            reader.core_noc(
+                                arguments.me, slot + messages_arguments.message_bytes
+                            ),
+                            page + kMessagesHeader +
+                                kMessagesPacket * messages_arguments.message_bytes +
+                                taken * messages_arguments.body_bytes,
+                            messages_body_lines(bytes)
+                        );
+                    }
+                    senders[taken++] = sender;
+                }
+                if (where != 0) {
+                    break;
+                }
+                if (!noc_timeout(reader, [] {
+                    return ncrisc_noc_reads_flushed(noc_index);
+                })) {
+                    where = kWhereMessagesRead;
+                    break;
+                }
+                invalidate_l1_cache();
+                // The slots go back: this reader's count to each sender's credit line.
+                for (uint32_t index = 0; index < taken; index++) {
+                    volatile tt_l1_ptr uint32_t* line = (
+                        l1(direct.taken(senders[index]))
+                    );
                     line[0] = line[0] + 1;
                     invalidate_l1_cache();  // a fence: the NoC reads the stored line
-                    const uint32_t entry = direct.at(kDirectIn)[sender];
+                    const uint32_t entry = direct.at(kDirectIn)[senders[index]];
                     noc_async_write(
-                        direct.taken(sender),
+                        direct.taken(senders[index]),
                         reader.core_noc(
                             message_ranks.flat_of(entry & kDirectRank) - offset,
                             messages_arguments.direct +
@@ -999,7 +1041,6 @@ namespace km {
                         ),
                         16
                     );
-                    taken++;
                 }
                 if (!noc_timeout(reader, [] {
                     return ncrisc_noc_nonposted_writes_flushed(noc_index);
@@ -1359,7 +1400,61 @@ namespace km {
             );
         };
 
-        // Bin `bin` to its destination: reserve, mark, write, wait for the writes.
+        // The bin written but not committed (kMessagesNoBin: none); its commit goes
+        // out while the next bin's reservation travels.
+        uint32_t pending = kMessagesNoBin, pending_mark = 0;
+        uint64_t pending_noc = 0;
+        auto writes_landed = [&] {
+            if (!noc_timeout(writer, [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            })) {
+                where = kWhereMessagesFlush;
+                return false;
+            }
+            return true;
+        };
+        // The bin's messages are in their queue: counted sent, its body free, the bin
+        // empty.
+        auto sent_bin = [&](uint32_t bin) {
+            sent += bin_fill[bin];
+            messages[KM_MESSAGES_SENT / 4] = sent;
+            if (bin_body_bytes[bin] != 0) {  // compute may change the body's L1 again
+                bin_body_bytes[bin] = 0;
+                writer_flags[kMessagesFlagBodies] = ++bodies;
+            }
+            bin_fill[bin] = 0;
+            bin_destination[bin] = kMessagesEnd;
+            held--;
+        };
+        // The pending bin's commit: one 16-byte write of its first message's mark,
+        // once its messages have landed.
+        auto commit = [&] {
+            const uint32_t base = (
+                store + pending * kMessagesPacket * messages_arguments.message_bytes
+            );
+            if (!writes_landed()) {
+                return false;
+            }
+            *message_mark_half(base) = pending_mark;
+            invalidate_l1_cache();
+            noc_async_write(base, pending_noc, 16);
+            return true;
+        };
+        // The pending bin committed and landed (with nothing else in flight).
+        auto settle = [&] {
+            if (pending == kMessagesNoBin) {
+                return true;
+            }
+            if (!commit() || !writes_landed()) {
+                return false;
+            }
+            sent_bin(pending);
+            pending = kMessagesNoBin;
+            return true;
+        };
+
+        // Bin `bin` to its destination: reserve; the pending bin's commit while the
+        // answer travels; then this bin's messages go out with the first one's mark 0.
         auto flush = [&](uint32_t bin) {
             const uint32_t bin_messages = bin_fill[bin];
             if (
@@ -1372,6 +1467,9 @@ namespace km {
                 return false;
             }
             if (away.takes(bin_destination[bin])) {
+                if (!settle()) {
+                    return false;
+                }
                 where = (
                     away.put(
                         writer,
@@ -1387,15 +1485,7 @@ namespace km {
                 if (where != 0) {
                     return false;
                 }
-                sent += bin_messages;
-                messages[KM_MESSAGES_SENT / 4] = sent;
-                if (bin_body_bytes[bin] != 0) {  // its body has left this L1 too
-                    bin_body_bytes[bin] = 0;
-                    writer_flags[kMessagesFlagBodies] = ++bodies;
-                }
-                bin_fill[bin] = 0;
-                bin_destination[bin] = kMessagesEnd;
-                held--;
+                sent_bin(bin);  // its body has left this L1 too
                 return true;
             }
             returned[0] = kMessagesEnd;
@@ -1415,6 +1505,9 @@ namespace km {
                 false,
                 returned_address
             );
+            if (pending != kMessagesNoBin && !commit()) {
+                return false;
+            }
             if (!noc_timeout(writer, [] {
                 return ncrisc_noc_nonposted_atomics_flushed(noc_index);
             })) {
@@ -1429,6 +1522,15 @@ namespace km {
                 where = kWhereMessagesLost;
                 lost_to = bin_destination[bin];
                 return false;
+            }
+            if (
+                pending != kMessagesNoBin
+            ) {  // the commit landed: nothing else is in flight
+                if (!writes_landed()) {
+                    return false;
+                }
+                sent_bin(pending);
+                pending = kMessagesNoBin;
             }
             // Commit: the messages go out with the first one's mark zero, then after
             // their barrier one 16-byte write sets it (each word 0 holds its handler).
@@ -1466,30 +1568,9 @@ namespace km {
                 );
                 i += chunk;
             }
-            if (!noc_timeout(writer, [] {
-                return ncrisc_noc_nonposted_writes_flushed(noc_index);
-            })) {
-                where = kWhereMessagesFlush;
-                return false;
-            }
-            *message_mark_half(base) = marks(0);
-            invalidate_l1_cache();
-            noc_async_write(base, queue_noc(bin_destination[bin], first_position), 16);
-            if (!noc_timeout(writer, [] {
-                return ncrisc_noc_nonposted_writes_flushed(noc_index);
-            })) {
-                where = kWhereMessagesFlush;
-                return false;
-            }
-            sent += bin_messages;
-            messages[KM_MESSAGES_SENT / 4] = sent;
-            if (bin_body_bytes[bin] != 0) {  // compute may change the body's L1 again
-                bin_body_bytes[bin] = 0;
-                writer_flags[kMessagesFlagBodies] = ++bodies;
-            }
-            bin_fill[bin] = 0;
-            bin_destination[bin] = kMessagesEnd;
-            held--;
+            pending = bin;
+            pending_mark = marks(0);
+            pending_noc = queue_noc(bin_destination[bin], first_position);
             return true;
         };
         // A direct line from the outgoing page `source` into its receiver's slot: the
@@ -1505,6 +1586,19 @@ namespace km {
                 )
             );
             volatile tt_l1_ptr uint32_t* written = direct.at(kDirectWritten, entry);
+            uint32_t body_bytes = 0;
+            if (messages_arguments.body_bytes != 0) {  // the body, then the line
+                const uint32_t body_word = l1(source)[kMessagesBodyWord];
+                body_bytes = body_word & kMessagesOutBodyBytes;
+                l1(source)[kMessagesBodyWord] = body_bytes;
+                if (body_bytes != 0) {
+                    noc_async_write(
+                        (body_word >> kMessagesOutBodyShift) << 6,
+                        slot + messages_arguments.message_bytes,
+                        messages_body_lines(body_bytes)
+                    );
+                }
+            }
             *message_mark_half(source) = 0;
             *message_handler_half(source) = (word >> kMessagesOutHandlerShift) & 0xFF;
             invalidate_l1_cache();  // a fence: the NoC reads the stored words
@@ -1527,15 +1621,18 @@ namespace km {
             *written = *written + 1;
             sent++;
             messages[KM_MESSAGES_SENT / 4] = sent;
+            if (body_bytes != 0) {  // compute may change the body's L1 again
+                writer_flags[kMessagesFlagBodies] = ++bodies;
+            }
             return true;
         };
         auto flush_all = [&] {
             for (uint32_t bin = 0; bin < bins; bin++) {
-                if (bin_fill[bin] != 0 && !flush(bin)) {
+                if (bin_fill[bin] != 0 && bin != pending && !flush(bin)) {
                     return false;
                 }
             }
-            return true;
+            return settle();
         };
 
         bool ended = false;
@@ -1545,6 +1642,7 @@ namespace km {
                 : static_cast<uint64_t>(arguments.idle_limit) << 10
         );
         uint64_t quiet_from = wall64();
+        uint32_t empty = 0;  // polls of an empty outgoing buffer since the last message
         for (uint32_t loop = 0; where == 0 && !ended; loop++) {
             invalidate_l1_cache();
             if (writer.stop()) {
@@ -1552,6 +1650,10 @@ namespace km {
                 break;
             }
             if (!cb_pages_available_at_front(kCbMessagesOut, 1)) {
+                if (pending != kMessagesNoBin && ++empty >= kMessagesSettlePolls) {
+                    settle();  // no next bin came to overlap it with
+                    continue;
+                }
                 if (
                     held != 0 && compute_flags[0] == run &&
                     (compute_flags[1] & kMessagesWaiting)
@@ -1572,6 +1674,7 @@ namespace km {
                 continue;
             }
             quiet_from = wall64();
+            empty = 0;
             cb_wait_front(kCbMessagesOut, 1);
             volatile tt_l1_ptr uint32_t* outgoing = l1(get_read_ptr(kCbMessagesOut));
             const uint32_t outgoing_word = outgoing[0];
@@ -1602,8 +1705,12 @@ namespace km {
                 destination = kMessagesAway | flat;
             }
             const uint32_t bin = destination % bins;
+            if (bin == pending && !settle()) {  // its store is still being read
+                break;
+            }
             if (
-                bin_destination[bin] != destination && bin_fill[bin] != 0 && !flush(bin)
+                bin_destination[bin] != destination && bin_fill[bin] != 0 &&
+                (!flush(bin) || !settle())  // the store takes this message next
             ) {
                 break;
             }
@@ -1899,6 +2006,8 @@ namespace km {
             if (body_bytes_ != 0) {
                 packet.bodies = packet.base + kMessagesPacket * message_bytes_;
                 packet.body_bytes = body_bytes_;
+                packet_low_ = packet.bodies;
+                packet_high_ = packet.bodies + kMessagesBodyPacket * body_bytes_;
             }
             return packet;
         }
@@ -1932,29 +2041,20 @@ namespace km {
         }
 
         // The same with `body` (L1, 64-byte aligned, at most the program's body bytes)
-        // beside it. Returns on every thread once the body has left: its L1 is free.
+        // beside it. A body of the packet in hand: done() waits for it to leave.
         void forward(
             uint32_t destination,
             const uint32_t* message,
             uint32_t handler,
             const Body& body
         ) {
-            if (!reaches(destination)) {
+            if (!reaches(destination) || !body_fits(body)) {
                 return;
             }
-            if (
-                body.bytes == 0 || body.bytes > body_bytes_ || body.address % 64 != 0 ||
-                (body.address >> 6) >> (32 - kMessagesOutBodyShift) != 0
-            ) {
-                failed_ = true;
-                PACK(
-                    (messages_gave_up(control_, kWhereMessagesBody, body.bytes, run_))
-                );
-                PACK((command_gave_up(
-                    control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_
-                )));
-                return;
-            }
+            // Another buffer: the call returns once the body has left it.
+            const bool held = (
+                body.address >= packet_low_ && body.address < packet_high_
+            );
             // Every thread's writes to the body are in L1 before pack hands it over.
             UNPACK(({
                 __sync_synchronize();
@@ -1974,7 +2074,10 @@ namespace km {
                         message,
                         body.bytes | (body.address >> 6) << kMessagesOutBodyShift
                     );
-                    wait_body();
+                    bodies_++;
+                    if (!held) {
+                        wait_bodies();
+                    }
                 }
                 ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
                 ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, 1);
@@ -1997,29 +2100,48 @@ namespace km {
         bool direct(uint32_t destination, const uint32_t* message, uint32_t handler) {
             uint32_t went = 0;
             PACK(({
-                const uint32_t entry = (
-                    destination < count_ ? direct_.find(destination) : kDirectNone
+                went = direct_out(destination, message, handler, 0);
+                ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, went);
+                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, went);
+            }));
+            UNPACK((went = ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
+            MATH((went = ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
+            return went != 0;
+        }
+
+        // The same with `body` beside it (as forward with a body): true once the body
+        // has left; false, and nothing sent, while the slot is busy.
+        bool direct(
+            uint32_t destination,
+            const uint32_t* message,
+            uint32_t handler,
+            const Body& body
+        ) {
+            if (!body_fits(body)) {
+                return false;
+            }
+            uint32_t went = 0;
+            UNPACK(({
+                __sync_synchronize();
+                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, 1);
+            }));
+            MATH(({
+                __sync_synchronize();
+                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, 1);
+            }));
+            PACK(({
+                (void)ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
+                (void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId);
+                went = (
+                    direct_out(
+                        destination,
+                        message,
+                        handler,
+                        body.bytes | (body.address >> 6) << kMessagesOutBodyShift
+                    )
                 );
-                if (!failed_ && entry == kDirectNone) {
-                    failed_ = true;
-                    messages_gave_up(control_, kWhereMessagesDirect, destination, run_);
-                    command_gave_up(
-                        control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_
-                    );
-                } else if (!failed_) {
-                    volatile tt_l1_ptr uint32_t* sends = direct_.at(kDirectSent, entry);
-                    if (direct_.at(kDirectCredit, 4 * entry)[0] == *sends) {
-                        push_out(
-                            kMessagesOutDirect | entry |
-                                (handler & 0xFF) << kMessagesOutHandlerShift,
-                            message,
-                            0
-                        );
-                        if (!failed_) {
-                            *sends = *sends + 1;
-                            went = 1;
-                        }
-                    }
+                if (went != 0) {
+                    wait_body();
                 }
                 ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, went);
                 ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, went);
@@ -2027,6 +2149,10 @@ namespace km {
             UNPACK((went = ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
             MATH((went = ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
             return went != 0;
+        }
+
+        bool direct(uint32_t destination, const uint32_t* message, const Body& body) {
+            return direct(destination, message, handler_, body);
         }
 
         // The message ends here: one send returns to this core's quota.
@@ -2068,10 +2194,16 @@ namespace km {
             return send(destination, message, handler_, body);
         }
 
-        // The packet's page is free; CONSUMED counts its messages.
+        // The packet's page is free once its bodies sent on have left; CONSUMED counts
+        // its messages.
         void done(const Packet& packet) {
             MATH((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1)));
-            PACK((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1)));
+            PACK(({
+                if (body_bytes_ != 0 && !failed_) {
+                    wait_bodies();
+                }
+                ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
+            }));
             UNPACK(({
                 (void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId);
                 (void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId);
@@ -2098,6 +2230,62 @@ namespace km {
         }
 
     private:
+        // Pack: a direct line to `destination` with `body` (bytes, address / 64 above;
+        // 0: none) when its slot is free. 1: it went; 0: busy, or the run given up.
+        uint32_t direct_out(
+            uint32_t destination,
+            const uint32_t* message,
+            uint32_t handler,
+            uint32_t body
+        ) {
+            const uint32_t entry = (
+                destination < count_ ? direct_.find(destination) : kDirectNone
+            );
+            if (failed_) {
+                return 0;
+            }
+            if (entry == kDirectNone) {
+                failed_ = true;
+                messages_gave_up(control_, kWhereMessagesDirect, destination, run_);
+                command_gave_up(
+                    control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_
+                );
+                return 0;
+            }
+            volatile tt_l1_ptr uint32_t* sends = direct_.at(kDirectSent, entry);
+            if (direct_.at(kDirectCredit, 4 * entry)[0] != *sends) {
+                return 0;
+            }
+            push_out(
+                kMessagesOutDirect | entry |
+                    (handler & 0xFF) << kMessagesOutHandlerShift,
+                message,
+                body
+            );
+            if (failed_) {
+                return 0;
+            }
+            *sends = *sends + 1;
+            return 1;
+        }
+
+        // False, and the run given up (reason body), when `body` cannot be sent.
+        bool body_fits(const Body& body) {
+            if (
+                body.bytes != 0 && body.bytes <= body_bytes_ &&
+                body.address % 64 == 0 &&
+                (body.address >> 6) >> (32 - kMessagesOutBodyShift) == 0
+            ) {
+                return true;
+            }
+            failed_ = true;
+            PACK((messages_gave_up(control_, kWhereMessagesBody, body.bytes, run_)));
+            PACK((
+                command_gave_up(control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_)
+            ));
+            return false;
+        }
+
         // False, and the run given up, when rank `destination` is no core of the group
         // and no X280 rank.
         bool reaches(uint32_t destination) {
@@ -2135,9 +2323,14 @@ namespace km {
             pushed_++;
         }
 
-        // Pack: waits until the writer has written every body pushed so far.
+        // Pack: one more body pushed, and the wait until every one has been written.
         void wait_body() {
             bodies_++;
+            wait_bodies();
+        }
+
+        // Pack: waits until the writer has written every body pushed so far.
+        void wait_bodies() {
             volatile tt_l1_ptr uint32_t* writer_flags = (
                 l1(
                     control_ + KM_CONTROL_MESSAGES + KM_MESSAGES_FLAGS + kMessagesFlagWriter
@@ -2230,7 +2423,8 @@ namespace km {
         bool seeded_;
         uint32_t pushed_ = 0;
         uint32_t consumed_ = 0;
-        uint32_t bodies_ = 0;  // pack: bodies pushed in this run
+        uint32_t bodies_ = 0;                        // pack: bodies pushed in this run
+        uint32_t packet_low_ = 0, packet_high_ = 0;  // the packet in hand's bodies
         bool failed_ = false;
     };
 
