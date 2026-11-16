@@ -598,11 +598,15 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
 
   | Move | 64 MiB | 512 MiB |
   |---|---|---|
-  | Puts from L1 into the other island's DRAM, both islands at once, each way | 1.00 ms, 66.9 GB/s | 7.41 ms, 72.5 GB/s |
+  | Puts from L1 into the other island's DRAM, both islands at once, each way | 1.08 ms, 62.1 / 62.3 GB/s | 7.41 ms, 72.5 GB/s |
   | `session.cross`, DRAM to DRAM (host, by its ticks) | | 5.35 ms, 100.4 GB/s |
   | the same, by the host's clock | 1.05 ms, 64.1 GB/s | 5.85 ms, 91.7 GB/s |
   | `km::read_pages`, 128 pages a call | 1.95 ms, 34.5 GB/s | 13.2 ms, 40.6 GB/s |
   | `km::read_pages`, 256 pages a call | | 11.1 ms, 48.3 GB/s |
+
+  The 64 MiB row was measured again on 2026-11-16, with the put queue first in the link
+  cores' buffers (1.081 and 1.077 ms, every page exact). An earlier 1.00 ms, 66.9 GB/s
+  has no log and has not been seen again; 2026-11-16 08:00 gave 61.6 / 62.3 GB/s.
 
   Where a put's time goes (512 MiB both ways, counters on the cores): a putting core
   spends 0.87 of its cycles waiting for its turn at a ring (its slots reserved, room
@@ -1010,6 +1014,10 @@ times (12.4 µs, 2 pages). On one card split into three islands in a line (`--ca
 --islands 3`), the release takes 0.8 to 0.9 µs on every island, including those whose
 first core is not the card's.
 
+Measured again on 2026-11-16 with the put queue first in the link cores' buffers (the
+same command, kernel form, 3 rounds): 12.56 µs at 2 pages and 22.82 µs at 272, both
+exact.
+
 The larger gather, 272 pages (557 KB each way): 22.6 µs, 24.6 GB/s each way for the
 call. The term that holds it is the share's put line: 16.2 µs from the lines out to the
 share in, of which 5.3 is a line's own time (one page) and 10.9 the other 135 pages,
@@ -1081,7 +1089,8 @@ its 112 ranks centred on island 1's first rank, so each island runs four groups 
 on its own half of W's columns; X `copy=True`, W and Y `split=1` over the 128 ranks
 centred there (a column tile a rank: a hint over the command's 112 ranks would put 72
 of the 128 on island 0, and part of W would be read across the link). At 32 x 4096 x
-4096 it is exact in 65.1 us, against 94.2 on one card.
+4096 it is exact in 65.3 us (2026-11-16; 65.1 before the put queue's move), against 94.2
+on one card.
 
 ## What is not built
 
