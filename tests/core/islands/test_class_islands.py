@@ -58,7 +58,7 @@ def test_self_x_and_y_on_a_group_across_two_islands_is_refused_by_name():
     with pytest.raises(ValueError) as refused:
         Run._check_places(run, place, 0, (60, 120))
     assert str(refused.value) == (
-        "SimpleNamespace.place, line 40: self.x, self.y and self.core are a core's "
+        "SimpleNamespace.place, line 40: self.x and self.y are a core's "
         "place on its own island, and the group 60..179 spans more than this "
         "island's ranks 119..237, whose places the next island's ranks repeat: "
         "submit it on one island's ranks"

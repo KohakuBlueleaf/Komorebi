@@ -630,7 +630,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
 the group's size and its rank 0; `self.x` and `self.y` its column and row in the
 rectangle; `self.core` its place in the grid, whatever the group (`me()` of the
-runtime).
+runtime: on islands the flat rank, its island's first rank plus its index there).
 
 A broadcast's rectangle is fixed at load (a program argument), and `Run.submit`
 refuses a broadcast's command whose group is not the rectangle's, naming the
