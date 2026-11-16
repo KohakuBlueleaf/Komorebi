@@ -783,7 +783,7 @@ own page calls: a page read through `noc_async_read_page` reads its own island's
 only, so a kernel that calls it works on one card and reads the wrong pages over
 islands; a load of islands refuses a mover's source line that names one (the file and
 line), unless the line says `// km: own island` because the call means the core's own
-island's bank. The calls
+island's bank (`Program(own_island_pages=True)`: every such call of the program). The calls
 (`km_ask.hpp`) take the tensor as one object:
 
 ```c++
