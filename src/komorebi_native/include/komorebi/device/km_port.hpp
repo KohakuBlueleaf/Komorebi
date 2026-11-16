@@ -176,20 +176,25 @@ namespace km {
         );
     }
 
-    // Reader: waits until the port has counted `wanted` arrivals, clears it, hands all
-    // S pages to compute. False: gave up; the port keeps `wanted`: the missing count.
-    inline bool arrive(
+    // arrive's steps; kFirst: the buffer reserved before the wait (a reduce's), then
+    // before() (a repeated reduce's credits). False: gave up.
+    template <bool kFirst, typename Before>
+    inline bool arrive_at(
         const Reader& reader,
         const km_command_t& command,
         const Arrival& arrival,
         uint32_t port,
-        uint32_t wanted
+        uint32_t wanted,
+        Before before
     ) {
         const uint32_t named = slot(command) | port << 8;
         if (port >= KM_PORTS) {
             reader.gave_up(
                 kStReader, kGaveBadItem, kWherePort, named, command.sequence
             );
+            return false;
+        }
+        if ((kFirst && !reader.reserve(arrival.cb, arrival.pages)) || !before()) {
             return false;
         }
         volatile tt_l1_ptr uint32_t* words = port_words(reader, port);
@@ -207,11 +212,25 @@ namespace km {
         }
         words[KM_PORT_COUNT] = 0;  // every sender of this command has bumped it
         words[KM_PORT_WANT] = 0;
-        if (!reader.reserve(arrival.cb, arrival.pages)) {
+        if (!kFirst && !reader.reserve(arrival.cb, arrival.pages)) {
             return false;
         }
         cb_push_back(arrival.cb, arrival.pages);
         return true;
+    }
+
+    // Reader: waits until the port has counted `wanted` arrivals, clears it, hands all
+    // S pages to compute. False: gave up; the port keeps `wanted`: the missing count.
+    inline bool arrive(
+        const Reader& reader,
+        const km_command_t& command,
+        const Arrival& arrival,
+        uint32_t port,
+        uint32_t wanted
+    ) {
+        return arrive_at<false>(reader, command, arrival, port, wanted, [] {
+            return true;
+        });
     }
 
     // A reduce's turn over one group in one command (1: the first; a chain's record
@@ -261,20 +280,16 @@ namespace km {
         return false;
     }
 
-    // Reader, turn 2 on: once compute has taken the turn before (the buffer reserved),
-    // a credit to each sender of `port`. False: gave up (recorded).
-    __attribute__((noinline)) inline bool reduce_free(
+    // Reader, turn 2 on, the buffer reserved (compute has taken the turn before): a
+    // credit to each sender of `port`. False: gave up (recorded).
+    __attribute__((noinline)) inline bool reduce_credit_senders(
         const Reader& reader,
         const km_command_t& command,
-        const Arrival& arrival,
         const Group& group,
         uint32_t form,
         uint32_t port
     ) {
-        if (
-            !reduce_turn_here(reader, command, group, port, kWherePort) ||
-            !reader.reserve(arrival.cb, arrival.pages)
-        ) {
+        if (!reduce_turn_here(reader, command, group, port, kWherePort)) {
             return false;
         }
         const uint32_t credit = (
@@ -287,31 +302,14 @@ namespace km {
                 reader.core_noc(reader.core_of(core_of(group, rank)), credit), 1
             );
         }
-        const uint32_t code = reader.poll_at(
-            kWherePort,
-            [] {
-                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
-            },
-            reader.args().wait_limit
-        );
-        if (code != kGaveNone) {
-            reader.gave_up(
-                kStReader, code, kWherePort, slot(command) | port << 8, command.sequence
-            );
-            return false;
-        }
-        return true;
+        return reader.flushed(kFlushAtomics, kStReader);
     }
 
-    // Reader, a reduce given up: its ports' counts cleared (a bump counted early must
+    // Reader, a reduce given up: the ports' counts cleared (a bump counted early must
     // not meet the next command's wait).
-    __attribute__((noinline)) inline bool reduce_clear(
-        const Reader& reader, const Group& group, uint32_t form
-    ) {
+    __attribute__((noinline)) inline bool reduce_clear(const Reader& reader) {
         for (uint32_t port = 0; port < KM_PORTS; port++) {
-            if (reduce_wants(group, form, port) != 0) {
-                port_words(reader, port)[KM_PORT_COUNT] = 0;
-            }
+            port_words(reader, port)[KM_PORT_COUNT] = 0;
         }
         return false;
     }
@@ -338,17 +336,14 @@ namespace km {
         }
         for (uint32_t port = 0; port < KM_PORTS; port++) {
             const uint32_t wanted = reduce_wants(group, form, port);
-            if (
-                wanted != 0 &&
-                (
-                    (
-                        turn > 1 &&
-                        !reduce_free(reader, command, arrival, group, form, port)
-                    ) ||
-                    !arrive(reader, command, arrival, port, wanted)
-                )
-            ) {
-                return reduce_clear(reader, group, form);
+            if (wanted != 0 &&
+                !arrive_at<true>(reader, command, arrival, port, wanted, [&] {
+                    return (
+                        turn == 1 ||
+                        reduce_credit_senders(reader, command, group, form, port)
+                    );
+                })) {
+                return reduce_clear(reader);
             }
         }
         return true;
