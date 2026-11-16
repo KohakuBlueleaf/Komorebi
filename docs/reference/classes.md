@@ -1386,8 +1386,9 @@ written a row at a time, in place, as a step's states are: `acc = f(self.o[i],
 self.s[r])` copies row i into DST 0 .. w - 1 after the field's token, and
 `self.o[j].write(acc)` packs acc into row j by index and pushes the token, then
 acc's state. A row is written only from sums started from one of the field's rows
-(the token orders each read after the last write); `t.pages(first, n w)
-.write(self.o)` writes the rows after the last. So each of n rows keeps its own
+(the token orders each read after the last write); `t.pages(first, w).write(acc)`
+writes acc elsewhere and gives the token back, the row unchanged; `t.pages(first,
+n w).write(self.o)` writes the rows after the last. So each of n rows keeps its own
 running sum, `for r in range(n): acc = decay(self.o[r], self.state[0]); ...;
 self.o[r].write(acc)`.
 

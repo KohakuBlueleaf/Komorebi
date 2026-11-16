@@ -1,7 +1,7 @@
-"""Rows of a field (no card): `acc = f(self.o[i], self.s[r])` copies row i of a field
-of rows (filled above) into DST in place after its token, and `self.o[j].write(acc)`
-packs it back into row j and pushes the token, then the state; refused: a row
-written from other sums, a field not of rows, an index past its rows."""
+"""Rows of a field (no card): `acc = f(self.o[i], self.s[r])` copies row i in place
+after its token; `self.o[j].write(acc)` packs it into row j, pushes the token, then
+the state; a page write of acc gives the token back. Refused: a row written from
+other sums, a field not of rows, an index past its rows."""
 
 from pathlib import Path
 
@@ -75,6 +75,19 @@ class Whole(km.Program):
         self.o[0].write(acc)
 
 
+class Read(km.Program):
+    state: km.L1[km.fp32, 1, 32, 32]
+    o: km.L1[km.fp32, R, N, 32, 32]
+
+    @km.handler
+    def run(self, x: km.Tensor, w: km.Tensor, init: km.Tensor, y: km.Tensor):
+        self.state.fill(km.Stream(init.pages(0, 1)))
+        self.o.fill(km.Stream(init.pages(1, O_PAGES)))
+        for r in range(R):
+            last = decay(self.o[r], self.state[0])
+            y.pages(r * N, N).write(last)
+
+
 class Other(km.Program):
     state: km.L1[km.fp32, 1, 32, 32]
     o: km.L1[km.fp32, R, N, 32, 32]
@@ -117,6 +130,17 @@ def test_a_row_is_read_and_written_in_place_between_its_tokens():
     written = text.index("copy_tile(kFieldO, km_state", state)
     assert primed < rows < taken < copied < body < product < packed < pushed < state
     assert state < written
+
+
+def test_a_row_written_elsewhere_gives_its_token_back():
+    text = (folder_of(Read) / "compute.cpp").read_text()
+    rows = text.index("for (uint32_t r = 0;")
+    taken = text.index("cb_pop_front(kStepTokenO, 1);", rows)
+    packed = text.index("pack_tile(1, kOut0", taken)
+    given = text.index("cb_push_back(kStepTokenO, 1);", packed)
+    released = text.index("tile_regs_release();", given)
+    drained = text.index("cb_pop_front(kStepTokenO, 1);", released)
+    assert rows < taken < packed < given < released < drained
 
 
 @pytest.mark.parametrize(

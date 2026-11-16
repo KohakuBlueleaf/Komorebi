@@ -5203,6 +5203,7 @@ class HandlerCompiler:
             compute.append(Line(pack(value.dst, buffer.name, width), {"km_ok"}))
             if getattr(value, "state", None) is not None:  # started from a field
                 self.state_packed(compute, *value.state)
+            self.row_given_back(compute, value)
             self.dst_live = None
             value.kind = "written"
             value.buffer = buffer
@@ -5346,6 +5347,7 @@ class HandlerCompiler:
         compute = [Line(text, {"km_ok"})]
         if state is not None:
             self.state_packed(compute, *state)
+        self.row_given_back(compute, value)
         return [], compute
 
     def write_sums(self, node, pages, field_, pushed=False):
@@ -5673,6 +5675,26 @@ class HandlerCompiler:
             last.text[:at] + packed + last.text[at + len("tile_regs_release();") :]
         )
         last.uses = last.uses | self.uses(index)
+
+    def row_given_back(self, compute, value):
+        """Sums started from a row of a field (started_from_row) written elsewhere
+        leave the row as it was: its token pushed back before the last compute line's
+        DST release, so the row's next read finds it."""
+        row_of = getattr(value, "row_of", None)
+        if row_of is None:
+            return
+        given = (
+            f"if (km_ok && compute.reserve_back({row_of[2]}, 1)) {{  // the row as "
+            "it was\n"
+            f"    cb_push_back({row_of[2]}, 1);\n"
+            "}\n"
+            "tile_regs_release();"
+        )
+        last = compute[-1]
+        at = last.text.rindex("tile_regs_release();")
+        last.text = (
+            last.text[:at] + given + last.text[at + len("tile_regs_release();") :]
+        )
 
     def step_of_field(self, call):
         """(field, state field, index) of `f(self.o, self.s[r])`, f a tile function,
