@@ -257,10 +257,10 @@ def healthy_after(run, own, hung, words):
 
 
 def hops_check(run, graph, rounds, jobs):
-    """Commands from island 0's dispatcher alone (its own run, no part mark: they
-    cross) to islands further away: a NOP to each island's ranks; COUNT `rounds` times
-    on islands 2 and on together, every rank counting each once; a HANG whose hung rank
-    is on the last island, given up naming it; a NOP on the same ranks after it."""
+    """From island 0's dispatcher alone (its own run: they cross): a NOP to each
+    island's ranks; COUNTs on islands 2 on, each rank counting each; a HANG on the last
+    island named; a NOP on islands 1 to the one before the last after it (the hung
+    part's cores end at their wait limit, and a split card resets none)."""
     first = run.island(0)
     islands = len(graph.islands)
     own = [(graph.first(i), graph.count(i)) for i in range(islands)]
@@ -270,6 +270,7 @@ def hops_check(run, graph, rounds, jobs):
             np.median([timed_nops(first, own[island], jobs) for _ in range(3)])
         )
         report["hops_nop_us"][island] = round(spent, 3)
+    log(f"NOP from island 0's dispatcher to each island: {report['hops_nop_us']} us")
     far = (own[2][0], graph.ranks - own[2][0])
     handles = [first.submit("count", far, [0]) for _ in range(rounds)]
     kinds = {event.kind for event in first.wait(handles, timeout=30.0)}
@@ -278,6 +279,7 @@ def hops_check(run, graph, rounds, jobs):
     want[far[0] :] = rounds
     report["hops_count_group"] = list(far)
     report["hops_counts_exact"] = kinds == {"done"} and bool((counts == want).all())
+    log(f"{rounds} COUNTs on {far}: {kinds}, exact {report['hops_counts_exact']}")
     hung = graph.ranks - 3  # one of the last island's ranks
     try:
         event = first.wait(first.submit("hang", far, [hung - far[0], 1]), timeout=20.0)
@@ -286,13 +288,11 @@ def hops_check(run, graph, rounds, jobs):
         named = error.slot & 0xFF
     report["hops_hang_named"] = named
     report["hops_hang_named_island"] = named == EVENT_ISLAND + islands - 1
-    after = first.wait(first.submit(0, far), timeout=10.0)
+    log(f"HANG on {far}, rank {hung} hung: named {named}")
+    alive = (own[1][0], own[-1][0] - own[1][0])
+    after = first.wait(first.submit(0, alive), timeout=10.0)
     report["hops_after_hang"] = after.kind == "done"
-    log(
-        f"from island 0's dispatcher: NOP {report['hops_nop_us']} us; {rounds}"
-        f" COUNTs on {far} exact {report['hops_counts_exact']}; HANG on rank {hung}"
-        f" named {named}; a NOP after it {after.kind}"
-    )
+    log(f"a NOP on {alive} after it: {after.kind}")
     return report
 
 

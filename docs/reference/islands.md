@@ -988,7 +988,9 @@ output exact, every kernel ended with no error:
 
 What a hop costs: a NOP's command and its DONE to an island one link away take 3.9 to
 5.1 µs (the mesh rows above), two links 7.4 µs and three 11.3 µs, so each island
-between adds 2.3 to 3.9 µs. Example 01's 141 asks of a round, each answered by two
+between adds 2.3 to 3.9 µs. Those were with 3 and 2 commands across in flight; with 8 (2026-11-16,
+example 25's `hops` step, pipelined NOPs from island 0's dispatcher on a line of four):
+4.97 µs one link away, 6.06 two, 6.25 three. Example 01's 141 asks of a round, each answered by two
 pages, took 160.7 µs more from two links away than from island 0's own DRAM, against
 41.6 µs from one link away in the mesh of three. The end of a dynamic run over islands
 (example 05, island 0's part, which holds the end): 146.6 µs over two islands, 166.1 over
