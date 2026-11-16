@@ -724,24 +724,36 @@ KM_STATIC_ASSERT(
  * next 64-byte boundary on: what the session's own words hold in all */
 #define KM_OWN_BATCH KM_OWN_BYTES
 #define KM_OWN_ALL_BYTES (KM_OWN_BATCH + 2u * KM_PUT_BATCH_BYTES + 64u)
-/* The forward area (km_transport.hpp), a link core's: packets for another island, sent
- * on toward it. Part 0's writer: far link core; part 1 + i: link core i */
-#define KM_FORWARD_PARTS 3u
+/* Forward rooms (km_transport.hpp) after a link core's far places: a room a writer core
+ * (0 the far one, 1 + i link core i), CPU and hop level; the load sizes them */
+#ifndef KM_FORWARD_CORES
+#define KM_FORWARD_CORES 3u /* an island's link cores, at most */
+#endif
+#ifndef KM_FORWARD_CPUS
+#define KM_FORWARD_CPUS 1u /* a link core's CPUs that send on: 2, two links */
+#endif
+#ifndef KM_FORWARD_LEVELS
+#define KM_FORWARD_LEVELS 1u /* the diameter less one: hop h waits on level h + 1 */
+#endif
+#define KM_FORWARD_PARTS (KM_FORWARD_CORES * KM_FORWARD_CPUS)
+#define KM_FORWARD_ROOMS (KM_FORWARD_PARTS * KM_FORWARD_LEVELS)
 #define KM_FORWARD_SLOTS 2u
-#define KM_FORWARD_LANDED 0x00u /* 16 bytes a part: its packets landed */
-/* 16 bytes a destination (0 across): packets it took */
-#define KM_FORWARD_CREDIT 0x30u
-#define KM_FORWARD_STATE 0x60u /* taken a part, sent a destination, failed */
-#define KM_FORWARD_FAILED (2u * KM_FORWARD_PARTS) /* state word */
-#define KM_FORWARD_HEADERS 0x80u                  /* two packet headers */
-#define KM_FORWARD_STAGE 0x100u /* the head of a packet this core starts */
-#define KM_FORWARD_SLOT 0x180u  /* slots: {island, bytes, KM_CROSS_* field} */
+#define KM_FORWARD_LANDED 0x00u                    /* 16 bytes a room: landed */
+#define KM_FORWARD_CREDIT (16u * KM_FORWARD_ROOMS) /* 16 bytes a room there: taken */
+#define KM_FORWARD_STATE (32u * KM_FORWARD_ROOMS)  /* taken a room, sent one, failed */
+#define KM_FORWARD_FAILED (2u * KM_FORWARD_ROOMS)  /* state word */
+#define KM_FORWARD_HEADERS \
+    ((KM_FORWARD_STATE + 4u * KM_FORWARD_FAILED + 4u + 63u) / 64u * 64u)
+/* two headers a CPU, then the head of a packet each CPU starts */
+#define KM_FORWARD_STAGE (KM_FORWARD_HEADERS + 0x80u * KM_FORWARD_CPUS)
+/* {island, bytes, field, links} */
+#define KM_FORWARD_SLOT (KM_FORWARD_STAGE + 0x80u * KM_FORWARD_CPUS)
 /* a forwarded packet's largest payload: its slot's (the session's packets over more
  * than two islands are no larger) */
 #define KM_FORWARD_PAYLOAD 4352u
 #define KM_FORWARD_SLOT_BYTES (128u + KM_FORWARD_PAYLOAD) /* header 64, payload 128 */
 #define KM_FORWARD_BYTES \
-    (KM_FORWARD_SLOT + KM_FORWARD_PARTS * KM_FORWARD_SLOTS * KM_FORWARD_SLOT_BYTES)
+    (KM_FORWARD_SLOT + KM_FORWARD_ROOMS * KM_FORWARD_SLOTS * KM_FORWARD_SLOT_BYTES)
 #define KM_FORWARD_NO_FIELD 0xFFu
 /* a reference word below KM_TENSORS_MAX names an entry, any other a bank address; a
  * load of more entries (km.Session(tensors=n)) defines it as n */
@@ -829,7 +841,7 @@ KM_STATIC_ASSERT(
         KM_OWN_FAR >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_BUILD >= KM_OWN_FAR + 4u &&
         KM_OWN_BUILD % 64u == 0 && KM_QUEUE_E_VALUE * 4u < KM_QUEUE_ENTRY &&
         KM_OWN_CPU_BYTES % 64u == 0 &&
-        KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_PARTS &&
+        KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_ROOMS &&
         KM_FORWARD_HEADERS >= KM_FORWARD_STATE + 4u * (KM_FORWARD_FAILED + 1u) &&
         KM_FORWARD_SLOT % 64u == 0 && KM_FORWARD_SLOT_BYTES % 64u == 0 &&
         KM_RELAY_DONE >= KM_RELAY_ASK + 64u * KM_RELAY_ASKS &&

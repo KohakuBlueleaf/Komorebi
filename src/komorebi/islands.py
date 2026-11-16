@@ -308,10 +308,17 @@ class Graph:
         return self._next[source][target]
 
     def next_link(self, source, target):
-        """`source`'s own link number of the first link toward `target` (the one that
-        carries messages and commands, in order); NO_LINK when they are one island."""
+        """`source`'s first link core toward `target`: its link cores in neighbour
+        order, as many links a core as its links fill (one or two); NO_LINK when one."""
         step = self._next[source][target]
-        return NO_LINK if step is None else self.ports[source].index((step, 0))
+        if step is None:
+            return NO_LINK
+        cores = max(len(self.link_cores[source]), 1)
+        per = -(-len(self.ports[source]) // cores)  # links a core
+        near = self.neighbours(source)
+        return sum(
+            -(-self.between(source, n).count // per) for n in near[: near.index(step)]
+        )
 
     def neighbours(self, island):
         """The islands one link away (port p is neighbour p); none on one island."""
