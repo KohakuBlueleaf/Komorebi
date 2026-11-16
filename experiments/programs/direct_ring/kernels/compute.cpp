@@ -27,6 +27,7 @@ void kernel_main() {
         km::Messages messages(compute, command);
         const uint32_t rank = messages.rank();
         uint32_t visits = 0, consumed = 0, direct = 0, busy = 0;
+        uint32_t next_cycles = 0, handle_cycles = 0, asked = km::wall();
         uint32_t token[kTokenWords] = {};
         volatile tt_l1_ptr uint32_t* results = km::l1(results_address);
         if (messages.seeding()) {
@@ -55,6 +56,8 @@ void kernel_main() {
             messages.seeded();
         }
         while (km::Packet packet = messages.next()) {
+            const uint32_t in_hand = km::wall();
+            next_cycles += in_hand - asked;
             for (uint32_t index = 0; index < packet.count; index++) {
                 const volatile tt_l1_ptr uint32_t* incoming = packet[index];
                 for (uint32_t word = 1; word < kTokenWords; word++) {
@@ -106,6 +109,8 @@ void kernel_main() {
                 messages.forward(to, token);
             }
             messages.done(packet);
+            asked = km::wall();
+            handle_cycles += asked - in_hand;
         }
         PACK(({
             results[kResVisits] = visits;
@@ -113,6 +118,8 @@ void kernel_main() {
             results[kResDirect] = direct;
             results[kResBusy] = busy;
             results[kResRun] = command.sequence;
+            results[kResNext] = next_cycles;
+            results[kResHandle] = handle_cycles;
         }));
     });
 }

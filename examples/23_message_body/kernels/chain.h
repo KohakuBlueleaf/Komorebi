@@ -16,8 +16,8 @@ constexpr uint32_t kMsgThread = 2;
 constexpr uint32_t kMsgHop = 3;  // arrivals so far
 constexpr uint32_t kMsgState = 4;  // a word changed at every hop, with or without a body
 
-// RUN command: a0 threads, a1 hops per thread, a2 body bytes (0: none), a3 1 to change
-// the body at each hop (0: carried unchanged).
+// RUN command: a0 threads, a1 hops per thread, a2 body bytes (0: none), a3 1: the body
+// changed at each hop (0: carried), a4 1: each hop by direct() (parts/chain.cpp).
 
 // Per-core area at the program's compute argument 0: a body (the seed's, then the
 // final body of the thread that ends here), then the result words.
@@ -29,9 +29,12 @@ constexpr uint32_t kResState = 1027;     // its state word
 constexpr uint32_t kResRun = 1028;       // the run's sequence
 constexpr uint32_t kResStamps = 1029;           // parts, rank 0: wall clock at arrival hop / count
 constexpr uint32_t kStamps = 8;  // laps 0 to 6, then the last lap in slot 7
+constexpr uint32_t kResDirect = 1037;  // hops that went by direct() (a4)
 constexpr uint32_t kAreaWords = 1040;  // the body, then 16 result words
 static_assert(
-    kResArrivals == kBodyWordsMax && kResStamps + kStamps <= kAreaWords, "the area"
+    kResArrivals == kBodyWordsMax && kResStamps + kStamps <= kResDirect &&
+        kResDirect < kAreaWords,
+    "the area"
 );
 
 inline uint32_t chain_seed(uint32_t thread, uint32_t word) {

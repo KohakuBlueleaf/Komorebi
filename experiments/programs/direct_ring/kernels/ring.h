@@ -27,6 +27,8 @@ constexpr uint32_t kResConsumed = 1;
 constexpr uint32_t kResDirect = 2;  // hops that went direct
 constexpr uint32_t kResBusy = 3;    // direct() false: forwarded instead
 constexpr uint32_t kResRun = 4;     // the run's sequence: the results are this run's
+constexpr uint32_t kResNext = 5;    // pack's cycles in next(), waiting for a packet
+constexpr uint32_t kResHandle = 6;  // pack's cycles from a packet in hand to done()
 constexpr uint32_t kResRecords = 8;
 constexpr uint32_t kRecordWords = 4;  // id + 1, state, sum, body checks failed
 

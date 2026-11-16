@@ -38,6 +38,7 @@ namespace km {
         uint32_t x280_credits;  // LIM address there of core 0's credit line (c: + 16 c)
         uint32_t inbox;   // L1 address of this core's inbox, kMessagesInbox messages
         uint32_t direct;  // L1 address of this core's direct area (0: no direct pairs)
+        uint32_t stamps;  // L1 address of this core's stamps (0: none)
     };
 
     constexpr uint32_t kMessagesArgs = sizeof(MessagesArgs) / 4;
@@ -98,6 +99,30 @@ namespace km {
     constexpr uint32_t kMessagesFlagBodies = 2;  // writer's flag word: bodies written
     constexpr uint32_t kMessagesNoBin = 0xFFFFFFFF;  // the writer: no bin awaits its commit
     constexpr uint32_t kMessagesSettlePolls = 32;  // empty polls before it is committed
+
+    // Stamps (KM_MESSAGES_STAMPS): words of a core's area, wall-clock cycles summed and
+    // counts over the load's runs. Writer first, then reader.
+    constexpr uint32_t kMessagesStampWords = 32;
+    constexpr uint32_t kStampTaken = 0;  // lines taken from compute
+    constexpr uint32_t kStampBinWait = 1;  // a line's cycles in its bin, until its flush
+    constexpr uint32_t kStampFlushes = 2;  // bins sent
+    constexpr uint32_t kStampReserve = 3;  // the reservation's round trip
+    constexpr uint32_t kStampLanded = 4;   // waits for written lines to land
+    constexpr uint32_t kStampPending = 5;  // a bin written until its commit goes out
+    constexpr uint32_t kStampFull = 6;     // flushes: a full bin (or a body)
+    constexpr uint32_t kStampEvicted = 7;  // flushes: the bin needed for another rank
+    constexpr uint32_t kStampComputeWaits = 8;  // flushes: compute waits (all bins)
+    constexpr uint32_t kStampSettled = 9;    // commits after kMessagesSettlePolls polls
+    constexpr uint32_t kStampOutEmpty = 10;  // cycles with no outgoing line
+    constexpr uint32_t kStampTails = 16;     // reader: tail reads
+    constexpr uint32_t kStampTailCycles = 17;  // reader: their round trips
+    constexpr uint32_t kStampPackets = 18;     // reader: queue packets pushed
+    constexpr uint32_t kStampMessages = 19;    // reader: their messages
+    constexpr uint32_t kStampRead = 20;        // reader: the lines' NoC read
+    constexpr uint32_t kStampGaps = 21;  // reader: reads with no valid mark at head
+    constexpr uint32_t kStampGapCycles = 22;              // reader: from a new tail to its first mark
+    constexpr uint32_t kStampToPush = 23;  // reader: from a new tail to the push
+    constexpr uint32_t kStampInPage = 24;  // reader: waits for a free incoming page
 
     // A core's direct messages (Program.dynamic(direct=)): an L1 area the host writes;
     // its header words are byte offsets in it (program.direct_layout).
@@ -441,6 +466,18 @@ namespace km {
 
 #if !defined(COMPILE_FOR_TRISC)
 namespace km {
+#if defined(KM_MESSAGES_STAMPS)
+#define KM_MSTAMP(statement) statement
+#else
+#define KM_MSTAMP(statement)
+#endif
+    // Adds `value` to word `word` of the stamps at `area` (KM_MESSAGES_STAMPS).
+    inline void messages_stamp(uint32_t area, uint32_t word, uint32_t value) {
+        if (area != 0) {
+            volatile tt_l1_ptr uint32_t* words = l1(area);
+            words[word] = words[word] + value;
+        }
+    }
 
     // Reads the dynamic arguments that follow the start-up arguments.
     inline MessagesArgs messages_args(const Core& core) {
@@ -760,10 +797,13 @@ namespace km {
                 )
         );
         // A core's tail, read from its counter tile into IN_TAIL (with a timeout).
+        KM_MSTAMP(const uint32_t stamps = messages_arguments.stamps);
+        KM_MSTAMP(uint32_t tail_seen = 0);  // when a tail beyond head was first read
         auto refresh = [&] {
             if (counter) {
                 return true;  // nobody sends to a counter tile: its tail stays its head
             }
+            KM_MSTAMP(const uint32_t asked = wall());
             noc_async_read(
                 tail_line,
                 arguments.control + KM_CONTROL_MESSAGES + KM_MESSAGES_IN_TAIL,
@@ -773,6 +813,8 @@ namespace km {
                 return ncrisc_noc_reads_flushed(noc_index);
             });
             invalidate_l1_cache();
+            KM_MSTAMP(messages_stamp(stamps, kStampTails, 1));
+            KM_MSTAMP(messages_stamp(stamps, kStampTailCycles, wall() - asked));
             return ok;
         };
         // The second source, this core's inbox in L1: the X280 ranks' messages, taken
@@ -892,6 +934,9 @@ namespace km {
                 where = kWhereMessagesOverflow;
                 break;
             }
+            KM_MSTAMP(if (tail_value != head && tail_seen == 0) {
+                tail_seen = wall();
+            });
             const uint32_t from_inbox = arrived();
             const uint32_t from_direct = direct_arrived();
             if (tail_value == head && from_inbox == 0 && from_direct == 0) {
@@ -953,6 +998,7 @@ namespace km {
                 reader_flags[1] = 0;
                 idle_shown = false;
             }
+            KM_MSTAMP(const uint32_t page_asked = wall());
             if (reader.poll_at(
                 kWhereMessagesInPage,
                 [&] {
@@ -963,6 +1009,7 @@ namespace km {
                 where = kWhereMessagesInPage;
                 break;
             }
+            KM_MSTAMP(messages_stamp(stamps, kStampInPage, wall() - page_asked));
             cb_reserve_back(kCbMessagesIn, 1);
             const uint32_t page = get_write_ptr(kCbMessagesIn);
             if (from_direct != 0) {  // the slots first: each sender waits for its own
@@ -1129,6 +1176,7 @@ namespace km {
                     : kMessagesPacket
             );
             uint32_t batch = tail_value - head < packet ? tail_value - head : packet;
+            KM_MSTAMP(const uint32_t read_at = wall());
             for (uint32_t i = 0; i < batch;) {
                 const uint32_t position = (head + i) & (messages_arguments.cap - 1);
                 const uint32_t in_page = position % kMessagesPageMessages;
@@ -1151,6 +1199,7 @@ namespace km {
                 break;
             }
             invalidate_l1_cache();
+            KM_MSTAMP(messages_stamp(stamps, kStampRead, wall() - read_at));
             uint32_t valid = 0;
             const MessageMarks marks(head, shift, batch);
             // The prefix of valid marks: a message is valid only after its packet's
@@ -1168,6 +1217,7 @@ namespace km {
                 valid++;
             }
             if (valid == 0) {  // the message at head has not landed yet
+                KM_MSTAMP(messages_stamp(stamps, kStampGaps, 1));
                 const uint64_t now = wall64();
                 if (waiting_from == 0) {
                     waiting_from = now;
@@ -1178,6 +1228,7 @@ namespace km {
                 continue;
             }
             waiting_from = 0;
+            KM_MSTAMP(messages_stamp(stamps, kStampGapCycles, wall() - tail_seen));
             if (messages_arguments.body_bytes != 0) {
                 // The bodies after the packet's messages, a page each: landed before
                 // the packet's mark (the writer's barrier).
@@ -1229,6 +1280,10 @@ namespace km {
             l1(page)[0] = valid;
             l1(page)[1] = head;
             cb_push_back(kCbMessagesIn, 1);
+            KM_MSTAMP(messages_stamp(stamps, kStampToPush, wall() - tail_seen));
+            KM_MSTAMP(messages_stamp(stamps, kStampPackets, 1));
+            KM_MSTAMP(messages_stamp(stamps, kStampMessages, valid));
+            KM_MSTAMP(tail_seen = 0);
             head += valid;
             *head_word = head;
 #if defined(KM_MESSAGE_HANDLERS)
@@ -1404,13 +1459,19 @@ namespace km {
         // out while the next bin's reservation travels.
         uint32_t pending = kMessagesNoBin, pending_mark = 0;
         uint64_t pending_noc = 0;
+        KM_MSTAMP(const uint32_t stamps = messages_arguments.stamps);
+        KM_MSTAMP(uint32_t bin_taken[kMessagesBinsMax] = {});  // sums of take times
+        KM_MSTAMP(uint32_t pending_at = 0);
+        KM_MSTAMP(uint32_t empty_from = 0);
         auto writes_landed = [&] {
+            KM_MSTAMP(const uint32_t asked = wall());
             if (!noc_timeout(writer, [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             })) {
                 where = kWhereMessagesFlush;
                 return false;
             }
+            KM_MSTAMP(messages_stamp(stamps, kStampLanded, wall() - asked));
             return true;
         };
         // The bin's messages are in their queue: counted sent, its body free, the bin
@@ -1435,6 +1496,7 @@ namespace km {
             if (!writes_landed()) {
                 return false;
             }
+            KM_MSTAMP(messages_stamp(stamps, kStampPending, wall() - pending_at));
             *message_mark_half(base) = pending_mark;
             invalidate_l1_cache();
             noc_async_write(base, pending_noc, 16);
@@ -1457,6 +1519,11 @@ namespace km {
         // answer travels; then this bin's messages go out with the first one's mark 0.
         auto flush = [&](uint32_t bin) {
             const uint32_t bin_messages = bin_fill[bin];
+            KM_MSTAMP(messages_stamp(stamps, kStampFlushes, 1));
+            KM_MSTAMP(messages_stamp(
+                stamps, kStampBinWait, bin_messages * wall() - bin_taken[bin]
+            ));
+            KM_MSTAMP(bin_taken[bin] = 0);
             if (
                 (bin_destination[bin] & kMessagesAway) != 0 &&
                 !away.takes(bin_destination[bin])
@@ -1490,6 +1557,7 @@ namespace km {
             }
             returned[0] = kMessagesEnd;
             invalidate_l1_cache();  // a fence: the store lands before the answer can
+            KM_MSTAMP(const uint32_t reserved_at = wall());
             noc_fast_atomic_increment<noc_mode, true>(
                 noc_index,
                 write_at_cmd_buf,
@@ -1523,6 +1591,7 @@ namespace km {
                 lost_to = bin_destination[bin];
                 return false;
             }
+            KM_MSTAMP(messages_stamp(stamps, kStampReserve, wall() - reserved_at));
             if (
                 pending != kMessagesNoBin
             ) {  // the commit landed: nothing else is in flight
@@ -1569,6 +1638,7 @@ namespace km {
                 i += chunk;
             }
             pending = bin;
+            KM_MSTAMP(pending_at = wall());
             pending_mark = marks(0);
             pending_noc = queue_noc(bin_destination[bin], first_position);
             return true;
@@ -1650,7 +1720,9 @@ namespace km {
                 break;
             }
             if (!cb_pages_available_at_front(kCbMessagesOut, 1)) {
+                KM_MSTAMP(if (empty_from == 0) { empty_from = wall() | 1; });
                 if (pending != kMessagesNoBin && ++empty >= kMessagesSettlePolls) {
+                    KM_MSTAMP(messages_stamp(stamps, kStampSettled, 1));
                     settle();  // no next bin came to overlap it with
                     continue;
                 }
@@ -1658,6 +1730,7 @@ namespace km {
                     held != 0 && compute_flags[0] == run &&
                     (compute_flags[1] & kMessagesWaiting)
                 ) {
+                    KM_MSTAMP(messages_stamp(stamps, kStampComputeWaits, 1));
                     flush_all();  // compute waits: nothing stays in a bin
                     continue;
                 }
@@ -1675,6 +1748,10 @@ namespace km {
             }
             quiet_from = wall64();
             empty = 0;
+            KM_MSTAMP(if (empty_from != 0) {
+                messages_stamp(stamps, kStampOutEmpty, wall() - empty_from);
+                empty_from = 0;
+            });
             cb_wait_front(kCbMessagesOut, 1);
             volatile tt_l1_ptr uint32_t* outgoing = l1(get_read_ptr(kCbMessagesOut));
             const uint32_t outgoing_word = outgoing[0];
@@ -1708,10 +1785,11 @@ namespace km {
             if (bin == pending && !settle()) {  // its store is still being read
                 break;
             }
-            if (
-                bin_destination[bin] != destination && bin_fill[bin] != 0 &&
-                (!flush(bin) || !settle())  // the store takes this message next
-            ) {
+            const bool evicted = (
+                bin_destination[bin] != destination && bin_fill[bin] != 0
+            );
+            KM_MSTAMP(if (evicted) { messages_stamp(stamps, kStampEvicted, 1); });
+            if (evicted && (!flush(bin) || !settle())) {  // the store takes it next
                 break;
             }
             if (bin_fill[bin] == 0) {
@@ -1738,17 +1816,17 @@ namespace km {
                 bin_body_bytes[bin] = body_word & kMessagesOutBodyBytes;
             }
             bin_fill[bin]++;
+            KM_MSTAMP(messages_stamp(stamps, kStampTaken, 1));
+            KM_MSTAMP(bin_taken[bin] += wall());
             cb_pop_front(kCbMessagesOut, 1);
             taken++;
             flag = taken;
             writer_flags[1] = taken;
-            if (
-                (
-                    bin_fill[bin] == kMessagesPacket ||
-                    (body_word & kMessagesOutBodyBytes)
-                ) &&
-                !flush(bin)
-            ) {
+            const bool full = (
+                bin_fill[bin] == kMessagesPacket || (body_word & kMessagesOutBodyBytes)
+            );
+            KM_MSTAMP(if (full) { messages_stamp(stamps, kStampFull, 1); });
+            if (full && !flush(bin)) {
                 break;
             }
         }
