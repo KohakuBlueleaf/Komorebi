@@ -80,6 +80,13 @@ NAMES = {
         "km.ANY(p=n): the load's buffers sized for p=n too",
         None,
     ),
+    "up_to": Name(
+        "UPTO",
+        'Class(handlers={"h": [km.UPTO(block=8)]}): block given at each submit, one '
+        "build serving 1 to 8; a tensor parameter's name: its tile columns; rect: "
+        "the rectangle, an argument after the parameters",
+        None,
+    ),
     "own": Name("own", "f: km.L1[...] = km.own(push=): a field only bodies use", None),
     "tensor": Name("Tensor", "km.Tensor: a parameter that is a tensor", "tensor"),
     "pattern": Name("Pattern", "km.Pattern: a parameter that is a pattern", "pattern"),
