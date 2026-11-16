@@ -646,6 +646,7 @@ class Dynamic:
     x280_ranks: int = 0
     x280_cluster: int = 1
     direct: object = ()
+    stamps: bool = False
 
     def __post_init__(self):
         constants, _ = messages_header()
@@ -829,10 +830,11 @@ class Dynamic:
     def defines(self):
         """The defines of the runtime's kernels of handlers as parts: the program's
         handlers in order (handler i is overlay i + 1)."""
+        stamps = [("KM_MESSAGES_STAMPS", "1")] if self.stamps else []
         if not self.parts:
-            return []
+            return stamps
         handlers = ",".join(str(number) for number in self.handlers)
-        return [("KM_MESSAGE_PARTS", "1"), ("KM_MESSAGE_HANDLERS", handlers)]
+        return [("KM_MESSAGE_PARTS", "1"), ("KM_MESSAGE_HANDLERS", handlers)] + stamps
 
     def ranks(self, cores):
         """The ranks of a group of `cores` cores: its cores without the counter tiles,
@@ -852,10 +854,10 @@ class Dynamic:
         ranks = self.x280_cluster | self.x280_ranks << 4 if self.x280_ranks else 0
         return self.word() | ranks << 32
 
-    def args(self, queue, lines, body=0, x280=None, direct=0):
+    def args(self, queue, lines, body=0, x280=None, direct=0, stamps=0):
         """Reader and writer words of km::MessagesArgs (they precede the program's);
-        `body`: the DRAM address of the bodies; `x280`: the X280 ranks' words by field
-        name (x280_queue, ..., inbox); `direct`: the direct area's L1 address."""
+        `body`: bodies' DRAM address; `x280`: the X280 ranks' words by field name;
+        `direct`, `stamps`: the direct area's and the stamps' L1 addresses."""
         _, fields = messages_header()
         values = {
             "handler": self.word(),
@@ -870,6 +872,7 @@ class Dynamic:
             "body_bytes": self.body_bytes,
             "x280": self.x280_ranks,
             "direct": direct,
+            "stamps": stamps,
         }
         values |= x280 or {}
         return [int(values.get(field, 0)) & abi.M32 for field in fields]

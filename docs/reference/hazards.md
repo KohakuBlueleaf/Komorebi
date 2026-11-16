@@ -1030,6 +1030,21 @@ the commands (`kmx_wait` each, or `kmx_poll` until `KMX_NONE`).
 
 Described in [X280 threads reference, commands to a thread](threads.md#commands-to-a-thread).
 
+### A thread's command taken as done when it timed out
+
+**The hazard.** A command a thread submits to a core group and that does not finish by
+its deadline is given up, the run going on: `kmx_wait` returns `KMX_OK` with an event of
+kind `KM_EVENT_TIMEOUT`, not `KM_EVENT_DONE`. Before 2026-11-16 such a command ended the
+whole run.
+
+**The rule.** A thread checks each event's `kind` before it uses what the command
+wrote.
+
+**The guard.** `kmx_load`, `kmx_fetch` and the other calls that wait for their own
+command return `KMX_BAD` on its timeout; a raw `kmx_wait` returns the event as it is.
+
+Described in [X280 threads reference, what the host sees](threads.md#a-thread-in-a-run-of-several-programs).
+
 ### A tell taken for a message
 
 **The hazard.** A tell overwrites the line it lands in: a side that looks less often than

@@ -1879,6 +1879,36 @@ class HandlerCompiler:
             if call.args or call.keywords:
                 self.refuse(node, "consume() takes nothing", "write self.consume()")
             return [], [Line("km_messages.consume();", {"km_messages"})]
+        arguments, uses = self.message_arguments(node, call, kind)
+        return [], [Line(f"km_messages.{kind}({arguments});", uses)]
+
+    def direct_call(self, node, name, call):
+        """`went = self.direct(rank, message)`: 1 when the message went into its slot
+        at rank (a declared pair), 0 when the slot was busy and nothing was sent."""
+        if not self.dynamic:
+            self.refuse(node, "a message call is a dynamic handler's", "use one")
+        arguments, uses = self.message_arguments(node, call, "direct_message")
+        text = f"(km_messages.direct({arguments}) ? 1u : 0u)"
+        if name in self.scope:
+            if self.scope[name].kind != "int" or name not in self.assigned:
+                self.refuse(node, f"{name} is already defined", "use a new name")
+            return [], [Line(f"{name} = {text};", uses | {name})]
+        self.scope[name] = Value("int", name)
+        declared = "uint32_t" if name in self.assigned else "const uint32_t"
+        # a line, not glue: the call sends, so it stays when the name goes unread
+        return [], [Line(f"{declared} {name} = {text};", uses)]
+
+    def direct_unnamed(self, node):
+        """self.direct(...) anywhere but as a name's value: refused, by its bool."""
+        self.refuse(
+            node,
+            "self.direct(rank, message) says whether the message went (0: its slot "
+            "is busy and nothing was sent), so its value is a name's",
+            "write went = self.direct(rank, message), then forward it when went == 0",
+        )
+
+    def message_arguments(self, node, call, kind):
+        """The C++ arguments of self.<kind>(rank, message[, to=]) and their uses."""
         to = [k for k in call.keywords if k.arg == spelling("to")]
         if len(call.args) != 2 or len(call.keywords) != len(to) or len(to) > 1:
             self.refuse(
@@ -1896,7 +1926,7 @@ class HandlerCompiler:
         rank = self.integer(call.args[0])
         uses = self.uses(call.args[0]) | {"km_messages", message.id}
         handler = f", {self.handler_named(node, to[0].value)}" if to else ""
-        return [], [Line(f"km_messages.{kind}({rank}, {message.id}{handler});", uses)]
+        return f"{rank}, {message.id}{handler}", uses
 
     def handler_named(self, node, value):
         """The C++ of `to=Class.handler`: a dynamic handler of this class."""
@@ -2194,6 +2224,8 @@ class HandlerCompiler:
             and self.field_name(value.func.value)
         ):
             return self.bump_line(node, name, value)
+        if self.self_call(value, "direct_message"):
+            return self.direct_call(node, name, value)
         call = self.construct(value)
         if call == "partition":
             return self.partition(node, name, value)
@@ -2437,6 +2469,8 @@ class HandlerCompiler:
             return "(" + op.join(self.integer(v) for v in node.values) + ")"
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             return f"!({self.integer(node.operand)})"
+        if self.self_call(node, "direct_message"):
+            self.direct_unnamed(node)
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -4739,6 +4773,8 @@ class HandlerCompiler:
         for kind in ("send", "forward", "consume"):
             if self.self_call(call, kind):
                 return self.message_call(node, call, kind)
+        if self.self_call(call, "direct_message"):
+            self.direct_unnamed(node)
         construct = self.construct(call)
         if construct == "cxx":
             return self.inline(node, call)
@@ -5477,8 +5513,11 @@ class HandlerCompiler:
             f"    copy_tile({item.cxx}, {first} + 2 * {chunk} + 1, 1);",
         ]
         lines = ["tile_regs_acquire();", f"MATH((km_tile::{cxx}_start(0)));"]
+        last = f"copy_tile({item.cxx}, {first} + {item.width - 1}, 0);"  # an odd row's
         for part in unit.parts:
-            if part.startswith("sum"):
+            if part.startswith("sum") and part.endswith("_one"):
+                lines += [last, f"MATH((km_tile::{cxx}_{part}(0)));"]
+            elif part.startswith("sum"):
                 call = f"    MATH((km_tile::{cxx}_{part}(0)));"
                 lines += [loop, *copy, call, "}"]
             elif part.startswith("finish"):
@@ -5515,8 +5554,19 @@ class HandlerCompiler:
             "    }",
             "    tile_regs_release();",
             "}",
-            f"cb_pop_front({rows}, 1);",
         ]
+        if item.width % 2:  # the last tile: a chunk of one
+            at = lines.index(loop, lines.index(f"cb_wait_front({rows}, 1);"))
+            body = [x[4:] for x in lines[at + 1 : -1] if "+ 1" not in x[4:]]
+            body = [
+                x.replace(f"{first} + 2 * {chunk}", f"{first} + {item.width - 1}")
+                .replace(f"{tile} + 2 * {chunk}", f"{tile} + {item.width - 1}")
+                .replace(f", {chunk}, ", f", {count}, ")
+                .replace(f"km_tile::{cxx}(0)", f"km_tile::{cxx}_apply_one(0)")
+                for x in body
+            ]
+            lines += body
+        lines.append(f"cb_pop_front({rows}, 1);")
         self.compiled.tile_calls.append(
             (self.method.name, node.lineno, self.text(node), function, cxx)
         )

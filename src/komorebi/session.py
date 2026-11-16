@@ -2626,6 +2626,7 @@ class _Backend:
         self.state_tensor = None
         self.inbox = None  # the X280 ranks' messages to each core, in L1
         self.direct = None  # each core's direct messages' tables and slots, in L1
+        self.stamps = None  # stamps=True: each core's reader and writer sums, in L1
         self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
@@ -2809,7 +2810,14 @@ class _Backend:
             self.direct = _words(self.session, messages.direct_rows(cores), grid)
             self.io.append(self.direct)
             direct = self.direct.address
-        reader_writer = messages.args(queue.address, lines, body, x280, direct)
+        stamps = 0
+        if messages.stamps:  # km_messages.hpp kMessagesStamp*: cycles and counts
+            words = messages_header()[0]["kMessagesStampWords"]
+            zeros = np.zeros((cores, words), np.uint32)
+            self.stamps = _words(self.session, zeros, grid)
+            self.io.append(self.stamps)
+            stamps = self.stamps.address
+        reader_writer = messages.args(queue.address, lines, body, x280, direct, stamps)
         return reader_writer, messages.compute_args(cores, direct)
 
     def describe(self, *args, **options):

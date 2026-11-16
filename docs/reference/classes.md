@@ -1206,18 +1206,18 @@ def layer_norm(row, weight, bias):
     return d * km.rsqrt(var + EPS).col() * weight.row() + bias.row()
 ```
 
-A row of more than 2 tiles (`row=` 4, 6, ..., the stream's block the whole row) takes the
+A row of more than 2 tiles (`row=` 3 or more, the stream's block the whole row) takes the
 chunk form ([tile compiler](tile.md)): in one acquire the sums' passes over the row's
 chunks of 2 tiles and the per-row values, packed to a page of their own
 (`kChunkRows<F>`); then an acquire a chunk, the chunk, those values and each field's
 chunk in DST, the chunk packed to its place in the block. A field holds a tile a chunk.
 The call is pushed (`results.push(layer_norm(row, self.weight, self.bias))`); assigning
 it to a name, and stamps= on its handler, are refused. From
-[tile wide](../../experiments/language/tile_wide/tile_wide.py), rows of 768 values:
+[tile wide](../../experiments/language/tile_wide/tile_wide.py), rows of 736 values:
 
 ```python
-WIDE = 24  # tiles a row: 768 values
-CHUNKS = 12  # chunks of 2 tiles a row: the fields' tiles
+WIDE = 23  # tiles a row: 736 values (11 chunks of 2, a last of 1)
+CHUNKS = 12  # chunks a row: the fields' tiles
 
 
 class Wide(km.Program):
@@ -2101,6 +2101,7 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 | `for message in self.arrive():` | each packet of `km_messages.next()`, each message of it copied, then `km_messages.done(km_packet)` |
 | `message.state`, `message.sum += x` | the message's word |
 | `self.forward(rank, message)` | `km_messages.forward(rank, message)` |
+| `went = self.direct(rank, message)` | `const uint32_t went = km_messages.direct(rank, message) ? 1 : 0`: 1 when it went into its slot at rank, a [declared pair](dynamic.md#a-direct-message); 0 when the slot is busy and nothing was sent (the call is refused anywhere but as a name's value) |
 | `self.consume()` | `km_messages.consume()` |
 
 A `km.cxx` body in a dynamic handler can call the handler's `km::Messages` by its name,
