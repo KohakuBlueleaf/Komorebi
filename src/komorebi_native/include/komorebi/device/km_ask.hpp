@@ -143,7 +143,7 @@ namespace km {
         live[kLvLostAt + cpu] = number;
         live[kLvLostPages] = (
             (live[kLvLostPages] & ~(0xFFFFu << 16 * cpu)) |
-            (1u << 15 | (holder & 7u) << 12) << 16 * cpu
+            (1u << 15 | (holder & 0xFFu) << 7) << 16 * cpu
         );
     }
 #endif

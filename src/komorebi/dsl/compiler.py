@@ -253,6 +253,9 @@ class Compiled:
     unpack_fp32: set = field(default_factory=set)  # buffer names compute copies fp32
     summed_fields: set = field(default_factory=set)  # fields of sums: compute packs
     broadcasts: list = field(default_factory=list)  # (along, buffer, window)
+    rect_sized: bool = False  # a handler's rectangle given at each submit
+    rect_plain: bool = False  # a handler reads the make's rectangle
+    rect_broadcasts: set = field(default_factory=set)  # (mover, index) computed so
     constants: dict = field(default_factory=dict)  # plan names used -> value
     rectangle: bool = False  # self.x or self.y used
     fields: dict = field(default_factory=dict)  # name -> front.Field
@@ -1455,7 +1458,9 @@ class HandlerCompiler:
                     {f"km_field_{field_}"},
                 )
             )
+        self.rect_param = None
         self.bind_parameters(movement, compute)
+        self.rect_glue(movement, compute)
         spans = None
         if self.method.stamps is not None and not self.method.overlay:
             spans = self.tile_stamps()
@@ -1465,7 +1470,19 @@ class HandlerCompiler:
             compute.append(Glue("bool km_ok = true;", {"km_ok"}))
         if spans is not None:
             compute.append(spans[0])
+        self.block_words, self.stream_word = {}, None
+        marks = (len(movement), len(compute))
+        self.rect_read = False
         body_m, body_c = self.statements(self.definition.body)
+        if self.rect_param is not None and not (self.rect_read or self.movers):
+            self.refuse(
+                self.definition,
+                "its rectangle is given at each submit, and it reads no self.x, "
+                "self.y or broadcast",
+                f"leave rect out of km.{spelling('up_to')}",
+            )
+        compute[marks[1] : marks[1]] = self.block_lines()
+        movement[marks[0] : marks[0]] = self.block_lines()
         movement += self.opening_b + body_m + self.put_waits()
         compute += self.opening + body_c + self.carried_end()
         if spans is not None:
@@ -1969,7 +1986,10 @@ class HandlerCompiler:
             args.vararg
             or args.kwarg
             or args.kwonlyargs
-            or (len(args.defaults) > len(constants))
+            or (
+                len(args.defaults)
+                > len(constants) + len(front.sized_parameters(self.method.function))
+            )
         ):
             self.refuse(
                 self.definition,
@@ -1978,7 +1998,8 @@ class HandlerCompiler:
             )
         parameters = [p for p in args.args[1:] if p.arg not in constants]
         words = []
-        for word, parameter in enumerate(parameters):
+        for parameter in parameters:
+            word = len(words)  # a rectangle takes four
             kind = self.parameter_kind(parameter)
             self.check_name(parameter, parameter.arg)
             param = Param(parameter.arg, kind, word)
@@ -1997,6 +2018,8 @@ class HandlerCompiler:
                     f"const km::Pattern {param.name} = "
                     f"km::Pattern::of(command.a{word});"
                 )
+            elif kind == "rect":
+                text = self.bind_rect(param.name, word, words)
             elif kind == "float":
                 self.scope[param.name] = Value("float", param.name)
                 text = (
@@ -2008,6 +2031,12 @@ class HandlerCompiler:
                 text = f"const uint32_t {param.name} = command.a{word};"
             for nodes in (movement, compute):
                 nodes.append(Glue(text, {param.name}))
+        if front.rect_given(self.method.function) is not None:  # km.UPTO(rect=)
+            word = len(words)
+            words.append(("rect", "rect"))
+            text = self.bind_rect("rect", word, words, "km_rect_given")
+            for nodes in (movement, compute):
+                nodes.append(Glue(text, {"km_rect_given"}))
         counted = self.counted_tensors()
         for tensor in counted:
             word = len(words)
@@ -2018,6 +2047,19 @@ class HandlerCompiler:
                     Glue(
                         f"const uint32_t {tensor}_pages = command.a{word};",
                         {f"{tensor}_pages"},
+                    )
+                )
+        self.column_words = {}
+        sized = front.sized_parameters(self.method.function)
+        for tensor in [n for n, kind in words if kind == "tensor" and n in sized]:
+            word = len(words)  # its tile columns, the tensor's at each submit
+            words.append((tensor, "columns"))
+            self.column_words[tensor] = f"{tensor}_columns"
+            for nodes in (movement, compute):
+                nodes.append(
+                    Glue(
+                        f"const uint32_t {tensor}_columns = command.a{word};",
+                        {f"{tensor}_columns"},
                     )
                 )
         for name in [n for n, kind in words if kind == "region"]:  # its bank's word
@@ -2049,7 +2091,8 @@ class HandlerCompiler:
                     f"give it a default, {parameter.arg}: "
                     f"km.{spelling('constant')}[int] = n",
                 )
-        if any(name not in constants for name in defaulted):
+        sized = front.sized_parameters(self.method.function)
+        if any(name not in constants and name not in sized for name in defaulted):
             return {}  # a default of a command word: refused by bind_parameters
         return constants
 
@@ -2064,6 +2107,11 @@ class HandlerCompiler:
             )
         if isinstance(annotation, ast.Name) and annotation.id in ("int", "float"):
             return annotation.id
+        most = front.sized_parameters(self.method.function).get(parameter.arg)
+        if isinstance(annotation, ast.Name) and isinstance(most, tuple):
+            return "rect"  # a rectangle given at each submit: four words
+        if isinstance(annotation, ast.Subscript) and isinstance(most, int):
+            return "int"  # a constant int km.UPTO gives at each submit: a word
         if isinstance(annotation, ast.Attribute):
             kind = kind_of(annotation.attr, ("tensor", "pattern", "region"))
             if kind:
@@ -2074,6 +2122,70 @@ class HandlerCompiler:
             f"a parameter is km.{spelling('tensor')}, int, float or "
             f"km.{spelling('pattern')}",
         )
+
+    def bind_rect(self, name, word, words, text=None):
+        """A rectangle given at each submit: its four words (x0, y0, columns, rows)
+        as an array (named `text` in C++, else `name`), three more words after its
+        place (`words` the handler's)."""
+        text = text or name
+        if self.rect_param is not None:
+            self.refuse(
+                self.definition,
+                f"two rectangles given at each submit ({self.rect_param}, {name})",
+                "give one",
+            )
+        self.rect_param = text
+        self.compiled.rect_sized = True
+        words += [(name, "rect words")] * 3
+        places = ", ".join(f"command.a{word + i}" for i in range(4))
+        return f"const uint32_t {text}[4] = {{{places}}};"
+
+    def rect_glue(self, movement, compute):
+        """A handler with a rectangle given at each submit: self.x, self.y, the
+        rectangle's sides and whether the core is in it computed on the core
+        (km_rect.hpp) from its words and the grid's (program arguments)."""
+        if self.rect_param is None:
+            return
+        for nodes, me in ((movement, "movement"), (compute, "compute")):
+            nodes.append(
+                Glue(
+                    "uint32_t km_grid_words[kGridWords];\n"
+                    "for (uint32_t i = 0; i < kGridWords; i++) {\n"
+                    f"    km_grid_words[i] = {me}.arg(kArgGrid + i);\n"
+                    "}\n"
+                    "const km::RectGrid km_grid = km::rect_grid(km_grid_words);",
+                    {"km_grid"},
+                )
+            )
+            nodes.append(
+                Glue(
+                    f"const km::RectPlace km_place = km::rect_place({me}.me(), "
+                    f"km_grid.width, {self.rect_param});",
+                    {"km_place"},
+                    {"km_grid", self.rect_param},
+                )
+            )
+            fields = {"km_self_x": "x", "km_self_y": "y"}
+            fields |= {"km_rect_columns": "columns", "km_rect_rows": "rows"}
+            nodes[:] = [  # the program arguments' place words: here the command's
+                n
+                for n in nodes
+                if not (isinstance(n, Glue) and n.defines <= set(fields))
+            ]
+            for value, field_ in fields.items():
+                nodes.append(
+                    Glue(
+                        f"const uint32_t {value} = km_place.{field_};",
+                        {value},
+                        {"km_place"},
+                    )
+                )
+
+    def included_test(self, me):
+        """The C++ of `the core is outside the rectangle`."""
+        if self.rect_param is not None:
+            return "km_place.included == 0", {"km_place"}
+        return f"{me}.arg(kArgIncluded) == 0", set()
 
     def bind_region(self, parameter, word):
         """A region parameter: a tensor of the handler's lines in pages of the thread's
@@ -2523,6 +2635,43 @@ class HandlerCompiler:
         self.word_given(node, "a size the build needs")
         self.refuse(node, "a size the build needs", "give an int, or a plan name")
 
+    def sized_block(self, node):
+        """A stream's block= : a constant, or a parameter given at each submit
+        (a handler parameter given at each submit), whose most sizes the buffer
+        (stream_word)."""
+        sized = front.sized_parameters(self.method.function)
+        if isinstance(node, ast.Name) and node.id in sized:
+            self.stream_word = node.id
+            return sized[node.id]
+        return self.constant_int(node)
+
+    def block_word(self, node, buffer):
+        """A stream's pair whose block is given at each submit: the handler's
+        `<pair>Block` a word, its constant the most (the pair's pages) elsewhere; a
+        pair one handler streams with two blocks refused."""
+        word, self.stream_word = self.stream_word, None
+        if self.block_words.setdefault(buffer.name, word) != word:
+            self.refuse(
+                node,
+                f"pair {buffer.name} is streamed with block {word or 'a constant'} "
+                f"and with {self.block_words[buffer.name] or 'a constant'} in one "
+                "handler",
+                "give the two streams one block, or tensors of other formats",
+            )
+
+    def block_lines(self):
+        """Each pair's block given at each submit, as `<pair>Block` over the
+        constant (the most), in the handler's movement and compute."""
+        return [
+            Line(
+                f"[[maybe_unused]] const uint32_t {name}Block = {word};  // "
+                "given at each submit: a divisor of the constant's",
+                {word},
+            )
+            for name, word in self.block_words.items()
+            if word is not None
+        ]
+
     def attribute(self, node):
         base = node.value
         if self.is_class_constant(node):
@@ -2539,6 +2688,8 @@ class HandlerCompiler:
                 return self.leader_text
             if kind in ("x", "y"):
                 self.compiled.rectangle = True
+                self.compiled.rect_plain |= self.rect_param is None
+                self.rect_read = True
                 return f"km_self_{kind}"
             self.field_use(node)
             self.refuse(node, f"self.{node.attr} is not known", "use self.rank")
@@ -2686,8 +2837,10 @@ class HandlerCompiler:
                 "in tiles of at least two dimensions",
                 f'make it with {tensor}=a tensor of the shape, layout "tile"',
             )
-        columns_of = example.shape[-1] // 32
-        self.method.widths[tensor] = columns_of  # the host's check at submit
+        columns_of = getattr(self, "column_words", {}).get(tensor)
+        if columns_of is None:
+            columns_of = example.shape[-1] // 32
+            self.method.widths[tensor] = columns_of  # the host's check at submit
         texts, lengths, bounds = [], [], []
         for side in sides:
             low, high = self.integer(side.lower), self.integer(side.upper)
@@ -2709,12 +2862,13 @@ class HandlerCompiler:
                 f"({rows[1] if rows[0] is None else rows[0]} * "
                 f"{columns[1] if columns[0] is None else columns[0]})"
             )
-        used = set()
+        used = {columns_of} if isinstance(columns_of, str) else set()
         for side in sides:
             used |= self.uses(side.lower) | self.uses(side.upper)
         for part in (sides[0].step,) if step is not None else ():
             used |= self.uses(part)
         if step is None and (rows[0] == 1 or columns[0] == columns_of):  # one run
+            # (a width given at each submit is never known to equal a side)
             rect = None
         else:  # rows of columns; either side a word, read at run time
             rect = (
@@ -2765,8 +2919,10 @@ class HandlerCompiler:
         known = self.known_int(side.step)
         if known is not None and known < 1:
             self.refuse(node, "a rectangle's rows' step is 1 or more", "give s >= 1")
-        if known is not None:
+        if known is not None and isinstance(columns_of, int):
             return known * columns_of
+        if known is not None:  # the tensor's width given at each submit
+            return f"({known} * {columns_of})"
         return f"(({self.integer(side.step)}) * {columns_of})"
 
     def stepped_side(self, side):
@@ -4155,10 +4311,11 @@ class HandlerCompiler:
         pages = self.range_of(call.args[0])
         block, pattern, letters, repeat = None, None, None, "1"
         self.row_width = 1
+        self.stream_word = None  # a block given at each submit: its parameter
         for keyword_ in call.keywords:
             key = keyword_.arg
             if key == spelling("block"):
-                block = self.constant_int(keyword_.value)
+                block = self.sized_block(keyword_.value)
             elif key == spelling("row") and not write:
                 self.row_width = self.constant_int(keyword_.value)
             elif key == "pattern":
@@ -4177,6 +4334,15 @@ class HandlerCompiler:
                 node,
                 "a block of no pages, or not of whole rows nor a part of one",
                 "give block= a count, a multiple of row= or a part of it",
+            )
+        if self.stream_word is not None and (
+            self.row_width > 1 or pages.rect is not None
+        ):
+            self.refuse(
+                node,
+                f"a block given at each submit ({self.stream_word}) of rows of a "
+                "rectangle or of row= is not built",
+                "give block= a constant, or stream one run of pages",
             )
         if pattern is None and letters is None:  # unstated: the default
             letters = WRITE_PATTERN if write else READ_PATTERN
@@ -4351,6 +4517,7 @@ class HandlerCompiler:
             WRITE_ITEMS,
             f"line {node.lineno}: {self.text(node)}",
         )
+        self.block_word(node, buffer)
         pattern_text = self.pattern_cxx(buffer, pattern, letters)
         variable = f"km_write{number}"
         self.scope[name] = Value(
@@ -4513,6 +4680,8 @@ class HandlerCompiler:
                 READ_ITEMS,
                 f"line {node.lineno}: {self.text(node)}",
             )
+            word = self.stream_word
+            self.block_word(node, buffer)
             pattern_text = self.pattern_cxx(buffer, pattern, letters)
             if dtype == "float32" and pages.items is None:
                 self.compiled.unpack_fp32.add(buffer.name)
@@ -4530,17 +4699,26 @@ class HandlerCompiler:
                     "repeat": repeat,
                     "buffer": buffer,
                     "width": self.row_width,
+                    "word": word,
                 }
             )
         first = reads[0]
         rows_in_step = False  # blocks of whole rows, as many blocks: a product's
         for other in reads[1:]:
-            if (other["block"], other["pages"].count, other["repeat"]) == (
-                first["block"],
-                first["pages"].count,
-                first["repeat"],
-            ):
+            if (
+                other["block"],
+                other["pages"].count,
+                other["repeat"],
+                other["word"],
+            ) == (first["block"], first["pages"].count, first["repeat"], first["word"]):
                 continue
+            if other["word"] or first["word"]:
+                self.refuse(
+                    node,
+                    "streams read in step, one with a block given at each submit, "
+                    "have one count and the same block parameter",
+                    "give each stream block= the same parameter",
+                )
             if stream_units(other) & stream_units(first) and other["repeat"] == (
                 first["repeat"]
             ):
@@ -8465,6 +8643,7 @@ class HandlerCompiler:
             self.method.name, f"line {node.lineno}, `{self.text(node)}`"
         )
         self.compiled.rectangle = True
+        self.compiled.rect_plain |= self.rect_param is None
         self.compiled.includes |= {"broadcast"}
         self.compute_waits = True
         self.scope[name] = Value(
@@ -8475,10 +8654,13 @@ class HandlerCompiler:
         if unread is not None:  # a word of the handler: its C++, the names it reads
             self.scope[name].unread = (self.integer(unread), self.uses(unread))
         arg = "kArgBroadcast" + (f" + km::kBroadcastArgs * {index}" if index else "")
+        if self.rect_param is not None:  # its arguments computed on the core
+            arg = self.rect_broadcast(name, along, mover, window, length, index)
         movement = Line(
             f"km::Broadcast {name}(movement, command, {arg});\n"
             f"if (!{name}.ok()) {{\n    return false;\n}}\n"
             f"if (!{name}.included()) {{\n    return true;\n}}",
+            {"km_grid", self.rect_param} if self.rect_param else set(),
             mover=mover,
         )
         counter = f"km_blocks_{name}"  # kept where casts count over loops
@@ -8488,12 +8670,36 @@ class HandlerCompiler:
         ]
         compute = []
         if len(self.movers) == 1:
-            compute.append(Line("if (compute.arg(kArgIncluded) == 0) {\n    break;\n}"))
+            test, uses = self.included_test("compute")
+            compute.append(Line(f"if ({test}) {{\n    break;\n}}", uses))
             return [movement, counted[0], self.other_mover_skips(mover)], [
                 *compute,
                 counted[1],
             ]
         return [movement, counted[0]], [counted[1]]
+
+    def rect_broadcast(self, name, along, mover, window, length, index):
+        """A broadcast's arguments on a rectangle given at each submit: the build's
+        (its number, NoC, buffer, window, pages), the command's group, and rank,
+        receivers, sender and corners computed on the core (km::rect_broadcast)."""
+        args, place = f"km_args_{name}", f"{mover}{index}"
+        self.compiled.rect_broadcasts.add((mover, index))
+        return (
+            f"[&]() {{\n"
+            f"    km::BroadcastArgs {args}{{}};\n"
+            f"    {args}.broadcast = kRectId{place};\n"
+            f"    {args}.group = command.group;\n"
+            f"    {args}.noc = {0 if mover == 'A' else 1}u;\n"
+            f"    {args}.cb = kRectCb{place};\n"
+            f"    {args}.window = kRectWindow{place};\n"
+            f"    {args}.pages = kRectPages{place};\n"
+            f"    {args}.next = km::kBroadcastNoNext;\n"
+            f"    km::rect_broadcast({args}, movement.me(), km_grid, "
+            f"{self.rect_param}, {'true' if along == 'row' else 'false'}, "
+            f"{length or 0}u, km::kBroadcastNone);\n"
+            f"    return {args};\n"
+            f"}}()"
+        )
 
     def class_mover(self, node, mover):
         """The place of this handler's broadcast among its mover's in the class: a
@@ -8548,8 +8754,10 @@ class HandlerCompiler:
     def other_mover_skips(self, mover):
         """The mover a handler's first broadcast does not run skips the handler on a
         core the rectangle leaves out, as that broadcast's mover and compute do."""
+        test, uses = self.included_test("movement")
         return Line(
-            "if (movement.arg(kArgIncluded) == 0) {\n    return true;\n}",
+            f"if ({test}) {{\n    return true;\n}}",
+            uses,
             mover="B" if mover == "A" else "A",
         )
 
@@ -10404,6 +10612,13 @@ class HandlerCompiler:
             1,  # one block a half: the block is held until the end of its lines
             f"line {node.lineno}: {self.text(node)}",
         )
+        if self.stream_word is not None:
+            self.refuse(
+                node,
+                f"a block bodies take, given at each submit ({self.stream_word}), is "
+                "not built",
+                "give block= its most pages, a constant",
+            )
         pattern_text = self.pattern_cxx(buffer, pattern, letters)
         if dtype == "float32":
             self.compiled.unpack_fp32.add(buffer.name)
@@ -11198,6 +11413,8 @@ def text_uses(text, compiler):
         if name in compiler.scope or name in GENERATED_VALUES:
             found.add(name)
         if name in compiler.counts.values():
+            found.add(name)
+        if name in getattr(compiler, "column_words", {}).values():  # a width word
             found.add(name)
     return found
 

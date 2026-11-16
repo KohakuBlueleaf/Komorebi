@@ -690,6 +690,12 @@ def submitted_word(handler, method, at, label):
             "call is given at submit"
         )
     ((place, value),) = at.items()
+    if place in front.sized_parameters(method.function):
+        raise kc.ChainRefused(
+            f"{label}: {place} is a size given at each command, whose most a "
+            "chain's per-submit word is not checked against: give it a value in the "
+            "call"
+        )
     if place in front.constant_parameters(method.function):
         raise kc.ChainRefused(
             f"{label}: {place} is a constant, fixed when the handler is built; "
@@ -697,7 +703,8 @@ def submitted_word(handler, method, at, label):
         )
     places = [p for p, _kind in handler.method.words]
     kind = dict(handler.method.words).get(place)
-    if kind in ("tensor", "pages", "region", "bank", "pattern", "float", None):
+    if kind in ("tensor", "pages", "columns", "region", "bank", "pattern", "float",
+                None):  # fmt: skip
         raise kc.ChainRefused(
             f"{label}: {place} is a {kind or 'parameter with no word'}; "
             f"km.{spelling('at_submit')} gives an int word"

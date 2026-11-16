@@ -387,6 +387,7 @@ class Run:
             ports = self._check_ports(program_field, handler, group, exclusive)
             if method is not None:
                 self._check_rectangle(method, program_field, group)
+                self._check_given_rectangle(method, args, group)
                 self._check_reduce_groups(method, program_field, group)
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
@@ -450,6 +451,28 @@ class Run:
                 )
             out[index] = found[0]
         return out
+
+    def _check_given_rectangle(self, method, args, group):
+        """Refuses a command whose rectangle given at each submit (km.UPTO(rect=))
+        is off this run's grid or whose group is not the rectangle's."""
+        if front.rect_given(method.function) is None or method.words is None:
+            return
+        at = method.words.index(("rect", "rect"))
+        x0, y0, columns, rows = (int(word) for word in args[at : at + 4])
+        width, height = self.grid
+        if x0 + columns > width or y0 + rows > height:
+            raise ValueError(
+                f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is off the "
+                f"{width} x {height} grid"
+            )
+        first = y0 * width + x0
+        want = (first + self.island_first - self.island_cores[0],
+                (y0 + rows - 1) * width + x0 + columns - first)  # fmt: skip
+        if tuple(group) != want:
+            raise ValueError(
+                f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is the group "
+                f"{want}; submit it to that group (not {tuple(group)})"
+            )
 
     def _check_rectangle(self, method, program_field, group):
         """Refuses a broadcast's command of a class whose group is not the group of
