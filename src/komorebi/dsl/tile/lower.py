@@ -10,6 +10,7 @@ from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile import macro, sfpu
 from komorebi.dsl.tile.ir import A_DTYPES, TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.matrix import PHASES, tile_products
+from komorebi.dsl.tile.schedule import interleave
 from komorebi.dsl.tile.unit import (
     FIXED,
     IADD_IMM,
@@ -1621,8 +1622,6 @@ def unit_program(
         unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
     if per_row:
         # The even and odd vectors of a block are two independent chains.
-        from komorebi.dsl.tile.rows import interleave  # noqa: PLC0415 (rows imports us)
-
         unit.passes.append(Pass("algebra", "drop_copies", drop_copies(body.code)))
         unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
         trial = copy.deepcopy(body.code)

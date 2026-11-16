@@ -150,7 +150,7 @@ class Compiled:
     # overlay handler -> its overlay number; broadcast handler -> its km.Broadcast
     overlays: dict = field(default_factory=dict)
     broadcast_lines: dict = field(default_factory=dict)
-    rect_lines: dict = field(default_factory=dict)  # handler -> self.x/y/core read at
+    rect_lines: dict = field(default_factory=dict)  # handler -> self.x/y read at
     # mover -> [(handler, its broadcast's line)] in the class's order: a core holds
     # each one's arguments after the last's (kArgBroadcast + kBroadcastArgs i)
     mover_broadcasts: dict = field(default_factory=dict)

@@ -3,7 +3,6 @@ becomes (km_chain.h), and what is proven or checked before they are written: an
 earlier input complete for every core that reads it, a direct input's senders."""
 
 import functools
-import importlib
 import sys
 import types
 from typing import NamedTuple
@@ -445,12 +444,34 @@ def build(calls):
     return report, (names.pop() if names else None)
 
 
+class ChainMethod:
+    """A method decorated with `km.chain`: calls of the class's handlers in order,
+    read when the class is made; called on a program with its arguments, the same
+    list of calls the host form gives (`run.chain(program.layer(x, y))`)."""
+
+    expand = None  # the DSL's expansion of a call, given when the class is made
+
+    def __init__(self, function):
+        self.function = function
+        self.name = function.__name__
+        self.owner = None
+
+    def __set_name__(self, owner, name):
+        self.name, self.owner = name, owner
+
+    def __get__(self, program, owner=None):
+        if program is None:
+            return self
+        return lambda *values, **named: self.expand(program, self, values, named)
+
+
 class _Spelled(types.ModuleType):
-    """`km.chain` is this module and, called, the decorator of a class's chain
-    method (komorebi.dsl.front.chain): `@km.chain` beside `km.chain.Call`."""
+    """`km.chain` is this module and, called, the decorator that makes a method of a
+    class deriving km.Program a chain: its lines calls of the class's handlers in
+    order (a loop of a constant count unrolled); `@km.chain` beside `km.chain.Call`."""
 
     def __call__(self, function):
-        return importlib.import_module("komorebi.dsl.front").chain(function)
+        return ChainMethod(function)
 
 
 sys.modules[__name__].__class__ = _Spelled

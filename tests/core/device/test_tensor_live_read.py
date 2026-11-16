@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from komorebi.builder import prebuild
+from komorebi.device import mock
 from komorebi.device.tensor import Tensor
 from komorebi.errors import KomorebiError
 from komorebi.session.session import Session
@@ -30,7 +30,7 @@ def tensor(loaded, shard_grid=None):
 def test_a_read_while_a_run_is_loaded_is_refused_by_name(monkeypatch):
     with pytest.raises(KomorebiError, match=r"run.stop\(\), or session.read\(tensor\)"):
         tensor(lambda: True).read()
-    monkeypatch.setenv(prebuild.ACTIVE, "1")  # a prebuild's mock run meets it too
+    monkeypatch.setenv(mock.ACTIVE, "1")  # a prebuild's mock run meets it too
     with pytest.raises(KomorebiError, match="by DRAM banks or the host channel"):
         tensor(lambda: True).read()
     with pytest.raises(KomorebiError, match="L1 tensor live only through the host"):

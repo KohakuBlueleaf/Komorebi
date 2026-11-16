@@ -68,7 +68,7 @@ def test_a_split_card_s_load_remembers_what_it_took(monkeypatch):
         card._last_total = 120000
         return [object(), object()]
 
-    monkeypatch.setattr(island_session.prebuild, "active", lambda: True)
+    monkeypatch.setattr(island_session.mock, "active", lambda: True)
     made = split_session(loaded)
     made.load(Kernel())
     assert made._memory.said == [("loaded", "swiglu", 120000)]

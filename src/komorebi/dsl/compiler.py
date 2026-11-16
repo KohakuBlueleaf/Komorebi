@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi import abi
-from komorebi.dsl import front
+from komorebi.dsl import front, island_place
 from komorebi.dsl.compile import layout
 from komorebi.dsl.compile.records import (
     Buffer,
@@ -1966,7 +1966,8 @@ class HandlerCompiler:
             )
             nodes.append(
                 Glue(
-                    f"const km::RectPlace km_place = km::rect_place({me}.me(), "
+                    "const km::RectPlace km_place = km::rect_place("
+                    f"{island_place.card_core(me, self.compiled.islands)}, "
                     f"km_grid.width, {self.rect_param});",
                     {"km_place"},
                     {"km_grid", self.rect_param},
@@ -2510,8 +2511,6 @@ class HandlerCompiler:
         if isinstance(base, ast.Name) and base.id == "self":
             kind = kind_of(node.attr, ("rank", "size", "leader", "x", "y", "core"))
             if kind == "core":
-                where = f"line {node.lineno}"
-                self.compiled.rect_lines.setdefault(self.method.name, where)
                 return "km_self_core"
             if kind == "rank":
                 return "km_rank"
@@ -9058,7 +9057,8 @@ class HandlerCompiler:
             f"    {args}.window = kRectWindow{place};\n"
             f"    {args}.pages = kRectPages{place};\n"
             f"    {args}.next = km::kBroadcastNoNext;\n"
-            f"    km::rect_broadcast({args}, movement.me(), km_grid, "
+            f"    km::rect_broadcast({args}, "
+            f"{island_place.card_core('movement', self.compiled.islands)}, km_grid, "
             f"{self.rect_param}, {'true' if along == 'row' else 'false'}, "
             f"{length or 0}u, km::kBroadcastNone);\n"
             f"    return {args};\n"

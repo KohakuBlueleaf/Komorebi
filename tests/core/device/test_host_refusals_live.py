@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from komorebi.builder import prebuild
+from komorebi.device import mock
 from komorebi.device.tensor import Tensor
 from komorebi.errors import KomorebiError
 
@@ -46,10 +47,12 @@ def test_a_prebuild_s_script_stopped_by_an_error_exits_non_zero(
 ):
     script = tmp_path / "script.py"
     script.write_text(body)
-    monkeypatch.setenv(prebuild.ACTIVE, "1")
-    monkeypatch.delenv(prebuild.MEMORY, raising=False)
+    monkeypatch.setenv(mock.ACTIVE, "1")
+    monkeypatch.delenv(mock.MEMORY, raising=False)
     monkeypatch.setattr(sys, "argv", ["child", str(script)])
     monkeypatch.setattr(sys, "path", list(sys.path))
-    monkeypatch.setattr(prebuild, "LOADS", [0])  # no other test's loads
+    loads = [0]  # no other test's loads: the mock's count, as the runner reads it
+    monkeypatch.setattr(mock, "LOADS", loads)
+    monkeypatch.setattr(prebuild, "LOADS", loads)
     assert prebuild.main() == code
     assert said in capsys.readouterr().err
