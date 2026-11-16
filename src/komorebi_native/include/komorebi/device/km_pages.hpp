@@ -1800,14 +1800,21 @@ namespace km {
         const Islands view = islands_at(kernel.args().control);
         const uint32_t rank = (keeper & 0xFFu) - 1;
         const uint32_t ranks = (keeper >> KM_KEEPER_RANKS_SHIFT & 0xFFu) + 1;
-        const uint32_t port = keeper >> KM_KEEPER_PORT_SHIFT & 0xFFu;
-        if (rank + ranks > view.ranks() || port >= KM_PORT_SLOTS) {
+        const uint32_t port = keeper >> KM_KEEPER_PORT_SHIFT;
+        // a port from KM_PORT_SLOTS on: a word of the keeper's counts table
+        const uint32_t word = port - KM_PORT_SLOTS;
+        if (
+            rank + ranks > view.ranks() ||
+            (port >= KM_PORT_SLOTS && (word >= view.count() || view.counts() == 0))
+        ) {
             l1(area)[KM_PUT_BAD / 4] += 1;
             return kGaveNone;
         }
         const uint32_t count = (
-            kernel.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
-            KM_PORT_COUNT * 4
+            port >= KM_PORT_SLOTS
+                ? view.counts() + 4 * word
+                : kernel.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
+                    KM_PORT_COUNT * 4
         );
         for (uint32_t k = 0; k < ranks; k++) {
             const uint32_t share = partition(pages, k, ranks).len;

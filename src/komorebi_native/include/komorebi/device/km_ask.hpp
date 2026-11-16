@@ -2906,85 +2906,244 @@ namespace km {
         return true;
     }
 
-    // The leader's line of shares: its own to both neighbours, each that arrives from
-    // one side (counted at KM_PORT_LEFT, KM_PORT_RIGHT) on to the other, then waited.
+    // A collective's tree over the islands: the routes' tree of each root (tree());
+    // a tree of the user's: n parent bytes in page `page` of the copy `tensor`.
+    struct Tree {
+        uint32_t tensor;
+        uint32_t page;
+    };
+
+    constexpr Tree tree() {
+        return {0, 0};
+    }
+
+    constexpr Tree tree(uint32_t tensor, uint32_t page) {
+        return {tensor, page};
+    }
+
+    // In the routes' tree of `root`: this island's parent (this island at the root)
+    // and its port there (`back`), from the next link toward the root.
+    struct TreeUp {
+        uint32_t parent;
+        uint32_t back;
+    };
+
+    inline TreeUp tree_up(const Islands& view, uint32_t root) {
+        const uint32_t here = view.here();
+        uint32_t link = view.link(root);
+        for (uint32_t port = 0; root != here && port < KM_ISLAND_PORTS_MAX; port++) {
+            const uint32_t word = view.port_link(port, 0, 0);
+            const uint32_t links = word >> 24;
+            if (link < links) {
+                return {word >> 16 & 0xFFu, view.port_link(port, 0, 1) >> 24};
+            }
+            link -= links;
+        }
+        return {here, 0};
+    }
+
+    // The island on port `port` of this one.
+    inline uint32_t tree_far(const Islands& view, uint32_t port) {
+        return view.port_link(port, 0, 0) >> 16 & 0xFFu;
+    }
+
+    // The pages of share `c` of a collective on `pages` pages over `n` islands: all
+    // of them at the root `root` alone (root < n), else partition(pages, c, n).
+    inline Partition tree_share(uint32_t pages, uint32_t c, uint32_t n, uint32_t root) {
+        if (root < n) {
+            return c == root ? Partition{0, pages} : Partition{0, 0};
+        }
+        return partition(pages, c, n);
+    }
+
+    // The leader waits (bounded) until word `c` of its counts table counted `pages`
+    // pages, then takes them off. False: gave up.
     template <typename Kernel>
-    __attribute__((noinline)) bool gather_line(
+    inline bool tree_counted(
+        const Kernel& core, const km_command_t& command, uint32_t c, uint32_t pages
+    ) {
+        const uint32_t counts = islands_at(core.args().control).counts();
+        if (counts == 0) {
+            return coll_gave_up(core, command, kGaveBadItem);
+        }
+        return pages == 0 || taken_off(core, command, l1(counts + 4 * c), pages);
+    }
+
+    // The leader's down sweep: each share, nearest root first, from its parent (counted
+    // in its counts table) on to its children in its root's tree, DRAM to DRAM.
+    template <typename Kernel>
+    __attribute__((noinline)) bool tree_down(
         const Kernel& core,
         const km_command_t& command,
         uint32_t tensor,
         uint32_t first,
         uint32_t pages,
+        uint32_t root,
         Gather& posted
     ) {
         const Islands view = islands_at(core.args().control);
-        const uint32_t n = view.count(), i = view.here();
-        const auto post = [&](uint32_t c, uint32_t to, uint32_t port) {
-            const Partition part = partition(pages, c, n);
-            return (
-                gather_run(
+        const uint32_t n = view.count(), here = view.here();
+        for (uint32_t h = 0, done = 0; done < n; h++) {
+            for (uint32_t c = 0; c < n; c++) {
+                if (view.hops(c) != h) {
+                    continue;
+                }
+                done++;
+                const Partition part = tree_share(pages, c, n, root);
+                if (part.len == 0) {
+                    continue;
+                }
+                if (c != here && !tree_counted(core, command, c, part.len)) {
+                    return false;
+                }
+                for (uint32_t kids = view.children(c), port = 0; kids != 0; port++) {
+                    if ((kids >> port & 1u) == 0) {
+                        continue;
+                    }
+                    kids &= ~(1u << port);
+                    const uint32_t to = tree_far(view, port);
+                    if (!gather_run(
+                        core,
+                        command,
+                        tensor,
+                        first + part.start,
+                        part.len,
+                        to,
+                        posted,
+                        keeper(team_leader(view, command, to), KM_PORT_SLOTS + c),
+                        0,
+                        first + part.start
+                    )) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    // The team's up sweep: each share, farthest root first: its children's partials
+    // (scratch page slot * pages + q, slot: the child's port here) added into this
+    // island's copy by the team, then the leader puts it into its parent's scratch.
+    template <typename Kernel>
+    __attribute__((noinline)) bool tree_reduce(
+        const Kernel& core,
+        const km_command_t& command,
+        Team& t,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t scratch,
+        Sum kind,
+        uint32_t buffer,
+        uint32_t room,
+        uint32_t root,
+        Gather& posted
+    ) {
+        const Islands view = islands_at(core.args().control);
+        const uint32_t n = view.count(), here = view.here();
+        const bool lead = t.index == 0;
+        uint32_t deepest = 0;
+        for (uint32_t c = 0; c < n; c++) {
+            deepest = view.hops(c) > deepest ? view.hops(c) : deepest;
+        }
+        for (uint32_t h = deepest + 1; h-- > 0;) {
+            for (uint32_t c = 0; c < n; c++) {
+                const Partition part = tree_share(pages, c, n, root);
+                if (view.hops(c) != h || part.len == 0) {
+                    continue;
+                }
+                const uint32_t kids = view.children(c);
+                if (kids != 0) {
+                    const uint32_t partials = __builtin_popcount(kids) * part.len;
+                    if (
+                        (lead && !tree_counted(core, command, c, partials)) ||
+                        !team_go(core, command, t)
+                    ) {
+                        return false;
+                    }
+                    for (uint32_t port = 0; port < KM_ISLAND_PORTS_MAX; port++) {
+                        if ((kids >> port & 1u) != 0 && !team_fold(
+                            core,
+                            command,
+                            t,
+                            kind,
+                            tensor,
+                            first + part.start,
+                            tensor,
+                            first + part.start,
+                            scratch,
+                            port * pages + part.start,
+                            part.len,
+                            buffer,
+                            room
+                        )) {
+                            return false;
+                        }
+                    }
+                    if (!team_meet(core, command, t)) {
+                        return false;
+                    }
+                }
+                if (c == here || !lead) {
+                    continue;
+                }
+                const TreeUp up = tree_up(view, c);
+                if (!gather_run(
                     core,
                     command,
                     tensor,
                     first + part.start,
                     part.len,
-                    to,
+                    up.parent,
                     posted,
-                    keeper(team_leader(view, command, to), port),
-                    0,
-                    first + part.start
-                )
-            );
-        };
-        if (
-            (i > 0 && !post(i, i - 1, KM_PORT_RIGHT)) ||
-            (i + 1 < n && !post(i, i + 1, KM_PORT_LEFT))
-        ) {
-            return false;
-        }
-        coll_stamp(kCsPosted);
-        for (uint32_t r = 1; r < n; r++) {
-            if (i >= r) {  // share i - r from the left, on to the right
-                const uint32_t c = i - r;
-                if (!gathered(
-                    core, command, KM_PORT_LEFT, partition(pages, c, n).len
-                ) ||
-                    (i + 1 < n && !post(c, i + 1, KM_PORT_LEFT))) {
-                    return false;
-                }
-            }
-            if (i + r < n) {  // share i + r from the right, on to the left
-                const uint32_t c = i + r;
-                if (!gathered(
-                    core, command, KM_PORT_RIGHT, partition(pages, c, n).len
-                ) ||
-                    (i > 0 && !post(c, i - 1, KM_PORT_RIGHT))) {
+                    keeper(team_leader(view, command, up.parent), KM_PORT_SLOTS + c),
+                    scratch,
+                    up.back * pages + part.start
+                )) {
                     return false;
                 }
             }
         }
-        coll_stamp(kCsArrived);
-        if (!gather_wait(core, command, posted)) {
+        return true;
+    }
+
+    // The leader's posts confirmed, then the team let go. False: gave up.
+    template <typename Kernel>
+    inline bool tree_end(const Kernel& core, const km_command_t& command, Team& t, Gather& posted) {
+        if (t.index == 0) {
+            coll_stamp(kCsArrived);
+            if (!gather_wait(core, command, posted)) {
+                return false;
+            }
+            coll_stamp(kCsConfirmed);
+        }
+        if (!team_go(core, command, t)) {
             return false;
         }
-        coll_stamp(kCsConfirmed);
+        coll_stamp(kCsReleased);
+        coll_stamps_out(core);
         return true;
     }
 
     // All-gather of pages first .. + pages - 1 of the copy `tensor`, island c's share
-    // partition(pages, c, islands): on return this island's copy holds every share.
+    // partition(pages, c, islands), each down its island's tree: every copy all of it.
     template <typename Kernel>
     __attribute__((noinline)) bool all_gather(
         const Kernel& core,
         const km_command_t& command,
         uint32_t tensor,
         uint32_t first,
-        uint32_t pages
+        uint32_t pages,
+        Tree tree = km::tree()
     ) {
 #if defined(KM_TENSOR_TABLE)
         const Islands view = islands_at(core.args().control);
         if (view.count() < 2) {
             return true;
+        }
+        if (tree.tensor != 0) {
+            return coll_gave_up(core, command, kGaveBadItem);  // not built yet
         }
         coll_begin();
         Team t = team_of(view, command, core.me());
@@ -2994,26 +3153,64 @@ namespace km {
         }
         coll_stamp(kCsMet);
         if (
-            (
-                t.index == 0 &&
-                !gather_line(core, command, tensor, first, pages, posted)
-            ) ||
-            !team_go(core, command, t)
+            t.index == 0 &&
+            !tree_down(core, command, tensor, first, pages, view.count(), posted)
         ) {
             return false;
         }
-        coll_stamp(kCsReleased);
-        coll_stamps_out(core);
-        return true;
+        return tree_end(core, command, t, posted);
 #else
         static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
-        static_cast<void>(first), static_cast<void>(pages);
+        static_cast<void>(first), static_cast<void>(pages), static_cast<void>(tree);
         return true;  // one island: it holds the whole tensor
 #endif
     }
 
-    // All-reduce of pages first .. + pages - 1 of the copy `tensor` (`kind`): on return
-    // this copy holds the sum; `scratch` 2 x pages pages, `buffer` `room` bytes of L1.
+    // The tree reduces of km::all_reduce (root: islands) and km::reduce_to, then (down)
+    // the sums down the same trees. False: gave up.
+    template <typename Kernel>
+    __attribute__((noinline)) bool tree_collective(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t scratch,
+        Sum kind,
+        uint32_t buffer,
+        uint32_t room,
+        uint32_t root,
+        bool down,
+        Tree tree
+    ) {
+        const Islands view = islands_at(core.args().control);
+        if (tree.tensor != 0) {
+            return coll_gave_up(core, command, kGaveBadItem);  // not built yet
+        }
+        coll_begin();
+        Team t = team_of(view, command, core.me());
+        Gather posted = {};
+        if (!team_meet(core, command, t)) {
+            return false;
+        }
+        coll_stamp(kCsMet);
+        if (
+            !tree_reduce(
+                core, command, t, tensor, first, pages, scratch, kind, buffer, room, root,
+                posted
+            ) ||
+            (
+                down && t.index == 0 &&
+                !tree_down(core, command, tensor, first, pages, root, posted)
+            )
+        ) {
+            return false;
+        }
+        return tree_end(core, command, t, posted);
+    }
+
+    // All-reduce of pages first .. + pages - 1 of the copy `tensor` (`kind`): share c
+    // summed up island c's tree, then down it; `scratch` ports x pages, `buffer` L1.
     template <typename Kernel>
     __attribute__((noinline)) bool all_reduce(
         const Kernel& core,
@@ -3024,215 +3221,102 @@ namespace km {
         uint32_t scratch,
         Sum kind,
         uint32_t buffer,
-        uint32_t room
+        uint32_t room,
+        Tree tree = km::tree()
     ) {
 #if defined(KM_TENSOR_TABLE)
-        const Islands view = islands_at(core.args().control);
-        const uint32_t n = view.count(), i = view.here();
-        if (n < 2) {
-            return true;
-        }
-        coll_begin();
-        Team t = team_of(view, command, core.me());
-        const bool lead = t.index == 0;
-        const Partition mine = partition(pages, i, n);
-        const uint32_t after = mine.start + mine.len;  // the shares after this one's
-        Gather posted = {};
-        // scratch pages q: the sums from the left of page first + q; pages + q: from
-        // the right
-        const auto post = [&](
-            uint32_t from,
-            uint32_t from_first,
-            uint32_t q,
-            uint32_t len,
-            uint32_t to,
-            uint32_t port,
-            uint32_t into_first
-        ) {
-            return (
-                gather_run(
-                    core,
-                    command,
-                    from,
-                    from_first,
-                    len,
-                    to,
-                    posted,
-                    keeper(team_leader(view, command, to), port),
-                    scratch,
-                    into_first + q
-                )
-            );
-        };
-        if (!team_meet(core, command, t)) {
-            return false;
-        }
-        coll_stamp(kCsMet);
-        // the ends start the two sweeps from their partials
-        if (
-            lead && i == 0 &&
-            !post(tensor, first + after, after, pages - after, 1, KM_PORT_LEFT, 0)
-        ) {
-            return false;
-        }
-        if (
-            lead && i + 1 == n &&
-            !post(tensor, first, 0, mine.start, n - 2, KM_PORT_RIGHT, pages)
-        ) {
-            return false;
-        }
-        // from the left: the sums of the shares from this one on; those after it
-        // folded with this island's partial and passed right
-        if (i > 0) {
-            if (lead && !gathered(core, command, KM_PORT_LEFT, pages - mine.start)) {
-                return false;
-            }
-            coll_stamp(kCsLeftArrived);
-            if (i + 1 < n) {
-                if (!team_go(core, command, t)) {
-                    return false;
-                }
-                coll_stamp(kCsLeftGo);
-                if (!team_fold(
-                    core,
-                    command,
-                    t,
-                    kind,
-                    scratch,
-                    after,
-                    scratch,
-                    after,
-                    tensor,
-                    first + after,
-                    pages - after,
-                    buffer,
-                    room
-                )) {
-                    return false;
-                }
-                coll_stamp(kCsLeftFolded);
-                if (
-                    !team_meet(core, command, t) ||
-                    (
-                        lead &&
-                        !post(
-                            scratch, after, after, pages - after, i + 1, KM_PORT_LEFT, 0
-                        )
-                    )
-                ) {
-                    return false;
-                }
-                coll_stamp(kCsLeftPassed);
-            }
-        }
-        // from the right: the sums of the shares up to this one's; those before it
-        // folded and passed left
-        if (i + 1 < n) {
-            if (lead && !gathered(core, command, KM_PORT_RIGHT, after)) {
-                return false;
-            }
-            coll_stamp(kCsRightArrived);
-            if (i > 0) {
-                if (!team_go(core, command, t)) {
-                    return false;
-                }
-                coll_stamp(kCsRightGo);
-                if (!team_fold(
-                    core,
-                    command,
-                    t,
-                    kind,
-                    scratch,
-                    pages,
-                    scratch,
-                    pages,
-                    tensor,
-                    first,
-                    mine.start,
-                    buffer,
-                    room
-                )) {
-                    return false;
-                }
-                coll_stamp(kCsRightFolded);
-                if (
-                    !team_meet(core, command, t) ||
-                    (
-                        lead &&
-                        !post(
-                            scratch, pages, 0, mine.start, i - 1, KM_PORT_RIGHT, pages
-                        )
-                    )
-                ) {
-                    return false;
-                }
-                coll_stamp(kCsRightPassed);
-            }
-        }
-        // this island's share: its partial plus the sums from both sides
-        if (!team_go(core, command, t)) {
-            return false;
-        }
-        coll_stamp(kCsKeptGo);
-        if (
-            (
-                i > 0 &&
-                !team_fold(
-                    core,
-                    command,
-                    t,
-                    kind,
-                    tensor,
-                    first + mine.start,
-                    tensor,
-                    first + mine.start,
-                    scratch,
-                    mine.start,
-                    mine.len,
-                    buffer,
-                    room
-                )
-            ) ||
-            (
-                i + 1 < n &&
-                !team_fold(
-                    core,
-                    command,
-                    t,
-                    kind,
-                    tensor,
-                    first + mine.start,
-                    tensor,
-                    first + mine.start,
-                    scratch,
-                    pages + mine.start,
-                    mine.len,
-                    buffer,
-                    room
-                )
+        const uint32_t n = islands_at(core.args().control).count();
+        return (
+            n < 2 ||
+            tree_collective(
+                core, command, tensor, first, pages, scratch, kind, buffer, room, n, true,
+                tree
             )
-        ) {
-            return false;
-        }
-        coll_stamp(kCsKeptFolded);
-        if (!team_meet(core, command, t)) {
-            return false;
-        }
-        coll_stamp(kCsKeptMet);
-        if (
-            (lead && !gather_line(core, command, tensor, first, pages, posted)) ||
-            !team_go(core, command, t)
-        ) {
-            return false;
-        }
-        coll_stamp(kCsReleased);
-        coll_stamps_out(core);
-        return true;
+        );
 #else
         static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
         static_cast<void>(first), static_cast<void>(pages), static_cast<void>(scratch);
         static_cast<void>(kind), static_cast<void>(buffer), static_cast<void>(room);
+        static_cast<void>(tree);
         return true;  // one island: its partial is the sum
+#endif
+    }
+
+    // Reduce of the copies' pages first .. + pages - 1 into island `root`'s copy, up
+    // its tree (the other copies are left partial); `scratch` ports x pages.
+    template <typename Kernel>
+    __attribute__((noinline)) bool reduce_to(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t scratch,
+        Sum kind,
+        uint32_t buffer,
+        uint32_t room,
+        uint32_t root,
+        Tree tree = km::tree()
+    ) {
+#if defined(KM_TENSOR_TABLE)
+        const Islands view = islands_at(core.args().control);
+        if (view.count() < 2) {
+            return true;
+        }
+        if (root >= view.count()) {
+            return coll_gave_up(core, command, kGaveBadItem);
+        }
+        return (
+            tree_collective(
+                core, command, tensor, first, pages, scratch, kind, buffer, room, root,
+                false, tree
+            )
+        );
+#else
+        static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
+        static_cast<void>(first), static_cast<void>(pages), static_cast<void>(scratch);
+        static_cast<void>(kind), static_cast<void>(buffer), static_cast<void>(room);
+        static_cast<void>(root), static_cast<void>(tree);
+        return true;  // one island: its copy is the sum
+#endif
+    }
+
+    // Broadcast of island `root`'s copy's pages first .. + pages - 1 into every other
+    // island's copy, down its tree.
+    template <typename Kernel>
+    __attribute__((noinline)) bool broadcast_from(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t root,
+        Tree tree = km::tree()
+    ) {
+#if defined(KM_TENSOR_TABLE)
+        const Islands view = islands_at(core.args().control);
+        if (view.count() < 2) {
+            return true;
+        }
+        if (root >= view.count() || tree.tensor != 0) {
+            return coll_gave_up(core, command, kGaveBadItem);
+        }
+        coll_begin();
+        Team t = team_of(view, command, core.me());
+        Gather posted = {};
+        if (!team_meet(core, command, t)) {
+            return false;
+        }
+        coll_stamp(kCsMet);
+        if (t.index == 0 && !tree_down(core, command, tensor, first, pages, root, posted)) {
+            return false;
+        }
+        return tree_end(core, command, t, posted);
+#else
+        static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
+        static_cast<void>(first), static_cast<void>(pages), static_cast<void>(root);
+        static_cast<void>(tree);
+        return true;  // one island: its copy is the root's
 #endif
     }
 

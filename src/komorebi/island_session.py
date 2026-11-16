@@ -39,6 +39,7 @@ from komorebi.errors import (
     WaitTimeout,
 )
 from komorebi.program import Program
+from komorebi.trees import TreeCalls
 
 M32 = 0xFFFFFFFF
 SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)
@@ -420,7 +421,7 @@ def _handler_label(handler):
     return f"{program.name} handler {int(handler)}" if program else f"handler {handler}"
 
 
-class IslandRun:
+class IslandRun(TreeCalls):
     """The runs of one program on every island, as one run over flat ranks. A ticket
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
     and it completes when every part has. Errors name the island (`error.island`)."""
@@ -2403,7 +2404,8 @@ class IslandSession:
         own island's (graph.table): KM_ISLAND_TABLE, sized by the island count."""
         columns, rows = session.grid
         count = len(self.graph.islands)
-        words = np.zeros((columns * rows, -(-2 * count // 16) * 16), np.uint32)
+        # the entries (2 words an island), then the counts table (a word an island)
+        words = np.zeros((columns * rows, -(-3 * count // 16) * 16), np.uint32)
         mine = [self.sessions.index(session)] if self.split == 1 else range(count)
         for island in mine:
             cores = list(self.graph.islands[island].cores)
@@ -2416,8 +2418,8 @@ class IslandSession:
 
     def _port_words(self, island):
         """Island `island`'s port table (KM_ISLAND_PORTS): port p (neighbour p), link
-        l: its link core, CPU, far island, the port's links, the far link core's tile.
-        """
+        l: its link core, CPU, far island, the port's links, the far link core's tile
+        and the far island's port toward `island`."""
         h = abi.headers()
         per = h["KM_ISLAND_PORT_LINKS"]
         words = np.zeros((h["KM_ISLAND_PORTS_MAX"] * per, 2), np.uint32)
@@ -2440,9 +2442,10 @@ class IslandSession:
                 core = self.link_cores[island][first(island, there) + link // 2]
                 peer = self.link_cores[there][first(there, island) + link // 2]
                 place = self.noc_of(there, peer)
+                back = self.graph.neighbours(there).index(island)  # its port here
                 words[port * per + link] = (
                     core | link % 2 << 8 | there << 16 | count << 24,
-                    (place & 0xFF) | (place >> 8) << 16,
+                    (place & 0xFF) | (place >> 8) << 16 | back << 24,
                 )
         return words.reshape(-1)
 

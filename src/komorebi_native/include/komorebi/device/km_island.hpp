@@ -15,6 +15,7 @@ namespace km {
     constexpr uint32_t kIslandEntryLink = 4;   // u8: next link, KM_ISLAND_NO_LINK own
     constexpr uint32_t kIslandEntryHops = 5;   // u8: links crossed toward it
     constexpr uint32_t kIslandEntryPorts = 6;  // u8: bit p, port p on a shortest path
+    constexpr uint32_t kIslandEntryChildren = 7;  // u8: bit p, port p's a child toward it
     // km::rate of this island: no link limits it (the NoC's own); 0: not known.
     constexpr uint32_t kRateLocal = 0xFFFFFFFFu;
 
@@ -164,8 +165,33 @@ namespace km {
 #endif
         }
 
+        // The mask of this island's ports whose neighbour's next island toward `island`
+        // is this one: its children in `island`'s tree; 0 on one island.
+        uint32_t children(uint32_t island) const {
+#if defined(KM_ONE_ISLAND)
+            return static_cast<void>(island), 0;
+#else
+            return (
+                island < count() && area_[KM_ISLAND_COUNT] != 0
+                    ? byte(island, kIslandEntryChildren)
+                    : 0
+            );
+#endif
+        }
+
+        // The counts table's L1 address on this island's cores (a word an island, after
+        // the table's entries); 0: none (one island).
+        uint32_t counts() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
+            const uint32_t table = area_[KM_ISLAND_TABLE];
+            return table != 0 ? table + KM_ISLAND_ENTRY_BYTES * count() : 0;
+#endif
+        }
+
         // Port `port`'s link `l` (KM_ISLAND_PORTS): word 0 link core | CPU << 8 | far
-        // island << 16 | the port's links << 24, word 1 the far link core's tile.
+        // island << 16 | links << 24, word 1 the far tile | the far island's port << 24.
         uint32_t port_link(uint32_t port, uint32_t l, uint32_t word) const {
             return (
                 area_

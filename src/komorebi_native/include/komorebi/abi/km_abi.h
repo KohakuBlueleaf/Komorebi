@@ -72,8 +72,9 @@
 #define KM_ENTRY_TABLE 0x400u   /* a tensor's table row: a1 its word, a2 the row */
 #define KM_ENTRY_ADDRESS 1u     /* a1 to a5: each part's DRAM address in every bank */
 #define KM_ENTRY_BYTES 6u       /* a6 to a8: each part's bytes / 64, two parts a word */
-/* host, served by the service overlay: every rank of the group calls km::all_gather
- * or km::all_reduce (km_ask.hpp) on pages of a copy tensor, with these words */
+/* host, served by the service overlay: every rank of the group calls km::all_gather,
+ * km::all_reduce, km::broadcast_from or km::reduce_to (km_ask.hpp) on pages of a copy
+ * tensor, with these words */
 #define KM_HANDLER_GATHER 243u
 #define KM_HANDLER_REDUCE 244u
 #define KM_COLL_TENSOR 0u  /* its reference word */
@@ -83,6 +84,9 @@
 #define KM_COLL_SUM 4u     /* reduce: km::Sum, 0 int32, 1 float32, 2 bfloat16 */
 #define KM_COLL_BUFFER 5u  /* reduce: L1 of every rank for the folds */
 #define KM_COLL_ROOM 6u    /* reduce: its bytes, two pages or more */
+/* the root island + 1: GATHER a broadcast from it (km::broadcast_from), REDUCE a reduce
+   into it (km::reduce_to); 0: every island's share (km::all_gather, km::all_reduce) */
+#define KM_COLL_ROOT 7u
 /* served on link cores (km_pages.hpp): host: each CPU sends its pages share over its
  * link, or the reader waits a count; dispatcher: link 0 sends a staged packet */
 #define KM_HANDLER_PAGES 248u
@@ -236,7 +240,8 @@
 #define KM_ASK_GET_BYTES 2u
 #define KM_ASK_GET_SPAN 14u
 /* A put line from DRAM may name keepers (word 14, km::keeper): once its pages are all
- * written, keeper k of the far island counts share k at its port. 0: none. */
+ * written, keeper k of the far island counts share k at its port (bits 16 to 31; a
+ * port from KM_PORT_SLOTS on: word port - KM_PORT_SLOTS of its counts table). 0: none */
 #define KM_ASK_KEEPER 14u
 #define KM_KEEPER_RANKS_SHIFT 8u
 #define KM_KEEPER_PORT_SHIFT 16u
@@ -397,8 +402,8 @@ KM_STATIC_ASSERT(
    alone count at the reader's KM_PORT_PAGES and at the writer's, the one after. */
 #define KM_PORTS 8u
 #define KM_PORT_PAGES KM_PORTS
-/* the collectives' counts of pages from the island before and after on the line; word
-   KM_PORT_MET of KM_PORT_LEFT's slot counts an island's ranks' meetings */
+/* word KM_PORT_MET of KM_PORT_LEFT's slot counts an island's ranks' meetings; word
+   KM_PORT_COUNT of KM_PORT_RIGHT's: an all-reduce's 1, cast from it (km_tree.hpp) */
 #define KM_PORT_LEFT (KM_PORTS + 2u)
 #define KM_PORT_RIGHT (KM_PORTS + 3u)
 #define KM_PORT_SLOTS (KM_PORTS + 4u)
@@ -617,7 +622,9 @@ KM_STATIC_ASSERT(
    contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
 /* the island table (KM_ISLAND_TABLE): an entry an island {first rank u16, count u16,
-   next link u8 (own link number), hops u8, ports u8 (bit p: shortest path), 0 u8} */
+   next link u8 (own link number), hops u8, ports u8 (bit p: shortest path), children
+   u8 (bit p: port p's neighbour's next island toward this entry's is this island)};
+   after the n entries, n words: the counts table (a collective's shares, km_ask.hpp) */
 #define KM_ISLAND_ENTRY_BYTES 8u
 #ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
 #define KM_ISLANDS_MAX 16u
@@ -639,7 +646,8 @@ KM_STATIC_ASSERT(
  * its one entry in the area at KM_ISLAND_PORTS) */
 #define KM_ISLAND_TABLE 7u
 /* the port table in the area: port p's link l at (p * KM_ISLAND_PORT_LINKS + l) * 8:
- * {link core u8 (0xFF: none), CPU u8, far island u8, links of the port u8, far tile} */
+ * {link core u8 (0xFF: none), CPU u8, far island u8, links of the port u8, far tile x
+ * u8, 0 u8, y u8, the far island's port toward this island u8} */
 #define KM_ISLAND_PORTS KM_ISLAND_HEADER_BYTES
 #define KM_ISLAND_PORTS_MAX 4u
 #define KM_ISLAND_PORT_LINKS 4u
