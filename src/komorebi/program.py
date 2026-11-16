@@ -852,10 +852,11 @@ class Dynamic:
         """Bytes of the X280 ranks' queues in their cluster's bank (0: none)."""
         return self.x280_ranks * self.queue_messages * self.message_bytes
 
-    def dispatcher_word(self):
-        """The dispatcher's messages_handler: word() and the X280 ranks above it."""
+    def dispatcher_word(self, deliver=False):
+        """The dispatcher's messages_handler: word() and the X280 ranks above it;
+        `deliver`: messages to other islands are deliveries (KMD_MESSAGES_DELIVER)."""
         ranks = self.x280_cluster | self.x280_ranks << 4 if self.x280_ranks else 0
-        return self.word() | ranks << 32
+        return self.word() | ranks << 32 | int(deliver) << 40
 
     def args(self, queue, lines, body=0, x280=None, direct=0, stamps=0):
         """Reader and writer words of km::MessagesArgs (they precede the program's);

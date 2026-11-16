@@ -6,6 +6,11 @@
 #include "completion.h"
 #include "kernel.h"
 
+/* waves.h, after link.h: a run across islands */
+static void messages_islands(kmd_t* dispatcher);
+static void messages_entry(kmd_t* dispatcher, uint32_t id);
+static int messages_waves(kmd_t* dispatcher);
+
 /* The run line into the X280 ranks' thread area: one 16-byte store, then a fence. */
 static inline void messages_run_store(kmd_thread_t* thread) {
     kmd_store_chunk(
@@ -55,6 +60,12 @@ KMD_HOT void messages_submitted(
     run->request = request;
     run->source = source;
     run->run_handler = (uint32_t)(line[0] >> 32) & 0xFFu;
+    run->id = run->round = run->asked = run->ended = run->have_last = 0;
+    run->round_number = 0;
+    run->next_round = 0;
+    if (run->deliver && dispatcher->link_on) {
+        messages_islands(dispatcher);
+    }
     messages_run_line(dispatcher, KM_X280_RUN_START);
 }
 
@@ -81,7 +92,8 @@ static inline void messages_gave(kmd_t* dispatcher, uint32_t core) {
 static inline uint32_t messages_link(const kmd_t* dispatcher) {
     const kmd_messages_t* run = &dispatcher->messages;
     return (
-        dispatcher->island_count != 0 && (run->part >> 16) < (run->group >> 16) &&
+        !run->deliver && dispatcher->island_count != 0 &&
+        (run->part >> 16) < (run->group >> 16) &&
         dispatcher->cores > dispatcher->island_base + dispatcher->island_count
     );
 }
@@ -102,10 +114,13 @@ static inline uint32_t messages_line(const kmd_t* dispatcher, uint32_t index) {
     );
 }
 
-/* The two passes: 1 quiet, 0 not yet (a line busy, of an earlier run or changed).
- * Counter tiles and X280 ranks are read as the group's other cores. */
-static inline int messages_quiet(kmd_t* dispatcher) {
+/* The two passes: 1 every line idle and unchanged, its sums in `sent_out` and
+ * `consumed_out`; 0 not yet. Counter tiles and X280 ranks are read as other cores. */
+static inline int messages_sample(
+    kmd_t* dispatcher, uint64_t* sent_out, uint64_t* consumed_out
+) {
     kmd_messages_t* run = &dispatcher->messages;
+    *sent_out = *consumed_out = 0;
     const uint32_t lines_count = (
         (run->part >> 16) + messages_link(dispatcher) + run->x280_count
     );
@@ -147,7 +162,23 @@ static inline int messages_quiet(kmd_t* dispatcher) {
         sent += run->first[2u * core];
         consumed += run->first[2u * core + 1u];
     }
-    return sent == consumed;
+    *sent_out = sent;
+    *consumed_out = consumed;
+    return 1;
+}
+
+/* Quiet on this island alone: every line idle and unchanged, sent equal to consumed. */
+static inline int messages_quiet(kmd_t* dispatcher) {
+    uint64_t sent = 0, consumed = 0;
+    return messages_sample(dispatcher, &sent, &consumed) && sent == consumed;
+}
+
+/* Whether the run's group spans islands and its messages cross as deliveries. */
+static inline int messages_spans(const kmd_t* dispatcher) {
+    const kmd_messages_t* run = &dispatcher->messages;
+    return (
+        run->deliver && dispatcher->link_on && (run->part >> 16) < (run->group >> 16)
+    );
 }
 
 /* A pass during a dynamic run: once quiet and a slot is free, its end command {a0: the
@@ -159,10 +190,14 @@ static inline void messages_turn(kmd_t* dispatcher) {
         dispatcher->slot_sequence[run->slot] != run->sequence
     ) {
         run->active = 0; /* the RUN completed or ended otherwise: nothing to end */
+        if (run->id != 0) {
+            messages_entry(dispatcher, 0);
+        }
         messages_run_line(dispatcher, KM_X280_RUN_END);
         return;
     }
-    if (!messages_quiet(dispatcher)) {
+    const int spans = messages_spans(dispatcher);
+    if (spans ? !messages_waves(dispatcher) : !messages_quiet(dispatcher)) {
         return;
     }
     const uint32_t slot = slot_free(dispatcher);
@@ -185,6 +220,9 @@ static inline void messages_turn(kmd_t* dispatcher) {
     );
     run->end = slot + 1u;
     run->active = 0;
+    if (spans) {
+        messages_entry(dispatcher, 0); /* no line of this run is on its way */
+    }
     messages_run_line(dispatcher, KM_X280_RUN_END);
     dispatcher->x280_cores[KMD_H_MESSAGES_QUIET] = (uint32_t)now;
 }

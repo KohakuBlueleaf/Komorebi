@@ -335,6 +335,18 @@ def far_bytes(defines):
     return -(-(12 + 4 * lines) * n // 64) * 64 + 64 * lines * n
 
 
+def deliver_bytes(defines):
+    """The link cores' places for deliveries (KM_DELIVER), after the far places
+    (km_abi.h KM_DELIVER_BYTES); 0 without."""
+    if not defines.get("KM_DELIVER"):
+        return 0
+    n, slots, size = (
+        int(defines[name])
+        for name in ("KM_DELIVER_ISLANDS", "KM_DELIVER_SLOTS", "KM_DELIVER_SLOT_BYTES")
+    )
+    return -(-(12 + 4 * slots) * n // 64) * 64 + 64 + 64 * slots * n + size * slots * n
+
+
 def _link_kernels(island, program, split, cores):
     """(ranks, link cores) of a load whose link cores get the runtime's link kernels
     (the link services) and its ranks the program's (their client side): a program
@@ -1783,7 +1795,7 @@ class Session:
                 state_tensor.address,
                 **thread_module.kernel_work_args(ends),
                 messages_handler=(
-                    program.messages.dispatcher_word()
+                    program.messages.dispatcher_word("KM_DELIVER" in program.defines)
                     if program.messages is not None
                     else 0
                 ),
@@ -2057,7 +2069,9 @@ class Session:
                         kernel_idle,
                         states[-1].address,
                         messages_handler=(
-                            program.messages.dispatcher_word()
+                            program.messages.dispatcher_word(
+                                "KM_DELIVER" in program.defines
+                            )
                             if program.messages is not None
                             else 0
                         ),
@@ -3119,7 +3133,12 @@ class _Backend:
             raise ValueError(
                 f"{program.name}: buffer index {index} is the link cores' own"
             )
-        size = h["KM_QUEUE_BYTES"] + far_bytes(program.defines) + 2 * chunk
+        size = (
+            h["KM_QUEUE_BYTES"]
+            + far_bytes(program.defines)
+            + deliver_bytes(program.defines)
+            + 2 * chunk
+        )
         launch.cb(rects, index, "uint32", size, size)
         self.link_cb = index
         return [("KM_LINK_QUEUE", "1")]
@@ -3144,6 +3163,7 @@ class _Backend:
             - apart
             - abi.headers()["KM_QUEUE_BYTES"]
             - far_bytes(program.defines)
+            - deliver_bytes(program.defines)
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
