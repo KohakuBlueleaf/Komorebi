@@ -5574,6 +5574,16 @@ class HandlerCompiler:
             items, what = shape[0], "rows"
             pages = items * width
         buffer, token = f"kField{camel(field_)}", f"kStepToken{camel(field_)}"
+        filled_in = self.fill_loops.get(field_, (0, 0))
+        if filled_in[0] > 0:
+            self.refuse(
+                node,
+                f"self.{field_} is filled in a loop (line {filled_in[1]}) and its "
+                f"{what} are freed once, at the handler's end: the next turn's fill "
+                "would wait for room that is never freed",
+                f"fill it before the loops, once (self.{field_}.fill(km."
+                f"{spelling('stream')}(...)))",
+            )
         if field_ not in self.stepped:
             if self.filled.get(field_) is None:
                 self.refuse(
@@ -8790,7 +8800,9 @@ class HandlerCompiler:
         if self.dst_next > DST_HALF:
             self.compiled.full_dst = True
         self.dst_live = name
-        value = Value("tile", name, dst=0, width=width)
+        value = Value(
+            "tile", name, dst=0, width=width, made_at=(len(self.loops), node.lineno)
+        )
         value.state = (buffer, token, slot, width, index)
         value.row_of = (field_, source, token_o)  # written back in place
         self.scope[name] = value
@@ -8814,6 +8826,7 @@ class HandlerCompiler:
                 f"write acc = f(self.{field_}[i], self.s[r]) above, then "
                 f"self.{field_}[j].write(acc)",
             )
+        self.same_loops(node, written.id, value, "this write", *self.once_text(value))
         _, source, token_o = value.row_of
         line = self.integer(row)
         items = self.compiled.fields[field_].shape[0]
