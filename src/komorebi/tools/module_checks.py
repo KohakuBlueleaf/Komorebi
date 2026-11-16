@@ -1,13 +1,15 @@
-"""Module checks of src/komorebi: statements a file (ast.stmt nodes at any depth, less
-imports and string-constant expressions such as docstrings), over 1000 a warning, over
-2000 an error; module-level import cycles; imports inside functions. The allowlist,
-module_checks.toml beside this file, only shrinks. Usage: [--check]."""
+"""Module checks of src/komorebi: statements a file (ast.stmt nodes, less imports and
+string-constant expressions such as docstrings), over 1000 a warning, over 2000 an
+error; no import cycle over all imports, importlib calls included; an import inside a
+function only of an optional third-party package. Config: module_checks.toml."""
 
 import argparse
 import ast
+import re
 import sys
 import tomllib
 from pathlib import Path
+from typing import NamedTuple
 
 from komorebi.tools.comment_lint import under
 from komorebi.tools.cxx_format import repo_root
@@ -15,7 +17,22 @@ from komorebi.tools.cxx_format import repo_root
 SOFT_CAP = 1000
 HARD_CAP = 2000
 PACKAGE = Path("src") / "komorebi"
-ALLOWLIST = Path(__file__).resolve().with_name("module_checks.toml")
+CONFIG = Path(__file__).resolve().with_name("module_checks.toml")
+PYPROJECT = "pyproject.toml"
+# Exempt: the package's lazy names (a module __getattr__: it imports without tt-metal).
+EXEMPT = "src/komorebi/__init__.py"
+CALLS = {"import_module", "__import__"}
+
+
+class Import(NamedTuple):
+    """One import: its file, line, enclosing function (None at module level), the
+    modules it names (dotted), and its text."""
+
+    path: str
+    line: int
+    function: str | None
+    names: tuple
+    text: str
 
 
 def statements(tree):
@@ -38,15 +55,49 @@ def module_name(path):
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
-def imports(tree):
-    """(node, function) for each import of a tree: function is the dotted name of the
-    innermost enclosing function, or None for a module-level import."""
+def statement_names(node, module, package):
+    """The dotted names an import statement imports: `from a import b` gives a.b
+    (resolved against the modules later) and a; relative imports resolved."""
+    if isinstance(node, ast.Import):
+        return tuple(alias.name for alias in node.names)
+    base = node.module or ""
+    if node.level:
+        parts = module.split(".")[: len(module.split(".")) - node.level + package]
+        base = ".".join(parts + ([base] if base else []))
+    return tuple(f"{base}.{alias.name}|{base}" for alias in node.names)
+
+
+def call_name(node):
+    """The literal an importlib.import_module or __import__ call names; "" when the
+    argument is not a string literal; None when the node is no such call."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if name not in CALLS or not node.args:
+        return None
+    first = node.args[0]
+    literal = isinstance(first, ast.Constant) and isinstance(first.value, str)
+    return first.value if literal and not first.value.startswith(".") else ""
+
+
+def imports(path, tree):
+    """Every import of a file, statements and importlib calls alike."""
+    module, package = module_name(path), Path(path).name == "__init__.py"
     found = []
 
     def visit(node, names, inside):
         for child in ast.iter_child_nodes(node):
+            function = ".".join(names) if inside else None
             if isinstance(child, ast.Import | ast.ImportFrom):
-                found.append((child, ".".join(names) if inside else None))
+                text = ast.unparse(child)
+                given = statement_names(child, module, package)
+                found.append(Import(path, child.lineno, function, given, text))
+            called = call_name(child)
+            if called is not None:
+                given = (called,) if called else ()
+                text = ast.unparse(child)
+                found.append(Import(path, child.lineno, function, given, text))
             if isinstance(child, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
                 own = isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
                 visit(child, names + [child.name], inside or own)
@@ -59,23 +110,13 @@ def imports(tree):
     return found
 
 
-def targets(node, module, package, modules):
-    """The modules of the package that an import statement names: `from a import b`
-    names a.b when that is a module, else a; parent packages are not counted."""
-    if isinstance(node, ast.Import):
-        return {alias.name for alias in node.names if alias.name in modules}
-    base = node.module or ""
-    if node.level:
-        parts = module.split(".")[: len(module.split(".")) - node.level + package]
-        base = ".".join(parts + ([base] if base else []))
-    out = set()
-    for alias in node.names:
-        name = f"{base}.{alias.name}"
-        if name in modules:
-            out.add(name)
-        elif base in modules:
-            out.add(base)
-    return out
+def resolved(name, modules):
+    """The package module a dotted name reaches (`a.b|a`: a.b when a module, else a),
+    or None for a name outside the package."""
+    for one in name.split("|"):
+        if one in modules:
+            return one
+    return None
 
 
 def cycles(edges):
@@ -107,24 +148,60 @@ def cycles(edges):
     return sorted(found)
 
 
-def measure(sources):
-    """(statements by path, cycles, in-function imports) of {path: source text};
-    an in-function import is (path, function, statement text)."""
+def is_pending(item, target, pending):
+    """True when an import is one of the named edges left to their owners."""
+    return any(
+        entry["path"] == item.path and entry["imports"] == target for entry in pending
+    )
+
+
+def check(sources, config, optional=frozenset()):
+    """(errors, (statements by path, the imports, the pending edges met)) of {path:
+    source text}: `config` the TOML's dict, `optional` the import names of optional
+    third-party packages."""
     trees = {path: ast.parse(text) for path, text in sources.items()}
-    modules = {module_name(path): path for path in trees}
-    counts, edges, inner = {}, {}, []
-    for path, tree in trees.items():
-        counts[path] = statements(tree)
-        module = module_name(path)
-        package = Path(path).name == "__init__.py"
-        for node, function in imports(tree):
-            if function is None:
-                edges.setdefault(module, set()).update(
-                    targets(node, module, package, modules)
-                )
-            else:
-                inner.append((path, function, ast.unparse(node)))
-    return counts, cycles(edges), sorted(set(inner))
+    modules = {module_name(path) for path in trees}
+    pending = config.get("pending", [])
+    optional = set(optional) | set(config.get("optional", {}))
+    counts = {path: statements(tree) for path, tree in trees.items()}
+    errors, edges, found, used = size_errors(counts, config), {}, [], {}
+    for path, tree in sorted(trees.items()):
+        exempt = path == EXEMPT
+        for item in imports(path, tree):
+            found.append(item)
+            if not item.names:
+                errors.append(f"{path}:{item.line}: `{item.text}`: not a literal")
+                continue
+            for name in item.names:
+                target = resolved(name, modules)
+                if exempt and item.function is not None:
+                    continue
+                if target is not None and is_pending(item, target, pending):
+                    used.setdefault((path, target), item.line)
+                    continue
+                if target is not None:
+                    edges.setdefault(module_name(path), set()).add(target)
+                outside = name.split("|")[-1].split(".")[0]
+                if item.function is not None and (target or outside not in optional):
+                    errors.append(
+                        f"{path}:{item.line}: `{item.text}` inside {item.function}:"
+                        " import it at the top (only an optional third-party package"
+                        " is imported in a function)"
+                    )
+    errors += [f"import cycle among {', '.join(group)}" for group in cycles(edges)]
+    errors += [
+        f"{entry['path']}: the edge to {entry['imports']} ({entry['owner']}) is gone:"
+        " take it off the pending list"
+        for entry in pending
+        if (entry["path"], entry["imports"]) not in used
+    ]
+    left = [
+        f"{entry['path']}:{used[key]}: imports {entry['imports']}, left to"
+        f" {entry['owner']}"
+        for entry in pending
+        if (key := (entry["path"], entry["imports"])) in used
+    ]
+    return list(dict.fromkeys(errors)), (counts, found, left)
 
 
 def size_warnings(counts):
@@ -137,9 +214,9 @@ def size_warnings(counts):
     ]
 
 
-def size_errors(counts, allow):
-    """The errors of the hard cap against the allowlist's files over it today."""
-    hard = allow.get("over_hard_cap", {})
+def size_errors(counts, config):
+    """The errors of the hard cap against the files listed over it today."""
+    hard = config.get("over_hard_cap", {})
     errors = []
     for path, count in sorted(counts.items()):
         recorded = hard[path]["statements"] if path in hard else None
@@ -153,54 +230,28 @@ def size_errors(counts, allow):
     return errors + [f"{path}: listed but not found: take it off" for path in missing]
 
 
-def cycle_errors(found, allow):
-    """A cycle must lie inside a listed one; a listed one must be a cycle of today."""
-    listed = [sorted(entry["modules"]) for entry in allow.get("cycle", [])]
-    errors = [
-        f"import cycle among {', '.join(group)}"
-        for group in found
-        if not any(set(group) <= set(entry) for entry in listed)
-    ]
-    return errors + [
-        f"listed cycle {', '.join(entry)} is not a cycle of today: write the cycle it"
-        " became, or take it off the list"
-        for entry in listed
-        if entry not in found
-    ]
-
-
-def import_errors(inner, allow):
-    """An import inside a function must be listed; a listed one must exist."""
-    listed = {
-        (entry["path"], entry["function"], entry["import"])
-        for entry in allow.get("function_import", [])
-    }
-    errors = [
-        f"{path}: `{text}` inside {function}: not allowlisted"
-        for path, function, text in inner
-        if (path, function, text) not in listed
-    ]
-    return errors + [
-        f"{path}: `{text}` inside {function}: gone, take it off the list"
-        for path, function, text in sorted(listed - set(inner))
-    ]
-
-
-def check(sources, allow):
-    """(errors, measured) of {path: source text} against the allowlist dict."""
-    counts, found, inner = measure(sources)
-    errors = size_errors(counts, allow) + cycle_errors(found, allow)
-    return errors + import_errors(inner, allow), (counts, found, inner)
+def optional_packages(root):
+    """The distribution names of pyproject.toml's optional dependencies, as import
+    names (lower case, dashes as underscores)."""
+    project = tomllib.loads((root / PYPROJECT).read_text(encoding="utf-8"))
+    groups = project.get("project", {}).get("optional-dependencies", {})
+    names = (
+        re.match(r"[A-Za-z0-9_.-]+", one).group() for g in groups.values() for one in g
+    )
+    return {name.lower().replace("-", "_") for name in names}
 
 
 def table(measured):
-    """The report: files over 1000 statements, the cycles, the in-function imports."""
-    counts, found, inner = measured
+    """The report: files over 1000 statements, then the imports inside functions."""
+    counts, found = measured
     lines = ["statements | file"]
     over = sorted((count, path) for path, count in counts.items() if count > SOFT_CAP)
     lines += [f"{count:10d} | {path}" for count, path in reversed(over)]
-    lines += [f"cycle among {', '.join(group)}" for group in found]
-    lines += [f"in {function}: {path}: {text}" for path, function, text in inner]
+    lines += [
+        f"in {item.function}: {item.path}:{item.line}: {item.text}"
+        for item in found
+        if item.function is not None
+    ]
     return "\n".join(lines)
 
 
@@ -221,8 +272,9 @@ def main():
     args = parser.parse_args()
     root = repo_root().resolve()
     try:
-        allow = tomllib.loads(ALLOWLIST.read_text(encoding="utf-8"))
-        errors, measured = check(package_sources(root), allow)
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+        optional = optional_packages(root)
+        errors, measured = check(package_sources(root), config, optional)
     except (OSError, SyntaxError, tomllib.TOMLDecodeError, KeyError) as error:
         print(f"module_checks: {error}", file=sys.stderr)
         return 2
@@ -230,6 +282,9 @@ def main():
         print(table(measured))
     for warning in size_warnings(measured[0]):
         print(f"warning: {warning}")
+    print(f"exempt: {EXEMPT}: the package's lazy names (its module __getattr__)")
+    for edge in measured[2]:
+        print(f"pending: {edge}")
     for error in errors:
         print(error)
     return int(bool(errors))

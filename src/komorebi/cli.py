@@ -9,6 +9,7 @@ from komorebi import __version__, _env
 from komorebi.bench import power
 from komorebi.builder import flags as build
 from komorebi.builder import prebuild
+from komorebi.device import mock
 
 try:
     from komorebi_runtime import prepare
@@ -152,11 +153,11 @@ def main(argv=None):
     sampler.add_argument("--period", type=float, default=power.DEFAULT_PERIOD_S)
 
     prebuild.add_arguments(
-        sub.add_parser(prebuild.COMMAND, help="build a script's programs with no card")
+        sub.add_parser(mock.COMMAND, help="build a script's programs with no card")
     )
 
     args = parser.parse_args(argv)
-    if args.command == prebuild.COMMAND:
+    if args.command == mock.COMMAND:
         return prebuild.run_cli(args)
     if args.command == "power":
         return power.run_cli(args, sys.stdout)

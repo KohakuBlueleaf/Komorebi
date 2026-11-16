@@ -4,10 +4,8 @@ bookkeeping is the same against a fake transport.
 """
 
 import contextlib
-import importlib
 import time
 from array import array
-from typing import NamedTuple
 
 import numpy as np
 
@@ -17,7 +15,8 @@ import numpy.ma
 from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device import tensor as tensor_module
-from komorebi.dsl import front
+from komorebi.device.events import Event
+from komorebi.dsl import chain_calls, first_use, front
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
@@ -61,23 +60,6 @@ SEQUENCE_LOW = (
 SEQUENCE_BACK = (
     2048  # how far a queued command's sequence may fall behind the host's order
 )
-
-
-class Event(NamedTuple):
-    """A finished command: its handle, kind (done, timeout, pong, rejected), the
-    auxiliary (done: the group's first core; timeout: the slot; rejected: the reason),
-    submit-to-completion time in X280 timer ticks, and for a command submitted with
-    `result=True` the leader's result word (sent as the ticks)."""
-
-    handle: int
-    kind: str
-    auxiliary: int
-    ticks: int
-    result: int | None = None
-
-    @property
-    def microseconds(self):
-        return self.ticks / 50.0  # the X280 timer runs at 50 MHz
 
 
 def stuck_message(cluster, result):
@@ -332,9 +314,8 @@ class Run:
     def _class_calls(self, calls, cores, prefetch, group=None):
         """The framework's calls of a chain stated with a class's handler calls
         (komorebi.dsl.chain_calls); `group` (flat ranks) in place of `cores`."""
-        made = importlib.import_module("komorebi.dsl.chain_calls")
         group = self._group(cores) if group is None else group
-        return made.chain_calls(self, list(calls), group, prefetch)
+        return chain_calls.chain_calls(self, list(calls), group, prefetch)
 
     def _walk(self, calls):
         """The chain command's handler when the first call is a class's handler of a
@@ -651,8 +632,7 @@ class Run:
             program = handler.program
         else:
             program = self.programs[self._handler(handler)[1]]
-        made = importlib.import_module("komorebi.dsl.program")
-        number, built = made.constant_handler(
+        number, built = first_use.constant_handler(
             program, method, method.constants_given(args), run=self
         )
         return ClassHandler(number, program, built)
@@ -669,8 +649,7 @@ class Run:
         program = None
         if isinstance(handler, HandlerMethod):
             program = self.programs[self._handler(handler)[1]]
-        made = importlib.import_module("komorebi.dsl.program")
-        return made.words_handler(handler, rows, program, where)
+        return first_use.words_handler(handler, rows, program, where)
 
     def _class_form_refused(self, handler, fields):
         """Why `Class.handler` names no program when the run holds several of its

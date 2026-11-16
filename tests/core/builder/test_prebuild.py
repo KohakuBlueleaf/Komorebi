@@ -13,24 +13,24 @@ import pytest
 
 from komorebi import cli
 from komorebi.builder import prebuild
-from komorebi.device import remembered
+from komorebi.device import mock, remembered
 from komorebi.session import kernels as session_kernels
 from komorebi.session import session
 
 
 def test_the_mock_clusters_ship_with_the_package():
-    assert prebuild.descriptor([0]).name == "p150.yaml"
-    assert prebuild.descriptor([0, 1]).name == "p150x2.yaml"
+    assert mock.descriptor([0]).name == "p150.yaml"
+    assert mock.descriptor([0, 1]).name == "p150x2.yaml"
     for cards in ([0], [0, 1]):
-        assert "board_type: p150" in prebuild.descriptor(cards).read_text()
+        assert "board_type: p150" in mock.descriptor(cards).read_text()
     with pytest.raises(ValueError, match="one card or two"):
-        prebuild.descriptor([0, 1, 2])
+        mock.descriptor([0, 1, 2])
 
 
 def test_the_command_takes_the_cards_and_the_script_s_own_arguments(monkeypatch):
     called = []
     monkeypatch.setattr(prebuild, "run", lambda *given: called.append(given) or 0)
-    assert cli.main([prebuild.COMMAND, "--cards", "0,1", "x.py", "--n", "4"]) == 0
+    assert cli.main([mock.COMMAND, "--cards", "0,1", "x.py", "--n", "4"]) == 0
     ((script, args, cards, cluster),) = called
     assert (str(script), args, cards, cluster) == ("x.py", ["--n", "4"], [0, 1], None)
 
@@ -49,15 +49,15 @@ def test_the_built_line_counts_elves_written_since_the_build(tmp_path):
 def test_a_prebuild_keeps_its_sizes_in_its_own_copy(monkeypatch, tmp_path):
     real = tmp_path / "real.json"
     real.write_text('{"scripts": {"a": 4096}}')
-    monkeypatch.setattr(remembered, "_path", lambda: prebuild.memory(real) or real)
-    monkeypatch.setenv(prebuild.ACTIVE, "1")
-    monkeypatch.setenv(prebuild.MEMORY, str(tmp_path / "own.json"))
+    monkeypatch.setattr(remembered, "_path", lambda: mock.memory(real) or real)
+    monkeypatch.setenv(mock.ACTIVE, "1")
+    monkeypatch.setenv(mock.MEMORY, str(tmp_path / "own.json"))
     assert remembered.read()["scripts"] == {"a": 4096}  # the card's, copied
     remembered.write({"programs": {}, "scripts": {"a": 8192}})
     assert remembered.read()["scripts"] == {"a": 8192}
     assert real.read_text() == '{"scripts": {"a": 4096}}'
-    monkeypatch.delenv(prebuild.MEMORY)
-    assert prebuild.memory(real) is None
+    monkeypatch.delenv(mock.MEMORY)
+    assert mock.memory(real) is None
 
 
 def test_a_compiled_kernel_is_logged_with_its_own_defines(tmp_path):
@@ -76,9 +76,9 @@ def test_a_compiled_kernel_is_logged_with_its_own_defines(tmp_path):
 
 
 def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
-    before = prebuild.LOADS[0]
-    run = prebuild.Run()
-    assert prebuild.LOADS[0] == before + 1 and run.alive()
+    before = mock.LOADS[0]
+    run = mock.Run()
+    assert mock.LOADS[0] == before + 1 and run.alive()
     event = run.wait(run.submit("twice", a=1))
     assert event.kind == "done" and event.microseconds == 1.0
     assert [e.kind for e in run.wait([run.submit(), run.submit()])] == ["done"] * 2
@@ -97,7 +97,7 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
 
 
 def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
-    run = prebuild.Run(parts=[prebuild.Run(counted=False) for _ in range(2)])
+    run = mock.Run(parts=[mock.Run(counted=False) for _ in range(2)])
     event = run.wait(run.submit())
     assert event.kind == "done" and len(event) == 2 and event.parts[1].kind == "done"
     assert [block["error_name"] for block in run.result()] == ["none", "none"]
@@ -107,7 +107,7 @@ def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
 
 def passes(monkeypatch, tmp_path, refusals):
     """converge over passes that refuse `refusals` in turn (then one that does not)."""
-    monkeypatch.setenv(prebuild.MEMORY, str(tmp_path / "kernel_buffer.json"))
+    monkeypatch.setenv(mock.MEMORY, str(tmp_path / "kernel_buffer.json"))
     left, said = list(refusals), []
 
     def one_pass():
@@ -178,8 +178,8 @@ def test_a_prebuild_writes_the_script_s_files_beside_them(monkeypatch, tmp_path)
         "    json.dump({'err': 0.0}, f)\n"
         "(pathlib.Path(__file__).parent / 'notes.txt').write_text('zeros')\n"
     )
-    monkeypatch.setenv(prebuild.ACTIVE, "1")
-    monkeypatch.delenv(prebuild.MEMORY, raising=False)
+    monkeypatch.setenv(mock.ACTIVE, "1")
+    monkeypatch.delenv(mock.MEMORY, raising=False)
     monkeypatch.setattr("sys.argv", ["prebuild", str(script)])
     monkeypatch.setattr(sys, "path", list(sys.path))
     assert prebuild.main() == 0
@@ -206,16 +206,16 @@ def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):
         def form(self):
             return "kernels"
 
-    monkeypatch.setenv(prebuild.ACTIVE, "1")
+    monkeypatch.setenv(mock.ACTIVE, "1")
     split = island_session.IslandSession.__new__(island_session.IslandSession)
     split.links, split.card_dram, split.graph = False, True, "graph"
     split._memory = None  # nothing remembered
-    parts = [prebuild.Run(counted=False) for _ in range(3)]  # load_islands': one each
+    parts = [mock.Run(counted=False) for _ in range(3)]  # load_islands': one each
     split.sessions = [
         SimpleNamespace(load_islands=lambda *args, **kwargs: parts, _last_total=0)
     ]
-    before = prebuild.LOADS[0]
+    before = mock.LOADS[0]
     run = split._load_split(Kernels(), {})
-    assert isinstance(run, prebuild.Run) and run.parts == parts and run is split.run
-    assert prebuild.LOADS[0] == before + 1  # the islands' one load
+    assert isinstance(run, mock.Run) and run.parts == parts and run is split.run
+    assert mock.LOADS[0] == before + 1  # the islands' one load
     assert len(run.wait(run.submit())) == 3

@@ -10,7 +10,7 @@ from test_class_first_use import TENSORS, FakeRun, Gate, quiet
 
 import komorebi as km
 from komorebi.dsl import first_use
-from komorebi.dsl.program import constant_handler
+from komorebi.dsl.first_use import constant_handler
 from komorebi.errors import ProgramError
 from komorebi.program import several as programs
 from komorebi.session import kernels as session_kernels

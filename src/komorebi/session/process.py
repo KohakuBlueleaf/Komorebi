@@ -8,7 +8,7 @@ import signal
 import weakref
 from pathlib import Path
 
-from komorebi.builder import prebuild
+from komorebi.device import mock
 from komorebi.errors import KomorebiError
 
 CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
@@ -121,7 +121,7 @@ def chip_holder(card, path=None):
     """The PID of another live process that holds `card`'s chip lock, else None. Read
     from UMD's lock file (a pthread mutex, a 64-bit word, the owner's TID and PID)
     without taking it; UMD keeps the lock from a process's first open to its exit."""
-    if prebuild.active() or os.environ.get(MOCK):  # a mock: no chip to hold
+    if mock.active() or os.environ.get(MOCK):  # a mock: no chip to hold
         return None
     # the file's mtime cannot date the PID: UMD writes the lock through a mapping,
     # which leaves the mtime unchanged
