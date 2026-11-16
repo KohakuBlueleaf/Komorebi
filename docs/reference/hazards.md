@@ -94,17 +94,24 @@ Described in [Ports, emit and reduce](ports.md#on-the-wire) and
 ### A reduce repeated in a loop of one command
 
 **The hazard.** A sender writes its page straight into its receiver's arrival slot and
-adds 1 to the receiver's port, with no credit back (`km_port.hpp`, `emit`); the receiver
-sets the port's count to 0 once it has the count it waits for (`arrive`). With a reduce
-a turn, a sender's next turn can land in a slot the receiver's compute is still adding,
-and its bump, counted before the clear, is lost: the receiver waits for it for good
-(seen on the card: the tree's inner roots waiting in their port).
+adds 1 to the receiver's port (`km_port.hpp`, `emit`); the receiver sets the port's
+count to 0 once it has the count it waits for (`arrive`). With a reduce a turn and no
+flow control, a sender's next turn can land in a slot the receiver's compute is still
+adding (a wrong sum, silently), or its bump, counted before the clear, is lost (the
+receiver waits for good: seen on the card, the tree's inner roots waiting in their
+port).
 
-**The rule.** One reduce of a group a command, or a reduce after the loop.
+**The rule.** A reduce repeated over the same group in one command goes through
+`reduce_emit` / `reduce_arrive`, which give the credit. Two reduces over different
+groups that take turns on the same cores in one command are not covered: give them
+different arrival buffers, or one command each. A pair of `emit` / `arrive` of a
+program's own, repeated on one port, needs a credit of the program's own.
 
-**The guard.** The class compiler refuses `km.reduce` in a range loop ("a reduce in a
-range loop: the port has no flow control between turns yet"). A hand program's repeated
-`reduce_arrive` / `reduce_emit` in one command is not checked.
+**The guard.** From its second turn over one group in one command, a reduce's sender
+waits for its receiver's credit, sent once compute has taken the turn before (the
+first turn pays nothing). A reduce over islands is refused at its second turn, by name
+at both ends. The class compiler refuses `km.reduce` in a range loop ("a reduce in a
+range loop: the port has no flow control between turns yet").
 
 Described in [Ports, reduce](ports.md#reduce).
 
