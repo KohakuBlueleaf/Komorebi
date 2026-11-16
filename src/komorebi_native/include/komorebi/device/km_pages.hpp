@@ -71,6 +71,13 @@ namespace km {
 #endif
     }
 
+    // The places for puts between islands past the next, after the put queue (bytes).
+#if defined(KM_FAR_PUTS)
+    constexpr uint32_t kFarBytes = KM_FAR_BYTES(KM_ISLANDS_MAX);
+#else
+    constexpr uint32_t kFarBytes = 0;
+#endif
+
     // The slots of the ring of a chunk of `chunk` bytes, slots of `packet` bytes (0:
     // none).
     constexpr uint32_t ring_slots(uint32_t chunk, uint32_t packet) {
@@ -593,7 +600,7 @@ namespace km {
         // a link core's own chunks (the session's buffer KM_LINK_CB, on link cores
         // alone, after the put queue), not the run's transfer buffer every core has
         const uint32_t chunk = KM_LINK_CHUNK;
-        const uint32_t buffer = link_queue() + KM_QUEUE_BYTES;
+        const uint32_t buffer = link_queue() + KM_QUEUE_BYTES + kFarBytes;
 #else
         const uint32_t chunk = r.chunk;
         const uint32_t buffer = r.buffer;
@@ -622,6 +629,15 @@ namespace km {
             }
             l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_PENDING_COUNT] = 0;
             l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_LAST] = 0;
+#if defined(KM_FAR_PUTS)
+            constexpr uint32_t n = KM_ISLANDS_MAX;
+            for (uint32_t w = 0; w < KM_FAR_LINE(n) / 4; w++) {
+                l1(queue + KM_QUEUE_BYTES)[w] = 0;
+            }
+            for (uint32_t i = 0; i < n * KM_FAR_LINES; i++) {
+                l1(queue + KM_QUEUE_BYTES + KM_FAR_LINE(n) + 64 * i)[KM_ASK_NUMBER] = 0;
+            }
+#endif
         }
         const uint32_t links_area = islands_at(kernel.args().control).link_area();
         const uint32_t row = links_area + KM_LINK_CROSS + (link & 1u) * KM_CROSS_ROW;
@@ -1602,6 +1618,81 @@ namespace km {
         );
     }
 
+#if defined(KM_FAR_PUTS)
+    // The lead: a put line for an island past the next, its pages then the line by the
+    // forwarding rooms into that island's places for this one. `sent`: false, no place.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t pages_put_far(
+        const Kernel& kernel, uint32_t cpu, uint32_t area, uint32_t at, bool& sent
+    ) {
+        constexpr uint32_t n = KM_ISLANDS_MAX;
+        const Islands view = islands_at(kernel.args().control);
+        volatile tt_l1_ptr uint32_t* line = l1(at);
+        const uint32_t far = link_queue() + KM_QUEUE_BYTES;
+        volatile tt_l1_ptr uint32_t* words = l1(far);
+        const uint32_t holder = line[KM_ASK_HOLDER];
+        invalidate_l1_cache();
+        const uint32_t count = words[KM_FAR_SENT(n) / 4 + holder];
+        sent = count - words[KM_FAR_CREDIT(n) / 4 + holder] < KM_FAR_LINES;
+        if (!sent) {
+            return kGaveNone;
+        }
+        const uint32_t tile = view.far_tile(holder, false);
+        const uint32_t i = view.here() * KM_FAR_LINES + count % KM_FAR_LINES;
+        const uint32_t dram = line[KM_ASK_DRAM];
+        const uint32_t out = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
+        const PagesRequest r = {
+            line[KM_ASK_TO],
+            line[KM_ASK_PAGE],
+            dram != 0 ? line[KM_ASK_DRAM_FIRST] : line[KM_ASK_FIRST],
+            line[KM_ASK_PAGES],
+            line[KM_ASK_TENSOR],
+            KM_PAGES_DRAM,
+            pages_held.chunk,
+            far + KM_FAR_COUNT(n) + 4 * i,
+            (tile & 0xFFu) | (tile >> 16 & 0xFFu) << 8,
+            pages_held.hops,
+            KM_PAGES_SEND,
+            0,
+            pages_held.area - cpu * pages_held.chunk,
+            dram != 0 ? out : line[KM_ASK_CORE],
+            0,
+            line[KM_ASK_FIRST]
+        };
+        const bool good = (
+            holder < view.count() && holder < n && tile != 0 && r.pages != 0 &&
+            r.page != 0 && r.page % 16 == 0 && r.page <= pages_packet() &&
+            r.from % 16 == 0 && (line[KM_ASK_RING] & KM_ASK_FORM) == 0
+        );
+        if (!good) {
+            line[KM_ASK_PAGES] = 0;  // confirmed with no page
+            l1(area)[KM_PUT_BAD / 4] += 1;
+        }
+        uint32_t code = kGaveNone;
+        if (good) {  // every page by the lead: the place is its alone
+            forward_route(holder, KM_CROSS_PAGES);
+            code = pages_push(kernel, r, cpu, Partition{0, r.pages});
+        }
+        if (code == kGaveNone && holder < n && tile != 0) {
+            forward_route(holder, KM_CROSS_LINES);
+            auto* header = pages_header(area + KM_PUT_HEADERS);
+            link_write(
+                header,
+                link_noc(tile & 0xFFFFu, tile >> 16, far + KM_FAR_LINE(n) + 64 * i),
+                64
+            );
+            code = pages_packet(kernel, header, at, 64);
+        }
+        forward_route_off();
+        if (code == kGaveNone) {
+            words[KM_FAR_SENT(n) / 4 + holder] = count + 1;
+            cross_count(area, KM_CROSS_PUTS, 1, 64);
+        }
+        return code;
+    }
+
+#endif
+
     // Page CPU j: the queue's next line. A put: share j of its pages into the holder's
     // DRAM, the lead sends the line across; a get: the lead sends it on. kGave* code.
     template <typename Kernel>
@@ -1644,6 +1735,18 @@ namespace km {
             }
             return pages_taken(kernel, area, j, taken);
         }
+#if defined(KM_FAR_PUTS)
+        if (islands_at(kernel.args().control).hops(line[KM_ASK_HOLDER]) > 1) {
+            if (lead) {  // the other page CPUs only take it
+                bool sent = true;
+                code = pages_put_far(kernel, cpu, area, at, sent);
+                if (code != kGaveNone || !sent) {
+                    return code;  // not sent yet: taken on a later pass
+                }
+            }
+            return pages_taken(kernel, area, j, taken);
+        }
+#endif
         const uint32_t xy = pages_far0;  // the far link core 0
         const uint32_t place = (xy & 0xFFu) | (xy >> 16 & 0xFFu) << 8;
         // from the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
@@ -1833,6 +1936,94 @@ namespace km {
         );
     }
 
+#if defined(KM_FAR_PUTS)
+    // The lead: each island's next line in its places here once its pages landed,
+    // confirmed to its asker and the place given back to the island it came from.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t
+    pages_confirm_far(const Kernel& kernel, uint32_t area) {
+        constexpr uint32_t n = KM_ISLANDS_MAX;
+        const Islands view = islands_at(kernel.args().control);
+        const uint32_t far = link_queue() + KM_QUEUE_BYTES;
+        volatile tt_l1_ptr uint32_t* words = l1(far);
+        invalidate_l1_cache();
+        for (uint32_t s = 0; s < view.count() && s < n; s++) {
+            const uint32_t taken = words[KM_FAR_TAKEN(n) / 4 + s];
+            const uint32_t i = s * KM_FAR_LINES + taken % KM_FAR_LINES;
+            volatile tt_l1_ptr uint32_t* line = l1(far + KM_FAR_LINE(n) + 64 * i);
+            const uint32_t number = line[KM_ASK_NUMBER];
+            const uint32_t pages = line[KM_ASK_PAGES];
+            if (
+                number == 0 || line[KM_ASK_END] != number ||
+                static_cast<int32_t>(words[KM_FAR_COUNT(n) / 4 + i] - pages) < 0
+            ) {
+                continue;  // none, not whole yet, or its pages not all landed
+            }
+            const uint32_t asker = line[KM_ASK_CORE];
+            const uint32_t owner = line[KM_ASK_OWNER] % KM_QUEUE_LINES;
+            uint32_t code = kGaveNone;
+            forward_route(line[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
+            if (pages != 0) {
+                auto* header = pages_header(area + KM_PUT_HEADERS + 64);
+                link_increment(
+                    header,
+                    link_noc(asker & 0xFFFFu, asker >> 16, line[KM_ASK_COUNT]),
+                    pages
+                );
+                code = pages_packet(kernel, header, 0, 0);
+            }
+            if (code == kGaveNone) {
+                const uint32_t own = (
+                    view.own_words() + (owner / 2 % 2 == 1 ? KM_OWN_CPU_BYTES : 0)
+                );
+                auto* done = pages_header(area + KM_PUT_HEADERS + 128);
+                link_inline(
+                    done,
+                    link_noc(
+                        asker & 0xFFFFu,
+                        asker >> 16,
+                        own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
+                    ),
+                    number
+                );
+                code = pages_packet(kernel, done, 0, 0);
+            }
+            forward_route_off();
+            if (code == kGaveNone) {
+                const uint32_t dram = line[KM_ASK_DRAM];
+                code = (
+                    pages_keeper(
+                        kernel, area, dram != 0 ? line[KM_ASK_KEEPER] : 0, pages
+                    )
+                );
+            }
+            if (code != kGaveNone) {
+                return code;
+            }
+            words[KM_FAR_COUNT(n) / 4 + i] -= pages;
+            line[KM_ASK_NUMBER] = 0;
+            words[KM_FAR_TAKEN(n) / 4 + s] = taken + 1;
+            const uint32_t tile = view.far_tile(s, true);  // its place back
+            forward_route(s, KM_CROSS_LINES);
+            auto* back = pages_header(area + KM_PUT_HEADERS + 128);
+            link_inline(
+                back,
+                link_noc(
+                    tile & 0xFFFFu, tile >> 16, far + KM_FAR_CREDIT(n) + 4 * view.here()
+                ),
+                taken + 1
+            );
+            code = pages_packet(kernel, back, 0, 0);
+            forward_route_off();
+            if (code != kGaveNone) {
+                return code;
+            }
+            cross_count(area, KM_CROSS_PUTS, 1, pages != 0 ? 12 : 8);
+        }
+        return kGaveNone;
+    }
+#endif
+
     // The lead page CPU: far put lines arrive as pending; each once its pages landed
     // (KM_QUEUE_ARRIVED) is confirmed to the asker's port and parity word. kGave* code.
     template <typename Kernel>
@@ -1843,6 +2034,12 @@ namespace km {
             return kGaveNone;
         }
         volatile tt_l1_ptr uint32_t* words = l1(area);
+#if defined(KM_FAR_PUTS)
+        const uint32_t far = pages_confirm_far(kernel, area);
+        if (far != kGaveNone) {
+            return far;
+        }
+#endif
         volatile tt_l1_ptr uint32_t*
             count = (l1(queue + KM_QUEUE_WORDS) + KM_QUEUE_PENDING_COUNT);
         invalidate_l1_cache();

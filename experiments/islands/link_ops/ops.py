@@ -1,9 +1,7 @@
-"""Writes into another rank's L1 and adds to its word (km::l1_write, km::word_add):
+"""Writes into another rank's L1 and adds to its word (km::write_l1, km::add_word):
 for each case S:T, island S's first rank makes --calls calls to island T's last rank,
-then the target's ring, counter and port count are read back and checked. Prints one
-JSON line. See README.md.
-  ops.py --cards 0,1 [--cases 0:0,0:1]
-  ops.py --card 0 --islands 3 --shape line [--cases 0:0,0:1,0:2]"""
+then the target's ring, counter and port count are checked. One JSON line; README.md.
+"""
 
 import argparse
 import json

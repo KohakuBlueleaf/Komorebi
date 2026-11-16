@@ -180,13 +180,13 @@ namespace km {
         }
 
         // The counts table's L1 address on this island's cores (a word an island, after
-        // the table's entries); 0: none (one island).
+        // the table's entries and its far tiles); 0: none (one island).
         uint32_t counts() const {
 #if defined(KM_ONE_ISLAND)
             return 0;
 #else
             const uint32_t table = area_[KM_ISLAND_TABLE];
-            return table != 0 ? table + KM_ISLAND_ENTRY_BYTES * count() : 0;
+            return table != 0 ? table + 4 * 4 * count() : 0;
 #endif
         }
 
@@ -204,6 +204,24 @@ namespace km {
                         word
                     ]
             );
+        }
+
+        // The tile (x | y << 16) of island `island`'s link core where this island's
+        // path to it enters it (`back`: where its path here leaves it); 0: none.
+        uint32_t far_tile(uint32_t island, bool back) const {
+#if defined(KM_ONE_ISLAND)
+            return static_cast<void>(island), static_cast<void>(back), 0;
+#else
+            const uint32_t table = area_[KM_ISLAND_TABLE];
+            const uint32_t n = area_[KM_ISLAND_COUNT];
+            return (
+                table != 0 && island < n
+                    ? reinterpret_cast<const volatile uint32_t*>(
+                        table
+                    )[(back ? 3 : 2) * n + island]
+                    : 0
+            );
+#endif
         }
 
         // The island that holds `rank`: its table entry; this island when the rank is
