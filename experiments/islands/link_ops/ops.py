@@ -40,6 +40,12 @@ def parse():
     parser.add_argument("--slots", type=int, default=128, help="the ring's slots")
     parser.add_argument("--port", type=int, default=3, help="-1: no count")
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--refused",
+        type=int,
+        default=0,
+        help="cases this many hops away or more: refused",
+    )
     return parser.parse_args()
 
 
@@ -172,6 +178,9 @@ def cases_run(args, cases, own, graph, reports, one, session, report):
             record["done"] = int(sender_row[2])
             record.update(check(target_row, args, target))
             record["ok"] = record["ok"] and record["done"] == args.calls
+            if args.refused and record["hops"] >= args.refused:  # nothing done
+                record["refused"] = record["done"] == 0 and record["counter"] == 0
+                record["ok"] = record["refused"]
         except km.KomorebiError as error:
             record["error"] = f"{type(error).__name__}: {error}"[:800]
             record["ok"] = False
