@@ -5,14 +5,14 @@ words a pair and the graphs the session refuses by name."""
 import pytest
 
 from komorebi.islands import graph as islands
-from komorebi.islands.session import (
-    IslandSession,
+from komorebi.islands.parts.link_plan import link_tail
+from komorebi.islands.parts.mesh import (
     _split_graph,
     cards_graph,
     check_wired,
     link_slots,
-    link_tail,
 )
+from komorebi.islands.session import IslandSession
 
 
 def cores(parts, size=30, columns=10):

@@ -102,7 +102,7 @@ written for islands runs on one card unchanged.
   serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
   holds each CPU's largest text over the two groups. A program with messages and a
   card split into islands keep the services in every kernel (see a link core's L1). The session opens at the kernel buffer its script's last run needed and an
-  eighth more (at least 8 KiB), else at 160 KiB (`island_session.KERNEL_BYTES`: the largest such build, a dynamic program with a
+  eighth more (at least 8 KiB), else at 160 KiB (`islands.parts.load.KERNEL_BYTES`: the largest such build, a dynamic program with a
   message service on every link, example 23's 159,360 bytes, in steps of 16 KiB); it
   costs every core 32 KiB of L1 more than 128 KiB did (1,367,936 bytes left for
   circular buffers and L1 tensors against 1,400,704). One card keeps the runtime's
