@@ -1,6 +1,5 @@
 """A class on an island session (no card): the islands' common grid, a broadcast's
-rectangle taken as one island's flat ranks, a reduce group that spans two islands
-refused by name."""
+rectangle taken as one island's flat ranks."""
 
 from types import SimpleNamespace
 
@@ -8,7 +7,6 @@ import pytest
 
 from komorebi.dsl.program import flat_groups, rank_rectangle, session_nocs
 from komorebi.errors import KomorebiError, ProgramError
-from komorebi.islands.run import _check_reduce_islands
 from komorebi.islands.session import IslandSession
 from komorebi.session.run import Run
 
@@ -63,24 +61,6 @@ def test_self_x_and_y_on_a_group_across_two_islands_is_refused_by_name():
         "place on its own island, and the group 60..179 spans more than this "
         "island's ranks 119..237, whose places the next island's ranks repeat: "
         "submit it on one island's ranks"
-    )
-
-
-class Linear:
-    reduce_groups = {"split": (14, "line 70: km.reduce(self.sums, group=14)")}
-
-
-def test_a_reduce_group_across_two_islands_is_refused_by_name():
-    graph = SimpleNamespace(islands=[0, 1], first=lambda island: 119 * island)
-    split = SimpleNamespace(method=SimpleNamespace(name="split"), program=Linear())
-    _check_reduce_islands(graph, split, (63, 112))  # island 1 begins a group
-    _check_reduce_islands(graph, split, (0, 112))  # on island 0 alone
-    with pytest.raises(ValueError) as refused:
-        _check_reduce_islands(graph, split, (60, 112))
-    assert str(refused.value) == (
-        "Linear.split, line 70: km.reduce(self.sums, group=14): its reduce group of "
-        "14 ranks at flat ranks 116..129 spans islands 0 and 1; start the command so "
-        "that island 1's first rank 119 begins a group"
     )
 
 

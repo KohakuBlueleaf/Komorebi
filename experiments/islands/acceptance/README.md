@@ -59,7 +59,13 @@ output.
 | Decode layer, steps | 369.52 | equal, 6,958.63 | refused (6)* | refused (6)* | refused (6)* |
 
 Every two-card row is word-equal to one island, and so is the SwiGLU on the ring of
-four and its chain on the line of three. The times are stated, not tuned.
+four and its chain on the line of three. The times are stated, not tuned. The decode
+layer's two-card rows hold for its placement (`across.py`'s first ranks 6, 103, 70: no
+float reduce group across the edge). With its groups started at rank 0, groups of 15
+cross rank 118 (attend's merge, `o`, `down`) and are added in another order than one
+island's tree: qkv equal, the attention output 366 of 65,536 words differing (largest
+0.0050 relative), the layer's output 996 (largest 0.0065), chain and steps alike
+(2026-11-17).
 
 **Where the two-card time goes.** One `up` across the edge (ranks 112 to 123, its
 tensors placed by the default hint, rows split over every rank) made 480 far page asks
