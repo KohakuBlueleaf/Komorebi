@@ -1820,7 +1820,10 @@ copies of the build's 22 constant tables of the buffers pass when their bytes ar
 resident kernel's (a part built against other buffers is refused, naming the table);
 a math part that defines matmul.h's `throttled_mop_status` is built with its copy and
 the resident kernel's set unknown around the call
-([hazards](hazards.md#a-part-that-keeps-something-from-one-call-to-the-next)).
+([hazards](hazards.md#a-part-that-keeps-something-from-one-call-to-the-next)). On the
+card that layer's chain gave the seven tensors word for word equal to the hand's, in
+342.11 us a layer against 342.25 us with all five as overlays
+([decode_class](../../experiments/language/decode_class/README.md)).
 
 ## Classes merged into one
 
