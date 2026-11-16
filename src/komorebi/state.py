@@ -8,6 +8,7 @@ import re
 import numpy as np
 
 from komorebi import abi
+from komorebi.errors import KomorebiError
 
 GAVES = {
     "Stop": "stop",
@@ -492,18 +493,17 @@ def wrap(delta):
 
 
 class Trace:
-    """The per-command trace: wall-clock words per core and sequence number.
+    """The per-command trace: `rows` [cores, cap, kTraceWords]; `seqs` and `groups`: a
+    handle's sequence number and (first row, count); `mhz`: the Tensix clock; `own`:
+    the runtime's own commands among the handles (handle -> what)."""
 
-    `rows` is [cores, cap, kTraceWords]; `seqs` and `groups` map a handle to its
-    sequence number and (first row, count); `mhz`: the Tensix clock.
-    """
-
-    def __init__(self, rows, seqs, groups, mhz, abi_headers=None):
+    def __init__(self, rows, seqs, groups, mhz, abi_headers=None, own=None):
         self.h = abi_headers or abi.headers()
         self.rows = np.asarray(rows).astype(np.int64) & abi.M32
         self.seqs = seqs
         self.groups = groups
         self.mhz = mhz
+        self.own = dict(own or {})
 
     @property
     def capacity(self):
@@ -511,12 +511,31 @@ class Trace:
 
     def command(self, handle):
         """[count, 4] words (seen, done, sent, extra) of the handle's cores, or None
-        when the handle was not traced."""
+        when the handle was not traced (no sequence number known). A command past the
+        trace's slots is refused (KomorebiError), saying what took them."""
         sequence = self.seqs.get(handle)
-        if sequence is None or not 1 <= sequence <= self.capacity:
+        if sequence is None or sequence < 1:
             return None
+        if sequence > self.capacity:
+            raise KomorebiError(self.past(handle, sequence))
         first, count = self.groups[handle]
         return self.rows[first : first + count, sequence - 1]
+
+    def past(self, handle, sequence):
+        """Why handle `handle` (the kernel's command `sequence`) is not in the trace:
+        the slots it holds, and the commands that took them before it."""
+        earlier = [h for h, s in self.seqs.items() if s < sequence]
+        own = [h for h in earlier if h in self.own]
+        kinds = sorted({self.own[h] for h in own})
+        others = sequence - 1 - len(earlier)  # counted, not this run's handles
+        return (
+            f"handle {handle}: the trace holds {self.capacity} commands and this is "
+            f"command {sequence} of the cores' count ({sequence - self.capacity} past "
+            f"it); before it: {len(earlier) - len(own)} of the run's commands, "
+            f"{len(own)} of the runtime's own ({', '.join(kinds) or 'none'}), "
+            f"{others} from other sources (a thread's commands): load with a larger "
+            "trace="
+        )
 
     def phases(self, handle):
         """Microseconds after the first core took the command: last core took it,

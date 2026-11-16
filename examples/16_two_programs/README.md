@@ -93,7 +93,8 @@ islands, and a phase that reads a trace reads each command's rows over both card
 (`run.trace().command(ticket)`, each island's in its own clock). Measured on two cards
 (2026-11-16): `combined` is exact and the price and switch phases run; `disjoint` gives
 up none of its 80 commands and is exact, and `live` makes its 200 switches (600
-commands) with 0 wrong words.
+commands) with 0 wrong words. `all` skips `load` there: a program has one group, so
+`widen`'s, on island 1, has no rank on island 0 to load it on.
 
 ## Numbers
 

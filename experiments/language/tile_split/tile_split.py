@@ -237,6 +237,33 @@ def card_all(args):
     return 0
 
 
+def card_islands(args):
+    """Card 0 split in 2: SplitNormAll on SPLIT cores, half on each island, so its
+    all-reduce crosses; x and w a copy on each island, out placed by the session."""
+    os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
+    data, want = split_data()
+    # the movers' page calls across islands and the cast: more than the default 160 KiB
+    with km.Session(card=0, islands=2, kernel_bytes=192 << 10, log=log) as session:
+        t = {
+            n: session.tensor(v, "bfloat16", "tile", copy=True) for n, v in data.items()
+        }
+        out = session.tensor(np.zeros((32, 2048), np.float32), "bfloat16", "tile")
+        run = session.load(SplitNormAll(log=log, session=session, **t, out=out))
+        cores = (session.graph.first(1) - SPLIT // 2, SPLIT)
+        try:
+            times = timed(run, SplitNormAll.norm, cores, (t["x"], t["w"], out))
+            log(f"SplitNormAll.norm on {cores} over 2 islands: {times}")
+        finally:
+            run.stop()
+        got = out.read().astype(np.float64)
+    what = "split RMS norm, 2,048, bf16, 16 cores over 2 islands, sums all-reduced"
+    row = {"what": what, "cores": cores, **errors(got, want), "microseconds": times}
+    RESULTS.mkdir(exist_ok=True)
+    with open(RESULTS / "tile_split_islands.json", "w") as f:
+        json.dump(check([row]), f)
+    return 0
+
+
 def made_up(args):
     """The host side after the card: the references through `check`, moved by 1e-7."""
     rows = []
@@ -248,9 +275,10 @@ def made_up(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("what", choices=["card", "card_all", "made_up"])
+    p.add_argument("what", choices=["card", "card_all", "card_islands", "made_up"])
     args = p.parse_args()
-    return {"card": card, "card_all": card_all, "made_up": made_up}[args.what](args)
+    calls = {"card": card, "card_all": card_all, "card_islands": card_islands}
+    return {**calls, "made_up": made_up}[args.what](args)
 
 
 if __name__ == "__main__":

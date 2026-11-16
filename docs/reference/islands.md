@@ -76,7 +76,10 @@ written for islands runs on one card unchanged.
   last `(links + 1) // 2` cores are its link cores
   (`session.link_cores`, `graph.link_cores`), not ranks; both data-movement CPUs of a
   link core send, each on its own link (`session.channels`: the Ethernet channel of
-  each). Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
+  each). Three or more cards open as the fabric's line (card i joined to i + 1, the
+  graph `cards_graph`): two links a pair (the fewest found, refused by name below two),
+  so one link core toward each neighbour; built and checked on the host, not tested on
+  three cards. Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
   dispatcher's command and DONE lines (commands across), and pages only when it is
   the one link; links 1 on carry pages. A core's bytes into a rank's L1 on the other
   card (`km::write_l1`, `km::emit` across) go as a line of the put queue, its pieces by
@@ -339,7 +342,11 @@ than the handler's is not). The first use costs two reads (a `COUNTS` command to
 island's link cores, each) and later commands of the same (handler, group) nothing.
 `run.crossing_line` is `"log"` (the default), `"error"` (raised by that wait after the
 command has run, its events on the error's `events`) or `"off"`; a run whose messages
-cross is not read (its counts wait behind its RUN). The counts are a link's, so the line
+cross is not read (its counts wait behind its RUN). A run loaded with `trace=` starts at
+`"off"`, so that its trace holds the commands it was given: set to `"log"` or `"error"`,
+each first use takes two of the trace's slots on every island. A command past the
+trace's slots is refused by `trace.command`, which says how many slots the trace holds and
+what took them. The counts are a link's, so the line
 cannot name the tensor or the ranks that fetched across; commands in flight in the
 same span are counted with it, and the line says how many (`with 2 other commands in
 flight`).
@@ -882,7 +889,7 @@ and one open.
   bank address: for kernels that read a tensor by its bank address (example 03's
   islands script opens so).
 - **Wires.** Every pair of islands is joined by `links` wires (default 1; with more
-  than two islands, one): link cores taken from the end of each island's rows, a
+  than two islands, at most two): link cores taken from the end of each island's rows, a
   neighbour's links ceil(links / 2) cores in neighbour order, named and served as
   between two cards (commands across on link 0, a core's own page ask, put and L1
   write, messages, `crossings()`). The build defines `KM_WIRE`: the link's transport
@@ -901,9 +908,8 @@ and one open.
   wires, the direct one and the wrap, so every island has four links). The session
   refuses by name a graph it cannot wire (`check_wired`): more islands than a core's
   table holds (`KM_ISLANDS_MAX`), an island with more neighbours than a card's four
-  ports or, beyond two islands, than the forward parts (`KM_FORWARD_PARTS`), and,
-  beyond two islands, more than one wire a pair: the grid is refused until the link
-  service carries parallel links. A session of three or more cards is refused too.
+  ports and, beyond two islands, more than two wires a pair (a link core a neighbour,
+  its two CPUs a wire each).
 - **Forwarding.** Over more than two islands the build also defines `KM_FORWARD` (the
   session's; two islands build without it and their kernels stay smaller). A link core
   that receives what is not for its island sends it on by its island's next link
@@ -912,14 +918,26 @@ and one open.
   command's line and its DONE, a get and the pages that answer it (a get is queued
   again in the queue of the link core toward the holder; the pages go back to the
   asker), an L1 write (a reduce's fold, a broadcast's blocks) and an island's report
-  at the end of a run (below). Each link core holds a forward area (3 parts of 2
-  slots of 4,480 bytes, `KM_FORWARD_*` in `km_abi.h`, its address in the island area
-  at `KM_ISLAND_FORWARD`): part 0 written by the far link core across, one part by each
-  other link core of its island, each with credits back. A message is not forwarded
+  at the end of a run (below). Each link core holds forward rooms in its own buffer,
+  after its put queue (`KM_FORWARD_*` in `km_abi.h`): a room of 2 slots of 4,480 bytes
+  for each writer (the far link core across, each other link core of its island), each
+  sending CPU and each hop level, with credits back. A packet on its h-th link waits
+  only for room of level h + 1, so no circle of links can wait on itself; the levels
+  are the graph's diameter less one. A message is not forwarded
   packet by packet: the link core that takes it in queues it in the outbox of the link
   core toward its rank, as a writer does. `crossings()` counts every link a crossing
-  uses. A put (`km::write_pages`) still goes one link only; a put to an island two
-  links away is refused (the kernel gives up).
+  uses. A put (`km::write_pages`) to an island two or more links away (`KM_FAR_PUTS`,
+  built when the diameter is over one) is sent by the asker's link core: its pages
+  forwarded to the holder's island, then its line into one of `KM_FAR_LINES` (8) far
+  places a source island there, with credits back; the holder confirms to the asker
+  as for a neighbour's. A batch or ring put still goes one link only.
+- **L1 of a link core.** The forward rooms and far places, beside the put queue and
+  the chunks: a line or ring of four 18,304 + 8,896 bytes, the 2 x 2 grid (two wires a
+  pair) 36,544 + 8,896, a 4 x 4 grid with wrap 108,288 + 8,896, a 4 x 8 grid with wrap
+  (32 islands, diameter 6) 180,288 + 17,792 with one wire a pair, 360,576 + 17,792 with
+  two. Ranks hold none of it, and a session of one card or two none at all. A level
+  costs 8,992 bytes a room (a writer and CPU: 2 slots and its words), so the largest diameter is the
+  one whose rooms fit a link core's L1; a load past it is refused by name (L1).
 - **Messages over more than two islands.** Every link core serves its link in a
   dynamic run (a PAGES command of mode MESSAGES each). The run's end is decided once
   for the whole run: each island's link core 0 checks its island quiet (every core of
@@ -1257,7 +1275,7 @@ on one card.
   run's messages are served the links carry nothing else (a core's ask waits too). A
   kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
   page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
-  link, and a put goes one link only. A copy with both sides placed moves a chunk at a
+  link, and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
   time, a line a run of the chunk; a copy that asks pages another island holds sends a
   line a run, all in flight ([pages across a link](#pages-across-a-link)).
 - Uploads over islands (an engine's stream or graph runs on the island it is uploaded
@@ -1270,9 +1288,9 @@ on one card.
   tracer's packet streams, whose page bytes change with the handler and the stage, by
   `km::SizedTensor`; neither project uses them yet. An overlay of the kernel form is built with its kernel's defines and
   compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
-- More than two cards: the mesh opens 1 x n; tried with two.
-- A split card: a copy across and a put over more than one link; more than one wire a
-  pair with more than two islands; X280 threads (not supported, by decision: a split card
+- More than two cards: the mesh opens 1 x n as a line; tried with two.
+- A split card: a copy across and a batch put over more than one link; more than two
+  wires a pair with more than two islands; X280 threads (not supported, by decision: a split card
   is for developing and checking island programs).
 - Two cards each split into islands, as a line of four (fabric links and wires in one
   graph): not in this release, so forwarding has run over wires only.
