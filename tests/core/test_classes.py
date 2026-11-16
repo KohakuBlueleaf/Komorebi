@@ -477,7 +477,9 @@ class Budget:
     """A session's L1 as its load counts it (Session.l1_rows), without a card."""
 
     channel, largest_page, transfer_chunk = object(), 2048, None
+    page_bounds = 0  # no page bounds list (Session.page_bounds_list: None)
     l1_rows = Session.l1_rows
+    page_bounds_list = Session.page_bounds_list
 
     def __init__(self, free):
         self.free = free
