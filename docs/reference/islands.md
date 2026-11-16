@@ -313,6 +313,20 @@ the far link core's tile.
   word; the direct tables number the message ranks of every island. Example 23 by
   `direct()` (card 1, 2026-11-16): split in two 3.556 µs a hop without a body, 6.891
   with 4 KiB; in a line of three 3.900 and 7.406, exact.
+- Which path a dynamic run takes: between two cards the message service above (a RUN
+  of every rank, the links its own while it runs); on a split card, in two or as a line,
+  the deliveries (any group, the links shared with pages). Example 05's 10^6 forwards
+  on two cards (2026-11-16): the service 302.0 ms on one link, 80.1 ms on four;
+  deliveries, measured on the same cards with the service taken out, 1,522.9 and
+  1,469.1 ms (one lead page CPU an island sends and the far one delivers, about 2.9 µs
+  each), so two cards keep the service.
+- A put line's confirmation is its number + 1 with the holder island in the top byte
+  (`KM_OWN_CONFIRM`): an island with two link cores numbers each queue alone, and a bare
+  number from one queue met the wait for a line of the other (a delivery too many on a
+  line of three; exact 3 of 3 since). At a dynamic run's deadline the dispatcher names
+  the island whose wave did not come (`KM_EVENT_ISLAND` + it: the leader the lowest
+  island that did not answer its round, another island the leader), and the error
+  says "island N did not answer".
 
 ## What crossed
 
@@ -1285,8 +1299,14 @@ on one card.
 
 ## What is not built
 
-- Links: a dynamic run's messages cross only in a RUN of every rank, and while the
-  run's messages are served the links carry nothing else (a core's ask waits too). A
+- Links: between two cards a dynamic run's messages cross only in a RUN of every rank,
+  and while the run's messages are served the links carry nothing else (a core's ask
+  waits too); the deliveries that lift both run on a split card only. The path is the
+  session's, not chosen by a RUN's group.
+- Deliveries spread over the link cores' CPUs and links as pages are (not built, speed
+  work): page CPU j sends the lines numbered j modulo the CPUs over its own link, into
+  its own slot ring of the far island's places (the slots split, the L1 the same), and
+  the far CPU j confirms ring j, so the far chain runs on as many CPUs as links. A
   kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
   page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
   link, and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
