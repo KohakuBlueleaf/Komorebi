@@ -19,6 +19,7 @@ from experiments.language.decode_class.decode_layer import (
     O_CORES,
     QKV_CORES,
 )
+from komorebi import chain as kc
 from komorebi import power
 from projects.decode import model as md
 
@@ -44,6 +45,11 @@ def parse():
     )
     parser.add_argument(
         "--steps", action="store_true", help="also a command a step at the same ranks"
+    )
+    parser.add_argument(
+        "--prefixes",
+        action="store_true",
+        help="also the chains of the first 1 .. 5 calls timed, each record's far marks",
     )
     parser.add_argument("--save", default=None, help="the tensors' words to this .npz")
     parser.add_argument("--against", default=None, help="compare with this .npz")
@@ -158,6 +164,43 @@ def tensors_of(session, weights, cache, two):
     }
 
 
+def run_zero(run):
+    """The run that describes a class's calls: island 0's on islands."""
+    return run.runs[0] if hasattr(run, "runs") else run
+
+
+def far_marks(calls, edges):
+    """Each record's marks (root, core) as the walk issues them (chain.prove's
+    relation), and how many go to another island (`edges`: each island's first rank)."""
+
+    def island(rank):
+        return sum(rank >= edge for edge in edges)
+
+    out = []
+    for index in range(1, len(calls)):
+        call, before = calls[index], calls[index - 1]
+        groups = before.group[1] // before.size
+        pairs = {
+            (before.group[0] + block * before.size, core)
+            for core, rank, group in kc._cores(call)
+            for first, count in kc.tiles_of(call.k, call.ranges, rank, group, call.size)
+            for block in kc.blocks_met(first, count, before.width, groups)
+        }
+        far = [p for p in pairs if island(p[0]) != island(p[1])]
+        roots = {}
+        for root, _ in far:
+            roots[root] = roots.get(root, 0) + 1
+        out.append(
+            {
+                "record": index,
+                "marks": len(pairs),
+                "far": len(far),
+                "far_a_root_most": max(roots.values(), default=0),
+            }
+        )
+    return out
+
+
 def by_steps(run, steps):
     """The layer as a command a step, each waited for: its microseconds summed."""
     total = 0.0
@@ -207,6 +250,28 @@ def main():
             for _ in range(args.runs)
         ]
         result["layer_us"] = round(float(np.median(times)), 2)
+        if args.prefixes:  # where the layer's time goes: a record at a time
+            layer = program.placed(*words, position, qkv_first, o_first, up_first)
+            group = (low, high - low)
+            edges = (
+                [session.graph.first(i) for i in range(1, len(cards))] if two else []
+            )
+            try:  # the count is the host's: an error in it is printed, not fatal
+                calls = run_zero(run)._class_calls(layer, None, True, group)
+                result["records"] = far_marks(calls, edges)
+            except Exception as error:  # noqa: BLE001
+                result["records"] = f"not counted: {type(error).__name__}: {error}"
+            print(json.dumps({"records": result["records"]}), flush=True)
+            prefix_us = []
+            for count in range(1, len(layer) + 1):
+                part = run.chain(layer[:count], cores=group)
+                spans = [
+                    run.wait(run.submit(part), timeout=10.0).microseconds
+                    for _ in range(args.runs)
+                ]
+                part.free()
+                prefix_us.append(round(float(np.median(spans)), 2))
+            result["prefix_us"] = prefix_us
         # a command a step at the same ranks (no marks): its words, then its times
         if args.steps:
             rl.start_class(session, t, start)
