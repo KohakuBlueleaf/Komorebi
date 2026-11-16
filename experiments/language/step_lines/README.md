@@ -103,3 +103,47 @@ Both give the words each gave in a class of its own (above): `window` reads its 
 buffer (64 pages, number 1's area) and not `down`'s, which ran before it on the same
 core. With one set of arguments a mover, as before, both would have run with the
 last one's. The times are those of each handler alone, within 0.5 us.
+
+## A product whose left side is a field: a hidden layer kept in L1
+
+Question: does `self.h.write(act(acc))` put a row of DST sums into a field in bfloat16
+that `out += project(self.h, wb)` then takes as the product's left side, a turn of a
+loop at a time?
+
+`hidden_layer.py` computes Y = relu(X W1) W2 on 12 cores, 2 rows of tiles a core (X 8
+tiles wide, H 4, Y 4; X normal, W1 and W2 normal / sqrt of their rows, bfloat16). Each
+turn writes H's row into the field `h` (4 bfloat16 tiles) and multiplies it by W2's
+4 rows; the second turn's write frees the first's pages. Against Y with H rounded to
+bfloat16 (as the field holds it) and against float64:
+
+| | Card (5 commands) |
+|---|---|
+| Y against H in bfloat16, relative RMS / max | 1.06e-3 / 1.47e-3 |
+| Y against float64, relative RMS / max | 1.69e-3 / 1.65e-3 |
+| time a command | 15.1 to 16.0 us |
+
+Kernel text (mock): 46,768 B.
+
+The first card run gave Y near 1e36: the field's pack format was never set (a kernel
+whose only other pack is float32 packed H as float32 tiles into bfloat16 pages), so
+unpack read float32 low halves as bfloat16. The written field is now one of the
+formats pack writes.
+
+## Sums started from a field: a decayed running sum
+
+Question: does `acc = decay(self.o, self.state[0])` start a chunk's sums from the
+field's tiles scaled by a per-row value of a state slot, the products then add into
+them, and `self.o.write(acc)` carry them to the next chunk?
+
+`decayed_sum.py` computes o = o d + X_c W_c over C = 4 chunks of K = 4 tiles on 12
+cores (o 2 fp32 tiles, X normal and W normal / sqrt(K x 32), bfloat16), d each row's
+decay in [0.5, 1), written by the host into slot 0 of each core's state tile; Y = o d
+after the last chunk. Against float64:
+
+| | Card (5 commands) |
+|---|---|
+| Y, relative RMS / max | 3.09e-4 / 3.07e-4 |
+| Y against the sums without the last d (a decay not applied) | 0.249 / 0.315 |
+| time a command | 12.6 to 13.5 us |
+
+The error is the products' 3e-4: o and d stay in float32 through DST and the field.
