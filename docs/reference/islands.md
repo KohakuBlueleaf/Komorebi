@@ -342,7 +342,11 @@ than the handler's is not). The first use costs two reads (a `COUNTS` command to
 island's link cores, each) and later commands of the same (handler, group) nothing.
 `run.crossing_line` is `"log"` (the default), `"error"` (raised by that wait after the
 command has run, its events on the error's `events`) or `"off"`; a run whose messages
-cross is not read (its counts wait behind its RUN). The counts are a link's, so the line
+cross is not read (its counts wait behind its RUN). A run loaded with `trace=` starts at
+`"off"`, so that its trace holds the commands it was given: set to `"log"` or `"error"`,
+each first use takes two of the trace's slots on every island. A command past the
+trace's slots is refused by `trace.command`, which says how many slots the trace holds and
+what took them. The counts are a link's, so the line
 cannot name the tensor or the ranks that fetched across; commands in flight in the
 same span are counted with it, and the line says how many (`with 2 other commands in
 flight`).

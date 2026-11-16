@@ -228,6 +228,7 @@ class Run:
         self._state = None
         self._blocks = None
         self._trace = None
+        self.own_commands = {}  # handle -> what: the runtime's own commands (a trace's)
         self.thread = None  # the program's first X280 thread (thread.ThreadRun)
         self.threads = {}  # every X280 thread by work cluster
         self.submit_s = 0.0  # host time in submit() and submit_many()
@@ -2087,7 +2088,7 @@ class Run:
                     row = (first, int(group[1]))
                     seqs[handle], groups[handle] = _sequence_number(count), row
             self._trace = device_state.Trace(
-                trace_rows, seqs, groups, self.backend.mhz, self.h
+                trace_rows, seqs, groups, self.backend.mhz, self.h, self.own_commands
             )
 
     def _remember(self, error):
