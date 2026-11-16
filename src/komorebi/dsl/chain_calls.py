@@ -690,6 +690,12 @@ def submitted_word(handler, method, at, label):
             "call is given at submit"
         )
     ((place, value),) = at.items()
+    if place in front.sized_parameters(method.function):
+        raise kc.ChainRefused(
+            f"{label}: {place} is a size given at each command, whose most a "
+            "chain's per-submit word is not checked against: give it a value in the "
+            "call"
+        )
     if place in front.constant_parameters(method.function):
         raise kc.ChainRefused(
             f"{label}: {place} is a constant, fixed when the handler is built; "

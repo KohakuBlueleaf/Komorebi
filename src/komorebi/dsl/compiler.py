@@ -1465,7 +1465,11 @@ class HandlerCompiler:
             compute.append(Glue("bool km_ok = true;", {"km_ok"}))
         if spans is not None:
             compute.append(spans[0])
+        self.block_words, self.stream_word = {}, None
+        marks = (len(movement), len(compute))
         body_m, body_c = self.statements(self.definition.body)
+        compute[marks[1] : marks[1]] = self.block_lines()
+        movement[marks[0] : marks[0]] = self.block_lines()
         movement += self.opening_b + body_m + self.put_waits()
         compute += self.opening + body_c + self.carried_end()
         if spans is not None:
@@ -1969,7 +1973,10 @@ class HandlerCompiler:
             args.vararg
             or args.kwarg
             or args.kwonlyargs
-            or (len(args.defaults) > len(constants))
+            or (
+                len(args.defaults)
+                > len(constants) + len(front.sized_parameters(self.method.function))
+            )
         ):
             self.refuse(
                 self.definition,
@@ -2049,7 +2056,8 @@ class HandlerCompiler:
                     f"give it a default, {parameter.arg}: "
                     f"km.{spelling('constant')}[int] = n",
                 )
-        if any(name not in constants for name in defaulted):
+        sized = front.sized_parameters(self.method.function)
+        if any(name not in constants and name not in sized for name in defaulted):
             return {}  # a default of a command word: refused by bind_parameters
         return constants
 
@@ -2522,6 +2530,43 @@ class HandlerCompiler:
             return self.constant(node, node.id)
         self.word_given(node, "a size the build needs")
         self.refuse(node, "a size the build needs", "give an int, or a plan name")
+
+    def sized_block(self, node):
+        """A stream's block= : a constant, or a parameter given at each submit
+        (a handler parameter given at each submit), whose most sizes the buffer
+        (stream_word)."""
+        sized = front.sized_parameters(self.method.function)
+        if isinstance(node, ast.Name) and node.id in sized:
+            self.stream_word = node.id
+            return sized[node.id]
+        return self.constant_int(node)
+
+    def block_word(self, node, buffer):
+        """A stream's pair whose block is given at each submit: the handler's
+        `<pair>Block` a word, its constant the most (the pair's pages) elsewhere; a
+        pair one handler streams with two blocks refused."""
+        word, self.stream_word = self.stream_word, None
+        if self.block_words.setdefault(buffer.name, word) != word:
+            self.refuse(
+                node,
+                f"pair {buffer.name} is streamed with block {word or 'a constant'} "
+                f"and with {self.block_words[buffer.name] or 'a constant'} in one "
+                "handler",
+                "give the two streams one block, or tensors of other formats",
+            )
+
+    def block_lines(self):
+        """Each pair's block given at each submit, as `<pair>Block` over the
+        constant (the most), in the handler's movement and compute."""
+        return [
+            Line(
+                f"[[maybe_unused]] const uint32_t {name}Block = {word};  // "
+                "given at each submit: a divisor of the constant's",
+                {word},
+            )
+            for name, word in self.block_words.items()
+            if word is not None
+        ]
 
     def attribute(self, node):
         base = node.value
@@ -4155,10 +4200,11 @@ class HandlerCompiler:
         pages = self.range_of(call.args[0])
         block, pattern, letters, repeat = None, None, None, "1"
         self.row_width = 1
+        self.stream_word = None  # a block given at each submit: its parameter
         for keyword_ in call.keywords:
             key = keyword_.arg
             if key == spelling("block"):
-                block = self.constant_int(keyword_.value)
+                block = self.sized_block(keyword_.value)
             elif key == spelling("row") and not write:
                 self.row_width = self.constant_int(keyword_.value)
             elif key == "pattern":
@@ -4177,6 +4223,15 @@ class HandlerCompiler:
                 node,
                 "a block of no pages, or not of whole rows",
                 "give block= a count, a multiple of row=",
+            )
+        if self.stream_word is not None and (
+            self.row_width > 1 or pages.rect is not None
+        ):
+            self.refuse(
+                node,
+                f"a block given at each submit ({self.stream_word}) of rows of a "
+                "rectangle or of row= is not built",
+                "give block= a constant, or stream one run of pages",
             )
         if pattern is None and letters is None:  # unstated: the default
             letters = WRITE_PATTERN if write else READ_PATTERN
@@ -4351,6 +4406,7 @@ class HandlerCompiler:
             WRITE_ITEMS,
             f"line {node.lineno}: {self.text(node)}",
         )
+        self.block_word(node, buffer)
         pattern_text = self.pattern_cxx(buffer, pattern, letters)
         variable = f"km_write{number}"
         self.scope[name] = Value(
@@ -4513,6 +4569,8 @@ class HandlerCompiler:
                 READ_ITEMS,
                 f"line {node.lineno}: {self.text(node)}",
             )
+            word = self.stream_word
+            self.block_word(node, buffer)
             pattern_text = self.pattern_cxx(buffer, pattern, letters)
             if dtype == "float32" and pages.items is None:
                 self.compiled.unpack_fp32.add(buffer.name)
@@ -4530,17 +4588,26 @@ class HandlerCompiler:
                     "repeat": repeat,
                     "buffer": buffer,
                     "width": self.row_width,
+                    "word": word,
                 }
             )
         first = reads[0]
         rows_in_step = False  # blocks of whole rows, as many blocks: a product's
         for other in reads[1:]:
-            if (other["block"], other["pages"].count, other["repeat"]) == (
-                first["block"],
-                first["pages"].count,
-                first["repeat"],
-            ):
+            if (
+                other["block"],
+                other["pages"].count,
+                other["repeat"],
+                other["word"],
+            ) == (first["block"], first["pages"].count, first["repeat"], first["word"]):
                 continue
+            if other["word"] or first["word"]:
+                self.refuse(
+                    node,
+                    "streams read in step, one with a block given at each submit, "
+                    "have one count and the same block parameter",
+                    "give each stream block= the same parameter",
+                )
             if stream_units(other) & stream_units(first) and other["repeat"] == (
                 first["repeat"]
             ):
@@ -10152,6 +10219,13 @@ class HandlerCompiler:
             1,  # one block a half: the block is held until the end of its lines
             f"line {node.lineno}: {self.text(node)}",
         )
+        if self.stream_word is not None:
+            self.refuse(
+                node,
+                f"a block bodies take, given at each submit ({self.stream_word}), is "
+                "not built",
+                "give block= its most pages, a constant",
+            )
         pattern_text = self.pattern_cxx(buffer, pattern, letters)
         if dtype == "float32":
             self.compiled.unpack_fp32.add(buffer.name)

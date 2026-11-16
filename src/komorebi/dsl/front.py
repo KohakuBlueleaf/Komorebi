@@ -454,11 +454,14 @@ class HandlerMethod:
         given.update(named)
         for constant in constant_parameters(self.function):
             given.pop(constant, None)
+        sized = sized_parameters(self.function)
         words = []
         for parameter, kind in self.words:
             value = given.get(parameter)
-            if value is None:
+            if value is None or isinstance(value, SizedHook):
                 raise ProgramError(f"{self.name}: no argument {parameter!r}")
+            if parameter in sized and not isinstance(value, AtSubmit):
+                sized_checked(self.name, parameter, value, sized[parameter])
             width = self.widths.get(parameter)
             shape = getattr(value, "shape", None)
             if width is not None and shape is not None and shape[-1] // 32 != width:
@@ -583,6 +586,46 @@ def region_words(handler, parameter, value):
         f"{handler}: {parameter} is a region: give its name (Run.submit) or "
         f"(bank, address), got {value!r}"
     )
+
+
+class SizedHook:
+    """The internal hook of a size given at each submit (a handler parameter's
+    default, `block: int = _sized(8)`): its most sizes the buffers. No public name
+    yet; the spelling is the owner's to choose."""
+
+    def __init__(self, most):
+        if not isinstance(most, int) or most < 1:
+            raise ProgramError(f"a size given at each submit: most {most!r}, an int")
+        self.most = most
+
+    def __repr__(self):
+        return f"a size given at each submit, at most {self.most}"
+
+
+def _sized(most):
+    """The one internal hook: a handler parameter given at each submit, at most
+    `most` (see SizedHook)."""
+    return SizedHook(most)
+
+
+def sized_parameters(function):
+    """A handler's parameters whose size is given at each submit by name: their
+    most."""
+    return {
+        name: parameter.default.most
+        for name, parameter in inspect.signature(function).parameters.items()
+        if isinstance(parameter.default, SizedHook)
+    }
+
+
+def sized_checked(handler, parameter, value, most):
+    """Refuses a size given at submit that does not divide its most (its buffers'
+    pages are whole blocks), by name."""
+    if not isinstance(value, int) or not 1 <= value <= most or most % value:
+        raise ProgramError(
+            f"{handler}: {parameter}={value!r}; a size given at each submit, at most "
+            f"{most}: an int that divides {most} (the buffers hold whole blocks)"
+        )
 
 
 def constant_parameters(function):
