@@ -33,6 +33,10 @@ cores, for the pages and then for the count), each rank's compute packing the su
 each rank's write of its copy to DRAM, which the plain reduce does at rank 0 alone.
 With the count an atomic a rank it was 10.16 and 21.98 µs: not the count.
 
+Across islands (`--islands 2 --ranks 0`: card 0 split in 2, 118 ranks over both), rank
+0 writes the sum to island 1's first rank by `km::write_l1`, which casts it on: every
+rank exact, 36.6 µs.
+
 The first try counted the cast with one 4-byte multicast from a word at offset 12 of
 its 16-byte line to a word at offset 0: the write landed the source line's word 0 (a 0)
 and no rank saw the count ([noc_alignment](../../noc/noc_alignment/README.md)). The
@@ -61,3 +65,7 @@ from a kernel (the host's within 1%), every copy exact:
 
 On the ring `reduce_to` adds every page at the root, from both its children; the
 all-reduce gives each island the tree of its own share.
+
+With a tree of the user's, `--tree 1 2 3 3` on the ring (a chain rooted at island 3,
+`km::tree(low, high)` from the kernel, `tree=[1, 2, 3, 3]` from the host), every copy
+exact: broadcast_from 77.5 µs, all-reduce 704.6 µs, reduce_to 629.7 µs.

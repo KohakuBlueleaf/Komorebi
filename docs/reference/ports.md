@@ -156,6 +156,13 @@ rank 0 alone in the plain reduce):
 The count was an atomic a rank first: 10.16 and 21.98 µs, the same within the noise,
 so the cast's time at 118 ranks is not its count.
 
+Across islands the same calls: the reduce crosses as the ports' reduce does, then rank
+0 writes the sum into slot 0 of each other island's first rank of the group
+(`km::write_l1`, 1 at its port after), and that leader casts it to its own island's
+ranks as rank 0 does to its own (`km::all_reduce_keeps(group)`: the ranks that cast and
+keep the sum at their buffer's front). Card 0 split in 2, 118 ranks over both: every
+rank exact, 36.6 µs.
+
 In a class: `whole = km.all_reduce(total)` of a tile in DST, or `km.all_reduce(self.part)`
 of a float32 field compute wrote, every rank's field then the group's sum
 ([classes](classes.md)). The split norm of a row of 2,048 over 16 cores

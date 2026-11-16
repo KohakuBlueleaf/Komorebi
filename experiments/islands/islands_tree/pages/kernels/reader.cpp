@@ -13,6 +13,9 @@ void kernel_main() {
             return;
         }
         const auto sum = static_cast<km::Sum>(command.a4);
+        const km::Tree tree = (
+            command.a7 != 0 ? km::tree(command.a8, command.a9) : km::tree()
+        );
         const uint32_t room = kFoldPages * kFoldBytes;
         if (command.a5 == kCallGather) {
             km::all_gather(reader, command, command.a0, command.a1, command.a2);
@@ -26,7 +29,8 @@ void kernel_main() {
                 command.a3,
                 sum,
                 fold,
-                room
+                room,
+                tree
             );
         } else if (command.a5 == kCallReduceTo) {
             km::reduce_to(
@@ -39,11 +43,12 @@ void kernel_main() {
                 sum,
                 fold,
                 room,
-                command.a6
+                command.a6,
+                tree
             );
         } else {
             km::broadcast_from(
-                reader, command, command.a0, command.a1, command.a2, command.a6
+                reader, command, command.a0, command.a1, command.a2, command.a6, tree
             );
         }
     });
