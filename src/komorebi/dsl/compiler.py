@@ -226,6 +226,7 @@ class Compiled:
     # overlay handler -> its overlay number; broadcast handler -> its km.Broadcast
     overlays: dict = field(default_factory=dict)
     broadcast_lines: dict = field(default_factory=dict)
+    rect_lines: dict = field(default_factory=dict)  # handler -> self.x/y/core read at
     # mover -> [(handler, its broadcast's line)] in the class's order: a core holds
     # each one's arguments after the last's (kArgBroadcast + kBroadcastArgs i)
     mover_broadcasts: dict = field(default_factory=dict)
@@ -2683,6 +2684,8 @@ class HandlerCompiler:
         if isinstance(base, ast.Name) and base.id == "self":
             kind = kind_of(node.attr, ("rank", "size", "leader", "x", "y", "core"))
             if kind == "core":
+                where = f"line {node.lineno}"
+                self.compiled.rect_lines.setdefault(self.method.name, where)
                 return "km_self_core"
             if kind == "rank":
                 return "km_rank"
@@ -2691,6 +2694,8 @@ class HandlerCompiler:
             if kind == "leader":
                 return self.leader_text
             if kind in ("x", "y"):
+                where = f"line {node.lineno}"
+                self.compiled.rect_lines.setdefault(self.method.name, where)
                 self.compiled.rectangle = True
                 self.compiled.rect_plain |= self.rect_param is None
                 self.rect_read = True

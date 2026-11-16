@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include "km_far.hpp"
 #include "km_group.hpp"
 #include "km_relay.hpp"
 #include "km_worker.hpp"
@@ -61,16 +62,17 @@ namespace km {
         if (!writer.wait_front(cb, pages, kBehindPort)) {
             return false;
         }
-        if (crosses(destination)) {  // another island's rank: through the relay
+        if (crosses(destination)) {  // another island's rank: by its link cores
+            uint32_t island = 0;
             const uint32_t code = (
-                relay_put(
+                write_l1_at(
                     writer,
-                    command,
-                    get_read_ptr(cb),
-                    bytes,
                     destination,
                     slot_addr(arrival, arrival_slot),
-                    port
+                    get_read_ptr(cb),
+                    bytes,
+                    static_cast<int>(port),
+                    island
                 )
             );
             if (code != kGaveNone) {
