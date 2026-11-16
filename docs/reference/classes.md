@@ -1303,16 +1303,17 @@ a broadcast brought, takes tile k of the field by row r0 + k of w's part (acc's 
 of columns): n products of the library's, outside a stream loop. Any number of them
 take a block: it is waited for at its cast and freed at the end of the cast's lines
 (a body does not take it then). A hidden layer whose second weights come down the
-column once:
+column once (on mover A, beside mover B's page writes):
 
 ```python
+column = km.Broadcast(self, along="column", window=1, mover="A")
 if column.sender():
     ws = column.cast(w2.tiles[0:W2_ROWS, 0:N].read())
 else:
     ws = column.arrive()
 for r in range(R):
     acc = km.tile.zeros(km.fp32, KH)
-    for xb, wb in zip(km.Stream(..., pattern="A"), km.Stream(..., pattern="A")):
+    for xb, wb in zip(km.Stream(..., pattern="B"), km.Stream(..., pattern="B")):
         acc += project(xb, wb)
     self.h.write(acc)
     out = km.tile.zeros(km.fp32, N)
@@ -1322,8 +1323,9 @@ for r in range(R):
 
 Refused at the line: a field not written above, rows that are not the field's
 tiles, a part not of acc's columns or cast turned, a product inside a stream loop,
-and, for a block cast outside a loop, a stream on the cast's mover after it (the
-mover waits at the cast for compute to free the block, at the end of its lines).
+and, for a block cast outside a loop, a stream, a page write or a fill on the cast's
+mover after it (the mover waits at the cast for compute to free the block, at the end
+of its lines).
 
 ### Sums started from a field
 

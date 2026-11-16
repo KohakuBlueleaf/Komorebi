@@ -6757,6 +6757,9 @@ class HandlerCompiler:
         self.compiled.moves.append(
             Move(self.method.name, node.lineno, self.text(node), tensor, how)
         )
+        mover = {"page write": "B", "fill": "A"}.get(how)
+        if mover is not None:
+            self.held_cast_movers(node, [mover], how)
 
     def wait(self, node, cpu, where):
         self.compiled.waits.append(
@@ -8587,10 +8590,11 @@ class HandlerCompiler:
                 return True
         return False
 
-    def held_cast_movers(self, node, letters):
-        """Refuses a stream on the mover of a block cast outside a loop that products
-        take: the mover waits at the cast for compute to free the block, which
-        compute does at the end of the cast's lines, after this stream."""
+    def held_cast_movers(self, node, letters, how="stream"):
+        """Refuses a stream (or a page write, a fill) on the mover of a block cast
+        outside a loop that products take: the mover waits at the cast for compute
+        to free the block, which compute does at the end of the cast's lines, after
+        this line."""
         for ends in self.held_blocks.values():
             for name, _ in ends:
                 mover = self.finished_casts.get(name)
@@ -8602,9 +8606,14 @@ class HandlerCompiler:
                         node,
                         f"{name} was cast outside a loop and products take it, so "
                         f"mover {mover} waits at the cast for compute to free it, "
-                        "which compute does after this stream, some of whose blocks "
-                        f"mover {mover} moves",
-                        f'read the stream on mover {other}: pattern="{other}"',
+                        f"which compute does after this {how}, which mover {mover} "
+                        "moves",
+                        (
+                            f'read the stream on mover {other}: pattern="{other}"'
+                            if how == "stream"
+                            else f'cast it on mover {other} (mover="{other}"), or in '
+                            "the loop around this line"
+                        ),
                     )
 
     def held_block_ends(self, body):

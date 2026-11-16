@@ -1,7 +1,7 @@
-"""Products of a field and a broadcast's block (no card): `acc += f(self.h, w[r0:r0 +
-n, :])` takes tile k of the field by row r0 + k of the block, any number a block,
-the block waited for at its cast and freed at the end of the cast's lines; refused:
-a field not written, rows not the field's tiles, a stream on the cast's mover."""
+"""Products of a field and a broadcast's block (no card): field tile k by block row
+r0 + k, any number a block, waited at the cast and freed at the end of its lines;
+refused: a field not written, rows not the field's tiles, a stream or page write on
+the mover of a block cast outside a loop."""
 
 from pathlib import Path
 
@@ -42,7 +42,34 @@ class Rows(km.Program):
 
     @km.handler
     def run(self, x: km.Tensor, w1: km.Tensor, w2: km.Tensor, y: km.Tensor):
-        column = km.Broadcast(self, along="column", window=1)
+        column = km.Broadcast(self, along="column", window=1, mover="A")
+        if column.sender():
+            ws = column.cast(w2.tiles[0:W2_ROWS, 0:N].read())
+        else:
+            ws = column.arrive()
+        for r in range(R):
+            acc = km.tile.zeros(km.fp32, KH)
+            for xb, wb in zip(
+                km.Stream(
+                    x.tiles[r * 4 + self.y : r * 4 + self.y + 1, 0:K],
+                    block=2,
+                    pattern="B",
+                ),
+                km.Stream(w1.tiles[0:K, 0:KH], block=H_BLOCK, pattern="B"),
+            ):
+                acc += project(xb, wb)
+            self.h.write(acc)
+            out = km.tile.zeros(km.fp32, N)
+            out += project(self.h, ws[r * KH : r * KH + COUNT, :])
+            y.pages((r * 4 + self.y) * N, N).write(out)
+
+
+class OnA(km.Program):
+    h: km.L1[km.bf16, KH, 32, 32]
+
+    @km.handler
+    def run(self, x: km.Tensor, w1: km.Tensor, w2: km.Tensor, y: km.Tensor):
+        column = km.Broadcast(self, along="column", window=1, mover="A")
         if column.sender():
             ws = column.cast(w2.tiles[0:W2_ROWS, 0:N].read())
         else:
@@ -64,7 +91,7 @@ class Rows(km.Program):
             y.pages((r * 4 + self.y) * N, N).write(out)
 
 
-class OnB(km.Program):
+class Written(km.Program):
     h: km.L1[km.bf16, KH, 32, 32]
 
     @km.handler
@@ -80,9 +107,9 @@ class OnB(km.Program):
                 km.Stream(
                     x.tiles[r * 4 + self.y : r * 4 + self.y + 1, 0:K],
                     block=2,
-                    pattern="B",
+                    pattern="A",
                 ),
-                km.Stream(w1.tiles[0:K, 0:KH], block=H_BLOCK, pattern="B"),
+                km.Stream(w1.tiles[0:K, 0:KH], block=H_BLOCK, pattern="A"),
             ):
                 acc += project(xb, wb)
             self.h.write(acc)
@@ -145,7 +172,8 @@ def test_the_block_is_waited_at_its_cast_and_freed_after_every_product():
     [
         (Unwritten, {}, r"self\.h is not written above in this handler"),
         (Rows, {"count": 1}, r"self\.h is 2 tile\(s\) and the block's rows 1"),
-        (OnB, {}, r"ws was cast outside a loop and products take it"),
+        (OnA, {}, r"ws was cast outside a loop and products take it, so mover A"),
+        (Written, {}, r"which compute does after this page write, which mover B"),
     ],
 )
 def test_refusals_name_the_line(cls, options, refusal):
