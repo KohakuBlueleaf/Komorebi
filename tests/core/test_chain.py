@@ -127,6 +127,23 @@ def test_run_chain_writes_once_and_submit_takes_its_word():
         run.submit(chain, m=7)
 
 
+def test_a_long_chain_takes_a_sequence_number_for_each_256_records():
+    port = FakePort()
+    run = Run(BlockBackend(port), (12, 10))
+    assert [kc.Chain(1, (0, 8), 0, 0, None, None, {}, [0] * n).span
+            for n in (1, 256, 257, 1000)] == [1, 1, 2, 4]  # fmt: skip
+    first = run.submit(1, (0, 8), [5], exclusive=True, span=4)
+    after = run.submit(1, (0, 8), [6])
+    run._hand()  # the host's own count of the kernel's numbers (run._sequence)
+    mirror = [int(run._sequence[handle - run._base]) for handle in (first, after)]
+    run.wait([first, after])
+    sent = port.ring[first]
+    assert sent[run._arg_at[9]] == 3
+    assert sent[run._hdr] >> 8 & abi.headers()["KM_FLAG_SPAN"]
+    numbers = [number for _, number, *_ in port.submitted[-2:]]
+    assert numbers[1] - numbers[0] == 4 and mirror == numbers
+
+
 def test_a_record_names_its_handler_and_its_stamp_row():
     calls = steps()
     calls[1] = calls[1]._replace(handler=2, row=5)

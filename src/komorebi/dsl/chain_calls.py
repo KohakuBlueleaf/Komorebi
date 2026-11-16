@@ -1654,12 +1654,6 @@ class ChainLines:
                 value = self.argument(node.value, env)
                 for target in node.targets:
                     env[target.id] = value
-            if len(calls) > kc.words()["kChainRecordsMax"]:
-                self.refuse(
-                    node,
-                    f"more than {kc.words()['kChainRecordsMax']} calls unrolled",
-                    "a chain holds at most that many records",
-                )
 
     def made_call(self, call, env):
         handler = getattr(self.program, call.func.attr)
