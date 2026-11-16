@@ -4,7 +4,6 @@ buffers, run.addon adds them as a handler; a later submit finds it added, a late
 process its files under build/ and its parts in the parts' cache."""
 
 import hashlib
-import importlib
 import inspect
 import json
 import time
@@ -13,6 +12,7 @@ from pathlib import Path
 
 from komorebi import _env
 from komorebi.dsl import compiler, front
+from komorebi.dsl.files import text_key
 from komorebi.dsl.names import spelling
 from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.program import overlay
@@ -82,7 +82,6 @@ def reserve(cls, compiled, found, plan, tensors, room, values, sets, reserved=()
     """The load's buffers of each opted handler's template also sized for the set
     km.ANY(p=n) names (its template with those values): each buffer's pages the
     larger of the two compiles'; refused when the buffers no longer fit `room`."""
-    made = importlib.import_module("komorebi.dsl.program")  # it imports this
     for name, first_use in found.items():
         if not first_use.reserve:
             continue
@@ -98,7 +97,7 @@ def reserve(cls, compiled, found, plan, tensors, room, values, sets, reserved=()
         wanted = template(cls, name, sets)
         for parameter, value in first_use.reserve.items():
             kind = parameters[parameter][0]
-            wanted[parameter] = made.constant_checked(
+            wanted[parameter] = constant_checked(
                 cls, f"{name}'s {parameter}", kind, value
             )
         other = compiler.compile_class(
@@ -169,8 +168,7 @@ def afforded(program, session, l1, trace):
     """The load's L1 table with the added handlers' slots: each kernel part's
     SLOT_BYTES (the reader's beside the service part's, the larger); refused as the
     load refuses it."""
-    made = importlib.import_module("komorebi.dsl.program")  # it imports this
-    one, most = made.reserve_of(session)
+    one, most = reserve_of(session)
     l1 = one.l1()[1] if l1 is None else l1
     rows = one.l1_rows(program, trace)
     rows.append(
@@ -324,13 +322,12 @@ def found_built(cls, method, wanted, folder):
     data = json.loads(path.read_text())
     if not (folder / data["name"] / "movement.cpp").is_file():
         return None
-    made = importlib.import_module("komorebi.dsl.program")  # it imports this
     try:  # the folder is named by its inputs: its files are compared, not trusted
         files = {name: (folder / name).read_text() for name in data["files"]}
         digest = data["digest"]
     except (KeyError, OSError):
         return None
-    if made.text_key(files) != digest:
+    if text_key(files) != digest:
         return None
     return variant_of(cls, method, wanted, data)
 
@@ -354,7 +351,6 @@ def compile_set(program, method, wanted, key):
     set (so at its number, its buffers' indices), checks its buffers and fields are
     the load's, writes its files (the handler's overlay parts among them) into
     build/<class>-<key>/; returns its variant."""
-    made = importlib.import_module("komorebi.dsl.program")  # it imports this
     kept_ = program.first_use
     cls = type(program)
     sets = replaced(kept_.sets, method.name, wanted)
@@ -377,7 +373,7 @@ def compile_set(program, method, wanted, key):
         )
     load_checked(kept_, result, variant, where)
     result.overlays[variant.name] = len(result.overlays) + 1
-    built = made.write(cls, result, kept_.room, key, key=key)
+    built = program.write_variant(result, kept_.room, key)
     data = {
         "digest": built.digest,
         "files": sorted(built.files),
@@ -431,3 +427,106 @@ def load_checked(kept_, result, variant, where):
                 "L1 layout is the load's: list the set at the make, or make it with "
                 f"km.{spelling('first_use')}(...) naming the largest set"
             )
+
+
+def constant_handler(program, method, given, run=None):
+    """The handler of `program` built for `method`'s constant parameters at `given`
+    (by name; a parameter not given takes its default): (its number, the built
+    method). A set not built is refused, naming the sets that were; with km.ANY at
+    the make, compiled and added to `run` (komorebi.dsl.first_use)."""
+    built = getattr(program, "constant_handlers", {}).get(method.name, [])
+    parameters = front.constant_parameters(method.function)
+    unknown = sorted(set(given) - set(parameters))
+    if unknown:
+        raise ProgramError(
+            f"{type(program).__name__}.{method.name}: {', '.join(unknown)} is not a "
+            f"constant parameter of it ({', '.join(parameters) or 'none'})"
+        )
+    wanted = {
+        name: given.get(name, default) for name, (_, default) in parameters.items()
+    }
+    for values, variant in built:
+        if values == wanted:
+            return variant.number, variant
+    sets = "; ".join(
+        ", ".join(f"{k}={v}" for k, v in values.items()) for values, _ in built
+    )
+    if method.name in getattr(getattr(program, "first_use", None), "opted", {}):
+        return handler(run, program, method, wanted)
+    asked = ", ".join(f"{k}={v}" for k, v in wanted.items())
+    raise ProgramError(
+        f"{type(program).__name__}.{method.name} with {asked}: no handler was built "
+        f"for it (built: {sets}); list it at the make, "
+        f"{spelling('handlers')}={{{method.name!r}: [{{...}}]}} (a set is not "
+        "compiled on first use)"
+    )
+
+
+def words_handler(handler, rows, program, where):
+    """A class's handler given command words (`handler.args(...)`, each of `rows` a
+    command's): the handler `program` built for the constant values they carry (plain
+    words: the defaults), all rows one set. Others: `handler` itself."""
+    if not isinstance(handler, front.HandlerMethod | front.ClassHandler):
+        return handler
+    method = handler if isinstance(handler, front.HandlerMethod) else handler.method
+    parameters = front.constant_parameters(method.function)
+    if not parameters:
+        return handler
+    owner = method.owner.__name__ if method.owner else "its class"
+    if isinstance(handler, front.ClassHandler):
+        program = handler.program
+    elif program is None:
+        raise ProgramError(
+            f"{owner}.{method.name}: a handler with constant parameters is named "
+            f"through its program in {where} (program.{method.name}): {where} has no "
+            "run to find the class's program in"
+        )
+    made = getattr(program, "constant_handlers", {})
+    if method.name not in made and any(
+        method is variant for listed in made.values() for _, variant in listed
+    ):
+        return handler  # already the handler built for a set (an island's part)
+    sets = []
+    for row in rows:
+        given = getattr(row, "constants", None) or {}
+        sets.append({name: given.get(name, d) for name, (_, d) in parameters.items()})
+    for index, values in enumerate(sets):
+        if values != sets[0]:
+            asked = [", ".join(f"{k}={v}" for k, v in s.items()) for s in sets]
+            raise ProgramError(
+                f"{owner}.{method.name}: rows 0 and {index} of the words state "
+                f"{asked[0]} and {asked[index]}; {where} runs one handler, so submit "
+                "each set apart"
+            )
+    number, built = constant_handler(program, method, sets[0] if sets else {})
+    if isinstance(handler, front.ClassHandler):
+        return front.ClassHandler(number, program, built)
+    return built
+
+
+def constant_checked(cls, name, kind, value):
+    """An override of constant `name` of type `kind` (an int also gives a float)."""
+    fits = (
+        isinstance(value, bool)
+        if kind is bool
+        else not isinstance(value, bool)
+        and isinstance(value, int | float if kind is float else int)
+    )
+    if not fits:
+        raise ProgramError(
+            f"{cls.__name__}: {name}={value!r}: the constant is declared "
+            f"{kind.__name__}"
+        )
+    return kind(value)
+
+
+def reserve_of(session):
+    """(the Session whose L1 table a class's build checks, the service overlay's slot
+    it reserves): an island session's first island at ISLAND_SERVICE_SLOT_MOST, a
+    card's own at SERVICE_SLOT_MOST."""
+    islands = getattr(session, "sessions", None)
+    if not islands:
+        return session, overlay.SERVICE_SLOT_MOST
+    if len(islands) > 1:
+        return islands[0], overlay.ISLAND_SERVICE_SLOT_MOST
+    return islands[0], overlay.SERVICE_SLOT_MOST

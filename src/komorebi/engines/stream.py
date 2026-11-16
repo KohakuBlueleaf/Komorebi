@@ -3,12 +3,12 @@
 The constants repeat `km_stream.h`; a test compares them.
 """
 
-import importlib
 import struct
 from collections import namedtuple
 from dataclasses import dataclass
 
 from komorebi import abi
+from komorebi.dsl import first_use
 
 MAGIC = 0x4B4D5354
 VERSION = 1
@@ -478,8 +478,7 @@ def built_for(handler, args, where):
     for the constant values they carry (plain words: the defaults). Others: itself."""
     if not hasattr(handler, "method") and not hasattr(handler, "function"):
         return handler  # not a class's handler: nothing to pick
-    made = importlib.import_module("komorebi.dsl.program")
-    return made.words_handler(handler, [args], None, where)
+    return first_use.words_handler(handler, [args], None, where)
 
 
 def program_field(handler):

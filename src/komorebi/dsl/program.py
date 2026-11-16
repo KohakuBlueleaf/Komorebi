@@ -12,6 +12,17 @@ from types import MappingProxyType
 
 from komorebi import _env, abi, formats, layout
 from komorebi.dsl import class_thread, compiler, first_use, front
+from komorebi.dsl.files import (
+    camel,
+    put,
+    text_key,
+    thread_header,
+    thread_header_name,
+)
+from komorebi.dsl.first_use import (
+    constant_checked,
+    reserve_of,
+)
 from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
@@ -23,7 +34,6 @@ from komorebi.program import description as km_program
 from komorebi.program import overlay
 
 BUILD = "build"
-TEXT_KEY_CHARS = 16  # hex digits of a build folder's name: the digest of its text
 # A core's kernels as a CommandTimeout names them, and the CPU a class's wait is on.
 CPUS = {"reader": "mover A", "writer": "mover B", "compute": "compute"}
 INDENT = "    "
@@ -457,97 +467,6 @@ def handler_sets(cls, handlers):
     return sets
 
 
-def constant_handler(program, method, given, run=None):
-    """The handler of `program` built for `method`'s constant parameters at `given`
-    (by name; a parameter not given takes its default): (its number, the built
-    method). A set not built is refused, naming the sets that were; with km.ANY at
-    the make, compiled and added to `run` (komorebi.dsl.first_use)."""
-    built = getattr(program, "constant_handlers", {}).get(method.name, [])
-    parameters = front.constant_parameters(method.function)
-    unknown = sorted(set(given) - set(parameters))
-    if unknown:
-        raise ProgramError(
-            f"{type(program).__name__}.{method.name}: {', '.join(unknown)} is not a "
-            f"constant parameter of it ({', '.join(parameters) or 'none'})"
-        )
-    wanted = {
-        name: given.get(name, default) for name, (_, default) in parameters.items()
-    }
-    for values, variant in built:
-        if values == wanted:
-            return variant.number, variant
-    sets = "; ".join(
-        ", ".join(f"{k}={v}" for k, v in values.items()) for values, _ in built
-    )
-    if method.name in getattr(getattr(program, "first_use", None), "opted", {}):
-        return first_use.handler(run, program, method, wanted)
-    asked = ", ".join(f"{k}={v}" for k, v in wanted.items())
-    raise ProgramError(
-        f"{type(program).__name__}.{method.name} with {asked}: no handler was built "
-        f"for it (built: {sets}); list it at the make, "
-        f"{spelling('handlers')}={{{method.name!r}: [{{...}}]}} (a set is not "
-        "compiled on first use)"
-    )
-
-
-def words_handler(handler, rows, program, where):
-    """A class's handler given command words (`handler.args(...)`, each of `rows` a
-    command's): the handler `program` built for the constant values they carry (plain
-    words: the defaults), all rows one set. Others: `handler` itself."""
-    if not isinstance(handler, front.HandlerMethod | front.ClassHandler):
-        return handler
-    method = handler if isinstance(handler, front.HandlerMethod) else handler.method
-    parameters = front.constant_parameters(method.function)
-    if not parameters:
-        return handler
-    owner = method.owner.__name__ if method.owner else "its class"
-    if isinstance(handler, front.ClassHandler):
-        program = handler.program
-    elif program is None:
-        raise ProgramError(
-            f"{owner}.{method.name}: a handler with constant parameters is named "
-            f"through its program in {where} (program.{method.name}): {where} has no "
-            "run to find the class's program in"
-        )
-    made = getattr(program, "constant_handlers", {})
-    if method.name not in made and any(
-        method is variant for listed in made.values() for _, variant in listed
-    ):
-        return handler  # already the handler built for a set (an island's part)
-    sets = []
-    for row in rows:
-        given = getattr(row, "constants", None) or {}
-        sets.append({name: given.get(name, d) for name, (_, d) in parameters.items()})
-    for index, values in enumerate(sets):
-        if values != sets[0]:
-            asked = [", ".join(f"{k}={v}" for k, v in s.items()) for s in sets]
-            raise ProgramError(
-                f"{owner}.{method.name}: rows 0 and {index} of the words state "
-                f"{asked[0]} and {asked[index]}; {where} runs one handler, so submit "
-                "each set apart"
-            )
-    number, built = constant_handler(program, method, sets[0] if sets else {})
-    if isinstance(handler, front.ClassHandler):
-        return front.ClassHandler(number, program, built)
-    return built
-
-
-def constant_checked(cls, name, kind, value):
-    """An override of constant `name` of type `kind` (an int also gives a float)."""
-    fits = (
-        isinstance(value, bool)
-        if kind is bool
-        else not isinstance(value, bool)
-        and isinstance(value, int | float if kind is float else int)
-    )
-    if not fits:
-        raise ProgramError(
-            f"{cls.__name__}: {name}={value!r}: the constant is declared "
-            f"{kind.__name__}"
-        )
-    return kind(value)
-
-
 def derived_value(cls, name, declaration, values):
     """A derived constant's value from this program's `values` by name."""
     try:
@@ -618,18 +537,6 @@ def islands_of(session):
         return (1, 0)
     count = len(graph.islands)
     return (count, max(graph.count(i) for i in range(count)))
-
-
-def reserve_of(session):
-    """(the Session whose L1 table a class's build checks, the service overlay's slot
-    it reserves): an island session's first island at ISLAND_SERVICE_SLOT_MOST, a
-    card's own at SERVICE_SLOT_MOST."""
-    islands = getattr(session, "sessions", None)
-    if not islands:
-        return session, overlay.SERVICE_SLOT_MOST
-    if len(islands) > 1:
-        return islands[0], overlay.ISLAND_SERVICE_SLOT_MOST
-    return islands[0], overlay.SERVICE_SLOT_MOST
 
 
 def runtime_bytes(session, trace):
@@ -1123,10 +1030,6 @@ def header_name(compiled):
     return f"{compiled.name.lower()}.h"
 
 
-def camel(name):
-    return "".join(part.capitalize() for part in name.split("_"))
-
-
 FORMS = ("kernel", "runtime")
 
 
@@ -1345,25 +1248,6 @@ def sources_key(
     return hashlib.sha256(repr(made).encode()).hexdigest()[:8]
 
 
-def text_key(files):
-    """A short hash of the files a build wrote: each name and text, in name order,
-    and nothing else (not the report, which holds the folder's own path and the L1)."""
-    digest = hashlib.sha256()
-    for name in sorted(files):
-        text = files[name].encode()
-        digest.update(f"{name}\0{len(text)}\0".encode() + text)
-    return digest.hexdigest()[:TEXT_KEY_CHARS]
-
-
-def put(path, text):
-    """Writes `text` to `path` unless the file already holds it: a folder named by its
-    text is never trusted by its name, and a file that is equal is left as it is."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_file() and path.read_text() == text:
-        return
-    path.write_text(text)
-
-
 def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
     """Writes the class's files into build/<name>-<digest>/ beside its source, `digest`
     text_key of the files (equal text is one folder, whoever made it; text that differs
@@ -1408,37 +1292,6 @@ def resume_lines(text, name):
         if line.strip() == "#line RESUME":
             lines[index] = f'#line {index + 2} "{name}"'
     return "\n".join(lines)
-
-
-def thread_header_name(compiled):
-    return f"{compiled.name.lower()}_thread.h"
-
-
-def thread_header(compiled):
-    """The C header of an X280 thread that submits the class's commands: each
-    handler's number, the place of each of its words, their count, and whether its
-    command asks for the leader's result."""
-    prefix = compiled.name.upper()
-    lines = [
-        f"/* {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
-        " * its handlers' numbers and each command word's place (a0 is 0), for a",
-        " * thread's commands (kmx_submit). */",
-        "#pragma once",
-    ]
-    for name, number in compiled.handlers.items():
-        handler = f"{prefix}_{name.upper()}"
-        words = compiled.words[name]
-        lines += ["", f"/* {name.upper()}, line {compiled.lines[name]}. */"]
-        lines.append(f"#define {prefix}_HANDLER_{name.upper()} {number}u")
-        for place, (word, kind) in enumerate(words):
-            suffix = {"pages": "_PAGES", "bank": "_BANK", "columns": "_COLUMNS"}.get(
-                kind, ""
-            )
-            lines.append(f"#define {handler}_{word.upper()}{suffix} {place}u")
-        lines.append(f"#define {handler}_WORDS {len(words)}u")
-        if name in compiled.results:
-            lines.append(f"#define {handler}_RESULT 1u /* KM_FLAG_RESULT */")
-    return "\n".join(lines) + "\n"
 
 
 def header(compiled):

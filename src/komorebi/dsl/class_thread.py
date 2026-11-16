@@ -6,7 +6,6 @@ handler's command, so the C and the class are checked against each other.
 
 import dataclasses
 import hashlib
-import importlib
 import inspect
 import re
 import subprocess
@@ -18,7 +17,8 @@ from komorebi import _env, abi
 from komorebi.builder import flags as build
 from komorebi.chain import calls as kc
 from komorebi.device import native
-from komorebi.dsl import front
+from komorebi.dsl import chain_calls, front
+from komorebi.dsl.files import camel, put, thread_header, thread_header_name
 from komorebi.dsl.names import spelling
 from komorebi.errors import ProgramError
 from komorebi.program import description as km_program
@@ -298,7 +298,6 @@ def chained(program, thread, tensors, parts, where):
     km.chain method called with the make's tensors by name, then the dict's values
     (tensors, words, km.at_submit, `cores`) and its parameters' defaults, described
     and proven as run.chain does; its tensors not of the make join the load's words."""
-    made = importlib.import_module("komorebi.dsl.chain_calls")
     names = dict(parts.tensors)
     found = {id(tensor): name for name, tensor in names.items()}
     chains = []
@@ -339,7 +338,7 @@ def chained(program, thread, tensors, parts, where):
         if cores is None:
             raise ProgramError(f"{label}: give cores=(0, count), run.chain's cores")
         try:
-            calls = made.chain_calls(
+            calls = chain_calls.chain_calls(
                 None, getattr(program, name)(**values), tuple(cores), True
             )
             kc.build(calls)
@@ -388,10 +387,9 @@ def write_base(program, parts):
     """The header in the build folder: every thread's but the words' count and the
     regions, which a thread's own copy gives. The build wrote this very text (its
     `thread=`: the folder is named by it), so this leaves the file as it is."""
-    made = importlib.import_module("komorebi.dsl.program")  # it imports this module
-    name = made.thread_header_name(parts.compiled)
+    name = thread_header_name(parts.compiled)
     text = header_text(parts)
-    made.put(program.built.folder / name, text)
+    put(program.built.folder / name, text)
     program.built.files[name] = text
 
 
@@ -420,12 +418,11 @@ def joined(program, thread, parts, where):
 
 def header_written(program, parts, text):
     """The header in a folder of the build named by its text's hash: the folder."""
-    made = importlib.import_module("komorebi.dsl.program")
     folder = program.built.folder / (
         "thread-" + hashlib.sha256(text.encode()).hexdigest()[:8]
     )
     folder.mkdir(exist_ok=True)
-    (folder / made.thread_header_name(parts.compiled)).write_text(text)
+    (folder / thread_header_name(parts.compiled)).write_text(text)
     return folder
 
 
@@ -540,8 +537,7 @@ def others_named(errors, parts):
 
 
 def made_name(parts):
-    made = importlib.import_module("komorebi.dsl.program")
-    return made.thread_header_name(parts.compiled)
+    return thread_header_name(parts.compiled)
 
 
 def hints(errors, parts, thread):
@@ -578,15 +574,14 @@ def hints(errors, parts, thread):
 
 # The header ---------------------------------------------------------------------------
 def header_text(parts, thread=None, own=0):
-    """The thread header: today's places (komorebi.dsl.program.thread_header), then
+    """The thread header: today's places (komorebi.dsl.files.thread_header), then
     the program field, the constants, the load's words, the regions and a function
     per handler that fills its command."""
-    made = importlib.import_module("komorebi.dsl.program")
     compiled = parts.compiled
     upper, lower = compiled.name.upper(), compiled.name.lower()
-    program = "kProgram" + made.camel(lower)
+    program = "kProgram" + camel(lower)
     lines = [
-        made.thread_header(compiled).rstrip("\n"),
+        thread_header(compiled).rstrip("\n"),
         "",
         "/* For the thread's C, from the same build: the program field, the class's",
         " * constants, the load's words, the regions, and a function per handler that",

@@ -28,6 +28,10 @@ class Program(description.Program):
         """km.merge of made classes in the kernel form: one program of them."""
         return merged.merge_made(sources, name, overlay, resident, session, l1, log)
 
+    def write_variant(self, compiled, l1, key):
+        """Writes a set's compile (a first use's) into build/<class>-<key>/."""
+        return made.write(type(self), compiled, l1, key, key=key)
+
     def first_use_ahead(self, handler, wanted):
         """(name, parts, run.addon's keywords) of a handler's set built ahead."""
         return first_use.ahead(self, handler, wanted)
