@@ -52,9 +52,11 @@ commands while fewer than 32,768 commands of other sources are submitted between
 own; a queued command's number may fall up to 2,048 behind its source's order, as the
 queue lets later jobs go first. A `KM_EVENT_TIMEOUT` names the command whose deadline passed first.
 
-Nothing the kernel writes through the cached port stays dirty at exit: core 1 flushes its
-part of the state area before it reports stopped and core 0 flushes the whole area before
-the result (a core the runtime kills never gets there).
+Nothing the kernel writes through the cached port stays dirty at exit. That is the state
+area and its tail, the link's tables (`KMD_STATE_CACHED`, which every flush and the tables'
+placement use). Core 1 flushes from its part on before it reports stopped, core 0 all of
+it before the result and after a trap, and core 0 drops it from the cache at the start (a
+core the runtime kills never gets to its exit).
 
 ## Protocol with the host
 

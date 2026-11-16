@@ -93,6 +93,11 @@ _Static_assert(
     "the link outgrows its state"
 );
 _Static_assert(KMD_STATE_QUEUE + sizeof(kmd_queue_t) <= KMD_STATE_LINK, "queue, link");
+_Static_assert(
+    KMD_STATE_TABLES >= KMD_STATE_BYTES &&
+        KMD_STATE_TABLES + KMD_STATE_TAIL <= KMD_STATE_CACHED,
+    "the link's tables lie in what every exit flushes"
+);
 _Static_assert(KMD_CROSSINGS < 256u && KMD_LINK_DEPTH >= KMD_CROSSINGS, "tickets");
 
 /* 32-bit word `word` of the 64-bit words at `line`, and its store. */
@@ -172,7 +177,8 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
         block < KMD_LIM_UPLOAD + dispatcher->upload_bytes || block > lim_end ||
         bytes > lim_end - block || counts < link->islands * KMD_LINK_ENTRY_BYTES ||
         pending < counts + 8u * link->islands ||
-        pending + 4u * KMD_CROSSINGS * link->words > KMD_STATE_TAIL ||
+        pending + 4u * KMD_CROSSINGS * link->words >
+            KMD_STATE_CACHED - KMD_STATE_TABLES ||
         inbox < link->islands * KMD_LINK_ENTRY_BYTES || inbox > bytes ||
         (link->islands - 1u) * link->part_bytes > bytes - inbox
     ) {
@@ -181,7 +187,7 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
     volatile uint8_t* at = dispatcher->lim + block;
     /* the tables in the tail, through a volatile pointer: a plain loop may become a
      * memcpy or memset call, and the image has no C library */
-    uint32_t* tables = (uint32_t*)((uint8_t*)dispatcher + KMD_STATE_BYTES);
+    uint32_t* tables = (uint32_t*)((uint8_t*)dispatcher + KMD_STATE_TABLES);
     volatile uint32_t* filled = tables;
     for (uint32_t i = 0; i < 4u * link->islands; i++) {
         filled[i] = ((volatile const uint32_t*)at)[i];

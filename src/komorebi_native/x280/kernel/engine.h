@@ -935,7 +935,7 @@ static void eng_run(uint64_t core, const volatile kmd_args_t* arguments, uint64_
     x280_cores[KMD_H_POSTS] = engine->posts;
     x280_cores[KMD_H_EVENTS] = engine->events_in;
     x280_cores[KMD_H_RUNS] = engine->runs;
-    kmd_flush_lines(state + KMD_STATE_ENGINE, KMD_STATE_BYTES - KMD_STATE_ENGINE);
+    kmd_flush_lines(state + KMD_STATE_ENGINE, KMD_STATE_CACHED - KMD_STATE_ENGINE);
     x280_fence_ow();
     x280_cores[KMD_H_ENGINE] = KMD_ENGINE_STOPPED;
     x280_fence_ow();

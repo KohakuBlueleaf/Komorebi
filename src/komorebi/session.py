@@ -591,6 +591,9 @@ def _state_area(session):
     """A DRAM buffer whose bank address holds the dispatcher's state in every
     bank (KMD_STATE_BYTES at least); rejected if it covers the runtime's IPI word."""
     abi_headers = abi.headers()
+    # each bank holds what the kernel keeps cached and flushes (KMD_STATE_CACHED)
+    if STATE_PAGES // DRAM_BANKS * _state_page() < abi_headers["KMD_STATE_CACHED"]:
+        raise StartError(f"{STATE_PAGES} state pages: under KMD_STATE_CACHED a bank")
     rows = _words(session, np.zeros((STATE_PAGES, _state_page() // 4)))
     address = rows.address
     if address <= IPI_ACK_DDR < address + STATE_PAGES * abi_headers["KMD_STATE_BYTES"]:
