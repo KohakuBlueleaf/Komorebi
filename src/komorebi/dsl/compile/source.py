@@ -9,6 +9,7 @@ import textwrap
 from dataclasses import dataclass
 
 from komorebi.dsl.compile.records import Refused, Wait
+from komorebi.dsl.names import spelling
 
 # Every local the generated code declares starts with GENERATED_PREFIX, which a
 # parameter or a variable may not; the runtime's names bodies use are taken too.
@@ -128,3 +129,14 @@ def wait(where, waits, node, cpu, kind):
     """A wait of the generated code on `cpu` at `node`, the runtime's where `kind`,
     added to `waits`."""
     waits.append(Wait(where.handler, cpu, kind, node.lineno, line_text(where, node)))
+
+
+def self_call(node, kind):
+    """Whether `node` is the call `self.<kind's spelling>(...)`."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        and node.func.attr == spelling(kind)
+    )

@@ -16,9 +16,10 @@ from pathlib import Path
 
 from komorebi import abi
 from komorebi.dsl import front, island_place
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import layout, messages
 from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses, text_uses
 from komorebi.dsl.compile.frame import Frame
+from komorebi.dsl.compile.messages import arrive_of
 from komorebi.dsl.compile.records import (
     Buffer,
     Compiled,
@@ -41,6 +42,7 @@ from komorebi.dsl.compile.source import (
     check_name,
     line_text,
     refuse,
+    self_call,
     source_of,
     wait,
 )
@@ -534,21 +536,6 @@ def field_users(methods, fields):
     return users
 
 
-def arrive_of(definition):
-    """The `for message in self.arrive():` loop of a handler's def, or None."""
-    for node in ast.walk(definition):
-        if (
-            isinstance(node, ast.For)
-            and isinstance(node.iter, ast.Call)
-            and isinstance(node.iter.func, ast.Attribute)
-            and isinstance(node.iter.func.value, ast.Name)
-            and node.iter.func.value.id == "self"
-            and node.iter.func.attr == spelling("arrive_messages")
-        ):
-            return node
-    return None
-
-
 def loop_alone(method):
     """Whether a dynamic handler is its message loop alone (no words, nothing
     before or after the loop but a docstring)."""
@@ -920,7 +907,7 @@ class HandlerCompiler(Frame):
         self.definition, lines, first = source_of(method.function)
         self.where = Where(compiled.name, method.name, lines, first)
         self.assigned = self.assigned_names()
-        self.dynamic = self.arrives()
+        self.dynamic = messages.arrives(self)
 
     # The source -------------------------------------------------------------------
 
@@ -1142,7 +1129,7 @@ class HandlerCompiler(Frame):
             )
         ]
         if self.dynamic:  # the ranks of the message loop: no counter tiles
-            self.dynamic_start(compute)
+            messages.dynamic_start(self, compute)
         for nodes, me in ((movement, "movement"), (compute, "compute")):
             if not (self.dynamic and nodes is compute):
                 nodes.append(
@@ -1403,105 +1390,6 @@ class HandlerCompiler(Frame):
         self.compiled.includes.add("ask")
         return opening, closing, write
 
-    def arrives(self):
-        """Whether the handler has `for message in self.arrive():` (it is dynamic:
-        compute's lines alone, the runtime's movers carry the messages)."""
-        for node in ast.walk(self.definition):
-            if isinstance(node, ast.For) and self.self_call(
-                node.iter, "arrive_messages"
-            ):
-                return True
-        return False
-
-    def self_call(self, node, kind):
-        """Whether `node` is the call `self.<kind's spelling>(...)`."""
-        return (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "self"
-            and node.func.attr == spelling(kind)
-        )
-
-    def dynamic_start(self, compute):
-        """A dynamic handler: one in a class, no moves; its message loop's state, the
-        rank and size of the loop's ranks."""
-        if self.compiled.dynamic is not None:
-            refuse(
-                self.where,
-                self.definition,
-                f"{self.compiled.dynamic} is the class's dynamic handler already",
-                "make one class for each dynamic handler",
-            )
-        self.compiled.dynamic = self.method.name
-        for node in ast.walk(self.definition):
-            moving = isinstance(node, ast.Call) and (
-                self.construct(node) in ("stream", "reduce", "all_reduce", "broadcast")
-                or isinstance(node.func, ast.Attribute)
-                and node.func.attr in (spelling("push"), spelling("fill"))
-                or any(k.arg == spelling("on") for k in node.keywords)
-            )
-            if moving:
-                refuse(
-                    self.where,
-                    node,
-                    "a dynamic handler is compute's lines alone: the runtime's movers "
-                    "carry its messages",
-                    "move pages in a handler of another class",
-                )
-        compute.insert(
-            0, Glue("km::Messages km_messages(compute, command);", {"km_messages"})
-        )
-        compute[1] = Glue(
-            "const uint32_t km_rank = km_messages.rank();", {"km_rank"}, {"km_messages"}
-        )
-        compute.append(
-            Glue(
-                "const uint32_t km_size = km_messages.count();",
-                {"km_size"},
-                {"km_messages"},
-            )
-        )
-
-    def message_class(self, node, call):
-        """The km.Message class `call` names, or None."""
-        if not isinstance(call, ast.Call):
-            return None
-        func = call.func
-        found = self.names.get(func.id) if isinstance(func, ast.Name) else None
-        if isinstance(found, type) and issubclass(found, front.Message):
-            return found
-        return None
-
-    def made_message(self, node, name, cls, call):
-        """`message = Visit(id=..., ...)`: a message of named words, the others 0."""
-        if not self.dynamic:
-            refuse(
-                self.where, node, "a message is a dynamic handler's", "send it from one"
-            )
-        if call.args or any(k.arg not in cls.words for k in call.keywords):
-            refuse(
-                self.where,
-                node,
-                f"a {cls.__name__} is made of its named words",
-                f"write {cls.__name__}({', '.join(f'{w}=...' for w in cls.words)})",
-            )
-        self.messages_of(cls)
-        self.scope[name] = Value("message", name, words=cls.words)
-        text = [f"uint32_t {name}[kMessageWords] = {{}};"]
-        uses = set()
-        for given in call.keywords:
-            word = f"k{cls.__name__}{camel(given.arg)}"
-            text.append(f"{name}[{word}] = {self.integer(given.value)};")
-            uses |= self.uses(given.value)
-        return [], [Line("\n".join(text), uses)]
-
-    def messages_of(self, cls):
-        """The class's message words, for the header."""
-        known = self.compiled.messages.setdefault(cls.__name__, cls.words)
-        if known != cls.words:
-            refuse(self.where, self.definition, f"two {cls.__name__}s", "name one")
-
     def message_word(self, node):
         """The C++ of `message.word` (a word of a message), or None."""
         base = node.value
@@ -1519,206 +1407,6 @@ class HandlerCompiler(Frame):
             )
         cls = next(c for c, w in self.compiled.messages.items() if w is value.words)
         return f"{base.id}[k{cls}{camel(node.attr)}]"
-
-    def arrive_loop(self, node):
-        """`for message in self.arrive():` each message given to this core, in packets
-        (copied from the queue), each then forwarded, consumed or left."""
-        if not isinstance(node.target, ast.Name):
-            refuse(
-                self.where,
-                node,
-                "one message name",
-                "write for message in self.arrive()",
-            )
-        args = node.iter.args
-        cls = None
-        if len(args) == 1:
-            cls = self.message_class(node, ast.Call(func=args[0], args=[], keywords=[]))
-        elif not args:
-            known = [
-                v for v in self.names.values()
-                if isinstance(v, type) and issubclass(v, front.Message)
-                and v is not front.Message
-            ]  # fmt: skip
-            cls = known[0] if len(known) == 1 else None
-        if cls is None:
-            refuse(
-                self.where,
-                node,
-                "the loop's message class is not known",
-                "write self.arrive(Visit), Visit a km.Message of the module",
-            )
-        name = node.target.id
-        check_name(self.where, node, name)
-        self.messages_of(cls)
-        self.scope[name] = Value("message", name, words=cls.words)
-        _, body = self.statements(node.body)
-        self.scope.pop(name)
-        if self.compiled.folded:
-            body = [self.handler_cases(name, cls, body)]
-        copy = (
-            "const volatile tt_l1_ptr uint32_t* km_incoming = km_packet[km_arrived];\n"
-            f"uint32_t {name}[kMessageWords] = {{}};  // word 0: the runtime's\n"
-            "for (uint32_t km_word = 1; km_word < kMessageWords; km_word++) {\n"
-            f"    {name}[km_word] = km_incoming[km_word];\n"
-            "}"
-        )
-        inner = Block(
-            "for (uint32_t km_arrived = 0; "
-            "km_arrived < km_packet.count; km_arrived++) {",
-            "}",
-            [Line(copy), *body],
-        )
-        outer = Block(
-            "while (km::Packet km_packet = km_messages.next()) {",
-            "}",
-            [inner, Line("km_messages.done(km_packet);")],
-            {"km_messages"},
-        )
-        return [], [outer]
-
-    def handler_cases(self, name, cls, body):
-        """The message loop's body of a class of several dynamic handlers: a case of
-        each, by the handler the message names (its own loop's, compiled here with its
-        own lines and names); a message of no handler of the class is consumed."""
-        cases = [
-            Block(
-                f"case kHandler{camel(self.method.name)}: {{",
-                "}",
-                [*body, Line("break;")],
-            )
-        ]
-        for folded in self.compiled.folded.values():
-            saved = (self.method, self.definition, self.where, self.scope)
-            self.method = folded
-            self.definition, lines, first = source_of(folded.function)
-            self.where = Where(self.compiled.name, folded.name, lines, first)
-            self.scope = {}
-            try:
-                loop = arrive_of(self.definition)
-                if not isinstance(loop.target, ast.Name):
-                    refuse(
-                        self.where,
-                        loop,
-                        "one message name",
-                        "write for m in self.arrive()",
-                    )
-                check_name(self.where, loop, loop.target.id)
-                self.scope[loop.target.id] = Value("message", name, words=cls.words)
-                if loop.target.id != name:
-                    refuse(
-                        self.where,
-                        loop,
-                        f"the loops of one class's dynamic handlers name their "
-                        f"message alike ({name})",
-                        f"write for {name} in self.arrive()",
-                    )
-                _, lines = self.statements(loop.body)
-            finally:
-                self.method, self.definition, self.where, self.scope = saved
-            cases.append(
-                Block(
-                    f"case kHandler{camel(folded.name)}: {{",
-                    "}",
-                    [*lines, Line("break;")],
-                )
-            )
-        cases.append(Line("default:\n    km_messages.consume();", {"km_messages"}))
-        return Block("switch (km_messages.handler()) {", "}", cases, {"km_messages"})
-
-    def message_call(self, node, call, kind):
-        """self.send(rank, message), self.forward(rank, message), self.consume()."""
-        if not self.dynamic:
-            refuse(self.where, node, "a message call is a dynamic handler's", "use one")
-        if kind == "consume":
-            if call.args or call.keywords:
-                refuse(
-                    self.where, node, "consume() takes nothing", "write self.consume()"
-                )
-            return [], [Line("km_messages.consume();", {"km_messages"})]
-        arguments, uses = self.message_arguments(node, call, kind)
-        return [], [Line(f"km_messages.{kind}({arguments});", uses)]
-
-    def direct_call(self, node, name, call):
-        """`went = self.direct(rank, message)`: 1 when the message went into its slot
-        at rank (a declared pair), 0 when the slot was busy and nothing was sent."""
-        if not self.dynamic:
-            refuse(self.where, node, "a message call is a dynamic handler's", "use one")
-        arguments, uses = self.message_arguments(node, call, "direct_message")
-        text = f"(km_messages.direct({arguments}) ? 1u : 0u)"
-        if name in self.scope:
-            if self.scope[name].kind != "int" or name not in self.assigned:
-                refuse(self.where, node, f"{name} is already defined", "use a new name")
-            return [], [Line(f"{name} = {text};", uses | {name})]
-        self.scope[name] = Value("int", name)
-        declared = "uint32_t" if name in self.assigned else "const uint32_t"
-        # a line, not glue: the call sends, so it stays when the name goes unread
-        return [], [Line(f"{declared} {name} = {text};", uses)]
-
-    def direct_unnamed(self, node):
-        """self.direct(...) anywhere but as a name's value: refused, by its bool."""
-        refuse(
-            self.where,
-            node,
-            "self.direct(rank, message) says whether the message went (0: its slot "
-            "is busy and nothing was sent), so its value is a name's",
-            "write went = self.direct(rank, message), then forward it when went == 0",
-        )
-
-    def message_arguments(self, node, call, kind):
-        """The C++ arguments of self.<kind>(rank, message[, to=]) and their uses."""
-        to = [k for k in call.keywords if k.arg == spelling("to")]
-        if len(call.args) != 2 or len(call.keywords) != len(to) or len(to) > 1:
-            refuse(
-                self.where,
-                node,
-                "a rank and a message (and the handler there, to=)",
-                f"write self.{spelling(kind)}(rank, m) or "
-                f"self.{spelling(kind)}(rank, m, to={self.compiled.name}.handler)",
-            )
-        message = call.args[1]
-        if not (
-            isinstance(message, ast.Name)
-            and self.scope.get(message.id, Value("")).kind == "message"
-        ):
-            refuse(self.where, node, "the second is a message", "give a message's name")
-        rank = self.integer(call.args[0])
-        uses = self.uses(call.args[0]) | {"km_messages", message.id}
-        handler = f", {self.handler_named(node, to[0].value)}" if to else ""
-        return f"{rank}, {message.id}{handler}", uses
-
-    def handler_named(self, node, value):
-        """The C++ of `to=Class.handler`: a dynamic handler of this class."""
-        named = (
-            isinstance(value, ast.Attribute)
-            and isinstance(value.value, ast.Name)
-            and value.value.id == self.compiled.name
-            and value.attr in (*self.compiled.folded, self.compiled.dynamic)
-        )
-        if not named:
-            refuse(
-                self.where,
-                node,
-                f"to= names a dynamic handler of {self.compiled.name}",
-                f"write to={self.compiled.name}.<handler>, a handler with "
-                "`for message in self.arrive():`",
-            )
-        return f"kHandler{camel(value.attr)}"
-
-    def seeding_branch(self, node):
-        """`if self.seeding():` the first messages, then the loop is told they are
-        all sent."""
-        if node.orelse:
-            refuse(self.where, node, "seeding has no else", "write the if alone")
-        _, body = self.statements(node.body)
-        return [], [
-            Block(
-                "if (km_messages.seeding()) {",
-                "}",
-                [*body, Line("km_messages.seeded();")],
-                {"km_messages"},
-            )
-        ]
 
     def bind_parameters(self, movement, compute):
         """Each parameter after self is a command word: a tensor's reference word, an
@@ -2047,9 +1735,9 @@ class HandlerCompiler(Frame):
         check_name(self.where, node, name)
         self.not_parameter(node, name)
         value = node.value
-        made = self.message_class(node, value)
+        made = messages.message_class(self, node, value)
         if made is not None:
-            return self.made_message(node, name, made, value)
+            return messages.made_message(self, node, name, made, value)
         value = self.tile_expression(node, value) or value
         if self.step_of_field(value):
             return self.started_from_field(node, name, value)
@@ -2073,8 +1761,8 @@ class HandlerCompiler(Frame):
             and self.field_name(value.func.value)
         ):
             return self.bump_line(node, name, value)
-        if self.self_call(value, "direct_message"):
-            return self.direct_call(node, name, value)
+        if self_call(value, "direct_message"):
+            return messages.direct_call(self, node, name, value)
         call = self.construct(value)
         if call == "partition":
             return self.partition(node, name, value)
@@ -2348,8 +2036,8 @@ class HandlerCompiler(Frame):
             return "(" + op.join(self.integer(v) for v in node.values) + ")"
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             return f"!({self.integer(node.operand)})"
-        if self.self_call(node, "direct_message"):
-            self.direct_unnamed(node)
+        if self_call(node, "direct_message"):
+            messages.direct_unnamed(self, node)
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -4392,8 +4080,8 @@ class HandlerCompiler(Frame):
             refuse(self.where, node, "a loop with an else", "write the else after it")
         iterator = node.iter
         self.held_not_iterated(node, iterator)
-        if self.self_call(iterator, "arrive_messages"):
-            return self.arrive_loop(node)
+        if self_call(iterator, "arrive_messages"):
+            return messages.arrive_loop(self, node)
         if (
             isinstance(iterator, ast.Name)
             and self.scope.get(iterator.id, Value("")).kind == "arrived"
@@ -4816,10 +4504,10 @@ class HandlerCompiler(Frame):
         ):
             return self.drain(node, call)
         for kind in ("send", "forward", "consume"):
-            if self.self_call(call, kind):
-                return self.message_call(node, call, kind)
-        if self.self_call(call, "direct_message"):
-            self.direct_unnamed(node)
+            if self_call(call, kind):
+                return messages.message_call(self, node, call, kind)
+        if self_call(call, "direct_message"):
+            messages.direct_unnamed(self, node)
         construct = self.construct(call)
         if construct == "cxx":
             return self.inline(node, call)
@@ -7380,8 +7068,8 @@ class HandlerCompiler(Frame):
         return layout.out_buffer(self.compiled, name, dtype, page_bytes, pages, what)
 
     def branch(self, node):
-        if self.self_call(node.test, "seeding"):
-            return self.seeding_branch(node)
+        if self_call(node.test, "seeding"):
+            return messages.seeding_branch(self, node)
         broadcast = self.broadcast_branch(node)
         if broadcast is not None:
             return broadcast
