@@ -692,6 +692,27 @@ def direct(tensor):
     return Marked(tensor, "direct")
 
 
+class AtSubmit:
+    """km.at_submit("name") at an int parameter of a chain's call: the word is not
+    in the chain's records but given at each run.submit(chain, name=value)."""
+
+    def __init__(self, name):
+        if not isinstance(name, str) or not name.isidentifier():
+            raise ProgramError(
+                f"km.{spelling('at_submit')}({name!r}): a word's name, an identifier"
+            )
+        self.name = name
+
+    def __repr__(self):
+        return f"km.{spelling('at_submit')}({self.name!r})"
+
+
+def at_submit(name):
+    """km.at_submit("position") at a chain's call: the handler's int word given at
+    each submit of the chain (run.submit(chain, position=n)), the records unchanged."""
+    return AtSubmit(name)
+
+
 class ChainMethod:
     """A method decorated with `km.chain`: calls of the class's handlers in order,
     read when the class is made; called on a program with its arguments, the same
@@ -818,6 +839,7 @@ def exports():
         "handler": handler,
         "past": past,
         "direct": direct,
+        "at_submit": at_submit,
         "tile_function": tile_function,
         "message": Message,
         "entry": Entry,

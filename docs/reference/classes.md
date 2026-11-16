@@ -558,6 +558,13 @@ refuses a broadcast's command whose group is not the rectangle's, naming the
 the rectangle's core indices from its first core to its last, so on a rectangle
 narrower than the grid `self.rank` is not the place in the rectangle: a core is placed
 by `self.x` and `self.y`, and the cores between are in the group but skip the handler.
+On `rect=(x0, y0, W, H)` of a grid G columns wide, the core at column x and row y of the
+rectangle has `self.rank` = y * G + x, which runs from 0 to (H - 1) * G + W - 1 with
+gaps. `self.x` and `self.y` are already counted from the rectangle's origin, so the
+dense index 0 .. W H - 1 is `self.y * W + self.x`, with W the rectangle's width as the
+class was given it (a constant or a command word). Rows or pages picked by `self.rank`
+on such a rectangle run past the tensor
+([hazards](hazards.md#selfrank-on-a-rectangle-narrower-than-the-grid)).
 
 ### A broadcast's mover, bands and count
 
@@ -1070,8 +1077,8 @@ A **tile function** is a Python function of tiles that the tile compiler
 `@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
 called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
 stream form: `+`, `-`, `*`, `/`, `abs`, number constants, `km.silu`, `km.sigmoid`,
-`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.exp`
-(`error=`, `over=`) of up to four tiles, one result. From
+`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.exp`,
+`km.tanh`, `km.erf`, `km.log` (`error=`, `over=`) of up to four tiles, one result. From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
@@ -1184,6 +1191,21 @@ class RowNorm(km.Program):
             results.push(self.norm(row, self.weight))
 ```
 
+Several sums in turn and several fields take the row form in levels
+([tile compiler](tile.md)): the layer norm, from
+[tile levels](../../experiments/language/tile_levels/tile_levels.py), a weight and a bias
+field filled as the weight above (field k copied into DST 2 width + k), at most 4 values
+a row kept by `.col()` (the rows tile's slots):
+
+```python
+@km.tile_function
+def layer_norm(row, weight, bias):
+    mean = km.reduce_sum(row, exact=True) * (1.0 / (32 * WIDTH))
+    d = row - mean.col()
+    var = km.reduce_sum(d * d, exact=True) * (1.0 / (32 * WIDTH))
+    return d * km.rsqrt(var + EPS).col() * weight.row() + bias.row()
+```
+
 The weight's tile is the row form's per-column operand, laid out by the host
 (`p_tile` of [rules.py](../../experiments/language/tile_rules/rules.py)): the tile compiler's
 row form reads it so. This layout is temporary: a plain weight row, laid out on the
@@ -1197,6 +1219,31 @@ not priced), the rules that fired, and the tolerance the decorator states
 (`tolerance=`, the largest relative error against float64). A loop that calls a tile
 function holds no other tile line: the body's setup holds the vector unit's constant
 registers for the loop.
+
+A tile function may return several tiles (a state and an output): the call names each,
+and each is pushed into its own write stream in the loop. Result k is DST k of the call;
+the commit and the packs run at the last push of the call's results. From
+[tile levels](../../experiments/language/tile_levels/tile_levels.py):
+
+```python
+@km.tile_function
+def decay(x, h):
+    h = DECAY * h + x
+    return h, km.silu(h)
+
+
+for x, s in zip(
+    km.Stream(a.pages(first, TILES), block=8),
+    km.Stream(h.pages(first, TILES), block=8),
+):
+    s2, y = decay(x, s)
+    states.push(s2)
+    results.push(y)
+```
+
+A call holds 4 DST tiles (half of the fp32 DST), so a function returns at most 4 tiles.
+Refused by name: the results pushed without a name (`out.push(decay(x, s))`), a result
+left unpushed in the loop, several results in the row form.
 
 `@km.handler(stamps="t")` on a handler that calls a tile function makes the math CPU
 read the wall clock around each call between two `tensix_sync()`, as the tile
@@ -2217,6 +2264,25 @@ name (else `run.chain`'s `cores`). A `kc.Call` written by hand is refused in the
 list: its tensors are names the class's calls do not share, so no input or prefetch
 between them could be checked.
 
+**A word given at each submit.** `km.at_submit("position")` in place of an int word of
+a call makes that word the chain's per-submit word: the record holds 0 at its place
+and names it, and `run.submit(chain, position=n)` gives it, so one chain built once runs
+a decode layer at each position (or another layer's row, a step count) with no record
+written again. One word a chain, at most one a call (the same word may go to several
+calls, e.g. through the chain method's parameter). The calls' descriptions must not
+depend on it: a read or a write whose pages change with the word is refused ("what it
+reads or writes changes with width, given at each submit"), and so is the word at a
+tensor, a pattern, a float or a constant parameter. A word bodies take (`takes=[...]`)
+or a range of a body's own reads is free to change.
+
+```python
+chain = run.chain(program.layer(*tensors, km.at_submit("position")), cores=(0, 120))
+for position in range(3):
+    run.wait(run.submit(chain, position=position))
+```
+
+The tests are [test_class_chain_at_submit.py](../../tests/core/test_class_chain_at_submit.py).
+
 **The walk.** A class with a `km.chain` method, or made with `chain=True`, has the
 chain's walk in its kernels: a handler of its own after the class's (`km_chain`), the
 chain's words in buffer 32 (2,048 B), each kernel's case for a chain command handing
@@ -2563,9 +2629,9 @@ class is refused at the consuming line, naming the line that made the object:
 |---|---|---|---|
 | `total = km.tile.zeros(...)` outside a range loop | `self.f.write(total)` in it | the write: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
 | a running total (below) | its write or reduce under an `if` or in an inner loop of the range loop | the line: "total is a running total (made at line N, outside this loop): it is written or reduced once a turn, as a line of the range loop's own body" | move the line into the range loop's body |
-| a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
-| `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or take it with a body in the loop that fills it |
-| a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside |
+| a reduce's sum, outside a loop | written in a loop off the leader's `if`, or a field's sum written in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write it under the leader's `if` (a sum held across turns, below); or reduce and write both outside |
+| `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) after that loop | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or read it in the loop that fills it (a field filled each turn, below) |
+| a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside; for every turn's pages drained once, make it before the loop, its body lines in the loop, its end and drain after |
 
 **A running total.** A tile made by `km.tile.zeros` before a range loop and written
 (`pages.write(total)`) or reduced (`km.reduce(total)`) as a line of the loop's body is
@@ -2606,13 +2672,49 @@ if column.sender():
 else:
     ws = column.arrive()
 for i in range(turns):
+    r = (self.y * 2 + self.x) * turns + i  # the core's place in a rectangle 2 wide
     acc = km.tile.zeros(km.fp32, 4)
-    for xb in km.Stream(x.tiles[i : i + 1, 0:8], block=2, pattern="B"):
+    for xb in km.Stream(x.tiles[r : r + 1, 0:8], block=2, pattern="B"):
         acc += project(xb, ws)
-    y.pages((self.rank * turns + i) * 4, 4).write(acc)
+    y.pages(r * 4, 4).write(acc)
 ```
 
-The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py).
+The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py); on
+the card, every word equal to the same rows with the block cast each turn
+([loop forms](../../experiments/language/loop_forms/README.md)).
+
+**A sum held across turns.** A reduce's sum made before a range loop and written in it
+under the leader's `if` (`out.pages(i, 1).write(whole)`, the same sum on page i each
+turn), or taken there by a body (`km.cxx(..., takes=[whole])`), is held. Each turn
+waits for it without freeing it, and the leader frees it once, after the loop. A turn's
+write copies the sum's tiles (fp32, exact) into DST and packs them into the write's own
+pages, which mover B writes and frees as any page write. One write line or one take
+line of the sum a loop. A field's sum (`km.reduce(self.sums, ...)`) written in a loop
+is refused as before.
+
+```python
+whole = km.reduce(total, form="tree")
+for i in range(2):
+    if self.rank == self.leader:
+        out.pages(i, 1).write(whole)  # the sum beside each row block
+```
+
+**A field filled each turn.** A field filled by a line of a range loop's body
+(`self.w.fill(km.Stream(...))`) and read by a product in that loop (turn i's product
+of weight i) is freed at the end of the turn, after the turn's last product. Compute
+waits for each turn's fill, and mover A's next fill reserves the room the turn freed.
+A product of the field after the loop is still refused: it would read one fill of
+several. A field another handler reads stays in L1 between commands, so its fill in a
+loop is refused as before.
+
+```python
+for i in range(turns):
+    self.weight.fill(km.Stream(w.pages(i * 4, 4)))  # weight i
+    acc = km.tile.zeros(km.fp32, 2)
+    for block in km.Stream(x.pages(i * 2, 2), block=2):
+        acc += project(block, self.weight)
+    y.pages(i * 2, 2).write(acc)
+```
 
 A tile made inside a loop and written after it is refused the same way ("inside a loop
 that has ended"). Accumulating into a tile made before a range loop and writing it

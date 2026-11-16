@@ -315,6 +315,7 @@ LINK_DEFINES = (
     "KM_TENSOR_TABLE",
     "KM_ASKS_BY_HOST",
     "KM_TENSORS_MAX",
+    "KM_ISLANDS_MAX",
     "KM_TABLE_CACHE",
 )
 # Every define the island load gives a program; a plan's runtime kernels get them.
@@ -1071,6 +1072,12 @@ class Session:
             chunk = _transfer_chunk_of(self, held, switch, trace_cap, control)
             size = 2 * chunk + abi_headers["KM_TRANSFER_WORD_BYTES"] + NOC_ALIGN
             rows.append(("host transfer buffer", size))
+        messages = getattr(program, "messages", None)
+        if messages is not None and messages.direct:
+            cores = self.grid[0] * self.grid[1]
+            rows.append(
+                ("direct messages (tables, slots)", messages.direct_bytes(cores))
+            )
         bounds = self.page_bounds_list(placed.programs if placed else [program])
         if bounds is not None:
             rows.append(("page bounds list", bounds[0].nbytes))
@@ -2618,6 +2625,7 @@ class _Backend:
         self.trace_tensor = None
         self.state_tensor = None
         self.inbox = None  # the X280 ranks' messages to each core, in L1
+        self.direct = None  # each core's direct messages' tables and slots, in L1
         self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
@@ -2732,13 +2740,19 @@ class _Backend:
         for here, base, count in parts:
             plan = plans[here] if plans else plan
             area = plan.area if plans else self.session.link_area
-            table = np.frombuffer(graph.table(here), np.uint32)
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
             header += [base, getattr(self.session, "packet", 0)]
             header += [getattr(self.session, "relay_links", 0)]
             mine = self.control_rows[base : base + count]
+            if getattr(plan, "table", 0):  # the table in L1, the ports in the area
+                header += [plan.table]
+                mine[:, at + line : at + line + len(plan.ports)] = plan.ports
+            else:  # no links: the table in the area, where the ports go
+                table = np.frombuffer(graph.table(here), np.uint32)
+                if line * 4 + table.nbytes > abi_headers["KM_ISLAND_LINK_AREA"]:
+                    raise ValueError(f"{len(graph.islands)} islands without links")
+                mine[:, at + line : at + line + len(table)] = table
             mine[:, at : at + len(header)] = header
-            mine[:, at + line : at + line + len(table)] = table
             if plan is not None:  # the relay's words after the table (km_relay.hpp)
                 relay = at + abi_headers["KM_ISLAND_RELAY"]
                 mine[:, relay : relay + 3] = plan.relay
@@ -2785,9 +2799,18 @@ class _Backend:
             self.io.append(bodies)
             body = bodies.address
         lines = base + abi_headers["KMD_LIM_MESSAGES"]
-        return messages.args(queue.address, lines, body, x280), messages.compute_args(
-            cores
-        )
+        direct = 0
+        if messages.direct:  # each core's tables, credit lines and slots, in L1
+            if self.session.island is not None or self.split is not None:
+                raise ValueError(
+                    "direct messages within one island only: across islands they "
+                    "follow the link service's write into a far core's L1"
+                )
+            self.direct = _words(self.session, messages.direct_rows(cores), grid)
+            self.io.append(self.direct)
+            direct = self.direct.address
+        reader_writer = messages.args(queue.address, lines, body, x280, direct)
+        return reader_writer, messages.compute_args(cores, direct)
 
     def describe(self, *args, **options):
         """_describe's descriptor with the slots' buffer declared first, its size

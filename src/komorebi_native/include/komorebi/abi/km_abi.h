@@ -598,10 +598,12 @@ KM_STATIC_ASSERT(
 /* Islands: sets of cores that reach each other only through links, ranks flat and
    contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
-/* then the island table: an entry per island {first rank u16, count u16, next link u8
-   (own link number toward it), hops u8, ports u8 (bit p: on a shortest path), 0 u8} */
-#define KM_ISLANDS_MAX 16u
+/* the island table (KM_ISLAND_TABLE): an entry an island {first rank u16, count u16,
+   next link u8 (own link number), hops u8, ports u8 (bit p: shortest path), 0 u8} */
 #define KM_ISLAND_ENTRY_BYTES 8u
+#ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
+#define KM_ISLANDS_MAX 16u
+#endif
 #define KM_ISLAND_HEADER_BYTES 32u
 #define KM_ISLAND_NO_LINK 0xFFu /* next link of the holder's own entry */
 #define KM_ISLAND_HERE 0u       /* header words: this island (0: island 0 of one) */
@@ -615,13 +617,22 @@ KM_STATIC_ASSERT(
 /* the links toward the other of two islands a relay ask may take (0 or 1: link 0
  * alone); a source rank takes link rank % links, always the same (km_relay.hpp) */
 #define KM_ISLAND_LINKS 6u
-#define KM_ISLANDS_BYTES                                                             \
-    ((KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES + 63u) / 64u * \
-     64u)
-/* after the table: a word, the link area's L1 address on this island's cores (0: no
+/* header word: the island table's L1 address on this island's cores (0: one island,
+ * its one entry in the area at KM_ISLAND_PORTS) */
+#define KM_ISLAND_TABLE 7u
+/* the port table in the area: port p's link l at (p * KM_ISLAND_PORT_LINKS + l) * 8:
+ * {link core u8 (0xFF: none), CPU u8, far island u8, links of the port u8, far tile} */
+#define KM_ISLAND_PORTS KM_ISLAND_HEADER_BYTES
+#define KM_ISLAND_PORTS_MAX 4u
+#define KM_ISLAND_PORT_LINKS 4u
+#define KM_ISLAND_PORT_BYTES 8u
+#define KM_ISLAND_NO_CORE 0xFFu
+/* after the ports: a word, the link area's L1 address on this island's cores (0: no
    link area) */
 #define KM_ISLAND_LINK_AREA \
-    (KM_ISLAND_HEADER_BYTES + KM_ISLANDS_MAX * KM_ISLAND_ENTRY_BYTES)
+    (KM_ISLAND_PORTS +      \
+     KM_ISLAND_PORTS_MAX * KM_ISLAND_PORT_LINKS * KM_ISLAND_PORT_BYTES)
+#define KM_ISLANDS_BYTES ((KM_ISLAND_LINK_AREA + 32u + 63u) / 64u * 64u)
 /* words after it: the relay area's L1 address on this island (0: no relay), the far
  * island's, and the far link core 0's NoC tile x | y << 16 (km_relay.hpp) */
 #define KM_ISLAND_RELAY (KM_ISLAND_LINK_AREA / 4u + 1u)
@@ -745,12 +756,13 @@ KM_STATIC_ASSERT(
 KM_STATIC_ASSERT(
     KM_CONTROL_ISLANDS == KM_CONTROL_LIVE + KM_LIVE_BYTES &&
         KM_CONTROL_ISLANDS % 64u == 0 && KM_ISLANDS_MAX >= 1u &&
-        KM_ISLANDS_MAX <= 32u &&
+        KM_ISLANDS_MAX <= 256u &&
         KM_CONTROL_ISLANDS + KM_ISLANDS_BYTES == KM_CONTROL_RING,
-    "the island area: whole lines after the live words; an island is a bit of a word"
+    "the island area: whole lines after the live words; an island is a byte"
 );
 KM_STATIC_ASSERT(
     KM_ISLAND_LINK_AREA + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
+        KM_ISLAND_HEADER_BYTES + KM_ISLAND_ENTRY_BYTES <= KM_ISLAND_LINK_AREA &&
         KM_ASK_READ + 16u <= KM_ASK_HEADERS && KM_PUT_HEADERS % 64u == 0 &&
         KM_PUT_LINES % 64u == 0 && KM_ASK_SLOTS == 32u &&
         KM_PUT_QUEUE + 4u <= KM_PUT_TAKEN + KM_PUT_RING_READ &&

@@ -47,8 +47,8 @@ header = emit(unit)  # km_tile::gate_init(), km_tile::gate(dst)
 
 | Call | What it does |
 |---|---|
-| `unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4")` | the stream form: one store a tile, of an expression over up to 3 whole input tiles or tile products (`Dst` tiles 0, 1, 2). `load_macro=True` adds the load-macro rule (below); `rows=True` the band (below); `fidelity` the products' (below) |
-| `rows.row_program(ir, width, rows_tile, cols_tile, rows=False)` | the row form: a row of `width` tiles (1 or 2) in `Dst` tiles 0 .. width - 1, a per-row value in `Dst` tile `rows_tile`, a per-column operand in `Dst` tile `cols_tile`; `rows=True` the band |
+| `unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4")` | the stream form: one store a tile, of an expression over up to 3 whole input tiles or tile products (`Dst` tiles 0, 1, 2), or several stores (result k into `Dst` tile k, below). `load_macro=True` adds the load-macro rule (below); `rows=True` the band (below); `fidelity` the products' (below) |
+| `rows.row_program(ir, width, rows_tile, cols_tile, rows=False)` | the row form: a row of `width` tiles (1 or 2) in `Dst` tiles 0 .. width - 1, a per-row value in `Dst` tile `rows_tile`, a per-column operand in `Dst` tile `cols_tile` (resident row k in `cols_tile + k`); `rows=True` the band |
 | `steps.step_program(ir, width, state_tile, fidelity="HiFi4")` | the step form: a row of `width` tiles (1 to 3) in `Dst` tiles 0 .. width - 1, stored over them, and a state tile of per-row values in `Dst` tile `state_tile`, read and written in place; `fidelity` is the matrix unit's, for a row sum the cost model gives it |
 | `row_operand(row, width)` | the per-column operand tile `.row()` reads, placed from a plain row of 32 `width` values (1024 values in face order, written once by the host) |
 | `matrix.product_program(name, fidelity)` | one tile product with the math CPU's words emitted (the library's unpack and `mm_no_mop_init_short` are the caller's) |
@@ -154,7 +154,7 @@ four inputs: `+`, `-`, `*`, `/`, unary minus, `abs`, Python number constants,
 (`x * rsqrt(x)`, 0 at 0), `trace.reciprocal` (the unit's estimate and two Newton
 steps, as tt-metal's `sfpu_reciprocal_iter<2>`; `x / y` is `x * reciprocal(y)`),
 `trace.maximum` and `trace.minimum` (one `SFPSWAP` on copies: its larger or its
-smaller result). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst`
+smaller result), `trace.tanh`, `trace.erf` and `trace.log` (below). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst`
 a call holds. On the card ([tile lines](../../experiments/language/tile_lines/README.md), bf16
 inputs): `x / y` within 1.6e-7 of float64, `sqrt` 9.5e-8, `reciprocal` 1.1e-7, `minimum`
 and `abs` exact, four inputs `x * y + z * w` 6.0e-8 (largest relative errors); none is
@@ -186,6 +186,33 @@ r = trace.rsqrt(ms + 1e-6)
 trace.store(ys.tiles[t, :], row * r.col() * weight.row())
 ```
 
+**Row form in levels.** Several reductions, each `reduce_sum(..., exact=True)` along
+the row: a reduction whose argument reads a per-row value by `.col()` is a level after
+that value's, and each level is one pass over the row. Each per-row value read by
+`.col()`, and each sum a later level's value reads, takes a slot of the rows tile: 4 a
+row group (the step form's slots), so a function keeps at most 4 such values. Several
+resident rows, each broadcast with `.row()`: resident row k is the per-column tile in
+`Dst` tile `cols_tile + k`, up to the 8 fp32 tiles of `Dst` (4 after a row of 2 tiles
+and its rows tile). The layer norm, two levels and two resident rows:
+
+```python
+mean = trace.reduce_sum(row, exact=True) * (1.0 / 64)
+d = row - mean.col()
+var = trace.reduce_sum(d * d, exact=True) * (1.0 / 64)
+trace.store(ys.tiles[t, :], d * trace.rsqrt(var + 1e-5).col() * w.row() + b.row())
+```
+
+A function of one reduction, one `.col()` and one resident row takes the row form above,
+its words unchanged.
+
+**Several stores.** In the stream form a kernel may store several values a tile (a
+state and an output): result k is stored into `Dst` tile k, over operand k, after each
+row's loads; a value two results compute from is computed once (`common_values`). A
+call holds 4 `Dst` tiles (half of the fp32 `Dst`), so a function stores at most 4
+results, of whole-tile operands and no run-time scalar. The caller packs `Dst` tile k
+of the call into result k's buffer (`pack_tile(dst + k, out_k)`). The load macro's store
+slot stores one value: a unit of several stores runs its rows plain.
+
 **Transcendentals at a stated error.** `trace.exp(x, error=None, over=None,
 exact_at_zero=False)` and `trace.exp2(...)`: `error` is the relative error the program
 accepts for inputs in `over = (lo, hi)`; the lowering takes the cheapest template whose
@@ -199,6 +226,32 @@ at 0 (a rescale factor that must be none when nothing moved).
 | `exp` | accurate: Cody-Waite reduction, degree-6 polynomial | 3e-7 | all |
 | `exp2` | flash | 1.75e-3 | [-126, 127] |
 | `exp2` | accurate: `exp(a ln 2)` | 6e-6 | all |
+| `tanh` | accurate: below 0.625 `x + x t p(t)` (t = x^2, p of degree 4), above `(1 - e) / (1 + e)` of `e = exp(-2 abs(x))`, the accurate exp, `reciprocal` and x's sign | 3e-7 | all |
+| `erf` | accurate: `x N(x^2) / D(x^2)` (tt-metal's fp32 rational, degrees 15 and 16) of x clamped to [-10, 10], `reciprocal`, the result clamped to [-1, 1] | 4e-7 | all |
+| `log` | accurate: x = 2^k m with m in [0.75, 1.5), `f + f^2 r(f)` of f = m - 1 (Norbert Juffa's degree-8 r, as tt-metal's), `k ln 2` added | 1e-7 | normal x > 0 |
+
+`tanh`, `erf` and `log` take `error=` and `over=` as `exp` does; each has one template,
+and an error under its bound is refused. Each bound is the largest relative error found
+over a sweep of fp32 inputs and on the card ([tile math](../../experiments/language/tile_math/README.md):
+2.3e-7, 3.6e-7 and 8.1e-8 on 196,608 values each), rounded up. `log` is not guarded:
+0 and subnormals give -88.0 (2^-127's log), not -inf; a negative x gives a wrong
+number. GELU and softplus are lines of them:
+
+```python
+@km.tile_function
+def gelu(x):
+    return 0.5 * x * (1.0 + km.erf(x * 0.7071067811865476))
+
+
+@km.tile_function
+def softplus(x):
+    return km.maximum(x, 0.0) + km.log(1.0 + km.exp(-abs(x)))
+```
+
+On the card GELU is within 9.1e-7 of float64 against its largest values (its relative
+error is large only below about -5, where 1 + erf is within an fp32 rounding of 0),
+softplus within 2.4e-7 (relative: 3.7e-2 at its most negative inputs, where `1 + e`
+rounds most of `e` away).
 
 Below the flash template's range the argument is clamped (`max(u, 512)` on `u = a k +
 639`), so the result is under 2^-126 and finite for any argument down to minus
@@ -269,10 +322,11 @@ Each rule is a pass; `dump()` prints what each one did.
 
 | Refusal | Why |
 |---|---|
-| "the unit program takes one store" | one output tile a unit is what the loop nest and the pack calls are built for |
+| "N results; a call holds 4 Dst tiles (half of the fp32 Dst) and stores result k into tile k" | result k is stored into `Dst` tile k of the call |
+| "a function of several results takes tiles and numbers (no run-time scalar)", "... reads whole tiles", band or `tiles=` with several stores | what the several-stores lowering is built for |
 | "the unit program reads at most 4 operand tiles" | the operands sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst` a call holds |
 | "the unit program reads whole-tile operands" | a slice or a broadcast operand needs the row form |
-| "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering (tanh, exp2 outside a template and the comparisons other than `>`, `<`, `==`, `!=` have none) |
+| "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering (exp2 outside a template and the comparisons other than `>`, `<`, `==`, `!=` have none) |
 | "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
 | "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
 | "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |
@@ -282,7 +336,9 @@ Each rule is a pass; `dump()` prints what each one did.
 | exp / exp2: "no template meets relative error E over [lo, hi]" | no template's bound meets the stated error over that range |
 | step form: 1 to 3 row tiles, one row store and one state store, one row tensor, one state tile, exact sums or maxima, a slot read after the level that writes it, "the step's values do not fit the 8 work registers" | what the levels and the state layout are built for |
 | "a state tile holds 4 per-row values, or 3 and a word" | 4 slots a row group |
-| row form: one reduction, `reduce_sum(..., exact=True)` along the row; one `.col()`; one loaded row; `.row()` of a resident row only | what the stat and apply phases are built for |
+| row form: each reduction `reduce_sum(..., exact=True)` along the row; one loaded row; `.col()` of a per-row value; `.row()` of a resident row only; levels: no band, "a sum along the row reads the row and per-row values" | what the stat and apply phases are built for |
+| row form: "N per-row values kept across the row's passes; the rows tile holds 4" | 4 slots a row group in the rows tile |
+| row form: "N resident rows; Dst's 8 fp32 tiles hold M per-column tiles after the row's" | resident row k's per-column tile is `Dst` tile `cols_tile + k` |
 | load macro: "the row computes with N instructions (M MAD-class); a macro arms at most one a sub-unit" | a macro has one slot each for the simple, MAD and round sub-units and one for the store; SiLU (45 instructions) and the gate (46) do not fit, and run as plain rows |
 | load macro: a lane-flag instruction, a store of a value other than the last, a store more than 7 cycles after its load, more than 4 templates | the macro's slots run unguarded, its delays are 3 bits, the unit holds 4 templates |
 | load macro: "N rows a macro turn do not divide a face" | a face is 16 rows; the rows stay plain (`abs(x)` alone: a turn of 3) |
@@ -294,10 +350,8 @@ Each rule is a pass; `dump()` prints what each one did.
 
 What the limits above would take, where a user would write the line: a slice or a
 broadcast operand in the whole-tile form (`x * w.row()` in the stream form) needs the
-row form's per-column load inside the stream form, about 100 lines; two stores of one
-call need a second result tile in `Dst` and a second pack, about 60 lines; `>=` and
-`<=` are the swapped `SFPGT` with its flags inverted, about 10 lines; tanh needs
-tt-metal's fp32 polynomial lowered and its error checked, about 40 lines.
+row form's per-column load inside the stream form, about 100 lines; `>=` and
+`<=` are the swapped `SFPGT` with its flags inverted, about 10 lines.
 
 A refused load macro is not an error: the pass records "refused: reason" and the rows
 stay plain.

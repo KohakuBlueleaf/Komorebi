@@ -414,7 +414,17 @@ exp2 = _transcendental(
 )
 sigmoid = _unary("sigmoid", "1 / (1 + e^-x) on the vector unit.")
 silu = _unary("silu", "x * sigmoid(x) on the vector unit.")
-tanh = _unary("tanh", "tanh(x) on the vector unit (fp32 registers).")
+tanh = _transcendental(
+    "tanh", "tanh(x) on the vector unit; `error`, `over` as for exp (one template)."
+)
+erf = _transcendental(
+    "erf", "erf(x) on the vector unit; `error`, `over` as for exp (one template)."
+)
+log = _transcendental(
+    "log",
+    "The natural log of x > 0 on the vector unit; `error`, `over` as for exp (one "
+    "template).",
+)
 sqrt = _unary("sqrt", "The square root on the vector unit.")
 rsqrt = _unary("rsqrt", "1 / sqrt(x) on the vector unit.")
 reciprocal = _unary("recip", "1 / x on the vector unit.")
@@ -600,12 +610,14 @@ __all__ = [
     "cat",
     "cdiv",
     "exp",
+    "erf",
     "exp2",
     "f32",
     "grid",
     "lagging_max",
     "load",
     "load_state",
+    "log",
     "maximum",
     "minimum",
     "num_tile_rows",
