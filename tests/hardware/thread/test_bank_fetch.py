@@ -9,7 +9,7 @@ from shared_card import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[3]
     / "experiments"
     / "x280"
     / "bank_fetch"

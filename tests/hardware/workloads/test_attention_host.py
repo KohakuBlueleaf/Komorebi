@@ -8,7 +8,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-SCRIPT = Path(__file__).resolve().parents[2] / "projects" / "attention" / "run.py"
+SCRIPT = Path(__file__).resolve().parents[3] / "projects" / "attention" / "run.py"
 
 
 def test_a_small_causal_call_is_within_the_bound():

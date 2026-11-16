@@ -8,7 +8,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-HERE = Path(__file__).resolve().parents[2] / "projects" / "raytrace"
+HERE = Path(__file__).resolve().parents[3] / "projects" / "raytrace"
 TILES = ("--tiles", "0", "300", "528", "1000")
 
 

@@ -11,7 +11,7 @@ from komorebi.engines.graph import Graph
 from komorebi.engines.stream import Stream
 
 pytestmark = pytest.mark.card
-KERNELS = Path(__file__).resolve().parents[2] / "examples" / "01_mapcollect" / "kernels"
+KERNELS = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect" / "kernels"
 RESULT = 6  # kHandlerResult: with KM_FLAG_RESULT the result word is the leader's a0
 CORES = 120
 

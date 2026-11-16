@@ -11,7 +11,7 @@ import pytest
 from komorebi.device import dram
 
 pytestmark = pytest.mark.card
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def load(name, path):
@@ -22,7 +22,7 @@ def load(name, path):
 
 
 mapcollect = load("mapcollect", ROOT / "examples" / "01_mapcollect" / "mapcollect.py")
-cases = load("session_cases", Path(__file__).parent / "host" / "session_cases.py")
+cases = load("session_cases", Path(__file__).parent / "session_cases.py")
 
 
 def example(session, *argv):

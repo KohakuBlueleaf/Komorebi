@@ -8,7 +8,7 @@ from shared_card import run_json
 
 pytestmark = pytest.mark.card
 PORTS = (
-    Path(__file__).resolve().parents[2] / "examples" / "10_x280_ports" / "x280_ports.py"
+    Path(__file__).resolve().parents[3] / "examples" / "10_x280_ports" / "x280_ports.py"
 )
 
 

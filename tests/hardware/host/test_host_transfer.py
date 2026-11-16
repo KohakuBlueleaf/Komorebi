@@ -12,7 +12,7 @@ from komorebi.device import channel as channel_module
 from komorebi.session.session import read_tensors
 
 pytestmark = pytest.mark.card
-KERNELS = Path(__file__).resolve().parents[2] / "examples" / "01_mapcollect" / "kernels"
+KERNELS = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect" / "kernels"
 PAGES, PAGE = 64, 4096  # 256 KiB: above the size from which a launch pays
 
 

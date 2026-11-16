@@ -8,7 +8,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "06_graph" / "graph.py"
+SCRIPT = Path(__file__).resolve().parents[3] / "examples" / "06_graph" / "graph.py"
 
 
 def test_a_stalled_graph_ends_in_its_error_then_both_paths_are_exact():

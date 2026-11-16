@@ -7,7 +7,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-BUFFER = Path(__file__).resolve().parent / "host" / "kernel_buffer_case.py"
+BUFFER = Path(__file__).resolve().parent / "kernel_buffer_case.py"
 
 
 def test_a_session_with_a_128_kib_kernel_buffer_runs_exact():

@@ -8,9 +8,9 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = ROOT / "examples" / "18_thread_split" / "thread_split.py"
-CASE = Path(__file__).resolve().parent / "thread" / "open_points_case.py"
+CASE = Path(__file__).resolve().parent / "open_points_case.py"
 
 
 def test_each_range_runs_the_overlay_its_word_names_and_every_tile_is_exact():

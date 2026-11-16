@@ -9,7 +9,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "05_forward" / "forward.py"
+SCRIPT = Path(__file__).resolve().parents[3] / "examples" / "05_forward" / "forward.py"
 
 
 def test_a_stall_times_out_naming_the_core_then_runs_end_at_the_quiet_end():

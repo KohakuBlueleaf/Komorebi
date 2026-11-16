@@ -8,7 +8,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-SCRIPT = Path(__file__).resolve().parents[2] / "projects" / "dense" / "run.py"
+SCRIPT = Path(__file__).resolve().parents[3] / "projects" / "dense" / "run.py"
 
 
 @pytest.mark.parametrize("form", ["resident", "stream"])

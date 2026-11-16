@@ -8,7 +8,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "15_leader" / "leader.py"
+SCRIPT = Path(__file__).resolve().parents[3] / "examples" / "15_leader" / "leader.py"
 
 
 def test_words_alone_and_with_tiles_reach_every_core_of_a_column_exact():

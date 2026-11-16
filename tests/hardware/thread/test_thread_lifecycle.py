@@ -7,7 +7,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-CASES = Path(__file__).resolve().parent / "thread"
+CASES = Path(__file__).resolve().parent
 
 
 def test_spawned_cores_run_beside_core_0_and_rejections_are_as_documented():

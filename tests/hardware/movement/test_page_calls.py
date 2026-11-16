@@ -9,7 +9,7 @@ import pytest
 from shared_card import run_json, run_text
 
 pytestmark = pytest.mark.card
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 EXAMPLES = ROOT / "examples"
 # The lessons whose kernels read or write a tensor's pages through the page calls.
 LESSONS = [

@@ -11,7 +11,7 @@ import pytest
 if os.environ.get("KMR_CARD") != "1":
     pytest.skip("needs a Tenstorrent card (KMR_CARD=1)", allow_module_level=True)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "feeder"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import mapcollect_fed
 
