@@ -27,6 +27,15 @@ from komorebi.dsl.compile import (
     stamp_pages,
 )
 from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses, text_uses
+from komorebi.dsl.compile.dst_code import (
+    DST_FULL,
+    DST_HALF,
+    add_tile,
+    pack,
+    sums_reserve,
+    sums_room,
+    sums_room_line,
+)
 from komorebi.dsl.compile.frame import Frame
 from komorebi.dsl.compile.messages import arrive_of
 from komorebi.dsl.compile.records import (
@@ -46,6 +55,7 @@ from komorebi.dsl.compile.source import (
     WAIT_PORT,
     Where,
     check_name,
+    function_line,
     line_text,
     refuse,
     self_call,
@@ -89,8 +99,6 @@ HANDOVER_WORDS = 16  # a body's words of the other mover: one 64 B page
 REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
 PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}
 TILE_ELEMENTS = 32 * 32
-DST_HALF = 4  # fp32 tiles in DST's half a tile function's calls take (half sync)
-DST_FULL = 8  # fp32 tiles in all of DST (full sync: sums wider than a half)
 # A reduce of n tiles by tree: a slot of n tiles for each round (km::kTreeRounds).
 TREE_ROUNDS = 7
 TIMED_WAITS = (  # (the call's start, the counter, an expression or a statement)
@@ -9503,12 +9511,6 @@ class HandlerCompiler(Frame):
         return {text for _, text in pairs} | {value.cxx}
 
 
-def function_line(function):
-    """`line N of file` of a tile function's def."""
-    code = function.function.__code__
-    return f"line {code.co_firstlineno} of {Path(code.co_filename).name}"
-
-
 def is_product(function):
     """Whether a tile function is `return a @ b` of its two parameters, either one
     marked km.srcb(...) or km.srca(...)."""
@@ -9713,33 +9715,6 @@ def block_step(rows, row_step):
     return rows * row_step if isinstance(row_step, int) else f"{rows} * {row_step}"
 
 
-def add_tile(buffer, page, dst, scratch):
-    """DST dst += page `page` of buffer (copied to DST scratch, added by the SFPU)."""
-    return (
-        f"KM_UNPACK_FORMAT_A({buffer});\n"
-        f"copy_init({buffer});\n"
-        f"copy_tile({buffer}, {page}, {scratch});\n"
-        "add_binary_tile_init();\n"
-        f"add_binary_tile({dst}, {scratch}, {dst});"
-    )
-
-
-def pack(dst, half, width=1):
-    """DST tiles `dst` .. `dst + width - 1` packed into pages of `half`; DST
-    released."""
-    packs = "".join(f"    pack_tile({dst + t}, {half});\n" for t in range(width))
-    return (
-        "tile_regs_commit();\n"
-        "tile_regs_wait();\n"
-        f"if (km_ok && compute.reserve_back({half}, {width})) {{\n"
-        f"    KM_PACK_FORMAT({half});\n"
-        f"{packs}"
-        f"    cb_push_back({half}, {width});\n"
-        "}\n"
-        "tile_regs_release();"
-    )
-
-
 OPERATORS = {
     ast.Add: "+",
     ast.Sub: "-",
@@ -9771,29 +9746,6 @@ def product_setups(first, init):
         return "", ""
     own = "".join(f"    {line}\n" for line in init.split("\n"))
     return own, "".join(f"    {line}\n" for line in first.split("\n"))
-
-
-def sums_room(field_):
-    """The name of pack's own word that it holds a field of sums' pages: only pack's
-    reserve decides it (unpack's and math's is always true), so it guards the pack
-    lines alone and never a branch all three compute threads take."""
-    return f"km_room_sums_{field_}"
-
-
-def sums_room_line(field_):
-    """A field of sums' room, declared beside its count of sums."""
-    return f"bool {sums_room(field_)} = true;  // pack holds self.{field_}'s pages"
-
-
-def sums_reserve(sums, room, buffer):
-    """A new sum holds the field's pages: pack's reserve sets the room, and a give-up
-    leaves it false for the command, so the three threads still run the sections
-    and the destination's hand-over together while pack packs nothing."""
-    return (
-        f"if (km_ok && {sums} == 0) {{  // a new sum: the field's pages held\n"
-        f"    {room} = {room} && compute.reserve_back({buffer}, {buffer}Pages);\n"
-        "}\n"
-    )
 
 
 def sent_field_acked(buffer, group, form):

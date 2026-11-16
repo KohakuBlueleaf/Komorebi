@@ -7,6 +7,7 @@ import keyword
 import re
 import textwrap
 from dataclasses import dataclass
+from pathlib import Path
 
 from komorebi.dsl.compile.records import Refused, Wait
 from komorebi.dsl.names import spelling
@@ -140,3 +141,9 @@ def self_call(node, kind):
         and node.func.value.id == "self"
         and node.func.attr == spelling(kind)
     )
+
+
+def function_line(function):
+    """`line N of file` of a tile function's def."""
+    code = function.function.__code__
+    return f"line {code.co_firstlineno} of {Path(code.co_filename).name}"
