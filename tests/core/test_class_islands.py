@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from komorebi.errors import KomorebiError
+from komorebi.dsl.program import rank_rectangle
+from komorebi.errors import KomorebiError, ProgramError
 from komorebi.island_session import IslandSession, _check_reduce_islands
 from komorebi.run import Run
 
@@ -77,3 +78,42 @@ def test_a_tensor_made_while_an_island_run_lives_is_refused_by_name():
     )
     made.run.stopped = True
     made._refuse_live("a tensor")  # the run stopped: the next load writes it
+
+
+def loading(first, group=(0, 118), rect=None):
+    run = SimpleNamespace(
+        island_first=first, island_cores=(0, 120), island_ranks=118, ranks=236
+    )
+    return run, SimpleNamespace(
+        name="columns", rectangle={"group": group, "rect": rect}
+    )
+
+
+def test_a_load_s_rectangle_is_checked_against_this_island_s_part_of_the_group():
+    run, program = loading(118)
+    Run._check_load_rectangle(run, program, 0, 236)  # island 1's part: 118 to 235
+    Run._check_load_rectangle(run, program, 118, 118)
+    with pytest.raises(ProgramError) as refused:
+        Run._check_load_rectangle(run, program, 0, 166)
+    assert str(refused.value) == (
+        "run.load: columns's rectangle None is the ranks (118, 118) of this island, "
+        "not inside the group (0, 166); this island's part of it (118, 48)"
+    )
+    run, program = loading(0, group=(0, 120))  # the whole grid: the link cores too
+    with pytest.raises(ProgramError, match=r"\(0, 120\) of this island, its link"):
+        Run._check_load_rectangle(run, program, 0, 236)
+    one = SimpleNamespace(island_first=0, island_cores=(0, 120), island_ranks=120,
+                          ranks=120)  # fmt: skip
+    Run._check_load_rectangle(one, program, 0, 120)
+    with pytest.raises(ProgramError, match=r"is the cores \(0, 120\), not inside"):
+        Run._check_load_rectangle(one, program, 0, 60)
+
+
+def test_a_class_s_default_rectangle_on_an_island_is_its_rank_cores():
+    nocs = SimpleNamespace(grid=(12, 10))
+    args, group, rect = rank_rectangle(SimpleNamespace(broadcasts=[]), nocs, 118)
+    assert (group, rect) == ((0, 118), None)
+    assert args(17)[2] == [5, 1, 1, 12, 10]  # x, y, inside, columns, rows
+    assert args(118) == ([0, 0, 0, 12, 10],) * 3  # a link core: never inside
+    _, group, rect = rank_rectangle(SimpleNamespace(broadcasts=[]), nocs, 120)
+    assert (group, rect) == ((0, 120), None)  # one card: the whole grid
