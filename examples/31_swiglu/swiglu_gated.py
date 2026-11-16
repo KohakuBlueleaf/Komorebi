@@ -86,7 +86,19 @@ def gated_form(session, program, t, runs, deadline):
     return got, times, ends
 
 
-def card_result(session, runs=50, deadline=0.5):
+def where(gated, steps, columns):
+    """Where gated's words differ from the steps': by 32-row tile, by block of
+    `columns` (a core's), and the largest difference."""
+    a, b = gated.view(np.float32), steps.view(np.float32)
+    wrong = a != b
+    return {
+        "by_row_tile": wrong.reshape(-1, 32, a.shape[1]).sum(axis=(1, 2)).tolist(),
+        "by_core": wrong.reshape(a.shape[0], -1, columns).sum(axis=(0, 2)).tolist(),
+        "largest": float(np.abs(a.astype(np.float64) - b).max()),
+    }
+
+
+def card_result(session, runs=50, deadline=0.5, dump=None):
     data = rows.inputs()
     t = rows.tensors_of(session, data, empty=False)
     three = rows.SwiGLURows(log=log, session=session, **t)
@@ -104,6 +116,14 @@ def card_result(session, runs=50, deadline=0.5):
         n: int(np.sum(got["gated"][n] != got["steps"][n])) for n in ("hidden", "y")
     }
     result["words"] = {n: int(got["steps"][n].size) for n in ("hidden", "y")}
+    result["where"] = {
+        n: where(got["gated"][n], got["steps"][n], c)
+        for n, c in (("hidden", 128), ("y", 256))
+    }
+    if dump:
+        np.savez_compressed(
+            dump, **{f"{f}_{n}": got[f][n] for f in got for n in ("hidden", "y")}
+        )
     for name in ("steps", "gated"):
         hidden = got[name]["hidden"].view(np.float32)
         want_hidden, want_y = rows.wanted(data, hidden)
@@ -131,10 +151,10 @@ def build():
     return 0
 
 
-def card():
+def card(dump=None):
     os.environ.setdefault("TT_METAL_CACHE", str(rows.JIT_CACHE))
     with km.Session(log=log) as session:
-        result = card_result(session)
+        result = card_result(session, dump=dump)
         power.clocked(result)
     print(json.dumps(result), flush=True)
     return 0 if result["ok"] else 1
@@ -143,8 +163,9 @@ def card():
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("what", choices=["build", "card"])
+    parser.add_argument("--dump", help="card: every form's hidden and y to this .npz")
     args = parser.parse_args()
-    return build() if args.what == "build" else card()
+    return build() if args.what == "build" else card(args.dump)
 
 
 if __name__ == "__main__":

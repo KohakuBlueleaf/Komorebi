@@ -191,3 +191,19 @@ job and compares every word of hidden and y with the commands'. The gate's input
 not the same: the three calls round h and g to bf16 before `mix` reads them, the gated
 form gates the fp32 sums. The kernel text is 71,504 B against the three calls' 82,672 B.
 
+On the card (2026-11-16, card 0, 1350 MHz, 50 runs a form, median; the job's numbers
+in [results/swiglu_gated.json](results/swiglu_gated.json)):
+
+| | Three commands | Three-call chain | Gated chain (two calls) |
+|---|---:|---:|---:|
+| Time | 371.61 us | 372.96 us | 352.64 us |
+| hidden against float64 (relative RMS / max) | 7.01e-3 / 9.45e-3 | | 6.55e-3 / 7.41e-3 |
+| y against float64 (relative RMS / max) | 4.06e-3 / 3.84e-3 | | 4.07e-3 / 4.24e-3 |
+
+The gated form's words are not the commands': 136,845 of hidden's 393,216 words differ
+(at most 0.0039, spread evenly over the 24 cores and the 4 row tiles), and so do 131,070
+of y's 131,072, which down computes from that hidden. That is the gate reading fp32 sums
+in place of bf16-rounded ones: hidden is closer to float64, and y is as close as before.
+Leaving out `mix` and the h and g round trip through DRAM saves 20.3 us of the chain's
+372.96.
+
