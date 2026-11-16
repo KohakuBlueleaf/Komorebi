@@ -1,5 +1,5 @@
-"""The ports' reduce as an all-reduce, its sum cast back to every rank in one command: each rank's P
-float32 tiles summed over the group, every rank's copy of the sum checked against
+"""The ports' reduce as an all-reduce, its sum cast back to every rank in one command:
+each rank's P float32 tiles summed over the group, every rank's copy checked against
 numpy, beside the plain reduce (rank 0 alone). Prints one JSON line. See README.md."""
 
 import argparse
@@ -34,7 +34,7 @@ def parse():
         "--ranks", type=int, nargs="+", default=[16], help="group sizes (0: all)"
     )
     parser.add_argument(
-        "--plain", type=int, nargs="*", default=None, help="sizes of the plain reduce too"
+        "--plain", type=int, nargs="*", default=None, help="the plain reduce's sizes"
     )
     parser.add_argument("--part", type=int, default=1, help="tiles a rank (1 to 3)")
     parser.add_argument("--form", choices=sorted(FORMS), default="tree")

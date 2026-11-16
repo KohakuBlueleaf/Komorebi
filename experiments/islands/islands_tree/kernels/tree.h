@@ -1,12 +1,10 @@
-// The tree built-ins' experiment: the handler, buffers and command words its kernels
-// share.
+// The tree built-ins' experiment: the handler, buffers and words its kernels share.
 #pragma once
 
 #include <stdint.h>
 
-// ALL_REDUCE: a0 input (rank r's P tiles from page r * P), a1 output (rank r's sum at page
-// r * P), a2 form (0 owner, 1 tree), a3 P tiles, a4 1: cast (every rank writes), 0: the
-// plain reduce (rank 0 writes).
+// ALL_REDUCE: a0 input, a1 output (rank r's P tiles at page r * P), a2 form (0 owner, 1
+// tree), a3 P, a4 1: the all-reduce (every rank writes), 0: the reduce (rank 0 writes).
 constexpr uint32_t kHandlerAllReduce = 1;
 
 constexpr uint32_t kCbIn = 0;

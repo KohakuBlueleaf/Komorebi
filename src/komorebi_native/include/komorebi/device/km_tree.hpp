@@ -22,7 +22,9 @@ namespace km {
         if (!reduce_arrive(reader, command, arrival, group, form)) {
             return false;
         }
-        return group.rank == 0 || arrive(reader, command, arrival, KM_PORT_ALL_REDUCE, 1);
+        return (
+            group.rank == 0 || arrive(reader, command, arrival, KM_PORT_ALL_REDUCE, 1)
+        );
     }
 
     // The writer's NoC writes and atomics flushed (bounded); a give-up names the port.
@@ -81,9 +83,8 @@ namespace km {
         );
     }
 
-    // `bytes` from `source` to `target` on the cores of this island's flat ranks
-    // first, first + stride, ... (`ranks` of them): a multicast a NoC rectangle that
-    // whole runs of them make (a run: one row of the NoC, x one apart).
+    // `bytes` from `source` to `target` on flat ranks first + k * stride, k < ranks, of
+    // this island: a multicast a NoC rectangle of whole runs (a NoC row, x one apart).
     inline void cast_ranks(
         const Writer& writer,
         uint32_t first,
@@ -95,9 +96,13 @@ namespace km {
     ) {
         const volatile tt_l1_ptr uint32_t* table = writer.control(KM_CONTROL_CORES);
         const auto place = [&](uint32_t k) {
-            return core_entry(
-                table, writer.core_of(first + k * stride), writer.args().control,
-                writer.role()
+            return (
+                core_entry(
+                    table,
+                    writer.core_of(first + k * stride),
+                    writer.args().control,
+                    writer.role()
+                )
             );
         };
         // the rectangle so far: columns x0 .. x1, rows y0 .. y1
@@ -131,10 +136,8 @@ namespace km {
         }
     }
 
-    // Writer: a rank other than the group's 0 emits its part (reduce_emit); rank 0
-    // waits for the sum's `pages` pages at the front of `cb`, casts them into slot 0 of
-    // every other rank of the group and counts 1 at its port KM_PORT_ALL_REDUCE; the
-    // pages stay at the front (reduce_result, then pop). False: gave up.
+    // Writer: rank 0 casts the sum (front of `cb`, kept there) into every rank's slot
+    // 0, then 1 onto its port KM_PORT_ALL_REDUCE; the others emit. False: gave up.
     inline bool all_reduce_emit(
         const Writer& writer,
         const km_command_t& command,
@@ -184,11 +187,13 @@ namespace km {
         // the count after the pages, an atomic a rank: each port was cleared before
         // the sum could exist (its rank sent first)
         const uint32_t count = (
-            writer.args().control + KM_CONTROL_PORT + KM_PORT_ALL_REDUCE * KM_PORT_STRIDE +
-            4 * KM_PORT_COUNT
+            writer.args().control + KM_CONTROL_PORT +
+            KM_PORT_ALL_REDUCE * KM_PORT_STRIDE + 4 * KM_PORT_COUNT
         );
         for (uint32_t k = 1; k < group.size; k++) {
-            noc_semaphore_inc(writer.core_noc(writer.core_of(core_of(group, k)), count), 1);
+            noc_semaphore_inc(
+                writer.core_noc(writer.core_of(core_of(group, k)), count), 1
+            );
         }
         return cast_flushed(writer, command);
     }
@@ -198,10 +203,8 @@ namespace km {
 #else
 namespace km {
 
-    // Compute, after it packed its part: a rank other than the group's 0 takes the sum
-    // cast back (slot 0 of the arrival: copy_tile(arrival.cb, i, ...) for its page i in
-    // use()), then releases it; rank 0 (its sum is what it packed): nothing. False:
-    // stopping.
+    // Compute, its part packed: a rank but the group's 0 takes the sum cast back, use()
+    // reads it from slot 0 (page i: i), released after. False: stopping.
     template <typename Use>
     inline bool all_reduce_take(
         const Compute& compute, const Arrival& arrival, const Group& group, Use use
