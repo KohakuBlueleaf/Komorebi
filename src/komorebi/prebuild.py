@@ -21,6 +21,7 @@ ACTIVE = "KMR_PREBUILD"  # set in the script's process: its loads build, then mo
 MOCK = "TT_METAL_MOCK_CLUSTER_DESC_PATH"
 MEMORY = "KMR_PREBUILD_MEMORY"  # the remembered sizes a prebuild reads and keeps
 REFUSED = 75  # the script's exit: its load refused by size, the size now kept
+STOPPED = 76  # the script's exit: an error stopped it before its end (no prebuild)
 PASSES = 6  # passes at most: each opens at a size the passes before it did not
 MHZ = 1000  # a mock has no clock: the cycles of a limit, never compiled in
 LIMIT = (
@@ -365,7 +366,7 @@ def main():
         refused_load(error, script, kept, before)
         print(f"{said}refused by size, as the card's run would be", flush=True)
         return REFUSED
-    except Exception as error:  # the script's own checks on zeros, or a build
+    except Exception as error:  # the script's own checks on zeros, or a build: stops it
         if in_load(error):
             raise  # a build or a load failed: as it would on the card
         frames = traceback.extract_tb(error.__traceback__)
@@ -377,6 +378,7 @@ def main():
             f"({type(error).__name__}: {error})"[:400],
             file=sys.stderr,
         )
+        return STOPPED
     except SystemExit as exit:  # the script's own exit
         if exit.code not in (None, 0):
             print(f"{said}the script exited {exit.code}", file=sys.stderr)

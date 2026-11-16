@@ -74,6 +74,7 @@ class Tensor:
         )
         if shape != self.shape:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
+        refuse_live_write(self)
         self.buffer.write(raw)
         self.sent = None
         if self.kept is not None:
@@ -121,6 +122,19 @@ def refuse_live(tensor):
     raise KomorebiError(
         f"{tensor!r} is read while a run is loaded: tensor.read() waits for the cores, "
         f"which the run keeps; read it after run.stop(), or {live}"
+    )
+
+
+def refuse_live_write(tensor):
+    """A write of a tensor whose session has a run loaded, refused at once: the buffer
+    write waits for the cores, as the read does (refuse_live)."""
+    if tensor.loaded is None or not tensor.loaded():
+        return
+    raise KomorebiError(
+        f"{tensor!r} is written while a run is loaded: tensor.write() waits for the "
+        "cores, which the run keeps; write it before the load or after run.stop(), or "
+        "live with session.write(tensor, pages) (its pages as session.read gives "
+        "them, through the run's transfer or the host channel)"
     )
 
 
