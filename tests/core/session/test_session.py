@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from fake_session import CONSTANTS, FakeDevice, load_session
 
+from komorebi.device import native
 from komorebi.errors import ProgramError
 from komorebi.program import several
 from komorebi.session import process, sizes, tensor_bytes
@@ -60,7 +61,7 @@ def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch
 def backend_over(session, log, tmp_path, monkeypatch):
     """The real card backend over a closed fake dispatch and a stub readback."""
     sess = session.Session(device=FakeDevice(log), grid_timeout=0.5)
-    sess._module = session.native.load_module()
+    sess._module = native.load_module()
     port = sess._module.Dispatch("dev", 1750)
     port.close()
     backend = sess._module.card_backend(sess._card(), port, 1350, 0)

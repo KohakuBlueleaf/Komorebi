@@ -18,6 +18,7 @@ from komorebi.session import kernels as session_kernels
 from komorebi.session import process
 from komorebi.session import session as km_session
 from komorebi.session import x280 as session_x280
+from komorebi.session.backend import backend as card_backend
 
 
 class Built(BaseException):
@@ -61,7 +62,7 @@ def build_only(self, program, depth=None, trace=0, **_):
         sources = programs.runtime_kernels()
     self._module = native.load_module(self.tree)
     dispatch = FakeDispatch(self.device)
-    backend = km_session._Backend(self._card(), dispatch, 1000, trace)
+    backend = card_backend._Backend(self._card(), dispatch, 1000, trace)
     rings = {cluster: (0, 0) for cluster in owner.threads}
     _, port_lines = session_x280._port_lines(owner, dispatch, rings)
     descriptor = backend.describe(

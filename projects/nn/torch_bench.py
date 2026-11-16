@@ -21,7 +21,7 @@ import torch  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi import abi, formats  # noqa: E402
 from komorebi.bench import power  # noqa: E402
-from komorebi.session import session as session_module  # noqa: E402
+from komorebi.session.parts import transfer as transfer_part  # noqa: E402
 from projects.decode import model as md  # noqa: E402
 from projects.decode import real  # noqa: E402
 from projects.nn import front, models, nn, table  # noqa: E402
@@ -246,8 +246,8 @@ def plain_transfers(device, calls):
     for name, columns in (("x_joint", 2304), ("y", 2048)):
         tensor = session.empty((table.TILE, columns), "bfloat16", "tile")
         pages = random_pages(rng, columns)
-        for spin in (0.0, session_module.WORDS_SPIN_S):
-            kept, session_module.WORDS_SPIN_S = session_module.WORDS_SPIN_S, spin
+        for spin in (0.0, transfer_part.WORDS_SPIN_S):
+            kept, transfer_part.WORDS_SPIN_S = transfer_part.WORDS_SPIN_S, spin
             writes, reads = [], []
             for _ in range(calls + 1):
                 started = time.perf_counter()
@@ -256,7 +256,7 @@ def plain_transfers(device, calls):
                 (got,) = session.read(tensor)
                 writes.append(written - started)
                 reads.append(time.perf_counter() - written)
-            session_module.WORDS_SPIN_S = kept
+            transfer_part.WORDS_SPIN_S = kept
             if not np.array_equal(got, pages):
                 raise km.KomorebiError(f"{name}: the read is not the write")
             out[f"{name}_spin_{round(spin * 1e6)}us"] = {

@@ -16,7 +16,7 @@ from komorebi.program import overlay
 from komorebi.program import several as programs
 from komorebi.program.description import Handler, source_form
 from komorebi.session import kernels as session_kernels
-from komorebi.session import session as session_module
+from komorebi.session.backend import backend as card_backend
 from komorebi.session.run import Run
 
 CONSTANTS = abi.headers().constants
@@ -304,7 +304,7 @@ def test_buffers_declared_out_of_index_order_are_laid_out_in_index_order(tmp_pat
     program = made(tmp_path, "unordered", buffers=declared)
     plan = programs.plan({program: (0, 10)}, 120)
     module = SimpleNamespace(kernel_buffer=lambda device: (0, 0x1000, 0x20000))
-    backend = session_module._Backend.__new__(session_module._Backend)
+    backend = card_backend._Backend.__new__(card_backend._Backend)
     backend.card, backend.device, backend.trace_cap = (
         SimpleNamespace(module=module),
         None,
