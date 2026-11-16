@@ -24,8 +24,9 @@ REFUSED = 75  # the script's exit: its load refused by size, the size now kept
 PASSES = 6  # passes at most: each opens at a size the passes before it did not
 MHZ = 1000  # a mock has no clock: the cycles of a limit, never compiled in
 LIMIT = (
-    "a mock run's calls return at once and its reads give zeros: a script that "
-    "branches on what it read may build other loads than on the card"
+    "a mock run's calls return at once, its reads give zeros and what it returns "
+    "equals whatever it is compared with (the success path): a script that branches "
+    "on what it read may build other loads than on the card"
 )
 LOADS = [0]  # the loads this process built
 
@@ -33,9 +34,21 @@ LOADS = [0]  # the loads this process built
 CHILD = "import sys, komorebi.prebuild as p; sys.exit(p.main())"
 
 
-class Nothing:
-    """What a mock run's call gives: any field, call or item is itself, a number is
-    0, it iterates over nothing and is true (a loop waiting for it ends)."""
+class Nothing(float):
+    """What a mock run's call gives: any field, call or item is itself, 0.0 as a number
+    (JSON too), equal to whatever it is compared with (a script's success checks
+    pass), it iterates over nothing and is true (a loop waiting for it ends)."""
+
+    def __new__(cls):
+        return super().__new__(cls, 0.0)
+
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return False
+
+    __hash__ = float.__hash__
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -56,9 +69,6 @@ class Nothing:
 
     def __bool__(self):
         return True
-
-    def __float__(self):
-        return 0.0
 
     def __int__(self):
         return 0

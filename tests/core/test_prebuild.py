@@ -77,6 +77,10 @@ def test_a_mock_run_s_calls_return_at_once_with_nothing():
     assert event.parts == (event,)
     assert float(event.microseconds) == 0.0 and f"{event.microseconds:.2f}" == "0.00"
     assert list(event.values) == [] and event and int(event + 1) == 0
+    error = run.result()["error_name"]  # a script's success check passes
+    assert error == "none" and "none" == error  # noqa: SIM300 (both sides)
+    assert (error != "none") is False
+    assert json.dumps({"us": event.microseconds}) == '{"us": 0.0}'
     run.stop()
     assert run.stopped and not run.alive()
 
