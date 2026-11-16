@@ -18,6 +18,7 @@ from pathlib import Path
 
 from komorebi import abi
 from komorebi.dsl import front
+from komorebi.dsl.compile import layout
 from komorebi.dsl.compile.records import (
     Buffer,
     Compiled,
@@ -61,9 +62,6 @@ WRITE_ITEMS = 2
 REDUCE_SLOTS = 118
 # Blocks a broadcast holds in flight when the plan does not say.
 BROADCAST_WINDOW = 2
-# Circular buffer indices: reads from 0, writes from 16, the others from 8 (24 and up
-# are the runtime's).
-FIRST_READ, FIRST_OTHER, FIRST_WRITE, LAST_INDEX = 0, 8, 16, 25
 HANDOVER_WORDS = 16  # a body's words of the other mover: one 64 B page
 REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
 PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}
@@ -812,7 +810,7 @@ def bind_fields(compiled, plan, l1):
         buffer = Buffer(
             f"kField{camel(name)}",
             "field",
-            next_index(compiled),
+            layout.next_index(compiled),
             None,
             value.format.dtype,
             page_bytes,
@@ -825,7 +823,7 @@ def bind_fields(compiled, plan, l1):
                 else ""
             ),
         )
-        compiled.buffers.append(buffer)
+        layout.added(compiled, buffer)
         if name in compiled.own and value.format.dtype == "float32":
             compiled.unpack_fp32.add(buffer.name)  # unpacked to DST as float32
         for n in value.shape:
@@ -908,19 +906,6 @@ def solve(compiled, symbol, plan, l1, name):
             "give smaller blocks, or a smaller field",
         )
     return value
-
-
-def next_index(compiled):
-    taken = {b.index_a for b in compiled.buffers} | {
-        b.index_b for b in compiled.buffers
-    }
-    taken |= compiled.reserved
-    index = FIRST_OTHER
-    while index in taken:
-        index += 1
-    if index > LAST_INDEX:
-        raise Refused(f"{compiled.name}: more buffers and fields than the indices")
-    return index
 
 
 def source_of(function):
@@ -1365,7 +1350,8 @@ class HandlerCompiler:
                 f"a stamps page is five words; {stamps}'s page is {page_bytes} B",
                 f"make {stamps} a tensor of uint32 pages of at least five words",
             )
-        buffer = self.other_buffer(
+        buffer = layout.other_buffer(
+            self.compiled,
             "kStamps", "word", dtype, page_bytes, 2, "stamps: a page a mover"
         )  # fmt: skip
         buffer.page_bytes = max(buffer.page_bytes, page_bytes)
@@ -1407,7 +1393,8 @@ class HandlerCompiler:
                 f"make {stamps} a tensor of uint32 pages of {SPANS_FIRST + 1} words "
                 "or more",
             )
-        buffer = self.other_buffer(
+        buffer = layout.other_buffer(
+            self.compiled,
             "kSpans", "word", dtype, page_bytes, 1, "stamps: the math CPU's spans"
         )  # fmt: skip
         steps = self.calls_steps()  # then the three CPUs' words end the page
@@ -4222,44 +4209,6 @@ class HandlerCompiler:
             )
         return example.dtype, example.page_bytes
 
-    def pair(self, role, number, dtype, page_bytes, block, items, what):
-        """The program's pair `number` of `role`, made or grown."""
-        name = f"k{role.capitalize()}{number}"
-        for buffer in self.compiled.buffers:
-            if buffer.name == name:
-                if (buffer.dtype, buffer.page_bytes, buffer.block) != (
-                    dtype,
-                    page_bytes,
-                    block,
-                ):
-                    break
-                return buffer
-        else:
-            first = FIRST_READ if role == "read" else FIRST_WRITE
-            taken = {b.index_a for b in self.compiled.buffers} | {
-                b.index_b for b in self.compiled.buffers
-            }
-            taken |= self.compiled.reserved
-            index = first
-            while index in taken or index + 1 in taken:
-                index += 2
-            buffer = Buffer(
-                name,
-                role,
-                index,
-                index + 1,
-                dtype,
-                page_bytes,
-                (items * block, items * block),
-                block,
-                what,
-            )
-            if index + 1 > LAST_INDEX:
-                raise Refused(f"{self.compiled.name}: more pairs than buffers")
-            self.compiled.buffers.append(buffer)
-            return buffer
-        return self.pair(role, f"{number}b", dtype, page_bytes, block, items, what)
-
     def pattern_cxx(self, buffer, pattern, letters):
         """The C++ of a stream's pattern: a parameter's, or the pair's constant."""
         if pattern is not None:
@@ -4340,7 +4289,8 @@ class HandlerCompiler:
         self.moved(node, pages.tensor, "write stream")
         number = self.writes
         self.writes += 1
-        buffer = self.pair(
+        buffer = layout.pair(
+            self.compiled,
             "write",
             number,
             dtype,
@@ -4502,7 +4452,8 @@ class HandlerCompiler:
                 self.items_alone(node, row)
             index = self.reads
             self.reads += 1
-            buffer = self.pair(
+            buffer = layout.pair(
+                self.compiled,
                 "read",
                 index,
                 dtype,
@@ -6557,7 +6508,8 @@ class HandlerCompiler:
                 )
             self.filled[field_] = None
             self.stepped[field_] = pages
-            self.other_buffer(
+            layout.other_buffer(
+                self.compiled,
                 token,
                 "token",
                 "float32",
@@ -6976,7 +6928,8 @@ class HandlerCompiler:
             self.refuse(node, "a word is one page", "read pages(first, 1)")
         self.check_name(node, name)
         dtype, page_bytes = self.tensor_format(node, pages.tensor)
-        buffer = self.other_buffer(
+        buffer = layout.other_buffer(
+            self.compiled,
             "kWordB", "word", dtype, page_bytes, 1, f"line {node.lineno}: "
             f"{self.text(node)} (mover B's word page)",
         )  # fmt: skip
@@ -7041,11 +6994,23 @@ class HandlerCompiler:
             self.check_name(node, name)
             self.scope[name] = Value("int", name)
         what = f"line {node.lineno}: {self.text(node)}"
-        handed = self.other_buffer(
-            "kWords", "word", dtype, page_bytes, 1, f"{what} (mover A's, to compute)"
+        handed = layout.other_buffer(
+            self.compiled,
+            "kWords",
+            "word",
+            dtype,
+            page_bytes,
+            1,
+            f"{what} (mover A's, to compute)",
         )
-        own = self.other_buffer(
-            "kWordB", "word", dtype, page_bytes, 1, f"{what} (mover B's word page)"
+        own = layout.other_buffer(
+            self.compiled,
+            "kWordB",
+            "word",
+            dtype,
+            page_bytes,
+            1,
+            f"{what} (mover B's word page)",
         )
         for buffer in (handed, own):
             buffer.page_bytes = max(buffer.page_bytes, page_bytes)
@@ -7161,7 +7126,8 @@ class HandlerCompiler:
             self.refuse(
                 node, f"a page of {page_bytes} B is not whole words", "use words"
             )
-        buffer = self.other_buffer(
+        buffer = layout.other_buffer(
+            self.compiled,
             f"kWord{value.mover}", "word", dtype, page_bytes, 1, f"line {node.lineno}: "
             f"{self.text(node)} (mover {value.mover}'s word page)",
         )  # fmt: skip
@@ -7195,29 +7161,8 @@ class HandlerCompiler:
         if name is None:
             name = f"kOut{self.writes}"
             self.writes += 1
-        for buffer in self.compiled.buffers:
-            if buffer.name == name and (buffer.dtype, buffer.page_bytes) == (
-                dtype,
-                page_bytes,
-            ):
-                buffer.pages = (max(buffer.pages[0], WRITE_ITEMS * width),)
-                return buffer
-        while any(b.name == name for b in self.compiled.buffers):
-            name += "b"
-        taken = {b.index_a for b in self.compiled.buffers} | {
-            b.index_b for b in self.compiled.buffers
-        }
-        taken |= self.compiled.reserved
-        index = FIRST_WRITE
-        while index in taken:
-            index += 1
-        if index > LAST_INDEX:
-            raise Refused(f"{self.compiled.name}: more buffers than the indices")
-        buffer = Buffer(
-            name, "out", index, None, dtype, page_bytes, (WRITE_ITEMS * width,), 1, what
-        )
-        self.compiled.buffers.append(buffer)
-        return buffer
+        pages = WRITE_ITEMS * width
+        return layout.out_buffer(self.compiled, name, dtype, page_bytes, pages, what)
 
     def branch(self, node):
         if self.self_call(node.test, "seeding"):
@@ -8573,7 +8518,8 @@ class HandlerCompiler:
         if words and parts["giver"] != value.mover:
             self.refuse(node, "a body's hand-over is from one mover", "take one's")
         words.append(name)
-        buffer = self.other_buffer(
+        buffer = layout.other_buffer(
+            self.compiled,
             "kHandover",
             "word",
             "uint32",
@@ -8636,28 +8582,17 @@ class HandlerCompiler:
             )
             found.block, found.pages = per, (slots * per,)
             return found
-        arrival = self.other_buffer(
-            name, "arrival", "float32", PAGE_BYTES["float32"], slots * per, what
+        arrival = layout.other_buffer(
+            self.compiled,
+            name,
+            "arrival",
+            "float32",
+            PAGE_BYTES["float32"],
+            slots * per,
+            what,
         )
         arrival.block = per
         return arrival
-
-    def other_buffer(self, name, role, dtype, page_bytes, pages, what):
-        for buffer in self.compiled.buffers:
-            if buffer.name == name:
-                return buffer
-        taken = {b.index_a for b in self.compiled.buffers} | {
-            b.index_b for b in self.compiled.buffers
-        }
-        taken |= self.compiled.reserved
-        index = FIRST_OTHER
-        while index in taken:
-            index += 1
-        if index >= FIRST_WRITE and role != "field":
-            raise Refused(f"{self.compiled.name}: more buffers than the indices")
-        buffer = Buffer(name, role, index, None, dtype, page_bytes, (pages,), 1, what)
-        self.compiled.buffers.append(buffer)
-        return buffer
 
     # Broadcasts --------------------------------------------------------------------
 
@@ -8891,7 +8826,8 @@ class HandlerCompiler:
         buffer = broadcast.buffer
         if buffer is None:
             number = len(self.compiled.broadcasts)
-            buffer = self.other_buffer(
+            buffer = layout.other_buffer(
+                self.compiled,
                 f"kBroadcast{number}",
                 "broadcast",
                 dtype,
@@ -9326,7 +9262,8 @@ class HandlerCompiler:
 
     def end_buffer(self, node, name):
         """The page of a drained stream's end: the count of pages compute pushed."""
-        return self.other_buffer(
+        return layout.other_buffer(
+            self.compiled,
             f"kEnd{camel(name)}",
             "word",
             "uint32",
@@ -10690,7 +10627,8 @@ class HandlerCompiler:
         dtype, page_bytes = self.tensor_format(node, pages.tensor)
         index = self.reads
         self.reads += 1
-        buffer = self.pair(
+        buffer = layout.pair(
+            self.compiled,
             "read",
             index,
             dtype,
@@ -11015,12 +10953,19 @@ class HandlerCompiler:
         self.tables += 1
         name = f"km_entries{number}"
         what = f"line {node.lineno}: {self.text(node)}"
-        pushed = self.other_buffer(
+        pushed = layout.other_buffer(
+            self.compiled,
             f"kEntries{number}", "word", dtype, page_bytes, 1, f"{what} (mover A's, "
             "to compute)",
         )  # fmt: skip
-        own = self.other_buffer(
-            f"kEntries{number}B", "word", dtype, page_bytes, 1, f"{what} (mover B's)"
+        own = layout.other_buffer(
+            self.compiled,
+            f"kEntries{number}B",
+            "word",
+            dtype,
+            page_bytes,
+            1,
+            f"{what} (mover B's)",
         )
         for buffer in (pushed, own):
             buffer.page_bytes = max(buffer.page_bytes, page_bytes)
@@ -11365,18 +11310,19 @@ def chunk_rows_buffer(compiled, cxx, node, pages=1):
         if buffer.name == name and buffer.pages[0] < pages:
             buffer.pages = (pages,)
     if all(b.name != name for b in compiled.buffers):
-        compiled.buffers.append(
+        layout.added(
+            compiled,
             Buffer(
                 name,
                 "field",
-                next_index(compiled),
+                layout.next_index(compiled),
                 None,
                 "float32",
                 4096,
                 (pages,),
                 1,
                 f"the per-row values of {cxx}'s wide rows (line {node.lineno})",
-            )
+            ),
         )
         compiled.unpack_fp32.add(name)
     return name
