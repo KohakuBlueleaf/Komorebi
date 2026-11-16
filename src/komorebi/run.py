@@ -1324,13 +1324,22 @@ class Run:
             and block["kind"] == "timeout"
             and block["request"] == event.handle & M32
         )
-        self._given_up[event.handle] = (event, block["cores"] if ours else [])
+        cores = (block["cores"] if ours else []) + self._far_given_up(event.handle)
+        self._given_up[event.handle] = (event, cores)
         error = self._given_up_error(event.handle)
         if error.recovered:
             self.recoveries.append(
                 {"handle": event.handle, "cores": error.recovered, "text": str(error)}
             )
         return True
+
+    def _far_given_up(self, handle):
+        """An island run's command given up: the cores of its parts on the other
+        islands, as their dispatchers read them (IslandRun._far_cores); [] otherwise."""
+        far, group = getattr(self, "far_cores", None), self.group(handle)
+        if far is None or not group or group[0] is None:
+            return []
+        return far(group)
 
     def _given_up_error(self, handle):
         """The CommandTimeout of a command the dispatcher gave up."""
@@ -1342,7 +1351,11 @@ class Run:
             self.group(handle),
             cores,
             given_up=True,
-            recovered=[core["core"] for core in cores if core.get("reset")],
+            recovered=[
+                core["core"]
+                for core in cores
+                if core.get("reset") and not core.get("far")
+            ],
             links=self.links_named(handle),
         )
         self._name_lines(error)

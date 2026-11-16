@@ -203,8 +203,11 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   `island i:` and carries `error.island`; a `CommandTimeout` (a time-out or a give-up)
   names its ticket, and the cores it lists, where each waited and those reset and
   loaded again (`recovered`), by flat rank with the island and core as information:
-  `rank 128 (island 1, core 10) reader waits in port`. A `WaitTimeout`'s `pending`
-  lists tickets.
+  `rank 128 (island 1, core 10) reader waits in port`. A given-up command's
+  `CommandTimeout` lists the cores of every island that held a part: each other
+  island's part as its own dispatcher's inspect of the deadline read it. This covers a
+  group sent through one island's `run.island(i)`, whose far part that island's
+  dispatcher crossed. A `WaitTimeout`'s `pending` lists tickets.
 - `run.inspect(ranks=None)` reads what each rank of `ranks` (first, count; default
   every rank) is doing while the run goes on, each island's part asked of its own
   dispatcher, as `Run.inspect` does; each core's dict also holds its `rank` and
@@ -251,7 +254,12 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
 - `run.addon(program)` on an `IslandRun` adds a class to the live run on every island
   at once, all or none, with one program field (classes.md, "Another class added to a
   live run", item 8); its tensors may be made before the load or while the run lives
-  (each later tensor's table row is written by the ranks, below).
+  (each later tensor's table row is written by the ranks, below). Its parts must fit
+  the slots the load kept, which the loaded programs and the classes named ahead
+  (`Program.ahead(program)`) size. An instance made later of a class named ahead (the
+  same class and name, its tensors made after the load) takes the named one's own
+  overlay numbers (`KM_OVERLAY_SHIFT`), so its parts build byte for byte as the load
+  built them. A part over its slot is refused, naming both ways to keep more.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.

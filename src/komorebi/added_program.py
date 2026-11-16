@@ -551,8 +551,28 @@ def _shift_of(runs, program):
     field = len(runs[0].programs)
     shift = getattr(program, "added_own_shift", None)
     if shift is None or program.program_field != field:
+        shift = _ahead_twin_shift(runs, program, field)
+    if shift is None:
         shift = _own_shift(runs, program, field)
     return shift
+
+
+def _ahead_twin_shift(runs, program, field):
+    """The own overlays' shift the load gave a class of the same kind named ahead
+    (Program.ahead), not added itself, for this `field`: an instance made later (its
+    tensors made after the load) then builds its parts as the load built the named
+    one's, so they fit the slots kept for it. None when there is no such class."""
+    for loaded in runs[0].programs:
+        for other in getattr(loaded, "added_ahead_programs", ()):
+            if (
+                other is not program
+                and type(other) is type(program)
+                and other.name == program.name
+                and not getattr(other, "added_live", False)
+                and getattr(other, "program_field", None) == field
+            ):
+                return getattr(other, "added_own_shift", None)
+    return None
 
 
 def _prepared(run, program, shift, island=False):

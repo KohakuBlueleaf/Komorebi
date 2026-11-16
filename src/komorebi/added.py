@@ -185,9 +185,14 @@ def _part(session, each, made, kernel, part):
             f"declare them with Program.slots(bytes={{{kernel!r}: n}})"
         )
     cache = native.cache_directory() / "overlays"
-    linked, elf, hit = overlay.build_part_cached(
-        each.recipes[part], made, kernel, part, cache, slots[1]
-    )
+    try:
+        linked, elf, hit = overlay.build_part_cached(
+            each.recipes[part], made, kernel, part, cache, slots[1]
+        )
+    except overlay.OverlayError as error:
+        if "do not fit its slot" not in str(error):
+            raise
+        raise AddError(_slot_hint(error, kernel)) from None
     if not hit and insn_check.enabled():
         insn_check.check_kernels(
             made.name,
@@ -196,6 +201,15 @@ def _part(session, each, made, kernel, part):
             native.cache_directory() / "insn-check",
         )
     return linked, hit
+
+
+def _slot_hint(error, kernel):
+    """An added part larger than its slot: what the load kept and how to keep more."""
+    return (
+        f"{error}: the load sized the {kernel}'s slots by the loaded programs and the "
+        "classes named ahead (Program.ahead(program)); name the class ahead, or give "
+        f"the loaded program more (Program.slots(bytes={{{kernel!r}: n}}))"
+    )
 
 
 def ahead(program, name, parts, defines, compile_args, wanted):
