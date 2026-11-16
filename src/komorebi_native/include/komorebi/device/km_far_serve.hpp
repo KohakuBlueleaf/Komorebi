@@ -31,21 +31,23 @@ namespace km {
         const uint32_t pieces = (
             op == KM_ASK_OP_L1 && !inline_word ? line[KM_ASK_PIECES] : 0
         );
-        // the rank's core: the island tables are the same on every island
+        // the rank's core: its island's first core on the card (the core tables are
+        // the same on every island; a split card's is the card's)
         const uint32_t holder = line[KM_ASK_HOLDER];
         const uint32_t rank = line[KM_ASK_TENSOR];
         const uint32_t index = (
             holder < view.count() ? rank - view.entry_first(holder) : KM_CORES_MAX
         );
+        const uint32_t base = holder < view.count() ? view.entry_base(holder) : 0;
         const bool known = (
             holder < view.count() && holder != view.here() &&
-            index < view.entry_count(holder) && view.base() + index < KM_CORES_MAX
+            index < view.entry_count(holder) && base + index < KM_CORES_MAX
         );
         const uint32_t xy = (
             known
                 ? core_entry(
                     l1(kernel.args().control + KM_CONTROL_CORES),
-                    view.base() + index,
+                    base + index,
                     kernel.args().control,
                     kernel.role()
                 )
