@@ -63,3 +63,16 @@ def test_the_decode_layer_s_table_on_a_line_of_3_does_not_fit_with_the_queue():
     assert fits and "1,306,480 B of 1,307,200 B" in table
     table, fits = overlay.budget(1_307_200, rows + [(ROW, 111_232)])
     assert not fits and ROW in table and "1,417,712 B of 1,307,200 B" in table
+
+
+def test_a_load_refused_with_the_put_rings_is_built_again_without_them():
+    """The second build only when the chunks lie on link cores that hold the slots."""
+    backend, _ = queued(chunk=192 << 10)
+    backend.link_queue_at = (0, 192 << 10)
+    assert session_module.rings_dropped(backend)
+    backend.link_queue_at = (0, 0)  # no ring already: the refusal stands
+    assert not session_module.rings_dropped(backend)
+    backend.link_queue_at, backend.link_kernels = (0, 192 << 10), 2  # slots elsewhere
+    assert not session_module.rings_dropped(backend)
+    backend.link_kernels, backend.apart_links = 0, 3
+    assert not session_module.rings_dropped(backend)

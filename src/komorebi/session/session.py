@@ -288,6 +288,12 @@ def placed_slots(placed):
     return out
 
 
+def rings_dropped(backend):
+    """Whether a split card's load refused for its L1 table is built again without the
+    link cores' put rings: their chunks lie on cores that hold the slots too."""
+    return bool((backend.link_queue_at or (0, 0))[1] and sizes.link_rows(backend))
+
+
 def own_slot_declared(program):
     """`program`'s declared slots, the service shared when its kernels lack the
     own slot's code (own_slot_code)."""
@@ -1868,31 +1874,45 @@ class Session:
                     "the islands' dispatchers differ in upload region: "
                     f"{[dispatch.upload_bytes for dispatch in dispatches]}"
                 )
-            first = _Backend(self, dispatches[0], mhz, trace)
-            first.split = (graph, list(dispatches), tags, rows, set())
-            first.state_tensor = states[0]
-            descriptor = first.describe(
-                program, sources, tags[0], depth, wait, idle, trace
-            )
-            built_at = time.time()
-            try:
-                elves, *build = descriptor.build()
-            except Exception as error:
-                raise ProgramError(f"{program.name}: build failed: {error}") from error
-            program.sizes = kernel_sizes(build)
-            self._last_total = program.sizes.total
-            if build[-1]:
-                raise KernelSizeError(
-                    program.name, program.sizes, sizes.KERNEL_BUFFER_MAX
+            for ring in (True, False):  # the slots fit only without the put rings
+                first = _Backend(self, dispatches[0], mhz, trace)
+                first.split = (graph, list(dispatches), tags, rows, set())
+                first.state_tensor = states[0]
+                first.link_ring = ring
+                descriptor = first.describe(
+                    program, sources, tags[0], depth, wait, idle, trace
                 )
-            if insn_check.enabled():
-                insn_check.check_kernels(
-                    program.name,
-                    elves,
-                    native.metal_tree(self.tree),
-                    native.cache_directory() / "insn-check",
-                )
-            first.load_overlays(program, descriptor)
+                built_at = time.time()
+                try:
+                    elves, *build = descriptor.build()
+                except Exception as error:
+                    raise ProgramError(
+                        f"{program.name}: build failed: {error}"
+                    ) from error
+                program.sizes = kernel_sizes(build)
+                self._last_total = program.sizes.total
+                if build[-1]:
+                    raise KernelSizeError(
+                        program.name, program.sizes, sizes.KERNEL_BUFFER_MAX
+                    )
+                if insn_check.enabled():
+                    insn_check.check_kernels(
+                        program.name,
+                        elves,
+                        native.metal_tree(self.tree),
+                        native.cache_directory() / "insn-check",
+                    )
+                try:
+                    first.load_overlays(program, descriptor)
+                    break
+                except L1BudgetError:
+                    if not ring or not rings_dropped(first):
+                        raise
+                    first.release_l1()
+                    self.log(
+                        "the link cores have no put ring: a km::put_bytes batch to "
+                        "them is refused"
+                    )
             self._log_built(descriptor, built_at, program)
             if mock.active():  # built: a mock run an island for the launch
                 self._starting = None
@@ -2418,6 +2438,7 @@ class _Backend:
         self.apart_links = 0  # link cores holding the link area alone (_apart_links)
         self.link_kernels = 0  # link cores running the runtime's link kernels
         self.link_queue_at = None  # the put queue's offset from the link cores' base
+        self.link_ring = True  # False: no chunks on link cores holding the slots too
         # a split card: (graph, dispatches, tags, [(first row, rows)], the islands whose
         # cores returned) of the one launch; `rows` this backend's island's
         self.split = None
@@ -2783,6 +2804,7 @@ class _Backend:
             # alone (the program's kernels there); no room: no ring, no put batch
             packet = getattr(self.session, "packet", 0) or 0
             chunk = min(self._link_chunk(program, cores), link_chunk_least(packet))
+            chunk = chunk if self.link_ring else 0
             defines += self._link_queue(launch, program, grid, chunk)
             if chunk:
                 defines.append(("KM_LINK_CHUNK", str(chunk)))
