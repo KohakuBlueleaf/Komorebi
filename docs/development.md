@@ -116,7 +116,18 @@ native module and compiles each program (a few minutes the first time), and runs
 with `KMR_SIZES=1`. The continuous-integration workflow has no tree and skips it.
 
 The continuous-integration workflow runs ruff, black, the CPU tests and the
-programs' CPU tests.
+programs' CPU tests. It counts their skips and fails when the count is not the one
+kept in the workflow (`SKIPS` of each step), so a test that stops running is seen and
+a planned skip is a one-line change.
+
+Some tests in `tests/core` need a tt-metal tree and its X280 compiler (the class
+threads' C, the added program's native module, the RISC-V instruction check and the
+optimization levels: the files listed in the `tree-tests` job of
+`.github/workflows/ci.yml`); without a tree they are skipped. Run them locally with
+`TT_METAL_HOME` set to a built tree, for example `TT_METAL_HOME=~/tt-metal python -m
+pytest tests/core/dsl/test_class_thread_chain.py`. They open no device. CI runs them on
+the build machine on every push to main (never for a pull request), and there none of
+them may skip; a new test of that kind is added to that job's list.
 
 ## The runtime on the CPU
 
