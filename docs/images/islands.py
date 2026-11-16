@@ -2,14 +2,16 @@
 docs/images/<name>-{light,dark}.svg: reach ("A thread reaches any DRAM": one kmx_fetch
 on the tile grid, the call in time, what it costs on one card and from another island)
 and islands ("More than one card": two cards as two islands with flat ranks and the
-link cores, a tensor placed by a hint and read by one call, what crosses a link, a
-kernel that acts by island).
+link cores, islands as a graph of any shape, the link cores' four operations by flat
+rank or tensor page, a tensor placed by a hint and read by one call, what crosses the
+links, a kernel that acts by island).
 
 usage: python docs/images/islands.py [output folder]    (needs Pillow, as patterns.py)
 
 Every code line is read from the file it names when the figure is drawn. The numbers
-are the pages': experiments/x280/bank_fetch/README.md, docs/reference/islands.md and
-docs/concepts/islands.md.
+are the pages': experiments/x280/bank_fetch/README.md, docs/reference/islands.md,
+docs/concepts/islands.md, experiments/islands/link_ops/README.md and the READMEs of
+examples 25 and 26.
 """
 
 import sys
@@ -18,16 +20,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from patterns import (
+    BOX_W,
     BOX_X,
+    LIMIT,
     REPO,
+    RIGHT,
     THEMES,
     Frag,
     Lanes,
     Svg,
     arrow,
     card_tiles,
+    centre,
+    check,
     code_rows,
     core_at,
+    edge_point,
     lines_of,
     panel_frame,
     stack,
@@ -384,17 +392,234 @@ def panel_two_cards(s, y):
     return height
 
 
-def panel_crossings(s, y):
-    """What crosses a link, and what it cost when it was measured."""
+def node(s, cx, cy, label, kind=None, w=28, h=22):
+    """An island as a box with its number; returns its box."""
     c = s.c
+    fill, edge = (c[kind][1], c[kind][0]) if kind else (c["bg"], c["rule"])
+    box = (cx - w / 2, cy - h / 2, w, h)
+    s.rect(*box, fill, edge, rx=5, sw=1.5)
+    s.text(cx, cy + 4, label, 12, c["fg"], True, anchor="middle")
+    return box
+
+
+def wire(s, a, b, colour=None, shift=0.0, sw=1.8):
+    """A link between two islands' boxes, `shift` pixels beside the straight line."""
+    (ax, ay), (bx, by) = centre(a), centre(b)
+    (x1, y1), (x2, y2) = edge_point(a, (bx, by), 1.0), edge_point(b, (ax, ay), 1.0)
+    length = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
+    nx, ny = -(by - ay) / length * shift, (bx - ax) / length * shift
+    stroke = s.c[colour][0] if colour else s.c["rule"]
+    path(s, [(x1 + nx, y1 + ny), (x2 + nx, y2 + ny)], stroke, sw)
+
+
+def panel_graph(s, y):
+    """Islands as a graph: the shapes that ran, the flat ranks over them, a group."""
+    c = s.c
+    left = BOX_X + 14
+    cell = (BOX_W - 28) / 5
+    gy = y + 84
+
+    def at(k):
+        return left + cell * k + cell / 2
+
+    # two cards, four links
+    cx = at(0)
+    a, b = node(s, cx - 38, gy, "0"), node(s, cx + 38, gy, "1")
+    for shift in (-6, -2, 2, 6):
+        wire(s, a, b, shift=shift, sw=1.5)
+    # a line of four: island 0 reaches island 3 over three links
+    cx = at(1)
+    row = [
+        node(s, cx - 54 + 36 * k, gy, str(k), "a" if k in (0, 3) else None, w=26)
+        for k in range(4)
+    ]
+    for one, two in zip(row, row[1:]):
+        wire(s, one, two, "a", sw=2.4)
+    # a ring of four
+    cx = at(2)
+    spots = [(-30, -22), (30, -22), (30, 22), (-30, 22)]
+    ring = [node(s, cx + dx, gy + dy, str(k)) for k, (dx, dy) in enumerate(spots)]
+    for k in range(4):
+        wire(s, ring[k], ring[(k + 1) % 4])
+    # a ring of three
+    cx = at(3)
+    spots = [(0, -22), (34, 22), (-34, 22)]
+    three = [node(s, cx + dx, gy + dy, str(k)) for k, (dx, dy) in enumerate(spots)]
+    for k in range(3):
+        wire(s, three[k], three[(k + 1) % 3])
+    # two by two with wrap: the direct link and the wrap, so two a pair
+    cx = at(4)
+    spots = [(-30, -22), (30, -22), (-30, 22), (30, 22)]
+    grid = [node(s, cx + dx, gy + dy, str(k)) for k, (dx, dy) in enumerate(spots)]
+    for one, two in ((0, 1), (2, 3), (0, 2), (1, 3)):
+        for shift in (-3, 3):
+            wire(s, grid[one], grid[two], shift=shift, sw=1.5)
+    captions = [
+        ("two cards", "four links"),
+        ('shape="line"', "0 reaches 3 over three links"),
+        ('shape="ring"', "four islands"),
+        ('shape="ring"', "three islands"),
+        ('shape="grid"', "2 x 2 with wrap, two links a pair"),
+    ]
+    for k, (name, gloss) in enumerate(captions):
+        s.text(at(k), gy + 56, name, 12, c["fg"], bool(k == 0), k > 0, anchor="middle")
+        s.text(at(k), gy + 72, gloss, 12, c["mute"], anchor="middle")
+    s.text(
+        left,
+        y + 44,
+        "km.Session(cards=[0, 1]) opens two cards; km.Session(card=0, islands=n, "
+        "shape=...) splits one card into islands, to develop with one card",
+        12,
+        c["mute"],
+    )
+
+    # the flat ranks over a line of four, and one group over an edge
+    by = gy + 98
+    s.text(left, by + 12, "flat ranks", 12, c["fg"], True)
+    x0 = left + 86
+    span = RIGHT - 14 - x0
+    shares = (35, 34, 22, 23)
+    kinds = ("b", "y", "m", "r")
+    x, edges = x0, []
+    for k, share in enumerate(shares):
+        w = span * share / sum(shares)
+        edge, fill, _ = c[kinds[k]]
+        s.rect(x, by, w - 3, 16, fill, edge, rx=3)
+        s.text(x + w / 2, by + 12, f"island {k}", 12, c["fg"], anchor="middle")
+        edges.append((x, w))
+        x += w
+    g1 = edges[1][0] + edges[1][1] * 0.55
+    g2 = edges[2][0] + edges[2][1] * 0.6
+    path(s, [(g1, by + 20), (g1, by + 26), (g2, by + 26), (g2, by + 20)], c["a"][0])
+    s.text(
+        (g1 + g2) / 2,
+        by + 42,
+        "a group is (first, count), anywhere in the flat ranks",
+        12,
+        c["a"][0],
+        True,
+        anchor="middle",
+    )
+    notes = [
+        "A core holds one table entry an island: its ranks, the link core toward it "
+        "and the links away. A link core that receives what is not for its",
+        "island sends it on; its rooms for what it sends on are kept by the links "
+        "already travelled, so islands in a circle cannot wait on each other.",
+        "The tables are sized by the session. Ran: two P150A joined by four links, and "
+        "one card split into two to four islands in each of these shapes.",
+    ]
+    for i, line in enumerate(notes):
+        s.text(left, by + 64 + 18 * i, line, 12, c["mute"])
+    height = by + 64 + 18 * len(notes) - 4 - y
+    panel_frame(
+        s,
+        y,
+        height,
+        "islands are a graph: any shape, a rank any number of links away",
+        "docs/reference/islands.md",
+        "a",
+    )
+    return height
+
+
+def measured_rows(s, y, rows):
+    """Rows of a colour square, a bold label, a gloss and a muted measured line;
+    returns the y after the last."""
+    c = s.c
+    for colour, label, gloss, measured in rows:
+        edge, fill, _ = c[colour]
+        s.rect(BOX_X + 14, y + 2, 14, 14, fill, edge, rx=3)
+        s.text(BOX_X + 38, y + 14, label, 12, edge, True)
+        s.text(BOX_X + 38 + width(label, bold=True) + 10, y + 14, gloss, 12, c["fg"])
+        check(BOX_X + 38 + width(label, bold=True) + 10 + width(gloss), LIMIT, label)
+        s.text(BOX_X + 38, y + 31, measured, 12, c["mute"])
+        check(BOX_X + 38 + width(measured), LIMIT, measured)
+        y += 44
+    return y
+
+
+def panel_service(s, y):
+    """The link cores' four operations, each by a flat rank or a tensor's page."""
+    rows = [
+        (
+            "a",
+            "write into a rank's L1",
+            "km::write_l1(core, command, rank, address, from, bytes): there when it "
+            "returns",
+            "16 bytes and an add: 11.8 µs across two cards, 1.09 µs inside an island; "
+            "a split line of three: 8.6 µs one link away, 18.8 µs two",
+        ),
+        (
+            "m",
+            "add to a word of a rank",
+            "km::add_word(core, command, rank, address, value); with km::posted it "
+            "does not wait",
+            "a posted add: 2.16 µs across two cards; a split line of three: 1.54 µs "
+            "one link away, 4.04 µs two (experiments/islands/link_ops)",
+        ),
+        (
+            "p",
+            "write pages",
+            "km::write_pages, km::put_bytes: each run of pages another island holds "
+            "is one line",
+            "512 MiB: puts 72.5 GB/s each way with both islands putting; 65,536 keys "
+            "placed across in 5.99 ms, 0.091 µs a key (09_bucket_sort)",
+        ),
+        (
+            "p",
+            "read pages",
+            "km::read_pages, km::read_bytes: asked of the island that holds them, "
+            "waited for at the core's port",
+            "512 MiB: reads 40.6 to 48.3 GB/s (experiments/islands/islands_pages); a "
+            "range read across every 1.70 to 1.95 µs",
+        ),
+    ]
+    height = 40 + 44 * len(rows) + 26
+    panel_frame(
+        s,
+        y,
+        height,
+        "the link cores serve four operations, by flat rank or by tensor page",
+        "experiments/islands/link_ops",
+        "m",
+    )
+    end = measured_rows(s, y + 40, rows)
+    s.text(
+        BOX_X + 14,
+        end + 10,
+        "The same call on one island and on many: inside an island it is the NoC "
+        "write, add or read itself; a link away it is one line to a link core.",
+        12,
+        s.c["mute"],
+    )
+    return height
+
+
+def panel_crossings(s, y):
+    """What crosses the links, and what it cost when it was measured."""
     rows = [
         (
             "a",
             "a command's part",
-            "a group over both islands runs as a part on each; the parts are joined "
-            "into one completion",
-            "7.46 µs a command split by the host, 10.89 µs sent across by a thread's "
-            "dispatcher (25_islands_threads)",
+            "from the host, a thread, a stream or a graph, to any group of the flat "
+            "ranks; one completion",
+            "a NOP across two cards 4.4 to 5.2 µs; a split line of four: 4.97, 6.06 "
+            "and 6.25 µs one, two and three links away (25_islands_threads)",
+        ),
+        (
+            "r",
+            "a port's send, a reduce's part, a broadcast's block",
+            "km::emit to a rank of another island as to any rank",
+            "a sum over 238 ranks 167.5 µs against 162.8 on one island of 119 "
+            "(26_islands_sum, 02_merge_tree's kernels unchanged)",
+        ),
+        (
+            "r",
+            "the collectives, over a tree of islands",
+            "km::all_gather, all_reduce, reduce_to, broadcast_from; a class's "
+            "km.all_reduce",
+            "256 pages on two cards: all-gather 21.3 µs, all-reduce 180.0 µs; 64 pages "
+            "on a split ring of four: 27.0 and 331.8 µs",
         ),
         (
             "m",
@@ -403,29 +628,6 @@ def panel_crossings(s, y):
             "messages to a packet",
             "4.7 µs a crossing in a run of round trips; about 4.7 million 64-byte "
             "messages a second each way (05_forward)",
-        ),
-        (
-            "r",
-            "a reduce's part, a broadcast's block",
-            "each island folds, or casts, inside itself; one part an island crosses",
-            "a sum over 238 ranks 172.6 µs against 162.8 on one island of 119 "
-            "(02_merge_tree, kernels unchanged)",
-        ),
-        (
-            "p",
-            "pages",
-            "km::read_pages, km::write_pages, km::put_pages: each run of pages another "
-            "island holds is one line",
-            "512 MiB: puts 72.5 GB/s each way with both islands putting, reads 40.6 "
-            "to 48.3 GB/s (experiments/islands/islands_pages)",
-        ),
-        (
-            "p",
-            "part of a page",
-            "km::put_bytes, km::read_bytes: bytes of a page another island holds; "
-            "the rest of the page untouched",
-            "65,536 keys placed across in 5.99 ms, 0.091 µs a key (09_bucket_sort); "
-            "a range read across every 1.70 to 1.95 µs",
         ),
         (
             "w",
@@ -441,18 +643,11 @@ def panel_crossings(s, y):
         s,
         y,
         height,
-        "what crosses a link, each measured on two P150A joined by four links",
-        "docs/reference/islands.md",
+        "what crosses the links, each measured",
+        "25 to 28, docs/reference/islands.md",
         "p",
     )
-    yy = y + 40
-    for colour, label, gloss, measured in rows:
-        edge, fill, _ = c[colour]
-        s.rect(BOX_X + 14, yy + 2, 14, 14, fill, edge, rx=3)
-        s.text(BOX_X + 38, yy + 14, label, 12, edge, True)
-        s.text(BOX_X + 38 + width(label, bold=True) + 10, yy + 14, gloss, 12, c["fg"])
-        s.text(BOX_X + 38, yy + 31, measured, 12, c["mute"])
-        yy += 44
+    measured_rows(s, y + 40, rows)
     return height
 
 
@@ -622,13 +817,23 @@ def panel_kernel(s, y):
 
 def figure_islands(theme):
     s = Svg(theme, "More than one card", markers="abmwrpyg")
-    bottom = stack(s, [panel_two_cards, panel_tensor, panel_crossings, panel_kernel])
+    bottom = stack(
+        s,
+        [
+            panel_two_cards,
+            panel_graph,
+            panel_service,
+            panel_tensor,
+            panel_crossings,
+            panel_kernel,
+        ],
+    )
     c = s.c
     notes = [
-        "Ranks are flat and contiguous by island. A core holds a table with one entry "
-        "for each island, not one for each rank; a link runs through",
-        "the router on an Ethernet tile of each card (row 1 of the grid). Every number "
-        "is a run on two Blackhole P150A joined by four links.",
+        "Ranks are flat and contiguous by island. Between two cards a link runs "
+        "through the router on an Ethernet tile of each card (row 1 of the",
+        "grid); on a split card it is a write over the card's own NoC. Every number is "
+        "a run on two P150A joined by four links, or on a split card where said.",
     ]
     for i, line in enumerate(notes):
         s.text(BOX_X + 4, bottom + 12 + 18 * i, line, 12, c["mute"])
