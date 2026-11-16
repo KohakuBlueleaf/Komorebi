@@ -5693,7 +5693,9 @@ class HandlerCompiler:
         if self.dst_next > DST_HALF:
             self.compiled.full_dst = True
         self.dst_live = name
-        value = Value("tile", name, dst=0, width=width)
+        value = Value(
+            "tile", name, dst=0, width=width, made_at=(len(self.loops), node.lineno)
+        )
         value.state = (buffer, token, slot, width, index)  # packed at acc's write
         self.scope[name] = value
         return [], [Line(text, {"km_ok"} | self.uses(index))]
