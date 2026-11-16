@@ -143,6 +143,7 @@ class FakeRun:
     _built_for = Run._built_for
     _handler = Run._handler
     _class_form_refused = Run._class_form_refused
+    _program_told = Run._program_told
     program_field = Run.program_field
 
 

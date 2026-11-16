@@ -1,6 +1,7 @@
 """The kernel buffer remembered for a script's next run (B): kept by script and by
 program in the build cache; the open at that size; grown during a run, set at close."""
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -40,6 +41,31 @@ def test_a_run_grows_the_entry_and_its_close_sets_it(cache):
     assert remembered.read()["scripts"][second.script] == 70656
 
 
+def test_an_entry_measured_with_other_code_is_not_read(cache, monkeypatch):
+    remembered.Memory(lambda message: None).wanted(92496)
+    monkeypatch.setattr(remembered, "code_digest", lambda: "other")
+    said = []
+    assert remembered.Memory(said.append).size is None
+    assert said == ["kernel buffer: the runtime's at the open (nothing remembered)"]
+
+
+def test_a_prebuild_s_sizes_seed_the_card_s_entry_until_a_card_run(cache):
+    own = cache / "own.json"
+    own.write_text(json.dumps({"scripts": {remembered.script_key("card"): 93568}}))
+    said = []
+    remembered.seed(own, said.append)
+    assert said == ["kmr prebuild: 1 kernel buffer size(s) seeded"]
+    made = remembered.Memory(said.append)
+    assert made.size == 93568
+    assert (
+        said[1]
+        == "kernel buffer 93,568 B at the open (seeded by a prebuild for this script)"
+    )
+    made.largest = 93568
+    made.closed()
+    assert remembered.read()["prebuilt"] == []
+
+
 def test_a_corrupt_file_is_no_entry_logged_once(cache):
     (cache / remembered.FILE).write_text('{"scripts": {"')
     said = []
@@ -60,7 +86,8 @@ def test_code_without_a_file_keeps_nothing(cache, monkeypatch):
 def test_a_load_of_several_programs_keeps_the_scripts_entry(cache):
     made = remembered.Memory(lambda message: None)
     made.loaded([object(), object()], 70096)  # an island session's list
-    assert remembered.read() == {"programs": {}, "scripts": {made.script: 71168}}
+    want = {"programs": {}, "scripts": {made.script: 71168}, "prebuilt": []}
+    assert remembered.read() == want
 
 
 def test_a_runner_in_pythons_prefix_keeps_nothing(cache, monkeypatch):

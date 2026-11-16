@@ -631,16 +631,75 @@ namespace km {
         return DirectOr<Accessor>{accessor_of(tensor), area};
     }
 
+    // Where a direct input's tiles land on a reading core: tile `offset` of its K
+    // range and the `count` after it, from `source`, at its area's offset.
+    struct LinearLanding {
+        uint32_t area;
+        uint32_t tile_bytes;
+
+        template <typename Writer>
+        void write(
+            const Writer& writer,
+            uint32_t core,
+            uint32_t source,
+            uint32_t offset,
+            uint32_t count
+        ) const {
+            noc_async_write(
+                source,
+                writer.core_noc(core, area + offset * tile_bytes),
+                count * tile_bytes
+            );
+        }
+    };
+
+    // ... in the reading stream's own halves (an in-place input, km::InPlace): each
+    // block of the K range where its half's ring takes it, one write a block.
+    struct InPlaceLanding {
+        uint32_t half_a;
+        uint32_t half_b;
+        uint32_t tile_bytes;
+        uint32_t block;
+        Pattern pattern;
+
+        template <typename Writer>
+        void write(
+            const Writer& writer,
+            uint32_t core,
+            uint32_t source,
+            uint32_t offset,
+            uint32_t count
+        ) const {
+            while (count != 0) {
+                const uint32_t index = offset / block, in = offset % block;
+                const uint32_t owner = pattern.owner(index);
+                const uint32_t part = block - in < count ? block - in : count;
+                const uint32_t slot = blocks_before(pattern, owner, index) * block + in;
+                noc_async_write(
+                    source,
+                    writer.core_noc(
+                        core, (owner != 0 ? half_b : half_a) + slot * tile_bytes
+                    ),
+                    part * tile_bytes
+                );
+                source += part * tile_bytes;
+                offset += part;
+                count -= part;
+            }
+        }
+    };
+
     // A root, a kChainDataMark next: tiles low .. high - 1 of its output (at
-    // direct.source) into each next core's K range, its trid's acks waited.
-    template <typename Writer, typename Shape>
-    bool chain_send(
+    // direct.source) issued to each next core's K range (its trid; `landing` places).
+    template <typename Writer, typename Shape, typename Landing>
+    bool chain_send_writes(
         const Shape& shape,
         const Writer& writer,
         const uint32_t* next,
         uint32_t low,
         uint32_t high,
-        const ChainDirect& direct
+        const ChainDirect& direct,
+        const Landing& landing
     ) {
         const uint32_t first = next[kChainGroup] & 0xFFFFu;
         const uint32_t count = next[kChainGroup] >> 16;
@@ -660,17 +719,22 @@ namespace km {
             const uint32_t hi = end < high ? end : high;
             noc_async_write_set_trid(kChainInputTrid);
             for (uint32_t group = 0; lo < hi && group < groups; group++) {
-                noc_async_write(
+                landing.write(
+                    writer,
+                    writer.core_of(first + group * size + rank),
                     direct.source + (lo - low) * bytes,
-                    writer.core_noc(
-                        writer.core_of(first + group * size + rank),
-                        direct.area + (lo - range.first) * bytes
-                    ),
-                    (hi - lo) * bytes
+                    lo - range.first,
+                    hi - lo
                 );
             }
             noc_async_write_set_trid(0);
         }
+        return true;
+    }
+
+    // A root: its direct sends' acks (its trid's) waited.
+    template <typename Writer>
+    bool chain_sent(const Writer& writer) {
         const uint32_t code = writer.poll_at(
             kWhereData,
             [] {
@@ -689,9 +753,27 @@ namespace km {
         return true;
     }
 
-    // A group's root, its output written: its writes acked (a direct input sent; with
-    // `dram_too` the DRAM copy too), a mark to each next core a range meets this block.
+    // A root, a kChainDataMark next: tiles low .. high - 1 of its output (at
+    // direct.source) into each next core's K range, its trid's acks waited.
     template <typename Writer, typename Shape>
+    bool chain_send(
+        const Shape& shape,
+        const Writer& writer,
+        const uint32_t* next,
+        uint32_t low,
+        uint32_t high,
+        const ChainDirect& direct
+    ) {
+        const LinearLanding landing = {direct.area, direct.tile_bytes};
+        return (
+            chain_send_writes(shape, writer, next, low, high, direct, landing) &&
+            chain_sent(writer)
+        );
+    }
+
+    // A group's root, its output written: its writes acked (a direct input sent, or
+    // with kSent sent already; `dram_too`: DRAM's too), a mark to each core it meets.
+    template <bool kSent = false, typename Writer, typename Shape>
     bool chain_mark(
         const Shape& shape,
         const Writer& writer,
@@ -719,7 +801,14 @@ namespace km {
         const uint32_t high = low + width;
         const bool data = (next[kChainInfo] & kChainDataMark) != 0;
         if (
-            (data && !chain_send(shape, writer, next, low, high, direct)) ||
+            (
+                data &&
+                !(
+                    kSent
+                        ? chain_sent(writer)
+                        : chain_send(shape, writer, next, low, high, direct)
+                )
+            ) ||
             ((!data || dram_too) && !writer.flushed(kFlushWrites, kStWriter))
         ) {
             return false;

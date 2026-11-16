@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from komorebi import added, formats, native, overlay, programs
+from komorebi import abi, added, formats, native, overlay, programs
 from komorebi.errors import ProgramError
 from komorebi.program import Program, check_families
 
@@ -38,11 +38,19 @@ def spare_fields(placed):
     field after the loaded ones whose overlay number stays above the programs' own
     overlays (field p is overlay kOverlayService - 1 - p), each a record row."""
     service = overlay.constants()["kOverlayService"]
+    return range(len(placed.programs), service - 1 - _own_end(placed))
+
+
+def _own_end(placed):
+    """The highest overlay number the load's programs' own overlays take, and those of
+    the classes named ahead (numbered after them, in order: ahead_programs)."""
     last = placed.programs[-1]
     shift = last.overlay_shift + max(
         (each.number for each in last.overlays.values()), default=0
     )
-    return range(len(placed.programs), service - 1 - shift)
+    for other in _ahead_of(placed):
+        shift += max((each.number for each in other.overlays.values()), default=0)
+    return shift
 
 
 def buffers_given(buffers):
@@ -55,14 +63,50 @@ def buffers_given(buffers):
 def ahead_programs(placed):
     """The programs a load's programs named ahead (Program.ahead(program)), each given
     the program field it takes when added, after the loaded ones."""
+    out = _ahead_of(placed)
+    last = placed.programs[-1]
+    shift = last.overlay_shift + max(
+        (each.number for each in last.overlays.values()), default=0
+    )
+    for field, other in enumerate(out, start=len(placed.programs)):
+        other.program_field, other.overlay_shift, other.args_at = field, shift, 0
+        other.added_own_shift = shift  # its own overlays' numbers, kept by the add
+        shift += max((each.number for each in other.overlays.values()), default=0)
+    return out
+
+
+def ahead_own_kernels(placed):
+    """The kernels where a class named ahead has a part of an own overlay (the load
+    gives them a slot more: pay for use)."""
+    return {
+        kernel
+        for other in _ahead_of(placed)
+        for each in other.overlays.values()
+        for kernel in each.sources
+    }
+
+
+def _ahead_of(placed):
     out = []
     for program in placed.programs:
         for other in getattr(program, "added_ahead_programs", ()):
             if other not in out and other not in placed.programs:
                 out.append(other)
-    for field, other in enumerate(out, start=len(placed.programs)):
-        other.program_field, other.overlay_shift, other.args_at = field, 0, 0
     return out
+
+
+def own_overlays(program):
+    """An added class's own overlays as the run numbers them (programs.own_overlays),
+    with the defines its parts read their args from L1 by when it has args."""
+    given = {
+        name: program.defines[name]
+        for name in ("KM_ARGS_L1", "KM_ARGS_WRITER", "KM_ARGS_COMPUTE")
+        if name in program.defines
+    }
+    return [
+        dataclasses.replace(each, defines={**each.defines, **given})
+        for each in programs.own_overlays(program)
+    ]
 
 
 def args_defines(program, cores):
@@ -109,6 +153,9 @@ def pad_reserve(backend, placed, reserve):
     # the highest free index: a class made later takes the low ones first
     backend.switch_pad = max(set(range(programs.SWITCH_BUFFERS)) - used)
     backend.switch_loaded = len(placed.programs)
+    backend.added_own = set()  # the overlay numbers added classes' own overlays took
+    # the entry command's code in the service overlay, for a class ahead with its own
+    backend.added_entry = bool(ahead_own_kernels(placed))
     # the load command's row read is built only for a class named ahead with args
     backend.switch_args = any(other.args is not None for other in ahead)
     for other in ahead:
@@ -131,10 +178,12 @@ def ahead_overlays(backend, placed, number, recipes):
         return []
     run = SimpleNamespace(backend=backend, programs=list(placed.programs))
     by_part = {overlay.TARGETS[target]: recipe for target, recipe in recipes.items()}
-    return [
-        _Own(programs.program_overlay(other, True), own_recipes(run, other, by_part))
-        for other in ahead_programs(placed)
-    ]
+    out = []
+    for other in ahead_programs(placed):
+        mine = own_recipes(run, other, by_part)
+        made = [programs.program_overlay(other, True), *own_overlays(other)]
+        out += [_Own(each, mine) for each in made]
+    return out
 
 
 class _Own:
@@ -157,10 +206,11 @@ def build_ahead(session, backend, room, placed):
     and fitted slots into the parts' cache, so the add finds them built."""
     run = SimpleNamespace(backend=backend, programs=list(placed.programs))
     for other in ahead_programs(placed) if room is not None else ():
-        started, made = time.perf_counter(), programs.program_overlay(other, True)
+        started = time.perf_counter()
         group = _own_group(run, other, room.groups[0])
         hits = [
             added._part(session, group, made, kernel, part)[1]
+            for made in [programs.program_overlay(other, True), *own_overlays(other)]
             for kernel, part in made.parts()
         ]
         session.log(
@@ -402,13 +452,19 @@ def refused(run, program):
             "the load command's row read, built only when a class with them is named "
             "with Program.ahead(...) before the load"
         )
-    if getattr(program, "word_fields", None):
+    room = getattr(run.backend, "room", None)
+    entered = getattr(run.backend, "added_entry", False) or (room and room.entered)
+    if program.overlays and not entered:
         return (
-            f"{program.name}: word fields (their L1 tensors are made with the class "
-            "and named in its args at the load)"
+            f"{program.name}: overlays of its own need the entry command's code, built "
+            "only when a class with them is named with Program.ahead(...) before the "
+            "load (or the program names slot bytes)"
         )
-    if program.overlays or program.messages is not None:
-        return f"{program.name}: overlays of its own or a dynamic handler"
+    if program.messages is not None:
+        return (
+            f"{program.name}: a dynamic handler (its queues and tables are set at the "
+            "launch)"
+        )
     runtime = {cb[0] for cb in run.backend._runtime_cbs()} | {run.backend.slot_index}
     clash = sorted({b.index for b in program.buffers} & runtime)
     if clash or any(b.index >= programs.SWITCH_BUFFERS for b in program.buffers):
@@ -443,7 +499,16 @@ def add(run, program):
         )
     backend, started = run.backend, time.perf_counter()
     session = backend.session
-    program.program_field, program.overlay_shift, program.args_at = field, 0, 0
+    shift = getattr(program, "added_own_shift", None)
+    if shift is None or program.program_field != field:
+        shift = _own_shift(run, program, field)
+    service = overlay.constants()["kOverlayService"]
+    if service - 1 - field in backend.added_own:
+        raise added.AddError(
+            f"{program.name}: field {field}'s overlay number {service - 1 - field} is "
+            "an added class's own overlay; fewer or lower own overlays"
+        )
+    program.program_field, program.overlay_shift, program.args_at = field, shift, 0
     session._hand_nocs(program)
     rows, row_bytes = args_defines(program, run.cores)
     layout, end = layout_of(backend, program)
@@ -468,6 +533,7 @@ def add(run, program):
         linked, hit = added._part(session, group, made, kernel, part)
         _check_included(group.recipes[part], made, kernel, part)
         images[part], cached = linked.image, cached and hit
+    own = _own_parts(run, program, group)
     built_s = time.perf_counter() - started
     placed = added._place(run, made, [images])[0]
     table = [placed.get(part, (0, 0)) for part in overlay.PARTS]
@@ -492,7 +558,9 @@ def add(run, program):
     session.write(tensor, page, first=banks * row)  # a copy in each bank, as loaded
     backend.switch_layouts[field] = layout
     run._switch["records"][field] = address
+    entries_s = _own_entries(run, own)
     run.programs.append(program)
+    program.added_live = True  # a refusal naming the class's programs tells it
     if run._holds is not None:
         run._holds.append(np.zeros(run.cores, bool))
     for thread in run.threads.values():  # kmx_load reaches it
@@ -502,5 +570,87 @@ def add(run, program):
         f"{ {p: len(i) for p, i in images.items()} } built in {built_s * 1e3:.1f} ms"
         f"{' (cached)' if cached else ''}; buffers {end - start:,} B in the switch "
         f"area; {time.perf_counter() - started:.2f} s"
+        + (
+            f"; own overlays {sorted(number for number, _, _ in own)}, their entries "
+            f"sent to every core in {entries_s * 1e3:.1f} ms"
+            if own
+            else ""
+        )
     )
     return field
+
+
+def _own_shift(run, program, field):
+    """The shift of an added class's own overlays (each declared number + shift): the
+    lowest that leaves every number free (the run's overlays, added code, earlier added
+    classes' own) and below every program field's overlay up to `field`."""
+    if not program.overlays:
+        return 0
+    backend, service = run.backend, overlay.constants()["kOverlayService"]
+    room = backend.room
+    taken = set(backend.added_own) | {
+        n for each in (room.groups if room else ()) for n in each.numbers
+    }
+    taken |= {each.number for each in (room.added.values() if room else ())}
+    lowest = service - 1 - field  # field p is overlay service - 1 - p
+    numbers = [each.number for each in program.overlays.values()]
+    for shift in range(lowest):
+        mine = {number + shift for number in numbers}
+        if max(mine) < lowest and not mine & taken:
+            return shift
+    raise added.AddError(
+        f"{program.name}: no overlay numbers left for its own overlays "
+        f"{sorted(numbers)} below its field's {lowest}"
+    )
+
+
+def _own_parts(run, program, group):
+    """[(number, name, {part: image})] of an added class's own overlays, built against
+    `group` (its own recipes); refused by name where a kernel has one slot (a part of
+    the class runs from one while it loads its own overlay into another)."""
+    out = []
+    for made in own_overlays(program):
+        images = {}
+        for kernel, part in made.parts():
+            count = group.slots.get(part, (0, 0))[0]
+            if count == 1:
+                raise added.AddError(
+                    f"{program.name}: its own overlay {made.name} has a {kernel} part "
+                    f"and the load gave the {kernel} one slot; name the class with "
+                    "Program.ahead(...) before the load, or Program.slots(count=2)"
+                )
+            linked, _ = added._part(run.backend.session, group, made, kernel, part)
+            _check_included(group.recipes[part], made, kernel, part)
+            images[part] = linked.image
+        out.append((made.number, made.name, images))
+    return out
+
+
+def _own_entries(run, own):
+    """Places an added class's own overlays' parts into the room and sends each group
+    the entry command of each (the service overlay writes the table entry, each part's
+    bank address and bytes, in every core's overlay area); returns its seconds."""
+    if not own:
+        return 0.0
+    backend, started = run.backend, time.perf_counter()
+    entry = abi.headers()["KM_HANDLER_ENTRY"]
+    for number, name, images in own:
+        made = SimpleNamespace(name=name, number=number)
+        placed = added._place(run, made, [images])[0]
+        words = added.entry_words(number, False, placed)
+        handles = [
+            run._queue_command(entry, (each.first, each.count), words)
+            for each in backend.room.groups
+        ]
+        for handle in handles:
+            event = run.wait(handle, 30.0)
+            if event.kind != "done":
+                raise added.AddError(
+                    f"{name}: the entry command of its own overlay {number} ended "
+                    f"{event.kind}: {event}"
+                )
+        for each in backend.room.groups:
+            added._mirror(run, each, number, words)
+            each.numbers.add(number)
+        backend.added_own.add(number)
+    return time.perf_counter() - started

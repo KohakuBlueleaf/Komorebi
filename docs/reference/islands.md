@@ -118,7 +118,7 @@ written for islands runs on one card unchanged.
   lines' words, the headers it builds for a piece of a put into the rings, and its
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, as many entries as the tensors held
-  at the load, in steps of 4; a tensor made while a run lives takes a free entry) and
+  at the load, in steps of 4; a tensor made while a run lives is refused) and
   a dynamic run's message region. When the link cores run the link kernels, the link
   area and the relay (48,192 bytes) are theirs alone: at the base of their circular
   buffers, zeroed by the host at the load (`write_l1`, just before the launch), the
@@ -185,7 +185,8 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   events) until every part arrived, so the islands run their parts at once; all within
   the one timeout.
   A ticket completes when every part has; its result is the tuple of its parts' events
-  in island order. `run.drain`, `run.stop` and `run.abort` act on every island within
+  in island order, which also reads as one card's event (`kind` "done" only if every
+  part is, else the first other part's; `microseconds` the slowest part's; `reason`). `run.drain`, `run.stop` and `run.abort` act on every island within
   one timeout; `run.state()` lists every rank in flat order, each with its `rank` and
   `island`, `run.result()` every island's result block.
 - The run is addressed and reported by flat rank. An error from an island starts
@@ -320,7 +321,8 @@ are in the kernel's own words:
 
 `session.tensor(data, dtype, layout="row", split=None, group=None, like=None,
 copy=False)` makes it and writes it; `session.empty(shape, dtype, layout, ...)` takes
-the same hints and writes nothing. `islands.place(graph, shape, layout, split, group,
+the same hints and writes nothing; `t.read()` and `t.write(data)` do what a one-card
+tensor's do, each island's part through its own channel. `islands.place(graph, shape, layout, split, group,
 copy)` is the rule on the host: a `Placement` whose pages are `outer` blocks of `steps`
 steps of the split dimension, `inner` pages a step, and whose `parts[i]` are the
 (first step, steps) island `i` holds of every block. `placement.where(page)` gives the
@@ -339,7 +341,7 @@ DRAM takes now.
 a kernel hands to Komorebi's page calls. On one card it is the bank address, as without
 islands. Over islands it is the index of the tensor's entry in the tensor table
 (`KM_TENSORS_MAX`, 32, entries), which the session writes into every core of every
-island at the load and again when a tensor is made while a run is loaded; the word
+island at the load (a tensor made while a run is loaded is refused by name); the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,
@@ -375,7 +377,8 @@ that fit there now (asking island 0 alone for 48 GiB on a p150a: refused in 35 m
 most 16,688,832 pages of 2 KiB). Example 01's MAP on one group of the 238 ranks of two
 cards, its input of 238 x 2 tiles placed with no hint, `split=0` and `split=1` over the
 group (118, 2) (`examples/01_mapcollect/islands.py --whole --split 1 --group 118,2`;
-2026-11-14, AICLK 800 MHz idle before the run, host load 3.8 to 8.4, one run each):
+2026-11-14, AICLK 800 MHz read idle before the job, the session's 1,350 MHz from its open
+to its exit; host load 3.8 to 8.4, one run each):
 
 | Input hint | Island 0 holds | MAP, us | Wrong tiles |
 |---|---|---|---|
@@ -391,7 +394,8 @@ island 0 2.89 to 3.11 GB/s, card 0 alone 2.86 to 3.13 GB/s: each island first co
 its part out of the caller's rows, and those copies did not overlap.
 
 Without that copy (`examples/01_mapcollect/islands.py --whole --io-mib 64,512`, the
-run loaded, AICLK 800 MHz, host load 4.3, one run, every byte read back compared), GB/s
+run loaded, AICLK 1,350 MHz from the open: the 800 MHz once written here was read idle
+before the job; host load 4.3, one run, every byte read back compared), GB/s
 of one write and one read:
 
 | Size | Split over both cards: write, read | Island 0 alone: write, read |
@@ -1039,6 +1043,27 @@ island 1's core 10 during a HANG on ranks 100 to 239 named its reader waiting fo
 port arrival; the deadline gave the command up, `CommandTimeout` named island 1 and its
 cores, and the run went on; 16 pages of island 1 read inside the run were exact. Open
 to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
+
+## Classes on islands
+
+A class (`km.Program` written as a class) is made with the island session as its
+`session` (its L1 table is island 0's) and loaded on every island, a copy an island.
+`session.grid` is each island's grid, the same on every island. What its lines mean:
+
+| A class's line | On two islands |
+|---|---|
+| `self.rank`, `self.size`, `self.leader` | the flat rank less the command's first, the group's count: as on one card |
+| a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
+| `km.reduce(..., group=S)` | each group of S consecutive ranks on one island; a command whose group of S spans two islands is refused by name, with the first rank to start at |
+| `km.Broadcast`, `self.x`, `self.y` | the rectangle is one island's: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores); a group that is not, such as a row across the link, is refused, saying a broadcast stays on one island |
+
+The output dimension sharded, the activation a copy (`experiments/language/
+dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of
+its 112 ranks centred on island 1's first rank, so each island runs four groups of 14
+on its own half of W's columns; X `copy=True`, W and Y `split=1` over the 128 ranks
+centred there (a column tile a rank: a hint over the command's 112 ranks would put 72
+of the 128 on island 0, and part of W would be read across the link). At 32 x 4096 x
+4096 it is exact in 65.1 us, against 94.2 on one card.
 
 ## What is not built
 

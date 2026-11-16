@@ -90,9 +90,9 @@ class DirectSwiGLU(SwiGLU):
         self.down(km.direct(hidden), w2, y, cores=(0, 4))  # up's blocks into L1
 ```
 
-Each of `up`'s 12 roots keeps its 8 tiles of the hidden in its write buffer and writes
-them into the landing area of each of `down`'s 4 cores: 16 KiB a reader, 64 KiB a
-root. It marks those cores once its own writes are acknowledged. A `down` core reads
+Each of `up`'s 12 roots sends its 8 tiles of the hidden, as it writes them, into the
+landing area of each of `down`'s 4 cores: 16 KiB a reader, 64 KiB a root. It marks
+those cores once its own writes are acknowledged. A `down` core reads
 the hidden from its area (a local copy into its stream buffer), not from DRAM. The
 same class runs the plain `forward` chain through DRAM. The hidden has no DRAM copy
 after the direct chain, so `hidden.read()` then raises, naming `up`'s call.
@@ -112,9 +112,41 @@ after a first command, AICLK 1,350 MHz in the session.
   reads. In the direct chain, each root's 64 KiB send has to be acknowledged before it
   marks. That puts 12 roots' sends into 4 cores' L1 on the path before `down` can use
   the hidden.
-- Not measured, expected: a direct input gains where the reader's DRAM read of its
-  input is on that path and the roots' sends are short (a small input to few readers).
+- The chain's stamps below measure each record's terms, for this chain, in place, and
+  a shape where the hidden is half of each reader's reads.
+
+### in place, and a reader-heavy shape
+
+`InPlaceSwiGLU` declares `down = km.handler(direct=("hidden",), in_place=True)(...)`:
+the roots write the hidden into `down`'s stream halves themselves, so a `down` core
+copies nothing and its stream's movers push the blocks without reading. The second
+shape is reader-heavy: `down` on 32 cores of one column each (the hidden is half of
+each reader's reads), and `up` writing its 8 columns in 2 pieces of 4, each sent as it
+is written. Card 0, 2026-11-16, one job, AICLK 1,350 MHz in the session; y equal word
+for word in all eight chains; each class's chains in turn in one load, 50 timed each.
+
+| The chain, us on the card | example 31 (down on 4 cores) | reader-heavy (down on 32) |
+|---|---:|---:|
+| through DRAM: the plain class / the copy's / the in-place class's | 106.00 / 105.43 / 105.67 | 112.53 / 113.51 / 113.68 |
+| the hidden direct, into a landing area (a copy) | 110.37 | 124.62 |
+| the hidden direct, in place | 108.41 | 122.53 |
+
+The chain stamps (`chain_stamps=True`, 20 chains a form, the median over the cores,
+us) say where the time goes:
+
+| Term | example 31: DRAM / copy / in place | reader-heavy: DRAM / copy / in place |
+|---|---:|---:|
+| `up`'s body (the sends inside it in a direct chain) | 49.1 / 51.8 / 52.3 | 64.8 / 77.3 / 77.9 |
+| `up`'s marks | 1.04 / 0.40 / 0.25 | 7.5 / 1.35 / 1.22 |
+| `down`'s wait for its input | 0.38 / 4.46 / 4.53 | 70.9 / 86.9 / 87.3 |
+| `down`'s body | 51.0 / 51.4 / 49.3 | 35.1 / 32.8 / 30.7 |
+
+- In place is about 2 us ahead of the copy in both shapes, and its class's DRAM chain
+  runs as the plain class's.
+- No direct form is ahead of DRAM. A reader saves 2 to 4 us of its body, but a root's
+  sends lengthen `up`'s body by 2.7 us (64 KiB to 4 cores) and by 12.5 us (512 KiB to
+  32 cores, about 41 GB/s from one writer), and the readers wait for that.
 
 ```
-python examples/31_swiglu/swiglu_direct.py               # both chains, every word of y
+python examples/31_swiglu/swiglu_direct.py --kernel-bytes 96000   # both shapes, all forms
 ```
