@@ -2176,7 +2176,7 @@ class IslandSession:
             nocs = self.sessions[0].nocs()
             rows = session_module._split_rows(self.graph, self.sessions[0].grid)
             split = tuple(
-                (first, count, self.graph.count(island))
+                (first, count, self.graph.count(island), self.graph.first(island))
                 for island, (first, count) in enumerate(rows)
             )
             for program in needing:

@@ -976,12 +976,12 @@ def rank_rectangle(compiled, nocs, ranks):
 
 def island_rectangles(compiled, nocs, islands, rect):
     """A class's rectangle on a split card, each island its own: `islands` each one's
-    (first row, rows, ranks); `rect` (None: its rank cores, as rank_rectangle) in the
+    (first row, rows, ranks, first flat rank); `rect` (None: its rank cores) in the
     island's own rows, as on each card over cards. (args, {an island's first core:
     (its group in the card's cores, its rect)})."""
     columns = nocs.grid[0]
     parts, by_core = {}, []
-    for island, (first_row, rows, ranks) in enumerate(islands):
+    for island, (first_row, rows, ranks, flat) in enumerate(islands):
         base = first_row * columns
         if rect is not None:
             x, y, width, height = rect
@@ -991,14 +991,15 @@ def island_rectangles(compiled, nocs, islands, rect):
                     f"({rows} rows of {columns}, its link cores last): give a rect= "
                     "that every island's ranks hold"
                 )
+            at = flat + y * columns + x  # its first rank, flat
             args, group = rectangle_args(
-                compiled, (x, y + first_row, width, height), nocs
+                compiled, (x, y + first_row, width, height), nocs, at
             )
             made = tuple(rect)
         elif compiled.broadcasts:
             made = (0, 0, columns, ranks // columns)
             args, group = rectangle_args(
-                compiled, (0, first_row, columns, ranks // columns), nocs
+                compiled, (0, first_row, columns, ranks // columns), nocs, flat
             )
         else:
             whole, _ = rectangle_args(compiled, (0, first_row, columns, rows), nocs)
@@ -1030,10 +1031,11 @@ def session_nocs(program, nocs):
         state["nocs"] = nocs
 
 
-def rectangle_args(compiled, rect, nocs):
+def rectangle_args(compiled, rect, nocs, flat=None):
     """Each core's program arguments (a function of the core, as Program takes): its
-    column and row in `rect`, whether it is there, its mover's broadcast arguments;
-    and the rectangle's group (first, count)."""
+    column and row in `rect`, whether it is there, its mover's broadcast arguments
+    (their group the command's: `flat`, its first flat rank, on a split card); and
+    the rectangle's group (first, count) in cores."""
     first_x, first_y, columns, rows = rect
     grid_width = nocs.grid[0]
     first = first_y * grid_width + first_x
@@ -1058,6 +1060,10 @@ def rectangle_args(compiled, rect, nocs):
             (number, buffer.index_a, window, buffer.block),
             length,
         )
+        if flat is not None:  # the cores compare it with the command's flat group
+            sets = by_mover[mover][index]
+            for core, words in sets.items():
+                sets[core] = {**words, "group": flat | group.count << 16}
     cells = {
         y * grid_width + x: (x - first_x, y - first_y)
         for y in range(first_y, first_y + rows)

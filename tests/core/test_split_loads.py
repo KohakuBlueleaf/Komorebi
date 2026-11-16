@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from komorebi import island_session
+from komorebi import island_session, layout
 from komorebi.dsl.program import island_rectangles
 from komorebi.errors import KernelSizeError
 from komorebi.island_session import IslandSession
@@ -83,7 +83,7 @@ PLAIN = SimpleNamespace(broadcasts=[])  # a class with self.x / self.y, no broad
 
 
 def test_a_split_in_two_gives_each_island_its_own_rank_cores():
-    islands = [(0, 5, 59), (5, 5, 59)]  # (first row, rows, ranks): a split in 2
+    islands = [(0, 5, 59, 0), (5, 5, 59, 59)]  # rows from, rows, ranks, flat first
     args, parts = island_rectangles(PLAIN, nocs_of(), islands, None)
     assert parts == {0: ((0, 59), None), 60: ((60, 59), None)}
     assert args(17)[2] == [5, 1, 1, 12, 5]  # x, y, inside, columns, rows
@@ -93,7 +93,7 @@ def test_a_split_in_two_gives_each_island_its_own_rank_cores():
 
 
 def test_a_line_of_three_gives_each_island_its_own_rows_and_ranks():
-    islands = [(0, 4, 47), (4, 3, 34), (7, 3, 35)]  # the line's 47 / 34 / 35
+    islands = [(0, 4, 47, 0), (4, 3, 34, 47), (7, 3, 35, 81)]  # 47 / 34 / 35
     args, parts = island_rectangles(PLAIN, nocs_of(), islands, None)
     assert parts == {0: ((0, 47), None), 48: ((48, 34), None), 84: ((84, 35), None)}
     assert args(46)[2] == [10, 3, 1, 12, 4]
@@ -103,7 +103,7 @@ def test_a_line_of_three_gives_each_island_its_own_rows_and_ranks():
 
 
 def test_a_split_card_s_rect_is_each_island_s_own_rows():
-    islands = [(0, 5, 59), (5, 5, 59)]
+    islands = [(0, 5, 59, 0), (5, 5, 59, 59)]
     args, parts = island_rectangles(PLAIN, nocs_of(), islands, (2, 1, 4, 3))
     rect = (2, 1, 4, 3)  # island-local, as on each card of a session over cards
     assert parts == {0: ((14, 28), rect), 60: ((74, 28), rect)}
@@ -112,7 +112,7 @@ def test_a_split_card_s_rect_is_each_island_s_own_rows():
 
 
 def test_a_split_card_s_rect_past_an_island_s_ranks_is_refused_by_name():
-    islands = [(0, 4, 47), (4, 3, 34), (7, 3, 35)]
+    islands = [(0, 4, 47, 0), (4, 3, 34, 47), (7, 3, 35, 81)]
     with pytest.raises(ValueError) as refused:
         island_rectangles(PLAIN, nocs_of(), islands, (0, 0, 12, 3))
     assert str(refused.value) == (
@@ -153,6 +153,7 @@ def test_a_split_card_hands_each_island_s_rows_to_a_class_s_rectangle():
         rank_cores=[tuple(range(59)), tuple(range(60, 119))],
         link_cores=[(59,), (119,)],
         count=lambda island: 59,
+        first=lambda island: 59 * island,
     )
     made = IslandSession.__new__(IslandSession)
     made.split, made.graph = 2, graph
@@ -161,4 +162,20 @@ def test_a_split_card_hands_each_island_s_rows_to_a_class_s_rectangle():
     program.rectangle = {"rect": None, "nocs": None, "args": None, "group": None}
     made._hand_rectangles(program)
     assert program.rectangle["nocs"] is nocs
-    assert program.rectangle["split"] == ((0, 5, 59), (5, 5, 59))
+    assert program.rectangle["split"] == ((0, 5, 59, 0), (5, 5, 59, 59))
+
+
+def test_a_split_card_s_broadcast_carries_the_command_s_flat_group():
+    """The cores compare a broadcast's group with the command's, which is in flat
+    ranks: island 1's (59, 48), not its cores (60, 48)."""
+    buffer = SimpleNamespace(index_a=10, block=4)
+    down = SimpleNamespace(broadcasts=[("column", buffer, 2, "A", 4, 0)])
+    order = layout.core_order((12, 10))
+    words = [(x + 1) | (y + 2) << 16 for x, y in order]
+    nocs = layout.nocs((12, 10), words, words)
+    islands = [(0, 5, 59, 0), (5, 5, 59, 59)]
+    args, parts = island_rectangles(down, nocs, islands, None)
+    assert parts == {0: ((0, 48), (0, 0, 12, 4)), 60: ((60, 48), (0, 0, 12, 4))}
+    assert args(0)[0][5 + 1] == 0 | 48 << 16  # common words, then the group
+    assert args(60)[0][5 + 1] == 59 | 48 << 16
+    assert args(60)[0][5 + 4] == 60  # the sender: a core of the card
