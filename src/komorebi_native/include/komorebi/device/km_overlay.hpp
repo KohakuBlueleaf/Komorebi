@@ -750,19 +750,19 @@ namespace km {
                     ? (mine[kOverlayCalling] == 0 ? kOverlayOwnSlot : kOverlaySlotsMax)
                     : overlay_free_slot(control, part, number_)
             );
-            if (slot == kOverlaySlotsMax && !own) {  // every slot runs a part
-                const uint32_t slots = overlay_area(control)[kOverlaySlots + part];
+            if (slot == kOverlaySlotsMax) {
+#if KM_GUARD  // every slot runs a part: the word says so, with the kernel's slots
                 kernel_.gave_up(
                     kOverlayStateWord,
                     kGaveOverlay,
-                    kWhereOverlaySlots,
-                    number_ | slots << 8,
+                    own ? kWhereOverlayFind : kWhereOverlaySlots,
+                    number_ |
+                        (own ? 0 : overlay_area(control)[kOverlaySlots + part] << 8),
                     0
                 );
-                return kOverlaySlotsMax;
-            }
-            if (slot == kOverlaySlotsMax) {
+#else
                 give_up(kGaveOverlay, kWhereOverlayFind);
+#endif
                 return kOverlaySlotsMax;
             }
             return start_read(control, part, slot) ? slot | 1u << 8 : kOverlaySlotsMax;
