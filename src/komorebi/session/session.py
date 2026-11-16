@@ -7,7 +7,6 @@ Needs a tt-metal tree or the runtime package; `import komorebi` does not import 
 import contextlib
 import copy
 import ctypes
-import dataclasses
 import os
 import re
 import secrets
@@ -20,12 +19,13 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import _env, abi, formats, layout
+from komorebi import abi, formats, layout
 from komorebi.builder import prebuild
 from komorebi.chain import calls as chain
 from komorebi.device import channel as channel_module
 from komorebi.device import dram, extents, kernel_buffer, native, remembered
 from komorebi.device import tensor as tensor_module
+from komorebi.device.dram import DRAM_BANKS
 from komorebi.dsl.program import session_nocs
 from komorebi.errors import (
     CardBusy,
@@ -34,7 +34,6 @@ from komorebi.errors import (
     KernelSizeError,
     L1BudgetError,
     ProgramError,
-    SlowCodeError,
     StartError,
 )
 from komorebi.islands import graph as islands
@@ -46,7 +45,6 @@ from komorebi.program.addon import program as added_program
 from komorebi.program.checks import instructions as insn_check
 from komorebi.program.checks import page_calls as island_names
 from komorebi.program.description import (
-    KernelSizes,
     Program,
     guard_says,
     messages_header,
@@ -56,17 +54,13 @@ from komorebi.program.several import (  # COMPUTE_FLAGS: read here by the compil
     COMPUTE_FLAGS,  # noqa: F401
     compute_config,
 )
-from komorebi.session import process, sizes
+from komorebi.session import kernels as kernel_module
+from komorebi.session import process, sizes, tensor_bytes
 from komorebi.session import state as device_state
+from komorebi.session import x280 as x280_module
 from komorebi.session.run import Run
 
-CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
-IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
 MESSAGES_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may take
-X280_QUEUES = "x280_queues"  # the region of the X280 ranks' queues in their thread
-STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
-NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
-DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
 # The X280 clock: 1750 MHz loses loads under full Tensix load. 1350 is the default; a
 # runtime without it gets 1000 (its error: "no PLL solution") unless one was asked for.
 X280_MHZ = 1350
@@ -75,444 +69,15 @@ NO_PLL_SOLUTION = "no PLL solution for"
 STATE_DUMP_LINES = 8  # 64-byte lines of the kernel's state logged after a failure
 PROBE_GAP_S = 0.02  # core 0's pass marker moves every 1,024 passes (about 33 us)
 ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop flag, before the close
-REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
-REGION_CHUNK = 2 << 20  # of this size, with a log line each
-GROUP_DEFINE = "-DKM_PROGRAM_GROUP"  # a group's runtime kernels are built apart
-GROUP_LINE = re.compile(r"^#define KM_PROGRAM_GROUP (\d+)$", re.M)
 # a name the compiler gives a source file's own symbol (trisck.cc.4c8b3e06): the
 # build's hash, which no part refers to
 UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
 TAKEN_ROW = "L1 held by the session (its L1 tensors, runs not stopped)"
-# A taken branch to code at or above this L1 address costs about 4 cycles more: the
-# kernels and the slots go below it, the circular buffers above them.
-L1_FAST_CODE = 1 << 20
-TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 # A transfer without a run launches its kernel from this many bytes on: a launch costs
 # about 30 ms, as the device API's read of some 76 KiB does (measured on a p150a).
 LAUNCH_MIN_BYTES = 80 << 10
-DRAM_PIECE_ALIGN = 64  # a piece of a DRAM page written apart starts this aligned
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 WORDS_SPIN_S = 300e-6  # a transfer's words looked at without a pause this long
-OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
-
-
-def kernel_sizes(build):
-    """A KernelSizes from the native kernel_build's (config bytes, buffer, text per
-    thread, the runtime's message); the total from that message when it does not fit."""
-    total, limit, text, error = build
-    if error:
-        said = re.search(r"Program size \((\d+)\) too large", error)
-        total = int(said.group(1)) if said else None
-    return KernelSizes(dict(zip(TENSIX_THREADS, text, strict=False)), total, limit)
-
-
-def _core_args(program, placed, core):
-    """(reader, writer, compute) program arguments of `core`: its group's program's
-    when the run holds programs in the runtime's form."""
-    if placed is None:
-        return program.core_args(core)
-    if len(placed.programs) > 1:
-        return programs.core_args(placed, core)
-    for group in placed.groups:
-        if group.first <= core < group.first + group.count and group.programs:
-            return placed.programs[group.programs[0]].core_args(core)
-    return [], [], []
-
-
-# A link CPU's own chunk on the link cores (Run._link_chunk): at most, and what is
-# left besides; at least the least that holds a put ring (link_chunk_least).
-LINK_CHUNK_MOST = 512 << 10
-LINK_CHUNK_MARGIN = 64 << 10
-# km_pages.hpp's ring: kRingChunkMin, kRingSlotsMin, kRingHeader
-RING_CHUNK_MIN, RING_SLOTS_MIN, RING_HEADER = 128 << 10, 8, 128
-
-
-def link_chunk_least(packet):
-    """The least link chunk (whole 64 KiB) whose put ring has RING_SLOTS_MIN slots of
-    `packet` bytes in its half (km_pages.hpp ring_slots): 192 KiB for 8 KiB packets."""
-    ring = 2 * RING_SLOTS_MIN * (RING_HEADER + packet)
-    return max(RING_CHUNK_MIN, -(-ring // (64 << 10)) * (64 << 10))
-
-
-# The defines of an island run that the link cores' own kernels are built with too.
-LINK_DEFINES = (
-    "KM_PAGE_LINKS",
-    "KM_TENSOR_TABLE",
-    "KM_ASKS_BY_HOST",
-    "KM_TENSORS_MAX",
-    "KM_ISLANDS_MAX",
-    "KM_TABLE_CACHE",
-    "KM_FORWARD",
-    "KM_FORWARD_CORES",
-    "KM_FORWARD_CPUS",
-    "KM_FORWARD_LEVELS",
-    "KM_FAR_PUTS",
-)
-# Every define the island load gives a program; a plan's runtime kernels get them.
-ISLAND_DEFINES = (*LINK_DEFINES, "KM_WIRE")
-
-
-def _link_kernels(island, program, split, cores):
-    """(ranks, link cores) of a load whose link cores get the runtime's link kernels
-    (the link services) and its ranks the program's (their client side): a program
-    built with page links on an island of its own card, not dynamic (its link cores
-    carry its messages); else (cores, 0): every core the program's kernels."""
-    if (
-        island is None
-        or split is not None
-        or program.messages is not None
-        or "KM_PAGE_LINKS" not in program.defines
-    ):
-        return cores, 0
-    graph, here = island
-    links = len(graph.link_cores[here])
-    return (cores - links, links) if links else (cores, 0)
-
-
-def _cbs_end(cbs):
-    """The end of circular buffers `cbs` ((index, format, page bytes, pages)) as
-    tt-metal places them from 0, in creation order."""
-    return programs.buffer_layout(cbs, 0)[1]
-
-
-def check_link_defines(name, link_defines, placed):
-    """Refuses link cores' kernels built without a link define a program `placed` has,
-    or without the put queue (KM_LINK_QUEUE) its ranks' put lines go through."""
-    have = {define for define, _ in link_defines}
-    missing = sorted(
-        {define for p in placed for define in p.defines if define in LINK_DEFINES}
-        - have
-    )
-    if "KM_PAGE_LINKS" in have and "KM_LINK_QUEUE" not in have:
-        missing.append("KM_LINK_QUEUE")
-    if missing:
-        raise ProgramError(
-            f"{name}: its link cores' kernels would be built without "
-            f"{', '.join(missing)}: the ranks' asks and put lines would never be served"
-        )
-
-
-def _link_kernel_path(kernel):
-    """The runtime's link kernel of `kernel` (reader, writer, compute)."""
-    return _env.include_directory().parent / "kernels" / f"link_{kernel}.cpp"
-
-
-def _is_link_kernel(source):
-    """Whether a kernel `source` of a build is one of the runtime's link kernels."""
-    return any(
-        Path(source) == _link_kernel_path(kernel)
-        for kernel in ("reader", "writer", "compute")
-    )
-
-
-def kernel_build(program, kernel, defines):
-    """A kernel's defines, its optimisation level when the program sets one, and its
-    NoC when the program sets them. A set level also adds a define naming it: the
-    runtime's build cache key leaves the level out, and two levels must not share a
-    cached ELF."""
-    build = {"defines": defines}
-    if program.noc and kernel != "compute":
-        build["noc"] = program.kernel_noc(kernel)
-    level = program.kernel_opt(kernel)
-    if level is not None:
-        build |= {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
-    return build
-
-
-def own_slot_code(program):
-    """Whether `program` may give the service overlay its own slot: it has overlays of
-    its own, added handlers or slots(service="own"); else the service shares the
-    reader's slots, the same layout with no program slots (pay for use)."""
-    return (
-        bool(program.overlays)
-        or "KM_ADDED_HANDLERS" in program.defines
-        or program.overlay_slots.service == "own"
-    )
-
-
-def own_slot_path(program):
-    """The kernels' define of the own slot's code (km_overlay.hpp's overlay_own),
-    for a program that may use it (own_slot_code); a placed load always has it."""
-    return [("KM_OVERLAY_OWN", "1")] if own_slot_code(program) else []
-
-
-def slots_most(program, placed=None):
-    """The slots of one part the load's kernels are built for (KM_OVERLAY_SLOTS over
-    4): as the overlays want them on a core, or as slots(count=) declares; a load of
-    several programs: its groups' (placed_slots)."""
-    fixed = overlay.constants()["kOverlaySlotsFixed"]
-    if placed is not None:
-        return max([fixed, *placed_slots(placed).values()])
-    declared = getattr(program, "overlay_slots", None)  # None: a class not yet made
-    if declared is None:
-        return fixed
-    own = list(program.overlays.values())
-    counts = [
-        declared.of(kernel, own)[0]
-        for kernel in overlay.KERNELS
-        if declared.reserved(kernel) or any(kernel in each.sources for each in own)
-    ]
-    return max([fixed, *counts])
-
-
-def placed_slots(placed):
-    """{kernel: count} a load of several programs wants, before its kernels are built:
-    a switching run's (a declared count, else one a program, one more for an own
-    overlay named ahead); else the largest group's, one an overlay with a part there.
-    A merged program's spilled sources come with a declared count (komorebi.merge)."""
-    declared = placed.programs[0].overlay_slots
-    count = declared.count
-    out = {}
-    if placed.switch:
-        ahead = added_program.ahead_own_kernels(placed)
-        for kernel in overlay.KERNELS:
-            wanted = count.get(kernel) if isinstance(count, dict) else count
-            out[kernel] = wanted or len(placed.programs) + (kernel in ahead)
-        return out
-    single = len(placed.programs) == 1
-    for group in placed.groups:
-        held = [placed.programs[index] for index in group.programs]
-        overlays = [
-            *(
-                part
-                for each in held
-                for part in programs.program_overlays(each, False, single)
-            ),
-            *(made for each in held for made in programs.own_overlays(each)),
-        ]
-        for kernel in overlay.KERNELS:
-            if declared.reserved(kernel) or any(
-                kernel in each.sources for each in overlays
-            ):
-                wanted = declared.of(kernel, overlays)[0]
-                out[kernel] = max(out.get(kernel, 0), wanted)
-    return out
-
-
-def own_slot_declared(program):
-    """`program`'s declared slots, the service shared when its kernels lack the
-    own slot's code (own_slot_code)."""
-    if own_slot_code(program):
-        return program.overlay_slots
-    return dataclasses.replace(program.overlay_slots, service="shared")
-
-
-def added_path(placed):
-    """The runtime's kernels' define of the path of a handler added to the live run
-    (run.addon), when every program of the load names slot bytes for it, as the
-    load's room requires (added.room); a program's own defines stay its parts'."""
-    if placed and all("KM_ADDED_HANDLERS" in p.defines for p in placed):
-        return [("KM_ADDED_HANDLERS", "1")]
-    return []
-
-
-def guard_path(programs):
-    """The runtime's kernels' define of KM_GUARD 0 when the load's programs are built
-    with guard=False (programs.same_guard: they all are, or none); a program's own
-    parts get it from its defines."""
-    return [("KM_GUARD", "0")] if unguarded(programs) else []
-
-
-def slot_area(base, size, used, slow_code):
-    """The slots' (address, bytes, buffer index): `size` bytes as the first circular
-    buffer, at the L1 base `base`, on an index not in `used`; refused (SlowCodeError)
-    when they end above L1_FAST_CODE, unless `slow_code`."""
-    size = -(-size // overlay.ALIGN) * overlay.ALIGN
-    if base + size > L1_FAST_CODE and not slow_code:
-        raise SlowCodeError(base, size, L1_FAST_CODE)
-    return base, size, slot_index(used)
-
-
-def slot_index(used):
-    """The slots' buffer index: the highest one below the highest index in `used`
-    (the kernel config keeps its size)."""
-    free = set(range(max(used))) - set(used)
-    if not free:
-        raise ProgramError(f"no circular buffer index below {max(used)} for the slots")
-    return max(free)
-
-
-def _state_page():
-    """The page of the dispatcher's state area (_state_area): KMD_STATE_BYTES."""
-    return abi.headers()["KMD_STATE_BYTES"] // 4 * 4
-
-
-def _state_area(session):
-    """A DRAM buffer whose bank address holds the dispatcher's state in every
-    bank (KMD_STATE_BYTES at least); rejected if it covers the runtime's IPI word."""
-    abi_headers = abi.headers()
-    # each bank holds what the kernel keeps cached and flushes (KMD_STATE_CACHED)
-    if STATE_PAGES // DRAM_BANKS * _state_page() < abi_headers["KMD_STATE_CACHED"]:
-        raise StartError(f"{STATE_PAGES} state pages: under KMD_STATE_CACHED a bank")
-    rows = programs.words_tensor(session, np.zeros((STATE_PAGES, _state_page() // 4)))
-    address = rows.address
-    if address <= IPI_ACK_DDR < address + STATE_PAGES * abi_headers["KMD_STATE_BYTES"]:
-        raise StartError(f"the kernel state at {address:#x} covers the X280 IPI word")
-    return rows
-
-
-def lim_bases(lim_base, abi_headers=None):
-    """The X280 local-memory addresses the kernels are given or derive from the
-    runtime's base: the base, every KMD_LIM_* offset from it, the ack stride."""
-    abi_headers = abi_headers or abi.headers()
-    bases = {"lim_base": lim_base, "KM_ACK_STRIDE": abi_headers["KM_ACK_STRIDE"]}
-    for name, offset in abi_headers.constants.items():
-        if name.startswith("KMD_LIM_"):
-            bases[name] = lim_base + offset
-    return bases
-
-
-def check_bases(bases):
-    """Rejects bases that are not multiples of NOC_ALIGN: the runtime's small writes
-    go slot to slot and rely on them."""
-    bad = {name: address for name, address in bases.items() if address % NOC_ALIGN}
-    if bad:
-        named = ", ".join(f"{name} {address:#x}" for name, address in bad.items())
-        raise StartError(f"not a multiple of {NOC_ALIGN} bytes: {named}")
-
-
-def go_layout(panels, columns, cores, abi_headers=None):
-    """KM_ISLAND_GO of an island of `cores` cores (whole rows of `columns`) over the
-    grid's `panels` (column ranges, at most two, in order): what km::team_go
-    multicasts its release over; 0 (one atomic a rank) when they do not tile the
-    grid."""
-    abi_headers = abi_headers or abi.headers()
-    starts = [first for first, _ in panels]
-    ends = [last for _, last in panels]
-    tiled = (
-        starts[:1] == [0]
-        and starts[1:] == [end + 1 for end in ends[:-1]]
-        and ends[-1:] == [columns - 1]
-    )
-    rows = cores // columns if columns else 0
-    if not (len(panels) <= 2 and tiled and rows * columns == cores):
-        return 0
-    if not (1 <= rows < 256 and columns < 256):
-        return 0
-    split = panels[1][0] if len(panels) == 2 else 0
-    return (
-        columns
-        | rows << abi_headers["KM_ISLAND_GO_ROWS"]
-        | split << abi_headers["KM_ISLAND_GO_SPLIT"]
-        | abi_headers["KM_ISLAND_GO_ON"]
-    )
-
-
-def _control_bytes(most=0):
-    """A core's control block and overlay area (Run._control_blocks's words), the
-    records of `most` slots of a part past 4 after it."""
-    abi_headers = abi.headers()
-    area = overlay.area_bytes(most)
-    return (abi_headers["KM_CONTROL_BYTES"] + area + CONTROL_ALIGN) // 4 * 4
-
-
-def write_pieces(aligned, chunk):
-    """The pieces a DRAM page of `aligned` bytes is written in while a run lives, its
-    transfer moving at most `chunk` bytes a page: 1 when it fits, else the fewest equal
-    pieces of whole DRAM_PIECE_ALIGN units within the chunk; None when none are."""
-    if aligned <= chunk:
-        return 1
-    for pieces in range(2, aligned // DRAM_PIECE_ALIGN + 1):
-        piece = aligned // pieces
-        if aligned % pieces == 0 and piece % DRAM_PIECE_ALIGN == 0 and piece <= chunk:
-            return pieces
-    return None
-
-
-def split_pages(first, rows, pieces, banks=DRAM_BANKS):
-    """Pages first .. of an interleaved DRAM tensor (`rows`, [n, aligned] uint8) as
-    the same bytes in pages of aligned / pieces: piece j of page p is page
-    banks * ((p // banks) * pieces + j) + p % banks of that view (a bank holds its pages
-    back to back). [(first page of the view, [m, piece] rows)], each a run of them."""
-    count, aligned = rows.shape
-    pages = first + np.arange(count)
-    at = (
-        banks * ((pages // banks)[:, None] * pieces + np.arange(pieces))
-        + (pages % banks)[:, None]
-    )
-    order = np.argsort(at, axis=None, kind="stable")
-    at = at.reshape(-1)[order]
-    pieced = rows.reshape(count * pieces, aligned // pieces)[order]
-    cuts = np.flatnonzero(np.diff(at) != 1) + 1
-    return [
-        (int(run[0]), part)
-        for run, part in zip(np.split(at, cuts), np.split(pieced, cuts), strict=True)
-    ]
-
-
-def _transfer_chunk_of(session, held, switch, trace_cap, control_bytes):
-    """The chunk of a run's transfer buffer: CHUNK_DEFAULT, or the largest DRAM page
-    (the session's tensors' and the state area's a load makes first) when two take at
-    most half of what a core has left after its buffers. A run with overlays, or whose
-    groups switch program, keeps the default: it has slots to place."""
-    page = max(session.largest_page, _state_page())
-    if switch or any(each.overlays for each in held):
-        return channel_module.CHUNK_DEFAULT
-    buffers = max(
-        sum(buffer.page_bytes * buffer.pages for buffer in each.buffers)
-        for each in held
-    )
-    buffers += 2 * abi.headers()["kTokenBytes"] + trace_cap * 16
-    spare = session.l1()[1] - buffers - control_bytes
-    asked = session.transfer_chunk  # a session over two cards: LINK_CHUNK
-    word = abi.headers()["KM_TRANSFER_WORD_BYTES"]
-    if asked and asked >= page and 2 * asked + word <= spare // 2:
-        return asked
-    if page <= channel_module.CHUNK_DEFAULT:
-        return channel_module.CHUNK_DEFAULT
-    return channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
-
-
-def slot_rows(slots, service=0, why=""):
-    """The L1 budget table's rows of overlay slots ({part: (count, bytes)}) and of the
-    service overlay's own reader slot (`service` bytes; 0: the reader's, `why`)."""
-    rows = [(f"slots: service (reader), 1 x {service:,} B", service)] if service else []
-    if why:
-        place = "its own" if service else "in the reader slots"
-        rows = [(f"slots: service (reader), {place}: {why}", 0)] + rows
-    return rows + [
-        (f"slots: {part}, {count} x {size:,} B", count * size)
-        for part, (count, size) in slots.items()
-        if count
-    ]
-
-
-def built_files(recipes, started):
-    """(found, compiled) of the ELFs of a launch's `recipes()`: compiled when written
-    from `started` (time.time()) on, else found in the build cache."""
-    elves = {Path(row[1]) for _, builds in recipes for row in builds}
-    compiled = sum(elf.is_file() and elf.stat().st_mtime >= started for elf in elves)
-    return len(elves) - compiled, compiled
-
-
-def fit_slots(built, declared, free, rows, log):
-    """`built` with the undeclared slot counts lowered until `rows` (the L1 table's
-    rows besides the slots) and the slots fit `free` bytes, where they can."""
-    room = free - sum(size for _, size in rows)
-    return overlay.choose(built, declared, room, log)
-
-
-def read_tensors(device, module, tensors, first=0, pages=None):
-    """The raw pages first .. first + pages - 1 (pages=None: to the end) of interleaved
-    DRAM tensors as [pages, page_bytes] uint8 each: one DRAM barrier, one read per bank
-    and tensor, no wait for idle cores."""
-    banks = module.dram_banks(device)
-    spans, layout = [], []
-    for tensor in tensors:
-        if not tensor.in_dram:
-            raise ValueError("only interleaved DRAM tensors are read by banks")
-        page, aligned = tensor.page_bytes, tensor.aligned_page_bytes
-        start_page, count = dram.page_range(first, pages, tensor.pages)
-        mine = dram.bank_spans(tensor.address, aligned, count, banks, start_page)
-        layout.append((len(spans), len(mine), page, aligned, count))
-        spans += mine
-    chunks = module.read_dram(device, spans)
-    return [
-        dram.pages_in_order(
-            chunks[first_span : first_span + span_count], page, aligned, pages, banks
-        )
-        for first_span, span_count, page, aligned, pages in layout
-    ]
 
 
 def _echo(source, target, seen):
@@ -554,16 +119,6 @@ def _output_seen():
             thread.join(timeout=5.0)
         for saved in kept:
             os.close(saved)
-
-
-def _read_uint32(tensor, device=None, module=None):
-    """A row-major 32-bit tensor's words as int64: by banks when it is in DRAM and a
-    module is given, else as one buffer read (which waits for the launched cores)."""
-    if module is not None and tensor.in_dram:
-        (pages,) = read_tensors(device, module, [tensor])
-        words = pages.reshape(-1).view(np.uint32).reshape(tuple(tensor.shape))
-        return words.astype(np.int64)
-    return tensor.read_bytes().view(np.uint32).reshape(tensor.shape).astype(np.int64)
 
 
 class Session:
@@ -860,7 +415,7 @@ class Session:
         if buffers is None:
             buffers = sum(b.page_bytes * b.pages for b in program.buffers)
         buffers += 2 * abi_headers["kTokenBytes"] + trace_cap * 16
-        control = _control_bytes(slots_most(program, placed))
+        control = tensor_bytes._control_bytes(kernel_module.slots_most(program, placed))
         rows = [
             ("circular buffers", buffers),
             ("control block and overlay area", control),
@@ -870,8 +425,10 @@ class Session:
         if self.channel is not None or program.threads or mock:
             held = placed.programs if placed else [program]
             switch = bool(placed and placed.switch)
-            chunk = _transfer_chunk_of(self, held, switch, trace_cap, control)
-            size = 2 * chunk + abi_headers["KM_TRANSFER_WORD_BYTES"] + NOC_ALIGN
+            chunk = tensor_bytes._transfer_chunk_of(
+                self, held, switch, trace_cap, control
+            )
+            size = 2 * chunk + abi_headers["KM_TRANSFER_WORD_BYTES"] + sizes.NOC_ALIGN
             rows.append(("host transfer buffer", size))
         messages = getattr(program, "messages", None)
         if messages is not None and messages.direct:
@@ -970,7 +527,9 @@ class Session:
                 "which this session cannot use for it"
             )
         in_dram = [tensor for tensor in tensors if tensor.in_dram]
-        banked = iter(read_tensors(self.device, self._module, in_dram, first, pages))
+        banked = iter(
+            tensor_bytes.read_tensors(self.device, self._module, in_dram, first, pages)
+        )
         out = []
         for tensor in tensors:
             if tensor.in_dram:
@@ -1039,7 +598,7 @@ class Session:
             return None
         if run.stopped or not run.alive():
             return None
-        return write_pieces(tensor.aligned_page_bytes, transfer.chunk)
+        return tensor_bytes.write_pieces(tensor.aligned_page_bytes, transfer.chunk)
 
     def _write_pieces(self, tensor, pages, start, pieces):
         """Pages start .. of a DRAM tensor written while a run lives, each page as
@@ -1053,7 +612,7 @@ class Session:
             aligned_page_bytes=aligned // pieces, pages=tensor.pages * pieces,
             in_dram=True, shard_grid=None,
         )  # fmt: skip
-        for at, part in split_pages(start, rows, pieces):
+        for at, part in tensor_bytes.split_pages(start, rows, pieces):
             for done, step in channel_module.rounds(
                 len(part), view.aligned_page_bytes, self._region
             ):
@@ -1080,7 +639,7 @@ class Session:
                 f"a write while a run is loaded moves at most {transfer.chunk:,} B a "
                 f"page through the run's transfer buffer; this tensor's page is "
                 f"{tensor.aligned_page_bytes:,} B and splits into no equal pieces of "
-                f"whole {DRAM_PIECE_ALIGN} B within it"
+                f"whole {tensor_bytes.DRAM_PIECE_ALIGN} B within it"
             )
         return (
             "a page range, or a write while a run is loaded, goes through the run's "
@@ -1262,7 +821,7 @@ class Session:
         launch = self._transfer_launch(cores, args, transfer.chunk)
         started = time.time()
         launch.run()
-        if built_files(launch.recipes(), started)[1]:
+        if kernel_module.built_files(launch.recipes(), started)[1]:
             self.log("built: the host transfer kernel compiled (not found built)")
         try:
             arrived = self._words_arrived(words, want, timeout)
@@ -1299,13 +858,13 @@ class Session:
         launch = self._transfer_launch([(0, 0, 0, 0)], [(0, 0, [0] * 16)], 4096)
         started = time.time()
         launch.build()
-        return [built_files(launch.recipes(), started)]
+        return [kernel_module.built_files(launch.recipes(), started)]
 
     def _log_built(self, descriptor, started, program):
         """The load's line: its kernels and overlay parts found built and compiled
         (with a transfer kernel built before it), each compiled kernel's defines of
         `program` and the runtime's (KM_*)."""
-        found, compiled = built_files(descriptor.recipes(), started)
+        found, compiled = kernel_module.built_files(descriptor.recipes(), started)
         for before_found, before_compiled in self._built_before:
             found, compiled = found + before_found, compiled + before_compiled
         self._built_before = []
@@ -1487,7 +1046,7 @@ class Session:
             raise ValueError(f"reserve={reserve}: bytes, 0 or more")
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
-        self.island = _island(island, self.grid)
+        self.island = kernel_module._island(island, self.grid)
         if link is not None and self.island is None:
             raise ValueError("link= is an island's (island= too)")
         self.link_plan = link
@@ -1537,7 +1096,7 @@ class Session:
             if on_card
             else {}
         )
-        ranks = _x280_ranks(program, owner, placed, on_card)
+        ranks = x280_module._x280_ranks(program, owner, placed, on_card)
         depth = depth or program.depth
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
@@ -1545,7 +1104,7 @@ class Session:
         mhz = prebuild.MHZ if prebuild.active() else process.aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
-        regions = _bank_regions(self, owner, works)
+        regions = x280_module._bank_regions(self, owner, works)
         dispatch = self._open_dispatch(module)
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
         process._hook_exit()
@@ -1556,9 +1115,11 @@ class Session:
         try:
             if not dispatch.idle:
                 raise StartError("X280 cluster 0 is not idle: no image can start")
-            state_tensor = _state_area(self)
+            state_tensor = tensor_bytes._state_area(self)
             rings = {
-                work.cluster: _work_ring(dispatch, work) for work in works if on_card
+                work.cluster: x280_module._work_ring(dispatch, work)
+                for work in works
+                if on_card
             }
             ends = {cluster: end for cluster, (_, end) in rings.items()}
             tag = dispatch.prepare(
@@ -1576,9 +1137,9 @@ class Session:
                     else 0
                 ),
                 programs=(
-                    _held_fields(
+                    kernel_module._held_fields(
                         placed,
-                        _link_kernels(
+                        kernel_module._link_kernels(
                             self.island,
                             program,
                             None,
@@ -1588,22 +1149,24 @@ class Session:
                     if placed and placed.switch
                     else []
                 ),
-                island=_island_word(self.island),
+                island=kernel_module._island_word(self.island),
                 link=list(link.line(dispatch)) if link is not None else [],
                 channel_region=self._channel_region(),
             )
-            check_bases(lim_bases(dispatch.lim_base))
+            kernel_module.check_bases(kernel_module.lim_bases(dispatch.lim_base))
             # an island's ports serve its ranks, not its link cores
-            served, _ = _link_kernels(
+            served, _ = kernel_module._link_kernels(
                 self.island, program, None, dispatch.grid_x * dispatch.grid_y
             )
-            plan, port_lines = _port_lines(owner, dispatch, rings, served)
+            plan, port_lines = x280_module._port_lines(owner, dispatch, rings, served)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
             backend.reserve = reserve
             backend.added_buffers = added_program.buffers_given(buffers)
             if ranks is not None:
-                ranks = _x280_words(self, program, dispatch, rings, regions, plan)
+                ranks = x280_module._x280_words(
+                    self, program, dispatch, rings, regions, plan
+                )
             descriptor = backend.describe(
                 program, sources, tag, depth, wait, idle, trace, port_lines, placed,
                 ranks,
@@ -1613,7 +1176,7 @@ class Session:
                 elves, *build = descriptor.build()
             except Exception as error:
                 raise ProgramError(f"{program.name}: build failed: {error}") from error
-            program.sizes = kernel_sizes(build)
+            program.sizes = kernel_module.kernel_sizes(build)
             self._last_total = program.sizes.total
             for other in placed.programs if placed is not None else ():
                 other.sizes = program.sizes
@@ -1693,7 +1256,7 @@ class Session:
         if state != abi.headers()["KMD_STATE_READY"]:
             run._fail_start(state)
         if placed is not None and placed.switch:
-            _start_loads(run, placed, part=self.island is not None)
+            kernel_module._start_loads(run, placed, part=self.island is not None)
         if recover and not (placed is not None and placed.switch):
             # an island's link cores keep their held connection: no reset list
             exclude = ()
@@ -1714,8 +1277,11 @@ class Session:
             self.log(guard_says(unguarded(run.programs), recover))
         self.log("ready")
         if works:
-            shared = {name: _host_array(value) for name, value in owner.shared.items()}
-            peers = _peers(self, dispatch, images) if on_card else {}
+            shared = {
+                name: x280_module._host_array(value)
+                for name, value in owner.shared.items()
+            }
+            peers = x280_module._peers(self, dispatch, images) if on_card else {}
             switch = getattr(backend, "switch", None)
             records = thread_module.load_records(switch) if on_card else None
             if records is not None:  # a thread may load: reason 13 is the judge
@@ -1746,7 +1312,7 @@ class Session:
                         )
                         thread_run.write_ports()
                     if ranks is not None and cluster == program.messages.x280_cluster:
-                        thread_run.ranks = _x280_line(
+                        thread_run.ranks = x280_module._x280_line(
                             program, dispatch, backend, ranks, wait, mhz
                         )
                         thread_run.write_ranks()
@@ -1809,7 +1375,7 @@ class Session:
         depth = depth or program.depth
         sources = program.sources()
         mhz = prebuild.MHZ if prebuild.active() else process.aiclk_mhz(self.card)
-        dispatches = _Dispatches([self._open_dispatch(module)])
+        dispatches = kernel_module._Dispatches([self._open_dispatch(module)])
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
         process._hook_exit()
         process._LIVE.add(self)
@@ -1829,7 +1395,7 @@ class Session:
                 dispatch.settle_microseconds = settle_microseconds
                 if not dispatch.idle:
                     raise StartError(f"X280 cluster {island} is not idle")
-                states.append(_state_area(self))
+                states.append(tensor_bytes._state_area(self))
                 base = first_row * self.grid[0]
                 plan = links[island] if links else None
                 line = b""
@@ -1851,14 +1417,14 @@ class Session:
                             if program.messages is not None
                             else 0
                         ),
-                        island=_island_word((graph, island)) | base << 32,
+                        island=kernel_module._island_word((graph, island)) | base << 32,
                         link=list(line),
                         first_row=first_row,
                         rows=count,
                         channel_region=self._channel_region(),
                     )  # fmt: skip
                 )
-                check_bases(lim_bases(dispatch.lim_base))
+                kernel_module.check_bases(kernel_module.lim_bases(dispatch.lim_base))
             if len({dispatch.lim_base for dispatch in dispatches}) != 1:
                 raise StartError(  # a core's words name one LIM address on every one
                     "the islands' dispatchers differ in LIM base: "
@@ -1880,7 +1446,7 @@ class Session:
                 elves, *build = descriptor.build()
             except Exception as error:
                 raise ProgramError(f"{program.name}: build failed: {error}") from error
-            program.sizes = kernel_sizes(build)
+            program.sizes = kernel_module.kernel_sizes(build)
             self._last_total = program.sizes.total
             if build[-1]:
                 raise KernelSizeError(
@@ -1951,436 +1517,6 @@ class Session:
                 run._fail_start(state)
         self.log("ready: every island")
         return runs
-
-
-def _recipe_group(recipe):
-    """The group number a runtime kernel's build was made for (KM_PROGRAM_GROUP, in
-    its defines or in the header the runtime generates beside its ELF), or None."""
-    for word in recipe.defines:
-        if word.startswith(GROUP_DEFINE + "="):
-            return int(word.split("=", 1)[1])
-    header = recipe.elf.parent.parent / "defines_generated.h"
-    found = GROUP_LINE.search(header.read_text()) if header.is_file() else None
-    return int(found.group(1)) if found else None
-
-
-def _island(island, grid):
-    """Session.load's `island` (graph, i) checked: island i's ranks are this card's
-    first cores in core order, its link cores the rest in order, so rank first + c is
-    core c and link core k is core ranks + k (the dispatcher's mapping)."""
-    if island is None:
-        return None
-    graph, here = island
-    cores = grid[0] * grid[1]
-    if not 0 <= here < len(graph.islands):
-        raise ValueError(f"island {here} of {len(graph.islands)}")
-    if graph.rank_cores[here] + graph.link_cores[here] != tuple(range(cores)):
-        raise ValueError(
-            f"island {here}: its ranks, then its link cores, are not the {cores} "
-            "cores in order"
-        )
-    return graph, here
-
-
-def _island_word(island):
-    """The dispatcher's island word: first | count << 16 of its ranks; 0 for none."""
-    if island is None:
-        return 0
-    graph, here = island
-    return graph.first(here) | graph.count(here) << 16
-
-
-class _Dispatches(list):
-    """The dispatches of a card split into islands, closed together (a load's)."""
-
-    close_failed = ""
-
-    def close(self):
-        failed = [d.close_failed for d in self if not d.close()]
-        self.close_failed = "; ".join(failed)
-        return not failed
-
-
-def _group_recipes(kernels, count):
-    """{target: Recipe} of each group's runtime kernels, by group number: the
-    runtime lists a program's kernels in no fixed order."""
-    out = [{} for _ in range(count)]
-    for source, builds in kernels:
-        if _is_link_kernel(source):  # the link cores': no program runs there
-            continue
-        for row in builds:
-            recipe = overlay.Recipe.from_native(row)
-            number = _recipe_group(recipe)
-            if number is None or not 0 <= number < count:
-                raise ProgramError(f"{recipe.elf}: no group number in its build")
-            out[number][recipe.target] = recipe
-    return out
-
-
-def _held_fields(placed, links=0):
-    """A byte per core for the dispatcher's table: the program field it holds, 0xFF
-    none. An island's `links` link cores, after its ranks, run the runtime's link
-    kernels whatever program is loaded: they hold field 0, the field the session's
-    own commands to them carry."""
-    out = [0xFF] * placed.cores + [0] * links
-    for group in placed.groups:
-        for program_field in group.programs:
-            out[group.first : group.first + group.count] = [program_field] * group.count
-    return out
-
-
-def _start_loads(run, placed, part=False):
-    """In a run whose groups switch, each group loads its program first: the compute
-    parts set the hardware up for its formats (the runtime's kernels do not); `part`:
-    the run is an island's, its groups a part of the flat ones."""
-    first = run.island_first  # the run takes flat ranks; an island's are a part
-    handles = [
-        run.load(
-            placed.programs[group.programs[0]],
-            (first + group.first, group.count),
-            part=part,
-        )
-        for group in placed.groups
-        if group.programs
-    ]
-    run.wait(handles, timeout=10.0)
-
-
-def _common_slots(placed, declared, built, most):
-    """A switching run's slots of the largest part any program has there: the declared
-    count, else one a program up to `most` (the kernels' slots), one more where a class
-    named ahead has an own overlay, and 2 at least where a loaded program has one (its
-    part loads into another slot)."""
-    slots = {}
-    for made in built:
-        for part, (_, size) in made.slots.items():
-            slots[part] = max(slots.get(part, 0), size)
-    count = declared.count
-    service = max(made.service for made in built)
-    own = added_program.ahead_own_kernels(placed)
-    loaded = _loaded_own_kernels(placed)
-    out = {}
-    for part, size in slots.items():
-        kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
-        wanted = count.get(kernel) if isinstance(count, dict) else count
-        if wanted == 1 and kernel in own | loaded:
-            raise ProgramError(
-                f"Program.slots(count=1) for the {kernel}: a program of this run has "
-                f"an overlay of its own with a {kernel} part, which its part loads "
-                "into another slot while it runs; give it 2 or more"
-            )
-        more = 1 if kernel in own else 0
-        default = min(len(placed.programs) + more, most)
-        if kernel in loaded:
-            default = max(default, 2)
-        out[part] = (wanted or default, size)
-    return overlay.Built({}, out, service, service)
-
-
-def _own_slots_kept(placed, common):
-    """Refuses slots the L1 lowered to one in a kernel where a program's own overlay
-    loads beside its program overlay: its first call would find no slot."""
-    own = added_program.ahead_own_kernels(placed) | _loaded_own_kernels(placed)
-    for part, (count, _) in common.slots.items():
-        kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
-        if kernel in own and count < 2:
-            raise ProgramError(
-                f"the {part} slots lowered to {count}: a program of this run loads an "
-                f"overlay of its own there beside its program overlay, which needs 2; "
-                "the L1 left allows no more (fewer or smaller buffers, or smaller "
-                "parts)"
-            )
-
-
-def _loaded_own_kernels(placed):
-    """The kernels where a program the run loads has a part of an overlay of its own
-    (its handlers' overlays, besides its program overlay)."""
-    return {
-        kernel
-        for program in placed.programs
-        for each in program.overlays.values()
-        for kernel in each.sources
-    }
-
-
-def _peers(session, dispatch, images):
-    """{cluster: komorebi.program.thread.Peers} for the threads on the card: each with
-    the clusters running its image, their tiles and their banks' DRAM tiles."""
-    out, nonce = {}, thread_module.new_check_value() & 0xFFFFFFFF
-    for cluster, group in thread_module.peer_groups(images).items():
-        tiles, banks = {}, {}
-        for peer in group:
-            info = dispatch.work_info(peer)
-            tiles[peer] = info["virtual_x"] | info["virtual_y"] << 16
-            x, y = session.device.dram_core(thread_module.BANK_OF_CLUSTER[peer])
-            banks[peer] = int(x) | int(y) << 16
-        out[cluster] = thread_module.Peers(nonce, min(group), tiles, banks)
-    return out
-
-
-class _PortLines(NamedTuple):
-    """Each core's tile by core index, and {core: (X280 tile, mailbox address)}."""
-
-    cores: list
-    lines: dict
-
-
-def _port_lines(program, dispatch, rings, cores=None):
-    """The program's X280 ports over the first `cores` cores (default the grid):
-    ({core: (cluster, cpu)}, _PortLines), or (None, None) when it declares none."""
-    if program.x280_ports is None:
-        return None, None
-    cores = cores or dispatch.grid_x * dispatch.grid_y
-    plan = thread_module.port_plan(program.x280_ports["serve"], cores, set(rings))
-    lines = {}
-    for core, (cluster, _) in plan.items():
-        info = dispatch.work_info(cluster)
-        tile = info["virtual_x"] | info["virtual_y"] << 16
-        lines[core] = (
-            tile,
-            thread_module.port_box(info["lim_base"], rings[cluster][0], core),
-        )
-    return plan, _PortLines(
-        [int(core_tile) for core_tile in dispatch.core_table()[:cores]], lines
-    )
-
-
-def _x280_ranks(program, owner, placed, on_card):
-    """The thread of the program's X280 ranks, its queues' region (X280_QUEUES) added;
-    None when the program has none."""
-    messages = program.messages
-    if messages is None or messages.x280_ranks == 0:
-        return None
-    work = owner.threads.get(messages.x280_cluster)
-    if placed is not None or work is None or not on_card:
-        raise ValueError(
-            f"{program.name}: X280 ranks need one program with its thread on cluster "
-            f"{messages.x280_cluster}, on the card"
-        )
-    size = messages.queue_region_bytes()
-    if work.regions.get(X280_QUEUES, size) != size:
-        raise ValueError(f"{program.name}: the thread's region {X280_QUEUES!r} is ours")
-    work.regions[X280_QUEUES] = size
-    return work
-
-
-def _x280_words(session, program, dispatch, rings, regions, plan):
-    """The X280 ranks' words of km::MessagesArgs (without the inbox): their queues'
-    bank address and DRAM tile, their cluster's tile, the cores' credit lines there."""
-    messages = program.messages
-    cluster = messages.x280_cluster
-    bank, queue = regions[thread_module.BANK_OF_CLUSTER[cluster]].address(
-        (cluster, X280_QUEUES)
-    )
-    x, y = session.device.dram_core(bank)
-    info = dispatch.work_info(cluster)
-    at = thread_module.ranks_at(rings[cluster][0], plan)
-    return {
-        "x280_queue": queue,
-        "x280_bank": int(x) | int(y) << 16,
-        "x280_tile": info["virtual_x"] | info["virtual_y"] << 16,
-        "x280_credits": (
-            info["lim_base"] + at + thread_module.layout()["KMX_RANKS_CREDITS"]
-        ),
-    }
-
-
-def _x280_line(program, dispatch, backend, words, wait, mhz):
-    """The X280 ranks' line and area for their thread
-    (komorebi.program.thread.Ranks)."""
-    messages = program.messages
-    abi_headers, (constants, _) = abi.headers(), messages_header()
-    cores = dispatch.grid_x * dispatch.grid_y
-    ticks = thread_module.TIMER_HZ
-    line = {
-        "ranks": messages.x280_ranks,
-        "cores": cores,
-        "queue": words["x280_queue"],
-        "cap": messages.queue_messages,
-        "message_bytes": messages.message_bytes,
-        "quota": messages.quota(cores),
-        "counters": messages.counters,
-        "idle": max(1, round(messages.idle_cycles / (mhz * 1e6) * ticks)),
-        "inbox": backend.inbox.address,
-        "inbox_messages": constants["kMessagesInbox"],
-        "lines": dispatch.lim_base + abi_headers["KMD_LIM_MESSAGES"],
-        "lines_tile": dispatch.l2_x | dispatch.l2_y << 16,
-        "wait": round(wait * ticks),
-    }
-    tiles = [int(core_tile) for core_tile in dispatch.core_table()[:cores]]
-    return thread_module.Ranks(line, tiles)
-
-
-def _region_bytes(value):
-    return int(value) if isinstance(value, int) else np.asarray(value).nbytes
-
-
-def _region_initial(value):
-    """The initial bytes as uint8, or None for a zeroed region."""
-    if isinstance(value, int):
-        return None
-    return np.ascontiguousarray(value).view(np.uint8).reshape(-1)
-
-
-def _host_array(value):
-    """A shared region for the host fallbacks: uint32 words of its initial bytes."""
-    size = _region_bytes(value)
-    data = np.zeros(-(-size // 4) * 4, dtype=np.uint8)
-    initial = _region_initial(value)
-    if initial is not None:
-        data[:size] = initial
-    return data.view(np.uint32)
-
-
-def _bank_regions(session, program, works):
-    """{bank: _Regions} for the threads' own regions and the shared ones."""
-    out = {}
-    for bank in sorted({work.bank for work in works}):
-        mine = [work for work in works if work.bank == bank]
-        names = {name for work in mine for name in work.shared}
-        shared = {
-            name: value for name, value in program.shared.items() if name in names
-        }
-        out[bank] = _Regions(session, bank, mine, shared)
-    return out
-
-
-def _work_ring(dispatch, work):
-    """The thread's ring (RingPlacement) and the kernel's end of it (tile, area)."""
-    info = dispatch.work_info(work.cluster)
-    return thread_module.work_ring(
-        dispatch.lim_base,
-        (dispatch.l2_x, dispatch.l2_y),
-        info["lim_base"],
-        (info["virtual_x"], info["virtual_y"]),
-        work.cluster,
-    )
-
-
-def _pages(data, pages):
-    """`data` (uint8) zero-padded to `pages` region pages, as [pages, words] uint32."""
-    out = np.zeros(pages * thread_module.PAGE, dtype=np.uint8)
-    out[: data.size] = data
-    return out.view(np.uint32).reshape(pages, -1)
-
-
-class _Regions:
-    """The regions of one DRAM bank in one DRAM tensor whose pages of that bank hold
-    them: page 0 the check line, then each thread's own regions (keys (cluster,
-    name)), then the shared ones (("shared", name)). Written before the grid starts;
-    read(key) only once the grid has stopped, from that bank's pages alone."""
-
-    def __init__(self, session, bank, threads, shared):
-        self.session = session
-        self.check = thread_module.new_check_value()
-        self.bank = bank
-        entries = [
-            ((thread.cluster, name), thread.region_bytes(name), thread.initial(name))
-            for thread in threads
-            for name in thread.regions
-        ]
-        entries += [
-            (("shared", name), _region_bytes(value), _region_initial(value))
-            for name, value in shared.items()
-        ]
-        self.placed, pages = {}, 1
-        for key, size, _ in entries:
-            self.placed[key] = thread_module.Placement(
-                key[1], pages, -(-size // thread_module.PAGE), size
-            )
-            pages += self.placed[key].pages
-        self.readable = False  # set by the run once the grid has stopped
-        rows = np.zeros((DRAM_BANKS * pages, thread_module.PAGE // 4), dtype=np.uint32)
-        mine = rows[self.bank :: DRAM_BANKS]
-        mine[0, :2] = [self.check & abi.M32, self.check >> 32]
-        for key, _, data in entries:
-            placement = self.placed[key]
-            if data is not None:
-                mine[placement.page : placement.page + placement.pages] = _pages(
-                    data, placement.pages
-                )
-        self.tensor = programs.words_tensor(session, rows)
-        self.base = self.tensor.address
-        if (
-            self.base
-            <= thread_module.IPI_ACK_DDR
-            < self.base + pages * thread_module.PAGE
-        ):
-            raise StartError(
-                f"the thread's regions at {self.base:#x} cover the IPI word"
-            )
-
-    def view(self, thread):
-        """The regions `thread` sees, by name."""
-        return _ThreadRegions(self, thread)
-
-    def address(self, key):
-        """(bank, bank address) of a region, for Tensix kernels."""
-        return self.bank, self.base + self.placed[key].page * thread_module.PAGE
-
-    def read(self, key):
-        """The region's bytes, as uint8."""
-        if not self.readable:
-            raise RuntimeError("regions are read after run.stop()")
-        placement, session = self.placed[key], self.session
-        name = placement.name
-        chunk_pages = (
-            placement.pages
-            if placement.pages * thread_module.PAGE <= REGION_WHOLE
-            else REGION_CHUNK // thread_module.PAGE
-        )
-        spans = dram.bank_chunks(
-            self.base,
-            thread_module.PAGE,
-            self.bank,
-            placement.page,
-            placement.pages,
-            chunk_pages,
-        )
-        out = np.empty(placement.pages * thread_module.PAGE, np.uint8)
-        for offset, span in zip(
-            range(0, out.size, chunk_pages * thread_module.PAGE), spans
-        ):
-            (chunk,) = session._module.read_dram(session.device, [span])
-            out[offset : offset + span[2]] = np.asarray(chunk, np.uint8)
-            if len(spans) > 1:
-                session.log(
-                    f"region {name}: {offset + span[2]} of {out.size} bytes read"
-                )
-        return out[: placement.bytes].copy()
-
-
-class _ThreadRegions:
-    """One thread's regions in its bank's _Regions: its own, then the shared ones it
-    names, in id order (table() gives the argument block's region table)."""
-
-    def __init__(self, regions, thread):
-        self.all = regions
-        self.keys = {name: (thread.cluster, name) for name in thread.regions}
-        self.keys |= {name: ("shared", name) for name in thread.shared}
-        self.bank, self.base, self.check = regions.bank, regions.base, regions.check
-
-    @property
-    def readable(self):
-        return self.all.readable
-
-    @readable.setter
-    def readable(self, value):
-        self.all.readable = value
-
-    def table(self):
-        return [
-            (self.address(name)[1], self.all.placed[key].bytes)
-            for name, key in self.keys.items()
-        ]
-
-    def address(self, name):
-        """(bank, bank address) of a region, for Tensix kernels."""
-        return self.all.address(self.keys[name])
-
-    def read(self, name):
-        """The region's bytes, as uint8, after run.stop()."""
-        return self.all.read(self.keys[name])
 
 
 class _TransferBuffer(NamedTuple):
@@ -2471,15 +1607,21 @@ class _Backend:
         KM_X280_TO line of each served core, written once the address is known.
         `area_bytes`: the overlay area after each block (written by load_overlays)."""
         abi_headers = abi.headers()
-        words = (abi_headers["KM_CONTROL_BYTES"] + area_bytes + CONTROL_ALIGN) // 4
+        words = (
+            abi_headers["KM_CONTROL_BYTES"] + area_bytes + tensor_bytes.CONTROL_ALIGN
+        ) // 4
         words += 0 if bounds is None else bounds[0].size
         self.control = programs.words_tensor(
             self.session, np.zeros((cores, words)), grid
         )
         base = self.control.address
-        self.control_addr = (base + CONTROL_ALIGN - 1) // CONTROL_ALIGN * CONTROL_ALIGN
+        self.control_addr = (
+            (base + tensor_bytes.CONTROL_ALIGN - 1)
+            // tensor_bytes.CONTROL_ALIGN
+            * tensor_bytes.CONTROL_ALIGN
+        )
         self.control_offset = (self.control_addr - base) // 4
-        check_bases({"control block": self.control_addr})
+        kernel_module.check_bases({"control block": self.control_addr})
         self.control_rows = np.zeros((cores, words), dtype=np.uint32)
         self._island_rows(cores, grid[0])
         self._page_bounds_rows(bounds, area_bytes)
@@ -2564,8 +1706,8 @@ class _Backend:
             )
             mine[:, at + abi_headers["KM_ISLAND_OWN"] // 4] = getattr(plan, "own", 0)
             if panels is not None:
-                mine[:, at + abi_headers["KM_ISLAND_GO"] // 4] = go_layout(
-                    panels, columns, count, abi_headers
+                mine[:, at + abi_headers["KM_ISLAND_GO"] // 4] = (
+                    kernel_module.go_layout(panels, columns, count, abi_headers)
                 )
 
     def _direct_islands(self, program, cores, columns):
@@ -2649,7 +1791,7 @@ class _Backend:
         self.link_kernels, self.link_queue_at, self.queue_after_slots = 0, None, False
         launch = self._describe(*args, **options)
         # below the highest index of the ranks' own: the link cores' buffer is above
-        self.slot_index = slot_index(self.cb_indices)
+        self.slot_index = kernel_module.slot_index(self.cb_indices)
         launch.cb(self._slot_cores(), self.slot_index, "uint32", 64, 64, first=True)
         return launch
 
@@ -2682,7 +1824,7 @@ class _Backend:
         port = self.port
         grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
-        self.slots_most = slots_most(program, placed)
+        self.slots_most = kernel_module.slots_most(program, placed)
         # the service overlay's too, and the records of slots past 4
         self.area_bytes = overlay.area_bytes(self.slots_most)
         island_names.check(placed.programs if placed else [program], self.session.log)
@@ -2746,7 +1888,7 @@ class _Backend:
                     "ready_slot": slot,
                 }
             )
-            reader, writer, compute = _core_args(program, placed, core)
+            reader, writer, compute = kernel_module._core_args(program, placed, core)
             reader_args.append(
                 (x, y, start + messages_reader_writer_args + list(reader))
             )
@@ -2766,11 +1908,13 @@ class _Backend:
         include = [str(abi.headers().abi.parents[2])]
         defines = [(name, str(value)) for name, value in program.defines.items()]
         defines += self._one_island()
-        defines += own_slot_path(program)
+        defines += kernel_module.own_slot_path(program)
         defines += overlay.slots_define(self.slots_most)
         if program.messages is not None:
             defines += program.messages.defines()
-        ranks, links = _link_kernels(self.session.island, program, self.split, cores)
+        ranks, links = kernel_module._link_kernels(
+            self.session.island, program, self.split, cores
+        )
         if "KM_PAGE_LINKS" in program.defines and not links:
             defines.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
         held = programs.rectangles(0, ranks, grid[0]) if links else all_cores
@@ -2782,7 +1926,7 @@ class _Backend:
         if "KM_PAGE_LINKS" in program.defines and not links:
             # its link cores' put queue, on them alone (the program's kernels there)
             defines += self._link_queue(launch, program, grid, 0)
-            self.link_queue_at = (_cbs_end(self._cbs(program.buffers)), 0)
+            self.link_queue_at = (kernel_module._cbs_end(self._cbs(program.buffers)), 0)
             self.queue_after_slots = True  # the slots' bytes added (_slot_buffer)
         if apart:  # the link cores: their link area first, then the tokens
             self._link_area(launch, ranks, links, grid, apart)
@@ -2799,7 +1943,7 @@ class _Backend:
                 program.kernel_compile_args(kernel),
                 includes=include,
                 args=args[:ranks],
-                **kernel_build(program, kernel, defines),
+                **kernel_module.kernel_build(program, kernel, defines),
                 **config,
             )
         if links:  # the island's link cores: the runtime's link kernels, its services
@@ -2807,21 +1951,21 @@ class _Backend:
             link_defines = [
                 (name, str(value))
                 for name, value in program.defines.items()
-                if name in LINK_DEFINES
+                if name in kernel_module.LINK_DEFINES
             ] + [("KM_LINK_SERVICES", "1")]
             chunk = self._link_chunk(program, cores, apart)
             # the link cores' own L1, on them alone: the put queue, the chunks
             link_defines += self._link_queue(launch, program, grid, chunk)
             self.link_kernels = links
             below = [(0, "uint32", apart, 1), *self._runtime_cbs()]
-            self.link_queue_at = (_cbs_end(below), chunk)
+            self.link_queue_at = (kernel_module._cbs_end(below), chunk)
             if chunk:
                 link_defines.append(("KM_LINK_CHUNK", str(chunk)))
                 self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
-            check_link_defines(program.name, link_defines, [program])
+            kernel_module.check_link_defines(program.name, link_defines, [program])
             for kernel, args, processor, _ in kernels:
                 launch.kernel(
-                    str(_link_kernel_path(kernel)),
+                    str(kernel_module._link_kernel_path(kernel)),
                     served,
                     processor,
                     [],
@@ -2887,7 +2031,7 @@ class _Backend:
         """The chunk of the run's transfer buffer (_transfer_chunk_of)."""
         held = placed.programs if placed else [program]
         switch = bool(placed and placed.switch)
-        return _transfer_chunk_of(
+        return tensor_bytes._transfer_chunk_of(
             self.session, held, switch, self.trace_cap, self.control.nbytes // cores
         )
 
@@ -2953,21 +2097,23 @@ class _Backend:
             - sizes.far_bytes(program.defines)
             - sizes.forward_bytes(program.defines)
             - sizes.deliver_bytes(program.defines)
-            - LINK_CHUNK_MARGIN
+            - kernel_module.LINK_CHUNK_MARGIN
         )
-        chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
-        least = link_chunk_least(self.session.packet or 0)
+        chunk = min(
+            kernel_module.LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10)
+        )
+        least = kernel_module.link_chunk_least(self.session.packet or 0)
         return chunk if chunk >= least else 0  # else no ring: the transfer chunk's
 
     def _transfer_buffer(self, cores, grid, chunk):
         """The L1 every core moves a transfer's chunks through (a sharded tensor)."""
         size = 2 * chunk + abi.headers()["KM_TRANSFER_WORD_BYTES"]
         tensor = self.session.empty(
-            (cores, (size + NOC_ALIGN) // 4), "uint32", shard_grid=grid
+            (cores, (size + sizes.NOC_ALIGN) // 4), "uint32", shard_grid=grid
         )
         self.io.append(tensor)
-        address = -(-tensor.address // NOC_ALIGN) * NOC_ALIGN
-        return _TransferBuffer(address, chunk, size + NOC_ALIGN)
+        address = -(-tensor.address // sizes.NOC_ALIGN) * sizes.NOC_ALIGN
+        return _TransferBuffer(address, chunk, size + sizes.NOC_ALIGN)
 
     def _held_rows(self):
         """The L1 budget table's rows of what the session's owner keeps at the top of
@@ -3078,8 +2224,8 @@ class _Backend:
                     defines.append(("KM_ADDED_ENTRY", "1"))
             defines += island
             defines += self._one_island()
-            defines += added_path(placed.programs)
-            defines += guard_path(placed.programs)
+            defines += kernel_module.added_path(placed.programs)
+            defines += kernel_module.guard_path(placed.programs)
             defines.append(("KM_OVERLAY_OWN", "1"))  # placed: every program's parts
             defines += overlay.slots_define(self.slots_most)
             first = held[0] if held else None
@@ -3093,7 +2239,7 @@ class _Backend:
                     else {}
                 )
                 build = (
-                    kernel_build(first, kernel, defines)
+                    kernel_module.kernel_build(first, kernel, defines)
                     if first
                     else {"defines": defines}
                 )
@@ -3110,7 +2256,7 @@ class _Backend:
         if links:  # the island's link cores: the runtime's link kernels, its services
             self._link_cores(launch, placed.programs, args, ranks, links, grid, queue)
             self.link_kernels = links
-            below = _cbs_end([(0, "uint32", apart, 1)]) if apart else 0
+            below = kernel_module._cbs_end([(0, "uint32", apart, 1)]) if apart else 0
             self.link_queue_at = (below, 0) if queue else None  # after the area
 
     def _placed_links(self, placed, grid):
@@ -3120,10 +2266,12 @@ class _Backend:
         island = [
             (name, str(value))
             for name, value in first.defines.items()
-            if name in ISLAND_DEFINES
+            if name in kernel_module.ISLAND_DEFINES
         ]
         cores = grid[0] * grid[1]
-        ranks, links = _link_kernels(self.session.island, first, self.split, cores)
+        ranks, links = kernel_module._link_kernels(
+            self.session.island, first, self.split, cores
+        )
         if "KM_PAGE_LINKS" in first.defines and not links:
             island.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
         if placed.cores != ranks:
@@ -3144,13 +2292,15 @@ class _Backend:
         named = {}
         for program in placed:
             named |= {
-                k: str(v) for k, v in program.defines.items() if k in LINK_DEFINES
+                k: str(v)
+                for k, v in program.defines.items()
+                if k in kernel_module.LINK_DEFINES
             }
         link_defines = [*named.items(), ("KM_LINK_SERVICES", "1"), *queue]
-        check_link_defines(placed[0].name, link_defines, placed)
+        kernel_module.check_link_defines(placed[0].name, link_defines, placed)
         for processor, kernel in enumerate(("reader", "writer", "compute")):
             launch.kernel(
-                str(_link_kernel_path(kernel)),
+                str(kernel_module._link_kernel_path(kernel)),
                 served,
                 processor,
                 [],
@@ -3164,7 +2314,7 @@ class _Backend:
         """Every core's slots as the launch's first circular buffer, at the L1 base,
         so they lie below 1 MB and the buffers above them; returns their address."""
         base = sizes.L1_BYTES - self.session.l1()[1]
-        address, size, _ = slot_area(
+        address, size, _ = kernel_module.slot_area(
             base, slot_bytes, self.cb_indices, self.session.slow_code
         )
         index = self.slot_index  # declared by describe
@@ -3188,7 +2338,9 @@ class _Backend:
         started = time.perf_counter()
         recipes = {}
         for source, builds in descriptor.recipes():
-            if _is_link_kernel(source):  # the link cores': no overlay runs there
+            if kernel_module._is_link_kernel(
+                source
+            ):  # the link cores': no overlay runs there
                 continue
             for row in builds:
                 recipe = overlay.Recipe.from_native(row)
@@ -3202,11 +2354,15 @@ class _Backend:
             self.slots_most,
         )
         rows = session.l1_rows(program, self.trace_cap)
-        built = fit_slots(
-            built, own_slot_declared(program), session.l1()[1], rows, session.log
+        built = kernel_module.fit_slots(
+            built,
+            kernel_module.own_slot_declared(program),
+            session.l1()[1],
+            rows,
+            session.log,
         )
         program.overlays_built = built
-        rows[2:2] = slot_rows(built.slots, built.service, built.why)
+        rows[2:2] = kernel_module.slot_rows(built.slots, built.service, built.why)
         table, fits = overlay.budget(session.l1()[1], rows)
         session.log(f"L1 budget of a core:\n{table}")
         if not fits:
@@ -3322,7 +2478,9 @@ class _Backend:
         table, when a group's do not fit) and writes each group's overlay area."""
         session, abi_headers = self.session, abi.headers()
         started = time.perf_counter()
-        by_group = _group_recipes(descriptor.recipes(), len(placed.groups))
+        by_group = kernel_module._group_recipes(
+            descriptor.recipes(), len(placed.groups)
+        )
         declared = placed.programs[0].overlay_slots
         built, symbols = [], []
         for number, group in enumerate(placed.groups):
@@ -3377,8 +2535,10 @@ class _Backend:
                     placed.programs[0], self.trace_cap, placed, buffers=buffers
                 )
                 if not placed.switch:  # a switch's slots are common: sized below
-                    made = fit_slots(made, declared, session.l1()[1], rows, session.log)
-                rows[2:2] = slot_rows(made.slots, made.service, made.why)
+                    made = kernel_module.fit_slots(
+                        made, declared, session.l1()[1], rows, session.log
+                    )
+                rows[2:2] = kernel_module.slot_rows(made.slots, made.service, made.why)
                 table, fits = overlay.budget(session.l1()[1], rows)
                 names = ", ".join(program.name for program in held)
                 session.log(f"L1 budget of a core of {names}:\n{table}")
@@ -3406,17 +2566,23 @@ class _Backend:
                 mine[key] = at
             stored.append(mine)
         if placed.switch:  # one set of slots, every program's parts fit any core's
-            common = _common_slots(placed, declared, built, self.slots_most)
+            common = kernel_module._common_slots(
+                placed, declared, built, self.slots_most
+            )
             rows = session.l1_rows(placed.programs[0], self.trace_cap, placed)
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
-            common = fit_slots(common, declared, session.l1()[1], rows, session.log)
-            _own_slots_kept(placed, common)
+            common = kernel_module.fit_slots(
+                common, declared, session.l1()[1], rows, session.log
+            )
+            kernel_module._own_slots_kept(placed, common)
             built = [
                 overlay.Built(made.images, common.slots, common.service)
                 for made in built
             ]
-            rows[2:2] = slot_rows(common.slots, common.service, common.why)
+            rows[2:2] = kernel_module.slot_rows(
+                common.slots, common.service, common.why
+            )
             added_program.grow_area(self, descriptor, rows, placed)
             table, fits = overlay.budget(session.l1()[1], rows)
             session.log(f"L1 budget of a core:\n{table}")
@@ -3530,7 +2696,9 @@ class _Backend:
         base is the bank the cluster's Memory Port reaches. None if no page does."""
         module = self.session._module
         banks = module.dram_banks(self.device)
-        (pages,) = read_tensors(self.device, module, [self.state_tensor], 0, banks)
+        (pages,) = tensor_bytes.read_tensors(
+            self.device, module, [self.state_tensor], 0, banks
+        )
         words = np.asarray(pages, np.uint8)[:, : 64 * STATE_DUMP_LINES]
         words = np.ascontiguousarray(words).view("<u8")
         base = self.port.lim_base
@@ -3629,14 +2797,14 @@ class _Backend:
         else:
             self.device.finish()  # returns at once: every core is done
             self.session.log(f"grid returned ({time.monotonic() - started:.1f} s)")
-            rows = _read_uint32(self.control)
+            rows = tensor_bytes._read_uint32(self.control)
             start = self.control_offset
             blocks = rows[:, start : start + words].astype(np.uint32)
         trace = None
         if self.trace_tensor is not None:
-            words = _read_uint32(self.trace_tensor, self.device, module).astype(
-                np.uint32
-            )
+            words = tensor_bytes._read_uint32(
+                self.trace_tensor, self.device, module
+            ).astype(np.uint32)
             trace = words.reshape(
                 words.shape[0], self.trace_cap, abi_headers["kTraceWords"]
             )

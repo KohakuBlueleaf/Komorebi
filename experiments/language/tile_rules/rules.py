@@ -27,6 +27,7 @@ from komorebi.dsl.tile.matrix import product_program
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.unit import matrix_cost
+from komorebi.session import kernels as session_kernels
 from komorebi.session import process
 from komorebi.session import session as km_session
 
@@ -1233,7 +1234,7 @@ def build(args):
             log(f"build {case} {form}")
             run, *_ = launch(session, body, data)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             sizes[f"{case} {form}"] = [got.total, got.limit, got.text]
             log(f"built {case} {form}: kernel buffer {got.total} of {got.limit} B")
     for case in args.cases:

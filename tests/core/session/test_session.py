@@ -13,7 +13,7 @@ import pytest
 from fake_session import CONSTANTS, FakeDevice, load_session
 
 from komorebi.errors import ProgramError
-from komorebi.session import process, sizes
+from komorebi.session import process, sizes, tensor_bytes
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ def backend_over(session, log, tmp_path, monkeypatch):
     backend.control, backend.control_addr = "control", 0x20000
     words = (CONSTANTS["KM_CONTROL_BYTES"] + 64) // 4
     rows = np.zeros((120, words), np.int64)
-    monkeypatch.setattr(session, "_read_uint32", lambda tensor: rows)
+    monkeypatch.setattr(tensor_bytes, "_read_uint32", lambda tensor: rows)
     log.clear()
     return sess, backend
 
@@ -86,7 +86,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
         asked.append((*tensors, first, pages))
         return [words.view(np.uint8)]
 
-    monkeypatch.setattr(session, "read_tensors", read)
+    monkeypatch.setattr(tensor_bytes, "read_tensors", read)
     backend.state_tensor = "state"
     backend.log_state()
     assert asked == [("state", 0, 8)]
@@ -97,7 +97,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     words[5, 2] = 0  # no bank holds the kernel's lines
     backend.log_state()
     assert lines[-1] == "kernel state not found in DRAM (lines not flushed)"
-    monkeypatch.setattr(session, "read_tensors", None)  # logged, not raised
+    monkeypatch.setattr(tensor_bytes, "read_tensors", None)  # logged, not raised
     backend.log_state()
     assert lines[-1].startswith("kernel state not read (TypeError")
 

@@ -10,7 +10,7 @@ from fake_port import FakeBackend, FakePort
 
 from komorebi import abi
 from komorebi.program.description import Program
-from komorebi.session import process
+from komorebi.session import process, tensor_bytes
 
 CONSTANTS = abi.headers().constants
 
@@ -187,7 +187,7 @@ def load_session(monkeypatch, tmp_path):
     monkeypatch.delenv(process.OP_TIMEOUT, raising=False)  # restored after the test
     monkeypatch.setattr(process, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
     state = types.SimpleNamespace(address=0x40000)
-    monkeypatch.setattr(session, "_state_area", lambda host_session: state)
+    monkeypatch.setattr(tensor_bytes, "_state_area", lambda host_session: state)
     module.card_backend = session._Backend  # the real one, for its own tests
     monkeypatch.setattr(session, "_Backend", SessionBackend)
     return session, log, module

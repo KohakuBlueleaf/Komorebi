@@ -11,7 +11,7 @@ import pytest
 
 from komorebi import OverlayError, Program, SlowCodeError
 from komorebi.program import overlay
-from komorebi.session import session
+from komorebi.session import kernels as session_kernels
 
 BASE = overlay.LINK_BASE
 PERSISTENT = overlay.Persistent(
@@ -190,9 +190,9 @@ def test_the_budget_table_says_whether_it_fits():
 
 
 def test_slots_are_the_first_buffer_and_end_below_the_line():
-    line = session.L1_FAST_CODE
+    line = session_kernels.L1_FAST_CODE
     used = {0, 1, 2, 30}
-    assert session.slot_area(0x1B480, 4801, used, False) == (0x1B480, 4864, 29)
+    assert session_kernels.slot_area(0x1B480, 4801, used, False) == (0x1B480, 4864, 29)
     with pytest.raises(SlowCodeError):
-        session.slot_area(line - 4800, 4801, used, False)
-    assert session.slot_area(line - 4800, 4801, used, True)[1] == 4864
+        session_kernels.slot_area(line - 4800, 4801, used, False)
+    assert session_kernels.slot_area(line - 4800, 4801, used, True)[1] == 4864

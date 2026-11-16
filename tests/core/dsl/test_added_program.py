@@ -21,7 +21,7 @@ from komorebi.program import overlay, thread
 from komorebi.program import several as programs
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
-from komorebi.session import session as session_module
+from komorebi.session import kernels as session_kernels
 from komorebi.session.run import Run
 
 
@@ -437,17 +437,17 @@ def test_a_loaded_program_with_own_overlays_gets_two_slots_in_their_kernels():
                              service=8640)]  # fmt: skip
     declared = SimpleNamespace(count=None)
     alone = programs.plan({own: (0, 120)}, 120)
-    made = session_module._common_slots(alone, declared, built, 4)
+    made = session_kernels._common_slots(alone, declared, built, 4)
     assert made.slots == {"reader": (2, 4160), "writer": (2, 4032)}
     plain_alone = programs.plan({plain: (0, 120)}, 120)
-    made = session_module._common_slots(plain_alone, declared, built, 4)
+    made = session_kernels._common_slots(plain_alone, declared, built, 4)
     assert made.slots == {"reader": (1, 4160), "writer": (1, 4032)}  # pays nothing
     with pytest.raises(ProgramError, match=r"slots\(count=1\) for the reader"):
-        session_module._common_slots(alone, SimpleNamespace(count=1), built, 4)
+        session_kernels._common_slots(alone, SimpleNamespace(count=1), built, 4)
     lowered = SimpleNamespace(slots={"reader": (1, 4160), "writer": (2, 4032)})
     with pytest.raises(ProgramError, match=r"reader slots lowered to 1"):
-        session_module._own_slots_kept(alone, lowered)
-    session_module._own_slots_kept(
+        session_kernels._own_slots_kept(alone, lowered)
+    session_kernels._own_slots_kept(
         plain_alone, lowered
     )  # no own overlay: one is enough
 

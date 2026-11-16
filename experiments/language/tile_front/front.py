@@ -26,6 +26,7 @@ from komorebi.device import native
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.dsl.tile.unit import OPS, Insn, decode
+from komorebi.session import kernels as session_kernels
 from komorebi.session import process
 from komorebi.session import session as km_session
 
@@ -282,7 +283,7 @@ def build(args):
             log(f"build {BODIES[body]}")
             run, *_ = launch(session, body, inputs)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             sizes[BODIES[body]] = [got.total, got.limit, got.text]
             log(f"built {BODIES[body]}: kernel buffer {got.total} of {got.limit} B")
     elfs = built_elfs(cache)

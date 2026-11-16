@@ -11,6 +11,7 @@ KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B)
 KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
 KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 SPLIT_ISLANDS_MAX = 4  # a card split into islands: a dispatcher an X280 cluster
+NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 
 
 def worker_l1_size(kernel_bytes):

@@ -9,7 +9,7 @@ from test_pieces_meet import Gate, made
 import komorebi as km
 from komorebi.program import overlay
 from komorebi.program.addon.code import AddError
-from komorebi.session import session
+from komorebi.session import kernels as session_kernels
 from komorebi.session.run import Run
 
 DEFINE = "KM_ADDED_HANDLERS"
@@ -34,9 +34,9 @@ def test_each_way_of_asking_defines_the_path(tmp_path):
 def test_the_runtime_s_kernels_get_the_path_only_when_every_program_asks(tmp_path):
     asked = program(tmp_path).slots(bytes={})
     plain = program(tmp_path)
-    assert session.added_path([asked, asked]) == [(DEFINE, "1")]
-    assert session.added_path([asked, plain]) == []
-    assert session.added_path([plain]) == []
+    assert session_kernels.added_path([asked, asked]) == [(DEFINE, "1")]
+    assert session_kernels.added_path([asked, plain]) == []
+    assert session_kernels.added_path([plain]) == []
 
 
 def test_an_add_on_a_run_that_did_not_ask_is_refused_before_any_command(tmp_path):

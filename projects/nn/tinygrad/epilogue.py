@@ -22,6 +22,7 @@ from komorebi.device import native
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.unit import UnitError
+from komorebi.session import kernels as session_kernels
 from komorebi.session import process
 from komorebi.session import session as km_session
 
@@ -246,7 +247,7 @@ def build(args):
     with km.Session() as session:
         run, *_ = launch(session, a, b)
         _, *built = run.build()
-        got = km_session.kernel_sizes(built)
+        got = session_kernels.kernel_sizes(built)
         print(f"built: kernel buffer {got.total} of {got.limit} B", flush=True)
     av, bv = (case[k].astype(np.float64) for k in "ab")
     made = (av / (1 + np.exp(-av)) * bv).astype(np.float32)

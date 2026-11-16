@@ -4,7 +4,7 @@ import pytest
 
 from komorebi.errors import ProgramError
 from komorebi.program.description import Program
-from komorebi.session import session
+from komorebi.session import kernels as session_kernels
 
 
 def kernels(tmp_path):
@@ -21,7 +21,10 @@ def test_each_kernel_takes_its_own_noc(tmp_path):
 
 def test_a_swap_reaches_the_build_and_the_default_leaves_it(tmp_path):
     swapped = Program("p", kernels=kernels(tmp_path), noc={"reader": 1, "writer": 0})
-    assert session.kernel_build(swapped, "reader", []) == {"defines": [], "noc": 1}
-    assert session.kernel_build(swapped, "compute", []) == {"defines": []}
+    assert session_kernels.kernel_build(swapped, "reader", []) == {
+        "defines": [],
+        "noc": 1,
+    }
+    assert session_kernels.kernel_build(swapped, "compute", []) == {"defines": []}
     plain = Program("q", kernels=tmp_path)
-    assert session.kernel_build(plain, "writer", []) == {"defines": []}
+    assert session_kernels.kernel_build(plain, "writer", []) == {"defines": []}
