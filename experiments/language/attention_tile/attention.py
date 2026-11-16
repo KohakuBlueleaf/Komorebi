@@ -17,6 +17,7 @@ import numpy as np
 import komorebi as km
 from komorebi import native
 from komorebi import session as km_session
+from komorebi import state as state_module
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -36,7 +37,7 @@ STARTED = time.monotonic()
 DT, DV, R, KB, WINDOW, LENGTH = 2, 2, 13, 12, 2, 10
 SUB = 2  # key tiles a step (the hand's 3 cuts t1's 4 keys only with a mask)
 QB = R * DT  # a job's block of Q
-STATE_PAGES, O_PAGES = R, R * DV  # init's pages: R states, then R rows of O
+MASKS, MASK_PAGES = 3, 3 * SUB  # init's (causal): none, [diagonal, out], [0, d.]
 SCALE = 1.0 / math.sqrt(64.0)
 LOG2E = 1.0 / math.log(2.0)
 
@@ -90,10 +91,15 @@ def norm(row, state):
     return row / state[1].col(), (state[0], state[1], state[2])
 
 
+@km.tile_function
+def start(row, state):
+    return row, (state[0], state[1], state[2])
+
+
 class Attention(km.Program):
     """attend: each core's job (one a core), Q's rows against the job's K / V blocks
-    from its band's broadcast; each row's softmax state and O row kept in L1 across
-    the blocks, O written after the last."""
+    from its band's broadcast; each row's softmax state and O row zeroed on the core
+    and kept in L1 across the blocks, O written after the last."""
 
     state: km.L1[km.fp32, R, 32, 32]
     o: km.L1[km.fp32, R, DV, 32, 32]
@@ -102,10 +108,10 @@ class Attention(km.Program):
     @km.handler
     def attend(
         self, q: km.Tensor, k: km.Tensor, v: km.Tensor, o: km.Tensor,
-        tables: km.Tensor, init: km.Tensor,
+        tables: km.Tensor,
     ):  # fmt: skip
-        self.state.fill(km.Stream(init.pages(0, STATE_PAGES)))
-        self.o.fill(km.Stream(init.pages(STATE_PAGES, O_PAGES)))
+        self.state.zero()
+        self.o.zero()
         down = km.Broadcast(
             self, along="column", length=LENGTH, mover="A", window=WINDOW
         )
@@ -132,6 +138,64 @@ class Attention(km.Program):
                 for r in range(job.rows):
                     for c in range(min(KB, job.keys - b * KB) // SUB):
                         s = km.tile.zeros(km.fp32, SUB)
+                        s += score(qs[r], kv[0][:, c * SUB : c * SUB + SUB])
+                        self.p.write(softmax_step(s, self.state[r]))
+                        acc = rescale(self.o[r], self.state[r])
+                        acc += weigh(self.p, kv[1][c * SUB : c * SUB + SUB, :])
+                        self.o[r].write(acc)
+            for r in range(job.rows):
+                last = norm(self.o[r], self.state[r])
+                o.pages(job.o + r * job.stride * DV, DV).write(last)
+
+
+class CausalAttention(km.Program):
+    """attend with a causal mask: row p (in its head) takes keys 0 .. p, each step's
+    scores started from a mask row (0 before the diagonal tile, the diagonal tile's
+    triangle of 0 and -inf, -inf past it), chosen by the step's first key."""
+
+    state: km.L1[km.fp32, R, 32, 32]
+    o: km.L1[km.fp32, R, DV, 32, 32]
+    p: km.L1[km.bf16, SUB, 32, 32]
+    mask: km.L1[km.fp32, MASKS, SUB, 32, 32]
+
+    @km.handler
+    def attend(
+        self, q: km.Tensor, k: km.Tensor, v: km.Tensor, o: km.Tensor,
+        tables: km.Tensor, init: km.Tensor,
+    ):  # fmt: skip
+        self.state.zero()
+        self.o.zero()
+        self.mask.fill(km.Stream(init.pages(0, MASK_PAGES)))
+        down = km.Broadcast(
+            self, along="column", length=LENGTH, mover="A", window=WINDOW
+        )
+        jobs = tables.pages(self.rank, 1).entries(Job, first=8, size=8, count=0)
+        for job in jobs:
+            r0 = job.q // DT
+            qs = km.Stream(
+                q.tiles[r0 : min(r0 + R * job.stride, r0 + job.rows * job.stride)
+                        : job.stride, 0:DT],
+                block=QB,
+            )  # fmt: skip
+            k0 = job.k // DT
+            v0 = job.v // DV
+            for b in range((job.keys + KB - 1) // KB):
+                kr = k0 + b * KB
+                vr = v0 + b * KB
+                if down.sender():
+                    kv = down.cast(
+                        k.tiles[kr : min(kr + KB, k0 + job.keys), 0:DT].T,
+                        v.tiles[vr : min(vr + KB, v0 + job.keys), 0:DV],
+                    )
+                else:
+                    kv = down.arrive()
+                first = b * KB
+                for r in range(job.rows):
+                    row = job.start + r * job.stride
+                    seen = min(min(KB, job.keys - first), max(row + 1, first) - first)
+                    for c in range((seen + SUB - 1) // SUB):
+                        key = first + c * SUB
+                        s = start(self.mask[(min(row - key, 2) + 1) % 3], self.state[r])
                         s += score(qs[r], kv[0][:, c * SUB : c * SUB + SUB])
                         self.p.write(softmax_step(s, self.state[r]))
                         acc = rescale(self.o[r], self.state[r])
@@ -172,9 +236,37 @@ def errors(got, want):
     }
 
 
-def init_values():
-    """The fills' pages: R zero states (m 0, l 0, the rescale 0), R zero rows of O."""
-    return np.zeros((32, 32 * (STATE_PAGES + O_PAGES)), np.float32)
+def mask_values():
+    """The causal class's mask rows: zeros, [the diagonal's triangle, -inf], [zeros,
+    the triangle]."""
+    zero, out = np.zeros((32, 32), np.float32), np.full((32, 32), -np.inf, np.float32)
+    triangle = np.where(np.tri(32, dtype=bool), 0.0, -np.inf).astype(np.float32)
+    return np.concatenate([zero, zero, triangle, out, zero, triangle], axis=1)
+
+
+def spans(trace, handles, plan):
+    """From the trace (microseconds after the first core took each command, the
+    median over the commands): the last core to take it, and the last mover B done
+    among cores with rows and among cores without (mover B is done once O's pages,
+    packed by compute, are written)."""
+    rows = np.array([sum(job.rows for job in jobs) for jobs in plan.jobs])
+    taken, with_rows, without = [], [], []
+    for handle in handles:
+        times = trace.command(handle)
+        if times is None or not times[:, 0].any():
+            continue
+        seen = state_module.wrap(times[:, 0] - times[:, 0].min()) / trace.mhz
+        done = state_module.wrap(times[:, 1] - times[:, 0].min()) / trace.mhz
+        taken.append(seen.max())
+        with_rows.append(done[rows > 0].max())
+        without.append(done[rows == 0].max())
+    return {
+        "commands_traced": len(taken),
+        "last_taken_us": round(float(np.median(taken)), 2),
+        "last_done_cores_with_rows_us": round(float(np.median(with_rows)), 2),
+        "last_done_cores_without_rows_us": round(float(np.median(without)), 2),
+        "cores_with_rows": int((rows > 0).sum()),
+    }
 
 
 def checked_plan(call, grid):
@@ -222,9 +314,11 @@ def build(args):
             "o": session.empty(zeros.reshape(-1, zeros.shape[-1]).shape, "bfloat16",
                                "tile"),
             "tables": session.empty(pl.tables(plan).shape, "uint32"),
-            "init": session.empty(init_values().shape, "float32", "tile"),
         }  # fmt: skip
-        program = Attention(session=session, log=log, **tensors)
+        if call.causal:
+            tensors["init"] = session.empty(mask_values().shape, "float32", "tile")
+        made = CausalAttention if call.causal else Attention
+        program = made(session=session, log=log, **tensors)
         session.load(program)
         print(json.dumps({"class_text": program.sizes.text}), flush=True)
     return 0
@@ -264,27 +358,30 @@ def run_card(args):
             "tables": card.table_tensor(session, pl.tables(plan)),
         }
         hand, report["hand_text"] = hand_attention(session, plan, tensors)
-        _, hand_us = hand.calls(args.calls)
+        _, hand_us = hand.calls(args.calls, timeout=30.0)  # below the stall limit
         report["hand_run"] = hand.stop()
         hand_o = tensors["o"].read()
         class_o = card.bf16_tensor(session, zeros)
-        init = session.tensor(init_values(), "float32", "tile")
-        program = Attention(
-            q=tensors["q"], k=tensors["k"], v=tensors["v"], o=class_o,
-            tables=tensors["tables"], init=init, session=session, log=log,
-        )  # fmt: skip
-        loaded = session.load(program)
-        words = (tensors["q"], tensors["k"], tensors["v"], class_o,
-                 tensors["tables"], init)  # fmt: skip
+        words = {"q": tensors["q"], "k": tensors["k"], "v": tensors["v"],
+                 "o": class_o, "tables": tensors["tables"]}  # fmt: skip
+        if causal:
+            words["init"] = session.tensor(mask_values(), "float32", "tile")
+        made = CausalAttention if causal else Attention
+        program = made(session=session, log=log, **words)
+        loaded = session.load(program, trace=args.calls + 1)
+        words = tuple(words.values())
         try:
             handles = [
-                loaded.submit(Attention.attend, (0, len(plan.jobs)), args=words,
+                loaded.submit(made.attend, (0, len(plan.jobs)), args=words,
                               exclusive=True)
                 for _ in range(args.calls)
             ]  # fmt: skip
-            events = loaded.wait(handles, timeout=60.0)
+            events = loaded.wait(handles, timeout=30.0)
         finally:
             loaded.stop()
+        trace = loaded.trace()
+        if trace is not None:
+            report["class_trace"] = spans(trace, handles, plan)
         kinds = sorted({event.kind for event in events})
         report["class_events"] = kinds
         report["class_text"] = program.sizes.text
@@ -318,7 +415,7 @@ def run_card(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("mode", choices=("build", "card"))
-    parser.add_argument("--shape", choices=("t1",), default="t1")
+    parser.add_argument("--shape", choices=("t1", "causal64"), default="t1")
     parser.add_argument("--calls", type=int, default=20)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
