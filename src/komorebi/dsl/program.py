@@ -14,6 +14,7 @@ from komorebi import _env, abi, formats, layout
 from komorebi.chain import calls as kc
 from komorebi.dsl import chain_calls, class_thread, compiler, first_use, front
 from komorebi.dsl.compile.layout import REGION_PAGE
+from komorebi.dsl.compile.records import Buffer
 from komorebi.dsl.files import (
     camel,
     put,
@@ -2057,7 +2058,7 @@ def direct_prepared(cls, compiled, tensors, handlers):
     if placed:
         return in_place_prepared(cls, compiled, sorted(declared), placed[0], used)
     compiled.buffers.append(
-        compiler.Buffer(
+        Buffer(
             "kDirectArea",
             "direct",
             index,
@@ -2084,7 +2085,7 @@ def chain_prepared(cls, compiled):
         raise ProgramError(f"{cls.__name__}: no handler number left for the chain")
     compiled.chain = number
     compiled.buffers.append(
-        compiler.Buffer(
+        Buffer(
             "kChainArea",
             "chain",
             words["kChainBuffer"],
@@ -2564,7 +2565,7 @@ def in_place_prepared(cls, compiled, declared, key, used):
     compiled.direct_area = (tiles, buffer.page_bytes, declared)
     compiled.direct_in = (name, place, pair)
     compiled.buffers.append(
-        compiler.Buffer(
+        Buffer(
             "kDirectIn",
             "read",
             free[0],
