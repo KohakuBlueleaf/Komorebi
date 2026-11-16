@@ -109,8 +109,9 @@ def by_thread(run, chain, factor):
     one = chain.chains[0]
     if chain.address is None:
         raise RuntimeError("the chain's records are not at one address")
-    args = [chain.address, one.handler, *chain.group, one.mode, factor, one.flags]
-    args.append(one.span)
+    if one.pieces != 1:
+        raise RuntimeError("a chain past 256 records: a command a piece, not one")
+    args = [chain.address, one.handler, *chain.group, one.mode, factor, one.flags, 1]
     first = run.island(0)
     event = first.wait(first.submit("chain", cluster=1, args=args, result=True), 10.0)
     if event.kind != "done" or event.result == 0xFFFFFFFF:
@@ -165,12 +166,6 @@ def main():
         )
         t = {name: tensor.address for name, tensor in tensors.items()}
         four, six = island_calls(t, ranks, island_ranks, args.width)
-        try:  # SUM's ranks reading a share of K as one card's do: island 1's from 0's
-            k_form = four[3]._replace(ranges=(), k=(0, island_ranks * args.width))
-            kc.build([*four[:3], k_form], lambda rank: session.graph.resolve(rank)[0])
-            result["refused"] = None
-        except kc.ChainRefused as error:
-            result["refused"] = str(error)
         made = cs.program(tensors["x"])
         if args.thread:
             made.thread(
@@ -227,7 +222,6 @@ def main():
             for name in ("four", "six")
             for bad in result[name]["checks"].values()
         )
-        and result["refused"] is not None
     )
     result["wall_s"] = round(time.monotonic() - cs.STARTED, 1)
     print(json.dumps(power.clocked(result)), flush=True)

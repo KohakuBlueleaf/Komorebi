@@ -2009,7 +2009,7 @@ def lines_of(program, error):
 
 # The chain's walk (km_chain.hpp) in a class's kernels: built when the class has a
 # km.chain method or is made with chain=True; a class without it pays nothing.
-CHAIN_PAGE = 2048  # the chain's words on each core (km_chain.hpp: 1,808 B)
+CHAIN_PAGE = 2816  # the chain's words on each core (km_chain.hpp's kChainAreaBytes)
 CHAIN_HANDLER = "km_chain"  # its handler's name: kHandlerKmChain
 READ_MOVES = ("read stream", "word read", "fill", "broadcast's read", "table read")
 
@@ -2313,7 +2313,7 @@ def chain_waits(compiled, name, lines, reads):
 
 CHAIN_HELPERS = """namespace {
 
-    bool km_chain_waited = false;  // this record's input waited for, or counted
+    bool km_chain_waited = false;  // this record's input waited for
 
     // Before a line reading tensors `bits` of a chain's record: its input's marks
     // waited for once, unless `mask` (the chain's written tensors) has none of them.
@@ -2327,17 +2327,13 @@ CHAIN_HELPERS = """namespace {
         return km::chain_input(km::ChainShape{}, movement);
     }
 
-    // A record's end: its marks counted if no line waited for them; on mover B each
-    // group's root marks the next record's cores once its block is written.
+    // A record's end: on mover B each group's root marks the next record's cores once
+    // its block is written.
     __attribute__((noinline)) bool km_chain_end(
         km::Movement& movement, const km_command_t& command
     ) {
         if (!km::chain_now.on) {
             return true;
-        }
-        if (!km_chain_waited) {
-            uint32_t target = 0;
-            km::chain_target(km::ChainShape{}, movement, target);
         }
 #if defined(COMPILE_FOR_BRISC)  // mover A
         return true;
@@ -2556,10 +2552,9 @@ def direct_helpers(compiled):
     end = CHAIN_HELPERS.index("#endif", start) + len("#endif")
     text = CHAIN_HELPERS[:start] + DIRECT_END + CHAIN_HELPERS[end:]
     text = text.replace(
-        "        if (!km::chain_now.on) {\n            return true;\n        }\n"
-        "        if (!km_chain_waited) {",
+        "        if (!km::chain_now.on) {\n            return true;\n        }\n#if",
         "        if (!km::chain_now.on) {\n            km_direct_release();\n"
-        "            return true;\n        }\n        if (!km_chain_waited) {",
+        "            return true;\n        }\n#if",
         1,
     )
     head = "namespace {\n"
