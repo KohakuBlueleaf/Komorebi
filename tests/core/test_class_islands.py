@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from komorebi.dsl.program import rank_rectangle
+from komorebi.dsl.program import flat_groups, rank_rectangle, session_nocs
 from komorebi.errors import KomorebiError, ProgramError
 from komorebi.island_session import IslandSession, _check_reduce_islands
 from komorebi.run import Run
@@ -120,3 +120,19 @@ def test_a_class_s_default_rectangle_on_an_island_is_its_rank_cores():
     assert args(118) == ([0, 0, 0, 12, 10],) * 3  # a link core: never inside
     _, group, rect = rank_rectangle(SimpleNamespace(broadcasts=[]), nocs, 120)
     assert (group, rect) == ((0, 120), None)  # one card: the whole grid
+
+
+def test_a_broadcast_on_the_second_card_carries_the_command_s_flat_group():
+    """Over cards a card's cores take flat ranks from its first: island 1's broadcast
+    group (0, 48) in its cores is (118, 48) in the command's flat ranks."""
+    size = 14  # BroadcastArgs' words
+    mover = [0, 0, 1, 12, 4] + [0, 0 | 48 << 16, 0, 10, 0] + [0] * (size - 5)
+    reader, writer, compute = flat_groups((mover, [0, 0, 1, 12, 4], [7]), 118)
+    assert reader[6] == 118 | 48 << 16 and reader[:6] == mover[:6]
+    assert writer == [0, 0, 1, 12, 4] and compute == [7]  # no broadcast: as it was
+    graph = SimpleNamespace(first=lambda island: 118 * island)
+    program = SimpleNamespace(rectangle={"nocs": None})
+    session_nocs(program, "nocs", (graph, 1))
+    assert program.rectangle == {"nocs": "nocs", "flat": 118}
+    session_nocs(program, "other", None)  # one card: no flat ranks
+    assert program.rectangle == {"nocs": "nocs", "flat": None}
