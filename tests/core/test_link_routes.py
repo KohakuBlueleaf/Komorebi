@@ -68,13 +68,17 @@ def test_split_shapes_wire_the_pairs_of_their_shape():
     assert pairs("ring", 3) == {(0, 1, 1), (1, 2, 1), (0, 2, 1)}  # the triangle
     assert pairs("grid") == {(0, 1, 2), (1, 3, 2), (2, 3, 2), (0, 2, 2)}
     assert len(_split_graph(10, 12, 4, 1, "mesh").links) == 6
+    # the next link names a link core, two links a core: 0 toward 1, 1 toward 2
+    grid = _split_graph(10, 12, 4, 1, "grid")
+    assert [islands.read_table(grid.table(0))[i][2] for i in (1, 2)] == [0, 1]
 
 
-def test_the_session_wires_a_ring_and_refuses_the_grid_by_name():
+def test_the_session_wires_a_ring_and_the_grid_and_refuses_three_wires_by_name():
     check_wired(_split_graph(10, 12, 4, 1, "ring"), 4)
     check_wired(_split_graph(10, 12, 3, 1, "ring"), 3)
-    with pytest.raises(ValueError, match="2 wires a pair: beyond two islands one wire"):
-        check_wired(_split_graph(10, 12, 4, 1, "grid"), 4)
+    check_wired(_split_graph(10, 12, 4, 1, "grid"), 4)  # two wires a pair
+    with pytest.raises(ValueError, match="3 wires a pair: beyond two islands a link"):
+        check_wired(_split_graph(10, 12, 3, 3, "line"), 3)
 
 
 def test_more_neighbours_than_ports_or_islands_than_a_byte_are_refused():

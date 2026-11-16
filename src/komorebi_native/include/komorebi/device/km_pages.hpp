@@ -78,6 +78,16 @@ namespace km {
     constexpr uint32_t kFarBytes = 0;
 #endif
 
+    // The forward rooms (KM_FORWARD), after the far places: a link core's alone.
+#if defined(KM_FORWARD)
+#if !defined(KM_LINK_QUEUE)
+#error "the forward rooms follow the put queue: KM_LINK_QUEUE"
+#endif
+    constexpr uint32_t kForwardBytes = KM_FORWARD_BYTES;
+#else
+    constexpr uint32_t kForwardBytes = 0;
+#endif
+
     // The slots of the ring of a chunk of `chunk` bytes, slots of `packet` bytes (0:
     // none).
     constexpr uint32_t ring_slots(uint32_t chunk, uint32_t packet) {
@@ -600,7 +610,9 @@ namespace km {
         // a link core's own chunks (the session's buffer KM_LINK_CB, on link cores
         // alone, after the put queue), not the run's transfer buffer every core has
         const uint32_t chunk = KM_LINK_CHUNK;
-        const uint32_t buffer = link_queue() + KM_QUEUE_BYTES + kFarBytes;
+        const uint32_t buffer = (
+            link_queue() + KM_QUEUE_BYTES + kFarBytes + kForwardBytes
+        );
 #else
         const uint32_t chunk = r.chunk;
         const uint32_t buffer = r.buffer;
@@ -638,18 +650,25 @@ namespace km {
                 l1(queue + KM_QUEUE_BYTES + KM_FAR_LINE(n) + 64 * i)[KM_ASK_NUMBER] = 0;
             }
 #endif
+#if defined(KM_FORWARD)
+            for (uint32_t w = 0; w < KM_FORWARD_HEADERS / 4; w++) {
+                l1(queue + KM_QUEUE_BYTES + kFarBytes)[w] = 0;  // no packet in a room
+            }
+#endif
         }
         const uint32_t links_area = islands_at(kernel.args().control).link_area();
         const uint32_t row = links_area + KM_LINK_CROSS + (link & 1u) * KM_CROSS_ROW;
         forward_held = {
-            island_area()[KM_ISLAND_FORWARD / 4],
+            kForwardBytes != 0 && queue != 0 ? queue + KM_QUEUE_BYTES + kFarBytes : 0,
             kernel.args().control,
             kernel.args().me,
             links_area != 0 ? row : 0,
             kernel.args().wait_limit,
             0,
             KM_FORWARD_NO_FIELD,
-            0
+            0,
+            KM_FORWARD_CPUS > 1 ? (link & 1u) : 0,
+            link == 0 ? 1u : 0
         };
         const LinkHeaderAt header = link_header(area + kPagesHeaders, r.hops);
         const uint64_t far = (
@@ -1907,14 +1926,21 @@ namespace km {
         const Islands view = islands_at(kernel.args().control);
         const uint32_t rank = (keeper & 0xFFu) - 1;
         const uint32_t ranks = (keeper >> KM_KEEPER_RANKS_SHIFT & 0xFFu) + 1;
-        const uint32_t port = keeper >> KM_KEEPER_PORT_SHIFT & 0xFFu;
-        if (rank + ranks > view.ranks() || port >= KM_PORT_SLOTS) {
+        const uint32_t port = keeper >> KM_KEEPER_PORT_SHIFT;
+        // a port from KM_PORT_SLOTS on: a word of the keeper's counts table
+        const uint32_t word = port - KM_PORT_SLOTS;
+        if (
+            rank + ranks > view.ranks() ||
+            (port >= KM_PORT_SLOTS && (word >= view.count() || view.counts() == 0))
+        ) {
             l1(area)[KM_PUT_BAD / 4] += 1;
             return kGaveNone;
         }
         const uint32_t count = (
-            kernel.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
-            KM_PORT_COUNT * 4
+            port >= KM_PORT_SLOTS
+                ? view.counts() + 4 * word
+                : kernel.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
+                    KM_PORT_COUNT * 4
         );
         for (uint32_t k = 0; k < ranks; k++) {
             const uint32_t share = partition(pages, k, ranks).len;
