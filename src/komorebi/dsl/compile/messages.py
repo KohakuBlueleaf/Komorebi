@@ -5,6 +5,7 @@ branch."""
 import ast
 
 from komorebi.dsl import front
+from komorebi.dsl.compile import scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import Where, check_name, refuse, self_call, source_of
@@ -237,7 +238,7 @@ def made_message(frame, node, name, cls, call):
     for given in call.keywords:
         word = f"k{cls.__name__}{camel(given.arg)}"
         text.append(f"{name}[{word}] = {frame.integer(given.value)};")
-        uses |= frame.uses(given.value)
+        uses |= scope.uses(frame, given.value)
     return [], [Line("\n".join(text), uses)]
 
 
@@ -259,7 +260,7 @@ def message_arguments(frame, node, call, kind):
     ):
         refuse(frame.where, node, "the second is a message", "give a message's name")
     rank = frame.integer(call.args[0])
-    uses = frame.uses(call.args[0]) | {"km_messages", message.id}
+    uses = scope.uses(frame, call.args[0]) | {"km_messages", message.id}
     handler = f", {handler_named(frame, node, to[0].value)}" if to else ""
     return f"{rank}, {message.id}{handler}", uses
 

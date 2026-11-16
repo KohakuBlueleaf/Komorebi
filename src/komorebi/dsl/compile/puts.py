@@ -3,6 +3,7 @@ count."""
 
 import ast
 
+from komorebi.dsl.compile import scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import check_name, refuse
@@ -13,13 +14,13 @@ from komorebi.dsl.nodes import Line
 def bump_line(frame, node, name, call):
     """`slot = self.f.bump(i)`: word i of field f, then one more, on the CPU that
     owns f's words: an own field's push= mover, or a word field's unpack CPU."""
-    field_ = frame.field_name(call.func.value)
+    field_ = scope.field_name(frame, call.func.value)
     if len(call.args) != 1 or call.keywords:
         refuse(
             frame.where, node, f"{spelling('bump')}(i): one word's index", "give one"
         )
     check_name(frame.where, node, name)
-    uses = frame.uses(call.args[0])
+    uses = scope.uses(frame, call.args[0])
     if field_ in frame.compiled.word_fields:
         index = frame.integer(call.args[0])
         frame.scope[name] = Value("word", name, mover="unpack")
@@ -105,7 +106,7 @@ def put_line(frame, node, call):
     source, uses = put_source(frame, node, call.args[0], size)
     at = keywords[spelling("put_at")]
     index = frame.mover_integer(node, at, mover)
-    uses |= frame.uses(at)
+    uses |= scope.uses(frame, at)
     per = page_bytes // size
     if mover not in frame.putters:
         frame.putters.append(mover)
@@ -127,7 +128,7 @@ def put_source(frame, node, source, size):
         return source.id, {source.id}
     if isinstance(source, ast.Subscript):
         source, item = source.value, source.slice
-    field_ = frame.field_name(source)
+    field_ = scope.field_name(frame, source)
     if field_ not in frame.compiled.own:
         refuse(
             frame.where,
@@ -139,4 +140,4 @@ def put_source(frame, node, source, size):
     address = f"get_write_ptr(kField{camel(field_)})"
     if item is None:
         return address, set()
-    return f"{address} + ({frame.integer(item)}) * {size}", frame.uses(item)
+    return f"{address} + ({frame.integer(item)}) * {size}", scope.uses(frame, item)

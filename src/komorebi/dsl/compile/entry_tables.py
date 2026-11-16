@@ -4,7 +4,7 @@ over its entries, an entry's words."""
 import ast
 
 from komorebi.dsl import front
-from komorebi.dsl.compile import broadcasts, layout
+from komorebi.dsl.compile import broadcasts, layout, scope
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -66,7 +66,7 @@ def entries_loop(frame, node):
 
     def clamped(bound):
         text = frame.integer(bound)
-        uses.update(frame.uses(bound))
+        uses.update(scope.uses(frame, bound))
         return f"({text} < {count} ? {text} : {count})"
 
     low = "0" if lower is None else clamped(lower)
@@ -80,7 +80,7 @@ def entries_loop(frame, node):
     frame.loops.append(loop)
     before = set(frame.scope)
     body_m, body_c = frame.statements(node.body)
-    frame.scoped("loop", node, before)
+    scope.scoped(frame, "loop", node, before)
     frame.loops.pop()
     frame.scope.pop(name)
     for word in cls.words:

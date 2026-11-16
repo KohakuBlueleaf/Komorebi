@@ -5,7 +5,7 @@ import ast
 import inspect
 import math
 
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import layout, scope
 from komorebi.dsl.compile.cxx import camel, range_uses
 from komorebi.dsl.compile.dst_code import DST_HALF, pack
 from komorebi.dsl.compile.records import Value
@@ -110,7 +110,7 @@ def started_from_field(frame, node, name, call):
     )
     value.state = (buffer, token, slot, width, index)  # packed at acc's write
     frame.scope[name] = value
-    return [], [Line(text, {"km_ok"} | frame.uses(index))]
+    return [], [Line(text, {"km_ok"} | scope.uses(frame, index))]
 
 
 def started_from_row(frame, node, name, call, field_, state, index, row):
@@ -169,7 +169,7 @@ def started_from_row(frame, node, name, call, field_, state, index, row):
     value.state = (buffer, token, slot, width, index)
     value.row_of = (field_, source, token_o)  # written back in place
     frame.scope[name] = value
-    uses = {"km_ok"} | frame.uses(index) | frame.uses(row)
+    uses = {"km_ok"} | scope.uses(frame, index) | scope.uses(frame, row)
     return [], [Line(text, uses)]
 
 
@@ -187,7 +187,7 @@ def state_packed(frame, compute, buffer, token, slot, dst, index):
     last = compute[-1]
     at = last.text.rindex("tile_regs_release();")
     last.text = last.text[:at] + packed + last.text[at + len("tile_regs_release();") :]
-    last.uses = last.uses | frame.uses(index)
+    last.uses = last.uses | scope.uses(frame, index)
 
 
 def state_taken(buffer, token, slot, dst):
@@ -212,7 +212,7 @@ def step_of_dst(frame, call):
     value = isinstance(acc, ast.Name) and frame.scope.get(acc.id)
     if not value or value.kind != "tile" or value.batch is not None:
         return None
-    field_ = isinstance(slot, ast.Subscript) and frame.field_name(slot.value)
+    field_ = isinstance(slot, ast.Subscript) and scope.field_name(frame, slot.value)
     return (acc.id, field_, slot.slice) if field_ else None
 
 
@@ -225,8 +225,8 @@ def step_of_field(frame, call):
     index = None
     if isinstance(row, ast.Subscript):  # a row of a field of rows
         row, index = row.value, row.slice
-    field_ = frame.field_name(row)
-    state = isinstance(slot, ast.Subscript) and frame.field_name(slot.value)
+    field_ = scope.field_name(frame, row)
+    state = isinstance(slot, ast.Subscript) and scope.field_name(frame, slot.value)
     return (field_, state, slot.slice, index) if field_ and state else None
 
 
@@ -515,4 +515,4 @@ def write_step_of_dst(frame, node, write, call):
     write.args[0] = ast.Name(id=name, ctx=ast.Load())
     movement, compute = frame.write(node, write)
     state_packed(frame, compute, buffer, token, slot, width, index)
-    return movement, [Line(before, {"km_ok"} | frame.uses(index)), *compute]
+    return movement, [Line(before, {"km_ok"} | scope.uses(frame, index)), *compute]

@@ -24,6 +24,7 @@ from komorebi.dsl.compile import (
     messages,
     page_words,
     puts,
+    scope,
     stamp_pages,
     tile_products,
     tile_reduce,
@@ -816,7 +817,7 @@ class HandlerCompiler(Frame):
         method.widths = {}  # tensor parameter -> its rectangles' tile width
         self.definition, lines, first = source_of(method.function)
         self.where = Where(compiled.name, method.name, lines, first)
-        self.assigned = self.assigned_names()
+        self.assigned = scope.assigned_names(self)
         self.dynamic = messages.arrives(self)
 
     # The source -------------------------------------------------------------------
@@ -1001,20 +1002,6 @@ class HandlerCompiler(Frame):
                 "tile_regs_release();"
             )
         ]
-
-    def assigned_names(self):
-        """Names assigned more than once in the handler (their C++ is not const)."""
-        counts = {}
-        for node in ast.walk(self.definition):
-            targets = []
-            if isinstance(node, ast.Assign):
-                targets = node.targets
-            elif isinstance(node, ast.AugAssign):
-                targets = [node.target, node.target]
-            for target in targets:
-                if isinstance(target, ast.Name):
-                    counts[target.id] = counts.get(target.id, 0) + 1
-        return {name for name, count in counts.items() if count > 1}
 
     # The handler -------------------------------------------------------------------
 
@@ -1480,7 +1467,7 @@ class HandlerCompiler(Frame):
             refuse(self.where, node, "one name a line", "assign one name")
         name = node.targets[0].id
         check_name(self.where, node, name)
-        self.not_parameter(node, name)
+        scope.not_parameter(self, node, name)
         value = node.value
         made = messages.message_class(self, node, value)
         if made is not None:
@@ -1507,7 +1494,7 @@ class HandlerCompiler(Frame):
             isinstance(value, ast.Call)
             and isinstance(value.func, ast.Attribute)
             and value.func.attr == spelling("bump")
-            and self.field_name(value.func.value)
+            and scope.field_name(self, value.func.value)
         ):
             return puts.bump_line(self, node, name, value)
         if self_call(value, "direct_message"):
@@ -1517,7 +1504,9 @@ class HandlerCompiler(Frame):
             return self.partition(node, name, value)
         if call == "zeros":
             return self.zeros(node, name, value)
-        if call == "stream" and self.field_name(value.args[0] if value.args else None):
+        if call == "stream" and scope.field_name(
+            self, value.args[0] if value.args else None
+        ):
             return drained.drained_stream(self, node, name, value)
         if call == "stream" and not self.write_keyword(value):
             return self.held_stream(node, name, value)
@@ -1547,11 +1536,11 @@ class HandlerCompiler(Frame):
             if self.scope[name].kind != "int" or name not in self.assigned:
                 refuse(self.where, node, f"{name} is already defined", "use a new name")
             line = f"{name} = {text};"
-            uses = self.uses(value) | {name}
+            uses = scope.uses(self, value) | {name}
             return [Line(line, uses)], [Line(line, uses)]
         self.scope[name] = Value("int", name)
         glue = f"{declared} {name} = {text};"
-        uses = self.uses(value)
+        uses = scope.uses(self, value)
         return [Glue(glue, {name}, uses)], [Glue(glue, {name}, uses)]
 
     def augmented(self, node):
@@ -1563,7 +1552,7 @@ class HandlerCompiler(Frame):
                     self.where, node, "an operator level 1 has no C++ for", "use + - *"
                 )
             return self.set_field_word(node, target, op)
-        field_ = self.field_name(target)
+        field_ = scope.field_name(self, target)
         if field_ is not None and self.tile_function_of(node.value) is not None:
             return tile_products.field_product(self, node, field_, node.value)
         if isinstance(target, ast.Attribute):
@@ -1574,8 +1563,8 @@ class HandlerCompiler(Frame):
                 )
             return self.set_word(node, target, self.integer(node.value), op)
         if isinstance(target, ast.Name):
-            self.not_parameter(node, target.id)
-            self.not_ended(node, target.id)
+            scope.not_parameter(self, node, target.id)
+            scope.not_ended(self, node, target.id)
         if not isinstance(target, ast.Name) or target.id not in self.scope:
             refuse(self.where, node, "an unknown name", "assign it first")
         value = self.scope[target.id]
@@ -1593,7 +1582,7 @@ class HandlerCompiler(Frame):
                 self.where, node, "an operator level 1 has no C++ for", "use + - * etc."
             )
         text = f"{target.id} {op}= {self.integer(node.value)};"
-        uses = self.uses(node.value) | {target.id}
+        uses = scope.uses(self, node.value) | {target.id}
         return [Line(text, uses)], [Line(text, uses)]
 
     def word_name(self, node):
@@ -1621,7 +1610,9 @@ class HandlerCompiler(Frame):
                 f"self.{name} has {count} words, 0 to {count - 1}",
                 "index one of them",
             )
-        return f"km_field_{name}[{index}]", self.uses(node.slice) | {f"km_field_{name}"}
+        return f"km_field_{name}[{index}]", scope.uses(self, node.slice) | {
+            f"km_field_{name}"
+        }
 
     def set_field_word(self, node, target, op=""):
         """`self.f[i] = value` (or `+=` and the others): a word the host reads after
@@ -1633,7 +1624,7 @@ class HandlerCompiler(Frame):
             value = self.integer(node.value)
         finally:
             self.field_line = False
-        uses |= self.uses(node.value)
+        uses |= scope.uses(self, node.value)
         uses |= {
             f"km_field_{n}"
             for n in self.compiled.word_fields
@@ -1650,7 +1641,7 @@ class HandlerCompiler(Frame):
         word = self.message_word(target)
         if word is None:
             refuse(self.where, node, "an attribute set is a message's word", "set one")
-        uses = self.uses(node.value) | {target.value.id}
+        uses = scope.uses(self, node.value) | {target.value.id}
         return [], [Line(f"{word} {op}= {text};", uses)]
 
     def construct(self, node):
@@ -1715,7 +1706,7 @@ class HandlerCompiler(Frame):
                         "use an int",
                     )
                 return node.id
-            self.not_ended(node, node.id)
+            scope.not_ended(self, node, node.id)
             return str(self.constant(node, node.id))
         if isinstance(node, ast.Attribute):
             return self.message_word(node) or self.attribute(node)
@@ -1981,27 +1972,6 @@ class HandlerCompiler(Frame):
                 if isinstance(end, ast.BinOp) and isinstance(end.op, ast.Add):
                     self.word_given(end.right, what)
 
-    def uses(self, node):
-        """The names an expression reads (scope names and generated ones)."""
-        found = set()
-        for item in ast.walk(node):
-            if isinstance(item, ast.Name) and item.id in self.scope:
-                value = self.scope[item.id]
-                found.add(value.cxx or item.id)
-            if isinstance(item, ast.Attribute) and isinstance(item.value, ast.Name):
-                if item.value.id == "self":
-                    kind = kind_of(item.attr, ("rank", "size", "x", "y", "core"))
-                    if kind in ("x", "y", "core"):
-                        found.add(f"km_self_{kind}")
-                    elif kind:
-                        found.add(f"km_{kind}")
-                if item.value.id in self.counts and item.attr == spelling("pages"):
-                    found.add(self.counts[item.value.id])
-                entry = self.scope.get(item.value.id)
-                if entry is not None and entry.kind in ("entry", "entries"):
-                    found.add(self.entries_word(item, entry))
-        return found
-
     # Ranges, partitions ------------------------------------------------------------
 
     def is_range(self, node):
@@ -2088,9 +2058,9 @@ class HandlerCompiler(Frame):
             )
         used = {columns_of} if isinstance(columns_of, str) else set()
         for side in sides:
-            used |= self.uses(side.lower) | self.uses(side.upper)
+            used |= scope.uses(self, side.lower) | scope.uses(self, side.upper)
         for part in (sides[0].step,) if step is not None else ():
-            used |= self.uses(part)
+            used |= scope.uses(self, part)
         if step is None and (rows[0] == 1 or columns[0] == columns_of):  # one run
             # (a width given at each submit is never known to equal a side)
             rect = None
@@ -2249,7 +2219,7 @@ class HandlerCompiler(Frame):
             if len(node.args) != 2 or node.keywords:
                 refuse(self.where, node, "pages(first, count)", "give both")
             first, count = (self.integer(arg) for arg in node.args)
-            used = self.uses(node.args[0]) | self.uses(node.args[1])
+            used = scope.uses(self, node.args[0]) | scope.uses(self, node.args[1])
             return Value(
                 "range",
                 first=first,
@@ -2304,7 +2274,7 @@ class HandlerCompiler(Frame):
                 f"give a {spelling('item_size')} that divides {page_bytes}",
             )
         first, count = (self.integer(arg) for arg in node.args)
-        used = self.uses(node.args[0]) | self.uses(node.args[1])
+        used = scope.uses(self, node.args[0]) | scope.uses(self, node.args[1])
         return Value(
             "range",
             first=first,
@@ -2366,7 +2336,7 @@ class HandlerCompiler(Frame):
         step = self.integer(given[words[3]]) if words[3] in given else "1"
         used = set()
         for value in given.values():
-            used |= self.uses(value)
+            used |= scope.uses(self, value)
         rect = None if step == "1" else (count, 1, step)
         return Value(
             "range",
@@ -2812,7 +2782,7 @@ class HandlerCompiler(Frame):
             refuse(self.where, node, "range(n) or range(first, n)", "give one or two")
         first = self.integer(call.args[0]) if len(call.args) == 2 else "0"
         end = self.integer(call.args[-1])
-        uses = set().union(*(self.uses(arg) for arg in call.args))
+        uses = set().union(*(scope.uses(self, arg) for arg in call.args))
         self.scope[name] = Value("int", name)
         loop = {"name": name, "first": first, "end": end, "casts": []}
         loop["body"] = node.body  # a running total's line stands in it (carries)
@@ -2821,7 +2791,7 @@ class HandlerCompiler(Frame):
         body_m, body_c = self.statements(node.body)
         body_c += loop.pop("frees", [])
         body_c += self.carried_back(loop)
-        self.scoped("loop", node, before)
+        scope.scoped(self, "loop", node, before)
         self.loops.pop()
         self.scope.pop(name)
         head = f"for (uint32_t {name} = {first}; {name} < {end}; {name}++) {{"
@@ -3020,7 +2990,7 @@ class HandlerCompiler(Frame):
                 "operands: a tile of one is a row of the other",
                 "keep the loop to `acc += self.f(a, b)`, f `return a @ b`",
             )
-        self.scoped("loop", node, before)
+        scope.scoped(self, "loop", node, before)
         for read in reads:
             self.scope.pop(read["name"], None)
         pushed = [v for v in writes_before if v.pushed and not pushed_before[id(v)]]
@@ -3176,15 +3146,15 @@ class HandlerCompiler(Frame):
         if (
             isinstance(func, ast.Attribute)
             and func.attr == spelling("fill")
-            and self.field_name(func.value)
+            and scope.field_name(self, func.value)
         ):
-            return self.fill(node, call, self.field_name(func.value))
+            return self.fill(node, call, scope.field_name(self, func.value))
         if (
             isinstance(func, ast.Attribute)
             and func.attr == spelling("zero")
-            and self.field_name(func.value)
+            and scope.field_name(self, func.value)
         ):
-            return self.zero(node, call, self.field_name(func.value))
+            return self.zero(node, call, scope.field_name(self, func.value))
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
             self.field_use(func.value)
         if (
@@ -3381,7 +3351,7 @@ class HandlerCompiler(Frame):
         scalars = {}  # {the function's parameter: the float word passed for it}
         names = list(inspect.signature(function.function).parameters)
         for arg in call.args:
-            field = self.field_name(arg)
+            field = scope.field_name(self, arg)
             if field is not None:
                 operands.append((None, field))
                 continue
@@ -4276,7 +4246,7 @@ class HandlerCompiler(Frame):
             )
         for name in names:
             check_name(self.where, node, name)
-            self.not_parameter(node, name)
+            scope.not_parameter(self, node, name)
         _, made = self.tile_call(node, call, names)
         group = self.scope.pop("<results>")
         state = self.loop_states[-1]
@@ -4384,11 +4354,11 @@ class HandlerCompiler(Frame):
 
     def write(self, node, call):
         target = call.func.value
-        if self.field_name(target) is not None:
-            return self.write_field(node, call, self.field_name(target))
-        if isinstance(target, ast.Subscript) and self.field_name(target.value):
+        if scope.field_name(self, target) is not None:
+            return self.write_field(node, call, scope.field_name(self, target))
+        if isinstance(target, ast.Subscript) and scope.field_name(self, target.value):
             return self.write_row(
-                node, call, self.field_name(target.value), target.slice
+                node, call, scope.field_name(self, target.value), target.slice
             )
         if not self.is_range(target):
             refuse(
@@ -4400,12 +4370,12 @@ class HandlerCompiler(Frame):
         pages = self.range_of(target)
         self.pages_only(node, pages)
         summed = call.args[0] if len(call.args) == 1 else None
-        if self.field_name(summed) in self.summed:
-            return self.write_sums(node, pages, self.field_name(summed))
+        if scope.field_name(self, summed) in self.summed:
+            return self.write_sums(node, pages, scope.field_name(self, summed))
         if (
             self.tile_function_of(summed) is not None
             and summed.args
-            and all(self.field_name(arg) in self.summed for arg in summed.args)
+            and all(scope.field_name(self, arg) in self.summed for arg in summed.args)
         ):
             return self.write_function_of_sums(node, pages, summed)
         if self.tile_function_of(summed) is not None and self.dst_pair_of(summed):
@@ -4416,8 +4386,10 @@ class HandlerCompiler(Frame):
             self, summed
         ):
             return tile_steps.write_step_of_dst(self, node, call, summed)
-        if self.field_name(summed) in self.stepped:
-            return tile_steps.write_state(self, node, pages, self.field_name(summed))
+        if scope.field_name(self, summed) in self.stepped:
+            return tile_steps.write_state(
+                self, node, pages, scope.field_name(self, summed)
+            )
         if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
             refuse(self.where, node, "write one tile", "write pages.write(total)")
         name = call.args[0].id
@@ -4949,7 +4921,7 @@ class HandlerCompiler(Frame):
         operand order), f's body, DST 0 packed in t's format and written a row at a
         time by mover B as `write(self.h)` is; the fields freed, the next sums start."""
         function = self.tile_function_of(call)
-        fields = [self.field_name(arg) for arg in call.args]
+        fields = [scope.field_name(self, arg) for arg in call.args]
         sides = {self.field_sides(node, f) for f in fields}
         if len(sides) > 1 or len(set(fields)) != len(fields):
             refuse(
@@ -5108,7 +5080,7 @@ class HandlerCompiler(Frame):
         self.allow_words = True
         text = f"{value.cxx} {op}= {self.integer(node.value)};"
         self.allow_words = False
-        uses = self.uses(node.value) | {value.cxx}
+        uses = scope.uses(self, node.value) | {value.cxx}
         return [Line(text, uses, mover=value.mover)], []
 
     def out_buffer(self, dtype, page_bytes, what, width=1, name=None):
@@ -5128,7 +5100,7 @@ class HandlerCompiler(Frame):
         if broadcast is not None:
             return broadcast
         condition = self.integer(node.test)
-        uses = self.uses(node.test)
+        uses = scope.uses(self, node.test)
         live = self.dst_live
         leader, self.in_leader = self.in_leader, self.in_leader or self.leader_test(
             node
@@ -5137,10 +5109,10 @@ class HandlerCompiler(Frame):
             self.leader_condition = (condition, uses)  # a held sum's free (sum_held)
         before = set(self.scope)
         then_m, then_c = self.statements(node.body)
-        self.scoped("if", node, before)
+        scope.scoped(self, "if", node, before)
         self.in_leader = leader
         else_m, else_c = self.statements(node.orelse)
-        self.scoped("if", node, before)
+        scope.scoped(self, "if", node, before)
         if self.dst_live != live:
             refuse(
                 self.where,
@@ -5160,37 +5132,6 @@ class HandlerCompiler(Frame):
             elif body_else:
                 out.append(Block(f"if (!({condition})) {{", "}", body_else, uses))
         return movement, compute
-
-    def scoped(self, kind, node, before):
-        """The names first assigned inside an if or a loop end with it, as C++'s
-        do: a line after it that reads one is refused (not_ended). Ranges are the
-        build's alone and stay."""
-        for name in set(self.scope) - before:
-            if getattr(self.scope[name], "kind", None) in ("int", "word", "partition"):
-                self.scope.pop(name)
-                self.ended[name] = (kind, node.lineno)
-            elif getattr(self.scope[name], "kind", None) == "moved":
-                self.scope[name].ended = self.scope[name].ended or (kind, node.lineno)
-
-    def not_ended(self, node, name):
-        if name in self.ended and name not in self.scope:
-            kind, line = self.ended[name]
-            refuse(
-                self.where,
-                node,
-                f"{name} is first assigned inside the {kind} at line {line}, and "
-                f"ends with it",
-                f"assign it before the {kind}",
-            )
-
-    def not_parameter(self, node, name):
-        if any(param.name == name for param in self.params):
-            refuse(
-                self.where,
-                node,
-                f"{name} is a parameter, a command word: it is not assigned again",
-                f"give the new value a name of its own: n = {name} + 1",
-            )
 
     def leader_test(self, node):
         """True when the if's test is `self.rank == self.leader` (either way round)."""
@@ -5251,17 +5192,6 @@ class HandlerCompiler(Frame):
             )
             for mover in self.putters
         ]
-
-    def field_name(self, node):
-        """The field `node` is (`self.name`), or None."""
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "self"
-            and node.attr in self.compiled.fields
-        ):
-            return node.attr
-        return None
 
     def fill(self, node, call, field):
         """`self.f.fill(km.Stream(t.pages(first, n)))`: mover A reads the n pages into
@@ -5625,7 +5555,7 @@ class HandlerCompiler(Frame):
     def field_use(self, node):
         """Refuses any other use of a field: `@`, slices and `.columns` of a field
         are tile expressions of level 2."""
-        if self.field_name(node):
+        if scope.field_name(self, node):
             refuse(
                 self.where,
                 node,
@@ -5851,7 +5781,7 @@ class HandlerCompiler(Frame):
         for item in takes:
             if self.take_constant(item, bound):
                 continue
-            field = self.field_name(item)
+            field = scope.field_name(self, item)
             if field in self.compiled.own:
                 self.take_own(node, field, where, text, bound)
                 continue
@@ -6002,7 +5932,7 @@ class HandlerCompiler(Frame):
                 "drop gives= and the name",
             )
         for item in takes:
-            if self.field_name(item) not in self.compiled.own:
+            if scope.field_name(self, item) not in self.compiled.own:
                 refuse(
                     self.where,
                     node,
@@ -6042,7 +5972,7 @@ class HandlerCompiler(Frame):
         name, a stream tile's buffer or L1 address, a write stream's page on pack, a
         tensor on a mover, a written tile on mover B."""
         if isinstance(item, ast.Name):
-            self.not_ended(node, item.id)
+            scope.not_ended(self, node, item.id)
         if not isinstance(item, ast.Name) or item.id not in self.scope:
             refuse(
                 self.where,
@@ -6333,7 +6263,7 @@ class HandlerCompiler(Frame):
         self.compiled.includes.add("pack")
         value.kind, value.popped = "written", True
         self.dst_live = None
-        compute = [Line(text, {"km_ok"} | self.uses(row))]
+        compute = [Line(text, {"km_ok"} | scope.uses(self, row))]
         tile_steps.state_packed(self, compute, *value.state)
         return [], compute
 
@@ -6767,7 +6697,9 @@ class HandlerCompiler(Frame):
         self.allow_words = False
         self.method.returns = True
         self.compiled.results.add(self.method.name)
-        return [Line(f"movement.result({text});", self.uses(node.value), mover="B")], []
+        return [
+            Line(f"movement.result({text});", scope.uses(self, node.value), mover="B")
+        ], []
 
     def drain(self, node, call):
         """`km.Stream(pages, ...).drain()`: the stream read and dropped, as a loop with

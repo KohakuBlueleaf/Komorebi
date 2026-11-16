@@ -4,7 +4,7 @@ handler of steps."""
 
 import ast
 
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.source import WAIT_DATA, refuse, wait
 from komorebi.dsl.names import spelling
@@ -19,7 +19,7 @@ def calls_steps(frame):
         and frame.tile_function_of(node) is not None
         and len(node.args) == 2
         and isinstance(node.args[1], ast.Subscript)
-        and frame.field_name(node.args[1].value) is not None
+        and scope.field_name(frame, node.args[1].value) is not None
         for node in ast.walk(frame.definition)
     )
 

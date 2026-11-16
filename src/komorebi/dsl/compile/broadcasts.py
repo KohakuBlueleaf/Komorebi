@@ -6,7 +6,7 @@ import ast
 
 from komorebi import abi
 from komorebi.dsl import island_place
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import layout, scope
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -184,7 +184,7 @@ def broadcast(frame, node, name, call):
     frame.scope[name].index = index  # its arguments' place among its mover's
     unread = placed.get(spelling("broadcast_unread"))
     if unread is not None:  # a word of the handler: its C++, the names it reads
-        frame.scope[name].unread = (frame.integer(unread), frame.uses(unread))
+        frame.scope[name].unread = (frame.integer(unread), scope.uses(frame, unread))
     arg = "kArgBroadcast" + (f" + km::kBroadcastArgs * {index}" if index else "")
     if frame.rect_param is not None:  # its arguments computed on the core
         arg = rect_broadcast(frame, name, along, mover, window, length, index)
@@ -705,7 +705,7 @@ def taken_by_field_products(frame, name):
             isinstance(node, ast.Call)
             and len(node.args) == 2
             and (
-                frame.field_name(node.args[0]) is not None
+                scope.field_name(frame, node.args[0]) is not None
                 or frame.held_row(node.args[0]) is not None
             )
             and any(

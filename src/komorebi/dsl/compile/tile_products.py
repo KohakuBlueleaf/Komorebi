@@ -5,7 +5,7 @@ tiles into DST or a field of sums."""
 import ast
 import math
 
-from komorebi.dsl.compile import broadcasts
+from komorebi.dsl.compile import broadcasts, scope
 from komorebi.dsl.compile.cxx import camel, text_uses
 from komorebi.dsl.compile.dst_code import (
     DST_HALF,
@@ -768,7 +768,7 @@ def held_block_product(frame, node, value, function, held, arrived):
         f"{calls}\n"
         "}"
     )
-    uses = {"km_ok"} | frame.uses(row) | text_uses(first, frame)
+    uses = {"km_ok"} | scope.uses(frame, row) | text_uses(first, frame)
     return [], [Line(text, uses | text_uses(bound, frame))]
 
 
@@ -875,7 +875,7 @@ def product(frame, node, value, call):
     arrived = held and arrived_operand(frame, node, call.args[1])
     if arrived:
         return held_block_product(frame, node, value, function, held, arrived)
-    left = len(call.args) == 2 and frame.field_name(call.args[0])
+    left = len(call.args) == 2 and scope.field_name(frame, call.args[0])
     rows = left and arrived_rows(frame, node, call.args[1])
     if rows:
         return field_block_product(frame, node, value, function, left, rows)
@@ -889,11 +889,11 @@ def product(frame, node, value, call):
         )
     state = frame.loop_states[-1]
     item = isinstance(call.args[0], ast.Name) and frame.scope.get(call.args[0].id)
-    left = frame.field_name(call.args[0])
+    left = scope.field_name(frame, call.args[0])
     right = isinstance(call.args[1], ast.Name) and frame.scope.get(call.args[1].id)
     if left is not None and right and in_this_loop(frame, right):
         return field_left_product(frame, node, value, function, left, right)
-    field_ = frame.field_name(call.args[1])
+    field_ = scope.field_name(frame, call.args[1])
     other = isinstance(call.args[1], ast.Name) and frame.scope.get(call.args[1].id)
     if item and other and in_this_loop(frame, item) and in_this_loop(frame, other):
         return stream_product(frame, node, value, function, item, other)

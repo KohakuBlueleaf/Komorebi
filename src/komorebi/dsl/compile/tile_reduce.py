@@ -5,7 +5,7 @@ import ast
 import math
 import textwrap
 
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import (
     DST_FULL,
@@ -527,7 +527,7 @@ def reduce(frame, node, name, call, everywhere=False):
     group (by owner or by tree) at its rank 0, a slot of n tiles a sender;
     `km.reduce(self.part, ...)`: a field of sums, the same in L1. `everywhere`
     (km.all_reduce): the sum then cast to every rank of the group (km_tree.hpp)."""
-    field_ = frame.field_name(call.args[0]) if len(call.args) == 1 else None
+    field_ = scope.field_name(frame, call.args[0]) if len(call.args) == 1 else None
     merging = any(keyword_.arg == spelling("combine") for keyword_ in call.keywords)
     if everywhere:
         return all_reduce(frame, node, name, call, field_, merging)
@@ -602,7 +602,7 @@ def reduce_keywords(frame, node, call):
             form_uses = set()
         else:
             form = frame.integer(value)
-            form_uses = frame.uses(value)
+            form_uses = scope.uses(frame, value)
     if form is None:
         form, form_uses = "km::kReduceTree", set()
     group = "km_group"
