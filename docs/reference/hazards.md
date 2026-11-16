@@ -1193,14 +1193,13 @@ places: two cores write the same page and another stays unwritten (120 ranks acr
 edge wrote 118 pages, 2026-11-16).
 
 **The rule.** Submit a handler that reads `self.x` or `self.y` on one
-island's ranks;
-start a reduce in groups of S where an island's first rank begins a group.
+island's ranks.
 
 **The guard.** Refused at submit, naming the handler's line: a handler that reads
-`self.x` or `self.y` on a group past this island's ranks, a reduce group of S across
-the edge, and a broadcast whose group is not one island's rectangle. `self.rank` and
-`self.size` are the group's and `self.core` the flat rank, so a class that works by them
-is exact across it.
+`self.x` or `self.y` on a group past this island's ranks, and a broadcast whose group
+is not one island's rectangle. `self.rank` and `self.size` are the group's and
+`self.core` the flat rank, so a class that works by them is exact across it, and so is
+a reduce in groups of S (`km.reduce`, `km.all_reduce`) whose group spans islands.
 
 Described in [Islands, classes on islands](islands.md#classes-on-islands).
 

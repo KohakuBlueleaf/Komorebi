@@ -1303,15 +1303,15 @@ A class (`km.Program` written as a class) is made with the island session as its
 | `self.rank`, `self.size`, `self.leader` | the flat rank less the command's first, the group's count: as on one card |
 | `self.core` | the core's flat rank: its island's first rank plus its index there |
 | a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
-| `km.reduce(..., group=S)` | each group of S consecutive ranks on one island; a command whose group of S spans two islands is refused by name, with the first rank to start at |
+| `km.reduce(..., group=S)`, `km.all_reduce(..., group=S)` | each group of S consecutive ranks, wherever its ranks lie: a group that spans islands folds each island's part as its own group, then each part's first rank sends once to the group's rank 0 (`all_reduce`: rank 0 sends the sum back to each part's first rank, which casts it to its part). The arrival has the largest part's rounds and a slot for each further island the group can touch, on islands only |
 | `km.Broadcast`, `self.x`, `self.y` | the rectangle is one island's: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores); a group that is not, such as a row across the link, is refused, saying a broadcast stays on one island. With no `rect=`, the rectangle is an island's rank cores (its link cores never inside): every rank core for `self.x` and `self.y`, the whole rows of them for a broadcast. On a split card each island has its own: its own rank rows (islands of different rank counts each their own rectangle), and a `rect=` is in each island's own rows, refused naming an island whose ranks do not hold it. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
 
 A command's group may start and end anywhere in the flat ranks. A class that works by
 `self.rank` and `self.size` is exact across an island's edge (the Linear class's split on
-ranks 104..131 across rank 118, two cards, 2026-11-16). A reduce in groups of S, a
-broadcast, and a handler that reads `self.x` or `self.y` (a core's place on its own
-island) stay on one island: today a command whose group of S, rectangle or whole group
-(for those three) spans the edge is refused at submit, naming its line. `self.core` is
+ranks 104..131 across rank 118, two cards, 2026-11-16), and so is a reduce in groups of
+S. A broadcast, and a handler that reads `self.x` or `self.y` (a core's place on its own
+island), stay on one island: today a command whose rectangle or whole group (for those
+two) spans the edge is refused at submit, naming its line. `self.core` is
 the core's flat rank (its island's first rank plus its index there), so it is defined
 across the edge. A rectangle given at each submit (`km.UPTO(rect=)`) counts from the
 island's own rows, as `rect=` does: on a split card the host gives the core the card's
