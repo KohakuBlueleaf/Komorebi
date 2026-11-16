@@ -6,12 +6,13 @@
 
 constexpr uint32_t kHandlerRing = 1;  // the dynamic handler
 
-// Token words (64 bytes); word 0 is the runtime's mark.
+// Token words (64 bytes); words 0 and 1 are the runtime's (mark, body bytes).
 constexpr uint32_t kTokenWords = 16;
-constexpr uint32_t kTokId = 1;
-constexpr uint32_t kTokHops = 2;   // hops left
-constexpr uint32_t kTokState = 3;  // the generator
-constexpr uint32_t kTokSum = 4;    // sum of the ranks it visited (mod 2**32)
+constexpr uint32_t kTokId = 2;
+constexpr uint32_t kTokHops = 3;      // hops left
+constexpr uint32_t kTokState = 4;     // the generator
+constexpr uint32_t kTokSum = 5;       // sum of the ranks it visited (mod 2**32)
+constexpr uint32_t kTokChecksum = 6;  // with a body: the sum of its words
 
 // RUN command: a0 tokens per rank, a1 hops per token, a2 mode, a3 pattern, a4 ranks
 // of the pattern (from rank 0; the others seed nothing and get nothing).
@@ -27,13 +28,18 @@ constexpr uint32_t kResDirect = 2;  // hops that went direct
 constexpr uint32_t kResBusy = 3;    // direct() false: forwarded instead
 constexpr uint32_t kResRun = 4;     // the run's sequence: the results are this run's
 constexpr uint32_t kResRecords = 8;
-constexpr uint32_t kRecordWords = 4;  // id + 1, state, sum, hops left (0)
+constexpr uint32_t kRecordWords = 4;  // id + 1, state, sum, body checks failed
 
 inline uint32_t ring_next(uint32_t state) {
     state ^= state << 13;
     state ^= state >> 17;
     state ^= state << 5;
     return state;
+}
+
+// Word `word` of token `id`'s body.
+inline uint32_t ring_body(uint32_t id, uint32_t word) {
+    return (id + 1) * 0x85EBCA77u ^ word * 0xC2B2AE3Du;
 }
 
 inline uint32_t ring_seed(uint32_t id) {

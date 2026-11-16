@@ -226,3 +226,21 @@ Each with two forms it could take.
 | 5 | attend | The token's key and value written as rows of the cache at the position (a row inside a tile) | `keys.rows(position, rows).write(k)`: a write of rows of a tile tensor | A body on mover B taking `keys` (built today), with `writes=[keys]` for a chain |
 
 The layer as a chain needs 1 to 5.
+
+## One chain, a position each submit
+
+`at_submit.py` builds `DecodeLayerChain`'s chain once with its position as the chain's
+per-submit word, `program.layer(..., km.at_submit("position"))`
+([classes, a word given at each submit](../../../docs/reference/classes.md#chains)),
+and submits it for positions 0, 1 and 2 with `run.submit(chain, position=p)`. Before
+each, the cache and x are written as before. The hand's layer, one command a step, runs
+at each position on the same inputs.
+
+On the card (2026-11-16, card 0, AICLK 800 MHz, kernel buffer 100 KiB) the chain was
+built once and nothing was rebuilt between positions. At each of the three positions
+all seven outputs (qkv, a, x1, squares2, gated, x, squares1) equal the hand's word for
+word. That result is not trivial: from one position to the next the outputs themselves
+change (qkv in about 5,600 of 131,072 words, a in 8,170 of 65,536). x against float64
+is 4.1e-3, 4.3e-3 and 3.6e-3 relative RMS. The chain took 406.2 us at position 0 (its
+first run, the overlays loaded) and 340.84 and 340.1 us after.
+

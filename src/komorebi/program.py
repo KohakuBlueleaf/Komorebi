@@ -589,7 +589,7 @@ def direct_declared(direct):
     return tuple((int(s), int(r)) for s, r in items)
 
 
-def direct_layout(receivers, senders, message_bytes):
+def direct_layout(receivers, senders, slot_bytes):
     """A core's direct area (km_messages.hpp DirectArea) for its declared receivers
     and senders: its header words (byte offsets) and its size in bytes."""
     constants, _ = messages_header()
@@ -600,7 +600,7 @@ def direct_layout(receivers, senders, message_bytes):
     written = sent + 4 * receivers
     taken = (written + 4 * receivers + 15) // 16 * 16
     slots = taken + 16 * senders
-    end = slots + senders * message_bytes
+    end = slots + senders * slot_bytes
     header = [receivers, senders, outgoing, incoming, credit, sent, written, taken]
     return [*header, slots], end
 
@@ -703,11 +703,8 @@ class Dynamic:
             raise ValueError(f"x280_cluster {self.x280_cluster}: work clusters 1 to 3")
         if self.x280_ranks and self.body_bytes:
             raise ValueError("X280 ranks take no bodies: body_bytes must be 0")
-        if self.direct and (self.x280_ranks or self.body_bytes):
-            raise ValueError(
-                "a direct message is a line between cores: no X280 ranks and no "
-                "body_bytes beside direct="
-            )
+        if self.direct and self.x280_ranks:
+            raise ValueError("direct messages are between cores: no X280 ranks")
 
     def buffers(self):
         """Runtime buffers of a dynamic handler: packets, outgoing messages, bins."""
@@ -797,7 +794,7 @@ class Dynamic:
             receivers[sender].append(receiver)
             senders[receiver].append(sender)
         layouts = [
-            direct_layout(len(receivers[core]), len(senders[core]), self.message_bytes)
+            direct_layout(len(receivers[core]), len(senders[core]), self.slot_bytes())
             for core in range(cores)
         ]
         rows = np.zeros((cores, max(end for _, end in layouts) // 4), np.uint32)
@@ -806,13 +803,17 @@ class Dynamic:
             outgoing, incoming = header[2] // 4, header[3] // 4
             for index, receiver in enumerate(receivers[core]):  # its slot there / 16
                 slot = layouts[receiver][0][8] + senders[receiver].index(core) * (
-                    self.message_bytes
+                    self.slot_bytes()
                 )
                 rows[core, outgoing + index] = receiver | slot // 16 << 16
             for index, sender in enumerate(senders[core]):  # its credit line there / 16
                 credit = layouts[sender][0][4] + 16 * receivers[sender].index(core)
                 rows[core, incoming + index] = sender | credit // 16 << 16
         return rows
+
+    def slot_bytes(self):
+        """A direct slot: a line and, in a program with bodies, its body."""
+        return self.message_bytes + self.body_bytes
 
     def direct_bytes(self, cores):
         """L1 bytes of a core's direct area (the largest core's): 0 without direct."""
