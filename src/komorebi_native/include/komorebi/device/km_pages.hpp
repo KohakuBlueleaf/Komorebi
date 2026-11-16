@@ -1912,7 +1912,7 @@ namespace km {
         };
         bool reading = false;
         const uint32_t code = core.poll_at(
-            kWhereAsk,
+            kWhereAskPlace,
             [&] {
                 if (reading) {
                     if (!ncrisc_noc_reads_flushed(noc_index)) {
@@ -2068,7 +2068,7 @@ namespace km {
             uint32_t slot = 0, until = 0;
             bool reserved = false, pausing = false;
             code = core.poll_at(
-                kWhereAsk,
+                kWhereAskSlot,
                 [&] {
                     if (pausing) {  // the ring sends the slots before ours meanwhile
                         if (static_cast<int32_t>(wall() - until) < 0) {
@@ -2125,7 +2125,7 @@ namespace km {
                 );
                 at += has;
             }
-            code = core.poll_at(kWhereAsk, written, limit);  // pages, then the marks
+            code = core.poll_at(kWhereAskSent, written, limit);  // pages, then marks
             if (code != kGaveNone) {
                 break;
             }
@@ -2184,7 +2184,7 @@ namespace km {
         }
         run.done += done;
         const uint32_t flushing = wall();
-        const uint32_t sent = core.poll_at(kWhereAsk, written, limit);
+        const uint32_t sent = core.poll_at(kWhereAskSent, written, limit);
         run.write += wall() - flushing;
         return code != kGaveNone ? code : sent;
     }
