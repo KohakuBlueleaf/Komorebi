@@ -11,6 +11,7 @@ from komorebi import abi
 from komorebi.device import kernel_buffer, mock, native
 from komorebi.errors import (
     KernelSizeError,
+    L1BudgetError,
     ProgramError,
     StartError,
 )
@@ -627,31 +628,45 @@ class LoadMixin:
                     "the islands' dispatchers differ in upload region: "
                     f"{[dispatch.upload_bytes for dispatch in dispatches]}"
                 )
-            first = _Backend(self._card(), dispatches[0], mhz, trace)
-            first.split = (graph, list(dispatches), tags, rows, set())
-            first.state_tensor = states[0]
-            descriptor = first.describe(
-                program, sources, tags[0], depth, wait, idle, trace
-            )
-            built_at = time.time()
-            try:
-                elves, *build = descriptor.build()
-            except Exception as error:
-                raise ProgramError(f"{program.name}: build failed: {error}") from error
-            program.sizes = kernel_module.kernel_sizes(build)
-            self._last_total = program.sizes.total
-            if build[-1]:
-                raise KernelSizeError(
-                    program.name, program.sizes, sizes.KERNEL_BUFFER_MAX
+            for ring in (True, False):  # the slots fit only without the put rings
+                first = _Backend(self._card(), dispatches[0], mhz, trace)
+                first.split = (graph, list(dispatches), tags, rows, set())
+                first.state_tensor = states[0]
+                first.link_ring = ring
+                descriptor = first.describe(
+                    program, sources, tags[0], depth, wait, idle, trace
                 )
-            if insn_check.enabled():
-                insn_check.check_kernels(
-                    program.name,
-                    elves,
-                    native.metal_tree(self.tree),
-                    native.cache_directory() / "insn-check",
-                )
-            first.load_overlays(program, descriptor)
+                built_at = time.time()
+                try:
+                    elves, *build = descriptor.build()
+                except Exception as error:
+                    raise ProgramError(
+                        f"{program.name}: build failed: {error}"
+                    ) from error
+                program.sizes = kernel_module.kernel_sizes(build)
+                self._last_total = program.sizes.total
+                if build[-1]:
+                    raise KernelSizeError(
+                        program.name, program.sizes, sizes.KERNEL_BUFFER_MAX
+                    )
+                if insn_check.enabled():
+                    insn_check.check_kernels(
+                        program.name,
+                        elves,
+                        native.metal_tree(self.tree),
+                        native.cache_directory() / "insn-check",
+                    )
+                try:
+                    first.load_overlays(program, descriptor)
+                    break
+                except L1BudgetError:
+                    if not ring or not kernel_module.rings_dropped(first):
+                        raise
+                    first.release_l1()
+                    self.log(
+                        "the link cores have no put ring: a km::put_bytes batch to "
+                        "them is refused"
+                    )
             self._log_built(descriptor, built_at, program)
             if mock.active():  # built: a mock run an island for the launch
                 self._starting = None

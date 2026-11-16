@@ -222,6 +222,12 @@ def placed_slots(placed):
     return out
 
 
+def rings_dropped(backend):
+    """Whether a split card's load refused for its L1 table is built again without the
+    link cores' put rings: their chunks lie on cores that hold the slots too."""
+    return bool((backend.link_queue_at or (0, 0))[1] and sizes.link_rows(backend))
+
+
 def own_slot_declared(program):
     """`program`'s declared slots, the service shared when its kernels lack the
     own slot's code (own_slot_code)."""
