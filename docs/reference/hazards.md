@@ -518,6 +518,27 @@ read waits for the input's marks.
 
 Described in [Programs written as classes, chains](classes.md#chains).
 
+### A broadcast's handler in a hand-stated chain on more cores than its rectangle
+
+**The hazard.** A core the broadcast's rectangle leaves out returns from the handler
+at its first broadcast line (`included()`), and in a chain's build that return skips the
+record's end (`km_chain_end`), which counts the record's marks and, at a group's root,
+marks the next record's cores. A chain that gives such a handler a group wider than the
+rectangle's (the cores between a rectangle's rows) may leave a mark unmade: its readers
+would wait for it. Read from the generated text only; no card has run it, so the hang
+is suspected, not seen.
+
+**The rule.** A chain does not call a handler that holds a broadcast on a group other
+than the rectangle's whole group of whole rows; give such a handler to `run.submit` as a
+command.
+
+**The guard.** For a chain stated with a class's handler calls: refused when the chain
+is made, by the read under `if b.sender():` ("a read or write under an if on the command's
+words"), every cast being one. For a hand-stated `chain.Call` of the same handler:
+nothing; the rule is the programmer's.
+
+Described in [Programs written as classes, chains](classes.md#chains).
+
 ### A body's reads and writes stated wrong
 
 **The hazard.** An inline body's `reads=[t]` and `writes=[t]` are the programmer's

@@ -2375,6 +2375,33 @@ Unfillable.load, line 664, `self.weight.fill(km.Stream(w.tiles[0:2, 0:n]))  # un
 Lone.copy, line 670, `km.Stream(x.pages(0, min(2))).drain()  # lone`: min(...) of level 1 takes two ints or more; write min(a, b)
 ```
 
+A once-only object is used in the loops it was made in. A tile of DST (`km.tile.zeros`),
+a reduce's sum, a block a broadcast cast, a field a product frees and a drained stream
+are each made once by a line of the handler and freed once by another; a loop around
+one of the two lines and not the other runs it a turn more than its partner, so the
+class is refused at the consuming line, naming the line that made the object:
+
+| Made | Used | Refused at | Right forms |
+|---|---|---|---|
+| `total = km.tile.zeros(...)` outside a range loop | `pages.write(total)`, `self.f.write(total)` or `km.reduce(total)` in it | the write or the reduce: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
+| a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
+| a cast block, outside a loop | `for tile in tiles:` or a body that takes it, in a loop | the take: "tiles was made at line N, outside the loop this take stands in" | cast in the loop that takes it, or take once outside the loops |
+| `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or take it with a body in the loop that fills it |
+| a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside |
+
+A tile made inside a loop and written after it is refused the same way ("inside a loop
+that has ended"). Accumulating into a tile made before a range loop and writing it
+after the loop, a tile made in the loop that writes it, a cast in the loop that takes
+its block, and a field filled once before the loops are the right forms and build as
+before.
+
+A chain stated with a class's handler calls refuses a broadcast's handler: its cast reads
+a tensor under `if b.sender():`, and `Run.chain` raises `ChainRefused` for a read under an
+if on the command's words ("a read or write under an if on the command's words", from
+`komorebi.dsl.chain_calls`), so no such chain holds a core the broadcast's rectangle
+leaves out. The tests are
+[test_class_depth_mismatch.py](../../tests/core/test_class_depth_mismatch.py).
+
 A range of items where a line moves whole pages (a fill, a page write, a word read, a
 partition, a cast) is refused at its line, and so is `compute={"unpack_to_dest_mode":
 ...}` (the class sets it from its float32 buffers).
