@@ -75,8 +75,7 @@ class AccumulateAcrossRange(km.Program):
 
 
 class ReduceTotalOutside(km.Program):
-    """A running total reduced a turn: built (the own total carried around the
-    reduce), refused as every reduce in a range loop is."""
+    """A running total reduced a turn: the own total carried around the reduce."""
 
     @km.handler
     def h(self, x: km.Tensor, out: km.Tensor):
@@ -104,8 +103,7 @@ class WriteTotalInIf(km.Program):
 
 
 class ReduceInLoop(km.Program):
-    """A reduce a turn: refused until the port counts turns (a sender's next turn
-    lands in its receiver's slot before the receiver took the last)."""
+    """The right form: the tile, the reduce and the write all in the loop."""
 
     @km.handler
     def h(self, x: km.Tensor, out: km.Tensor):
@@ -325,19 +323,6 @@ class Ended(Drained):
             r"body; move the line out of the if or inner loop",
         ),
         (
-            ReduceTotalOutside,
-            r"ReduceTotalOutside\.h, line \d+, `whole = km\.reduce\(total, "
-            r'form="tree"\)`: a reduce in a range loop: the port has no flow '
-            r"control between turns yet .*; reduce after the loop, or one reduce a "
-            r"command",
-        ),
-        (
-            ReduceInLoop,
-            r"ReduceInLoop\.h, line \d+, `whole = km\.reduce\(total, "
-            r'form="tree"\)`: a reduce in a range loop: the port has no flow '
-            r"control between turns yet",
-        ),
-        (
             ReduceWriteInLoop,
             r"ReduceWriteInLoop\.h, line \d+, `out\.pages\(i, 1\)\.write\(whole\)`: "
             r"whole was made at line \d+, outside the loop this write stands in: a "
@@ -387,7 +372,9 @@ def test_a_once_only_object_used_at_another_loop_depth_is_refused(cls, message):
     [
         (ZerosInLoop, ["tile_regs_acquire"]),
         (WriteTotalInLoop, ["cb_push_back(kCarryTotal, 1);", "copy_tile(kCarryTotal"]),
+        (ReduceTotalOutside, ["cb_push_back(kCarryTotal, 1);", "km::reduce"]),
         (AccumulateAcrossRange, ["tile_regs_acquire"]),
+        (ReduceInLoop, ["km::reduce"]),
         (ReduceWriteOnce, ["km::reduce"]),
         (SumTakenOnce, ["whole"]),
         (CastInRange, ["km::broadcast_receive("]),

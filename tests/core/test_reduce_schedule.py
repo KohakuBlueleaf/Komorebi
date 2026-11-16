@@ -156,3 +156,49 @@ def test_parts_of_two_pages_land_on_their_own_pages(tmp_path):
             assert first % 2 == 0 and first + 2 <= 118 and not {first, first + 1} & got
             got |= {first, first + 1}
     assert run(61, 0)[0] == (59, 60)  # by owner, 61 cores need 60 slots: too many
+
+
+SENDERS = r"""
+#include <cstdio>
+#include <cstdlib>
+#include "komorebi/device/km_group.hpp"
+
+int main(int argc, char** argv) {
+    km_command_t r = {};
+    r.group = km::make_group(5, std::atoi(argv[1]));
+    const unsigned form = std::atoi(argv[2]);
+    for (unsigned me = 5; me < 5 + km::count(r); me++) {
+        const km::Group g = km::group_of(r, me);
+        for (unsigned p = 0; p < KM_PORTS; p++) {
+            const km::ReduceSenders s = km::reduce_senders_flat(g, form, p);
+            for (unsigned rank = s.first; rank < s.end; rank++) {
+                std::printf("%u %u %u\n", g.rank, p, rank);
+            }
+        }
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.parametrize("form", [0, 1])
+@pytest.mark.parametrize("size", [1, 2, 6, 119, 120])
+def test_a_repeated_reduce_credits_exactly_the_ranks_that_send_to_it(
+    schedule, tmp_path, form, size
+):
+    """The credit of a reduce's turn 2 on goes to each rank whose send lands on this
+    rank's port: the inverse of reduce_send, every sender once."""
+    source_file, exe = tmp_path / "senders.cpp", tmp_path / "senders"
+    source_file.write_text(SENDERS)
+    command = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(INCLUDE)]
+    subprocess.run([*command, str(source_file), "-o", str(exe)], check=True)
+    args = [str(exe), str(size), str(form)]
+    out = subprocess.run(args, capture_output=True, text=True, check=True)
+    credited = [tuple(map(int, line.split())) for line in out.stdout.splitlines()]
+    plan = schedule(size, form)
+    sends = {
+        (receiver, port, rank)
+        for rank, (root, receiver, port, _, _) in plan.items()
+        if not root
+    }
+    assert sorted(credited) == sorted(sends) and len(set(credited)) == len(credited)

@@ -398,6 +398,9 @@ KM_STATIC_ASSERT(
    a line a give-up left unserved */
 #define KM_PORT_FLIGHT 2u
 #define KM_PORT_LOST_TENSOR 3u
+/* word 3 of ports 0 to KM_PORTS - 1 (a sender's): the credits a reduce repeated in one
+   command gives its senders, one a turn after the first (km_port.hpp) */
+#define KM_PORT_CREDIT 3u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
 /* KM_BROADCASTS areas, KM_BROADCAST_BYTES each; on a 64-byte line after the ports */

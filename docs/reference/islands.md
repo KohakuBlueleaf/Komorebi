@@ -1072,7 +1072,9 @@ share's line, about 5 the second island's store), the confirm 0.1 and the releas
 
 Two changes remove those two terms. The leader releases a whole island with one
 multicast: it writes a marker (the command's sequence number and the count of its
-releases in the call) into a word of its own control block, then multicasts those 4
+releases in the command, 1 to 7 and again: so a second `km::all_gather` or
+`km::all_reduce` in one command never finds the first's marker still in the word, and
+two releases in a row always differ) into a word of its own control block, then multicasts those 4
 bytes to the same word on the island's other cores, one rectangle each for the rest of
 its row, the other rows of the grid's first panel and the second panel; each rank
 waits for the marker. The reduce's go before the adds is the same release. A team that
