@@ -215,6 +215,8 @@
  * L1 address, 7 the asker's count (0: none), 8 the rank's island */
 #define KM_ASK_OP_ADD 2u
 #define KM_ASK_OWNER 13u /* a put: (core * 2 + its CPU) * 2 + parity, the asker's */
+/* a put's arrival: the asker's number of it (words 0, 15 its own) */
+#define KM_ASK_ASKED 1u
 #define KM_ASK_END 15u
 /* A batch line (km::put_bytes): its batch, page KM_ASK_FIRST of the landing, follows
  * in the rings; the far lead page CPU writes its records, then confirms (no page) */
@@ -243,7 +245,7 @@
  * core 0's counts and each ring's address, each CPU's ring words, the put lines */
 #define KM_PUT_TAIL (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
 #define KM_PUT_TAKEN (KM_PUT_TAIL + 0x10u) /* + 4 j: page CPU j's */
-#define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)
+#define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)  /* the lead's put lines sent across */
 #define KM_PUT_CONFIRMED (KM_PUT_TAIL + 0x24u)
 #define KM_PUT_BAD (KM_PUT_TAIL + 0x28u)
 #define KM_PUT_CPUS (KM_PUT_TAIL + 0x2Cu) /* read with the counts taken: 32 bytes */

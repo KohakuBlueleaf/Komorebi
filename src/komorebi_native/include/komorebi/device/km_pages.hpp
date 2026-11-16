@@ -1677,14 +1677,28 @@ namespace km {
                 line[KM_ASK_PAGES] = 0;
                 words[KM_PUT_BAD / 4] += 1;
             }
+            // its arrival numbered in the put lines sent across (gets take no arrival)
+            const uint32_t sent = words[KM_PUT_DONE / 4];
+            volatile tt_l1_ptr uint32_t* arrival = l1(own + KM_PAGE_CPU_ASK);
+            for (uint32_t w = 0; w < 16; w++) {
+                arrival[w] = line[w];
+            }
+            arrival[KM_ASK_ASKED] = line[KM_ASK_NUMBER];
+            arrival[KM_ASK_NUMBER] = sent + 1;
+            arrival[KM_ASK_END] = sent + 1;
             auto* header = pages_header(area + KM_PUT_HEADERS);
             link_write(
                 header,
-                link_noc(xy & 0xFFFFu, xy >> 16, queue + KM_QUEUE_ARRIVALS + place_at),
+                link_noc(
+                    xy & 0xFFFFu,
+                    xy >> 16,
+                    queue + KM_QUEUE_ARRIVALS + sent % KM_QUEUE_LINES * 64
+                ),
                 64
             );
-            code = pages_packet(kernel, header, at, 64);
+            code = pages_packet(kernel, header, own + KM_PAGE_CPU_ASK, 64);
             if (code == kGaveNone) {
+                words[KM_PUT_DONE / 4] = sent + 1;
                 cross_count(area, KM_CROSS_PUTS, 1, 64);
                 put_stamp(area, KM_STAMP_ACROSS);
             }
@@ -1848,7 +1862,7 @@ namespace km {
             entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES];
             entry[KM_QUEUE_E_CORE] = line[KM_ASK_CORE];
             entry[KM_QUEUE_E_COUNT] = line[KM_ASK_COUNT];
-            entry[KM_QUEUE_E_NUMBER] = line[KM_ASK_NUMBER];
+            entry[KM_QUEUE_E_NUMBER] = line[KM_ASK_ASKED];  // the asker's number
             // a gather's keeper (a line from the asker's DRAM; word 14 is a get's span)
             entry[KM_QUEUE_E_KEEPER] = line[KM_ASK_DRAM] != 0 ? line[KM_ASK_KEEPER] : 0;
             put_stamp(area, KM_STAMP_ARRIVED);
