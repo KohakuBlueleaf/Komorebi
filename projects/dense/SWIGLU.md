@@ -164,5 +164,5 @@ completed), a call costs 43 to 124 us more (`sw256` fused 86.0 against 42.6 us,
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | `LAYER`'s bodies beside `LOAD`, `PRODUCT` and `PROF` |
 | `swiglu_plan.py` | the plan as pure functions: shapes, buffers and the L1 fit, the commands of a call |
 | `swiglu.py` | one shape run, checked and optionally measured |
-| `results/swiglu-*.json` | the runs behind the results table |
+| `results/swiglu-*.json` | where the runs write their JSON (not kept in git) |
 | `reference/ktt_swiglu.py` | Kohaku-TT's layer on the same inputs, timed and checked the same way |

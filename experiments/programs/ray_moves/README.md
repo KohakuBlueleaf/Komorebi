@@ -33,8 +33,8 @@ python experiments/programs/ray_moves/predict.py results/paths.json results/toda
 
 `DATA` is the folder of the repository's scene downloader (`SCENE.npz` and
 `SCENE_tree.npz`). Part A takes about 35 minutes on 32 host threads; each part B run
-takes 6 to 22 seconds on the card. The results of the runs below are in `results/`
-(`paths.json` without its per-core lists).
+takes 6 to 22 seconds on the card. The runs below wrote their JSON to `results/`,
+which git does not keep (`paths.json` without its per-core lists).
 
 ## Answer
 

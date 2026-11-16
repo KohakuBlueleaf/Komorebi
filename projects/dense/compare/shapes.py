@@ -154,6 +154,12 @@ def main():
     if sys.argv[1:] == ["list"]:
         print(*(name(shape) for shape in SHAPES), sep="\n")
     elif sys.argv[1:] == ["table"]:
+        if not any(RESULTS.glob("*.json")):
+            raise SystemExit(
+                f"no result records in {RESULTS} (they are not kept in git): ours from"
+                " `linear.py --m --k --n --json`, Kohaku-TT's from"
+                " `compare/ktt_shapes.py --out results`"
+            )
         print(tables())
     else:
         raise SystemExit(__doc__)

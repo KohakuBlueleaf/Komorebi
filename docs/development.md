@@ -130,6 +130,13 @@ unless they are named on its command line.
 Experiments come first; a regression test comes after behaviour settles (see
 `experiments/README.md`).
 
+Result records are not committed. A run's output (a bench, probe, proof or gate record,
+JSON or any other dump) stays in the script's `results/` folder or the path its `--json`
+names, both ignored by git; a number that matters goes into a README or docs table with
+the command that reproduces it. The JSON files git keeps are inputs no run produces
+(`reference/public_scenes.json`, the reference streams and graphs under
+`experiments/checks/`), each named in `.gitignore`.
+
 ## Known limitations
 
 - **The `host` and `pymodule` builds borrow compile flags from targets of another
