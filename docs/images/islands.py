@@ -782,7 +782,12 @@ def panel_aware(s, y):
     ink = c["r"][0]
     bw = (half - 42) / 2
     sides = [
-        ("by rank:", "every rank sends its part to rank 0", "118 parts cross", "118"),
+        (
+            "by rank:",
+            "every rank sends its own part to rank 0",
+            "118 parts cross",
+            "118",
+        ),
         (
             "by island:",
             "each island folds to its leader; the leaders' parts cross",
@@ -793,50 +798,70 @@ def panel_aware(s, y):
     for k, (head, gloss, measured, count) in enumerate(sides):
         x0 = left + k * (half + 24)
         ix = [x0, x0 + bw + 42]
-        xs = [[], []]
+        spots = [[], []]
         for i in range(2):
-            s.rect(ix[i], top, bw, 80, c["bg"], c["line"], rx=6)
-            s.text(ix[i] + bw - 7, top + 74, f"island {i}", 12, c["mute"], anchor="end")
+            s.rect(ix[i], top, bw, 134, c["bg"], c["line"], rx=6)
+            s.text(ix[i] + 2, top + 148, f"island {i}", 12, c["mute"])
             for n in range(12):
                 cx = ix[i] + 10 + 20 * i + n % 6 * 19
-                cy = top + 10 + n // 6 * 19
-                lead = n == 6 and (i == 0 or k == 1)
-                if lead:
+                cy = top + 14 + n // 6 * 20
+                if i == 1 and k == 1 and n == 6:
                     s.rect(cx, cy, 14, 14, ink, ink, rx=3)
                 else:
                     core(s, cx, cy, "r", 14)
-                if n >= 6:
-                    xs[i].append(cx + 7)
-        near = link_core(s, ix[0] + bw - 18, top + 12, 32)
-        far = link_core(s, ix[1] + 4, top + 12, 32)
-        low = top + 43  # the bottom of the cores
-        comb(s, xs[0][1:], low, low + 6, xs[0][0], ink)
-        s.line(xs[0][0], low + 6, xs[0][0], low + 1, "r", 1.4)
-        if k == 0:  # every rank of island 1 sends across
-            comb(s, xs[1], low, low + 6, far[0] + 7, ink, 2.2)
-            path(s, [(far[0] + 7, low + 6), (far[0] + 7, top + 44)], ink, 2.2)
-        else:  # island 1 folds to its leader, whose part crosses
-            comb(s, xs[1][1:], low, low + 6, xs[1][0], ink)
-            s.line(xs[1][0], low + 6, xs[1][0], low + 1, "r", 1.4)
-            path(s, [(ix[1] + 30, top + 36), (far[0] + 14, top + 36)], ink, 2.4)
-        s.line(far[0], top + 28, near[0] + 15, top + 28, "r", 2.6)
-        s.chip((near[0] + 14 + far[0]) / 2, top + 12, count, "r")
-        s.poly(
-            [
-                (near[0] + 7, top + 44),
-                (near[0] + 7, low + 13),
-                (xs[0][0] - 5, low + 13),
-                (xs[0][0] - 5, low + 1),
-            ],
-            "r",
-            2.2,
-        )
-        s.text(x0, top + 100, head, 12, c["fg"], True)
-        s.text(x0 + width(head, bold=True) + 8, top + 100, gloss, 12, c["fg"])
-        s.text(x0, top + 116, measured, 12, c["mute"])
+                spots[i].append((cx, cy))
+        links = []
+        for x in (ix[0] + bw - 18, ix[1] + 4):  # tall, so every part passes through
+            s.rect(x, top + 8, 14, 118, c["bg"], c["fg"], rx=3, sw=1.4)
+            s.text(x + 7, top + 24, "L", 12, c["fg"], True, anchor="middle")
+            links.append(x)
+        # rank 0, drawn tall so each part that reaches it has its own arrowhead
+        bar = (ix[0] + 96, top + 72, 16, 54)
+        s.rect(*bar, ink, ink, rx=3)
+        s.text(bar[0] - 8, top + 103, "rank 0", 12, c["fg"], True, anchor="end")
+        low = top + 48  # the bottom of the cores
+        # inside island 0: its ranks to rank 0 (a local send each)
+        comb(s, [cx + 7 for cx, _ in spots[0][6:]], low, top + 58, bar[0] + 8, ink, 1.2)
+        s.line(bar[0] + 8, top + 58, bar[0] + 8, top + 71, "r", 1.4)
+        if k == 0:  # every rank of island 1 sends its own part across
+            for col in range(6):
+                for row in range(2):
+                    cx, cy = spots[1][row * 6 + col]
+                    ly = top + 76 + 4.2 * (2 * col + 1 - row)
+                    if row:  # the lower core: straight down
+                        start = [(cx + 7, low)]
+                    else:  # the upper core: out to the right, down between columns
+                        start = [(cx + 14, cy + 7), (cx + 16.5, cy + 7)]
+                    path(s, [*start, (start[-1][0], ly), (bar[0] + 26, ly)], ink, 0.9)
+                    s.line(bar[0] + 26, ly, bar[0] + 17, ly, "r", 0.9)
+        else:  # island 1 folds to its leader, whose one part crosses
+            lead = spots[1][6]
+            comb(
+                s,
+                [cx + 7 for cx, _ in spots[1][7:]],
+                low,
+                top + 58,
+                lead[0] + 7,
+                ink,
+                1.2,
+            )
+            s.line(lead[0] + 7, top + 58, lead[0] + 7, low + 1, "r", 1.4)
+            ly = top + 99
+            path(
+                s,
+                [(lead[0], lead[1] + 7), (lead[0] - 7, lead[1] + 7), (lead[0] - 7, ly)],
+                ink,
+                2.4,
+            )
+            path(s, [(lead[0] - 7, ly), (bar[0] + 40, ly)], ink, 2.4)
+            s.line(bar[0] + 40, ly, bar[0] + 17, ly, "r", 2.4)
+        s.chip((links[0] + 14 + links[1]) / 2, top + 44, count, "r")
+        s.text(x0, top + 170, head, 12, c["fg"], True)
+        s.text(x0 + width(head, bold=True) + 8, top + 170, gloss, 12, c["fg"])
+        s.text(x0, top + 186, measured, 12, c["mute"])
 
     # three more ways a kernel acts by island
-    r2 = top + 138
+    r2 = top + 208
     third = (BOX_W - 28) / 3
     ways = [
         (
@@ -859,60 +884,74 @@ def panel_aware(s, y):
         ),
     ]
     for j, (kind, name, call, measured) in enumerate(ways):
-        x0 = left + j * third + 10
+        x0 = left + j * third + 6
         tone = c[kind][0]
-        ix, near, far = two_islands(s, x0, r2, 106, 80, 22)
+        ix = [x0, x0 + 106 + 32]
+        for i in range(2):
+            s.rect(ix[i], r2, 106, 98, c["bg"], c["line"], rx=6)
+            s.text(ix[i] + 2, r2 + 112, f"island {i}", 12, c["mute"])
+        near = link_core(s, ix[0] + 106 - 18, r2 + 26, 30)
+        far = link_core(s, ix[1] + 4, r2 + 26, 30)
         spots = [[], []]
         for i in range(2):
             for n in range(8):
                 cx = ix[i] + 8 + 20 * i + n % 4 * 16
-                cy = r2 + 12 + n // 4 * 16
-                first = (j == 0 and n == 0) or (j == 1 and n == (7 if i == 0 else 4))
+                cy = r2 + 28 + n // 4 * 16
+                first = (j == 0 and n == 0) or (j == 1 and n == (3 if i == 0 else 0))
                 if first:
                     s.rect(cx, cy, 12, 12, tone, tone, rx=3)
                 else:
                     core(s, cx, cy, kind, 12)
                 spots[i].append((cx, cy))
-        mid = r2 + 23
+        mid = r2 + 34
         if j == 0:  # cast along the part; one block to the next part's first core
             for i in range(2):
                 (fx, fy), (lx, _) = spots[i][0], spots[i][3]
-                path(s, [(fx + 6, fy - 5), (lx + 6, fy - 5)], tone, 1.6)
+                path(
+                    s,
+                    [(fx + 6, fy - 1), (fx + 6, r2 + 12), (lx + 6, r2 + 12)],
+                    tone,
+                    1.4,
+                )
                 for cx, _ in spots[i][1:4]:
-                    s.line(cx + 6, fy - 5, cx + 6, fy - 1, kind, 1.2)
+                    s.line(cx + 6, r2 + 12, cx + 6, fy - 1, kind, 1.2)
             end = spots[0][3][0] + 6
             path(
-                s, [(end, r2 + 7), (near[0] + 7, r2 + 7), (near[0] + 7, r2 + 10)], tone
+                s,
+                [(end, r2 + 12), (near[0] + 7, r2 + 12), (near[0] + 7, r2 + 26)],
+                tone,
             )
-            s.line(near[0] + 14, mid, far[0] - 1, mid, kind, 2.4)
+            s.line(near[0] + 14, mid + 7, far[0] - 1, mid + 7, kind, 2.0)
             first = spots[1][0][0] + 6
             path(
-                s, [(far[0] + 7, r2 + 10), (far[0] + 7, r2 + 7), (first, r2 + 7)], tone
+                s,
+                [(far[0] + 7, r2 + 26), (far[0] + 7, r2 + 12), (first, r2 + 12)],
+                tone,
             )
         elif j == 1:  # the leaders exchange their pages, each island's copy whole
-            (ax, ay), (bx, by) = spots[0][7], spots[1][4]
-            path(s, [(ax + 12, ay + 6), (near[0], ay + 6)], tone, 2.2)
-            s.line(near[0] + 14, ay + 6, far[0] - 1, ay + 6, kind, 2.4, tail=True)
-            path(s, [(far[0] + 14, by + 6), (bx, by + 6)], tone, 2.2)
+            (ax, ay), (bx, by) = spots[0][3], spots[1][0]
+            path(s, [(ax + 12, ay + 6), (near[0], ay + 6)], tone, 2.0)
+            s.line(near[0] + 15, ay + 6, far[0] - 1, ay + 6, kind, 2.0, tail=True)
+            path(s, [(far[0] + 14, by + 6), (bx, by + 6)], tone, 2.0)
             for i in range(2):
-                pages(s, ix[i] + 8 + 20 * i, r2 + 52, [kind] * 4, 8, 8)
+                pages(s, ix[i] + 8 + 20 * i, r2 + 78, [kind] * 4, 10, 10)
         else:  # each island reads its own part; the link carries nothing
             for i in range(2):
-                box = pages(s, ix[i] + 8 + 20 * i, r2 + 52, [kind] * 4, 8, 8)
+                box = pages(s, ix[i] + 8 + 20 * i, r2 + 78, [kind] * 4, 10, 10)
                 for n in (0, 2):
-                    s.line(
-                        box[0] + 4 + n * 10,
-                        r2 + 51,
-                        box[0] + 4 + n * 10,
-                        r2 + 43,
-                        kind,
-                        1.2,
-                    )
-            path(s, [(near[0] + 14, mid), (far[0], mid)], c["rule"], 1.4, dash="3 3")
-        cx = x0 + 117
-        s.text(cx, r2 + 100, name, 12, tone, True, anchor="middle")
-        s.text(cx, r2 + 116, call, 12, c["fg"], mono=True, anchor="middle")
-        s.text(cx, r2 + 132, measured, 12, c["mute"], anchor="middle")
+                    px = box[0] + 5 + n * 12
+                    s.line(px, r2 + 77, px, r2 + 58, kind, 1.4)
+            path(
+                s,
+                [(near[0] + 14, mid + 7), (far[0], mid + 7)],
+                c["rule"],
+                1.4,
+                dash="3 3",
+            )
+        cx = x0 + 122
+        s.text(cx, r2 + 134, name, 12, tone, True, anchor="middle")
+        s.text(cx, r2 + 150, call, 12, c["fg"], mono=True, anchor="middle")
+        s.text(cx, r2 + 166, measured, 12, c["mute"], anchor="middle")
 
     # the words, from the kernel of the fold drawn above
     acting = lines_of(
@@ -929,7 +968,7 @@ def panel_aware(s, y):
         ("code", "    " + acting[5], True),
         ("code", "        " + acting[6], True),
     ]
-    end = code_rows(s, BOX_X + 24, r2 + 148, "r", rows)
+    end = code_rows(s, BOX_X + 24, r2 + 184, "r", rows)
     s.text(
         left,
         end + 18,
