@@ -445,7 +445,6 @@ its start: a `Crossings` whose `rows[(link, source, target)]` hold the counts is
 | `lines` | the dispatcher's command lines (commands across), 192 bytes each |
 | `asks` | ask lines of `km::read_pages` for pages the other island holds, 64 bytes each |
 | `pages` | pages sent: the answers to asks, puts, `send_pages`, `cross`, `ask`, `ask_range` |
-| `parts` | parts relayed by `km::to_island(i).put` |
 | `puts` | put lines of `km::write_pages` (64 bytes) and their confirmations (8 bytes) |
 | `bytes` | every payload byte of the above |
 

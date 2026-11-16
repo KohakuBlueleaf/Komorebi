@@ -15,7 +15,6 @@ from komorebi.islands.parts.mesh import MeshMixin
 from komorebi.islands.parts.table import TableMixin
 from komorebi.session import sizes
 
-M32 = 0xFFFFFFFF
 TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries by default
 # a word below a load's KM_TENSORS_MAX is an entry: every DRAM bank address is above
 # the allocator's base (over 1 MiB on Blackhole), so the bound may go up to this
