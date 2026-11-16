@@ -3,7 +3,7 @@
 #pragma once
 
 #include "completion.h"
-#include "kernel.h"
+#include "../kernel.h"
 #include "ring.h"
 
 static inline int work_pow2(uint64_t value) {

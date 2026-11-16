@@ -2,10 +2,10 @@
  * admitting KM_HANDLER_RUN with a2 1 or 2, KM_HANDLER_CANCEL, the graphs' ends. */
 #pragma once
 
-#include "event_ring.h"
-#include "kernel.h"
+#include "../sources/event_ring.h"
+#include "../kernel.h"
 #include "komorebi/abi/km_graph.h"
-#include "ring.h"
+#include "../sources/ring.h"
 
 /* The graphs' parts of the state area: core 1's runs after its engine state, core 0's
  * table after the engine's ring. */

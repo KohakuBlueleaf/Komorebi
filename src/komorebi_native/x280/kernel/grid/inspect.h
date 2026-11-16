@@ -2,11 +2,11 @@
  * control blocks through one window, a core a loop pass, into the inspect block. */
 #pragma once
 
-#include "completion.h"
-#include "kernel.h"
+#include "../sources/completion.h"
+#include "../kernel.h"
 #include "reset.h"
-#include "result.h"
-#include "ring.h"
+#include "../result.h"
+#include "../sources/ring.h"
 
 static inline volatile uint32_t* inspect_header(const kmd_t* dispatcher) {
     return (volatile uint32_t*)(dispatcher->lim + KMD_LIM_INSPECT);

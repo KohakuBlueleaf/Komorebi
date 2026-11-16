@@ -2,8 +2,8 @@
  * the acknowledgement words the groups' leaders push into LIM, one per slot. */
 #pragma once
 
-#include "grid_port.h"
-#include "kernel.h"
+#include "../grid/grid_port.h"
+#include "../kernel.h"
 #include "ring.h"
 
 /* The slot's ack line as one 64-bit word: the ack word, then the result word. */

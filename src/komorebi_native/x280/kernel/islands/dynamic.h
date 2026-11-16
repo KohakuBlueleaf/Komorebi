@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include "completion.h"
-#include "kernel.h"
+#include "../sources/completion.h"
+#include "../kernel.h"
 
 /* waves.h, after link.h: a run across islands */
 static void messages_islands(kmd_t* dispatcher);

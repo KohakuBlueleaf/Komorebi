@@ -3,7 +3,7 @@
 #pragma once
 
 #include "dynamic.h"
-#include "kernel.h"
+#include "../kernel.h"
 #include "link.h"
 
 /* The islands of the run's group, in rank order; its leader holds the first rank. */

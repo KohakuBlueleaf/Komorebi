@@ -2,7 +2,7 @@
  * host and the engine on core 1 use the same code; only the memory differs. */
 #pragma once
 
-#include "kernel.h"
+#include "../kernel.h"
 
 /* Copies command ring->next into ring->line if the source stored it whole: 64-bit
  * loads, the rest after a second load fence once sequence shows it. 1 or 0. */

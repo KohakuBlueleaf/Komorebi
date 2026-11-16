@@ -2,7 +2,7 @@
  * ring and consumed count in it, the state words, the ready block. */
 #pragma once
 
-#include "kernel.h"
+#include "../kernel.h"
 #include "ring.h"
 
 /* Programs the host window and points the host's rings at it. Returns KMD_ERROR_NONE or

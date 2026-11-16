@@ -2,9 +2,9 @@
  * link's byte write, to that island's dispatcher, which runs it and sends DONE back. */
 #pragma once
 
-#include "completion.h"
-#include "kernel.h"
-#include "ring.h"
+#include "../sources/completion.h"
+#include "../kernel.h"
+#include "../sources/ring.h"
 
 /* A packet: the command line (its group word in flat ranks), then the crossing line. */
 typedef struct {

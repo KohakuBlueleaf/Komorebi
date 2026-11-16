@@ -2,8 +2,8 @@
  * register, the host's write list (firmware, tables, kernels) into its L1, released. */
 #pragma once
 
-#include "event_ring.h"
-#include "kernel.h"
+#include "../sources/event_ring.h"
+#include "../kernel.h"
 
 /* Window `slot` aimed at `address` of core `core` (the host's core table), non-posted
  * and read back; 0 when it is refused or reads otherwise. */

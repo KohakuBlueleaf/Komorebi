@@ -2,7 +2,7 @@
  * the stop flag. The kernel only writes to the grid; it never reads it. */
 #pragma once
 
-#include "kernel.h"
+#include "../kernel.h"
 
 /* Programs one posted window per panel aimed at the control block `control` of every
  * core in the panel's rectangle. Returns KMD_ERROR_NONE or KMD_ERROR_WINDOW. */

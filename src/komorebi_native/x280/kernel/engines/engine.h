@@ -2,7 +2,7 @@
  * interpreter, which runs each stream in place, and the source's side of its ring. */
 #pragma once
 
-#include "kernel.h"
+#include "../kernel.h"
 
 /* A stream's state on core 1. */
 #define KMD_S_FREE 0u

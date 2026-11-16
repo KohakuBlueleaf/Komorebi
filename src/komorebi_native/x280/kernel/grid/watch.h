@@ -2,8 +2,8 @@
  * a machine software interrupt, whose handler (trap.h) re-enters the loop. */
 #pragma once
 
-#include "kernel.h"
-#include "ring.h"
+#include "../kernel.h"
+#include "../sources/ring.h"
 
 /* Hart `hart`'s machine software interrupt pending bit in the cluster's CLINT. */
 static inline volatile uint32_t* watch_msip(uint32_t hart) {

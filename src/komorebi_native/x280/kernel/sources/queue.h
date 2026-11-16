@@ -3,7 +3,7 @@
 #pragma once
 
 #include "completion.h"
-#include "kernel.h"
+#include "../kernel.h"
 
 /* Publishes the queue's length and the engine's jobs taken in, for its ENQUEUE. */
 static inline void queue_tell(kmd_t* dispatcher) {

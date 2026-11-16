@@ -2,11 +2,11 @@
  * RUN and KM_HANDLER_CANCEL as events on its ring, its posts, and stopping it. */
 #pragma once
 
-#include "event_ring.h"
+#include "../sources/event_ring.h"
 #include "graph_port.h"
-#include "kernel.h"
-#include "result.h"
-#include "ring.h"
+#include "../kernel.h"
+#include "../result.h"
+#include "../sources/ring.h"
 
 /* Points the engine's ring at its area in the state (zeroed with the state). */
 static inline void engine_open(kmd_t* dispatcher, uint64_t* line) {
