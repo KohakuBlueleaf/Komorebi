@@ -8,7 +8,7 @@ from chain_fixture import Pages, quiet, tensor
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
-from komorebi.dsl import compiler
+from komorebi.dsl.compile import tile_reduce
 
 
 def tiles(rows, columns, address):
@@ -109,9 +109,9 @@ def test_a_tree_over_the_commands_group_has_a_slot_each_island_part_more():
     # islands of 47, 34, 35 ranks: 6 + 2 = 8, past the flat tree's 7: given up)
     def slots(islands, size=None):
         made = SimpleNamespace(compiled=SimpleNamespace(islands=islands))
-        return compiler.HandlerCompiler.tree_slots(made, size)
+        return tile_reduce.tree_slots(made, size)
 
-    assert slots((1, 0)) == compiler.TREE_ROUNDS == 7  # one island: as before
+    assert slots((1, 0)) == tile_reduce.TREE_ROUNDS == 7  # one island: as before
     assert slots((3, 47)) == 8 and slots((2, 118)) == 8
     assert slots((2, 40)) == 7  # 6 + 1: the flat tree's 7 still the most
     assert slots((3, 47), size=15) == 4  # group=S: its own rounds

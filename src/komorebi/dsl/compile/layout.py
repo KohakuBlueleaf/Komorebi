@@ -7,6 +7,7 @@ from komorebi.dsl.compile.records import Buffer, Refused
 # Circular buffer indices: reads from 0, writes from 16, the others from 8 (24 and up
 # are the runtime's).
 FIRST_READ, FIRST_OTHER, FIRST_WRITE, LAST_INDEX = 0, 8, 16, 25
+PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}  # a tile page of each format
 
 
 def free_index(compiled, first, pair=False):
