@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi.errors import KernelSizeError, KomorebiError, L1BudgetError
+from komorebi.errors import KernelSizeError, L1BudgetError
 
 COMMAND = "prebuild"  # the command's and the call's one spelling: kmr prebuild
 ACTIVE = "KMR_PREBUILD"  # set in the script's process: its loads build, then mock
@@ -79,16 +79,29 @@ class Nothing:
 NOTHING = Nothing()
 
 
+class Done(Nothing):
+    """What a mock run's wait gives: a done event (its kind "done"; an island run's
+    parts, itself), else Nothing."""
+
+    kind = "done"
+    parts = property(lambda self: (self,))
+
+
+DONE = Done()
+
+
 class Run:
     """The run a prebuild's load returns in place of the card's: every call returns
-    at once with Nothing; stop and abort end it."""
+    at once with Nothing, a wait with a done event; stop and abort end its `parts`."""
 
-    def __init__(self, counted=True):
-        self.stopped = False
+    def __init__(self, counted=True, parts=()):
+        self.stopped, self.parts = False, list(parts)
         LOADS[0] += int(counted)
 
     def stop(self, timeout=None):
         self.stopped = True
+        for part in self.parts:
+            part.stop()
 
     abort = stop
 
@@ -98,7 +111,7 @@ class Run:
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return NOTHING
+        return (lambda *args, **kwargs: DONE) if name.startswith("wait") else NOTHING
 
 
 def active():
@@ -169,6 +182,9 @@ def run(script, args=(), cards=(0,), cluster=None):
                 f"kmr {COMMAND}: again, at the size the next run opens at", flush=True
             )
             code = subprocess.run(command, env=env, check=False).returncode
+        from komorebi import remembered  # noqa: PLC0415 (remembered imports us)
+
+        remembered.seed(Path(env[MEMORY]))
     return code
 
 
@@ -212,7 +228,7 @@ def main():
         print(f"{said}refused by size, as the card's run would be", flush=True)
         return REFUSED
     except Exception as error:  # the script's own checks on zeros, or a build
-        if isinstance(error, KomorebiError) and in_load(error):
+        if in_load(error):
             raise  # a build or a load failed: as it would on the card
         frames = traceback.extract_tb(error.__traceback__)
         line = next(

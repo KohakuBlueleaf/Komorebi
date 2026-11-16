@@ -126,23 +126,21 @@ def plan_of(program, rows):
     return program.grid, None
 
 
-def made(session, rows, k_tiles):
+def made(session, rows, k_tiles, hints=None, least=ROWS * OH):
     """The class made with K_TILES `k_tiles` and tensors of the largest shape of
-    `rows` (X [M, K], W [K, N], Y [M, N]); the grid's OH x OW block of 1024 rows when
-    none is larger, so one row tile and 32 load the same program."""
-    rows = max(*rows, ROWS * OH)
+    `rows` (X [M, K], W [K, N], Y [M, N]), each with its island hints of `hints`; the
+    grid's block of `least` rows when none is larger (one load for both)."""
+    rows = max(*rows, least)
     m, k, n = rows * 32, k_tiles * 32, Linear.N_TILES.default * 32
+    hints = hints or {}
     tensors = {
-        name: session.empty(shape, "bfloat16", "tile")
-        for name, shape in (
-            ("x", (m, k)),
-            ("w", (k, n)),
-            ("y", (m, n)),
-            ("a", (m, n)),
-            ("b", (m, n)),
-            ("out", (m, n)),
-        )
+        name: session.empty(shape, "bfloat16", "tile", **hints.get(name, {}))
+        for name, shape in (("x", (m, k)), ("w", (k, n)), ("y", (m, n)))
     }
+    for name in ("a", "b", "out"):  # the gate's: on two cards Y (it is one card's)
+        tensors[name] = (
+            tensors["y"] if hints else session.empty((m, n), "bfloat16", "tile")
+        )
     oh = rows // ROWS
     program = Linear(
         log=log,
@@ -155,30 +153,44 @@ def made(session, rows, k_tiles):
     return program
 
 
-def timed(run, handler, group, args, repeat):
-    """`repeat` commands of the handler; their events' microseconds."""
+def timed(run, handler, group, args, repeat, parts=None):
+    """`repeat` commands of the handler; their events' microseconds (two islands: the
+    slower part's, each part's appended to `parts`)."""
     times = []
     for _ in range(repeat):
         submitted = run.submit(handler, group, args=args)
         event = run.wait(submitted, timeout=30.0)
-        if event.kind != "done":
+        each = getattr(event, "parts", (event,))  # two cards: an island's part each
+        if any(part.kind != "done" for part in each):
             raise RuntimeError(f"{handler.method.name}: {event}")
-        times.append(event.microseconds)
+        times.append(max(part.microseconds for part in each))
+        if parts is not None:
+            parts.append([part.microseconds for part in each])
     return times
 
 
-def check_exact(session, run, plan, args):
+def check_exact(session, plan, args):
     """Small integers (x in -1, 0, 1; w in -1, 0, 0, 0, 1): every sum exact in fp32 and
-    under 256, so exact in bfloat16 too. Returns what reads Y after the run."""
+    under 256, so exact in bfloat16 too. Its tensors made now (before the load);
+    returns what runs it on a run, which returns what reads Y after the run."""
     rng = np.random.default_rng(args.seed)
     program = plan[0].program
     m, k, n = args.rows * 32, program.K_TILES * 32, program.N_TILES * 32
     x = rng.integers(-1, 2, (m, k)).astype(np.float32)
     w = rng.choice(np.array([-1, 0, 0, 0, 1], np.float32), (k, n))
-    tx, tw = (session.tensor(v, "bfloat16", "tile") for v in (x, w))
-    ty = session.tensor(np.zeros((m, n), np.float32), "bfloat16", "tile")
+    hints = args.hints
+    tx = session.tensor(x, "bfloat16", "tile", **hints.get("x", {}))
+    tw = session.tensor(w, "bfloat16", "tile", **hints.get("w", {}))
+    ty = session.tensor(
+        np.zeros((m, n), np.float32), "bfloat16", "tile", **hints.get("y", {})
+    )
     handler, group = plan
-    times = timed(run, handler, group, (tx, tw, ty), 1)
+
+    def go(run):
+        times[:] = timed(run, handler, group, (tx, tw, ty), 1)
+        return finish
+
+    times = []
 
     def finish():
         got = ty.read().astype(np.float64)
@@ -191,12 +203,13 @@ def check_exact(session, run, plan, args):
             "sums_exact_in_bf16": bool(np.abs(want).max() <= 256),
         }
 
-    return finish
+    return go
 
 
-def check_random(session, run, plan, args, swiglu):
+def check_random(session, plan, args, swiglu):
     """Normal values in bfloat16: Y (bfloat16) against float64 of the same inputs, as
-    the dense project judges (relative RMS); `swiglu`: two products and the gate."""
+    the dense project judges (relative RMS); `swiglu`: two products and the gate. Its
+    tensors made now; returns what runs it, as check_exact."""
     rng = np.random.default_rng(args.seed)
     program = plan[0].program
     m, k, n = args.rows * 32, program.K_TILES * 32, program.N_TILES * 32
@@ -204,26 +217,37 @@ def check_random(session, run, plan, args, swiglu):
     weights = [
         bf16(rng.standard_normal((k, n)) / 64) for _ in range(2 if swiglu else 1)
     ]
-    tx = session.tensor(x, "bfloat16", "tile")
-    tws = [session.tensor(w, "bfloat16", "tile") for w in weights]
+    hints = args.hints
+    tx = session.tensor(x, "bfloat16", "tile", **hints.get("x", {}))
+    tws = [session.tensor(w, "bfloat16", "tile", **hints.get("w", {})) for w in weights]
     tys = [
-        session.tensor(np.zeros((m, n), np.float32), "bfloat16", "tile") for _ in tws
+        session.tensor(
+            np.zeros((m, n), np.float32), "bfloat16", "tile", **hints.get("y", {})
+        )
+        for _ in tws
     ]
     out = session.tensor(np.zeros((m, n), np.float32), "bfloat16", "tile")
     handler, group = plan
     record = {}
-    times = timed(run, handler, group, (tx, tws[0], tys[0]), args.repeat)
-    record["microseconds"] = times
-    record["median_microseconds"] = float(np.median(times))
-    if swiglu:
-        timed(run, handler, group, (tx, tws[1], tys[1]), 1)
-        cores = args.gate_cores
-        pages = m * n // 1024 // cores
-        submitted = run.submit(
-            program.gate, (0, cores), args=(tys[0], tys[1], out, pages)
-        )
-        event = run.wait(submitted, timeout=30.0)
-        record["gate_microseconds"] = event.microseconds
+
+    def go(run):
+        parts = []
+        times = timed(run, handler, group, (tx, tws[0], tys[0]), args.repeat, parts)
+        record["microseconds"] = times
+        if hasattr(tws[0], "placement"):  # two cards
+            record["island_microseconds"] = parts
+            record.update(w_held(tws[0], program))
+        record["median_microseconds"] = float(np.median(times))
+        if swiglu:
+            timed(run, handler, group, (tx, tws[1], tys[1]), 1)
+            cores = args.gate_cores
+            pages = m * n // 1024 // cores
+            submitted = run.submit(
+                program.gate, (0, cores), args=(tys[0], tys[1], out, pages)
+            )
+            event = run.wait(submitted, timeout=30.0)
+            record["gate_microseconds"] = event.microseconds
+        return finish
 
     def finish():
         want = x @ weights[0]
@@ -238,7 +262,36 @@ def check_random(session, run, plan, args, swiglu):
             record["swiglu_relative_rms"] = rms(got, whole)
         return record
 
-    return finish
+    return go
+
+
+def w_held(w, program):
+    """W's bytes each island holds (its part of the columns) and one core of the K
+    split reads (its K rows of its group's WIDTH columns)."""
+    page = w.aligned_page_bytes
+    per_core = -(-program.K_TILES // program.SPLIT) * program.WIDTH * page
+    return {
+        "w_bytes_an_island": [
+            w.placement.part_pages(island) * page
+            for island in range(len(w.placement.parts))
+        ],
+        "w_bytes_a_core": per_core,
+    }
+
+
+def islands_args(session, args):
+    """Two cards (the owner's form, the output dim sharded): the split plan's group of
+    SPLIT_CORES ranks centred on island 1's first rank, so each island runs half the
+    groups; X a copy on both, W and Y split by their tile columns over that group."""
+    if args.rows != [1]:
+        raise SystemExit("two cards: the split plan only (--rows 1)")
+    edge, tiles = session.graph.first(1), Linear.N_TILES.default
+    cores = tiles // Linear.WIDTH.default * Linear.SPLIT.default
+    group = (edge - cores // 2, cores)
+    # W's and Y's column tiles one a rank over a group of N_TILES ranks: an island's
+    # tiles are exactly its groups' columns (km::partition of the command's 112 is not)
+    split = {"split": 1, "group": (edge - tiles // 2, tiles)}
+    return {"x": {"copy": True}, "w": split, "y": split}, group
 
 
 def rms(got, want):
@@ -250,28 +303,29 @@ def shapes_run(session, program, args):
     """Each shape of `args.rows` by the plan picker on one load of `program` (one
     load for every shape: the mock's build key), its checks read after the run;
     (the reports, whether all were right)."""
-    reports, finishes, ok = [], [], True
+    reports, checks, finishes, ok = [], [], [], True
+    for rows in args.rows:  # every check's tensors before the load (an island's table)
+        shape = argparse.Namespace(**{**vars(args), "rows": rows})
+        handler, group = plan_of(program, rows)
+        if handler.method is Linear.grid and rows != max(*args.rows, args.block):
+            raise SystemExit("the grid plan runs the largest shape of --rows")
+        group = args.group or group or program.rectangle["group"]
+        report = {"m_k_n": [rows * 32, program.K_TILES * 32, program.N_TILES * 32]}
+        report |= {"plan": handler.method.name, "group": list(group)}
+        plan = (handler, group)
+        if "exact" in args.check:
+            checks.append((report, "exact", check_exact(session, plan, shape)))
+        for name in ("random", "swiglu"):
+            if name in args.check:
+                check = check_random(session, plan, shape, name == "swiglu")
+                checks.append((report, name, check))
+        reports.append(report)
     run = session.load(program)
+    for report in reports:
+        report["kernel_text"] = program.sizes.text  # the load's
     try:
-        for rows in args.rows:
-            shape = argparse.Namespace(**{**vars(args), "rows": rows})
-            handler, group = plan_of(program, rows)
-            if handler.method is Linear.grid and rows != max(*args.rows, ROWS * OH):
-                raise SystemExit("the grid plan runs the largest shape of --rows")
-            group = group or program.rectangle["group"]
-            report = {"m_k_n": [rows * 32, program.K_TILES * 32, program.N_TILES * 32]}
-            report |= {"plan": handler.method.name, "group": list(group)}
-            report["kernel_text"] = program.sizes.text
-            plan = (handler, group)
-            if "exact" in args.check:
-                finishes.append(
-                    (report, "exact", check_exact(session, run, plan, shape))
-                )
-            for name in ("random", "swiglu"):
-                if name in args.check:
-                    check = check_random(session, run, plan, shape, name == "swiglu")
-                    finishes.append((report, name, check))
-            reports.append(report)
+        for report, name, go in checks:
+            finishes.append((report, name, go(run)))
     finally:
         run.stop()
     for report, name, finish in finishes:
@@ -291,6 +345,10 @@ def main():
     parser.add_argument("--repeat", type=int, default=3, help="timed commands")
     parser.add_argument("--gate-cores", type=int, default=64)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--cards", default="", help="0,1: two cards (the split plan)")
+    parser.add_argument(
+        "--block", type=int, default=ROWS * OH, help="the grid plan's rows (its field)"
+    )
     parser.add_argument(
         "--k-tiles",
         type=int,
@@ -300,10 +358,13 @@ def main():
     )
     args = parser.parse_args()
     reports, ok = [], True
-    with km.Session(log=log) as session:
+    cards = [int(card) for card in args.cards.split(",")] if args.cards else []
+    opened = {"cards": cards} if len(cards) > 1 else {}
+    with km.Session(log=log, **opened) as session:
         log(f"device open, grid {session.grid}; row tiles {args.rows}")
+        args.hints, args.group = islands_args(session, args) if opened else ({}, None)
         for k_tiles in args.k_tiles:
-            program = made(session, args.rows, k_tiles)
+            program = made(session, args.rows, k_tiles, args.hints, args.block)
             found, ok_k = shapes_run(session, program, args)
             reports += found
             ok &= ok_k

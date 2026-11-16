@@ -5,6 +5,7 @@ class in one run (no card)."""
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import komorebi as km
@@ -230,6 +231,7 @@ class FakeRun:
         self.programs = programs
 
     _class_form_refused = Run._class_form_refused
+    _program_told = Run._program_told
     program_field = Run.program_field
 
 
@@ -244,3 +246,9 @@ def test_the_class_form_with_two_programs_of_the_class_is_refused():
                        r"program \(program.split\)"):  # fmt: skip
         Run._handler(run, Linear.split)
     assert Run._handler(run, large.split) == (int(Linear.split), 1)
+    run._holds = [np.array([True, True, False, False]), np.zeros(4, bool)]
+    large.added_live = True
+    with pytest.raises(ValueError, match=r"Linear\(K_TILES=4, .*\) at field 0 \(held "
+                       r"by ranks 0-1\); Linear\(K_TILES=8, .*\) at field 1 \(added "
+                       r"live, held by no core yet\)"):  # fmt: skip
+        Run._handler(run, Linear.split)

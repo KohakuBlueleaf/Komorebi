@@ -408,8 +408,9 @@ call (9.1 to 9.5 µs of it on the card); every output exact, the gate after it t
 An added class with per-core args needs nothing more from the thread: its load command
 copies each core's row into L1 before any of the core's five CPUs takes the next
 command, and `kmx_load` returns only when that command is done. A thread's command to
-cores that never loaded the class is not checked by the host: load it on that group
-first.
+a group with a core that does not hold the class is refused by the dispatcher, as for
+any program: `kmx_wait` returns `KM_EVENT_REJECTED` with reason 13, and no core takes
+it.
 
 [21_thread_load](../../examples/21_thread_load/README.md): after one command from the
 host, the thread moves the boundary between two programs' groups with a load every

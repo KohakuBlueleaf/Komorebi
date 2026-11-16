@@ -7,7 +7,8 @@
 #include "komorebi/device/km_transfer.hpp"
 #include "komorebi/device/km_worker.hpp"
 
-#if defined(KM_ADDED_HANDLERS)
+// with KM_ADDED_ENTRY alone: an added class's own overlays (komorebi.added_program)
+#if defined(KM_ADDED_HANDLERS) || defined(KM_ADDED_ENTRY)
 // ENTRY: the table entry of an overlay added to the live run, written by this core in
 // its own overlay area; with KM_ENTRY_HANDLER, its handler's bit too.
 static void write_entry(km::Reader& reader, const km_command_t& command) {
@@ -57,7 +58,7 @@ static void write_entry(km::Reader& reader, const km_command_t& command) {
 
 void km_overlay(km::Reader& reader, const km_command_t& command) {
     const uint32_t handler = km::handler(command);
-#if defined(KM_ADDED_HANDLERS)
+#if defined(KM_ADDED_HANDLERS) || defined(KM_ADDED_ENTRY)
     if (handler == KM_HANDLER_ENTRY) {
         write_entry(reader, command);
         return;

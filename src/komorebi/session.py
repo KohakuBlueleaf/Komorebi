@@ -2050,7 +2050,9 @@ def _start_loads(run, placed, part=False):
 
 def _common_slots(placed, declared, built):
     """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most kOverlaySlotsMax) of the largest part any program has there."""
+    program, at most kOverlaySlotsMax, and one more in a kernel where a class named
+    ahead has an own overlay: its part loads it into another slot) of the largest part
+    any program has there."""
     most = overlay.constants()["kOverlaySlotsMax"]
     slots = {}
     for made in built:
@@ -2058,11 +2060,13 @@ def _common_slots(placed, declared, built):
             slots[part] = max(slots.get(part, 0), size)
     count = declared.count
     service = max(made.service for made in built)
+    own = added_program.ahead_own_kernels(placed)
     out = {}
     for part, size in slots.items():
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
-        out[part] = (wanted or min(len(placed.programs), most), size)
+        more = 1 if kernel in own else 0
+        out[part] = (wanted or min(len(placed.programs) + more, most), size)
     return overlay.Built({}, out, service, service)
 
 
@@ -2924,6 +2928,8 @@ class _Backend:
                 ]
                 if getattr(self, "switch_args", False):  # the row read: pay for use
                     defines.append(("KM_ADDED_ARGS", "1"))
+                if getattr(self, "added_entry", False):  # own overlays named ahead
+                    defines.append(("KM_ADDED_ENTRY", "1"))
             defines += island
             defines += self._one_island()
             defines += added_path(placed.programs)
