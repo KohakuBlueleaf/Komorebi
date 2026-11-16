@@ -13,6 +13,7 @@ import pytest
 from fake_session import CONSTANTS, FakeDevice, load_session
 
 from komorebi.errors import ProgramError
+from komorebi.session import process, sizes
 
 
 @pytest.fixture
@@ -22,31 +23,31 @@ def card(monkeypatch, tmp_path):
 
 def test_the_exit_timeout_is_set_only_when_the_environment_has_none(card):
     session, _, _ = card
-    name, log = session.OP_TIMEOUT, []
+    name, log = process.OP_TIMEOUT, []
     unset = {}
-    assert session.exit_timeout(unset, log.append) == 30.0
+    assert process.exit_timeout(unset, log.append) == 30.0
     assert (
         unset[name] == "30"
         and len(log) == 1
-        and session.exit_wait(unset) == "up to 30 s"
+        and process.exit_wait(unset) == "up to 30 s"
     )
     for given, timeout, phrase in (
         ("12.5", 12.5, "up to 12.5 s"),
         ("0", 0.0, "without a timeout"),
     ):
         env = {name: given}
-        assert session.exit_timeout(env, log.append) == timeout
-        assert env[name] == given and session.exit_wait(env) == phrase
+        assert process.exit_timeout(env, log.append) == timeout
+        assert env[name] == given and process.exit_wait(env) == phrase
     assert len(log) == 1  # a user's value, 0 included, is kept without a line
 
 
 def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch):
     session, _, module = card
-    monkeypatch.setattr(session, "_hook_exit", lambda: None)  # not this process's
+    monkeypatch.setattr(process, "_hook_exit", lambda: None)  # not this process's
     session.Session().open()
     session.Session(kernel_bytes=128 << 10).open()
     assert module.opened == [None, 1572864 - 41088 - (128 << 10)]
-    assert session.worker_l1_size(69 * 1024) == 1461120  # the runtime's default
+    assert sizes.worker_l1_size(69 * 1024) == 1461120  # the runtime's default
     for bad in (100, 0, 1531776, "big"):
         with pytest.raises(ValueError, match="multiple of 64 from 64 to 1531712"):
             session.Session(kernel_bytes=bad)
@@ -123,8 +124,10 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
         session.compute_config({"fp32_dest_acc": True})
 
 
-def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(card, tmp_path):
-    session = card[0]
+def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(
+    card, tmp_path, monkeypatch
+):
+    monkeypatch.delenv(process.MOCK, raising=False)
 
     def lock(pid, size=56, name="lock"):
         path = tmp_path / f"{name}-{pid}"
@@ -152,7 +155,10 @@ def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(card, tmp_pat
     path = lock(0, name="umd")
     holder = mapper(path, stay=True)
     path.write_bytes(lock(holder.pid).read_bytes())
-    assert session.chip_holder(0, path) == holder.pid
+    assert process.chip_holder(0, path) == holder.pid
+    monkeypatch.setenv(process.MOCK, str(tmp_path / "cluster.yaml"))
+    assert process.chip_holder(0, path) is None  # a mock device holds no chip
+    monkeypatch.delenv(process.MOCK)
     holder.stdin.close()
     holder.wait()
     zombie = mapper(path, stay=False)  # ended, not reaped yet: no mappings left
@@ -161,21 +167,21 @@ def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(card, tmp_pat
         assert time.monotonic() < deadline, "the mapping process did not end in 10 s"
         time.sleep(0.01)
     path.write_bytes(lock(zombie.pid).read_bytes())
-    assert session.chip_holder(0, path) is None
+    assert process.chip_holder(0, path) is None
     zombie.wait()
-    assert session.chip_holder(0, path) is None  # reaped: the PID is gone
-    assert session.chip_holder(0, lock(os.getppid())) is None  # alive, not mapping it
-    assert session.chip_holder(0, lock(os.getpid())) is None  # this process
-    assert session.chip_holder(0, lock(0)) is None  # no owner
-    assert session.chip_holder(0, lock(os.getppid(), size=40)) is None  # not UMD's
-    assert session.chip_holder(0, tmp_path / "missing") is None
+    assert process.chip_holder(0, path) is None  # reaped: the PID is gone
+    assert process.chip_holder(0, lock(os.getppid())) is None  # alive, not mapping it
+    assert process.chip_holder(0, lock(os.getpid())) is None  # this process
+    assert process.chip_holder(0, lock(0)) is None  # no owner
+    assert process.chip_holder(0, lock(os.getppid(), size=40)) is None  # not UMD's
+    assert process.chip_holder(0, tmp_path / "missing") is None
 
 
 def test_the_live_sessions_are_held_weakly(card):
     session = card[0]
     host_session = session.Session(log=lambda line: None)
-    session._LIVE.add(host_session)
-    assert host_session in session._LIVE
+    process._LIVE.add(host_session)
+    assert host_session in process._LIVE
     del host_session
     gc.collect()
-    assert len(session._LIVE) == 0
+    assert len(process._LIVE) == 0

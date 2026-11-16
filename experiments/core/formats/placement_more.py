@@ -13,8 +13,9 @@ import numpy as np
 
 import komorebi as km
 from komorebi import formats
-from komorebi import session as km_session
 from komorebi.device import native
+from komorebi.session import process
+from komorebi.session import session as km_session
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from placement import (
@@ -159,7 +160,7 @@ def build(args):
     """Mock device: the three half programs and the two grid programs built."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
+    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     km_session.Session.load = build_only()
     with km.Session(log=log) as session:

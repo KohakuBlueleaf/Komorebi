@@ -4,7 +4,6 @@ Tensix core and the dispatcher on X280 cluster 0, and hands out a `Run`.
 Needs a tt-metal tree or the runtime package; `import komorebi` does not import it.
 """
 
-import atexit
 import contextlib
 import copy
 import ctypes
@@ -12,11 +11,9 @@ import dataclasses
 import os
 import re
 import secrets
-import signal
 import sys
 import threading
 import time
-import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -35,14 +32,12 @@ from komorebi.errors import (
     ChannelError,
     GridTimeout,
     KernelSizeError,
-    KomorebiError,
     L1BudgetError,
     ProgramError,
     SlowCodeError,
     StartError,
 )
 from komorebi.islands import graph as islands
-from komorebi.islands import session as island_session
 from komorebi.program import overlay
 from komorebi.program import several as programs
 from komorebi.program import thread as thread_module
@@ -57,6 +52,11 @@ from komorebi.program.description import (
     messages_header,
     unguarded,
 )
+from komorebi.program.several import (  # COMPUTE_FLAGS: read here by the compiler
+    COMPUTE_FLAGS,  # noqa: F401
+    compute_config,
+)
+from komorebi.session import process, sizes
 from komorebi.session import state as device_state
 from komorebi.session.run import Run
 
@@ -73,30 +73,16 @@ X280_MHZ = 1350
 X280_FALLBACK_MHZ = 1000
 NO_PLL_SOLUTION = "no PLL solution for"
 STATE_DUMP_LINES = 8  # 64-byte lines of the kernel's state logged after a failure
-CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
-CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
-CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 PROBE_GAP_S = 0.02  # core 0's pass marker moves every 1,024 passes (about 33 us)
 ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop flag, before the close
 REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
 REGION_CHUNK = 2 << 20  # of this size, with a log line each
-# The runtime's timeout on its waits for the cores, the one at device close included;
-# unset, it is 0, which means no timeout. Read when the process first opens a device.
-OP_TIMEOUT = "TT_METAL_OPERATION_TIMEOUT_SECONDS"
-OP_TIMEOUT_DEFAULT = 30.0  # the runtime's own example value
-# A Blackhole Tensix core's L1 and where the runtime's kernel buffer starts in it
-# (MEM_L1_SIZE, MEM_MAP_END); the buffer ends where the allocator's L1 base begins.
-L1_BYTES = 1536 * 1024
-KERNEL_BUFFER_BASE = 41088
-KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B)
-KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
 GROUP_DEFINE = "-DKM_PROGRAM_GROUP"  # a group's runtime kernels are built apart
 GROUP_LINE = re.compile(r"^#define KM_PROGRAM_GROUP (\d+)$", re.M)
 # a name the compiler gives a source file's own symbol (trisck.cc.4c8b3e06): the
 # build's hash, which no part refers to
 UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
 TAKEN_ROW = "L1 held by the session (its L1 tensors, runs not stopped)"
-KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 # A taken branch to code at or above this L1 address costs about 4 cycles more: the
 # kernels and the slots go below it, the circular buffers above them.
 L1_FAST_CODE = 1 << 20
@@ -108,159 +94,6 @@ DRAM_PIECE_ALIGN = 64  # a piece of a DRAM page written apart starts this aligne
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 WORDS_SPIN_S = 300e-6  # a transfer's words looked at without a pause this long
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
-SPLIT_ISLANDS_MAX = 4  # a card split into islands: a dispatcher an X280 cluster
-
-
-# The runtime's ComputeConfigDescriptor fields that are flags.
-COMPUTE_FLAGS = (
-    "fp32_dest_acc_en",
-    "dst_full_sync_en",
-    "bfp8_pack_precise",
-    "math_approx_mode",
-    "enable_trisc2_rvv",
-)
-
-
-def compute_config(options):
-    """The compute kernel's options for the native Launch from Program.compute: the
-    runtime's ComputeConfigDescriptor fields (ProgramError names an unknown one);
-    `math_fidelity` a MathFidelity name, `unpack_to_dest_mode` an UnpackToDestMode
-    name for every circular buffer, or {cb: name} with the others Default."""
-    options = dict(options)
-    unpack = options.pop("unpack_to_dest_mode", None)
-    fidelity = options.pop("math_fidelity", None)
-    for name in options:
-        if name not in COMPUTE_FLAGS:
-            raise ProgramError(
-                f"compute option {name!r}: no such ComputeConfigDescriptor field"
-            )
-    config = {
-        "math_fidelity": fidelity,
-        "flags": [(name, bool(value)) for name, value in options.items()],
-    }
-    if unpack is not None:
-        by_cb = (
-            unpack if isinstance(unpack, dict) else dict.fromkeys(range(CBS), unpack)
-        )
-        modes = ["Default"] * CBS
-        for cb, name in by_cb.items():
-            if not 0 <= cb < CBS:
-                raise ProgramError(
-                    f"unpack_to_dest_mode: buffer {cb} is outside 0..{CBS - 1}"
-                )
-            modes[cb] = name
-        config["unpack_to_dest_mode"] = modes
-    return config
-
-
-# sessions holding a device they opened or an X280 runtime; weak, so that the exit
-# hooks never keep a session alive
-_LIVE = weakref.WeakSet()
-_HOOKED = []  # [True] once the exit hooks are installed
-# What this process opened: "mesh" (cards as a fabric mesh), "alone" (a card by itself)
-_OPENED = {"mesh": [], "alone": []}
-
-
-def refuse_reopen(kind, cards):
-    """Refuses opening `cards` as `kind` ("mesh" or "alone") in a process that already
-    opened the other kind; then records the attempt (see the hazards page)."""
-    other = "alone" if kind == "mesh" else "mesh"
-    if _OPENED[other]:
-        was = ",".join(str(card) for card in _OPENED[other][0])
-        now = ",".join(str(card) for card in cards)
-        said = {"mesh": f"cards {was} as a fabric mesh", "alone": f"card {was} alone"}
-        raise KomorebiError(
-            f"{'cards ' + now + ' as a mesh' if kind == 'mesh' else 'card ' + now}: "
-            f"this process opened {said[other]}; tt-metal would re-initialise its "
-            "context over every card the process holds, which left both cards' "
-            "Ethernet cores inactive until a board reset: open it in a new process"
-        )
-    _OPENED[kind].append(tuple(cards))
-
-
-def _release_all(why, close_device=True):
-    """The exit hooks' clean-up: every live session's run is stopped through the X280
-    runtime (with a timeout), then the device it opened is closed."""
-    for session in list(_LIVE):
-        session._release(why, close_device)
-
-
-def _on_sigterm(signum, frame):
-    """SIGTERM: the runtimes are closed while the devices are open, then the process
-    exits through its `with` blocks and the exit hook, which close the devices."""
-    _release_all("SIGTERM", close_device=False)
-    raise SystemExit(128 + signum)
-
-
-def _hook_exit():
-    """atexit for every session; SIGTERM too when the process has no handler of its
-    own (signals are set from the main thread only)."""
-    if _HOOKED:
-        return
-    _HOOKED.append(True)
-    atexit.register(_release_all, "exit")
-    if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL:
-        with contextlib.suppress(ValueError):  # not the main thread
-            signal.signal(signal.SIGTERM, _on_sigterm)
-
-
-def _command(pid):
-    """A process's command line, shortened, or "?"."""
-    try:
-        words = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except OSError:
-        return "?"
-    return " ".join(word.decode(errors="replace") for word in words if word)[:160]
-
-
-def aiclk_mhz(card=None):
-    """The Tensix clock of the card this process uses, from the driver (MHz)."""
-    card = card if card is not None else visible_card()
-    path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
-    return int(path.read_text().split()[0])
-
-
-def exit_timeout(environ, log):
-    """Sets OP_TIMEOUT to its default in `environ` when unset or empty and logs it; a
-    value already there is kept. The timeout in seconds (0: none; None: not a number).
-    """
-    value = environ.get(OP_TIMEOUT, "")
-    if value.strip():
-        try:
-            return max(float(value), 0.0)
-        except ValueError:
-            return None  # the runtime rejects it at the open
-    environ[OP_TIMEOUT] = f"{OP_TIMEOUT_DEFAULT:g}"
-    log(f"{OP_TIMEOUT} unset: set to {OP_TIMEOUT_DEFAULT:g} s (the exit's timeout)")
-    return OP_TIMEOUT_DEFAULT
-
-
-def exit_wait(environ=None):
-    """How long the device's close waits for the cores, as a phrase."""
-    value = (os.environ if environ is None else environ).get(OP_TIMEOUT, "")
-    try:
-        seconds = float(value)
-    except ValueError:
-        seconds = 0.0
-    return f"up to {seconds:g} s" if seconds > 0 else "without a timeout"
-
-
-def worker_l1_size(kernel_bytes):
-    """The runtime's worker_l1_size for a kernel buffer of `kernel_bytes` (None: the
-    default, nothing passed); a size the runtime would not give exactly is rejected."""
-    if kernel_bytes is None:
-        return None
-    if (
-        not isinstance(kernel_bytes, int)
-        or kernel_bytes % KERNEL_BUFFER_ALIGN
-        or not KERNEL_BUFFER_ALIGN <= kernel_bytes <= KERNEL_BUFFER_MAX
-    ):
-        raise ValueError(
-            f"kernel_bytes={kernel_bytes!r}: a multiple of {KERNEL_BUFFER_ALIGN} from "
-            f"{KERNEL_BUFFER_ALIGN} to {KERNEL_BUFFER_MAX} (default "
-            f"{KERNEL_BUFFER_DEFAULT})"
-        )
-    return L1_BYTES - KERNEL_BUFFER_BASE - kernel_bytes
 
 
 def kernel_sizes(build):
@@ -317,48 +150,6 @@ LINK_DEFINES = (
 )
 # Every define the island load gives a program; a plan's runtime kernels get them.
 ISLAND_DEFINES = (*LINK_DEFINES, "KM_WIRE")
-
-
-def far_bytes(defines):
-    """The link cores' places for puts between islands past the next (KM_FAR_PUTS),
-    after the put queue (km_abi.h KM_FAR_BYTES); 0 without."""
-    if not defines.get("KM_FAR_PUTS"):
-        return 0
-    h = abi.headers()
-    n, lines = (
-        int(defines.get("KM_ISLANDS_MAX", h["KM_ISLANDS_MAX"])),
-        h["KM_FAR_LINES"],
-    )
-    return -(-(12 + 4 * lines) * n // 64) * 64 + 64 * lines * n
-
-
-def deliver_bytes(defines):
-    """The link cores' places for deliveries (KM_DELIVER), after the forward rooms
-    (km_abi.h KM_DELIVER_BYTES); 0 without."""
-    if not defines.get("KM_DELIVER"):
-        return 0
-    n, slots, size = (
-        int(defines[name])
-        for name in ("KM_DELIVER_ISLANDS", "KM_DELIVER_SLOTS", "KM_DELIVER_SLOT_BYTES")
-    )
-    return -(-(12 + 4 * slots) * n // 64) * 64 + 64 + 64 * slots * n + size * slots * n
-
-
-def forward_bytes(defines):
-    """A link core's forward rooms (KM_FORWARD), after its far places (km_abi.h
-    KM_FORWARD_BYTES): a room a writer core and CPU and a hop level; 0 without."""
-    if not defines.get("KM_FORWARD"):
-        return 0
-    h = abi.headers()
-    cpus = int(defines.get("KM_FORWARD_CPUS", 1))
-    rooms = (
-        int(defines.get("KM_FORWARD_CORES", 3))
-        * cpus
-        * int(defines.get("KM_FORWARD_LEVELS", 1))
-    )
-    headers = -(-(32 * rooms + 4 * 2 * rooms + 4) // 64) * 64
-    slots = rooms * h["KM_FORWARD_SLOTS"] * h["KM_FORWARD_SLOT_BYTES"]
-    return headers + 2 * 0x80 * cpus + slots
 
 
 def _link_kernels(island, program, split, cores):
@@ -541,38 +332,6 @@ def slot_index(used):
     return max(free)
 
 
-def visible_card():
-    return int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
-
-
-def chip_holder(card, path=None):
-    """The PID of another live process that holds `card`'s chip lock, else None. Read
-    from UMD's lock file (a pthread mutex, a 64-bit word, the owner's TID and PID)
-    without taking it; UMD keeps the lock from a process's first open to its exit."""
-    if prebuild.active():  # a mock: no chip to hold
-        return None
-    # the file's mtime cannot date the PID: UMD writes the lock through a mapping,
-    # which leaves the mtime unchanged
-    path = Path(path or CHIP_LOCK.format(card=card))
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if len(data) != CHIP_LOCK_BYTES:
-        return None
-    pid = int.from_bytes(data[CHIP_LOCK_PID : CHIP_LOCK_PID + 4], "little", signed=True)
-    if pid <= 0 or pid == os.getpid():
-        return None
-    try:  # the owner holds it only while it maps the file: a zombie, a reused PID
-        # or a process that died holding the lock does not
-        with open(f"/proc/{pid}/maps") as maps:
-            return pid if any(str(path) in line for line in maps) else None
-    except (FileNotFoundError, ProcessLookupError):
-        return None  # the process ended
-    except PermissionError:
-        return pid  # alive, another user's
-
-
 def _state_page():
     """The page of the dispatcher's state area (_state_area): KMD_STATE_BYTES."""
     return abi.headers()["KMD_STATE_BYTES"] // 4 * 4
@@ -585,7 +344,7 @@ def _state_area(session):
     # each bank holds what the kernel keeps cached and flushes (KMD_STATE_CACHED)
     if STATE_PAGES // DRAM_BANKS * _state_page() < abi_headers["KMD_STATE_CACHED"]:
         raise StartError(f"{STATE_PAGES} state pages: under KMD_STATE_CACHED a bank")
-    rows = _words(session, np.zeros((STATE_PAGES, _state_page() // 4)))
+    rows = programs.words_tensor(session, np.zeros((STATE_PAGES, _state_page() // 4)))
     address = rows.address
     if address <= IPI_ACK_DDR < address + STATE_PAGES * abi_headers["KMD_STATE_BYTES"]:
         raise StartError(f"the kernel state at {address:#x} covers the X280 IPI word")
@@ -637,13 +396,6 @@ def go_layout(panels, columns, cores, abi_headers=None):
         | split << abi_headers["KM_ISLAND_GO_SPLIT"]
         | abi_headers["KM_ISLAND_GO_ON"]
     )
-
-
-def _words(session, rows, shard_grid=None):
-    """A row-major uint32 tensor of the rows (one page a row): in DRAM, or one row
-    in the L1 of each core of `shard_grid`."""
-    data = np.asarray(rows, dtype=np.uint64).astype(np.uint32)
-    return session.tensor(data, "uint32", shard_grid=shard_grid)
 
 
 def _control_bytes(most=0):
@@ -815,22 +567,10 @@ def _read_uint32(tensor, device=None, module=None):
 
 
 class Session:
-    """One card: `card` selects it, `device` uses an open one (`cards`, or `islands` 2
-    to 4 beside `card`: an IslandSession); `grid_timeout` bounds every grid wait. As a
-    context manager it stops a loaded run at the exit (through the runtime on an
-    exception) and closes the device it opened; so do the process's exit and SIGTERM."""
-
-    def __new__(cls, *args, cards=None, islands=None, **options):
-        if cards is not None:
-            if args or "card" in options or "device" in options:
-                raise ValueError("cards= is given alone, without card or device")
-            return island_session.IslandSession(cards, islands=islands, **options)
-        if islands is not None:
-            if args or "card" not in options or "device" in options:
-                raise ValueError("islands= is given with card=, without device")
-            card = options.pop("card")
-            return island_session.IslandSession([card], islands=islands, **options)
-        return super().__new__(cls)
+    """One card: `card` selects it, `device` uses an open one; `grid_timeout` bounds
+    every grid wait. As a context manager it stops a loaded run at the exit (through
+    the runtime on an exception) and closes the device it opened; so do the process's
+    exit and SIGTERM. km.Session (komorebi.sessions) gives islands an IslandSession."""
 
     def __init__(
         self,
@@ -859,7 +599,7 @@ class Session:
         self._dram = extents.Registry()  # its DRAM tensors: KM_GUARD's page bounds
         self.page_bounds = extents.MOST  # the most a load's list holds (0: none)
         self.slow_code = slow_code  # slots may end above L1_FAST_CODE
-        self._worker_l1 = worker_l1_size(kernel_bytes)
+        self._worker_l1 = sizes.worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
             raise ValueError("kernel_bytes is set when the session opens the device")
         self._memory = None  # the remembered kernel buffer (komorebi.device.remembered)
@@ -869,12 +609,14 @@ class Session:
         self._built_before = []  # (found, compiled) built before the next load
         if kernel_bytes is None and device is None:
             self._memory = remembered.Memory(self.log, expect)
-            if self._memory.size and self._memory.size <= KERNEL_BUFFER_MAX:
-                self._worker_l1 = worker_l1_size(self._memory.size)
+            if self._memory.size and self._memory.size <= sizes.KERNEL_BUFFER_MAX:
+                self._worker_l1 = sizes.worker_l1_size(self._memory.size)
         self.run = None
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
         self.link_plan = None  # Session.load's `link`
+        self.link_plans = None  # per island LinkPlan of a load over a split card
+        self.packet = 0  # an island session's link packet bytes (0: none)
         self.transfer_chunk = None  # a larger transfer chunk asked for, where it fits
         self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
         # the owner's L1 on every core of this session's card, kept at the top (an
@@ -917,25 +659,29 @@ class Session:
                 raise ValueError(f"card {self.card} is not visible ({visible})")
             os.environ["TT_VISIBLE_DEVICES"] = str(self.card)
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
-        if exit_timeout(os.environ, self.log) == 0:
-            self.log(f"{OP_TIMEOUT}=0: an exit after a grid that did not return hangs")
-        card = self.card if self.card is not None else visible_card()
-        holder = chip_holder(card)
+        if process.exit_timeout(os.environ, self.log) == 0:
+            self.log(
+                f"{process.OP_TIMEOUT}=0: an exit after a grid that did not return "
+                "hangs"
+            )
+        card = self.card if self.card is not None else process.visible_card()
+        holder = process.chip_holder(card)
         if holder is not None:
             raise CardBusy(
-                f"card {card} is held by process {holder} ({_command(holder)}): "
-                "an open would wait until that process exits",
+                f"card {card} is held by process {holder} "
+                f"({process._command(holder)}): an open would wait until that process "
+                "exits",
                 pid=holder,
             )
-        refuse_reopen("alone", [card])
+        process.refuse_reopen("alone", [card])
         self._module = self._module or native.load_module(self.tree)
         if self._region is None:
             self.device = self._module.Device(self._worker_l1)  # program cache off
         else:
             with _output_seen() as seen:  # the driver's warning, if it gives one
                 self.device = self._module.Device(self._worker_l1)
-        _hook_exit()
-        _LIVE.add(self)
+        process._hook_exit()
+        process._LIVE.add(self)
         self._own_device = True
         if self._region is not None:
             self._open_channel(b"".join(seen).decode(errors="replace"))
@@ -995,15 +741,23 @@ class Session:
         if self.stuck:
             self.log(
                 "device not closed by the session: the grid did not return; at the "
-                f"process's exit the runtime waits {exit_wait()} for the cores, then "
-                "puts them in reset (a stuck thread recovers at the next open, a "
-                "compute unit left running does not)"
+                f"process's exit the runtime waits {process.exit_wait()} for the "
+                "cores, then puts them in reset (a stuck thread recovers at the next "
+                "open, a compute unit left running does not)"
             )
             return
         if self.device is not None and self._own_device:
             self.device.close()
             self.device = None
-        _LIVE.discard(self)
+        process._LIVE.discard(self)
+
+    def _reopen_device(self, worker_l1):
+        """Closes the card and opens it again with the runtime's `worker_l1` (a new
+        kernel buffer, kernel_buffer.reopen); the channel's mapping goes with it."""
+        self.channel = None
+        self._close_device()
+        self._worker_l1 = worker_l1
+        self.open()
 
     def _release(self, why, close_device):
         """The exit hooks' timed clean-up of this session: closes the X280 runtime of
@@ -1410,7 +1164,7 @@ class Session:
             tensor.address, page, first, pages, 0, region.words, region.bytes, nonce,
             buffer, chunk,
         )  # fmt: skip
-        channel_module.check(transfer, count, L1_BYTES)
+        channel_module.check(transfer, count, sizes.L1_BYTES)
         words = channel_module.words_view(self.channel, region, count)
         words[:] = 0
         want = channel_module.sequence_words(nonce, pages, page, count)
@@ -1435,7 +1189,7 @@ class Session:
                 tensor.address, page, first, pages, 0, region.words, region.bytes,
                 secrets.randbits(32), 0, h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, pages, L1_BYTES)
+            channel_module.check(transfer, pages, sizes.L1_BYTES)
             words = channel_module.words_view(self.channel, region, pages)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, pages, page, pages)
@@ -1452,7 +1206,7 @@ class Session:
                 region.bytes, secrets.randbits(32), run.backend.transfer.address,
                 h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, count, L1_BYTES)
+            channel_module.check(transfer, count, sizes.L1_BYTES)
             words = channel_module.words_view(self.channel, region, count)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, count, page, count)
@@ -1627,7 +1381,7 @@ class Session:
             return run
         finally:
             self._kept.loading = loading
-        kernel_buffer.reopen(self, size, worker_l1_size(size), why)
+        kernel_buffer.reopen(self, size, sizes.worker_l1_size(size), why)
         self._kept.loading = True
         try:
             run = self._try_load(program, *args, **options)
@@ -1683,8 +1437,8 @@ class Session:
                 "it did not open its card"
                 if not self._own_device or self.island is not None
                 else (
-                    f"{size} B is over the most, {KERNEL_BUFFER_MAX} B"
-                    if size > KERNEL_BUFFER_MAX
+                    f"{size} B is over the most, {sizes.KERNEL_BUFFER_MAX} B"
+                    if size > sizes.KERNEL_BUFFER_MAX
                     else self._kept.refused()
                 )
             )
@@ -1788,14 +1542,14 @@ class Session:
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
             sources = programs.runtime_kernels()
-        mhz = prebuild.MHZ if prebuild.active() else aiclk_mhz(self.card)
+        mhz = prebuild.MHZ if prebuild.active() else process.aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
         regions = _bank_regions(self, owner, works)
         dispatch = self._open_dispatch(module)
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
-        _hook_exit()
-        _LIVE.add(self)
+        process._hook_exit()
+        process._LIVE.add(self)
         self._starting = dispatch
         dispatch.settle_microseconds = settle_microseconds
         backend, launched = None, False
@@ -1872,9 +1626,9 @@ class Session:
             )
             if build[-1]:
                 self._log_built(descriptor, built_at, program)
-                refused = self._resize(program.sizes.total or KERNEL_BUFFER_MAX)
+                refused = self._resize(program.sizes.total or sizes.KERNEL_BUFFER_MAX)
                 raise KernelSizeError(
-                    program.name, program.sizes, KERNEL_BUFFER_MAX, refused
+                    program.name, program.sizes, sizes.KERNEL_BUFFER_MAX, refused
                 )
             if insn_check.enabled():
                 insn_check.check_kernels(
@@ -2045,7 +1799,7 @@ class Session:
                 f"{program.name}: X280 threads, ports and ranks need the work "
                 "clusters, which a split card's dispatchers take"
             )
-        rows = _split_rows(graph, self.grid)
+        rows = sizes._split_rows(graph, self.grid)
         self.link_plans, self.link_plan, self.link_area = links, None, 0
         self.tensor_table = tensors
         image = Path(image) if image else native.image_path(self.tree)
@@ -2054,11 +1808,11 @@ class Session:
         module = self._module = native.load_module(self.tree)
         depth = depth or program.depth
         sources = program.sources()
-        mhz = prebuild.MHZ if prebuild.active() else aiclk_mhz(self.card)
+        mhz = prebuild.MHZ if prebuild.active() else process.aiclk_mhz(self.card)
         dispatches = _Dispatches([self._open_dispatch(module)])
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
-        _hook_exit()
-        _LIVE.add(self)
+        process._hook_exit()
+        process._LIVE.add(self)
         self._starting = dispatches
         backends, launched = [], False
         try:
@@ -2129,7 +1883,9 @@ class Session:
             program.sizes = kernel_sizes(build)
             self._last_total = program.sizes.total
             if build[-1]:
-                raise KernelSizeError(program.name, program.sizes, KERNEL_BUFFER_MAX)
+                raise KernelSizeError(
+                    program.name, program.sizes, sizes.KERNEL_BUFFER_MAX
+                )
             if insn_check.enabled():
                 insn_check.check_kernels(
                     program.name,
@@ -2232,32 +1988,6 @@ def _island_word(island):
         return 0
     graph, here = island
     return graph.first(here) | graph.count(here) << 16
-
-
-def _split_rows(graph, grid):
-    """[(first row, rows)] of each island of a card split into islands: its cores whole
-    rows of the grid in order, its ranks then its link cores (the dispatcher's
-    mapping), at most one island an X280 cluster."""
-    columns, rows = grid
-    out, at = [], 0
-    if not 2 <= len(graph.islands) <= SPLIT_ISLANDS_MAX:
-        raise ValueError(f"{len(graph.islands)} islands: 2 to {SPLIT_ISLANDS_MAX}")
-    for island, ranks in enumerate(graph.rank_cores):
-        cores = ranks + graph.link_cores[island]
-        if (
-            cores != tuple(range(at, at + len(cores)))
-            or at % columns
-            or len(cores) % columns
-        ):
-            raise ValueError(
-                f"island {island}: its ranks, then its link cores, are not whole rows "
-                f"of the {columns} x {rows} grid after the island before it"
-            )
-        out.append((at // columns, len(cores) // columns))
-        at += len(cores)
-    if at != columns * rows:
-        raise ValueError(f"the islands hold {at} cores of {columns * rows}")
-    return out
 
 
 class _Dispatches(list):
@@ -2371,14 +2101,6 @@ def _loaded_own_kernels(placed):
         for each in program.overlays.values()
         for kernel in each.sources
     }
-
-
-def _program_cbs(buffers):
-    """(index, format, page bytes, pages) of a program's buffers."""
-    return [
-        (buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
-        for buffer in buffers
-    ]
 
 
 def _peers(session, dispatch, images):
@@ -2577,7 +2299,7 @@ class _Regions:
                 mine[placement.page : placement.page + placement.pages] = _pages(
                     data, placement.pages
                 )
-        self.tensor = _words(session, rows)
+        self.tensor = programs.words_tensor(session, rows)
         self.base = self.tensor.address
         if (
             self.base
@@ -2701,6 +2423,13 @@ class _Backend:
         # cores returned) of the one launch; `rows` this backend's island's
         self.split = None
         self.rows = None
+        # a switching run's added programs, set by program.addon.program.pad_reserve
+        self.switch_pad = None  # the pad's buffer index
+        self.switch_loaded = 0  # programs loaded
+        self.added_own = set()  # own overlay numbers added classes took
+        self.added_entry = False  # the entry command's code is in the service overlay
+        self.switch_args = False  # the load command's row read is built
+        self.switch_reserve = 0  # L1 reserved for added programs
 
     def block(self, data, place=None, at=None):
         """A command's block (uint8 data) in DRAM: a copy at the same address of every
@@ -2744,7 +2473,9 @@ class _Backend:
         abi_headers = abi.headers()
         words = (abi_headers["KM_CONTROL_BYTES"] + area_bytes + CONTROL_ALIGN) // 4
         words += 0 if bounds is None else bounds[0].size
-        self.control = _words(self.session, np.zeros((cores, words)), grid)
+        self.control = programs.words_tensor(
+            self.session, np.zeros((cores, words)), grid
+        )
         base = self.control.address
         self.control_addr = (base + CONTROL_ALIGN - 1) // CONTROL_ALIGN * CONTROL_ALIGN
         self.control_offset = (self.control_addr - base) // 4
@@ -2799,15 +2530,15 @@ class _Backend:
             ]
         at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
         line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
-        plan = getattr(self.session, "link_plan", None)
-        plans = getattr(self.session, "link_plans", None) if self.split else None
+        plan = self.session.link_plan
+        plans = self.session.link_plans if self.split else None
         # the grid's panels: a whole island's release multicast (km::team_go)
         panels = self.session.nocs().panels if len(graph.islands) > 1 else None
         for here, base, count in parts:
             plan = plans[here] if plans else plan
             area = plan.area if plans else self.session.link_area
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
-            header += [base, getattr(self.session, "packet", 0)]
+            header += [base, self.session.packet]
             header += [0]  # KM_ISLAND_LINKS: unused (the relay's, retired)
             mine = self.control_rows[base : base + count]
             if getattr(plan, "table", 0):  # the table in L1, the ports in the area
@@ -2873,7 +2604,9 @@ class _Backend:
         if x280 is not None:
             constants, _ = messages_header()
             words = constants["kMessagesInbox"] * messages.message_bytes // 4
-            self.inbox = _words(self.session, np.zeros((cores, words)), grid)
+            self.inbox = programs.words_tensor(
+                self.session, np.zeros((cores, words)), grid
+            )
             self.io.append(self.inbox)
             x280 = x280 | {"inbox": self.inbox.address}
         abi_headers = abi.headers()
@@ -2896,14 +2629,14 @@ class _Backend:
             rows = messages.direct_rows(cores)
             if self.session.island is not None or self.split is not None:
                 rows = self._direct_islands(program, cores, grid[0])
-            self.direct = _words(self.session, rows, grid)
+            self.direct = programs.words_tensor(self.session, rows, grid)
             self.io.append(self.direct)
             direct = self.direct.address
         stamps = 0
         if messages.stamps:  # km_messages.hpp kMessagesStamp*: cycles and counts
             words = messages_header()[0]["kMessagesStampWords"]
             zeros = np.zeros((cores, words), np.uint32)
-            self.stamps = _words(self.session, zeros, grid)
+            self.stamps = programs.words_tensor(self.session, zeros, grid)
             self.io.append(self.stamps)
             stamps = self.stamps.address
         reader_writer = messages.args(queue.address, lines, body, x280, direct, stamps)
@@ -2957,7 +2690,7 @@ class _Backend:
         control = self._control_blocks(cores, grid, port_lines, self.area_bytes, bounds)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
-        cores_tensor = _words(self.session, table)
+        cores_tensor = programs.words_tensor(self.session, table)
         self.io = [self.control, cores_tensor]
         session = self.session
         if session.channel is not None or program.threads or session._mock_channel:
@@ -2965,7 +2698,7 @@ class _Backend:
             chunk = self._transfer_chunk(program, placed, cores)
             self.transfer = self._transfer_buffer(cores, grid, chunk)
         if self.trace_cap:
-            self.trace_tensor = _words(
+            self.trace_tensor = programs.words_tensor(
                 self.session,
                 np.zeros((cores, self.trace_cap * abi_headers["kTraceWords"])),
             )
@@ -3195,9 +2928,9 @@ class _Backend:
             )
         size = (
             h["KM_QUEUE_BYTES"]
-            + far_bytes(program.defines)
-            + forward_bytes(program.defines)
-            + deliver_bytes(program.defines)
+            + sizes.far_bytes(program.defines)
+            + sizes.forward_bytes(program.defines)
+            + sizes.deliver_bytes(program.defines)
             + 2 * chunk
         )
         launch.cb(rects, index, "uint32", size, size)
@@ -3223,13 +2956,13 @@ class _Backend:
             - self._held_bytes()
             - apart
             - abi.headers()["KM_QUEUE_BYTES"]
-            - far_bytes(program.defines)
-            - forward_bytes(program.defines)
-            - deliver_bytes(program.defines)
+            - sizes.far_bytes(program.defines)
+            - sizes.forward_bytes(program.defines)
+            - sizes.deliver_bytes(program.defines)
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
-        least = link_chunk_least(getattr(self.session, "packet", 0) or 0)
+        least = link_chunk_least(self.session.packet or 0)
         return chunk if chunk >= least else 0  # else no ring: the transfer chunk's
 
     def _transfer_buffer(self, cores, grid, chunk):
@@ -3265,7 +2998,7 @@ class _Backend:
 
     def _cbs(self, buffers):
         """(index, format, page bytes, pages) of `buffers` and the runtime's own."""
-        return _program_cbs(buffers) + self._runtime_cbs()
+        return programs.program_cbs(buffers) + self._runtime_cbs()
 
     def _runtime_cbs(self):
         abi_headers = abi.headers()
@@ -3287,7 +3020,7 @@ class _Backend:
         for program in placed.programs:
             # a group's buffers are launched in index order (joint_buffers)
             ordered = sorted(program.buffers, key=lambda buffer: buffer.index)
-            layout, last = programs.buffer_layout(_program_cbs(ordered), start)
+            layout, last = programs.buffer_layout(programs.program_cbs(ordered), start)
             self.switch_layouts[program.program_field] = layout
             end = max(end, last)
         self.switch_base = l1_bytes - kernel_free
@@ -3322,7 +3055,7 @@ class _Backend:
             cores = programs.rectangles(group.first, group.count, grid[0])
             cbs = self._cbs(buffers)
             if placed.switch:
-                cbs = self._runtime_cbs() + _program_cbs(buffers)
+                cbs = self._runtime_cbs() + programs.program_cbs(buffers)
                 _, end = programs.buffer_layout(cbs, self.switch_base)
                 pad = reserve - -(-end // align) * align
                 if pad > 0:  # one index on every group: an add resizes it
@@ -3345,9 +3078,9 @@ class _Backend:
                     ("KM_PROGRAM_SWITCH", "1"),
                     *queue,
                 ]
-                if getattr(self, "switch_args", False):  # the row read: pay for use
+                if self.switch_args:  # the row read: pay for use
                     defines.append(("KM_ADDED_ARGS", "1"))
-                if getattr(self, "added_entry", False):  # own overlays named ahead
+                if self.added_entry:  # own overlays named ahead
                     defines.append(("KM_ADDED_ENTRY", "1"))
             defines += island
             defines += self._one_island()
@@ -3436,7 +3169,7 @@ class _Backend:
     def _slot_buffer(self, descriptor, slot_bytes):
         """Every core's slots as the launch's first circular buffer, at the L1 base,
         so they lie below 1 MB and the buffers above them; returns their address."""
-        base = L1_BYTES - self.session.l1()[1]
+        base = sizes.L1_BYTES - self.session.l1()[1]
         address, size, _ = slot_area(
             base, slot_bytes, self.cb_indices, self.session.slow_code
         )
@@ -3489,7 +3222,7 @@ class _Backend:
             )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed = overlay.dram_rows(built, reserve)
-        image = _words(session, image_rows)
+        image = programs.words_tensor(session, image_rows)
         slot_base = self._slot_buffer(descriptor, built.slot_bytes)
         self.io.append(image)
         self.room = added.room(
@@ -3554,7 +3287,7 @@ class _Backend:
         empty = bytes(c["kRecordBytes"])
         records |= {(field, "record"): empty for field in spare}
         rows, placed_records = overlay.dram_rows(overlay.Built(records, {}))
-        tensor = _words(self.session, rows)
+        tensor = programs.words_tensor(self.session, rows)
         self.io.append(tensor)
         refused = None
         differ = sorted(
@@ -3709,7 +3442,7 @@ class _Backend:
             width = max(len(image) for image in images.values())
             reserve = max(reserve, added_program.ahead_parts(placed) * width)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
-        image = _words(session, image_rows)
+        image = programs.words_tensor(session, image_rows)
         slot_base = self._slot_buffer(
             descriptor, max(made.slot_bytes for made in built)
         )
@@ -3879,7 +3612,8 @@ class _Backend:
             raise GridTimeout(
                 f"the grid's kernels did not return within {timeout} s after the stop. "
                 "The session does not close the device; at the process's exit the "
-                f"runtime waits {exit_wait()} for the cores, then puts them in reset. "
+                f"runtime waits {process.exit_wait()} for the cores, then puts them in "
+                "reset. "
                 "A thread that is only stuck is recovered by the next open; a kernel "
                 "that left a compute unit running is not, and if the next open fails "
                 "the card needs a reset"
