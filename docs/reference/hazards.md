@@ -1130,6 +1130,23 @@ an address built without these names, is not seen. On one island nothing is look
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 
+### A class's group across an island's edge
+
+**The hazard.** `self.x` and `self.y` are a core's place in its own island's rectangle,
+so on a group that spans two islands the second island's ranks repeat the first's
+places: two cores write the same page and another stays unwritten (120 ranks across the
+edge wrote 118 pages, 2026-11-16).
+
+**The rule.** Submit a handler that reads `self.x` or `self.y` on one island's ranks;
+start a reduce in groups of S where an island's first rank begins a group.
+
+**The guard.** Refused at submit, naming the handler's line: a handler that reads
+`self.x` or `self.y` on a group past this island's ranks, a reduce group of S across
+the edge, and a broadcast whose group is not one island's rectangle. `self.rank` and
+`self.size` are the group's, so a class that works by them is exact across it.
+
+Described in [Islands, classes on islands](islands.md#classes-on-islands).
+
 ### A put that is never waited for
 
 **The hazard.** `km::put_bytes` of a page another island holds appends a record to the
