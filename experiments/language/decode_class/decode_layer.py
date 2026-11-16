@@ -152,7 +152,7 @@ layer::pad(at, cache_values);
 # attend's root, compute: the token's key and value tiles of qkv into `again`.
 TOKEN = """
 #include "../../../../../experiments/language/decode_class/layer.hpp"
-layer::token_copy<scale>(compute, token_key_buffer, token_value_buffer, at, again);
+layer::token_copy<scale>(compute, token_key_buffer, token_value_buffer, HEAD, again);
 """
 
 # attend, compute: the scores, each query head's state (maximum, sum, P V).
@@ -318,18 +318,18 @@ class DecodeLayer(
         # token's key and value, for the append
         if self.rank % self.O_GROUP == 0:
             # blocks of qkv's shapes, so they share its read buffers (no index is
-            # left): the key at tile 0 of a W_BLOCK, the value at `at` of a WIDTH
+            # left): the key at tile 0 of a W_BLOCK, the value at HEAD of a WIDTH
             key = self.Q_TILES + head * self.HEAD
-            value = key + self.KV_TILES
-            last = min(value, self.Q_TILES + 2 * self.KV_TILES - self.WIDTH)
-            at = value - last
+            value = key + self.KV_TILES - self.HEAD  # base + step x head: a chain's
             token_key = km.Stream(
                 qkv.tiles[0:1, key : key + self.W_BLOCK], block=self.W_BLOCK
             )
             token_value = km.Stream(
-                qkv.tiles[0:1, last : last + self.WIDTH], block=self.WIDTH
+                qkv.tiles[0:1, value : value + self.WIDTH], block=self.WIDTH
             )
-            km.cxx(TOKEN, takes=[token_key, token_value, at, self.scale, self.again])
+            km.cxx(
+                TOKEN, takes=[token_key, token_value, self.HEAD, self.scale, self.again]
+            )
         km.cxx(
             ATTEND_KEYS,
             takes=[keys, table, rank, head, position, live, self.O_GROUP,
@@ -508,3 +508,69 @@ class DecodeLayer(
                 takes=[whole, residual, out, part, self.WIDTH, self.y,
                        self.head_tiles],
             )  # fmt: skip
+
+
+PLANS = md.plans(MODEL, halves=(md.DEPTH, 1))  # the hand's, a command a step
+QKV_CORES, O_CORES, GATE_UP_CORES, DOWN_CORES = (
+    PLANS[md.plan_of(MODEL, name)].cores() for name in GROUPS
+)
+
+
+class DecodeLayerChain(DecodeLayer):
+    """The five handlers as overlays (the resident kernels small) with the chain's
+    walk: the layer as one chain command (run_layer.py --chain)."""
+
+    qkv = km.handler(overlay=True)(DecodeLayer.qkv.function)
+    attend = km.handler(overlay=True)(DecodeLayer.attend.function)
+    o = km.handler(overlay=True)(DecodeLayer.o.function)
+    gate_up = km.handler(overlay=True)(DecodeLayer.gate_up.function)
+    down = km.handler(overlay=True)(DecodeLayer.down.function)
+
+    @km.chain
+    def layer(
+        self,
+        x,
+        w_qkv,
+        qkv,
+        squares1,
+        qk,
+        keys,
+        values,
+        a,
+        table,
+        w_o,
+        x1,
+        squares2,
+        w_gate_up,
+        gated,
+        w_down,
+        constants,
+        position: int,
+    ):
+        """The layer's five calls, layer 0 at `position`: x1, written by o, is down's
+        residual two calls on (km.past)."""
+        self.qkv(
+            x, w_qkv, qkv, squares1, qk, "AB", position, 0, 1, cores=(0, QKV_CORES)
+        )
+        self.attend(qkv, keys, values, a, table, position, 1, cores=(0, O_CORES))
+        self.o(a, w_o, x1, x, squares2, constants, "AB", cores=(0, O_CORES))
+        self.gate_up(
+            x1,
+            w_gate_up,
+            gated,
+            squares2,
+            constants,
+            "AAAB",
+            1,
+            cores=(0, GATE_UP_CORES),
+        )
+        self.down(
+            gated,
+            w_down,
+            x,
+            km.past(x1),
+            squares1,
+            constants,
+            "AB",
+            cores=(0, DOWN_CORES),
+        )
