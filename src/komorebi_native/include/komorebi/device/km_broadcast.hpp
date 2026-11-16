@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "km_core.hpp"
+#include "km_far.hpp"
 #include "km_command.hpp"
 #include "km_group.hpp"
 #include "km_relay.hpp"
@@ -434,17 +435,7 @@ namespace km {
         bool relay_block(uint32_t block, uint32_t word, bool carries) {
             uint32_t code = kGaveNone;
             if (args_.pages != 0) {
-                code = (
-                    relay_put(
-                        core_,
-                        sequence_,
-                        slot(block),
-                        block_bytes_,
-                        args_.next,
-                        slot(block),
-                        kRelayNoPort
-                    )
-                );
+                code = far_put(args_.next, slot(block), slot(block), block_bytes_);
             }
             volatile tt_l1_ptr uint32_t* line = area_word(KM_BROADCAST_DONE);
             line[0] = broadcast_marker(0, block + 1);
@@ -452,14 +443,11 @@ namespace km {
             line[KM_BROADCAST_CARRIES] = carries ? 1 : 0;
             if (code == kGaveNone) {
                 code = (
-                    relay_put(
-                        core_,
-                        sequence_,
-                        area_ + KM_BROADCAST_DONE,
-                        16,
+                    far_put(
                         args_.next,
                         area_ + KM_BROADCAST_VALID,
-                        kRelayNoPort
+                        area_ + KM_BROADCAST_DONE,
+                        16
                     )
                 );
             }
@@ -545,14 +533,11 @@ namespace km {
             line[0] = broadcast_marker(0, popped_blocks);
             line[KM_BROADCAST_ARRIVED] = broadcast_marker(0, took_);
             const uint32_t code = (
-                relay_put(
-                    core_,
-                    sequence_,
-                    area_ + KM_BROADCAST_DONE,
-                    16,
+                far_put(
                     args_.from,
                     area_ + KM_BROADCAST_DONE + 16 * args_.fed,
-                    kRelayNoPort
+                    area_ + KM_BROADCAST_DONE,
+                    16
                 )
             );
             if (code != kGaveNone) {
@@ -906,6 +891,13 @@ namespace km {
             );
             stats[1] = static_cast<uint32_t>(waited);
             stats[2] = static_cast<uint32_t>(waited >> 32);
+        }
+
+        // `bytes` at L1 `from` into L1 `to` of `rank` of another island, landed at
+        // return (km::write_l1, no port); kGave* code.
+        uint32_t far_put(uint32_t rank, uint32_t to, uint32_t from, uint32_t bytes) {
+            uint32_t island = 0;
+            return write_l1_at(core_, rank, to, from, bytes, -1, island);
         }
 
         // The first broadcast give-up of this core names broadcast and block; the tile
