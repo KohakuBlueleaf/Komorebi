@@ -1,7 +1,7 @@
 """tt-metal's own page calls in a kernel of an island build: they read and write this
-island's DRAM only, so a load with the tensor table refuses a mover's source that names
-one (comments and strings aside), unless its program says it means its own island's
-bank (OWN, a Program keyword)."""
+island's DRAM only, so a load with the tensor table refuses a mover's source line that
+names one (comments and strings aside), unless that line says `// km: own island` (the
+call means this core's own island's bank); a marker on a line with no such call too."""
 
 import re
 from pathlib import Path
@@ -9,7 +9,8 @@ from pathlib import Path
 from komorebi import _env
 from komorebi.errors import ProgramError
 
-OWN = "own_island_pages"  # the way out: Program(own_island_pages=True)
+MARKER = "// km: own island"  # the way out, on the call's own line
+MARKED = re.compile(r"//[ \t]*km:[ \t]*own island[ \t]*$", re.M)
 NAMES = re.compile(
     r"\b(noc_async_(?:read|write)_(?:page|tile)|Interleaved(?:Pow2)?AddrGen\w*)\b"
 )
@@ -28,21 +29,40 @@ def _ours(path):
     return _env.include_directory().parent in path.parents
 
 
-def found(source):
-    """(file, line, name) of the first of NAMES in `source` or a file it includes by a
-    quoted path beside it, recursively (Komorebi's own files aside); None: none."""
-    seen, todo = set(), [Path(source).resolve()]
+def _lines(text, pattern):
+    """The 1-based lines of `text` where `pattern` matches: {line: first match}."""
+    out = {}
+    for hit in pattern.finditer(text):
+        out.setdefault(text.count("\n", 0, hit.start()) + 1, hit)
+    return out
+
+
+def scan(source):
+    """(calls, refused) of `source` and the files it includes by a quoted path beside
+    it, recursively (Komorebi's own files aside): calls [(file, line, name)] marked
+    with MARKER; refused [(file, line, name)], an unmarked call or (name None) a
+    marker on a line with no call."""
+    seen, todo, calls, refused = set(), [Path(source).resolve()], [], []
     while todo:
         path = todo.pop(0)
         if path in seen or _ours(path) or not path.is_file():
             continue
         seen.add(path)
-        text = COMMENTS.sub(_blank, path.read_text(errors="replace"))
+        raw = path.read_text(errors="replace")
+        marked = set(_lines(raw, MARKED))
+        text = COMMENTS.sub(_blank, raw)
         todo += [(path.parent / name).resolve() for name in LOCAL.findall(text)]
-        hit = NAMES.search(STRINGS.sub(_blank, text))
-        if hit is not None:
-            return path, text.count("\n", 0, hit.start()) + 1, hit.group(1)
-    return None
+        named = _lines(STRINGS.sub(_blank, text), NAMES)
+        for line, hit in sorted(named.items()):
+            (calls if line in marked else refused).append((path, line, hit.group(1)))
+        refused += [(path, line, None) for line in sorted(marked - set(named))]
+    return calls, refused
+
+
+def found(source):
+    """The first refused (file, line, name) of scan(source); None: none."""
+    refused = scan(source)[1]
+    return refused[0] if refused else None
 
 
 def sources(program):
@@ -58,25 +78,33 @@ def sources(program):
 
 def check(programs, log=None):
     """Refuses a program of an island build (KM_TENSOR_TABLE) whose movers call
-    tt-metal's page calls; one with OWN set is logged once and built."""
+    tt-metal's page calls on a line without MARKER, or carry a stale MARKER; the
+    marked calls are logged once a program."""
     for program in programs:
         if "KM_TENSOR_TABLE" not in program.defines:
             continue
+        meant = []
         for source in sources(program):
-            hit = found(source)
-            if hit is None:
+            calls, refused = scan(source)
+            meant += calls
+            if not refused:
                 continue
-            path, line, name = hit
-            if getattr(program, OWN, False):
-                if log is not None:
-                    log(
-                        f"{program.name}: {path.name}:{line}: {name} reaches this "
-                        f"island's DRAM only ({OWN}=True: meant)"
-                    )
-                break
+            path, line, name = refused[0]
+            if name is None:
+                raise ProgramError(
+                    f"{program.name}: {path}:{line}: `{MARKER}` on a line that names "
+                    "none of tt-metal's page calls: move it to the call's line or "
+                    "drop it"
+                )
             raise ProgramError(
                 f"{program.name}: {path}:{line}: {name} reaches this island's DRAM "
-                "only; on islands use km::read_pages / km::write_pages with a "
-                "km::Tensor (or km::BankRange / km::SizedTensor); a kernel that means "
-                f"its own island's bank: Program({OWN}=True)"
+                f"only; say `{MARKER}` on the line when the call means this core's "
+                "own island's bank, or use km::read_pages / km::write_pages with a "
+                "km::Tensor (or km::BankRange / km::SizedTensor)"
+            )
+        if meant and log is not None:
+            path, line, name = meant[0]
+            log(
+                f"{program.name}: {len(meant)} page call(s) marked `{MARKER}` "
+                f"(the first {path.name}:{line}: {name}): this island's bank"
             )

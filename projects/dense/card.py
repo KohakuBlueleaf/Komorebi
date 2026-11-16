@@ -280,7 +280,6 @@ def grid_program(plan, nocs, tensors, fidelity="HiFi2", first_row=0, command=Non
             "unpack_to_dest_mode": {G["kCbPart"]: "UnpackToDestFp32"},
         },
         handlers=pl.GRID_H,
-        own_island_pages=True,  # its profile pages: each island's core's own bank
     )
 
 

@@ -65,7 +65,6 @@ def program(uploaded=None):
         },
         depth=1,
         handlers=lists.RASTER_H,
-        own_island_pages=True,  # a band by address: one card (kWhereBandFar on islands)
     )
 
 
