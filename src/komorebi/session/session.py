@@ -3047,9 +3047,15 @@ class _Backend:
             launch.cb(held, index, fmt, page, page * pages)
             self.cb_indices.add(index)
         if "KM_PAGE_LINKS" in program.defines and not links:
-            # its link cores' put queue, on them alone (the program's kernels there)
-            defines += self._link_queue(launch, program, grid, 0)
-            self.link_queue_at = (_cbs_end(self._cbs(program.buffers)), 0)
+            # its link cores' put queue and the least chunks a put ring takes, on them
+            # alone (the program's kernels there); no room: no ring, no put batch
+            packet = getattr(self.session, "packet", 0) or 0
+            chunk = min(self._link_chunk(program, cores), link_chunk_least(packet))
+            defines += self._link_queue(launch, program, grid, chunk)
+            if chunk:
+                defines.append(("KM_LINK_CHUNK", str(chunk)))
+                self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
+            self.link_queue_at = (_cbs_end(self._cbs(program.buffers)), chunk)
             self.queue_after_slots = True  # the slots' bytes added (_slot_buffer)
         if apart:  # the link cores: their link area first, then the tokens
             self._link_area(launch, ranks, links, grid, apart)
