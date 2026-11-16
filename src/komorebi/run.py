@@ -444,12 +444,19 @@ class Run:
         rectangle = getattr(program, "rectangle", None)
         if line is None or rectangle is None or rectangle["group"] is None:
             return
-        if tuple(group) != rectangle["group"]:
+        low, count = rectangle["group"]  # this card's cores; an island's: flat ranks
+        want = (low + self.island_first - self.island_cores[0], count)
+        if tuple(group) != want:
+            across = (
+                "; a broadcast stays on one island"
+                if self.ranks != self.island_ranks or self.island_first
+                else ""
+            )
             raise ValueError(
                 f"{type(program).__name__}.{method.name}, {line}: the broadcast's "
                 f"rectangle {rectangle['rect'] or 'the whole grid'} is the group "
-                f"{rectangle['group']}, fixed at load; submit it to that group "
-                f"(not {tuple(group)}), or make the program with rect="
+                f"{want}, fixed at load; submit it to that group "
+                f"(not {tuple(group)}), or make the program with rect={across}"
             )
 
     def _port_numbers(self, program_field):
