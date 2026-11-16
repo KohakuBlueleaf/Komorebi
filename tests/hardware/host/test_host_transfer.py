@@ -9,7 +9,7 @@ import pytest
 import komorebi as km
 from komorebi import ChannelError
 from komorebi.device import channel as channel_module
-from komorebi.session.session import read_tensors
+from komorebi.session.tensor_bytes import read_tensors
 
 pytestmark = pytest.mark.card
 KERNELS = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect" / "kernels"

@@ -14,7 +14,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi.device import channel as channel_module
-from komorebi.session import session as session_module
+from komorebi.session import tensor_bytes
 
 ROOT = Path(__file__).resolve().parents[3]
 KERNELS = ROOT / "examples" / "01_mapcollect" / "kernels"
@@ -93,7 +93,7 @@ def break_even(session, tensor, launch):
             if launch:
                 session._push(tensor, 0, pages, "launch")
             else:
-                session_module.read_tensors(
+                tensor_bytes.read_tensors(
                     session.device, session._module, [tensor], 0, pages
                 )
             times.append(time.monotonic() - start)

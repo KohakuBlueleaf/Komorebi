@@ -21,7 +21,7 @@ from komorebi.program import overlay, thread
 from komorebi.program import several as programs
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
-from komorebi.session import session as session_module
+from komorebi.session import kernels as session_kernels
 from komorebi.session.run import Run
 
 
@@ -173,7 +173,7 @@ class Descriptor:
 
 def area(given, rows, free=900_000):
     made = backend(added_buffers=given, switch_pad=7, switch_reserve=0x3000)
-    made.session = SimpleNamespace(l1=lambda: (0, free), log=quiet)
+    made.card = SimpleNamespace(l1=lambda: (0, free), log=quiet)
     descriptor = Descriptor()
     added_program.grow_area(made, descriptor, rows, None)
     return made, descriptor
@@ -205,13 +205,13 @@ def test_a_class_named_ahead_takes_the_next_field_and_sizes_the_area():
     assert added_program.ahead_programs(placed) == [other]
     assert other.program_field == 1
     made = backend(switch_shift=0)
-    made.session = SimpleNamespace(_hand_nocs=lambda program: None)
+    made.card = SimpleNamespace(hand_nocs=lambda program: None)
     end = added_program.layout_of(made, other)[1]
     reserve = added_program.pad_reserve(made, placed, 0x20000)
     assert reserve >= end + programs.CB_ALIGN
     assert made.switch_pad not in {b.index for b in [*loaded.buffers, *other.buffers]}
     assert made.switch_loaded == 1 and made.switch_args is False
-    made.session._module = native_module()
+    made.card.module = native_module()
     (part,) = added_program.ahead_overlays(made, placed, 0, {})
     assert part.number == overlay.constants()["kOverlayService"] - 2
     assert part.recipes == {} and part.name == "project"
@@ -239,7 +239,7 @@ def test_the_added_class_s_parts_get_its_formats_in_a_copy_of_the_tables(tmp_pat
     loaded = twice(form="runtime")
     module = native_module()
     run = run_of(loaded)
-    run.backend.session = SimpleNamespace(_module=module)
+    run.backend.card = SimpleNamespace(module=module)
     run.backend.switch_pad, run.backend.switch_loaded = 27, 1
     names, modes = added_program._loaded_formats(run)
     fp32 = bool(loaded.compute.get("fp32_dest_acc_en"))
@@ -437,17 +437,17 @@ def test_a_loaded_program_with_own_overlays_gets_two_slots_in_their_kernels():
                              service=8640)]  # fmt: skip
     declared = SimpleNamespace(count=None)
     alone = programs.plan({own: (0, 120)}, 120)
-    made = session_module._common_slots(alone, declared, built, 4)
+    made = session_kernels._common_slots(alone, declared, built, 4)
     assert made.slots == {"reader": (2, 4160), "writer": (2, 4032)}
     plain_alone = programs.plan({plain: (0, 120)}, 120)
-    made = session_module._common_slots(plain_alone, declared, built, 4)
+    made = session_kernels._common_slots(plain_alone, declared, built, 4)
     assert made.slots == {"reader": (1, 4160), "writer": (1, 4032)}  # pays nothing
     with pytest.raises(ProgramError, match=r"slots\(count=1\) for the reader"):
-        session_module._common_slots(alone, SimpleNamespace(count=1), built, 4)
+        session_kernels._common_slots(alone, SimpleNamespace(count=1), built, 4)
     lowered = SimpleNamespace(slots={"reader": (1, 4160), "writer": (2, 4032)})
     with pytest.raises(ProgramError, match=r"reader slots lowered to 1"):
-        session_module._own_slots_kept(alone, lowered)
-    session_module._own_slots_kept(
+        session_kernels._own_slots_kept(alone, lowered)
+    session_kernels._own_slots_kept(
         plain_alone, lowered
     )  # no own overlay: one is enough
 

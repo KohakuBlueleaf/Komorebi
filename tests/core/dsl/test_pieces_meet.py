@@ -13,7 +13,7 @@ from komorebi.dsl import first_use
 from komorebi.dsl.first_use import constant_handler
 from komorebi.errors import ProgramError
 from komorebi.program import several as programs
-from komorebi.session import session
+from komorebi.session import kernels as session_kernels
 
 
 @km.tile_function
@@ -141,6 +141,6 @@ def test_the_refusals(tmp_path):
 def test_the_runtime_s_kernels_get_the_added_handlers_path():
     opted = made(Gate, handlers={"gate": km.ANY}, form="runtime")
     beside = made(Gate, handlers={"gate": km.ANY}, form="runtime", beside=opted)
-    assert session.added_path([opted, beside]) == [("KM_ADDED_HANDLERS", "1")]
-    assert session.added_path([opted, made(Other, form="runtime")]) == []
-    assert session.added_path([]) == []
+    assert session_kernels.added_path([opted, beside]) == [("KM_ADDED_HANDLERS", "1")]
+    assert session_kernels.added_path([opted, made(Other, form="runtime")]) == []
+    assert session_kernels.added_path([]) == []

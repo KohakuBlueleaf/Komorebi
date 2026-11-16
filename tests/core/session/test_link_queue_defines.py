@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from komorebi.errors import ProgramError
+from komorebi.session import kernels as session_kernels
 from komorebi.session import session as session_module
 
 
@@ -59,4 +60,4 @@ def test_the_check_names_a_link_define_the_link_kernels_lack():
     placed = [program("scale", KM_PAGE_LINKS=1, KM_ASKS_BY_HOST=1)]
     defines = [("KM_PAGE_LINKS", "1"), ("KM_LINK_QUEUE", "1")]
     with pytest.raises(ProgramError, match="scale: .* without KM_ASKS_BY_HOST"):
-        session_module.check_link_defines("scale", defines, placed)
+        session_kernels.check_link_defines("scale", defines, placed)

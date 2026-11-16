@@ -16,8 +16,9 @@ import numpy as np
 import komorebi as km
 from komorebi import formats
 from komorebi.device import native
+from komorebi.program import several
+from komorebi.session import kernels as session_kernels
 from komorebi.session import process
-from komorebi.session import session as km_session
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -464,7 +465,7 @@ def launch(session, c, data):
         [("CASE", str(form))],
         [],
         [(0, 0, [nonce, c.get("first", 0), count])],
-        **km_session.compute_config(options),
+        **several.compute_config(options),
     )
     return run, t_out, t_info, nonce
 
@@ -625,7 +626,7 @@ def build(args):
             data = inputs(c)
             run, *_ = launch(session, c, data)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             rec = check(c, data, fake_output(c, data))
             log(f"built {c['name']}: {got.total} of {got.limit} B; {json.dumps(rec)}")
     print(json.dumps(out), flush=True)

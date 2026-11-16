@@ -13,6 +13,7 @@ from komorebi.device.tensor import Tensor
 from komorebi.errors import KernelSizeError, L1BudgetError
 from komorebi.program import overlay
 from komorebi.program.description import KernelSizes
+from komorebi.session import kernels as session_kernels
 from komorebi.session import session
 from komorebi.session.sizes import KERNEL_BUFFER_MAX
 
@@ -164,7 +165,7 @@ def test_the_load_chooses_the_service_slot():
     assert shared.why == "it holds 7 program slots, not 6"
     asked = overlay.choose(made, overlay.Slots(service="shared"), room)
     assert asked.service == 0 and asked.why == "as slots() asks"
-    assert session.slot_rows(own.slots, own.service, own.why)[:2] == [
+    assert session_kernels.slot_rows(own.slots, own.service, own.why)[:2] == [
         ("slots: service (reader), its own: the L1 left has the room", 0),
         ("slots: service (reader), 1 x 9,088 B", 9088),
     ]
@@ -241,7 +242,9 @@ def test_the_bound_refused_before_the_layout_gives_the_total():
         "Program size (92240) too large for kernel config buffer (70656) (komorebi's "
         "bound)"
     )
-    sizes = session.kernel_sizes((0, 70656, [28688, 25640, 14416, 9336, 13272], error))
+    sizes = session_kernels.kernel_sizes(
+        (0, 70656, [28688, 25640, 14416, 9336, 13272], error)
+    )
     assert (sizes.total, sizes.limit) == (92240, 70656)
 
 
@@ -251,10 +254,10 @@ def test_the_own_slot_code_only_where_the_program_has_slots_of_its_own():
         overlay_slots = overlay.Slots()
 
     plain = Plain()
-    assert session.own_slot_path(plain) == []
-    assert session.own_slot_declared(plain).service == "shared"
+    assert session_kernels.own_slot_path(plain) == []
+    assert session_kernels.own_slot_declared(plain).service == "shared"
     plain.overlays = {"mix": object()}
-    assert session.own_slot_path(plain) == [("KM_OVERLAY_OWN", "1")]
-    assert session.own_slot_declared(plain).service is None
+    assert session_kernels.own_slot_path(plain) == [("KM_OVERLAY_OWN", "1")]
+    assert session_kernels.own_slot_declared(plain).service is None
     plain.overlays, plain.overlay_slots = {}, overlay.Slots(service="own")
-    assert session.own_slot_path(plain) == [("KM_OVERLAY_OWN", "1")]
+    assert session_kernels.own_slot_path(plain) == [("KM_OVERLAY_OWN", "1")]

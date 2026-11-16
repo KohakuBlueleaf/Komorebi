@@ -14,6 +14,7 @@ import pytest
 from komorebi import cli
 from komorebi.builder import prebuild
 from komorebi.device import mock, remembered
+from komorebi.session import kernels as session_kernels
 from komorebi.session import session
 
 
@@ -42,7 +43,7 @@ def test_the_built_line_counts_elves_written_since_the_build(tmp_path):
     new.write_bytes(b"")
     rows = [("brisc", str(old)), ("ncrisc", str(new)), ("ncrisc", str(new))]
     recipes = [("reader.cpp", rows[:1]), ("writer.cpp", rows[1:])]
-    assert session.built_files(recipes, started) == (1, 1)
+    assert session_kernels.built_files(recipes, started) == (1, 1)
 
 
 def test_a_prebuild_keeps_its_sizes_in_its_own_copy(monkeypatch, tmp_path):

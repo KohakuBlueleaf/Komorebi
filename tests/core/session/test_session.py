@@ -13,7 +13,9 @@ import pytest
 from fake_session import CONSTANTS, FakeDevice, load_session
 
 from komorebi.errors import ProgramError
-from komorebi.session import process, sizes
+from komorebi.program import several
+from komorebi.session import process, sizes, tensor_bytes
+from komorebi.session.backend import backend as card_backend
 
 
 @pytest.fixture
@@ -61,11 +63,11 @@ def backend_over(session, log, tmp_path, monkeypatch):
     sess._module = session.native.load_module()
     port = sess._module.Dispatch("dev", 1750)
     port.close()
-    backend = sess._module.card_backend(sess, port, 1350, 0)
+    backend = sess._module.card_backend(sess._card(), port, 1350, 0)
     backend.control, backend.control_addr = "control", 0x20000
     words = (CONSTANTS["KM_CONTROL_BYTES"] + 64) // 4
     rows = np.zeros((120, words), np.int64)
-    monkeypatch.setattr(session, "_read_uint32", lambda tensor: rows)
+    monkeypatch.setattr(tensor_bytes, "_read_uint32", lambda tensor: rows)
     log.clear()
     return sess, backend
 
@@ -76,7 +78,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     session, log, module = card
     sess, backend = backend_over(session, log, tmp_path, monkeypatch)
     lines, asked = [], []
-    sess.log = lines.append
+    backend.card = backend.card._replace(log=lines.append)  # the session's log
     module.dram_banks = lambda device: 8
     words = np.zeros((8, CONSTANTS["KMD_STATE_BYTES"] // 8), "<u8")
     words[5, :16] = np.arange(16)
@@ -86,25 +88,25 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
         asked.append((*tensors, first, pages))
         return [words.view(np.uint8)]
 
-    monkeypatch.setattr(session, "read_tensors", read)
+    monkeypatch.setattr(tensor_bytes, "read_tensors", read)
     backend.state_tensor = "state"
     backend.log_state()
     assert asked == [("state", 0, 8)]
-    assert len(lines) == session.STATE_DUMP_LINES
+    assert len(lines) == card_backend.STATE_DUMP_LINES
     assert lines[1] == "kernel state +0x040: " + " ".join(
         hex(word) for word in range(8, 16)
     )
     words[5, 2] = 0  # no bank holds the kernel's lines
     backend.log_state()
     assert lines[-1] == "kernel state not found in DRAM (lines not flushed)"
-    monkeypatch.setattr(session, "read_tensors", None)  # logged, not raised
+    monkeypatch.setattr(tensor_bytes, "read_tensors", None)  # logged, not raised
     backend.log_state()
     assert lines[-1].startswith("kernel state not read (TypeError")
 
 
 def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
     session, _, _ = card
-    config = session.compute_config(
+    config = several.compute_config(
         {
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
@@ -117,11 +119,11 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
     modes = config["unpack_to_dest_mode"]
     assert len(modes) == 64 and modes[3] == "UnpackToDestFp32"
     assert set(modes[:3] + modes[4:]) == {"Default"}
-    every = session.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
+    every = several.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
     assert set(every["unpack_to_dest_mode"]) == {"UnpackToDestFp32"}
-    assert "unpack_to_dest_mode" not in session.compute_config({})
+    assert "unpack_to_dest_mode" not in several.compute_config({})
     with pytest.raises(ProgramError, match="'fp32_dest_acc'"):  # a typo is rejected
-        session.compute_config({"fp32_dest_acc": True})
+        several.compute_config({"fp32_dest_acc": True})
 
 
 def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(
