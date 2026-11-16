@@ -583,6 +583,83 @@ namespace km {
     }
 
 #if KM_GUARD
+    // The last tensor page a walk reads or writes (its steps never go back).
+    __attribute__((noinline)) inline uint32_t walk_last(const Walk& walk) {
+        uint32_t last = (
+            walk.first_page + (walk.blocks - 1u) * walk.block_step +
+            (walk.last_rows - 1u) * walk.row_step +
+            (walk.last_columns - 1u) * walk.column_step
+        );
+        if (walk.blocks > 1u) {
+            const uint32_t full = (
+                walk.first_page + (walk.blocks - 2u) * walk.block_step +
+                (walk.rows - 1u) * walk.row_step +
+                (walk.columns - 1u) * walk.column_step
+            );
+            last = full > last ? full : last;
+        }
+        return last;
+    }
+
+    // Whether `T` is a bank-addressed accessor (a tensor of one island's banks).
+    template <typename T, typename = decltype(&T::get_bank_base_address)>
+    constexpr bool walk_banked(int) {
+        return true;
+    }
+
+    template <typename T>
+    constexpr bool walk_banked(...) {
+        return false;
+    }
+
+    // page_range_ok of a walk over the bank-addressed tensor at `word` of `bytes` pages
+    // (stream pages by noc_async_*_page; those that may cross: the page calls').
+    __attribute__((noinline)) inline bool walk_inside(
+        const Core& core, const Walk& walk, uint32_t word, uint32_t bytes
+    ) {
+        return (
+            walk.blocks == 0 ||
+            page_range_ok(
+                core,
+                core.running_slot(),
+                core.running_sequence(),
+                word,
+                walk.first_page,
+                walk_last(walk) + 1u - walk.first_page,
+                bytes
+            )
+        );
+    }
+
+    template <typename Plain>
+    inline bool walk_inside(const Core& core, const Walk& walk, const Plain& tensor) {
+        if constexpr (walk_banked<Plain>(0)) {
+            return (
+                walk_inside(
+                    core,
+                    walk,
+                    tensor.get_bank_base_address(),
+                    tensor.get_aligned_page_size()
+                )
+            );
+        }
+        return true;
+    }
+
+    template <typename Accessor>
+    inline bool move_inside(const Core& core, const Stream<Accessor>& stream) {
+        if constexpr (kInPlace<Accessor>) {
+            return (
+                stream.tensor.placed ||
+                walk_inside(core, stream.walk, stream.tensor.tensor)
+            );
+        } else if constexpr (!kMayCross<Accessor>) {
+            return walk_inside(core, stream.walk, accessor_of(stream.tensor));
+        } else {
+            return true;
+        }
+    }
+
     // Whether the dispatcher gave up the command this mover runs (its abort word): then
     // recorded, kGaveDeadline in kWhereMove.
     __attribute__((noinline)) inline bool move_given_up(const Core& core) {
@@ -627,6 +704,11 @@ namespace km {
             core.gave_up(kStMover, kGaveBadItem, kWhereData, 0, 0);
             return false;
         }
+#if KM_GUARD
+        if (!(move_inside(core, streams) && ...)) {  // a range past a tensor's end
+            return false;
+        }
+#endif
         const uint64_t limit = static_cast<uint64_t>(core.args().wait_limit) << 10;
         uint64_t deadline = wall64() + limit;
 #if KM_GUARD
