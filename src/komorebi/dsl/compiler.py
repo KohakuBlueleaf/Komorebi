@@ -2153,6 +2153,8 @@ class HandlerCompiler:
 
     def assign(self, node):
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Tuple):
+            if self.tile_function_of(node.value) is not None:
+                return self.tile_results(node, node.targets[0], node.value)
             return self.read_words(node, node.targets[0], node.value)
         if len(node.targets) == 1 and self.word_name(node.targets[0]):
             return self.set_field_word(node, node.targets[0])
@@ -4544,6 +4546,7 @@ class HandlerCompiler:
         self.held_cast_movers(node, [r["letters"] for r in reads])
         body_m, body_c = self.statements(node.body)
         state = self.loop_states.pop()
+        self.results_pushed(node, state)
         self.stream_loops.pop()
         if body_m:
             self.refuse(
@@ -4648,7 +4651,7 @@ class HandlerCompiler:
             )
         )
         for write in pushed:
-            out, room = f"km_out{number}", f"km_room{number}"
+            out, room = out_names(number, write, state)
             inner.append(
                 Line(
                     f"const uint32_t {out} = km::block_half({write.buffer.name}, "
@@ -4674,7 +4677,7 @@ class HandlerCompiler:
         elif body_c:
             inner.append(Block(loop, "}", body_c, {valid}))
         for write in pushed:
-            out, room = f"km_out{number}", f"km_room{number}"
+            out, room = out_names(number, write, state)
             inner.append(
                 Line(
                     f"if ({room}) {{\n    cb_push_back({out}, "
@@ -5024,7 +5027,8 @@ class HandlerCompiler:
             init.append(f"MATH((km_tile::{cxx}_init()));  // {function.name}'s setup")
             state["inits"].append(Line("\n".join(init)))
         timed = self.method.stamps is not None and not self.method.overlay
-        count = len(unit.operands)
+        self.results_named(node, function, unit, name)
+        count = max(len(unit.operands), unit.results)  # DST tiles a call
         slots = DST_HALF // count if width == 1 else 1
         copied = [
             operands[parameters.index(operand)][0]
@@ -5079,8 +5083,8 @@ class HandlerCompiler:
             lines += [
                 f"copy_tile({item.cxx}, {item.first} + {t}, {t});" for t in range(width)
             ]
-            for field in fields:
-                lines.append(f"copy_tile(kField{camel(field)}, 0, {2 * width});")
+            for k, field in enumerate(fields):  # resident row k: DST 2 width + k
+                lines.append(f"copy_tile(kField{camel(field)}, 0, {2 * width + k});")
         if slots == 1:
             words = scalar_words(unit, scalars)
             lines += self.timed_call([f"MATH((km_tile::{cxx}(0{words})));"], timed)
@@ -5088,7 +5092,7 @@ class HandlerCompiler:
             (self.method.name, node.lineno, self.text(node), function, cxx)
         )
         self.dst_next = 1
-        held = name or "<tile function>"
+        held = "<results>" if isinstance(name, list) else name or "<tile function>"
         self.dst_live = held
         self.scope[held] = Value(
             "tile",
@@ -5272,12 +5276,21 @@ class HandlerCompiler:
                         loads = iter([trace.load(p.tiles[t]) for p in proxies])
                         given = iter(values)
                         args = [next(given if f == SCALAR else loads) for f in formats]
-                        trace.store(out.tiles[t], function.function(*args))
+                        stored = function.function(*args)
+                        if isinstance(stored, tuple):  # its results: DST 0, 1, ...
+                            traced_results(ir, out, t, stored)
+                        else:
+                            trace.store(out.tiles[t], stored)
                 else:
                     rows = [trace.resident(p.tiles[0, :]) for p in proxies[held:]]
                     for t in trace.grid(trace.num_tile_rows(proxies[0])):
                         loads = [trace.load(p.tiles[t, :]) for p in proxies[:held]]
                         value = function.function(*loads, *rows)
+                        if isinstance(value, tuple):
+                            raise PlanError(
+                                f"{len(value)} results; the row form stores one row "
+                                "(several results are the one-tile form's)"
+                            )
                         trace.store(out.tiles[t, :], value)
             if width == 1:
                 fidelity = function.fidelity or "HiFi4"  # its products'
@@ -5330,6 +5343,8 @@ class HandlerCompiler:
         item = self.scope.get(call.args[0].id)
         if item is not None and item.kind == "tile" and self.dst_live == item.cxx:
             return self.push_made(node, stream, item, target.id)
+        if item is not None and item.kind == "result":
+            return self.push_results(node, stream, item, target.id)
         self.other_tile_line(node)
         if (
             item is None
@@ -5413,6 +5428,87 @@ class HandlerCompiler:
             "tile_regs_release();"
         )
         return [], [Line(text)]
+
+    def tile_results(self, node, targets, call):
+        """`s, y = self.f(a, b)`, f returning several tiles: the call as `tile_call`
+        makes it, result k in DST k of the call, each name pushed on its own."""
+        names = [t.id if isinstance(t, ast.Name) else None for t in targets.elts]
+        if None in names:
+            self.refuse(node, "a tile function's results are names", "write a, b = ...")
+        for name in names:
+            self.check_name(node, name)
+            self.not_parameter(node, name)
+        _, made = self.tile_call(node, call, names)
+        group = self.scope.pop("<results>")
+        state = self.loop_states[-1]
+        state["results"] = {"names": names, "packs": {}, "line": node.lineno}
+        for k, name in enumerate(names):
+            self.scope[name] = Value("result", name, dst=k, batch=group.batch)
+        return [], made
+
+    def results_named(self, node, function, unit, name):
+        """A call of a function of several results names each (`a, b = f(...)`)."""
+        count = len(name) if isinstance(name, list) else 1
+        if count != unit.results:
+            self.refuse(
+                node,
+                f"the tile function {function.name} returns {unit.results} tile(s), "
+                f"and the line takes {count}",
+                "name each result: `a, b = f(...)`, then push each",
+            )
+
+    def push_results(self, node, stream, item, name):
+        """`out.push(y)`, y a result of a call of several: its DST tile packed into
+        the write stream; the commit, the packs and the release at the last push of
+        the call's results."""
+        state = self.loop_states[-1] if self.loop_states else {}
+        group = state.get("results")
+        if group is None or item.cxx not in group["names"]:
+            self.refuse(
+                node,
+                f"{item.cxx} is a result of a tile function's call, pushed in its loop",
+                "push it in the loop of the call",
+            )
+        if stream.pushed:
+            self.refuse(
+                node, "a write stream fed by two loops", "open a write stream for each"
+            )
+        self.loop_fed(node, name, stream)
+        stream.pushed = True
+        state.setdefault("own_out", set()).add(stream.cxx)
+        number = self.stream_loops[-1]
+        out, room = out_names(number, stream, state)
+        pack = f"    pack_tile<true>({item.dst}, {out}, km_tile{number});"
+        if item.batch is not None:  # each call's DST k to its tile's place
+            slot, count = f"km_slot{number}", item.batch[1]
+            pack = (
+                f"    for (uint32_t {slot} = 0; {slot} < km_batch{number}; {slot}++) "
+                f"{{\n        pack_tile<true>({count} * {slot} + {item.dst}, {out}, "
+                f"km_tile{number} + {slot});\n    }}"
+            )
+        group["packs"][
+            item.cxx
+        ] = f"if ({room}) {{\n    KM_PACK_FORMAT({out});\n{pack}\n}}"
+        item.kind = "pushed"
+        if len(group["packs"]) < len(group["names"]):
+            return [], []
+        packs = [group["packs"][n] for n in group["names"]]
+        self.dst_live, self.dst_next = None, 0
+        text = "\n".join(["tile_regs_commit();", "tile_regs_wait();", *packs])
+        return [], [Line(text + "\ntile_regs_release();")]
+
+    def results_pushed(self, node, state):
+        """A loop that calls a function of several results pushes each."""
+        group = state.get("results")
+        if group is None or len(group["packs"]) == len(group["names"]):
+            return
+        left = [n for n in group["names"] if n not in group["packs"]]
+        self.refuse(
+            node,
+            f"the results {', '.join(group['names'])} of the call at line "
+            f"{group['line']} are pushed in its loop, and {', '.join(left)} is not",
+            f"push {left[0]} into a write stream in the loop",
+        )
 
     def write(self, node, call):
         target = call.func.value
@@ -10389,6 +10485,26 @@ def is_product(function):
         and isinstance(value.op, ast.MatMult)
         and [marked_operand(value.left)[0], marked_operand(value.right)[0]] == names
     )
+
+
+def traced_results(ir, out, t, values):
+    """Each result of a tile function's trace stored into its own output tensor (the
+    first into `out`, the others added to the IR as result1, result2, ...)."""
+    for k, value in enumerate(values):
+        if k == 0:
+            trace.store(out.tiles[t], value)
+            continue
+        result = TensorParam(f"result{k}", True, F32)
+        ir.tensors.append(result)
+        trace.store(trace.TensorProxy(result).tiles[t], value)
+
+
+def out_names(number, write, state):
+    """The C++ names of a loop's output half and room for write stream `write`: one
+    a loop, or the stream's own when results of one call go to several streams."""
+    if write.cxx in state.get("own_out", ()):
+        return f"{write.cxx}_out", f"{write.cxx}_room"
+    return f"km_out{number}", f"km_room{number}"
 
 
 def matrix_product(function):

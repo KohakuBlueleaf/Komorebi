@@ -104,18 +104,23 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
     for n in nodes:
         shapes(n)
     reduces = [n for n in nodes if n.kind == "reduce"]
-    if len(reduces) != 1:
-        fail(f"{ir.name}: the row form takes one reduction")
-    red = reduces[0]
-    if red.attrs["op"] != "sum" or not red.attrs["exact"] or red.attrs["dim"] != -1:
-        fail("the row form's reduction is reduce_sum(..., exact=True) along the row")
+    if not reduces:
+        fail(f"{ir.name}: the row form takes a reduction")
+    for red in reduces:
+        if red.attrs["op"] != "sum" or not red.attrs["exact"] or red.attrs["dim"] != -1:
+            fail(
+                "the row form's reduction is reduce_sum(..., exact=True) along the row"
+            )
     cols = [n for n in nodes if n.kind == "col"]
-    if len(cols) != 1 or shapes(cols[0].args[0]) != "col":
-        fail("the per-row value meets the row through one .col()")
-    stat = cols[0].args[0]
+    if any(shapes(c.args[0]) != "col" for c in cols):
+        fail("a per-row value meets the row through .col()")
     rows_ = [n for n in nodes if n.kind == "load" and n.attrs["view"].kind == "row"]
     if len({id(n.attrs["view"].tensor) for n in rows_}) != 1:
         fail("the row form reads one row tensor (loaded once)")
+    residents = {id(n): n for n in nodes if n.kind == "resident"}
+    if len(reduces) > 1 or len(cols) != 1 or len(residents) > 1:
+        return level_program(ir, width, rows_tile, cols_tile, shapes, rows_[0], rows)
+    red, stat = reduces[0], cols[0].args[0]
 
     def leaf_of(node, offset, kind):
         if offset is not None:
@@ -683,3 +688,315 @@ def _index(address, width):
     c, rest = divmod(rest, 16)
     q, rest = divmod(rest, 4)
     return t, h, c, q, rest // 2
+
+
+ROW_SLOTS = (0, 2, 32, 34)  # the per-row slots of a group in the rows tile (Dst rows)
+DST_TILES = 8  # fp32 tiles in all of Dst: the row form takes it whole
+
+
+def _below(node, kinds, stop):
+    """The nodes of `kinds` under `node`, not descending past a node of `stop`."""
+    found, seen, todo = [], set(), [node]
+    while todo:
+        n = todo.pop()
+        if id(n) in seen:
+            continue
+        seen.add(id(n))
+        if n.kind in kinds:
+            found.append(n)
+        if n.kind not in stop or n is node:
+            todo += list(n.args)
+    return found
+
+
+def _levels(reduces, stats):
+    """Each reduction's level (a pass over the row: one more than the per-row values
+    its argument reads by .col()) and each per-row value's (its last reduction's)."""
+    level = {}
+
+    def of(node):
+        if id(node) not in level:
+            if node.kind == "reduce":
+                under = [c.args[0] for c in _below(node.args[0], ("col",), ("col",))]
+                level[id(node)] = 1 + max((of(p) for p in under), default=-1)
+            else:
+                under = _below(node, ("reduce",), ("reduce",))
+                level[id(node)] = max(of(r) for r in under)
+        return level[id(node)]
+
+    for n in [*reduces, *stats]:
+        of(n)
+    return level
+
+
+def level_program(ir, width, rows_tile, cols_tile, shapes, row, rows=False):
+    """The row form with several reductions in levels, a pass over the row a level: a
+    level's sums may read the per-row values of the levels before it by .col(); each
+    per-row value kept across a level (and each sum a later value reads) in a slot of
+    the rows tile; one per-column tile a resident row (Dst tile cols_tile + k)."""
+    if rows:
+        fail(f"{ir.name}: the band takes the row form of one reduction")
+    nodes = ir.nodes()
+    reduces = [n for n in nodes if n.kind == "reduce"]
+    stats = list({id(c.args[0]): c.args[0] for c in nodes if c.kind == "col"}.values())
+    residents = list({id(n): n for n in nodes if n.kind == "resident"}.values())
+    level = _levels(reduces, stats)
+    kept = [
+        r
+        for r in reduces
+        if all(r is not p for p in stats)
+        and any(
+            level[id(p)] > level[id(r)]
+            for p in stats
+            if any(x is r for x in _below(p, ("reduce",), ("reduce",)))
+        )
+    ]
+    held = [*stats, *kept]
+    if len(held) > len(ROW_SLOTS):
+        fail(
+            f"{ir.name}: {len(held)} per-row values kept across the row's passes; the "
+            f"rows tile holds {len(ROW_SLOTS)} (a slot a value a row group)"
+        )
+    if cols_tile + len(residents) > DST_TILES:
+        fail(
+            f"{ir.name}: {len(residents)} resident rows; Dst's {DST_TILES} fp32 tiles "
+            f"hold {DST_TILES - cols_tile} per-column tiles after the row's"
+        )
+    slot = {id(v): Layout("rows", rows_tile, ROW_SLOTS[k]) for k, v in enumerate(held)}
+    cols = {id(r): Layout("cols", cols_tile + k) for k, r in enumerate(residents)}
+
+    def leaf_of(node, offset, kind):
+        if offset is not None:
+            return None
+        if node.kind in ("load", "resident") and node.attrs["view"].kind == "row":
+            return chains.Leaf(node, kind, None)
+        if node.kind == "reduce" or id(node) in slot:
+            return chains.Leaf(node, kind, None)
+        return None
+
+    compiler = chains._Compiler(ir.name, shapes, {})
+    limit = chains.SLOTS + len(residents) + len(stats)
+    summed = {id(r): compiler.chain(r.args[0], leaf_of, limit=limit) for r in reduces}
+    made = {
+        id(p): compiler.chain(p, leaf_of, limit=limit)
+        for p in stats
+        if p.kind != "reduce"
+    }
+    stored = compiler.chain(ir.stores[0].value, leaf_of, limit=limit)
+    for c in summed.values():
+        if any(leaf.kind not in ("copy", "bcast_col") for leaf in c.operands):
+            fail(f"{ir.name}: a sum along the row reads the row and per-row values")
+    for c in [*summed.values(), *made.values(), stored]:
+        if c.values or c.prev is not None:
+            fail(f"{ir.name}: the row form takes no runtime scalars and one stage")
+        for leaf in c.operands:
+            if leaf.kind == "copy" and leaf.source.kind == "resident":
+                fail(".row() broadcasts a resident row (a weight)")
+            if leaf.kind == "bcast_row" and leaf.source.kind != "resident":
+                fail(".row() broadcasts a resident row (a weight)")
+    body = Body()
+    unit = UnitProgram(ir.name, "fp32")
+    unit.operands = [row.attrs["view"].tensor.name]
+    pairs = []
+    for at in range(max(level[id(r)] for r in reduces) + 1):
+        mine = [r for r in reduces if level[id(r)] == at]
+        done = [p for p in stats if level[id(p)] == at]
+        pairs += _level_phase(body, mine, done, summed, made, slot, width)
+    pairs += _apply_slots(body, stored, slot, cols, width)
+    unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
+    unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
+    levels = 1 + max(level.values())
+    unit.passes.append(
+        Pass(
+            "layout",
+            "lanes",
+            [
+                f"{len(reduces)} sum(s) in {levels} pass(es) over the row; {len(held)} "
+                f"per-row value(s) in slots of tile {rows_tile}; {len(residents)} "
+                f"per-column value(s) in tile(s) from {cols_tile}"
+            ],
+        )
+    )
+    rows_layout = Layout("rows", rows_tile)
+    _check_lanes(unit, body.code, rows_layout)
+    moved = 0
+    for pair in pairs:
+        at = [i for i, x in enumerate(body.code) if id(x) in pair]
+        if at:
+            moved += interleave(body.code, at[0], at[-1] + 1)
+    unit.passes.append(
+        Pass("schedule", "interleave", [f"{moved} instructions moved in {len(pairs)}"])
+    )
+    layouts = {"copy": Layout("tile", 0)}
+    layouts.update({f"slot{k}": v for k, v in enumerate(slot.values())})
+    layouts.update({f"cols{k}": v for k, v in enumerate(cols.values())})
+    _check_broadcast(unit, body.code, layouts, width)
+    setup = []
+    unit.passes.append(Pass("schedule", "hoist", hoist(body.code, setup)))
+    unit.passes.append(Pass("layout", "allocate", allocate(body.code, body.prog)))
+    allocate(setup, body.prog)
+    unit.constants = {
+        PROGRAMMABLE[i]: value for i, value in enumerate(body.prog.values())
+    }
+    unit.init["math"] = [
+        Insn(
+            "SFPCONFIG",
+            {"imm16_math": 0, "config_dest": 15, "instr_mod1": 1},
+            "lane configuration",
+        ),
+        *setup,
+    ]
+    copies = [f"copy_tile(x, {t}, dst + {t})" for t in range(width)]
+    copies += [
+        f"copy_tile(cols{k}, 0, dst + {cols_tile + k})" for k in range(len(cols))
+    ]
+    unit.tile["unpack"] = [
+        Sync("unpack", "reader", "cb_wait_front(x, width)", "the row's tiles"),
+        *[Call(c, "into Dst (fp32, unpacked to Dst)") for c in copies],
+    ]
+    unit.tile["math"] = [
+        Sync("math", "pack", "tile_regs_acquire()", "a free Dst half"),
+        *[Call(c, "the math part of the copy (none to Dst)") for c in copies],
+        Call(
+            "ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, "
+            "UnpackDestination::SrcRegs>(dst)",
+            "Dst base of tile dst (RISC-V writes)",
+        ),
+        Insn(
+            "STALLWAIT",
+            {"stall_res": STALL_SFPU, "wait_res": WAIT_MATH},
+            "SFPU waits for the matrix unit",
+        ),
+        *body.code,
+        Sync("math", "pack", "tile_regs_commit()", "hands Dst to the pack CPU"),
+    ]
+    unit.tile["pack"] = [
+        Sync("pack", "math", "tile_regs_wait()", "Dst from the math CPU"),
+        *[Call(f"pack_tile(dst + {t}, out)", "the row's tile t") for t in range(width)],
+        Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
+    ]
+    _checks(unit, body.code)
+    unit.tile["math"][-1 - len(body.code) + _repairs(unit) : -1] = body.code
+    unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    return unit
+
+
+def _level_phase(b, mine, done, summed, made, slot, width):
+    """A level, per row group: the level's sums (`mine`) over every vector of the
+    row (a product into a multiply-add), their lanes summed by rotations, then the
+    per-row values the level completes (`done`) and the kept sums stored to their
+    slots. Returns the instructions of each pair of groups (ids)."""
+    pairs, start = [], 0
+    for h, q in GROUPS:
+        if q % 2 == 0:
+            start = len(b.code)
+        held = {}  # per-row values of earlier levels, loaded once a group
+
+        def kept_value(node, h=h, q=q, held=held):
+            if id(node) not in held:
+                where = slot[id(node)].address(0, h, 0, q, 0)
+                held[id(node)] = b.load(where, f"per-row slot, group {h} {q}")
+            return held[id(node)]
+
+        accs = {}
+        for t, c, p in _vectors(width):
+            address = Layout("tile", 0).address(t, h, c, q, p)
+            loaded = {}
+            for r in mine:
+                chain = summed[id(r)]
+
+                def source(i, chain=chain, address=address, loaded=loaded):
+                    leaf = chain.operands[i]
+                    if leaf.kind == "bcast_col":
+                        return kept_value(leaf.source)
+                    if "row" not in loaded:
+                        loaded["row"] = b.load(address, f"row {address}")
+                    return loaded["row"]
+
+                top, acc = chain.fn.result, accs.get(id(r))
+                if acc is not None and top.kind == "mul":
+                    memo = {}
+                    x = _value(b, top.args[0], memo, source)
+                    m = _value(b, top.args[1], memo, source)
+                    accs[id(r)] = b.mad(x, m, acc, "sum += f")
+                else:
+                    v = _value(b, top, {}, source)
+                    accs[id(r)] = v if acc is None else b.add(acc, v, "sum += f")
+        for r in mine:
+            acc = accs[id(r)]
+            for k in (1, 2, 4):
+                turned = acc
+                for _ in range(k):
+                    turned = b.op(
+                        "SFPSHFT2",
+                        f"lanes turned (step {k})",
+                        lreg_src_c=turned,
+                        instr_mod1=ROTATE,
+                    )
+                acc = b.add(acc, turned, f"sum of {2 * k} lanes")
+            accs[id(r)] = acc
+            if id(r) in slot:  # read by .col() itself, or by a later level's value
+                where = slot[id(r)].address(0, h, 0, q, 0)
+                b.store(acc, where, f"per-row sum, group {h} {q}")
+        for p in done:
+            if id(p) not in made:
+                continue  # a sum read by .col() itself: stored above
+
+            def stat_source(i, p=p, accs=accs, kept_value=kept_value):
+                leaf = made[id(p)].operands[i]
+                if id(leaf.source) in accs:
+                    return accs[id(leaf.source)]
+                return kept_value(leaf.source)
+
+            value = _value(b, made[id(p)].fn.result, {}, stat_source)
+            b.store(value, slot[id(p)].address(0, h, 0, q, 0), f"per-row value {h} {q}")
+        if q % 2:
+            pairs.append({id(x) for x in b.code[start:]})
+    return pairs
+
+
+def _apply_slots(b, stored, slot, cols, width):
+    """Per vector column (t, c, p) and pair of row groups: each per-row value loaded
+    from its slot once a group, each per-column vector once a vector column, the
+    stored function written over the row. Returns the instructions of each pair."""
+    pairs = []
+    for h in range(2):
+        for t, c, p in _vectors(width):
+            column = {}
+            for pair in ((0, 1), (2, 3)):
+                start = len(b.code)
+                for q in pair:
+                    address = Layout("tile", 0).address(t, h, c, q, p)
+                    loaded = {}
+
+                    def source(
+                        i,
+                        address=address,
+                        loaded=loaded,
+                        at=(t, h, c, q, p),
+                        column=column,
+                    ):
+                        leaf = stored.operands[i]
+                        key = id(leaf.source)
+                        if leaf.kind == "bcast_col":
+                            if key not in loaded:
+                                where = slot[key].address(*at)
+                                loaded[key] = b.load(
+                                    where, f"per-row slot {at[1]} {at[3]}"
+                                )
+                            return loaded[key]
+                        if leaf.kind == "bcast_row":
+                            if key not in column:
+                                where = cols[key].address(*at)
+                                column[key] = b.load(
+                                    where, f"per-column {at[0]} {at[2]} {at[4]}"
+                                )
+                            return column[key]
+                        if "row" not in loaded:
+                            loaded["row"] = b.load(address, f"row {at}")
+                        return loaded["row"]
+
+                    value = _value(b, stored.fn.result, {}, source)
+                    b.store(value, address, f"row {(t, h, c, q, p)}")
+                pairs.append({id(x) for x in b.code[start:]})
+    return pairs
