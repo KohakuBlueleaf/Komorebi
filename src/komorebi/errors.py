@@ -270,7 +270,7 @@ def describe_core(core):
                 parts[-1] += _no_free_slot(gave)
             if _toward_itself(core, gave):
                 parts[-1] += (
-                    f": refused, a page line toward its own island {core['island']} "
+                    f": a page line toward its own island {core['island']} "
                     "(km::write_pages and km::read_pages take this island's pages)"
                 )
     for kernel, words in (core.get("live") or {}).items():
@@ -286,10 +286,10 @@ def describe_core(core):
 
 def _toward_itself(core, gave):
     """Whether a give-up is the refusal of a get or put line toward the core's own
-    island (bad_item at ask, the island asked for its own)."""
+    island (refused at ask, bad_item in a build without the guard: its own island)."""
     return (
         gave["where"] == "ask"
-        and gave["code"] == "bad_item"
+        and gave["code"] in ("refused", "bad_item")
         and core.get("island") is not None
         and gave.get("island") == core["island"]
     )

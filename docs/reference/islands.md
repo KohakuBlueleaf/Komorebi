@@ -250,7 +250,8 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   onto island 0 refused.
 - `run.addon(program)` on an `IslandRun` adds a class to the live run on every island
   at once, all or none, with one program field (classes.md, "Another class added to a
-  live run", item 8); its tensors are ones made before the load.
+  live run", item 8); its tensors may be made before the load or while the run lives
+  (each later tensor's table row is written by the ranks, below).
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
@@ -578,6 +579,12 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   line's place in the queue: a get's 32 in flight, the put queue's page CPUs),
   `ask_slot` (room in a page CPU's ring), `ask_sent` (its writes leaving), `ask_count`
   (its port's count of the pages); the give-up word itself names `ask`.
+- A page line refused before it holds anything (toward the core's own island, a size
+  or an alignment that does not fit, a port out of range), under `guard` in an island
+  build, gives up that command alone (`refused` at `ask`, as a deadline's give-up is
+  recorded). The core's kernels do not end, so it is never reset. The command is given
+  up at its deadline, the row names the refusal, and the core takes its next command
+  and the stop's EXIT. Without the guard it is `bad_item`, and the core's kernels end.
 - A command given up while a page line is out (under `guard`): each reader and writer
   counts the pages its lines asked or put and no wait counted yet (the page port's
   word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait

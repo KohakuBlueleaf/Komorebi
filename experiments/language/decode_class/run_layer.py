@@ -47,6 +47,11 @@ def parse():
         "--chain", action="store_true", help="the overlay chain form (DecodeLayerChain)"
     )
     parser.add_argument(
+        "--mixed",
+        action="store_true",
+        help="with --chain: o and down resident, three overlays (DecodeLayerMixed)",
+    )
+    parser.add_argument(
         "--kernel-bytes", type=int, default=None, help="the session's kernel buffer"
     )
     parser.add_argument(
@@ -159,18 +164,17 @@ def compared(session, t, names, hand, hand_values, want):
 
 
 def chained(session, decode, cache, start, t, hand, hand_values, want, args, count):
-    """The layer as one chain command of DecodeLayerChain with `count` slots a part
-    (None: the default): once (the seven tensors against the hand's), timed, then
-    stamped (each record's terms)."""
+    """The layer as one chain command of DecodeLayerChain (--mixed: DecodeLayerMixed)
+    with `count` slots a part (None: the default): once (the seven tensors against the
+    hand's), timed, then stamped (each record's terms)."""
     position = dl.CONTEXT - 1
     names = [name for step in STEPS for name in WRITES[step]]
     out = {}
     for stamps in (False, True):
         decode.write_cache(0, *cache)
         start_class(session, t, start)
-        program = dl.DecodeLayerChain(
-            session=session, log=log, chain_stamps=stamps, **examples(t)
-        )
+        form = dl.DecodeLayerMixed if args.mixed else dl.DecodeLayerChain
+        program = form(session=session, log=log, chain_stamps=stamps, **examples(t))
         if count is not None:
             program.slots(count=count)
         run = session.load(program, wait=1.0, deadline=0.5)

@@ -64,13 +64,19 @@ RESETS = (
     "_ZN7ckernel4mathL22src_zero_flag_srca_fmtE",
     "_ZN7ckernel4mathL22src_zero_flag_srcb_fmtE",
 )
-# The build's constant tables of the buffers' formats (genfiles.cpp, `constexpr`): a
-# part built against the kernel has the same bytes, a copy that is not state.
-TABLES = (
-    "_ZL17unpack_src_format",
-    "_ZL17unpack_dst_format",
-    "_ZL15pack_src_format",
-    "_ZL15pack_dst_format",
+# matmul.h's file-static name of the programmed matmul MOP: a math part that defines it
+# is built again with KM_OVERLAY_MOP_STATUS (its copy and the resident's set unknown).
+MOP_STATUS = "_ZN7ckernelL20throttled_mop_statusE"
+# The build's constant tables of the buffers (genfiles.cpp, `constexpr`): a part built
+# against the kernel has the same bytes (check compares them), a copy that is not state.
+TABLE_NAMES = ("src_format", "dst_format", "tile_num_faces", "partial_face")
+TABLE_NAMES += ("tile_face_r_dim", "narrow_tile", "tile_r_dim", "tile_c_dim")
+TABLE_NAMES += ("tile_size", "num_faces_r_dim", "num_faces_c_dim")
+TABLES = tuple(
+    f"_ZL{len(name)}{name}"
+    for name in (
+        f"{unit}_{table}" for unit in ("unpack", "pack") for table in TABLE_NAMES
+    )
 )
 DROPPED_COMPILE = ("-MMD",)
 DROPPED_DEFINE = "-DFULL_KERNEL_NAME="
@@ -328,21 +334,24 @@ class Linked:
     undefined: tuple
     extent: int
     image: bytes
+    tables: dict = field(default_factory=dict)  # TABLES it defines: {name: bytes}
 
 
 @dataclass(frozen=True)
 class Persistent:
-    """The persistent kernel a part links against: its .text range and its defined
-    symbols {name: (value, kind, binding)}."""
+    """The persistent kernel a part links against: its .text range, its defined
+    symbols {name: (value, kind, binding)} and the bytes of the TABLES it defines."""
 
     text: tuple
     symbols: dict
+    tables: dict = field(default_factory=dict)
 
 
-def check(name, part, first, second, persistent, slot_bytes=None):
+def check(name, part, first, second, persistent, slot_bytes=None, resets=()):
     """Refuses a part (OverlayError) that has no entry at its first byte, relocations
     left, a call into the persistent kernel's text, its own copy of the runtime's
-    state, two links at two addresses that differ, or more bytes than its slot."""
+    state (but RESETS, TABLES of the kernel's bytes and `resets`, which its build
+    resets), two links at two addresses that differ, or more bytes than its slot."""
     where = f"overlay {name}, {part} part"
     if first.entry != first.base:
         raise OverlayError(f"{where}: no entry {ENTRY} at its first byte")
@@ -364,12 +373,27 @@ def check(name, part, first, second, persistent, slot_bytes=None):
         for symbol, (_, kind, _) in first.symbols.items()
         if kind == "OBJECT"
         and symbol in persistent.symbols
-        and not (persistent.symbols[symbol][2] == "LOCAL" and symbol in RESETS + TABLES)
+        and not (
+            persistent.symbols[symbol][2] == "LOCAL"
+            and symbol in RESETS + TABLES + tuple(resets)
+        )
     ]
     if copies:
         raise OverlayError(
             f"{where}: its own copy of the runtime's state {copies[:4]}; the "
             "persistent kernel's is the one that counts"
+        )
+    differing = [
+        symbol
+        for symbol in TABLES
+        if symbol in first.symbols
+        and symbol in persistent.symbols
+        and first.tables.get(symbol) != persistent.tables.get(symbol)
+    ]
+    if differing:
+        raise OverlayError(
+            f"{where}: its table {differing[0]} differs from the persistent kernel's "
+            "(the part was built against other buffers); build it with the kernel's"
         )
     if first.image != second.image:
         raise OverlayError(
@@ -424,7 +448,9 @@ def persistent_facts(recipe):
         words = line.replace("[ ", "[").split()
         if len(words) > 5 and words[1] == ".text":
             at, size = int(words[3], 16), int(words[5], 16)
-            return Persistent((at, at + size), elf_symbols(recipe, recipe.elf))
+            symbols = elf_symbols(recipe, recipe.elf)
+            tables = table_bytes(recipe, recipe.elf, symbols)
+            return Persistent((at, at + size), symbols, tables)
     raise OverlayError(f"{recipe.elf}: no .text")
 
 
@@ -449,8 +475,48 @@ def linked_facts(recipe, elf, base, undefined):
     image += bytes(-len(image) % ALIGN)
     entry = symbols.get(ENTRY, (None,))[0]
     return Linked(
-        base, entry, relocations, symbols, tuple(undefined), extent - base, image
+        base,
+        entry,
+        relocations,
+        symbols,
+        tuple(undefined),
+        extent - base,
+        image,
+        table_bytes(recipe, elf, symbols),
     )
+
+
+def table_bytes(recipe, elf, symbols):
+    """{name: bytes} of the TABLES an ELF defines (`symbols`: elf_symbols'), read from
+    its sections; {} when it defines none (nothing read)."""
+    if not any(symbol in symbols for symbol in TABLES):
+        return {}
+    sizes = {}
+    for line in run([recipe.tool("readelf"), "-sW", str(elf)]).splitlines():
+        words = line.split()
+        if len(words) == 8 and words[7] in TABLES and words[6] != "UND":
+            sizes[words[7]] = (int(words[1], 16), int(words[2]))
+    data = Path(elf).read_bytes()
+    found = {}
+    for name, (value, size) in sizes.items():
+        for address, offset, length in progbits(data):
+            if address <= value and value + size <= address + length:
+                found[name] = data[
+                    offset + value - address : offset + value - address + size
+                ]
+    return found
+
+
+def progbits(data):
+    """(address, file offset, size) of each PROGBITS section of a 32-bit ELF."""
+    (table,) = np.frombuffer(data, "<u4", 1, 0x20)
+    entry, count = np.frombuffer(data, "<u2", 2, 0x2E)
+    out = []
+    for index in range(int(count)):
+        words = np.frombuffer(data, "<u4", 6, int(table) + index * int(entry))
+        if words[1] == 1 and words[5]:  # SHT_PROGBITS, not empty
+            out.append((int(words[3]), int(words[4]), int(words[5])))
+    return out
 
 
 def part_defines(overlay, kernel):
@@ -477,7 +543,22 @@ def part_defines(overlay, kernel):
 PARTS_BUILT = {"found": 0, "compiled": 0}  # build_part's, since a load's line read it
 
 
-def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None):
+def mop_defines(part, linked, persistent):
+    """The defines a part is built again with when it is a math part that defines
+    MOP_STATUS: its copy set unknown at entry, and the resident's (by its address)
+    after the call, when the kernel defines one; {} for every other part."""
+    if part != "math" or MOP_STATUS not in linked.symbols:
+        return {}
+    defines = {"KM_OVERLAY_MOP_STATUS": 1}
+    if MOP_STATUS in persistent.symbols:
+        address = persistent.symbols[MOP_STATUS][0]
+        defines["KM_OVERLAY_RESIDENT_MOP_STATUS"] = f"{address:#x}"
+    return defines
+
+
+def build_part(
+    recipe, overlay, kernel, part, cache, slot_bytes=None, index=None, more=None
+):
     """Builds and checks one part: compiled with the runtime's commands, position-
     independent, linked at two bases; kept under `cache` by a hash of its preprocessed
     source, the recipe and the persistent ELF. Returns the first link's Linked;
@@ -486,6 +567,7 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None
     scratch = Path(cache) / "sources"
     scratch.mkdir(parents=True, exist_ok=True)
     defines, compile_args = part_defines(overlay, kernel)
+    defines = {**defines, **(more or {})}
     recipe_key = hashlib.sha256(
         repr((recipe, defines, compile_args)).encode()
     ).hexdigest()[:16]
@@ -524,7 +606,14 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None
                 elf, lambda path, ld=script: recipe.link_command(obj, ld, path), work
             )
         links.append(linked_facts(recipe, elf, base, undefined))
-    check(overlay.name, part, *links, persistent_facts(recipe), slot_bytes)
+    persistent = persistent_facts(recipe)
+    again = mop_defines(part, links[0], persistent)
+    if again and more is None:
+        return build_part(
+            recipe, overlay, kernel, part, cache, slot_bytes, index, again
+        )
+    resets = (MOP_STATUS,) if more else ()
+    check(overlay.name, part, *links, persistent, slot_bytes, resets)
     if index is not None:
         keep(index, links[0], preprocessed, work / f"part-{LINK_BASE:x}.elf")
     return links[0]

@@ -72,10 +72,14 @@ What the chain met on the way:
   run all five, a chain loaded parts in every record. The slots now follow the program:
   by default five a CPU here (423,040 B, L1 1,320,992 of 1,429,376 B), and
   `program.slots(count=4)` gives the old four.
-- A class with some handlers resident and others overlays is refused when a resident
-  handler has tile code: the overlay's compute part keeps its own copy of the
-  unpacker's state (`unpack_num_faces_c_dim` and three more), and the resident
-  kernel's is the one that counts.
+- A class with some handlers resident and others overlays was refused when a resident
+  handler had tile code: the overlay's compute parts keep their own copies of the
+  build's constant tables of the buffers (`unpack_num_faces_c_dim` and ten more here),
+  which are not state, and of matmul.h's `throttled_mop_status`, which is. The tables
+  now pass when byte-equal to the kernel's, and a math part with that status is built
+  with its copy and the kernel's set unknown around the call. `DecodeLayerMixed` keeps
+  o and down resident (text 104,272 B) beside qkv, attend and gate_up as overlays
+  (`run_layer.py --chain --mixed`).
 
 On the card (2026-11-16, card 0, AICLK 1,350 MHz, T 256, median of 10 chains), all
 seven tensors equal the hand's word for word at both slot counts, and every kernel ended
@@ -85,8 +89,14 @@ clean:
 |---|---:|---:|
 | class chain, five slots a CPU (the default) | 342.25 | 0.4 to 1.2 |
 | class chain, four slots a CPU | 390.86 | 3.8 to 16.6 |
+| mixed class chain (o and down resident), three slots a CPU, another job | 342.11 | 0.4 to 1.5 |
 | the hand's chain (`card.Decode(chain=True)`), same job | 316.06 | |
 | the hand's command a step, same job | 363.34 | |
+
+The mixed class's job (2026-11-16): the seven tensors equal the hand's word for word,
+the hand's chain 315.46 us and its command a step 362.98 us in that job. Keeping o and
+down resident takes their parts' loads out (they were already under 1.2 us a record
+at five slots), so the layer is the same.
 
 The fifth slot set takes the parts' loads out of every record (48.6 us a layer). What
 is left against the hand's chain is in the records' bodies and input waits
