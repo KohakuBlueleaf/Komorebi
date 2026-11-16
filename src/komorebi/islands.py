@@ -21,7 +21,7 @@ THREAD_NUMBERS = 256  # 0xFF00 + number in 16 bits; numbers 1 to 255, 0 names no
 NO_LINK = 0xFF  # an island's own entry: no link toward it
 
 # An island table entry, little-endian: u16 first, u16 count, u8 next link, u8 hops, u8
-# ports toward it (bit p: neighbour p on a shortest path), u8 its first core on its card.
+# ports toward it (bit p: neighbour p on a shortest path), u8 its first core (a card's).
 ENTRY = struct.Struct("<HHBBBB")
 PORTS_MAX = 4  # a card's ports (north, south, east, west): neighbours an island
 ENTRY_BYTES = ENTRY.size

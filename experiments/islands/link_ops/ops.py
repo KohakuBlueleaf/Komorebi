@@ -49,10 +49,16 @@ def parse():
     return parser.parse_args()
 
 
+def stride(size):
+    """A ring slot's bytes: `size` in whole 16s (the kernel's)."""
+    return (size + 15) // 16 * 16
+
+
 def expected_ring(calls, slots, size, rank):
-    """The ring's words after `calls` calls: slot s holds the last call s + k slots."""
+    """The ring's words after `calls` calls: slot s (16-aligned) holds the last call
+    s + k slots."""
     words = size // 4
-    ring = np.zeros((slots, words), np.uint32)
+    ring = np.zeros((slots, stride(size) // 4), np.uint32)
     for slot in range(min(slots, calls)):
         call = slot + (calls - 1 - slot) // slots * slots
         for word in range(words):
@@ -73,7 +79,9 @@ def check(row, args, target):
     if kind & 1:
         if args.port >= 0:
             good &= port == args.calls
-        ring = row[AREA_RING // 4 : AREA_RING // 4 + args.slots * args.bytes // 4]
+        ring = row[
+            AREA_RING // 4 : AREA_RING // 4 + args.slots * stride(args.bytes) // 4
+        ]
         wrong = np.flatnonzero(
             ring != expected_ring(args.calls, args.slots, args.bytes, target)
         )
@@ -93,8 +101,8 @@ def page_of(session, tensor, page):
 
 def main():
     args = parse()
-    if AREA_RING + args.slots * args.bytes > PAGE or args.bytes % 16:
-        sys.exit("the ring does not fit the area, or --bytes is not whole 16s")
+    if AREA_RING + args.slots * stride(args.bytes) > PAGE or args.bytes % 4:
+        sys.exit("the ring does not fit the area, or --bytes is not whole 4s")
     if args.card is not None:
         opened = {"card": args.card, "islands": args.islands, "shape": args.shape}
     else:

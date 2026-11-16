@@ -93,15 +93,14 @@ namespace km {
         );
     }
 
-    // What a far line carries besides its op: words 2, 3 and 4, the rank's L1 address,
-    // the asker's (pieces), the port + 1.
+    // What a far line carries besides its op: word 2 (piece bytes, the word, the value)
+    // and 4 (pieces), the rank's L1 address, the asker's (pieces), the port + 1.
     struct FarLine {
         uint32_t ring;
         uint32_t rank;
         uint32_t holder;
         uint32_t page;
         uint32_t pieces;
-        uint32_t value;
         uint32_t to;
         uint32_t source;
         uint32_t port;
@@ -115,11 +114,13 @@ namespace km {
         const uint32_t area = view.link_area();
         const uint32_t mine = view.own_words();
         const uint32_t index = core.args().me - view.base();
-        if (
-            area == 0 || mine == 0 || view.hops(far.holder) != 1 ||
-            index >= KM_CORES_MAX
-        ) {
-            return far_refused();  // several hops: with the puts' (nothing sent)
+#if defined(KM_FAR_PUTS)
+        const bool reached = view.hops(far.holder) != 0;  // any links away
+#else
+        const bool reached = view.hops(far.holder) == 1;  // the next island
+#endif
+        if (area == 0 || mine == 0 || !reached || index >= KM_CORES_MAX) {
+            return far_refused();  // nothing sent
         }
         const uint32_t link = view.base() + view.ranks() + view.link(far.holder);
         const uint32_t limit = core.args().wait_limit;
@@ -183,8 +184,7 @@ namespace km {
         }
         line[KM_ASK_TENSOR] = far.rank;
         line[KM_ASK_PAGE] = far.page;
-        line[KM_ASK_PIECES] = far.pieces;
-        line[KM_ASK_PAGES] = far.value;
+        line[KM_ASK_PAGES] = far.pieces;
         line[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
         line[KM_ASK_TO] = far.to;
         line[KM_ASK_COUNT] = block + KM_OWN_FAR;
@@ -251,7 +251,6 @@ namespace km {
                 holder,
                 0,
                 0,
-                0,
                 address + done,
                 source + done,
                 0
@@ -267,7 +266,6 @@ namespace km {
                 invalidate_l1_cache();
                 far.page = l1(source + done)[0];
             }
-            far.value = length;
             const bool last = done + length == bytes;
             if (last && sent != 0) {
                 code = far_settled(core);  // every earlier line done: then the port
@@ -370,15 +368,7 @@ namespace km {
             }
 #if defined(KM_PAGE_LINKS)
             const FarLine far = {
-                KM_ASK_OP_ADD << KM_ASK_OP_SHIFT,
-                rank,
-                island,
-                0,
-                0,
-                value,
-                address,
-                0,
-                0
+                KM_ASK_OP_ADD << KM_ASK_OP_SHIFT, rank, island, value, 0, address, 0, 0
             };
             const uint32_t code = far_line(core, far, confirmed);
             return code == kGaveNone || far_gave_up(core, command, code, island);

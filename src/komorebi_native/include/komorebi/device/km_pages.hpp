@@ -1958,9 +1958,9 @@ namespace km {
             }
             const uint32_t asker = line[KM_ASK_CORE];
             const uint32_t owner = line[KM_ASK_OWNER] % KM_QUEUE_LINES;
-            uint32_t code = kGaveNone;
+            uint32_t code = far_land_line(kernel, line);  // an L1 write's, an add's
             forward_route(line[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
-            if (pages != 0) {
+            if (code == kGaveNone && pages != 0) {
                 auto* header = pages_header(area + KM_PUT_HEADERS + 64);
                 link_increment(
                     header,

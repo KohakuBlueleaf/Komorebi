@@ -27,7 +27,9 @@ void ops(km::Reader& reader, const km_command_t& command) {
             for (uint32_t w = 0; w < bytes / 4; w++) {
                 words[w] = ops_word(call, w, target);
             }
-            const uint32_t slot = area + kAreaRing + call % slots * bytes;
+            const uint32_t slot = (
+                area + kAreaRing + call % slots * ((bytes + 15) / 16 * 16)
+            );
             if (!km::write_l1(
                 reader,
                 command,

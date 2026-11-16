@@ -222,16 +222,15 @@
 #define KM_ASK_FORM 0xFFu
 #define KM_ASK_OP_WRITE 3u /* op 3: pages or bytes into the holder's DRAM */
 #define KM_ASK_OP_READ 4u  /* op 4: pages or bytes of the holder's into the asker */
-/* op 1: an L1 write (km::write_l1); word 1 the target rank, 4 the bytes, 6 its L1
- * address, 7 the asker's count (KM_OWN_FAR), 8 the rank's island; the rest as op 3 */
+/* op 1: an L1 write (km::write_l1); word 1 the target rank, 2 and 4 as a put's, 6 its
+ * L1 address, 7 the asker's count (KM_OWN_FAR), 8 the rank's island */
 #define KM_ASK_OP_L1 1u
-/* op 2: an add to a word (km::add_word); word 1 the target rank, 4 the value, 6 the
- * word's L1 address, 8 the rank's island */
+/* op 2: an add to a word (km::add_word); word 1 the target rank, 2 the value, 4 0 (no
+ * piece), 6 the word's L1 address, 8 the rank's island */
 #define KM_ASK_OP_ADD 2u
-/* An L1 write's words (km_far.hpp): word 2 the piece bytes, 3 the pieces, 10 the
+/* An L1 write's words (km_far.hpp): word 2 the piece bytes, 4 the pieces, 11 the
  * asker's L1, 14 the port + 1 (0: none); form KM_ASK_INLINE: word 2 the word itself */
-#define KM_ASK_PIECES 3u
-#define KM_ASK_SOURCE 10u
+#define KM_ASK_SOURCE 11u
 #define KM_ASK_PORT 14u
 #define KM_ASK_INLINE 4u
 #define KM_ASK_OWNER 13u /* a put: (core * 2 + its CPU) * 2 + parity, the asker's */
