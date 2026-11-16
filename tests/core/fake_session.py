@@ -79,15 +79,15 @@ class FakeDispatch(FakePort):
 class SessionBackend(FakeBackend):
     """The session's backend over a FakeDispatch, logging what it is asked to do."""
 
-    def __init__(self, session, dispatch, mhz, trace):
+    def __init__(self, card, dispatch, mhz, trace):
         super().__init__(dispatch, trace_cap=trace)
-        self.session = session
+        self.card = card
         self.log = dispatch.log
         self.io = []
 
     def describe(self, *args):
         self.log.append("describe")
-        return FakeLaunch(self.session._module)
+        return FakeLaunch(self.card.module)
 
     def load_overlays(self, program, descriptor):
         """Every run's service overlay: nothing to place without a card."""

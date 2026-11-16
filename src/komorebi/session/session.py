@@ -57,6 +57,7 @@ from komorebi.session import kernels as kernel_module
 from komorebi.session import process, sizes, tensor_bytes
 from komorebi.session import state as device_state
 from komorebi.session import x280 as x280_module
+from komorebi.session.backend.card import Card
 from komorebi.session.run import Run
 
 MESSAGES_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may take
@@ -313,6 +314,44 @@ class Session:
         self._worker_l1 = worker_l1
         self.open()
 
+    def _card(self):
+        """What a backend of this session's load reads of it (backend.card.Card): the
+        load's values, fixed before the backend is made, and the session's calls."""
+        return Card(
+            log=self.log,
+            module=self._module,
+            tree=self.tree,
+            device=self.device,
+            island=self.island,
+            link_area=self.link_area,
+            link_plan=self.link_plan,
+            link_plans=self.link_plans,
+            packet=self.packet,
+            tensor_table=self.tensor_table,
+            page_bounds=self.page_bounds,
+            slow_code=self.slow_code,
+            grid_timeout=self.grid_timeout,
+            transfer_chunk=self.transfer_chunk,
+            channel=self.channel is not None or self._mock_channel,
+            tensor=self.tensor,
+            empty=self.empty,
+            write=self.write,
+            l1=self.l1,
+            l1_rows=self.l1_rows,
+            l1_held=self.l1_held,
+            l1_taken=self.l1_taken,
+            nocs=self.nocs,
+            page_bounds_list=self.page_bounds_list,
+            largest_page=lambda: self.largest_page,
+            hand_nocs=self._hand_nocs,
+            resize=self._resize,
+            mark_stuck=self._mark_stuck,
+        )
+
+    def _mark_stuck(self):
+        """The grid did not return after a stop: the runtime closes it at exit."""
+        self.stuck = True
+
     def _release(self, why, close_device):
         """The exit hooks' timed clean-up of this session: closes the X280 runtime of
         a load in progress or a loaded run, then (`close_device`) closes the session.
@@ -425,8 +464,9 @@ class Session:
             held = placed.programs if placed else [program]
             switch = bool(placed and placed.switch)
             chunk = tensor_bytes._transfer_chunk_of(
-                self, held, switch, trace_cap, control
-            )
+                self.largest_page, self.l1, self.transfer_chunk, held, switch,
+                trace_cap, control,
+            )  # fmt: skip
             size = 2 * chunk + abi_headers["KM_TRANSFER_WORD_BYTES"] + sizes.NOC_ALIGN
             rows.append(("host transfer buffer", size))
         messages = getattr(program, "messages", None)
@@ -1158,7 +1198,7 @@ class Session:
                 self.island, program, None, dispatch.grid_x * dispatch.grid_y
             )
             plan, port_lines = x280_module._port_lines(owner, dispatch, rings, served)
-            backend = _Backend(self, dispatch, mhz, trace)
+            backend = _Backend(self._card(), dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
             backend.reserve = reserve
             backend.added_buffers = added_program.buffers_given(buffers)
@@ -1434,7 +1474,7 @@ class Session:
                     "the islands' dispatchers differ in upload region: "
                     f"{[dispatch.upload_bytes for dispatch in dispatches]}"
                 )
-            first = _Backend(self, dispatches[0], mhz, trace)
+            first = _Backend(self._card(), dispatches[0], mhz, trace)
             first.split = (graph, list(dispatches), tags, rows, set())
             first.state_tensor = states[0]
             descriptor = first.describe(
@@ -1529,9 +1569,9 @@ class _TransferBuffer(NamedTuple):
 class _Backend:
     """The card side of a Run: the native port, the device tensors, the readback."""
 
-    def __init__(self, session, dispatch, mhz, trace):
-        self.session = session
-        self.device = session.device
+    def __init__(self, card, dispatch, mhz, trace):
+        self.card = card  # what it reads of its session (backend.card.Card)
+        self.device = card.device
         self.port = dispatch
         self.mhz = mhz
         self.trace_cap = (trace + 3) // 4 * 4 if trace else 0  # whole 64-byte pages
@@ -1574,21 +1614,21 @@ class _Backend:
         """
         words = -(-len(data) // 64) * 16  # whole 64-byte lines: a core reads lines
         tensor = (
-            self.session.empty((DRAM_BANKS, words), "uint32")
+            self.card.empty((DRAM_BANKS, words), "uint32")
             if at is None
             else SimpleNamespace(address=at, free=lambda: None)
         )
         data = data if place is None else place(tensor.address)
         padded = np.zeros(4 * words, np.uint8)
         padded[: len(data)] = data
-        self.session._module.write_dram(
+        self.card.module.write_dram(
             self.device, list(range(DRAM_BANKS)), tensor.address, padded
         )
         return tensor
 
     def fence(self):
         """Returns once every block written so far is in DRAM."""
-        self.session._module.dram_barrier(self.device)
+        self.card.module.dram_barrier(self.device)
 
     def inspect(self, count):
         """While the kernel runs: the inspect block with its first `count` records, and
@@ -1610,9 +1650,7 @@ class _Backend:
             abi_headers["KM_CONTROL_BYTES"] + area_bytes + tensor_bytes.CONTROL_ALIGN
         ) // 4
         words += 0 if bounds is None else bounds[0].size
-        self.control = programs.words_tensor(
-            self.session, np.zeros((cores, words)), grid
-        )
+        self.control = programs.words_tensor(self.card, np.zeros((cores, words)), grid)
         base = self.control.address
         self.control_addr = (
             (base + tensor_bytes.CONTROL_ALIGN - 1)
@@ -1641,7 +1679,7 @@ class _Backend:
         the island area's table word (km_extent.hpp); its tensors kept alive by the run
         (an address freed and made again would not be the listed tensor)."""
         self.bounds_tensors = []
-        if bounds is None or self.session.tensor_table:
+        if bounds is None or self.card.tensor_table:
             return
         words, self.bounds_tensors, left = bounds
         abi_headers = abi.headers()
@@ -1652,9 +1690,9 @@ class _Backend:
         ] = words
         table = abi_headers["KM_CONTROL_ISLANDS"] + abi_headers["KM_ISLAND_TENSORS"]
         rows[:, self.control_offset + table // 4] = self.control_addr + 4 * offset
-        said = extents.unchecked_says(left, self.session.page_bounds)
+        said = extents.unchecked_says(left, self.card.page_bounds)
         if said:
-            self.session.log(said)
+            self.card.log(said)
 
     def _island_rows(self, cores, columns):
         """Every core's island area in control_rows: island i of the load's graph,
@@ -1662,7 +1700,7 @@ class _Backend:
         the link area's and the tensor table's addresses); a split card's islands their
         own rows."""
         abi_headers = abi.headers()
-        graph, here = self.session.island or (islands.one(cores, columns), 0)
+        graph, here = self.card.island or (islands.one(cores, columns), 0)
         parts = [(here, 0, cores)]
         if self.split is not None:
             graph, _, _, rows, _ = self.split
@@ -1671,15 +1709,15 @@ class _Backend:
             ]
         at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
         line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
-        plan = self.session.link_plan
-        plans = self.session.link_plans if self.split else None
+        plan = self.card.link_plan
+        plans = self.card.link_plans if self.split else None
         # the grid's panels: a whole island's release multicast (km::team_go)
-        panels = self.session.nocs().panels if len(graph.islands) > 1 else None
+        panels = self.card.nocs().panels if len(graph.islands) > 1 else None
         for here, base, count in parts:
             plan = plans[here] if plans else plan
-            area = plan.area if plans else self.session.link_area
+            area = plan.area if plans else self.card.link_area
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
-            header += [base, self.session.packet]
+            header += [base, self.card.packet]
             header += [0]  # KM_ISLAND_LINKS: unused (the relay's, retired)
             mine = self.control_rows[base : base + count]
             if getattr(plan, "table", 0):  # the table in L1, the ports in the area
@@ -1697,9 +1735,7 @@ class _Backend:
                 for core, tile in getattr(plan, "relay_tiles", {}).items():
                     self.control_rows[core, relay + 2] = tile
             mine[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = area
-            mine[:, at + abi_headers["KM_ISLAND_TENSORS"] // 4] = (
-                self.session.tensor_table
-            )
+            mine[:, at + abi_headers["KM_ISLAND_TENSORS"] // 4] = self.card.tensor_table
             mine[:, at + abi_headers["KM_ISLAND_FORWARD"] // 4] = getattr(
                 plan, "forward", 0
             )
@@ -1720,7 +1756,7 @@ class _Backend:
                 "direct messages across islands need the deliveries (KM_DELIVER): a "
                 "split card's dynamic load"
             )
-        graph, here = self.session.island or (None, 0)
+        graph, here = self.card.island or (None, 0)
         parts = [(here, 0, cores)]
         if self.split is not None:
             graph, _, _, rows, _ = self.split
@@ -1746,20 +1782,20 @@ class _Backend:
             constants, _ = messages_header()
             words = constants["kMessagesInbox"] * messages.message_bytes // 4
             self.inbox = programs.words_tensor(
-                self.session, np.zeros((cores, words)), grid
+                self.card, np.zeros((cores, words)), grid
             )
             self.io.append(self.inbox)
             x280 = x280 | {"inbox": self.inbox.address}
         abi_headers = abi.headers()
         messages.check(cores, MESSAGES_DRAM_BYTES, depth)
         page = 32 * messages.message_bytes  # kMessagesPageMessages messages a page
-        queue = self.session.empty(
+        queue = self.card.empty(
             (cores * messages.queue_messages // 32, page // 4), "int32"
         )
         self.io.append(queue)
         body = 0
         if messages.body_bytes:  # a page of body_bytes a queue position
-            bodies = self.session.empty(
+            bodies = self.card.empty(
                 (cores * messages.queue_messages, messages.body_bytes // 4), "int32"
             )
             self.io.append(bodies)
@@ -1768,16 +1804,16 @@ class _Backend:
         direct = 0
         if messages.direct:  # each core's tables, credit lines and slots, in L1
             rows = messages.direct_rows(cores)
-            if self.session.island is not None or self.split is not None:
+            if self.card.island is not None or self.split is not None:
                 rows = self._direct_islands(program, cores, grid[0])
-            self.direct = programs.words_tensor(self.session, rows, grid)
+            self.direct = programs.words_tensor(self.card, rows, grid)
             self.io.append(self.direct)
             direct = self.direct.address
         stamps = 0
         if messages.stamps:  # km_messages.hpp kMessagesStamp*: cycles and counts
             words = messages_header()[0]["kMessagesStampWords"]
             zeros = np.zeros((cores, words), np.uint32)
-            self.stamps = programs.words_tensor(self.session, zeros, grid)
+            self.stamps = programs.words_tensor(self.card, zeros, grid)
             self.io.append(self.stamps)
             stamps = self.stamps.address
         reader_writer = messages.args(queue.address, lines, body, x280, direct, stamps)
@@ -1826,21 +1862,20 @@ class _Backend:
         self.slots_most = kernel_module.slots_most(program, placed)
         # the service overlay's too, and the records of slots past 4
         self.area_bytes = overlay.area_bytes(self.slots_most)
-        island_names.check(placed.programs if placed else [program], self.session.log)
-        bounds = self.session.page_bounds_list(placed.programs if placed else [program])
+        island_names.check(placed.programs if placed else [program], self.card.log)
+        bounds = self.card.page_bounds_list(placed.programs if placed else [program])
         control = self._control_blocks(cores, grid, port_lines, self.area_bytes, bounds)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
-        cores_tensor = programs.words_tensor(self.session, table)
+        cores_tensor = programs.words_tensor(self.card, table)
         self.io = [self.control, cores_tensor]
-        session = self.session
-        if session.channel is not None or program.threads or session._mock_channel:
+        if self.card.channel or program.threads:
             # also the threads' copies; a prebuild's as the card's
             chunk = self._transfer_chunk(program, placed, cores)
             self.transfer = self._transfer_buffer(cores, grid, chunk)
         if self.trace_cap:
             self.trace_tensor = programs.words_tensor(
-                self.session,
+                self.card,
                 np.zeros((cores, self.trace_cap * abi_headers["kTraceWords"])),
             )
             self.io.append(self.trace_tensor)
@@ -1898,7 +1933,7 @@ class _Backend:
             compute_args.append(
                 (x, y, [control, core, *limits, *messages_compute_args, *compute])
             )
-        launch = self.session._module.Launch(self.device)
+        launch = self.card.module.Launch(self.device)
         if placed is not None:
             args = (reader_args, writer_args, compute_args)
             self._describe_groups(launch, placed, sources, args, grid)
@@ -1912,7 +1947,7 @@ class _Backend:
         if program.messages is not None:
             defines += program.messages.defines()
         ranks, links = kernel_module._link_kernels(
-            self.session.island, program, self.split, cores
+            self.card.island, program, self.split, cores
         )
         if "KM_PAGE_LINKS" in program.defines and not links:
             defines.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
@@ -1960,7 +1995,7 @@ class _Backend:
             self.link_queue_at = (kernel_module._cbs_end(below), chunk)
             if chunk:
                 link_defines.append(("KM_LINK_CHUNK", str(chunk)))
-                self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
+                self.card.log(f"link cores: their own chunks, {chunk:,} B a CPU")
             kernel_module.check_link_defines(program.name, link_defines, [program])
             for kernel, args, processor, _ in kernels:
                 launch.kernel(
@@ -1979,7 +2014,7 @@ class _Backend:
         """KM_ONE_ISLAND for a load that is no island of several (a card of its own,
         not split): its kernels take the island table's one entry as known
         (km_island.hpp), the code of several islands left out."""
-        if self.session.island is not None or self.split is not None:
+        if self.card.island is not None or self.split is not None:
             return []
         return [("KM_ONE_ISLAND", "1")]
 
@@ -1987,7 +2022,7 @@ class _Backend:
         """The bytes of the link area at the link cores' buffers' base when
         the load's link plan keeps them there (its link cores run their own kernels,
         `links` of them), else 0; the rank cores' buffers are then launched apart."""
-        plan = self.session.link_plan
+        plan = self.card.link_plan
         if plan is None or getattr(plan, "apart", None) is None:
             return 0
         if not links:
@@ -2030,17 +2065,19 @@ class _Backend:
         """The chunk of the run's transfer buffer (_transfer_chunk_of)."""
         held = placed.programs if placed else [program]
         switch = bool(placed and placed.switch)
+        card = self.card
         return tensor_bytes._transfer_chunk_of(
-            self.session, held, switch, self.trace_cap, self.control.nbytes // cores
-        )
+            card.largest_page(), card.l1, card.transfer_chunk, held, switch,
+            self.trace_cap, self.control.nbytes // cores,
+        )  # fmt: skip
 
     def _link_core_rects(self, grid):
         """The rectangles of this load's link cores (two cards: its island's; a split
         card: every island's), [] for none."""
         if self.split is not None:
             graph, mine = self.split[0], range(len(self.split[0].islands))
-        elif self.session.island is not None:
-            graph, here = self.session.island
+        elif self.card.island is not None:
+            graph, here = self.card.island
             mine = [here]
         else:
             return []
@@ -2087,7 +2124,7 @@ class _Backend:
         buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
         buffers += self.transfer.bytes if self.transfer is not None else 0
         spare = (
-            self.session.l1()[1]
+            self.card.l1()[1]
             - buffers
             - self.control.nbytes // cores
             - self._held_bytes()
@@ -2101,13 +2138,13 @@ class _Backend:
         chunk = min(
             kernel_module.LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10)
         )
-        least = kernel_module.link_chunk_least(self.session.packet or 0)
+        least = kernel_module.link_chunk_least(self.card.packet or 0)
         return chunk if chunk >= least else 0  # else no ring: the transfer chunk's
 
     def _transfer_buffer(self, cores, grid, chunk):
         """The L1 every core moves a transfer's chunks through (a sharded tensor)."""
         size = 2 * chunk + abi.headers()["KM_TRANSFER_WORD_BYTES"]
-        tensor = self.session.empty(
+        tensor = self.card.empty(
             (cores, (size + sizes.NOC_ALIGN) // 4), "uint32", shard_grid=grid
         )
         self.io.append(tensor)
@@ -2118,11 +2155,11 @@ class _Backend:
         """The L1 budget table's rows of what the session's owner keeps at the top of
         every core (two cards: the link area, the tensor table) and of
         what the session already holds there (l1_taken)."""
-        return list(self.session.l1_held()) + self.session.l1_taken()
+        return list(self.card.l1_held()) + self.card.l1_taken()
 
     def _taken_bytes(self):
         """The bytes of the session's own L1 held from before this load."""
-        return sum(size for _, size in self.session.l1_taken())
+        return sum(size for _, size in self.card.l1_taken())
 
     def release_l1(self):
         """A finished run's L1 tensors (its host transfer buffer, control blocks and
@@ -2153,7 +2190,7 @@ class _Backend:
     def _switch_layouts(self, placed):
         """In a run whose groups switch: each program's buffers placed after the
         runtime's own ({field: layout}), and the end of the largest."""
-        _, kernel_free, l1_bytes = self.session._module.kernel_buffer(self.device)
+        _, kernel_free, l1_bytes = self.card.module.kernel_buffer(self.device)
         _, start = programs.buffer_layout(self._runtime_cbs(), l1_bytes - kernel_free)
         self.switch_layouts, end = {}, start
         for program in placed.programs:
@@ -2170,7 +2207,7 @@ class _Backend:
         """The runtime's kernels and each group's buffers on its cores: a group's
         kernels are built apart (KM_PROGRAM_GROUP), with its buffers and options."""
         include = [str(abi.headers().abi.parents[2])]
-        free = self.session.l1()[1]
+        free = self.card.l1()[1]
         self.group_buffers = []
         self.cb_indices = {  # a switch may give any core any program's buffers
             buffer.index for program in placed.programs for buffer in program.buffers
@@ -2269,7 +2306,7 @@ class _Backend:
         ]
         cores = grid[0] * grid[1]
         ranks, links = kernel_module._link_kernels(
-            self.session.island, first, self.split, cores
+            self.card.island, first, self.split, cores
         )
         if "KM_PAGE_LINKS" in first.defines and not links:
             island.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
@@ -2312,9 +2349,9 @@ class _Backend:
     def _slot_buffer(self, descriptor, slot_bytes):
         """Every core's slots as the launch's first circular buffer, at the L1 base,
         so they lie below 1 MB and the buffers above them; returns their address."""
-        base = sizes.L1_BYTES - self.session.l1()[1]
+        base = sizes.L1_BYTES - self.card.l1()[1]
         address, size, _ = kernel_module.slot_area(
-            base, slot_bytes, self.cb_indices, self.session.slow_code
+            base, slot_bytes, self.cb_indices, self.card.slow_code
         )
         index = self.slot_index  # declared by describe
         descriptor.resize_cb(index, size, size)
@@ -2326,14 +2363,14 @@ class _Backend:
                 for key, (at, *rest) in layout.items():
                     layout[key] = (at + size, *rest)
             self.switch_shift = size
-        self.session.log(f"slots: {size:,} B from {address:#x} (buffer {index})")
+        self.card.log(f"slots: {size:,} B from {address:#x} (buffer {index})")
         return address
 
     def load_overlays(self, program, descriptor):
         """Builds the program's overlays and the service overlay against the kernels
         just built, puts each part in every DRAM bank, places the slots in L1 (refused,
         with the L1 budget table, when they do not fit), writes each overlay area."""
-        session, abi_headers = self.session, abi.headers()
+        card, abi_headers = self.card, abi.headers()
         started = time.perf_counter()
         recipes = {}
         for source, builds in descriptor.recipes():
@@ -2349,29 +2386,29 @@ class _Backend:
             program.overlay_slots,
             recipes,
             native.cache_directory() / "overlays",
-            session.log,
+            card.log,
             self.slots_most,
         )
-        rows = session.l1_rows(program, self.trace_cap)
+        rows = card.l1_rows(program, self.trace_cap)
         built = kernel_module.fit_slots(
             built,
             kernel_module.own_slot_declared(program),
-            session.l1()[1],
+            card.l1()[1],
             rows,
-            session.log,
+            card.log,
         )
         program.overlays_built = built
         rows[2:2] = kernel_module.slot_rows(built.slots, built.service, built.why)
-        table, fits = overlay.budget(session.l1()[1], rows)
-        session.log(f"L1 budget of a core:\n{table}")
+        table, fits = overlay.budget(card.l1()[1], rows)
+        card.log(f"L1 budget of a core:\n{table}")
         if not fits:
-            refused = session._resize(program.sizes.total, l1_failed=True)
+            refused = card.resize(program.sizes.total, l1_failed=True)
             raise L1BudgetError(
                 program.name, table, self._held_bytes(), refused, self._taken_bytes()
             )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed = overlay.dram_rows(built, reserve)
-        image = programs.words_tensor(session, image_rows)
+        image = programs.words_tensor(card, image_rows)
         slot_base = self._slot_buffer(descriptor, built.slot_bytes)
         self.io.append(image)
         self.room = added.room(
@@ -2381,7 +2418,7 @@ class _Backend:
             [added.group(0, len(self.control_rows), recipes, built)],
             [program],
         )
-        added.build_ahead(session, self.room, [program])  # Program.ahead's parts
+        added.build_ahead(card, self.room, [program])  # Program.ahead's parts
         area = overlay.area_words(
             built,
             placed,
@@ -2395,7 +2432,7 @@ class _Backend:
         if self.apart_links:  # no slots there: no overlay to load
             self.control_rows[-self.apart_links :, at : at + len(area)] = 0
         self.control.write(self.control_rows)
-        session.log(
+        card.log(
             f"overlays {[*program.overlays, 'service']} built and placed: slots from "
             f"{slot_base:#x}, {image.nbytes:,} B of DRAM "
             f"({time.perf_counter() - started:.2f} s)"
@@ -2436,7 +2473,7 @@ class _Backend:
         empty = bytes(c["kRecordBytes"])
         records |= {(field, "record"): empty for field in spare}
         rows, placed_records = overlay.dram_rows(overlay.Built(records, {}))
-        tensor = programs.words_tensor(self.session, rows)
+        tensor = programs.words_tensor(self.card, rows)
         self.io.append(tensor)
         refused = None
         differ = sorted(
@@ -2475,7 +2512,7 @@ class _Backend:
         """Builds each program as an overlay against its group's runtime kernels, puts
         the parts in every DRAM bank, places the slots (refused, with the L1 budget
         table, when a group's do not fit) and writes each group's overlay area."""
-        session, abi_headers = self.session, abi.headers()
+        card, abi_headers = self.card, abi.headers()
         started = time.perf_counter()
         by_group = kernel_module._group_recipes(
             descriptor.recipes(), len(placed.groups)
@@ -2523,32 +2560,32 @@ class _Backend:
                     declared,
                     recipes,
                     native.cache_directory() / "overlays",
-                    session.log,
+                    card.log,
                     self.slots_most,
                 )
                 buffers = sum(
                     buffer.page_bytes * buffer.pages
                     for buffer in self.group_buffers[number]
                 )
-                rows = session.l1_rows(
+                rows = card.l1_rows(
                     placed.programs[0], self.trace_cap, placed, buffers=buffers
                 )
                 if not placed.switch:  # a switch's slots are common: sized below
                     made = kernel_module.fit_slots(
-                        made, declared, session.l1()[1], rows, session.log
+                        made, declared, card.l1()[1], rows, card.log
                     )
                 rows[2:2] = kernel_module.slot_rows(made.slots, made.service, made.why)
-                table, fits = overlay.budget(session.l1()[1], rows)
+                table, fits = overlay.budget(card.l1()[1], rows)
                 names = ", ".join(program.name for program in held)
-                session.log(f"L1 budget of a core of {names}:\n{table}")
+                card.log(f"L1 budget of a core of {names}:\n{table}")
                 spills = [p.spill for p in held if hasattr(p, "spill")]
-                if not fits and not any(spill(session.log) for spill in spills):
+                if not fits and not any(spill(card.log) for spill in spills):
                     break
             for program in held:
                 program.overlays_built = made
             built.append(made)
             if not fits:
-                refused = session._resize(placed.programs[0].sizes.total, True)
+                refused = card.resize(placed.programs[0].sizes.total, True)
                 raise L1BudgetError(
                     names, table, self._held_bytes(), refused, self._taken_bytes()
                 )
@@ -2568,11 +2605,11 @@ class _Backend:
             common = kernel_module._common_slots(
                 placed, declared, built, self.slots_most
             )
-            rows = session.l1_rows(placed.programs[0], self.trace_cap, placed)
+            rows = card.l1_rows(placed.programs[0], self.trace_cap, placed)
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
             common = kernel_module.fit_slots(
-                common, declared, session.l1()[1], rows, session.log
+                common, declared, card.l1()[1], rows, card.log
             )
             kernel_module._own_slots_kept(placed, common)
             built = [
@@ -2583,10 +2620,10 @@ class _Backend:
                 common.slots, common.service, common.why
             )
             added_program.grow_area(self, descriptor, rows, placed)
-            table, fits = overlay.budget(session.l1()[1], rows)
-            session.log(f"L1 budget of a core:\n{table}")
+            table, fits = overlay.budget(card.l1()[1], rows)
+            card.log(f"L1 budget of a core:\n{table}")
             if not fits:
-                refused = session._resize(placed.programs[0].sizes.total, True)
+                refused = card.resize(placed.programs[0].sizes.total, True)
                 raise L1BudgetError(
                     ", ".join(p.name for p in placed.programs),
                     table,
@@ -2601,7 +2638,7 @@ class _Backend:
             width = max(len(image) for image in images.values())
             reserve = max(reserve, added_program.ahead_parts(placed) * width)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
-        image = programs.words_tensor(session, image_rows)
+        image = programs.words_tensor(card, image_rows)
         slot_base = self._slot_buffer(
             descriptor, max(made.slot_bytes for made in built)
         )
@@ -2618,8 +2655,8 @@ class _Backend:
             ],
             placed.programs,
         )
-        added.build_ahead(session, self.room, placed.programs)  # Program.ahead's parts
-        added_program.build_ahead(session, self, self.room, placed)  # classes ahead
+        added.build_ahead(card, self.room, placed.programs)  # Program.ahead's parts
+        added_program.build_ahead(card, self, self.room, placed)  # classes ahead
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}
@@ -2638,7 +2675,7 @@ class _Backend:
         self.control.write(self.control_rows)
         if placed.switch:
             self._switch_records(placed, image, placed_rows, symbols)
-        session.log(
+        card.log(
             f"programs {[program.name for program in placed.programs]} built and "
             f"placed: slots from {slot_base:#x}, {image.nbytes:,} B of DRAM "
             f"({time.perf_counter() - started:.2f} s)"
@@ -2650,7 +2687,7 @@ class _Backend:
             return self.port.finish(timeout)
         finally:
             self.port.close()
-            self.session.log("x280 runtime closed")
+            self.card.log("x280 runtime closed")
 
     def abort(self):
         """The failure path: the stop flag to every core, a timed wait for the grid,
@@ -2659,11 +2696,9 @@ class _Backend:
         try:
             self.stop_grid()
             back = self._wait_grid(ABORT_GRID_S)
-            self.session.log("grid returned" if back else "grid still running")
+            self.card.log("grid returned" if back else "grid still running")
         except Exception as error:  # noqa: BLE001 (the close below always runs)
-            self.session.log(
-                f"stopping the grid raised {type(error).__name__}: {error}"
-            )
+            self.card.log(f"stopping the grid raised {type(error).__name__}: {error}")
         cleaned = self.port.close()
         self.close_failed = "" if cleaned else self.port.close_failed
         self.aborted = self.port.aborted()
@@ -2671,7 +2706,7 @@ class _Backend:
         if self.aborted is not None:
             abandoned = self.aborted["x280_cores"][abi.headers()["KMD_H_ABANDONED"]]
             why += f"; {abandoned} commands abandoned"
-        self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned}){why}")
+        self.card.log(f"x280 runtime closed after a stop (cleaned {cleaned}){why}")
         self.log_state()
         return cleaned
 
@@ -2681,19 +2716,19 @@ class _Backend:
         try:
             words = self.kernel_state()
             if words is None:
-                self.session.log("kernel state not found in DRAM (lines not flushed)")
+                self.card.log("kernel state not found in DRAM (lines not flushed)")
                 return
             for line_index, line in enumerate(words.reshape(-1, 8)):
                 text = " ".join(f"{int(word):#x}" for word in line)
-                self.session.log(f"kernel state +{64 * line_index:#05x}: {text}")
+                self.card.log(f"kernel state +{64 * line_index:#05x}: {text}")
         except Exception as error:  # noqa: BLE001 (a failure path: reported)
-            self.session.log(f"kernel state not read ({type(error).__name__}: {error})")
+            self.card.log(f"kernel state not read ({type(error).__name__}: {error})")
 
     def kernel_state(self):
         """The first STATE_DUMP_LINES lines of the kernel's state (uint64 words) from
         the first page of each bank: the one whose args and lim words name the LIM
         base is the bank the cluster's Memory Port reaches. None if no page does."""
-        module = self.session._module
+        module = self.card.module
         banks = module.dram_banks(self.device)
         (pages,) = tensor_bytes.read_tensors(
             self.device, module, [self.state_tensor], 0, banks
@@ -2724,18 +2759,18 @@ class _Backend:
             f"in {result['where_name']}); "
             f"X280 cores: {probe['x280_states']}"
         )
-        self.session.log(report)
+        self.card.log(report)
         return report
 
     def stop_grid(self):
         """Writes the stop flag into every core (of this island on a split card)
         through the device API."""
         abi_headers = abi.headers()
-        module, grid_x = self.session._module, self.port.grid_x
+        module, grid_x = self.card.module, self.port.grid_x
         for core in self._cores():
             address = self.control_addr + abi_headers["KM_CONTROL_STOP"]
             module.write_l1(self.device, core % grid_x, core // grid_x, address, [1])
-        self.session.log("stop flag written by the host")
+        self.card.log("stop flag written by the host")
 
     def _cores(self):
         """The cores of this backend's island on a split card; else every core."""
@@ -2747,7 +2782,7 @@ class _Backend:
     def _wait_grid(self, timeout):
         """Whether this backend's cores (_cores) returned within `timeout`."""
         first, rows = self.rows or (0, self.port.grid_y)
-        return self.session._module.wait_grid(
+        return self.card.module.wait_grid(
             self.device, self.port.grid_x, rows, timeout, first
         )
 
@@ -2760,16 +2795,16 @@ class _Backend:
             raise RuntimeError("close the X280 runtime before reading back")
         abi_headers = abi.headers()
         module, grid_x, grid_y = (
-            self.session._module,
+            self.card.module,
             self.port.grid_x,
             self.port.grid_y,
         )
         if stop_grid:
             self.stop_grid()
         started = time.monotonic()
-        timeout = self.session.grid_timeout
+        timeout = self.card.grid_timeout
         if not self._wait_grid(timeout):
-            self.session.stuck = True
+            self.card.mark_stuck()
             raise GridTimeout(
                 f"the grid's kernels did not return within {timeout} s after the stop. "
                 "The session does not close the device; at the process's exit the "
@@ -2790,12 +2825,10 @@ class _Backend:
             returned.add(self.rows)
             if len(returned) == len(self.split[3]):
                 self.device.finish()  # returns at once: every island is done
-            self.session.log(
-                f"island cores returned ({time.monotonic() - started:.1f} s)"
-            )
+            self.card.log(f"island cores returned ({time.monotonic() - started:.1f} s)")
         else:
             self.device.finish()  # returns at once: every core is done
-            self.session.log(f"grid returned ({time.monotonic() - started:.1f} s)")
+            self.card.log(f"grid returned ({time.monotonic() - started:.1f} s)")
             rows = tensor_bytes._read_uint32(self.control)
             start = self.control_offset
             blocks = rows[:, start : start + words].astype(np.uint32)
@@ -2807,5 +2840,5 @@ class _Backend:
             trace = words.reshape(
                 words.shape[0], self.trace_cap, abi_headers["kTraceWords"]
             )
-        self.session.log("state and trace read back")
+        self.card.log("state and trace read back")
         return blocks, trace

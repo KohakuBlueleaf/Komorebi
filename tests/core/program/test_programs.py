@@ -305,8 +305,8 @@ def test_buffers_declared_out_of_index_order_are_laid_out_in_index_order(tmp_pat
     plan = programs.plan({program: (0, 10)}, 120)
     module = SimpleNamespace(kernel_buffer=lambda device: (0, 0x1000, 0x20000))
     backend = session_module._Backend.__new__(session_module._Backend)
-    backend.session, backend.device, backend.trace_cap = (
-        SimpleNamespace(_module=module),
+    backend.card, backend.device, backend.trace_cap = (
+        SimpleNamespace(module=module),
         None,
         0,
     )

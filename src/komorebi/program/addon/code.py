@@ -169,7 +169,7 @@ def _builds(run, made, log):
     for each in run.backend.room.groups:
         images = {}
         for kernel, part in made.parts():
-            linked, hit = _part(run.backend.session, each, made, kernel, part)
+            linked, hit = _part(run.backend.card, each, made, kernel, part)
             cached = cached and hit
             images[part] = linked.image
             log(f"added {made.name}: {part} part {len(linked.image)} B")
@@ -177,7 +177,7 @@ def _builds(run, made, log):
     return builds, time.perf_counter() - started, cached
 
 
-def _part(session, each, made, kernel, part):
+def _part(card, each, made, kernel, part):
     """(Linked, whether it was in the cache) of one part of `made` built against the
     kernels of group `each` and checked against its slot and the instruction check."""
     slots = each.slots.get(part)
@@ -199,7 +199,7 @@ def _part(session, each, made, kernel, part):
         insn_check.check_kernels(
             made.name,
             [(made.sources[kernel], [elf])],
-            native.metal_tree(session.tree),
+            native.metal_tree(card.tree),
             native.cache_directory() / "insn-check",
         )
     return linked, hit
@@ -214,7 +214,7 @@ def _slot_hint(error, kernel):
     )
 
 
-def build_ahead(session, room, programs):
+def build_ahead(card, room, programs):
     """At a load: the parts of the code each program said a run will add
     (Program.ahead), built against each group's kernels into the parts' cache (the
     number is not in a part's key), so the add finds them built. Nothing is written
@@ -224,9 +224,9 @@ def build_ahead(session, room, programs):
             started, hits, count = time.perf_counter(), 0, 0
             for each in room.groups:
                 for kernel, part in made.parts():
-                    hits += _part(session, each, made, kernel, part)[1]
+                    hits += _part(card, each, made, kernel, part)[1]
                     count += 1
-            session.log(
+            card.log(
                 f"ahead {made.name}: {count} parts for {len(room.groups)} groups in "
                 f"{time.perf_counter() - started:.2f} s ({hits} built before)"
             )
@@ -259,7 +259,7 @@ def _place(run, made, builds):
                 chunk = np.frombuffer(image[row * width : (row + 1) * width], np.uint8)
                 page = banks * (first + row)
                 pages[page : page + banks, : len(chunk)] = chunk
-        run.backend.session.write(room.image, pages, first=banks * room.next)
+        run.backend.card.write(room.image, pages, first=banks * room.next)
     room.next = at
     stride = room.image.aligned_page_bytes
     return [
@@ -366,7 +366,7 @@ def addon(
         )
     if compile_args:  # a part of a program in the runtime's form: its arguments
         made = dataclasses.replace(made, compile_args=dict(compile_args))
-    log = run.backend.session.log
+    log = run.backend.card.log
     builds, build_s, cached = _builds(run, made, log)
     started = time.perf_counter()
     placed = _place(run, made, builds)

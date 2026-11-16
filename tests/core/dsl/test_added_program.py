@@ -173,7 +173,7 @@ class Descriptor:
 
 def area(given, rows, free=900_000):
     made = backend(added_buffers=given, switch_pad=7, switch_reserve=0x3000)
-    made.session = SimpleNamespace(l1=lambda: (0, free), log=quiet)
+    made.card = SimpleNamespace(l1=lambda: (0, free), log=quiet)
     descriptor = Descriptor()
     added_program.grow_area(made, descriptor, rows, None)
     return made, descriptor
@@ -205,13 +205,13 @@ def test_a_class_named_ahead_takes_the_next_field_and_sizes_the_area():
     assert added_program.ahead_programs(placed) == [other]
     assert other.program_field == 1
     made = backend(switch_shift=0)
-    made.session = SimpleNamespace(_hand_nocs=lambda program: None)
+    made.card = SimpleNamespace(hand_nocs=lambda program: None)
     end = added_program.layout_of(made, other)[1]
     reserve = added_program.pad_reserve(made, placed, 0x20000)
     assert reserve >= end + programs.CB_ALIGN
     assert made.switch_pad not in {b.index for b in [*loaded.buffers, *other.buffers]}
     assert made.switch_loaded == 1 and made.switch_args is False
-    made.session._module = native_module()
+    made.card.module = native_module()
     (part,) = added_program.ahead_overlays(made, placed, 0, {})
     assert part.number == overlay.constants()["kOverlayService"] - 2
     assert part.recipes == {} and part.name == "project"
@@ -239,7 +239,7 @@ def test_the_added_class_s_parts_get_its_formats_in_a_copy_of_the_tables(tmp_pat
     loaded = twice(form="runtime")
     module = native_module()
     run = run_of(loaded)
-    run.backend.session = SimpleNamespace(_module=module)
+    run.backend.card = SimpleNamespace(module=module)
     run.backend.switch_pad, run.backend.switch_loaded = 27, 1
     names, modes = added_program._loaded_formats(run)
     fp32 = bool(loaded.compute.get("fp32_dest_acc_en"))

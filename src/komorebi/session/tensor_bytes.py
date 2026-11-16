@@ -84,12 +84,12 @@ def split_pages(first, rows, pieces, banks=DRAM_BANKS):
     ]
 
 
-def _transfer_chunk_of(session, held, switch, trace_cap, control_bytes):
-    """The chunk of a run's transfer buffer: CHUNK_DEFAULT, or the largest DRAM page
-    (the session's tensors' and the state area's a load makes first) when two take at
-    most half of what a core has left after its buffers. A run with overlays, or whose
-    groups switch program, keeps the default: it has slots to place."""
-    page = max(session.largest_page, _state_page())
+def _transfer_chunk_of(largest_page, l1, asked, held, switch, trace_cap, control_bytes):
+    """The chunk of a run's transfer buffer: CHUNK_DEFAULT, `asked` where it fits, or
+    the largest DRAM page (the session's tensors' and the state area's) when two take
+    at most half of what a core has left after its buffers (`l1`: the session's). A run
+    with overlays, or whose groups switch program, keeps the default: slots to place."""
+    page = max(largest_page, _state_page())
     if switch or any(each.overlays for each in held):
         return channel_module.CHUNK_DEFAULT
     buffers = max(
@@ -97,8 +97,7 @@ def _transfer_chunk_of(session, held, switch, trace_cap, control_bytes):
         for each in held
     )
     buffers += 2 * abi.headers()["kTokenBytes"] + trace_cap * 16
-    spare = session.l1()[1] - buffers - control_bytes
-    asked = session.transfer_chunk  # a session over two cards: LINK_CHUNK
+    spare = l1()[1] - buffers - control_bytes  # `asked`: over two cards LINK_CHUNK
     word = abi.headers()["KM_TRANSFER_WORD_BYTES"]
     if asked and asked >= page and 2 * asked + word <= spare // 2:
         return asked

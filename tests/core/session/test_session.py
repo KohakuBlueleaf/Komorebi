@@ -61,7 +61,7 @@ def backend_over(session, log, tmp_path, monkeypatch):
     sess._module = session.native.load_module()
     port = sess._module.Dispatch("dev", 1750)
     port.close()
-    backend = sess._module.card_backend(sess, port, 1350, 0)
+    backend = sess._module.card_backend(sess._card(), port, 1350, 0)
     backend.control, backend.control_addr = "control", 0x20000
     words = (CONSTANTS["KM_CONTROL_BYTES"] + 64) // 4
     rows = np.zeros((120, words), np.int64)
@@ -76,7 +76,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     session, log, module = card
     sess, backend = backend_over(session, log, tmp_path, monkeypatch)
     lines, asked = [], []
-    sess.log = lines.append
+    backend.card = backend.card._replace(log=lines.append)  # the session's log
     module.dram_banks = lambda device: 8
     words = np.zeros((8, CONSTANTS["KMD_STATE_BYTES"] // 8), "<u8")
     words[5, :16] = np.arange(16)
