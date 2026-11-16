@@ -573,8 +573,9 @@ array, bfloat16 as float32) and `read_bytes()`; `free()`. Its `write` and `read`
 for the cores of a launched program to return, which the persistent grid does only at
 the stop: before `load` and after `run.stop()` they are the plain way. While a run of
 its session is loaded, `read()` and `read_bytes()` raise `km.KomorebiError` at once,
-naming `session.read` (below) as the live read; in a prebuild's mock run too, so a
-script that reads so stops off the card. bfloat16 values
+naming `session.read` (below) as the live read, and `write()` likewise, naming
+`session.write`; in a prebuild's mock run too, so a script that reads or writes so
+stops off the card. bfloat16 values
 are rounded to nearest, ties to even, and the block formats encoded as tt-metal's host
 encode does, which is not the card's packer ([tile formats](formats.md)); `komorebi.formats`
 has the conversions (`bf16_bits`, `bf16_values`, `tilize`, `untilize`, `to_bytes`,
@@ -976,8 +977,10 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   tensor's shape, and a call of no known shape gives a stand-in that is 0.0. A script that branches on what it read may
   take another path than on the card and build other loads. An exception from the
   script's own checks on those zeros ends it with `the script stopped at line N after
-  K load(s)`, which is not a failure of the build; the command ends with how many
-  loads it built. A failed build or load is a failure, as on the card.
+  K load(s)` and the command exits non-zero (76): the loads after that line were not
+  built, so a card job cannot rest on it. The script's own exit and its end exit 0,
+  with how many loads it built; a load refused by size and built again in a later
+  pass is not a stop. A failed build or load is a failure, as on the card.
 - The remembered kernel buffers are read, so the mock opens as the card's next run
   would; the prebuild keeps its sizes in a copy of its own while it runs. A load
   refused by size (a later load larger than the size a card opened at, or an island
