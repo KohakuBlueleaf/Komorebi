@@ -29,6 +29,9 @@ typedef struct {
     uint64_t line[8]; /* the command line each part carries */
 } kmd_crossing_t;
 
+/* A dynamic run's wave packet from island `island` (waves.h). */
+static void messages_wave(kmd_t* dispatcher, uint32_t island, const uint64_t* packet);
+
 /* A command from another island, taken into the link ring: whose it is. */
 typedef struct {
     uint32_t number; /* the link ring's number (its events' request); 0: free */
@@ -778,6 +781,8 @@ static void link_receive_from(kmd_t* dispatcher, uint32_t from, uint64_t now) {
                     now
                 );
             }
+        } else if (kind >= KMD_CROSS_START && kind <= KMD_CROSS_END) {
+            messages_wave(dispatcher, island, packet);
         }
         link->counts[2u * from + 1u] = number;
         link->taken++;

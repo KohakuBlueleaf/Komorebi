@@ -77,6 +77,18 @@ namespace km {
 #else
     constexpr uint32_t kFarBytes = 0;
 #endif
+#if defined(KM_DELIVER)  // then the deliveries' places (km_deliver.hpp)
+    constexpr uint32_t kDeliverPlaceBytes = (
+        KM_DELIVER_BYTES(KM_DELIVER_ISLANDS, KM_DELIVER_SLOTS, KM_DELIVER_SLOT_BYTES)
+    );
+    template <typename Kernel>
+    uint32_t deliver_put(const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t);
+    template <typename Kernel>
+    uint32_t deliver_confirm(const Kernel&, uint32_t);
+    inline void deliver_zero(uint32_t area);
+#else
+    constexpr uint32_t kDeliverPlaceBytes = 0;
+#endif
 
     // The forward rooms (KM_FORWARD), after the far places: a link core's alone.
 #if defined(KM_FORWARD)
@@ -611,7 +623,8 @@ namespace km {
         // alone, after the put queue), not the run's transfer buffer every core has
         const uint32_t chunk = KM_LINK_CHUNK;
         const uint32_t buffer = (
-            link_queue() + KM_QUEUE_BYTES + kFarBytes + kForwardBytes
+            link_queue() + KM_QUEUE_BYTES + kFarBytes + kForwardBytes +
+            kDeliverPlaceBytes
         );
 #else
         const uint32_t chunk = r.chunk;
@@ -654,6 +667,9 @@ namespace km {
             for (uint32_t w = 0; w < KM_FORWARD_HEADERS / 4; w++) {
                 l1(queue + KM_QUEUE_BYTES + kFarBytes)[w] = 0;  // no packet in a room
             }
+#endif
+#if defined(KM_DELIVER)
+            deliver_zero(islands_at(kernel.args().control).link_area());
 #endif
         }
         const uint32_t links_area = islands_at(kernel.args().control).link_area();
@@ -1758,6 +1774,11 @@ namespace km {
         if (op == KM_ASK_OP_L1 || op == KM_ASK_OP_ADD) {  // km_far_serve.hpp
             return far_put(kernel, cpu, area, at, taken);
         }
+#if defined(KM_DELIVER)
+        if (op == KM_ASK_OP_DELIVER) {  // km_deliver.hpp
+            return deliver_put(kernel, cpu, area, at, taken);
+        }
+#endif
 #if defined(KM_FAR_PUTS)
         if (islands_at(kernel.args().control).hops(line[KM_ASK_HOLDER]) > 1) {
             if (lead) {  // the other page CPUs only take it
@@ -2061,6 +2082,12 @@ namespace km {
         const uint32_t far = pages_confirm_far(kernel, area);
         if (far != kGaveNone) {
             return far;
+        }
+#endif
+#if defined(KM_DELIVER)
+        const uint32_t delivered = deliver_confirm(kernel, area);  // km_deliver.hpp
+        if (delivered != kGaveNone) {
+            return delivered;
         }
 #endif
         volatile tt_l1_ptr uint32_t*
@@ -2602,3 +2629,6 @@ namespace km {
 }  // namespace km
 
 #include "km_far_serve.hpp"  // an L1 write's and an add's steps (ops 1 and 2)
+#if defined(KM_DELIVER)
+#include "km_deliver.hpp"  // a dynamic run's deliveries (op 5)
+#endif
