@@ -383,14 +383,17 @@ def slots_most(program, placed=None):
     if placed is not None:
         count = placed.programs[0].overlay_slots.count
         counts = count.values() if isinstance(count, dict) else [count or 0]
-        return max(fixed, *counts)
-    declared, own = program.overlay_slots, list(program.overlays.values())
+        return max([fixed, *counts])
+    declared = getattr(program, "overlay_slots", None)  # None: a class not yet made
+    if declared is None:
+        return fixed
+    own = list(program.overlays.values())
     counts = [
         declared.of(kernel, own)[0]
         for kernel in overlay.KERNELS
         if declared.reserved(kernel) or any(kernel in each.sources for each in own)
     ]
-    return max(fixed, *counts)
+    return max([fixed, *counts])
 
 
 def own_slot_declared(program):
