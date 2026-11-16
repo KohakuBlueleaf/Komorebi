@@ -8,13 +8,15 @@ from chain_fixture import quiet, tensor
 import komorebi as km
 from komorebi.errors import ProgramError
 
-MERGE = "merge_state(arrival_buffer, arrival_index, state);"
+MERGE = "merge_state(arrival_buffer, arrival_index, state, kFieldHanded);"
 
 
 class Attend(km.Program):
-    """Each core's state, merged over groups of 4, the root's taken after."""
+    """Each core's state, merged over groups of 4, the root's taken after; `handed`
+    is the MERGE body's token from pack to unpack."""
 
     state: km.L1[km.fp32, 3, 32, 32] = km.own(push=None)
+    handed: km.L1[km.bf16, 1, 32, 32] = km.own(push="pack")
 
     @km.handler
     def attend(self, q: km.Tensor):
@@ -88,6 +90,14 @@ class Owner(Attend):
         km.reduce(self.state, form="owner", combine=MERGE)
 
 
+class Untokened(Attend):
+    @km.handler
+    def attend(self, q: km.Tensor):
+        km.reduce(self.state, form="tree", group=4, combine="merge(state);")
+        if self.rank == self.leader:
+            km.cxx("finish(state);", takes=[self.state])
+
+
 class Unassigned(Attend):
     @km.handler
     def attend(self, q: km.Tensor):
@@ -103,6 +113,7 @@ class Unassigned(Attend):
         (Named, "leaves the merged state in place"),
         (Owner, "a merge by owner holds a slot"),
         (Unassigned, "a reduce's sum is a value: it is assigned"),
+        (Untokened, "line 98 reads it after the merge: the body names no own field"),
     ],
 )
 def test_a_merge_of_anything_but_an_own_fp32_state_is_refused(cls, says):

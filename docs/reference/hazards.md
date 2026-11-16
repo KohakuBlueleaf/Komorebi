@@ -810,8 +810,13 @@ the state (an own field `km.own(push="pack")`: pack pushes a page after its pack
 unpack waits for it and frees it before it reads the state), as the attention pass's
 bodies do; the body after the merge waits for the last one.
 
-**The guard.** Nothing: the build runs the body as written. A sender's push of the
-state for mover B comes after the body's packs on pack itself.
+**The guard.** Refused when the class is made, at the merge's line: a MERGE body
+that names no own field compute pushes (`kField<Name>` of a field declared
+`km.own(push="pack")` or pushed by compute's bodies) has no token, and the refusal
+names the merge's line and the first later line that takes the state. That the body
+pushes and waits for the token it names is the programmer's (the build does not read
+the C++). A sender's push of the state for mover B comes after the body's packs on
+pack itself.
 
 Described in [Programs written as classes, a state merged, not
 added](classes.md#a-state-merged-not-added).

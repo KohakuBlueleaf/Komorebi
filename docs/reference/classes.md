@@ -822,6 +822,7 @@ an own float32 field written in place (`km.own(push=None)`):
 
 ```python
 state: km.L1[km.fp32, 3, 32, 32] = km.own(push=None)
+token: km.L1[km.bf16, 1, 32, 32] = km.own(push="pack")  # MERGE's, pack to unpack
 
 ...
 km.cxx(PARTIAL, takes=[self.state])  # this core's state
@@ -839,6 +840,13 @@ line gives no value. A merge of a field that is not own and written in place, of
 field other than float32 (the arrival's slots are float32), one assigned to a name, one
 by owner without `group=`, and `combine=` on a tile in DST are refused at the line
 ([test_class_merge_reduce.py](../../tests/core/test_class_merge_reduce.py)).
+
+Pack writes the state and unpack reads it, and they share no variable: the next
+arrival's run, or the root's body after the merge, could read a state pack has not
+written yet. So MERGE hands a token from its pack to its unpack: an own field pack
+pushes (`kFieldToken` above), pushed after the body's packs and waited for and freed on
+unpack before it reads the state. A MERGE body that names no own field compute pushes
+is refused at the merge's line, naming the first later line that takes the state.
 
 ### A body's reads and writes stated
 
