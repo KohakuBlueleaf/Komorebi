@@ -12,7 +12,7 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi
+from komorebi import abi, layout
 from komorebi.chain import calls as chain_module
 from komorebi.device import tensor as tensor_module
 from komorebi.device.events import Event
@@ -97,6 +97,42 @@ def _rectangle_here(rectangle, base):
     if islands is not None and base in islands:
         return islands[base]
     return rectangle["group"], rectangle["rect"]
+
+
+def _given_on_islands(method, args, group, at, stack, width):
+    """km.UPTO(rect=)'s check on islands: the rectangle counts from the island of the
+    group's first rank and runs on to the next islands, one below the other (`stack`,
+    island_session), every cell a rank; the words, its y0 moved to the stack's rows
+    (a split card's: the card's), as the cores count (km::rect_whole)."""
+    x0, y0, columns, rows = (int(word) for word in args[at : at + 4])
+    tops, heights = stack["tops"], stack["rows"]
+    firsts = [first for _, first, _ in stack["islands"]]
+    start = max(i for i, first in enumerate(firsts) if first <= group[0])
+    top = tops[start] + y0
+    named = f"{method.name}: rect=({x0}, {y0}, {columns}, {rows})"
+    if x0 + columns > width or top + rows > tops[-1] + heights[-1]:
+        raise ValueError(
+            f"{named} from island {start}'s first row is off the islands' "
+            f"{width} x {tops[-1] + heights[-1] - tops[start]} grid from there"
+        )
+    ends = [
+        layout.stack_rank(stack, width, x0 + columns - 1, y)
+        for y in range(top, top + rows)
+    ]
+    if None in ends:
+        raise ValueError(
+            f"{named} from island {start}'s first row takes a link core of an island "
+            "(each island's link cores last): give one on the islands' ranks"
+        )
+    first = layout.stack_rank(stack, width, x0, top)
+    want = (first, ends[-1] + 1 - first)
+    if tuple(group) != want:
+        raise ValueError(
+            f"{named} is the group {want}; submit it to that group (not {tuple(group)})"
+        )
+    args = list(args)
+    args[at + 1] = top  # the stack's row
+    return args
 
 
 def with_area(writes, address, area, h):
@@ -387,8 +423,7 @@ class Run:
             ports = self._check_ports(program_field, handler, group, exclusive)
             if method is not None:
                 self._check_rectangle(method, program_field, group)
-                self._check_places(method, program_field, group)
-                args = self._check_given_rectangle(method, args, group)
+                args = self._check_given_rectangle(method, args, group, program_field)
                 self._check_reduce_groups(method, program_field, group)
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
@@ -453,15 +488,19 @@ class Run:
             out[index] = found[0]
         return out
 
-    def _check_given_rectangle(self, method, args, group):
+    def _check_given_rectangle(self, method, args, group, program_field=0):
         """Refuses a command whose rectangle given at each submit (km.UPTO(rect=))
-        is off this island's grid or whose group is not the rectangle's; the words,
-        its y0 moved to the card's rows (a split card's island counts from its own)."""
+        is off the grid or whose group is not the rectangle's; the words, its y0
+        moved to the card's rows. On islands (the program's stack) it counts from the
+        island of the group's first rank and may run on (_given_on_islands)."""
         if front.rect_given(method.function) is None or method.words is None:
             return args
         at = method.words.index(("rect", "rect"))
         x0, y0, columns, rows = (int(word) for word in args[at : at + 4])
         width = self.grid[0]
+        state = getattr(self.programs[program_field], "rectangle", None) or {}
+        if state.get("stack") is not None:
+            return _given_on_islands(method, args, group, at, state["stack"], width)
         height = self.island_span // width  # the island's rows: a split card's own
         if x0 + columns > width or y0 + rows > height:
             raise ValueError(
@@ -480,27 +519,11 @@ class Run:
         args[at + 1] = y0 + self.island_cores[0] // width  # the card's row
         return args
 
-    def _check_places(self, method, program_field, group):
-        """Refuses a command of a class's handler that reads self.x or self.y whose
-        group spans more than this island: a core's place is its own island's, so the
-        next island's ranks would repeat those places (self.core, a flat rank, not)."""
-        program = self.programs[program_field]
-        line = getattr(program, "rect_lines", {}).get(method.name)
-        first, count = group
-        low, high = self.island_first, self.island_first + self.island_ranks
-        if line is None or low <= first and first + count <= high:
-            return
-        raise ValueError(
-            f"{type(program).__name__}.{method.name}, {line}: self.x and self.y "
-            "are a core's place on its own island, and the group "
-            f"{first}..{first + count - 1} spans more than this island's ranks "
-            f"{low}..{high - 1}, whose places the next island's ranks repeat: submit "
-            "it on one island's ranks"
-        )
-
     def _check_rectangle(self, method, program_field, group):
         """Refuses a broadcast's command of a class whose group is not the group of
-        the rectangle the program was loaded with (fixed at load)."""
+        the rectangle the program was loaded with (fixed at load): on islands a
+        rectangle that fits one island is each island's own; one taller than island 0
+        is one rectangle over the islands from its first row (dsl.program.spans)."""
         program = self.programs[program_field]
         line = getattr(program, "broadcast_lines", {}).get(method.name)
         rectangle = getattr(program, "rectangle", None)
@@ -508,17 +531,21 @@ class Run:
             return
         (low, count), rect = _rectangle_here(rectangle, self.island_cores[0])
         want = (low + self.island_first - self.island_cores[0], count)
-        if tuple(group) != want:
-            across = (
-                "; a broadcast stays on one island"
-                if self.ranks != self.island_ranks or self.island_first
-                else ""
+        one = ""
+        if rectangle.get("span"):
+            want, one = (
+                tuple(rectangle["group"]),
+                (
+                    ", one rectangle over the islands from island 0's first row (it is "
+                    "taller than island 0) in flat ranks"
+                ),
             )
+        if tuple(group) != want:
             raise ValueError(
                 f"{type(program).__name__}.{method.name}, {line}: the broadcast's "
                 f"rectangle {rect or 'the whole grid'} is the group "
-                f"{want}, fixed at load; submit it to that group "
-                f"(not {tuple(group)}), or make the program with rect={across}"
+                f"{want}{one}, fixed at load; submit it to that group "
+                f"(not {tuple(group)}), or make the program with rect="
             )
 
     def _port_numbers(self, program_field):
@@ -788,6 +815,15 @@ class Run:
         an island's link cores. One card: inside the group."""
         rectangle = getattr(program, "rectangle", None) or {}
         if rectangle.get("group") is None:
+            return
+        if rectangle.get("span"):  # one over the islands, its cells ranks (spans)
+            low, cores = rectangle["group"]
+            if low < first or low + cores > first + count:
+                raise ProgramError(
+                    f"run.load: {program.name}'s rectangle {rectangle['rect']} is "
+                    f"the flat ranks ({low}, {cores}) over the islands, not inside the "
+                    f"group ({first}, {count})"
+                )
             return
         base = self.island_cores[0]
         (low, cores), rect = _rectangle_here(rectangle, base)

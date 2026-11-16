@@ -2125,16 +2125,20 @@ class IslandSession:
                 (first, count, self.graph.count(island), self.graph.first(island))
                 for island, (first, count) in enumerate(rows)
             )
+            stack = self._stack([nocs] * len(rows), rows)
             for program in needing:
                 if program.rectangle["nocs"] is None:
                     program.rectangle["nocs"] = nocs
                 program.rectangle["split"] = split
+                program.rectangle["stack"] = stack
             return
         counts = {len(cores) for cores in self.graph.rank_cores}
         ranks = next(iter(counts)) if len(counts) == 1 else None
         nocs = self.sessions[0].nocs()
+        stack = self._stack([nocs] + [s.nocs() for s in self.sessions[1:]], None)
         for program in needing:
             state = program.rectangle
+            state["stack"] = stack
             if state["rect"] is None and ranks is None:
                 raise KomorebiError(
                     f"{program.name}: its default rectangle is an island's rank cores, "
@@ -2143,6 +2147,21 @@ class IslandSession:
             if state["nocs"] is None:
                 state["nocs"] = nocs
             state["ranks"] = ranks
+
+    def _stack(self, nocs, bands):
+        """The islands one below the other in the island order, as a rectangle that
+        spans them counts (dsl.program.stacked_rectangle): each island's NoCs, first
+        flat rank and ranks; a split card's `bands` (first row, rows); each island's
+        first row in the stack (a split card's: its first row of the card) and rows."""
+        rows = [n.grid[1] for n in nocs] if bands is None else [r for _, r in bands]
+        tops = [sum(rows[:i]) for i in range(len(rows))]
+        if bands is not None:
+            tops = [top for top, _ in bands]
+        islands = [
+            (one, self.graph.first(i), self.graph.count(i))
+            for i, one in enumerate(nocs)
+        ]
+        return {"islands": islands, "bands": bands, "tops": tops, "rows": rows}
 
     def _island_defines(self):
         """The defines a load gives every program the islands load (and the classes

@@ -1,11 +1,19 @@
 """A class on an island session (no card): the islands' common grid, a broadcast's
-rectangle taken as one island's flat ranks."""
+rectangle taken as one island's flat ranks, or one over the islands (taller than
+island 0)."""
 
 from types import SimpleNamespace
 
 import pytest
 
-from komorebi.dsl.program import flat_groups, rank_rectangle, session_nocs
+from komorebi import abi, layout
+from komorebi.dsl.program import (
+    flat_groups,
+    rank_rectangle,
+    session_nocs,
+    spans,
+    stacked_rectangle,
+)
 from komorebi.errors import KomorebiError, ProgramError
 from komorebi.islands.session import IslandSession
 from komorebi.session.run import Run
@@ -43,25 +51,72 @@ def test_a_broadcast_s_rectangle_is_its_island_s_flat_ranks():
     assert str(refused.value) == (
         "SimpleNamespace.grid, line 79: km.Broadcast(self, along='row'): the "
         "broadcast's rectangle (0, 0, 12, 8) is the group (119, 96), fixed at load; "
-        "submit it to that group (not (0, 96)), or make the program with rect=; a "
-        "broadcast stays on one island"
+        "submit it to that group (not (0, 96)), or make the program with rect="
     )
 
 
-def test_self_x_and_y_on_a_group_across_two_islands_is_refused_by_name():
-    run = island_run(119)
-    run.programs[0].rect_lines = {"place": "line 40"}
-    place = SimpleNamespace(name="place")
-    Run._check_places(run, place, 0, (119, 60))  # on island 1 alone
-    Run._check_places(run, SimpleNamespace(name="grid"), 0, (60, 120))  # no self.x
+def test_a_rectangle_taller_than_island_0_is_one_over_the_islands():
+    """A make's rect= taller than island 0 is one rectangle from its first row (over
+    cards island 1's rows 10 on): its group the flat ranks of its cells, each core's
+    place its place in the whole, its broadcasts layout.island_broadcast_args'."""
+    nocs = layout.nocs((12, 10), [(x + 1) | (y + 1) << 16 for x, y in
+                       layout.core_order((12, 10))], [(x + 1) | (y + 1) << 16 for x, y
+                       in layout.core_order((12, 10))])  # fmt: skip
+    stack = {"islands": [(nocs, 0, 118), (nocs, 118, 118)], "bands": None,
+             "tops": [0, 10], "rows": [10, 10]}  # fmt: skip
+    buffer = SimpleNamespace(index_a=3, block=2)
+    compiled = SimpleNamespace(broadcasts=[("column", buffer, 2, "B", None, 0)])
+    rect = (2, 8, 4, 4)  # island 0's rows 8 and 9, island 1's rows 0 and 1
+    assert spans(stack, rect) and not spans(stack, (2, 6, 4, 4))
+    flat = {"now": 118}
+    args, group = stacked_rectangle(compiled, stack, rect, lambda: flat["now"])
+    assert group == (98, 118 + 12 + 5 + 1 - 98)
+    want = layout.island_broadcast_args(
+        stack["islands"], layout.Group(*group), rect, "column", 1, (0, 3, 2, 2)
+    )
+    fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
+    reader, writer, compute = args(15)  # island 1's core 15: row 1, column 3
+    assert compute == [1, 3, 1, 4, 4] and reader == compute
+    assert writer[5:] == [want[1][15][name] for name in fields]
+    assert writer[5 + fields.index("group")] == 98 | 38 << 16  # flat, as the command's
+    flat["now"] = 0
+    assert args(98)[1][:5] == [0, 0, 1, 4, 4]
+    assert args(97)[1] == [0, 0, 0, 4, 4]  # outside the group: no broadcast
+    rank = 5 + fields.index("rank")
+    assert args(117)[1][rank] == layout.BROADCAST_NONE  # in it, not in the rectangle
+    with pytest.raises(ValueError, match=r"a cell of it is past the islands' rank"):
+        stacked_rectangle(compiled, stack, (8, 8, 4, 4), lambda: 0)
+
+
+def spanning_run(first):
+    program = SimpleNamespace(
+        name="columns",
+        broadcast_lines={"grid": "line 79: km.Broadcast(self, along='column')"},
+        rectangle={"group": (98, 38), "rect": (2, 8, 4, 4), "span": True},
+    )
+    return SimpleNamespace(
+        programs=[program], island_first=first, island_cores=(0, 120), ranks=236,
+        island_ranks=118,
+    )  # fmt: skip
+
+
+def test_a_broadcast_over_the_islands_takes_its_one_group_on_every_island():
+    grid = SimpleNamespace(name="grid")
+    Run._check_rectangle(spanning_run(0), grid, 0, (98, 38))
+    Run._check_rectangle(spanning_run(118), grid, 0, (98, 38))
     with pytest.raises(ValueError) as refused:
-        Run._check_places(run, place, 0, (60, 120))
+        Run._check_rectangle(spanning_run(118), grid, 0, (216, 38))
     assert str(refused.value) == (
-        "SimpleNamespace.place, line 40: self.x and self.y are a core's "
-        "place on its own island, and the group 60..179 spans more than this "
-        "island's ranks 119..237, whose places the next island's ranks repeat: "
-        "submit it on one island's ranks"
+        "SimpleNamespace.grid, line 79: km.Broadcast(self, along='column'): the "
+        "broadcast's rectangle (2, 8, 4, 4) is the group (98, 38), one rectangle over "
+        "the islands from island 0's first row (it is taller than island 0) in flat "
+        "ranks, fixed at load; submit it to that group (not (216, 38)), or make the "
+        "program with rect="
     )
+    run = spanning_run(118)
+    Run._check_load_rectangle(run, run.programs[0], 0, 236)
+    with pytest.raises(ProgramError, match=r"the flat ranks \(98, 38\) over the"):
+        Run._check_load_rectangle(run, run.programs[0], 118, 118)
 
 
 def loading(first, group=(0, 118), rect=None):

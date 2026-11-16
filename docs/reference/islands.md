@@ -1312,20 +1312,40 @@ A class (`km.Program` written as a class) is made with the island session as its
 | `self.core` | the core's flat rank: its island's first rank plus its index there |
 | a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
 | `km.reduce(..., group=S)`, `km.all_reduce(..., group=S)` | each group of S consecutive ranks, wherever its ranks lie: a group that spans islands folds each island's part as its own group, then each part's first rank sends once to the group's rank 0 (`all_reduce`: rank 0 sends the sum back to each part's first rank, which casts it to its part). The arrival has the largest part's rounds and a slot for each further island the group can touch, on islands only. The parts are added in another order than one island's tree: an integer or exact combine gives the same words, a float sum may differ by rounding |
-| `km.Broadcast`, `self.x`, `self.y` | the rectangle is one island's: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores); a group that is not, such as a row across the link, is refused, saying a broadcast stays on one island. With no `rect=`, the rectangle is an island's rank cores (its link cores never inside): every rank core for `self.x` and `self.y`, the whole rows of them for a broadcast. On a split card each island has its own: its own rank rows (islands of different rank counts each their own rectangle), and a `rect=` is in each island's own rows, refused naming an island whose ranks do not hold it. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
+| `km.Broadcast`, `self.x`, `self.y` | a rectangle that fits one island is each island's own: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores), and a broadcast's command on another group is refused naming the group. A `rect=` taller than island 0 is one rectangle over the islands from island 0's first row (below): its group the flat ranks of its cells, a broadcast's command on any other group refused, saying so. With no `rect=`, the rectangle is an island's rank cores (its link cores never inside): every rank core for `self.x` and `self.y`, the whole rows of them for a broadcast. On a split card each island has its own: its own rank rows (islands of different rank counts each their own rectangle), and a `rect=` is in each island's own rows, refused naming an island whose ranks do not hold it. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
 
 A command's group may start and end anywhere in the flat ranks. A class that works by
 `self.rank` and `self.size` is exact across an island's edge (the Linear class's split on
 ranks 104..131 across rank 118, two cards, 2026-11-16), and so is a reduce in groups of
 S, but for the order of its additions: a group that spans islands folds each island's
 part, then crosses once, so its float sums are rounded in another order than one
-island's tree (integers and exact combines are equal). An example, not a bound: the decode layer class on two cards with its groups started at rank 0 (groups of 15 across rank 118 in attend's merge, o and down): qkv equal, its attention output 366 of 65,536 words differing (largest 0.0050 relative), the layer's output 996 (largest 0.0065), 2026-11-17. A broadcast, and a handler that reads `self.x` or `self.y` (a core's place on its own
-island), stay on one island: today a command whose rectangle or whole group (for those
-two) spans the edge is refused at submit, naming its line. `self.core` is
-the core's flat rank (its island's first rank plus its index there), so it is defined
-across the edge. A rectangle given at each submit (`km.UPTO(rect=)`) counts from the
-island's own rows, as `rect=` does: on a split card the host gives the core the card's
-rows.
+island's tree (integers and exact combines are equal). An example, not a bound: the decode layer class on two cards with its groups started at rank 0 (groups of 15 across rank 118 in attend's merge, o and down): qkv equal, its attention output 366 of 65,536 words differing (largest 0.0050 relative), the layer's output 996 (largest 0.0065), 2026-11-17. `self.core` is the core's flat rank (its island's first rank plus its index there), so
+it is defined across the edge.
+
+A rectangle counts its rows from the island of the command's first rank, and rows past
+that island's last row continue on the next island, the islands standing one below the
+other in the island order. Two cards of 12 x 10 cores, each with its 118 ranks:
+
+```text
+             columns 0 .. 11
+island 0  row 8   . . X X X X . . . . . .   rect=(2, 8, 4, 4): rows 8 and 9 of
+          row 9   . . X X X X . . . . L L   island 0, rows 0 and 1 of island 1
+island 1  row 0   . . X X X X . . . . . .   (L: island 0's link cores, never in a
+          row 1   . . X X X X . . . . . .   rectangle); its group: flat ranks 98..135
+```
+
+A rectangle that fits one island behaves as on one island: each island has its copy,
+and a command that starts on a later island counts from that island's first row. A
+`rect=` at the make taller than island 0 is one rectangle from island 0's first row, its
+group the flat ranks of its cells; a broadcast's command on another group is refused,
+naming that one rectangle. `km.UPTO(rect=)` counts from the island of the group's first
+rank and may run on (a cell on a link core is refused by name). `self.x` and `self.y`
+are places in the whole rectangle (above, island 1's row 1 is `self.y` 3). A broadcast's
+column that crosses an edge is a part an island: each part's first core multicasts to
+its part, and the part before it feeds it each block across the link (`km::write_l1`),
+the form `layout.island_broadcast_args` writes by hand (`examples/03_broadcast/
+islands.py`). Why so: a program written for one island runs unchanged, and a command
+that starts on a later island counts from there, as before.
 
 The output dimension sharded, the activation a copy (`experiments/language/
 dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of

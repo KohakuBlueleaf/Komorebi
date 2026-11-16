@@ -1187,19 +1187,22 @@ Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-pa
 
 ### A class's group across an island's edge
 
-**The hazard.** `self.x` and `self.y` are a core's place on its own
-island, so on a group that spans two islands the second island's ranks repeat the first's
-places: two cores write the same page and another stays unwritten (120 ranks across the
-edge wrote 118 pages, 2026-11-16).
+**The hazard.** A rectangle that fits one island (with no `rect=`, an island's rank
+cores) is each island's own, so a handler that reads `self.x` or `self.y` on a group
+that spans two islands gives the second island's ranks the first's places: two cores
+write the same page and another stays unwritten (120 ranks across the edge wrote 118
+pages, 2026-11-16).
 
-**The rule.** Submit a handler that reads `self.x` or `self.y` on one
-island's ranks.
+**The rule.** For places across the edge, make the class with a `rect=` taller than
+island 0 (one rectangle over the islands) or give `km.UPTO(rect=)` a rectangle that runs
+on to the next island: `self.x` and `self.y` are then places in the whole rectangle.
+`self.rank` and `self.size` are the group's and `self.core` the flat rank, so a class
+that works by them is exact across the edge, and so is a reduce in groups of S
+(`km.reduce`, `km.all_reduce`) whose group spans islands.
 
-**The guard.** Refused at submit, naming the handler's line: a handler that reads
-`self.x` or `self.y` on a group past this island's ranks, and a broadcast whose group
-is not one island's rectangle. `self.rank` and `self.size` are the group's and
-`self.core` the flat rank, so a class that works by them is exact across it, and so is
-a reduce in groups of S (`km.reduce`, `km.all_reduce`) whose group spans islands.
+**The guard.** A broadcast's command whose group is not its rectangle's is refused at
+submit, naming its line. A handler that reads `self.x` or `self.y` and no broadcast is
+not checked: its group may be any.
 
 Described in [Islands, classes on islands](islands.md#classes-on-islands).
 

@@ -13,6 +13,7 @@ from komorebi import layout
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.program import rect_grid_args, rect_header_lines
 from komorebi.errors import ProgramError
 from komorebi.session.run import Run
 
@@ -156,44 +157,193 @@ def test_a_rectangle_given_at_each_submit_takes_no_rect_at_the_make():
                handlers=up_to, rect=(0, 0, 4, 4))  # fmt: skip
 
 
-def test_on_islands_the_core_s_place_is_its_card_s_and_one_island_s_text_stays():
-    """km::rect_place and km::rect_broadcast take a place in the card's grid: on
-    islands the card's core index (the flat rank counts from the island's first
-    rank); one island keeps Core::me(), its kernels byte-equal."""
+def test_on_islands_the_core_s_place_is_in_the_stack_and_one_island_s_text_stays():
+    """km::rect_place and km::rect_broadcast take a place in the grid: on islands the
+    core's place in the islands stacked one below the other (km::rect_whole, the
+    island table after the grid's words: kGridIslands); one island keeps Core::me()
+    and km::rect_broadcast, its kernels byte-equal."""
     out = Tensor(Pages(2048, 16, 0x9000), (32, 16 * 32), "bfloat16", "tile")
     tensors = {"x": grid(4), "out": out}
     made()  # km.UPTO's hook on the handler, as a make leaves it
     texts = {}
-    for islands in ((1, 0), (2, 59)):
+    for islands in ((1, 0), (3, 59)):
         compiled = compile_class(Spread, {}, tensors, 1 << 20, islands=islands)
         texts[islands] = (
             "\n".join(render(prune(compiled.movement["cast"]), 0)),
             "\n".join(render(prune(compiled.compute["cast"]), 0)),
+            "\n".join(rect_header_lines(compiled)),
         )
-    mover, compute = texts[(1, 0)]
-    assert "km::rect_broadcast(km_args_row, movement.me(), km_grid" in mover
+    mover, compute, header = texts[(1, 0)]
+    assert "km::rect_broadcast(km_args_row, movement.me(), km_grid, km_rect" in mover
     assert "km::rect_place(compute.me(), km_grid.width" in compute
-    mover, compute = texts[(2, 59)]
-    assert "km::rect_broadcast(km_args_row, movement.card_core(), km_grid" in mover
-    assert "km::rect_place(compute.card_core(), km_grid.width" in compute
+    assert "kGridWords = 11;" in header and "kGridIslands" not in header + mover
+    mover, compute, header = texts[(3, 59)]
+    call = "km::rect_broadcast_islands(km_args_row, movement.me(), km_grid, km_islands"
+    assert call in mover
+    whole = "km::rect_whole(compute.me(), km_grid.width, km_islands)"
+    assert f"km::rect_place({whole}, km_grid.width" in compute
+    assert "kGridWords = 14;" in header and "kGridIslands = 3;" in header
+    assert "km::rect_islands(km_grid_words + kGridWords - kGridIslands" in compute
 
 
-def test_a_rectangle_given_at_a_submit_counts_from_its_island_s_rows():
-    """On a split card the rectangle is in the island's own rows (as rect= at the make)
-    and the core is given it in the card's: island 1 of a split in 2 from row 5; over
-    cards a card's rows are its island's."""
+# Islands of the 14 x 10 grid of two_panels: two cards (one below the other, the
+# link cores last: 138 ranks each) and a card split in 3 (rows 0-3, 4-6, 7-9).
+CARDS = {"bands": None, "tops": [0, 10], "rows": [10, 10], "ranks": [138, 138]}
+SPLIT = {"bands": [(0, 4), (4, 3), (7, 3)], "tops": [0, 4, 7], "rows": [4, 3, 3]}
+SPLIT["ranks"] = [55, 40, 41]
+
+
+def stack_of(kind, nocs):
+    firsts = [sum(kind["ranks"][:i]) for i in range(len(kind["ranks"]))]
+    islands = [(nocs, first, n) for first, n in zip(firsts, kind["ranks"])]
+    return {k: kind[k] for k in ("bands", "tops", "rows")} | {"islands": islands}
+
+
+ISLANDS_DRIVER = r"""
+#include <cstdio>
+#include "komorebi/device/movement/km_rect.hpp"
+struct Args {
+    uint32_t rank, receivers, sender, mc_start, mc_end, noc, next, fed, from;
+};
+int main() {
+    uint32_t count, words[64];
+    if (scanf("%u", &count) != 1) return 1;
+    for (uint32_t i = 0; i < 11 + count; i++) {
+        if (scanf("%u", words + i) != 1) return 1;
+    }
+    const km::RectGrid grid = km::rect_grid(words);
+    const km::RectIslands islands = km::rect_islands(words + 11, count);
+    uint32_t rect[4], row, noc, length, rank;
+    while (scanf("%u %u %u %u %u %u %u %u", rect, rect + 1, rect + 2, rect + 3, &row,
+                 &noc, &length, &rank) == 8) {
+        const uint32_t whole = km::rect_whole(rank, grid.width, islands);
+        km::RectPlace p = km::rect_place(whole, grid.width, rect);
+        Args a{};
+        a.noc = noc;
+        const bool row_ = row != 0;
+        km::rect_broadcast_islands(a, rank, grid, islands, rect, row_, length, 0xFFu);
+        printf("%u %u %u %u %u %u %u %u %u %u %u\n", p.x, p.y, p.included, a.rank,
+               a.receivers, a.sender, a.mc_start, a.mc_end, a.next, a.fed, a.from);
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.parametrize("kind", ["cards", "split"])
+def test_on_islands_the_core_computes_the_host_s_parted_arguments(kind, tmp_path):
+    """km_rect.hpp built for the host, word-equal to layout.island_broadcast_args (the
+    form examples/03 writes by hand) for rectangles that run on across islands: each
+    rank's place in the whole, its part's rank, sender (a core of its card) and
+    corners, the next part's first flat rank, the feeder's cores and first rank."""
+    nocs = two_panels()
+    columns = nocs.grid[0]
+    kind = CARDS if kind == "cards" else SPLIT
+    stack = stack_of(kind, nocs)
+    count = len(kind["ranks"])
+    compiled = SimpleNamespace(name="Spread", islands=(count, 0), rect_sized=True)
+    words = rect_grid_args(compiled, nocs, stack)(0)[0]
+    built = tmp_path / "driver"
+    source = built.with_suffix(".cpp")
+    source.write_text(ISLANDS_DRIVER)
+    include = layout.__file__.rsplit("/", 1)[0] + "/../komorebi_native/include"
+    subprocess.run(
+        ["g++", "-std=c++17", "-O1", "-I", include, str(source), "-o", str(built)],
+        check=True,
+    )
+    if kind is CARDS:
+        rects = [
+            (0, 7, 5, 6),
+            (3, 0, 9, 20),
+            (6, 9, 2, 2),
+            (8, 2, 4, 15),
+            (0, 0, 12, 10),
+        ]
+    else:
+        rects = [(0, 0, 12, 10), (2, 3, 4, 5), (5, 6, 7, 1), (9, 1, 3, 9), (6, 2, 1, 2)]
+    cases, want = [], []
+    fields = ("rank", "receivers", "sender", "mc_start", "mc_end", "next", "fed")
+    for rect in rects:
+        x0, y0, w, h = rect
+        first = layout.stack_rank(stack, columns, x0, y0)
+        last = layout.stack_rank(stack, columns, x0 + w - 1, y0 + h - 1)
+        group = layout.Group(first, last + 1 - first)
+        for along in ("row", "column"):
+            for noc in (0, 1):
+                for length in (0, 2, 3):
+                    host = layout.island_broadcast_args(
+                        stack["islands"], group, rect, along, noc, (0, 0, 0, 0),
+                        "below", stack["bands"], length or None,
+                    )  # fmt: skip
+                    for rank in group.indices:
+                        island = max(
+                            i
+                            for i, one in enumerate(stack["islands"])
+                            if one[1] <= rank
+                        )
+                        local = rank - stack["islands"][island][1]
+                        cx = local % columns
+                        cy = stack["tops"][island] + local // columns
+                        inside = x0 <= cx < x0 + w and y0 <= cy < y0 + h
+                        row = int(along == "row")
+                        cases.append(f"{x0} {y0} {w} {h} {row} {noc} {length} {rank}")
+                        args = host[island][local]
+                        place = [cx - x0, cy - y0, 1] if inside else [0, 0, 0]
+                        got = [*place, *(args[n] for n in fields), args["from"]]
+                        want.append(got)
+    out = subprocess.run(
+        [str(built)],
+        input=f"{count} " + " ".join(map(str, words)) + "\n" + "\n".join(cases) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\n")
+    wrong = [
+        (case, line, w)
+        for case, line, w in zip(cases, out, want, strict=False)
+        if [int(n) for n in line.split()] != w
+    ]
+    assert len(out) - 1 == len(cases)
+    assert not wrong, (len(wrong), wrong[:3])
+    parted = [w for w in want if w[8] != layout.BROADCAST_NO_NEXT or w[9]]
+    assert parted  # parts fed across were among the cases
+
+
+def test_on_islands_a_rectangle_given_at_a_submit_counts_from_its_first_island():
+    """The rectangle counts from the island of the group's first rank and runs on to
+    the next (the stack's rows, given to the cores so): on a split card the card's
+    rows; over cards island 1's rows from row 10. Every cell a rank, its group the
+    rectangle's first to last flat rank."""
     program = made()
     method = program.cast.method
     words = list(program.cast.args(grid(4), grid(16, 0x9000), (2, 1, 4, 2)))
     at = method.words.index(("rect", "rect"))
-    split = SimpleNamespace(grid=(12, 10), island_first=59, island_cores=(60, 59),
-                            island_span=60)  # fmt: skip
-    given = Run._check_given_rectangle(split, method, words, (59 + 14, 16))
+    nocs = two_panels()
+    split = SimpleNamespace(
+        grid=(14, 10),
+        programs=[SimpleNamespace(rectangle={"stack": stack_of(SPLIT, nocs)})],
+    )
+    given = Run._check_given_rectangle(split, method, words, (55 + 16, 18))
+    assert given[at : at + 4] == [2, 5, 4, 2]  # island 1 from the card's row 4
+    words[at + 1] = 2  # island 1's rows 2 and 3: its row 6, island 2's row 7
+    given = Run._check_given_rectangle(split, method, words, (55 + 30, 16))
     assert given[at : at + 4] == [2, 6, 4, 2]
-    cards = SimpleNamespace(grid=(12, 10), island_first=118, island_cores=(0, 118),
-                            island_span=120)  # fmt: skip
-    given = Run._check_given_rectangle(cards, method, words, (118 + 14, 16))
-    assert given[at : at + 4] == [2, 1, 4, 2]
-    words[at + 1] = 4  # rows 4 and 5: past the island's 5 rows
-    with pytest.raises(ValueError, match=r"rect=\(2, 4, 4, 2\) is off the 12 x 5"):
-        Run._check_given_rectangle(split, method, words, (59 + 50, 16))
+    cards = SimpleNamespace(
+        grid=(14, 10),
+        programs=[SimpleNamespace(rectangle={"stack": stack_of(CARDS, nocs)})],
+    )
+    words[at + 1] = 9  # island 0's row 9, island 1's row 0
+    given = Run._check_given_rectangle(cards, method, words, (128, 16))
+    assert given[at : at + 4] == [2, 9, 4, 2]
+    with pytest.raises(
+        ValueError, match=r"rect=\(2, 9, 4, 2\) is the group \(128, 16\)"
+    ):
+        Run._check_given_rectangle(cards, method, words, (128, 17))
+    with pytest.raises(ValueError, match=r"from island 1's first row is off the "):
+        Run._check_given_rectangle(cards, method, words, (138 + 128, 16))
+    words[at + 1] = 1
+    given = Run._check_given_rectangle(cards, method, words, (138 + 16, 18))
+    assert given[at : at + 4] == [2, 11, 4, 2]  # island 1's row 1: the stack's 11
+    words[at : at + 4] = [10, 9, 4, 2]  # island 0's link cores, columns 12 and 13
+    with pytest.raises(ValueError, match=r"takes a link core of an island"):
+        Run._check_given_rectangle(cards, method, words, (136, 18))
