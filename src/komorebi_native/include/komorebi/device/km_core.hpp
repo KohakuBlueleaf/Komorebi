@@ -235,6 +235,9 @@ namespace km {
     // word's slot | the page's low byte << 8; live word kLvLine 1 << 31 | the page.
     constexpr uint32_t kWherePageRange = 78;
     constexpr uint32_t kWhereMove = 79;  // a mover's km::move with no block to move
+    // A write into a rank's L1 or an add to its word (km_far.hpp): the gave-up word's
+    // top byte is the rank's island.
+    constexpr uint32_t kWhereFar = 80;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -318,7 +321,8 @@ namespace km {
                 kWhereAskCount,
                 kWhereMessagesDirect,
                 kWherePageRange,
-                kWhereMove
+                kWhereMove,
+                kWhereFar
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {
@@ -358,7 +362,8 @@ namespace km {
     // writer) its command's sequence, then the line's first page or the number;
     constexpr uint32_t kLvLost = 27;
     constexpr uint32_t kLvLostAt = 29;
-    // 16 bits a CPU: bit 15 a number abandoned, 12-14 the island, 0-11 pages left.
+    // 16 bits a CPU: bit 15 a number abandoned, 7-14 the island, 0-6 pages left (127:
+    // or more).
     constexpr uint32_t kLvLostPages = 31;
     constexpr uint32_t kLvEnds = 32;  // pages pushed at a command's end (ends())
     constexpr uint32_t kLvWords = 128;
@@ -641,6 +646,9 @@ namespace km {
 
     // A give-up into state word pair `word`: a deadline's per command, the run goes on;
     // any other unless one came first, setting the tile's stop flag (all kernels end).
+#if !defined(COMPILE_FOR_TRISC)  // a mover's give-ups: one copy (cold; large inlined)
+    __attribute__((noinline))
+#endif
     inline void command_gave_up(
         uint32_t control,
         uint32_t word,
@@ -790,7 +798,7 @@ namespace km {
             live[kLvLost + cpu] = sequence;
             live[kLvLostAt + cpu] = line[KM_ASK_FIRST];
             const uint32_t bits = (
-                (line[KM_ASK_HOLDER] & 7u) << 12 | (left > 0xFFFu ? 0xFFFu : left)
+                (line[KM_ASK_HOLDER] & 0xFFu) << 7 | (left > 0x7Fu ? 0x7Fu : left)
             );
             live[kLvLostPages] = (
                 (live[kLvLostPages] & ~(0xFFFFu << 16 * cpu)) | bits << 16 * cpu

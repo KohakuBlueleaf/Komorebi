@@ -95,6 +95,56 @@ class Most(km.Program):
             results.push(rms(row, self.weight))
 
 
+@km.tile_function
+def normed(row, weight):
+    n = row * km.rsqrt(km.reduce_sum(row * row, exact=True) * (1.0 / 1024) + 1e-6).col()
+    return n * weight.row(), n
+
+
+@km.tile_function
+def three(row, weight):
+    n = row * km.rsqrt(km.reduce_sum(row * row, exact=True) * (1.0 / 1024) + 1e-6).col()
+    return n * weight.row(), n, n * 2.0
+
+
+class Results(km.Program):
+    weight: km.L1[km.fp32, 16, 32, 32]
+
+    @km.handler
+    def whole(self, x: km.Tensor, w: km.Tensor, out: km.Tensor, b: km.Tensor):
+        self.weight.fill(km.Stream(w.pages(0, 16)))
+        ys = km.Stream(out.pages(0, 2 * W), write=True, block=W)
+        ns = km.Stream(b.pages(0, 2 * W), write=True, block=W)
+        for row in km.Stream(x.pages(0, 2 * W), block=W, row=W):
+            y, n = normed(row, self.weight)
+            ys.push(y)
+            ns.push(n)
+
+    @km.handler
+    def parts(self, x: km.Tensor, w: km.Tensor, out: km.Tensor, b: km.Tensor):
+        self.weight.fill(km.Stream(w.pages(0, 16)))
+        ys = km.Stream(out.pages(0, 2 * W), write=True, block=8)
+        ns = km.Stream(b.pages(0, 2 * W), write=True, block=8)
+        for row in km.Stream(x.pages(0, 2 * W), block=8, row=W):
+            y, n = normed(row, self.weight)
+            ys.push(y)
+            ns.push(n)
+
+
+class Three(km.Program):
+    weight: km.L1[km.fp32, 16, 32, 32]
+
+    @km.handler
+    def rows(self, x: km.Tensor, w: km.Tensor, out: km.Tensor, b: km.Tensor):
+        self.weight.fill(km.Stream(w.pages(0, 16)))
+        ys = km.Stream(out.pages(0, 2 * W), write=True, block=W)
+        ns = km.Stream(b.pages(0, 2 * W), write=True, block=W)
+        for row in km.Stream(x.pages(0, 2 * W), block=W, row=W):
+            y, n, m = three(row, self.weight)
+            ys.push(y)
+            ns.push(n)
+
+
 class Halves(km.Program):
     weight: km.L1[km.bf16, 16, 32, 32]
     bias: km.L1[km.fp32, 16, 32, 32]
@@ -160,6 +210,9 @@ def built(cls):
         tensors = {n: tensors[n] for n in ("x", "w", "b", "out")}
         for n in ("x", "out"):
             tensors[n] = Tensor(Pages(4096), (6 * 32, 32 * W), "float32", "tile")
+    if cls in (Results, Three):
+        tensors = {n: tensors[n] for n in ("x", "w", "out")}
+        tensors["b"] = Tensor(Pages(4096), (64, 32 * W), "float32", "tile")
     if cls is Plain:
         tensors = {n: tensors[n] for n in ("x", "out")}
     return compile_class(cls, {}, tensors)
@@ -203,6 +256,22 @@ def test_a_row_count_word_takes_the_pages_of_its_most():
     assert "cb_reserve_back(kChunkRowsRms, 1);" in rms_case
     assert "pack_tile(3, kChunkRowsRms);" not in rms_case
     assert "cb_reserve_back(kChunkRowsLayer, 2);" in layer_case
+
+
+def test_several_results_of_a_wide_row_each_pack_their_own_tiles():
+    compiled = built(Results)
+    case = compute_source(compiled)
+    for name in ("Whole", "Parts"):
+        at = case.index(f"case kHandler{name}")
+        one = case[at : case.find("case kHandler", at + 1) % len(case)]
+        assert "pack_tile<true>(0, km_write0_out, km_tile0 + 2 * km_chunk0);" in one
+        assert "pack_tile<true>(5, km_write1_out, km_tile0 + 2 * km_chunk0);" in one
+        assert "pack_tile<true>(6, km_write1_out, km_tile0 + 2 * km_chunk0 + 1);" in one
+        assert one.count("MATH((km_tile::normed(0)));") == 1
+    unit = compiled.units["normed"][1]
+    assert (unit.results, unit.chunk_results) == (2, [0, 5])  # past the weight's 4
+    with pytest.raises(Refused, match="3 results; a wide row's call holds 2"):
+        built(Three)
 
 
 def test_a_bf16_field_is_unpacked_in_its_own_setup():

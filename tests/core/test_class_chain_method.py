@@ -92,8 +92,7 @@ def test_a_line_the_method_cannot_hold_is_refused_at_the_make(tmp_path, body, wh
         made(chain_class(tmp_path, body), GIVEN)
 
 
-def test_more_calls_than_a_chain_holds_are_refused(tmp_path):
+def test_more_calls_than_a_sequence_numbers_records_make_one_chain(tmp_path):
     body = ["for i in range(LIMIT):", "    self.scale(x, y, 1, 2)"]
     program = made(chain_class(tmp_path, body), GIVEN)
-    with pytest.raises(ProgramError, match="more than 256 calls unrolled"):
-        program.steps(GIVEN["x"], GIVEN["y"], 1)
+    assert len(program.steps(GIVEN["x"], GIVEN["y"], 1)) == 300  # LIMIT, 2 numbers

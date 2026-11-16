@@ -157,8 +157,8 @@
  * core 0, a page CPU's answers, the lines, the far asks */
 #define KM_PAGE_CPUS 4u
 /* a link core's own L1 (KM_LINK_QUEUE): the put queue, then with KM_LINK_CHUNK two
- * chunks; an index above every other (the trace's is 31; a Blackhole has 64) */
-#define KM_LINK_CB 32u
+ * chunks; an index above every other (the trace's 31, the chain's 32; of 64) */
+#define KM_LINK_CB 33u
 /* The put queue, on link core 0 (KM_LINK_CB, at KM_PUT_QUEUE): up to KM_QUEUE_LINES
  * unconfirmed put lines, the far lines as they arrive, pages landed per owner */
 #define KM_QUEUE_LINES (4u * KM_CORES_MAX) /* a core's two CPUs, two lines each */
@@ -323,6 +323,9 @@
 /* dispatcher: one island's part of a group split over islands (the host sends the flat
  * line to each island): run here, never crossed. A spanning line crosses. */
 #define KM_FLAG_PART 16u
+/* dispatcher: the command takes a9 + 1 sequence numbers, its own and the next a9 (a
+ * chain of more than kChainRecordsMax records: their tags run into them) */
+#define KM_FLAG_SPAN 64u
 #define KM_GROUP_ALL(n) ((uint32_t)(n) << 16) /* first 0, count n */
 /* A command to the X280 thread of work cluster c (1 to 3): first is
    KM_GROUP_CLUSTER_BASE + c, count 1. No core has such a first. */
@@ -408,6 +411,9 @@ KM_STATIC_ASSERT(
 #define KM_PORT_LEFT (KM_PORTS + 2u)
 #define KM_PORT_RIGHT (KM_PORTS + 3u)
 #define KM_PORT_SLOTS (KM_PORTS + 4u)
+/* the port an all-reduce of the ports' reduce counts the sum cast back at, in slot 0
+   of the arrival (km_tree.hpp) */
+#define KM_PORT_ALL_REDUCE 0u
 #define KM_PORT_STRIDE 16u
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u

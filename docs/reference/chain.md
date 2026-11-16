@@ -53,8 +53,14 @@ program's handlers to the walk.
 
 ## The record
 
-16 words, 64 bytes, 64-byte aligned, at most 256 a chain (`komorebi/abi/km_chain.h`,
-plain C for the device, the X280 and the host).
+16 words, 64 bytes, 64-byte aligned (`komorebi/abi/km_chain.h`, plain C for the device,
+the X280 and the host). A chain has any number of records. A record's tag on the cores
+is the chain command's sequence number times 256 plus its index, so a chain of more
+than 256 records takes one sequence number for each 256 (`KM_FLAG_SPAN`, the command's
+a9 the numbers past its own): the dispatcher, each island's, and the host's count of
+them skip those, and no later command's tags meet the chain's. `run.submit` of a
+chain and a class's thread chain set it; a thread's own chain calls
+`kmx_chain_span(chain, records)` after `kmx_chain_command`.
 
 | Word | Holds |
 |---|---|
@@ -196,13 +202,14 @@ is refused.
 | a group size that does not divide the call's cores, over 127, or a width over 255 | the call |
 | a call of a handler of another program than the first call's | the call, both program fields |
 | a handler number over 255, a stamp row over 63 | the call |
-| more than one per-submit word, more than 256 calls | the chain |
+| no call, more than one per-submit word | the chain |
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
 | a call in rows: roots writing different rows, a row read outside them, its tensor read as pages, `km.direct` of it | the line, the call, the rows |
 
 On the card a record with a bad address, a next record not 64-byte aligned or a chain
-of more than 256 records is given up by the reader with the chain's own code (0xC2 in
-the give-up's slot field).
+of more records than its command's sequence numbers hold (256 each: a thread's chain
+past 256 without `kmx_chain_span`) is given up by the reader with the chain's own code
+(0xC2 in the give-up's slot field).
 
 ## More than one tile row
 

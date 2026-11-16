@@ -360,6 +360,82 @@ Sets with different blocks share the template's ring. A block never wraps the ri
 end, so a ring left at a position that is not a multiple of the next set's block makes
 that command give up ([hazards](hazards.md#sets-of-a-handler-on-one-ring-with-blocks-that-do-not-divide-each-others)).
 
+### A size given at each submit
+
+```python
+sets = [km.UPTO(block=8)]  # one build serves block 1, 2, 4 and 8
+program = GateBlocks(a=a, b=b, out=out, handlers={"gate": sets})
+run.submit(program.gate, (0, cores), args=(a, b, out, tiles, pattern, 4))
+```
+
+`km.UPTO` among a handler's sets makes one build serve every value up to a most. The
+handler's text does not change. Each key names one of the handler's parameters, and
+the parameter's kind says what the key means:
+
+- **A constant int parameter** (`block: km.constant[int] = 8`): `km.UPTO(block=8)`.
+  The value is a command word, given in `args` at the constant's place. The buffers
+  are sized for the most, and the streams that read `block=block` take the word as
+  their block. The host refuses, by name, a value below 1, above the most, or one
+  that does not divide the most (a block never wraps a buffer's end):
+  `GateBlocks.gate: block=3; a size given at each submit, at most 8: an int that
+  divides 8 (the buffers hold whole blocks)`.
+- **A tensor parameter** (`x: km.Tensor`): `km.UPTO(x=64)` means x's tile columns,
+  up to 64. The width comes from the tensor given at the submit, and its rows' pitch
+  is a word the handler's rectangles of x read. The make's example tensor is only
+  the template. A wider tensor is refused at the submit, by name.
+- **`rect`**, when the handler has no parameter of that name: `km.UPTO(rect=(4, 4))`
+  means any rectangle of up to 4 columns and 4 rows. The rectangle is given at the
+  submit as one more argument after the handler's parameters, `args=(x, out, (x0,
+  y0, columns, rows))`, and the command goes to the rectangle's group (its first
+  core and the span to its last). Each core computes its `self.x`, `self.y`,
+  whether the rectangle holds it, and each broadcast's rank, receivers, sender and
+  multicast corners from those four words and the grid's NoC coordinates
+  (`km_rect.hpp`). These are the arguments `rect=` at the make gives today. The
+  host refuses, by name, a rectangle larger than its most, one off the grid, a
+  group that is not the rectangle's, and `rect=` at the make.
+
+One `km.UPTO` per handler, naming as many keys as it gives:
+`km.UPTO(block=8, x=64, rect=(4, 4))`. It stands beside the other sets in one list,
+and what it names stays a word in each of them:
+
+- With listed sets, `[km.UPTO(block=8), {"size": 4}, {"size": 2}]` is two builds
+  (size 4 and size 2), each taking block at each submit.
+- With `km.ANY`, `[km.UPTO(block=8), km.ANY]` compiles sets of the other constants at
+  their first use, again with block given at each submit.
+
+Refused by name at the make:
+
+- a listed set or `km.ANY(p=n)` that names a key of `km.UPTO`
+  (`block is given at each submit (km.UPTO); a set does not name it`);
+- `km.UPTO` twice for one handler, or `km.UPTO` naming nothing;
+- a key that is no parameter of the handler (other than `rect`), or one that names
+  an int command word, a float or bool constant, or a pattern;
+- a most that is not a positive int, or not (columns, rows) for `rect`;
+- `rect` on a handler that reads no `self.x`, `self.y` or broadcast;
+- a class where one handler takes the make's rectangle and another a rectangle
+  given at each submit.
+
+A handler's words are those of its class's last make, as its tile widths are. A
+program made with other `km.UPTO` than the class's last make is refused at its next
+submit (`made with km.UPTO {'block': 8}, and the class was made since with none ...:
+make this program again`). A chain call's `km.at_submit` cannot give the value
+(refused by name). Not in this version: a rectangle given at each
+submit on islands, two rectangles in one handler, and `km.UPTO` in a merged program.
+
+What it costs, on one p150a card at 1,350 MHz
+(`experiments/language/sized_block/sized_block.py --form all`), every word exact
+against numpy:
+
+| Size | Given at each submit | Built in |
+|---|---|---|
+| block over 20 tiles a core, 8 cores: block 8, 4, 2, 1 | 8.30, 7.92, 9.08, 13.26 µs | block 8: 8.32 µs |
+| kernel text, block | 34,880 B | 34,768 B |
+| width: tensors of 16 and then 8 tiles, one load | 0 wrong each | |
+| a row broadcast at 4 x 4, five rectangles on one load (one across the panels, one a single column, one a single row) | 4.54 µs | 4.40 µs (`rect=` at the make) |
+| kernel text, rectangle | 37,744 B (BRISC +944, NCRISC +80, TRISCs +68, +68, +88) | 36,496 B |
+
+A class without `km.UPTO` is built as before, to the byte.
+
 ### Another class added to a live run
 
 A handler of **another** class can be added to a live run whose groups switch program
@@ -1361,7 +1437,26 @@ A field read whole in that call (`x * scale`) is refused, naming `.row()`.
 
 A call holds 4 DST tiles (half of the fp32 DST), so a function returns at most 4 tiles.
 Refused by name: the results pushed without a name (`out.push(decay(x, s))`), a result
-left unpushed in the loop, several results in the row form.
+left unpushed in the loop, several results on a row of 2 tiles.
+
+A row function on a wide row (over 2 tiles, in one block or read in parts) may return
+several rows, each named and pushed into its own write stream: result 0 is written over
+the chunk (DST 0, 1), each other into 2 DST tiles of its own past the fields' chunks,
+and each chunk's results are packed after its one call. With one field that is 2 results
+(DST 0 and 5), with none 3; more are refused with the count it holds:
+
+```python
+@km.tile_function
+def normed(row, weight):
+    n = row * km.rsqrt(km.reduce_sum(row * row, exact=True) * (1.0 / 2048) + 1e-6).col()
+    return n * weight.row(), n
+
+
+for row in km.Stream(x.pages(first, rows * 64), block=8, row=64):
+    y, n = normed(row, self.weight)
+    ys.push(y)
+    ns.push(n)
+```
 
 `@km.handler(stamps="t")` on a handler that calls a tile function makes the math CPU
 read the wall clock around each call between two `tensix_sync()`, as the tile
@@ -2607,7 +2702,6 @@ island 0's program and `cores` in flat ranks.
 | `prefetch=True` on a read of a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
-| more than 256 calls unrolled | the call of the method | the method |
 | a class with the walk that also has a dynamic handler | the make | the class |
 
 ## The runtime's form

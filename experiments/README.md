@@ -214,6 +214,10 @@ collectives and the link service.
   `km::all_gather` and `km::all_reduce` goes across two cards, and how it grows with the
   tensor. 16 MiB gathered in 132.4 µs and 64 MiB in 381.7 (101 GB/s each way, the links'
   rate); the all-reduce takes 1,488.3 and 5,556.8 µs, the growth mostly the adds.
+- [islands_tree](islands/islands_tree/README.md): the ports' reduce as an all-reduce,
+  its sum cast back to every rank of the group in the same command: exact on every rank
+  of 16 and 118, 10.16 and 21.98 µs against the plain reduce's 7.62 and 10.44 (one
+  card, 800 MHz).
 - [link_service](islands/link_service/README.md): the first measure of messages between
   islands: two islands joined by one link, a core on each running a link reader and writer.
   A crossing costs 6.5 µs for one message and 4.7 µs among a thousand round trips; single

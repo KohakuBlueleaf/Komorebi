@@ -54,6 +54,7 @@ WHERES = (
     "OverlaySlots",
     "PageRange",
     "Move",
+    "Far",
 )
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
@@ -119,6 +120,8 @@ def gave_up(word, sequence, abi_headers=None):
         out["port"] = word >> abi_headers["KM_GAVE_PORT_SHIFT"]  # the port a wait named
     if out["where"] == "ask":
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
+    if out["where"] == "far":
+        out["island"] = word >> 24  # the rank's island (km::write_l1, km::add_word)
     if str(out["where"]).startswith("overlay"):
         out["overlay"] = word >> 16  # the overlay's number
     if out["where"] == "overlayslots":  # no free slot: the number, the kernel's slots
@@ -378,11 +381,11 @@ def lost(words, abi_headers=None):
             continue
         bits = packed >> 16 * cpu & 0xFFFF
         at = int(words[abi_headers["kLvLostAt"] + cpu])
-        entry = {"kernel": name, "sequence": sequence, "island": bits >> 12 & 7}
+        entry = {"kernel": name, "sequence": sequence, "island": bits >> 7 & 0xFF}
         if bits >> 15:
             entry["abandoned"] = at
         else:
-            entry["first"], entry["pages"] = at, bits & 0xFFF
+            entry["first"], entry["pages"] = at, bits & 0x7F  # 127: or more
         out.append(entry)
     return out
 

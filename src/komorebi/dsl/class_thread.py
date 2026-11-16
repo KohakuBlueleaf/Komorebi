@@ -733,6 +733,9 @@ def fill_function(handler, upper, lower, regions):
             said.append(f"{parameter} a region's id")
         elif kind == "bank":
             body.append(word + f"{lower}_bank();")
+        elif kind == "columns":  # a width given at each submit: the tensor's
+            arguments.append(f"{argument(parameter)}_columns")
+            body.append(word + f"{argument(parameter)}_columns;")
         else:
             arguments.append(argument(parameter))
             body.append(word + f"{argument(parameter)};")
@@ -847,6 +850,7 @@ def chain_functions(chain, upper, lower):
         "    }",
         f"    chain->hdr |= {upper}_PROGRAM << 24 | KM_FLAG_EXCLUSIVE << 8;",
         f"    chain->group = {name}_FIRST | {name}_CORES << 16;",
+        f"    kmx_chain_span(chain, {len(chain.calls)}u);",
         "    return KMX_OK;",
         "}",
     ]

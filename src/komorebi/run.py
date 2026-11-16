@@ -188,6 +188,7 @@ class Run:
         )
         self._flag_exclusive = constants["KM_FLAG_EXCLUSIVE"]
         self._flag_part = constants["KM_FLAG_PART"]
+        self._flag_span = constants["KM_FLAG_SPAN"]  # a long chain's sequence numbers
         # a command to the dispatcher itself (INSPECT, RESET): its flag, not its number
         self._flag_dispatcher = constants["KMD_FLAG_DISPATCHER"]
         # a group from this first core on names a work cluster's thread
@@ -338,17 +339,22 @@ class Run:
         cluster=None,
         block=None,
         part=False,
+        span=1,
         **words,
     ):
         """Queues a command for `handler` on cores [first, first + count) (default all)
         or cluster `cluster`'s X280 thread; returns its handle. `result`: ask the result
         word; `queued`: the kernel picks the cores; `block`: bytes its handlers read;
-        `part`: an island's part. A class's handler makes `args` into its words."""
+        `part`: an island's part; `span`: a chain's sequence numbers (a9 + 1)."""
         # a chain (run.chain): one exclusive command, `words` its per-submit word
         if isinstance(handler, chain_module.Chain):
             chain = handler
             handle = self.submit(
-                chain.handler, chain.group, chain.args(words), exclusive=True
+                chain.handler,
+                chain.group,
+                chain.args(words),
+                exclusive=True,
+                span=chain.span,
             )
             tensor_module.sent_direct(chain.written, chain.direct)
             return handle
@@ -381,6 +387,7 @@ class Run:
             ports = self._check_ports(program_field, handler, group, exclusive)
             if method is not None:
                 self._check_rectangle(method, program_field, group)
+                self._check_given_rectangle(method, args, group)
                 self._check_reduce_groups(method, program_field, group)
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
@@ -392,10 +399,14 @@ class Run:
         kept = None
         if block is not None:
             args, kept = self._block_words(block, args, cluster)
+        if span > 1:  # a9: the sequence numbers past the command's own
+            args = [*args, *[0] * (len(self._arg_at) - len(args))]
+            args[-1] = span - 1
         flags = (
             (self._flag_result if result else 0)
             | (self._flag_queue if queued else 0)
             | (self._flag_part if part else 0)
+            | (self._flag_span if span > 1 else 0)
         )
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
@@ -440,6 +451,28 @@ class Run:
                 )
             out[index] = found[0]
         return out
+
+    def _check_given_rectangle(self, method, args, group):
+        """Refuses a command whose rectangle given at each submit (km.UPTO(rect=))
+        is off this run's grid or whose group is not the rectangle's."""
+        if front.rect_given(method.function) is None or method.words is None:
+            return
+        at = method.words.index(("rect", "rect"))
+        x0, y0, columns, rows = (int(word) for word in args[at : at + 4])
+        width, height = self.grid
+        if x0 + columns > width or y0 + rows > height:
+            raise ValueError(
+                f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is off the "
+                f"{width} x {height} grid"
+            )
+        first = y0 * width + x0
+        want = (first + self.island_first - self.island_cores[0],
+                (y0 + rows - 1) * width + x0 + columns - first)  # fmt: skip
+        if tuple(group) != want:
+            raise ValueError(
+                f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is the group "
+                f"{want}; submit it to that group (not {tuple(group)})"
+            )
 
     def _check_rectangle(self, method, program_field, group):
         """Refuses a broadcast's command of a class whose group is not the group of
@@ -1177,10 +1210,13 @@ class Run:
         self._first[row : row + rows] = first
         self._count[row : row + rows] = count
         self._flags[row : row + rows] = flags
-        self._sequence[row : row + rows] = np.where(
-            has_cores, self._next_sequence + np.cumsum(has_cores) - 1, 0
+        spans = has_cores * np.where(  # a long chain takes a9 + 1 numbers
+            flags & self._flag_span, words[:, self._arg_at[-1]].astype(np.int64) + 1, 1
         )
-        self._next_sequence += int(has_cores.sum())
+        self._sequence[row : row + rows] = np.where(
+            has_cores, self._next_sequence + np.cumsum(spans) - spans, 0
+        )
+        self._next_sequence += int(spans.sum())
         self.port.enqueue(np.ascontiguousarray(words))
         self._handed += rows
 
@@ -1389,12 +1425,17 @@ class Run:
             )
 
     def _unsequence(self, handle):
-        """A rejected command took no sequence number: later commands move down one."""
+        """A rejected command took no sequence number (a long chain's, none of its
+        span): later commands move down as many."""
         i = handle - self._base
-        self._sequence[i] = 0
         later = self._sequence[i + 1 : self._handed - self._base]
-        later[later > 0] -= 1
-        self._next_sequence -= 1
+        after = later[later > 0]
+        took = (int(after[0]) if after.size else self._next_sequence) - int(
+            self._sequence[i]
+        )
+        self._sequence[i] = 0
+        later[later > 0] -= took
+        self._next_sequence -= took
 
     def _arrived(self, handles):
         return self._has[handles - self._base]
