@@ -52,13 +52,12 @@ The wheel installs and `kmr doctor` runs with nothing else. A wheel with the mod
 for a clone ([install](../docs/install.md#running-on-a-card)):
 
 1. a tt-metal tree at the pinned version, built with the X280 runtime
-   (`-DTT_METAL_BUILD_X280=ON`), with the tt-x280-dispatch targets hooked in, named by
-   `TT_METAL_HOME`. The tt-metal inside the `kohakutt` wheel does not do: it is built
-   without the X280 runtime;
+   (`-DTT_METAL_BUILD_X280=ON`), named by `TT_METAL_HOME`. The tt-metal inside the
+   `kohakutt` wheel does not do: it is built without the X280 runtime;
 2. `clang++-20`: the native host module is built once into `KMR_CACHE` (default
    `~/.cache/komorebi`) the first time a session loads, about ten seconds;
 3. the card's X280 memory prepared once ([install](../docs/install.md#running-on-a-card),
-   step 3; with `komorebi-runtime` installed, `kmr prime`).
+   step 2; with `komorebi-runtime` installed, `kmr prime`).
 
 Neither `ttnn` nor `torch`: the host goes through tt-metal's C++ API in the native
 module, and data goes in and out as numpy arrays.

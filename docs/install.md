@@ -79,10 +79,9 @@ kmr doctor
 
 The wheel needs nothing else to install and to run `kmr doctor`. To run on a card it
 needs what a clone needs ([running on a card](#running-on-a-card)): the tt-metal tree
-with the X280 runtime and the tt-x280-dispatch targets in `TT_METAL_HOME`, and
-`clang++-20`; neither `ttnn` nor `torch`. The native
-host module is built from the sources in the wheel on first use, into `KMR_CACHE`
-(default `~/.cache/komorebi`). The examples are not in the wheel; a copy of `examples/`
+with the X280 runtime in `TT_METAL_HOME`, and `clang++-20`; neither `ttnn` nor
+`torch`. The native host module is built from the sources in the wheel on first use,
+into `KMR_CACHE` (default `~/.cache/komorebi`). The examples are not in the wheel; a copy of `examples/`
 runs from anywhere with the wheel's environment active, and finds the headers, the X280
 library and the image in the install ([a run on a card](../packaging/README.md#a-run-on-a-card)).
 The tt-metal inside the `kohakutt` wheel cannot serve: it is built without the X280
@@ -207,37 +206,49 @@ kmr build host out/prog main.cpp -I include -D NAME=1 # a C++ host
 kmr build pymodule out/mod.so module.cpp              # a Python module
 ```
 
-`--tree` names the tree; the default is `TT_METAL_HOME`, else the runtime package. The `host` and `pymodule`
-builds copy their compile and link flags from two targets that the tt-x280-dispatch
-project adds to a tt-metal build, so they need a tree built with them; see the
-limitation in [development](development.md#known-limitations). Building an X280 image does not.
+`--tree` names the tree; the default is `TT_METAL_HOME`, else the runtime package. The
+`host` and `pymodule` builds read their flags from tt-metal's own statements in the
+tree's `build/build.ninja`, so they need a built tree (the runtime package carries none):
+the compile flags (include directories, defines, language and warning flags) of the X280
+runtime's library `x280_device`, which carry tt-metal's, less the warning tt-metal adds
+for its own sources (`-Wunused-parameter`); the link libraries of the X280
+runtime's priming test `x280_prime_test` (the runtime's static libraries, then
+`libtt_metal.so` and the libraries it needs); for a module, nanobind's include
+directories and archive from ttnn's `nanobind-static-abi3`. Both are tt-metal's targets
+in a tree configured with `-DTT_METAL_BUILD_X280=ON`; on a tree without them the error
+names that option. Building an X280 image needs no build statement.
 
 ## Running on a card
 
-Running the host API on a card needs a tt-metal tree with the X280 runtime, the
-[tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project hooked
-into it, and a card whose X280 memory is prepared once. Step by step:
+Running the host API on a card needs a tt-metal tree with the X280 runtime and a card
+whose X280 memory is prepared once. Nothing outside tt-metal is needed. Step by step:
 
-1. **tt-metal v0.81.1 with the X280 runtime** (the version in `packaging/tt-metal.pin`):
-
-   ```
-   git clone --branch v0.81.1 https://github.com/tenstorrent/tt-metal && cd tt-metal
-   ./build_metal.sh --configure-only && cmake -B build -DTT_METAL_BUILD_X280=ON
-   ```
-
-   The X280 runtime is the experimental one under
-   `tt_metal/fabric/experimental/x280` (its README explains it).
-
-2. **The companion project's targets.** Its `install.sh` adds a three-line CMake hook to
-   the tree and builds, among others, the `ttx_bench` and `_ttx280` targets whose flags
-   `kmr build host` and `kmr build pymodule` copy:
+1. **tt-metal v0.81.1 with the X280 runtime** (the version in `packaging/tt-metal.pin`).
+   `packaging/runtime/build_tt_metal.sh` clones the pinned release, applies this
+   repository's patches (among them the X280 clock table the session's 1350 MHz needs),
+   configures it with the X280 runtime and builds what Komorebi uses:
 
    ```
-   git clone https://github.com/KohakuBlueleaf/tt-x280-dispatch
-   tt-x280-dispatch/install.sh $PWD
+   packaging/runtime/build_tt_metal.sh $HOME/tt-metal   # KMR_JOBS=N limits the jobs
+   cd $HOME/tt-metal
    ```
 
-3. **Prepare the card once.** Prime the X280 LIM ECC of the card, then reset it; the
+   By hand, the same without the patches (the session then falls back to 1000 MHz):
+
+   ```
+   git clone --branch v0.81.1 --recurse-submodules https://github.com/tenstorrent/tt-metal
+   cd tt-metal
+   ./build_metal.sh --build-metal-tests --configure-only
+   cmake -B build -DTT_METAL_BUILD_X280=ON
+   ninja -C build ttnn hw_toolchain x280/obj/entry_active.o x280/obj/x280_active_start.o \
+       x280/firmware-lim-idle.bin x280_device x280_state x280_prime_test
+   ```
+
+   tt-metal accepts `TT_METAL_BUILD_X280` only with its tests configured
+   (`--build-metal-tests`); none of them is built. The X280 runtime is the experimental
+   one under `tt_metal/fabric/experimental/x280` (its README explains it).
+
+2. **Prepare the card once.** Prime the X280 LIM ECC of the card, then reset it; the
    priming survives later resets, so this is once per card, not per run. With the
    tree's own program (`ninja -C build x280_prime_test` builds it):
 
@@ -249,14 +260,14 @@ into it, and a card whose X280 memory is prepared once. Step by step:
    or, with `komorebi-runtime` installed in the environment, `kmr prime --card 0`
    ([setting up once](#setting-up-once)), then the same reset.
 
-4. **The Python environment.** `numpy` beside the package (neither `ttnn` nor `torch`
+3. **The Python environment.** `numpy` beside the package (neither `ttnn` nor `torch`
    is needed), and `TT_METAL_HOME` naming the tree:
 
    ```
    export TT_METAL_HOME=$PWD TT_METAL_RUNTIME_ROOT=$PWD
    ```
 
-5. **Build ahead (optional).** On first use the session builds the dispatcher image
+4. **Build ahead (optional).** On first use the session builds the dispatcher image
    and the package's native module from the tree into `build/komorebi/` of the clone (or
    `KMR_CACHE`), about ten seconds:
 
@@ -264,7 +275,7 @@ into it, and a card whose X280 memory is prepared once. Step by step:
    python -m komorebi.native        # prints the image and the module it built or found
    ```
 
-6. **Run.** The session opens the card in slow dispatch:
+5. **Run.** The session opens the card in slow dispatch:
 
    ```
    cd examples/01_mapcollect
@@ -276,13 +287,6 @@ into it, and a card whose X280 memory is prepared once. Step by step:
    ```
    KMR_CARD=1 python -m pytest tests/hardware
    ```
-
-What does not work without the companion project: the package's native module is
-built with the flags of its `_ttx280` target, so without step 2 `python -m
-komorebi.native` builds the dispatcher image but stops at the module, and no
-session can run. `kmr build image` and everything on the CPU work without it. This
-dependency ends when Komorebi has its own build files
-([known limitations](development.md#known-limitations)).
 
 ## Checks
 

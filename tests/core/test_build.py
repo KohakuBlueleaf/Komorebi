@@ -27,25 +27,34 @@ def test_ninja_block_without_a_build_ninja_says_the_tree_is_not_built(tmp_path):
 
 
 def test_ninja_block_without_a_match_is_an_error(tmp_path):
-    (tmp_path / "build.ninja").write_text(build_ninja(("host",)))
+    (tmp_path / "build.ninja").write_text(build_ninja())
     with pytest.raises(build.BuildError, match="no build statement"):
         build.ninja_block(tmp_path, "build nothing")
 
 
-def test_cxx_commands_follow_the_borrowed_flags(tmp_path):
+def test_cxx_commands_follow_the_x280_runtime_statements(tmp_path):
     kind = "host"
     tree = make_tree(tmp_path / "tree")
     out = tmp_path / "out" / "prog"
     compile_cmd, link_cmd = build.cxx_commands(
         kind, tree, out, "main.cpp", includes=["/mine"], defines=["N=3"]
     )
+    images = f'-DX280_IMAGE_DIR="{tree / "build" / "x280"}"'
     assert compile_cmd[0] == "clang++-20"
-    assert compile_cmd[1:5] == ["-DFOO=1", "-DBAR=two words", "-DN=3", "-I/mine"]
-    assert compile_cmd[5:9] == ["-I/a/include", "-isystem", "/b/include", "-O2"]
+    assert compile_cmd[1:6] == [
+        "-DFOO=1",
+        "-DBAR=two words",
+        images,
+        "-DN=3",
+        "-I/mine",
+    ]
+    assert compile_cmd[6:12] == [
+        "-I/a/include", "-isystem", "/b/include", "-O2", "-std=c++20", "-fPIC"
+    ]  # fmt: skip
     assert compile_cmd[-4:] == ["-c", "main.cpp", "-o", str(out.with_suffix(".o"))]
-    assert not any("KERNEL_DIR" in tok for tok in compile_cmd)
+    assert "-Wunused-parameter" not in compile_cmd
 
-    flags = build.TEMPLATES[kind][2]
+    flags = build.TEMPLATES[kind][1]
     build_directory = tree / "build"
     assert link_cmd == [
         "clang++-20",
@@ -58,6 +67,34 @@ def test_cxx_commands_follow_the_borrowed_flags(tmp_path):
         "/usr/lib/libz.so",
         str(build_directory / "lib/libtwo.a"),
     ]
+
+
+def test_a_module_adds_nanobind_includes_as_system_ones_and_its_archive(tmp_path):
+    tree = make_tree(tmp_path / "tree")
+    host_compile, host_link = build.cxx_commands("host", tree, tmp_path / "a", "m.cpp")
+    compile_cmd, link_cmd = build.cxx_commands(
+        "pymodule", tree, tmp_path / "a", "m.cpp"
+    )
+    nanobind = ["-isystem", "/nb/include", "-isystem", "/py/include"]
+    at = compile_cmd.index("/b/include") + 1
+    assert compile_cmd[at : at + 4] == nanobind
+    assert "/nb/ext/robin_map/include" not in compile_cmd
+    assert "-Os" in compile_cmd and "-Os" not in host_compile
+    archive = str(tree / "build" / build.NANOBIND[1])
+    assert link_cmd[link_cmd.index(str(tmp_path / "a")) + 1] == archive
+    assert archive not in host_link
+
+
+def test_a_tree_without_the_x280_runtime_or_nanobind_names_what_to_add(tmp_path):
+    tree = make_tree(tmp_path / "tree")
+    path = tree / "build" / "build.ninja"
+    path.write_text(build_ninja(x280=False))
+    with pytest.raises(build.BuildError, match="-DTT_METAL_BUILD_X280=ON"):
+        build.cxx_commands("host", tree, tmp_path / "a", "m.cpp")
+    path.write_text(build_ninja(nanobind=False))
+    assert build.cxx_commands("host", tree, tmp_path / "a", "m.cpp")
+    with pytest.raises(build.BuildError, match="nanobind.*without ttnn"):
+        build.cxx_commands("pymodule", tree, tmp_path / "a", "m.cpp")
 
 
 def test_cxx_commands_kinds_differ_in_link_flags(tmp_path):

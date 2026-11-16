@@ -900,8 +900,9 @@ back, and a script's flag "0-1,1-2" becomes one by `islands.parse_pairs`.
   a graph that is not connected, a pair of one island, an island with more
   neighbours than a card's four ports, more than 4 links a pair (a byte each in a
   PAGES command's link word).
-- **Links a pair.** Every pair uses the fewest links any pair has (`session.links`);
-  the links left out are logged at the open, which pair and how many.
+- **Links a pair.** Each pair uses all its links; `session.links`, the fewest any pair
+  has, is the island's page CPUs a pair (from link 1 when a pair has more, so link
+  core 0 holds one).
 - **Link cores.** An island's link cores are in neighbour order, `ceil(links / 2)`
   toward each neighbour (`graph.link_cores_toward(island, neighbour)`), a link a CPU;
   the PAGES command toward a neighbour carries that neighbour's channels alone.
@@ -1343,9 +1344,6 @@ on one card.
   compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
 - More than two cards: the mesh opens 1 x n, so the fabric reports a line (a 2-D
   mesh shape is not built); tried with two.
-- Pairs with different links: every pair uses the fewest links a pair (an island's put
-  rings and page CPUs are one set, indexed alike for every neighbour), the rest left
-  unused and logged.
 - A split card: a copy across and a batch put over more than one link; X280 threads (not supported, by decision: a split card
   is for developing and checking island programs).
 - Two cards each split into islands, as a line of four (fabric links and wires in one
