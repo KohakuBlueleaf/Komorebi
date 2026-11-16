@@ -210,23 +210,39 @@ the other way (1,000 pipelined to one core).
 
 ## Messages across a link
 
-A dynamic run over any group of the ranks of several islands forwards to a rank of
-another island as to any rank: the kernels do not change. A message for another
-island's rank is a delivery by the link service: the writer hands its bin to its link
-core (one line, confirmed, so a pair keeps its order), the lead page CPU pushes the
-messages and their bodies into a staging slot on the far island's link core, and that
-link core puts them into the rank's queue as a writer there would, reserving on the
-rank's counter tile and committing by the mark. A direct pair to a far rank goes by the
-link service's L1 write. The links carry pages and commands meanwhile. The run ends
-when the dispatchers' waves find every island quiet twice alike with as many messages
-consumed as sent.
+A dynamic run whose group is every rank of two islands (`Session(cards=...)`)
+forwards to a rank of the other island as to any rank: the kernels do not change. The
+writer flush puts a message for another island into the outbox of its link; beside the
+RUN the session starts the message service on the CPU that holds link 0, over the
+connection it opened at load. With `message_links=True` (opt-in: one run of three of example 05's 10^6 forwards over four links stalled at 81 % of its visits, cause not found yet) every
+link has a service, and a rank's messages take link `rank % links`, so one rank's stay
+in order. A service sends its outbox across, many messages to a packet (at most
+4352 bytes) and one count a packet, and issues what landed from the far island to its
+ranks. A message's body crosses in its message's packet, right after it (at most 4,224
+bytes for 64-byte messages), and is written into the rank's body page before the
+message: example 23 takes 3.001 µs a hop with the message alone, 6.109 µs with a 4 KiB
+body (one service; four: 2.990 and 6.056). Every wait is bounded and the link has credits, so a full far
+inbox holds the sender. The run ends when both islands are quiet: link 0's service decides for its
+island over the run's cores and the other services' state lines, sends its island's
+quiet report across, and the dispatcher's quiet test counts link core 0's line (sent:
+messages issued again here; consumed: messages sent across, every link's). Link 0's
+service calls its island quiet once two passes alike find every core idle and every
+other service empty in this run, with every service's counts balanced; both islands
+quiet with the sums sent across one way equal to those issued the other, nothing is in
+flight on any link.
 
-[05_forward](../../examples/05_forward/README.md) runs this on two Blackhole p150a cards:
-10^6 forwards exact in 1,522.9 ms on one link (one card: 11.77 ms; every delivery of an
-island goes through one CPU, so four links take 1,469.1 ms); on a split card over a
-group that is not every rank, with pages written across in the same run, exact.
-[23_message_body](../../examples/23_message_body/README.md): 2.378 µs a hop across two
-cards with the message alone, 7.570 µs with a 4 KiB body (one card 2.165 and 7.474).
+[05_forward](../../examples/05_forward/README.md) runs this on two Blackhole p150a cards,
+one link: 16 messages of 4 forwards over 234 message ranks of 238, exact against its
+replay, 27 of the 64 forwards across. 10^6 forwards: 302.0 ms with one service (one
+link), 80.1 to 80.4 ms with four (`message_links=True`, every link about 62,500
+messages each way); one card: 11.77 ms. Measured before the service moved onto the link
+cores (a link core of its own as a rank, one link,
+[link_service](../../experiments/islands/link_service/README.md)): 6.5 µs a crossing for a single
+message, 4.7 µs in a run of 1000 round trips; about 4.7 million 64-byte messages a second
+each way when messages wait to be batched, 0.6 million a packet a message.
+
+While a run's messages are served, its links' CPUs serve nothing else: a dispatcher's
+command line or a page waits until the run ends.
 
 Over more than two islands the end of a run is decided once for the whole run, not a
 pair at a time. Every link core serves its link. Each island's link core 0 checks its
@@ -307,14 +323,15 @@ The far link core needs nothing.
 
 ## What is not built
 
-- **Over a link:** X280 ranks of a dynamic run; deliveries faster than one lead CPU an
-  island; over a line of three islands one run of example 05 of four was not exact. Between two cards a kernel's ask and put use every page CPU of
+- **Over a link:** a dynamic run on part of the ranks (its RUN takes every rank), X280
+  ranks over a link. Between two cards a kernel's ask and put use every page CPU of
   every link; over more than two islands an ask is forwarded but carried by one page CPU
   a link, and a put goes one link only (a put to an island two links away is refused).
   More than 16 KiB in one relay call goes as several asks; no run has sent that much in one call yet. Over more
-  than two islands the relay takes one link a neighbour.
+  than two islands the relay and the messages take one link a neighbour.
 - **A rate in the table**, so `km::rate` of another island is 0.
-- **More than two islands of a split card:** one wire a pair. Not in this release, by decision: X280
+- **More than two islands of a split card:** one wire a pair and at most three link
+  cores an island for messages. Not in this release, by decision: X280
   threads on a split card (a split card is for developing and checking island programs),
   and two cards each split into islands, which would make a line of four (fabric links
   and wires in one graph); forwarding has run over wires only.

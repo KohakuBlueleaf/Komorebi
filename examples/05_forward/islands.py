@@ -289,9 +289,9 @@ def check(args, session, rows, group):
         "exact": exact,
         "consumed": int(got[:, FORWARD["kResConsumed"]].sum()),
         "visits": int(got[:, FORWARD["kResVisits"]].sum()),
-        "visits_by_island": [  # each island's part of the group
-            int(one[at : at + n, FORWARD["kResVisits"]].sum())
-            for one, at, n in zip(rows, starts, ranks)
+        "visits_by_island": [
+            int(island_rows[:count, FORWARD["kResVisits"]].sum())
+            for island_rows, count in zip(rows, ranks)
         ],
         "crossings_replayed": across,
     }

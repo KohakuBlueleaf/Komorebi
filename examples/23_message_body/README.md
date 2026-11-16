@@ -62,29 +62,23 @@ all exact (every word of the final body checked).
 
 ## Over two cards
 
-`islands.py` runs the same kernels on two cards (`Session(cards=[0, 1])`) or a split
-card (`--cards 1 --islands 2`, `--line`): one `RUN` over every message rank of every
-island, numbered on in flat order, so a thread crosses twice a lap. A message for
-another island's rank is a delivery by the link service: its bin's messages and bodies
-go into a staging slot on the far island's link core, which writes the bodies into the
-rank's body pages and the messages into its queue, as a local send does. `--direct`
-loads the handler as a part (`kernels/parts/chain.cpp`) with the pairs r to r + 1
-declared and sends each hop by `messages.direct()`; a pair across islands goes by the
-link service's L1 write.
+`islands.py` runs the same kernels on two cards (`Session(cards=[0, 1])`): one `RUN`
+over every message rank of both islands, numbered on from island 0 to island 1, so a
+thread crosses the link twice a lap. A body crosses in the packet of its message,
+right after it; the far link core writes the body into the rank's body page, then the
+message, as a local send does. A body over a link is at most 4,224 bytes (a 64-byte
+message and its body in one packet of 4,352 bytes); the load refuses a larger one.
 
 ```
-python islands.py                         # two cards; bodies 0 and 4 KiB
-python islands.py --direct                # each hop by direct()
-python islands.py --cards 1 --islands 3 --line --direct --kernel-bytes 180224
+python islands.py --threads 8                # one link; 0 and 4 KiB
+python islands.py --threads 8 --links 4 --message-links  # a service a link (opt-in)
 ```
 
-Cards 0 and 1 (Blackhole p150a, one link), 2026-11-16, one thread of 1200 hops over 234
-message ranks: exact, 2.378 µs a hop with the 64-byte message alone, 7.570 µs with a
-4 KiB body changed at every hop (one card 2.165 and 7.474); by `direct()`, 1199 of 1199
-hops direct, 3.607 and 6.908 µs. Card 1 split in two: 2.338 and 7.479 µs, by `direct()`
-3.556 and 6.891; in a line of three: 2.518 and 7.617, by `direct()` 3.900 and 7.406 (the
-line of three's parts need 180,224 bytes of kernel buffer). Every case exact, every word
-of every final body checked.
+Cards 0 and 1 (Blackhole p150a, one link), 2026-11-15, 8 threads of 1200 hops over 234
+message ranks, 40 crossings each way: both cases exact (every word of every final body
+checked); 3.001 µs a hop with the 64-byte message alone, 6.109 µs with a 4 KiB body
+changed at every hop (one service). Four services (`--links 4 --message-links`, 232 message
+ranks): exact, 2.990 and 6.056 µs a hop; the crossing ranks' messages took links 1 and 3, 40 each way.
 
 With `--parts` the handler is an overlay part under Komorebi's own kernels
 (`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
