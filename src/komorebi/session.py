@@ -33,6 +33,7 @@ from komorebi import (
     extents,
     formats,
     insn_check,
+    island_names,
     island_session,
     islands,
     kernel_buffer,
@@ -2886,6 +2887,7 @@ class _Backend:
         self.slots_most = slots_most(program, placed)
         # the service overlay's too, and the records of slots past 4
         self.area_bytes = overlay.area_bytes(self.slots_most)
+        island_names.check(placed.programs if placed else [program], self.session.log)
         bounds = self.session.page_bounds_list(placed.programs if placed else [program])
         control = self._control_blocks(cores, grid, port_lines, self.area_bytes, bounds)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
