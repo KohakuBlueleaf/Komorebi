@@ -583,24 +583,6 @@ namespace km {
     }
 
 #if KM_GUARD
-    // The last tensor page a walk reads or writes (its steps never go back).
-    __attribute__((noinline)) inline uint32_t walk_last(const Walk& walk) {
-        uint32_t last = (
-            walk.first_page + (walk.blocks - 1u) * walk.block_step +
-            (walk.last_rows - 1u) * walk.row_step +
-            (walk.last_columns - 1u) * walk.column_step
-        );
-        if (walk.blocks > 1u) {
-            const uint32_t full = (
-                walk.first_page + (walk.blocks - 2u) * walk.block_step +
-                (walk.rows - 1u) * walk.row_step +
-                (walk.columns - 1u) * walk.column_step
-            );
-            last = full > last ? full : last;
-        }
-        return last;
-    }
-
     // Whether `T` is a bank-addressed accessor (a tensor of one island's banks).
     template <typename T, typename = decltype(&T::get_bank_base_address)>
     constexpr bool walk_banked(int) {
@@ -612,23 +594,28 @@ namespace km {
         return false;
     }
 
-    // page_range_ok of a walk over the bank-addressed tensor at `word` of `bytes` pages
-    // (stream pages by noc_async_*_page; those that may cross: the page calls').
+    // page_range_ok of a walk, first page to last (steps never go back), over a
+    // banked tensor at `word` of `bytes` pages (a crossing one: the page calls').
     __attribute__((noinline)) inline bool walk_inside(
         const Core& core, const Walk& walk, uint32_t word, uint32_t bytes
     ) {
-        return (
-            walk.blocks == 0 ||
-            page_range_ok(
-                core,
-                core.running_slot(),
-                core.running_sequence(),
-                word,
-                walk.first_page,
-                walk_last(walk) + 1u - walk.first_page,
-                bytes
-            )
+        if (walk.blocks == 0) {
+            return true;
+        }
+        uint32_t last = (
+            (walk.blocks - 1u) * walk.block_step +
+            (walk.last_rows - 1u) * walk.row_step +
+            (walk.last_columns - 1u) * walk.column_step
         );
+        if (walk.blocks > 1u) {
+            const uint32_t full = (
+                (walk.blocks - 2u) * walk.block_step +
+                (walk.rows - 1u) * walk.row_step +
+                (walk.columns - 1u) * walk.column_step
+            );
+            last = full > last ? full : last;
+        }
+        return page_range_ok(core, word, walk.first_page, last + 1u, bytes);
     }
 
     template <typename Plain>
@@ -646,8 +633,11 @@ namespace km {
         return true;
     }
 
+    // walk_inside of a stream (one copy a kind of stream: a stream's call is short).
     template <typename Accessor>
-    inline bool move_inside(const Core& core, const Stream<Accessor>& stream) {
+    __attribute__((noinline)) bool move_inside(
+        const Core& core, const Stream<Accessor>& stream
+    ) {
         if constexpr (kInPlace<Accessor>) {
             return (
                 stream.tensor.placed ||

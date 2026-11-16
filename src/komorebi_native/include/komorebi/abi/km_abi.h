@@ -157,8 +157,8 @@
  * core 0, a page CPU's answers, the lines, the far asks */
 #define KM_PAGE_CPUS 4u
 /* a link core's own L1 (KM_LINK_QUEUE): the put queue, then with KM_LINK_CHUNK two
- * chunks; an index above every other (the trace's is 31; a Blackhole has 64) */
-#define KM_LINK_CB 32u
+ * chunks; an index above every other (the trace's 31, the chain's 32; of 64) */
+#define KM_LINK_CB 33u
 /* The put queue, on link core 0 (KM_LINK_CB, at KM_PUT_QUEUE): up to KM_QUEUE_LINES
  * unconfirmed put lines, the far lines as they arrive, pages landed per owner */
 #define KM_QUEUE_LINES (4u * KM_CORES_MAX) /* a core's two CPUs, two lines each */
@@ -177,6 +177,15 @@
 #define KM_QUEUE_E_NUMBER 4u /* the line's number word */
 #define KM_QUEUE_E_KEEPER 5u /* a gather's keeper (KM_ASK_KEEPER), 0: none */
 #define KM_QUEUE_BYTES (KM_QUEUE_PENDING + KM_QUEUE_LINES * KM_QUEUE_ENTRY)
+/* Then puts to islands past the next (KM_FAR_PUTS), n islands: sent to d, d's taken
+ * (its credit), taken from s, pages landed of s's line i, s's lines */
+#define KM_FAR_LINES 8u
+#define KM_FAR_SENT(n) 0u
+#define KM_FAR_CREDIT(n) (4u * (n))
+#define KM_FAR_TAKEN(n) (8u * (n))
+#define KM_FAR_COUNT(n) (12u * (n))
+#define KM_FAR_LINE(n) (((12u + 4u * KM_FAR_LINES) * (n) + 63u) / 64u * 64u)
+#define KM_FAR_BYTES(n) (KM_FAR_LINE(n) + 64u * KM_FAR_LINES * (n))
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
 #define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */
@@ -402,6 +411,9 @@ KM_STATIC_ASSERT(
 #define KM_PORT_LEFT (KM_PORTS + 2u)
 #define KM_PORT_RIGHT (KM_PORTS + 3u)
 #define KM_PORT_SLOTS (KM_PORTS + 4u)
+/* the port an all-reduce of the ports' reduce counts the sum cast back at, in slot 0
+   of the arrival (km_tree.hpp) */
+#define KM_PORT_ALL_REDUCE 0u
 #define KM_PORT_STRIDE 16u
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u

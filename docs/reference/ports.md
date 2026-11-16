@@ -118,6 +118,40 @@ different groups that take turns on the same cores in one command reset the coun
 each switch, so they are not covered
 ([hazards](hazards.md#a-reduce-repeated-in-a-loop-of-one-command)).
 
+## All-reduce: the sum at every rank
+
+The same reduce, and then its sum cast back to every rank of the group, in the same
+command (`komorebi/device/km_tree.hpp`):
+
+```cpp
+#include "komorebi/device/km_tree.hpp"
+// reader
+km::all_reduce_arrive(reader, command, arrival, group, form);
+// writer: rank 0's sum stays at the front of kCbOut (reduce_result, then pop)
+if (!km::all_reduce_emit(writer, command, arrival, group, form, kCbOut, 1)) return false;
+// compute, after it packed its part: every other rank takes the sum from slot 0
+km::all_reduce_take(compute, arrival, group, [&] { copy_tile(arrival.cb, 0, 0); });
+```
+
+Rank 0 combines as in the reduce, then writes the sum's pages into slot 0 of every
+other rank's arrival buffer, one multicast a NoC rectangle that whole runs of the
+group's cores make (a run: consecutive ranks in one row of the NoC), and, once those
+writes are acknowledged, adds 1 to each rank's port `KM_PORT_ALL_REDUCE` (0). Every
+other rank's reader, after its own arrivals, waits for that count and hands the
+arrival buffer to compute, whose `all_reduce_take` reads slot 0. The port is free by
+then: a rank has sent its part (its own arrivals taken and cleared) before the sum
+exists.
+
+One card (p150a, AICLK 800 MHz), the tree form, one float32 tile a rank, every rank's
+copy exact, the median of 5 commands on the card
+(`experiments/islands/islands_tree/tree.py`; each rank then writes its copy to DRAM,
+rank 0 alone in the plain reduce):
+
+| Group | Reduce (rank 0 holds the sum) | All-reduce (every rank holds it) |
+|---|---|---|
+| 16 ranks | 7.62 µs | 10.16 µs |
+| 118 ranks | 10.44 µs | 21.98 µs |
+
 ## When a core does not send
 
 Every wait times out at the start-up wait limit and sees the stop flag. The port's
