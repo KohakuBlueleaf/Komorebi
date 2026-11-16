@@ -885,7 +885,7 @@ class IslandRun:
     def drain(self, timeout=10.0):
         """Sends everything queued and waits, within one `timeout`, for every
         island's events; returns how many events it waited for, every island's
-        together."""
+        together. `drain_given_up`: the parts of them given up, every island's."""
         deadline = time.monotonic() + timeout
         self.send()
         waited = 0
@@ -895,6 +895,10 @@ class IslandRun:
             except KomorebiError as error:
                 raise self._error(error, island) from None
         return waited
+
+    @property
+    def drain_given_up(self):
+        return sum(run.drain_given_up for run in self.runs)
 
     def event(self, ticket):
         """The parts' events of a ticket (None for a part not arrived), island order."""

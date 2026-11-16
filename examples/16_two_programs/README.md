@@ -88,7 +88,7 @@ python two_programs.py --cards 0,1                # every phase on two cards
 ```
 
 `--cores 0` (the default) is every core of the grid. The script exits non-zero if a result
-differs or the host does not refuse. On two cards the groups are flat ranks over both
+differs, a command was given up (`run.drain_given_up`) or the host does not refuse. On two cards the groups are flat ranks over both
 islands, and a phase that reads a trace reads each command's rows over both cards
 (`run.trace().command(ticket)`, each island's in its own clock).
 

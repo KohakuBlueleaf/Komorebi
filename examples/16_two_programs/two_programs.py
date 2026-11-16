@@ -255,12 +255,14 @@ def checked_phase(session, args, cores, combined):
             sum_program.handler("sum"),  # handler 1 of sum
             scale_program.handler("scale"),  # handler 1 of scale
         )
+        given_up = run.drain_given_up  # a command given up is not an exact result
         refused = refusal(run, sum_program, split, every, combined)
     finally:
         run.stop()
     wrong = checked.wrong()
-    log(f"{'combined' if combined else 'disjoint'}: {sent} commands, {wrong} wrong")
-    return {"commands": sent, "wrong": wrong, "refused": refused}
+    phase = "combined" if combined else "disjoint"
+    log(f"{phase}: {sent} commands, {given_up} given up, {wrong} wrong")
+    return {"commands": sent, "given_up": given_up, "wrong": wrong, "refused": refused}
 
 
 def refusal(run, sum_program, split, every, combined):
@@ -499,11 +501,12 @@ def merged_phase(session, args, cores):
             sum_handler,
             scale_handler,
         )
+        given_up = run.drain_given_up
     finally:
         run.stop()
     wrong = checked.wrong()
-    log(f"merged: {sent} commands, {wrong} wrong")
-    out = {"commands": sent, "wrong": wrong, "cycles": {}}
+    log(f"merged: {sent} commands, {given_up} given up, {wrong} wrong")
+    out = {"commands": sent, "given_up": given_up, "wrong": wrong, "cycles": {}}
     forms = {
         "one": (sum_program, sum_program.handler("empty"), sum_program.handler("sum")),
         "list": (
@@ -578,9 +581,14 @@ def main():
         for key in ("disjoint", "combined", "live", "merged")
         if key in report
     )
+    given_up = sum(
+        report[key]["given_up"]
+        for key in ("disjoint", "combined", "merged")
+        if key in report
+    )
     refused = report.get("disjoint", {}).get("refused", True)
     refused &= report.get("live", {}).get("refused_other", 0) == 0
-    report["ok"] = wrong == 0 and refused
+    report["ok"] = wrong == 0 and given_up == 0 and refused
     print(json.dumps(power.clocked(report), default=float), flush=True)
     if not report["ok"]:
         raise SystemExit(1)
