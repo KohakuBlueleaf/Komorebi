@@ -1,8 +1,11 @@
 """`kmr prebuild` with no card: the mock clusters shipped, the command's arguments, the
 load's built line (ELFs found and compiled), the remembered sizes kept apart."""
 
+import builtins
+import io
 import json
 import os
+import sys
 import time
 from types import SimpleNamespace
 
@@ -160,3 +163,25 @@ def test_a_transfer_in_a_prebuild_builds_the_host_transfer_kernel(monkeypatch):
     mock._built_before = []
     assert mock._transfer_way([], 0, None) is None
     assert built == [1] and mock._built_before == [(1, 0)]  # in the next load's line
+
+
+def test_a_prebuild_writes_the_script_s_files_beside_them(monkeypatch, tmp_path):
+    real = builtins.open
+    script = tmp_path / "card.py"
+    script.write_text(
+        "import json, pathlib\n"
+        "with open(pathlib.Path(__file__).parent / 'results.json', 'w') as f:\n"
+        "    json.dump({'err': 0.0}, f)\n"
+        "(pathlib.Path(__file__).parent / 'notes.txt').write_text('zeros')\n"
+    )
+    monkeypatch.setenv(prebuild.ACTIVE, "1")
+    monkeypatch.delenv(prebuild.MEMORY, raising=False)
+    monkeypatch.setattr("sys.argv", ["prebuild", str(script)])
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    assert prebuild.main() == 0
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "card.py",
+        "notes.txt.prebuild",
+        "results.json.prebuild",
+    ]
+    assert builtins.open is real and io.open is real  # the real open again after
