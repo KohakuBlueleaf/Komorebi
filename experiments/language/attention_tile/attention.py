@@ -37,7 +37,8 @@ STARTED = time.monotonic()
 DT, DV, R, KB, WINDOW, LENGTH = 2, 2, 13, 12, 2, 10
 SUB = 2  # key tiles a step (the hand's 3 cuts t1's 4 keys only with a mask)
 QB = R * DT  # a job's block of Q
-MASKS, MASK_PAGES = 3, 3 * SUB  # init's (causal): none, [diagonal, out], [0, d.]
+CSUB = 3  # the causal class's key tiles a step: a mask covers a partial step
+MASKS, MASK_PAGES = 4, 4 * CSUB  # init's (causal): none, the diagonal at tile 0, 1, 2
 SCALE = 1.0 / math.sqrt(64.0)
 LOG2E = 1.0 / math.log(2.0)
 
@@ -155,8 +156,8 @@ class CausalAttention(km.Program):
 
     state: km.L1[km.fp32, R, 32, 32]
     o: km.L1[km.fp32, R, DV, 32, 32]
-    p: km.L1[km.bf16, SUB, 32, 32]
-    mask: km.L1[km.fp32, MASKS, SUB, 32, 32]
+    p: km.L1[km.bf16, CSUB, 32, 32]
+    mask: km.L1[km.fp32, MASKS, CSUB, 32, 32]
 
     @km.handler
     def attend(
@@ -193,13 +194,71 @@ class CausalAttention(km.Program):
                 for r in range(job.rows):
                     row = job.start + r * job.stride
                     seen = min(min(KB, job.keys - first), max(row + 1, first) - first)
-                    for c in range((seen + SUB - 1) // SUB):
-                        key = first + c * SUB
-                        s = start(self.mask[(min(row - key, 2) + 1) % 3], self.state[r])
-                        s += score(qs[r], kv[0][:, c * SUB : c * SUB + SUB])
+                    for c in range((seen + CSUB - 1) // CSUB):
+                        key = first + c * CSUB
+                        s = start(self.mask[(min(row - key, 3) + 1) % 4], self.state[r])
+                        s += score(qs[r], kv[0][:, c * CSUB : c * CSUB + CSUB])
                         self.p.write(softmax_step(s, self.state[r]))
                         acc = rescale(self.o[r], self.state[r])
-                        acc += weigh(self.p, kv[1][c * SUB : c * SUB + SUB, :])
+                        acc += weigh(self.p, kv[1][c * CSUB : c * CSUB + CSUB, :])
+                        self.o[r].write(acc)
+            for r in range(job.rows):
+                last = norm(self.o[r], self.state[r])
+                o.pages(job.o + r * job.stride * DV, DV).write(last)
+
+
+class StampedCausalAttention(km.Program):
+    """CausalAttention with the math CPU's spans of each step's setup and body
+    written to page `rank` of `stamps` (six a step: start, softmax_step, rescale;
+    then two a row for norm); otherwise the same lines."""
+
+    state: km.L1[km.fp32, R, 32, 32]
+    o: km.L1[km.fp32, R, DV, 32, 32]
+    p: km.L1[km.bf16, CSUB, 32, 32]
+    mask: km.L1[km.fp32, MASKS, CSUB, 32, 32]
+
+    @km.handler(stamps="stamps")
+    def attend(
+        self, q: km.Tensor, k: km.Tensor, v: km.Tensor, o: km.Tensor,
+        tables: km.Tensor, init: km.Tensor, stamps: km.Tensor,
+    ):  # fmt: skip
+        self.state.zero()
+        self.o.zero()
+        self.mask.fill(km.Stream(init.pages(0, MASK_PAGES)))
+        down = km.Broadcast(
+            self, along="column", length=LENGTH, mover="A", window=WINDOW
+        )
+        jobs = tables.pages(self.rank, 1).entries(Job, first=8, size=8, count=0)
+        for job in jobs:
+            r0 = job.q // DT
+            qs = km.Stream(
+                q.tiles[r0 : min(r0 + R * job.stride, r0 + job.rows * job.stride)
+                        : job.stride, 0:DT],
+                block=QB,
+            )  # fmt: skip
+            k0 = job.k // DT
+            v0 = job.v // DV
+            for b in range((job.keys + KB - 1) // KB):
+                kr = k0 + b * KB
+                vr = v0 + b * KB
+                if down.sender():
+                    kv = down.cast(
+                        k.tiles[kr : min(kr + KB, k0 + job.keys), 0:DT].T,
+                        v.tiles[vr : min(vr + KB, v0 + job.keys), 0:DV],
+                    )
+                else:
+                    kv = down.arrive()
+                first = b * KB
+                for r in range(job.rows):
+                    row = job.start + r * job.stride
+                    seen = min(min(KB, job.keys - first), max(row + 1, first) - first)
+                    for c in range((seen + CSUB - 1) // CSUB):
+                        key = first + c * CSUB
+                        s = start(self.mask[(min(row - key, 3) + 1) % 4], self.state[r])
+                        s += score(qs[r], kv[0][:, c * CSUB : c * CSUB + CSUB])
+                        self.p.write(softmax_step(s, self.state[r]))
+                        acc = rescale(self.o[r], self.state[r])
+                        acc += weigh(self.p, kv[1][c * CSUB : c * CSUB + CSUB, :])
                         self.o[r].write(acc)
             for r in range(job.rows):
                 last = norm(self.o[r], self.state[r])
@@ -236,12 +295,73 @@ def errors(got, want):
     }
 
 
+STAMP_WORDS, SPANS_FIRST = 256, 18  # a stamps page; its spans after 16 empty ones
+CPU_FIRST = STAMP_WORDS - 9  # then unpack, math, pack: span, waits for inputs, room
+KINDS = ("start_init", "start", "softmax_init", "softmax", "rescale_init", "rescale")
+
+
+def step_terms(words, plan, mhz):
+    """The stamped run's last command: each kind's median span (us, less the median
+    empty span) over the steps of the cores with rows, and the slowest core's spans
+    summed (us)."""
+    per_kind = {kind: [] for kind in (*KINDS, "norm_init", "norm")}
+    sums, cpus = [], []
+    for core, jobs in enumerate(plan.jobs):
+        rows = sum(job.rows for job in jobs)
+        if not rows:
+            continue
+        page = words[core].astype(np.int64)
+        empty = float(np.median(page[2:SPANS_FIRST]))
+        spans = page[SPANS_FIRST : SPANS_FIRST + int(page[1])] - empty
+        if len(spans) < 2 * rows:  # no stamps (a mock run reads zeros)
+            continue
+        steps = (len(spans) - 2 * rows) // 6
+        for at in range(6 * steps):
+            per_kind[KINDS[at % 6]].append(spans[at])
+        for at in range(6 * steps, len(spans)):
+            per_kind[("norm_init", "norm")[(at - 6 * steps) % 2]].append(spans[at])
+        sums.append(spans.sum())
+        cpus.append((page[CPU_FIRST:].reshape(3, 3), steps, core))
+    slowest = max(cpus, key=lambda c: c[0][:, 0].max(), default=None)
+    by_cpu = {}
+    if slowest is not None:
+        words, steps, core = slowest
+        for (span, waited_in, waited_out), cpu in zip(
+            words, ("unpack", "math", "pack")
+        ):
+            by_cpu[cpu] = {
+                "span_us": round(span / mhz, 2),
+                "waited_inputs_us": round(waited_in / mhz, 2),
+                "waited_room_us": round(waited_out / mhz, 2),
+                "own_us": round((span - waited_in - waited_out) / mhz, 2),
+                "a_step_us": {
+                    "own": round((span - waited_in - waited_out) / mhz / steps, 3),
+                    "waited_inputs": round(waited_in / mhz / steps, 3),
+                    "waited_room": round(waited_out / mhz / steps, 3),
+                },
+            }
+        by_cpu["core"], by_cpu["steps"] = core, steps
+    return {
+        "cpus_slowest_core": by_cpu,
+        "span_us": {
+            kind: round(float(np.median(v)) / mhz, 3)
+            for kind, v in per_kind.items()
+            if v
+        },
+        "spans_counted": {kind: len(v) for kind, v in per_kind.items()},
+        "slowest_core_spans_us": round(float(max(sums, default=0)) / mhz, 2),
+    }
+
+
 def mask_values():
-    """The causal class's mask rows: zeros, [the diagonal's triangle, -inf], [zeros,
-    the triangle]."""
+    """The causal class's mask rows of three tiles: zeros; the diagonal's triangle at
+    tile 0, 1 or 2, zeros before it and -inf after it."""
     zero, out = np.zeros((32, 32), np.float32), np.full((32, 32), -np.inf, np.float32)
     triangle = np.where(np.tri(32, dtype=bool), 0.0, -np.inf).astype(np.float32)
-    return np.concatenate([zero, zero, triangle, out, zero, triangle], axis=1)
+    rows = [[zero] * 3] + [
+        [zero] * d + [triangle] + [out] * (2 - d) for d in range(3)
+    ]  # the step's first key d tiles before the row's diagonal
+    return np.concatenate([tile for row in rows for tile in row], axis=1)
 
 
 def spans(trace, handles, plan):
@@ -345,7 +465,7 @@ def run_card(args):
     O); both O's against float64 and each other."""
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     call, causal, q, k, v = inputs(args.shape, args.seed)
-    report = {"shape": args.shape, "sub": SUB}
+    report = {"shape": args.shape, "sub": CSUB if causal else SUB}
     with km.Session(log=log) as session:
         plan = checked_plan(call, session.nocs().grid)
         report["plan"] = plan.summary()
@@ -386,6 +506,27 @@ def run_card(args):
         report["class_events"] = kinds
         report["class_text"] = program.sizes.text
         made_o = class_o.read()
+        if causal and args.stamps and trace is not None:
+            stamps = session.tensor(
+                np.zeros((len(plan.jobs), STAMP_WORDS), np.uint32), "uint32"
+            )
+            stamped = StampedCausalAttention(
+                session=session, log=log, **dict(zip(
+                    ("q", "k", "v", "o", "tables", "init"), words
+                )), stamps=stamps,
+            )  # fmt: skip
+            run = session.load(stamped)
+            try:
+                sent = [
+                    run.submit(StampedCausalAttention.attend, (0, len(plan.jobs)),
+                               args=(*words, stamps), exclusive=True)
+                    for _ in range(3)
+                ]  # fmt: skip
+                stamped_events = run.wait(sent, timeout=30.0)
+            finally:
+                run.stop()
+            report["stamped_us"] = [round(e.microseconds, 2) for e in stamped_events]
+            report["stamps"] = step_terms(stamps.read(), plan, trace.mhz)
     want = wanted(q, k, v, causal)
     hand_o = hand_o.reshape(want.shape).astype(np.float64)
     made_o = made_o.reshape(want.shape).astype(np.float64)
@@ -416,6 +557,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("mode", choices=("build", "card"))
     parser.add_argument("--shape", choices=("t1", "causal64"), default="t1")
+    parser.add_argument(
+        "--stamps", action="store_true", help="causal64: then the stamped class"
+    )
     parser.add_argument("--calls", type=int, default=20)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
