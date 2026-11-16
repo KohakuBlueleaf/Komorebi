@@ -12,7 +12,7 @@ import numpy as np
 from movement import pages_of, program
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 
 STARTED = time.monotonic()
 

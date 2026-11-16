@@ -16,19 +16,35 @@ src/komorebi/                  the package you import
   _env.py                      finds the tt-metal tree, its build and the X280 toolchain
   cli.py                       the `kmr` command: doctor, setup, sfpi, prime, build, power
   layout.py                    the grid, its panels and core groups (pure functions)
-  stats.py                     timing statistics and error against a reference
-  program.py  session.py       Program; Session (loads a program under the dispatcher)
-  run.py  errors.py  state.py  Run (submit, wait, stop); errors; result, state and trace decoding
-  programs.py  overlay.py      several programs in one run; overlays: the builder and the slots
-  movement.py  channel.py      both data-movement CPUs on one stream; the host channel
-  tensor.py  dram.py           device tensors; interleaved DRAM buffers, bank by bank
-  formats.py  insn_check.py    bfloat16 and tiles on the host; the instruction check of a kernel
-  thread.py                    X280 threads: declaration, arguments, regions, results
-  islands.py                   islands: the graph, ranks, the island table, placement (host values)
-  island_session.py            the session over several cards (or one card split into islands)
-  abi.py  native.py            constants read from the C headers; the image and native module
-  power.py                     power sampling: cards, a GPU, the CPU package
-  build.py                     out-of-tree builds: host program, Python module, X280 image
+  errors.py  formats.py        errors; bfloat16 and tiles on the host
+  abi.py  merge.py             constants read from the C headers; programs merged into one
+  program/                     a program:
+    description.py             Program
+    several.py  overlay.py     several programs in one run; overlays: the builder and the slots
+    movement.py                both data-movement CPUs on one stream
+    thread.py                  X280 threads: declaration, arguments, regions, results
+    addon/                     code added to a live run: added handlers, an added class's program
+    checks/                    the instruction check of a kernel; the page calls
+  session/                     the session on one card:
+    session.py                 Session (loads a program under the dispatcher)
+    run.py  state.py           Run (submit, wait, stop); result, state and trace decoding
+    page_bounds.py             a class's command checked at submit against its tensors' pages
+  device/                      the device side on the host:
+    channel.py                 the host channel
+    tensor.py  dram.py         device tensors; interleaved DRAM buffers, bank by bank
+    native.py                  the image and native module
+    extents.py                 the page bound on a card with no tensor table
+    kernel_buffer.py           the kernel buffer that follows the built kernels
+    remembered.py              that buffer's size, remembered in the build cache
+  chain/                       a chain's calls and the records they become
+  islands/                     islands:
+    graph.py                   the graph, ranks, the island table, placement (host values)
+    session.py                 the session over several cards (or one card split into islands)
+    link_area.py  trees.py     the link line and area; collectives over the islands' trees
+  builder/                     out-of-tree builds (flags.py: host program, Python module, X280
+                               image) and the prebuild (prebuild.py)
+  bench/                       power.py: power sampling (cards, a GPU, the CPU package);
+                               stats.py: timing statistics and error against a reference
   engines/                     micro-op streams and graphs: builders, upload encoding, checks,
                                simulators, the host-fed executors
   tools/cxx_format.py          clang-format with the rules it cannot express
@@ -76,7 +92,7 @@ repository, in the environment of [install](install.md#from-a-clone).
 `tests/core` covers the layout functions (panels, groups, partitions), statistics, the
 package boundary, `kmr doctor` with and without a tree, the runtime package's locator
 on a fake layout and the order in which the tree is chosen, the parsing and command
-assembly of `build.py` against a small fake `build.ninja`, the power sampler against
+assembly of `builder/flags.py` against a small fake `build.ninja`, the power sampler against
 fake sensors and a fake sysfs tree, and the formatter. Tests
 marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they live in
 `tests/hardware`). The host package's CPU tests run `Run` against a fake dispatcher

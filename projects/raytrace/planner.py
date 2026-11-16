@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
+from komorebi.program.thread import BANK_OF_CLUSTER, TIMER_HZ
 from projects.raytrace import packets
 
 K = packets.K

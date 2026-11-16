@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import native
+from komorebi.device import native
 from komorebi.layout import partition
 
 HERE = Path(__file__).resolve().parent

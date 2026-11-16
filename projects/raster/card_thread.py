@@ -13,8 +13,8 @@ import time
 import numpy as np
 
 import komorebi as km
-from komorebi import power
-from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
+from komorebi.bench import power
+from komorebi.program.thread import BANK_OF_CLUSTER, TIMER_HZ
 from projects.raster import card, card_passes, lists, passes, run
 from reference import raster
 

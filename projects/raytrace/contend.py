@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi import power
+from komorebi.bench import power
 from projects.raytrace import card, packets, trace
 from projects.raytrace.reference import harness
 from reference import native, raytrace, scenes

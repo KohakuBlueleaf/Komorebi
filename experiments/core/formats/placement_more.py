@@ -12,8 +12,9 @@ import time
 import numpy as np
 
 import komorebi as km
-from komorebi import formats, native
+from komorebi import formats
 from komorebi import session as km_session
+from komorebi.device import native
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from placement import (

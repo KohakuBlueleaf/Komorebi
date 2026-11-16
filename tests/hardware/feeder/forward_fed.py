@@ -21,7 +21,7 @@ import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
-from komorebi.program import Dynamic  # noqa: E402
+from komorebi.program.description import Dynamic  # noqa: E402
 
 CONSTANTS = feeder_commands.CONSTANTS
 FORWARD = feeder_commands.constants(EXAMPLE / "kernels" / "forward.h")

@@ -9,7 +9,7 @@ import inspect
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from komorebi import chain as kc
+from komorebi.chain import calls as kc
 from komorebi.dsl import compiler, front
 from komorebi.dsl.names import spelling
 from komorebi.errors import ProgramError

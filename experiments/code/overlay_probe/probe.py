@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import builder  # noqa: E402
 import numpy as np  # noqa: E402
 
-from komorebi import native  # noqa: E402
+from komorebi.device import native  # noqa: E402
 from komorebi.session import KERNEL_BUFFER_BASE, Session, aiclk_mhz  # noqa: E402
 
 T0 = time.monotonic()

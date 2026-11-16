@@ -16,7 +16,8 @@ import chain_steps as cs
 
 import komorebi as km
 from komorebi import chain as kc
-from komorebi import islands, power
+from komorebi import islands
+from komorebi.bench import power
 
 WORDS = cs.WORDS
 

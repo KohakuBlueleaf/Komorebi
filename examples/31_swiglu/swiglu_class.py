@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 
 
 @km.tile_function
@@ -153,8 +153,8 @@ def build_only():
 def build():
     """Mock device: the class built."""
     # here, not at the top: the class's block keeps its imports as printed
-    from komorebi import native  # noqa: PLC0415
     from komorebi import session as km_session  # noqa: PLC0415
+    from komorebi.device import native  # noqa: PLC0415
 
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)

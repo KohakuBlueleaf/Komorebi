@@ -17,9 +17,10 @@ FORBIDDEN = ("ttnn", "ttml", "tt_metal", "tt_x280", "_ttnn", "_ttx280")
 PROBE = f"""
 import json, sys
 sys.path.insert(0, {str(ROOT / "src")!r})
-import komorebi, komorebi.build, komorebi.cli, komorebi.layout, komorebi.stats
-import komorebi.tools.cxx_format, komorebi.abi, komorebi.errors, komorebi.native
-import komorebi.program, komorebi.run, komorebi.state
+import komorebi, komorebi.builder.flags, komorebi.cli, komorebi.layout
+import komorebi.bench.stats, komorebi.tools.cxx_format, komorebi.abi, komorebi.errors
+import komorebi.device.native, komorebi.program.description, komorebi.session.run
+import komorebi.session.state
 print(json.dumps(sorted(sys.modules)))
 """
 
@@ -46,7 +47,9 @@ def test_import_pulls_in_no_tt_module_and_loads_the_session_only_on_use():
     modules = imported_modules(child_environment(TT_METAL_HOME="/nonexistent/tt-metal"))
     assert "komorebi.layout" in modules and "komorebi.cli" in modules
     assert [module for module in modules if module.split(".")[0] in FORBIDDEN] == []
-    assert "komorebi.session" not in modules and "komorebi.run" in modules
+    assert (
+        "komorebi.session.session" not in modules and "komorebi.session.run" in modules
+    )
 
 
 def installed_or_source_version():

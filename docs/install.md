@@ -272,7 +272,7 @@ whose X280 memory is prepared once. Nothing outside tt-metal is needed. Step by 
    `KMR_CACHE`), about ten seconds:
 
    ```
-   python -m komorebi.native        # prints the image and the module it built or found
+   python -m komorebi.device.native        # prints the image and the module it built or found
    ```
 
 5. **Run.** The session opens the card in slow dispatch:
@@ -315,7 +315,7 @@ read it; otherwise, like a missing `nvidia-smi`, it is reported as not available
 The same sampler wraps a section of a program:
 
 ```python
-from komorebi.power import PowerSampler
+from komorebi.bench.power import PowerSampler
 
 with PowerSampler(1) as sampler:  # card index 1; one second of idle samples first
     sampler.mark("fill")
@@ -342,7 +342,7 @@ times. Every example's and project's driver puts the clock beside its times in i
 JSON line as `aiclk_mhz`, read in the process that ran the session:
 
 ```python
-from komorebi import power
+from komorebi.bench import power
 
 print(json.dumps(power.clocked(result)))  # adds "aiclk_mhz" unless already there
 ```

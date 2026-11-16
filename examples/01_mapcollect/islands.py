@@ -14,7 +14,8 @@ import numpy as np
 from mapcollect import rank_sums
 
 import komorebi as km
-from komorebi import formats, islands, power
+from komorebi import formats, islands
+from komorebi.bench import power
 from komorebi.errors import describe_core
 
 HERE = Path(__file__).resolve().parent

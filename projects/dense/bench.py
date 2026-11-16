@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import power  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.session import aiclk_mhz, visible_card  # noqa: E402
 from projects.dense import card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402

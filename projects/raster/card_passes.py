@@ -12,7 +12,7 @@ import time
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 from projects.raster import card, lists, passes, run
 from reference import raster
 

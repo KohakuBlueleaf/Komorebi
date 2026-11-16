@@ -34,7 +34,8 @@ def test_formatter_tests_leave_the_enclosing_repository_alone(tmp_path):
     }
     subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
-        + [str(ROOT / "tests/core/test_cxx_format.py"), "-k", "listing or ignore_file"],
+        + [str(ROOT / "tests/core/tools/test_cxx_format.py")]
+        + ["-k", "listing or ignore_file"],
         cwd=linked,
         env=inherited,
         check=True,

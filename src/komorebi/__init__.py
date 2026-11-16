@@ -30,9 +30,15 @@ from komorebi.errors import (
     WaitTimeout,
 )
 from komorebi.merge import merge
-from komorebi.movement import Pattern
-from komorebi.overlay import OverlayError
-from komorebi.program import Buffer, BufferPair, Handler, KernelSizes, Program
+from komorebi.program.description import (
+    Buffer,
+    BufferPair,
+    Handler,
+    KernelSizes,
+    Program,
+)
+from komorebi.program.movement import Pattern
+from komorebi.program.overlay import OverlayError
 
 __version__ = "0.2.0"
 
@@ -73,9 +79,9 @@ __all__ += sorted(_front.exports())
 
 
 def __getattr__(name):
-    if name == "chain":  # the framework's chain, and @km.chain of a class (chain.py)
+    if name == "chain":  # the framework's chain, and @km.chain of a class (chain/)
         return importlib.import_module("komorebi.chain")
     if name == "Session":
         _env.activate()
-        return importlib.import_module("komorebi.session").Session
+        return importlib.import_module("komorebi.session.session").Session
     raise AttributeError(f"module 'komorebi' has no attribute {name!r}")

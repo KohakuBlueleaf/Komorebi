@@ -13,8 +13,8 @@ import time
 
 import numpy as np
 
-from komorebi import power
-from komorebi.power import PowerSampler
+from komorebi.bench import power
+from komorebi.bench.power import PowerSampler
 from projects.raytrace import card, trace
 from projects.raytrace.reference import harness
 from reference import native, scenes

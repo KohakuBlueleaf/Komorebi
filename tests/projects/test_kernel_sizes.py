@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from komorebi import native
+from komorebi.device import native
 
 pytestmark = pytest.mark.sizes
 ROOT = Path(__file__).resolve().parents[2]

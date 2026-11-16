@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import formats, islands, power
+from komorebi import formats, islands
+from komorebi.bench import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "pages.h", known=km.abi.headers().constants)

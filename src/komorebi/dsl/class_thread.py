@@ -14,13 +14,15 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from komorebi import _env, abi, build, native
-from komorebi import chain as kc
-from komorebi import program as km_program
+from komorebi import _env, abi
+from komorebi.builder import flags as build
+from komorebi.chain import calls as kc
+from komorebi.device import native
 from komorebi.dsl import front
 from komorebi.dsl.names import spelling
 from komorebi.errors import ProgramError
-from komorebi.thread import BANK_OF_CLUSTER, layout
+from komorebi.program import description as km_program
+from komorebi.program.thread import BANK_OF_CLUSTER, layout
 
 # C words a parameter's name may be: its argument takes a "_" after it.
 C_WORDS = frozenset(

@@ -68,7 +68,7 @@ class CardTracer:
         self.cores = cores or self.workers
         self.check = check
         self.repetitions = repetitions
-        self.power = None  # a komorebi.power.PowerSampler around the next program
+        self.power = None  # a komorebi.bench.power.PowerSampler around the next program
         self.passes = []
 
     def trace(self, name, origins, directions, tmax, any_hit, pixels, layout=None):

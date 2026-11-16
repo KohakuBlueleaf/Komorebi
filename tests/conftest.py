@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from komorebi import remembered
+from komorebi.device import remembered
 
 
 @pytest.fixture(autouse=True)
@@ -17,8 +17,8 @@ def no_inherited_git_environment(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def remembered_apart(tmp_path_factory, monkeypatch):
-    """The remembered kernel buffers (komorebi.remembered) in a folder of the test's
-    own: no test reads or writes the build cache's file."""
+    """The remembered kernel buffers (komorebi.device.remembered) in a folder of the
+    test's own: no test reads or writes the build cache's file."""
     folder = tmp_path_factory.mktemp("remembered")
     monkeypatch.setattr(remembered, "_path", lambda: folder / remembered.FILE)
 

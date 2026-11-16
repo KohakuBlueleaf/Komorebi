@@ -98,7 +98,8 @@ NAMES = {
     "class_thread": Name(
         "x280_thread",
         'thread = km.x280_thread("t.c", cluster=1): the class\'s X280 thread, C built '
-        "at the make with the class's thread header (km.thread is the module)",
+        "at the make with the class's thread header "
+        "(komorebi.program.thread is the module)",
         "X280 thread",
     ),
     "thread_region": Name(

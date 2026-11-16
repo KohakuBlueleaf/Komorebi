@@ -12,10 +12,11 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import dram, native, power
+from komorebi.bench import power
+from komorebi.device import dram, native
 from komorebi.engines import stream as micro_ops
 from komorebi.layout import partition
-from komorebi.state import wrap
+from komorebi.session.state import wrap
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"

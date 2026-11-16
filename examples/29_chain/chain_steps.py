@@ -13,7 +13,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import chain as kc
-from komorebi import power
+from komorebi.bench import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 C = km.abi.constants(KERNELS / "steps.h", known=km.abi.headers().constants)
