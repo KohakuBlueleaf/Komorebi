@@ -1102,6 +1102,7 @@ class HandlerCompiler:
         self.waited_fields = set()  # fields compute waited for (a product's, once)
         self.stepped = {}  # a step's state field -> its pages (a state tile a page)
         self.packed = {}  # a field compute writes -> its flag: pages pushed, not freed
+        self.held_blocks = {}  # a statement list -> blocks taken there by products
         self.leader_text = "0"  # self.leader: rank 0, or a reduce group's first rank
         self.stream_loops = []  # the numbers of the read loops around the statement
         # Per read loop around the statement: its tile function, its other tile
@@ -1847,6 +1848,7 @@ class HandlerCompiler:
             if c:
                 compute.append(Group(comment, c))
         compute += self.held_ends(body)
+        compute += self.held_block_ends(body)
         self.blocks.pop()
         return movement, compute
 
@@ -2779,6 +2781,10 @@ class HandlerCompiler:
                 f"write {function.name} as `return a @ b`, a the stream's block, b a "
                 "field",
             )
+        left = len(call.args) == 2 and self.field_name(call.args[0])
+        rows = left and self.arrived_rows(node, call.args[1])
+        if rows:
+            return self.field_block_product(node, value, function, left, rows)
         if not self.loop_states or len(call.args) != 2 or call.keywords:
             self.refuse(
                 node,
@@ -3112,16 +3118,23 @@ class HandlerCompiler:
                 "is built plain",
                 "drop the marker",
             )
-        self.arrived_once(node, block_value)
+        held = getattr(block_value, "held", False)  # waited at its cast instead
+        if not held:
+            self.arrived_once(node, block_value)
         x, w = f"{item.buffer.name}.mover_a", buffer.name
         block = item.buffer.name + "Block"
         flip = "true" if transposed else "false"
         self.wait(node, "compute", WAIT_INPUT)
         if state["function"] is None:
             state["function"] = "product"
+        received = (
+            ""
+            if held
+            else f"km_ok = km_ok && km::broadcast_receive(compute, {w}, {w}Pages);\n"
+        )
         state["inits"].append(
             Line(
-                f"km_ok = km_ok && km::broadcast_receive(compute, {w}, {w}Pages);\n"
+                f"{received}"
                 "// the zeros' fills (vector unit) done before the matrix unit adds\n"
                 "MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
                 f"KM_UNPACK_FORMATS({w}, {x});\n"
@@ -3129,9 +3142,10 @@ class HandlerCompiler:
                 {"km_ok"},
             )
         )
-        state["after"].append(
-            Line(f"if (km_ok) {{\n    km::broadcast_done({w}, {w}Pages);\n}}")
-        )
+        if not held:
+            state["after"].append(
+                Line(f"if (km_ok) {{\n    km::broadcast_done({w}, {w}Pages);\n}}")
+            )
         self.compiled.includes.add("matmul")
         self.compiled.products.append(
             (self.method.name, node.lineno, self.text(node), function, width, block)
@@ -4203,6 +4217,7 @@ class HandlerCompiler:
                 "line": node.lineno,
             }
         )
+        self.held_cast_movers(node, [r["letters"] for r in reads])
         body_m, body_c = self.statements(node.body)
         state = self.loop_states.pop()
         self.stream_loops.pop()
@@ -7445,6 +7460,7 @@ class HandlerCompiler:
             tensor=tensors,
             parts=tuple(slot_part(part) for part in parts),
         )
+        self.scope[value].held = self.taken_by_field_products(value)
         self.wait(node, f"mover {broadcast.mover}", WAIT_FREE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_DONE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_VALID)
@@ -7453,6 +7469,16 @@ class HandlerCompiler:
         if counted is not None:  # the next block's number, on its mover and compute
             movement.append(Line(f"{counted}++;", {counted}, mover=broadcast.mover))
             compute.append(Line(f"{counted}++;", {counted}))
+        if self.scope[value].held:  # products take it: waited here, freed at the end
+            w = buffer.name
+            self.wait(node, "compute", WAIT_INPUT)
+            compute.append(
+                Line(
+                    f"km_ok = km_ok && km::broadcast_receive(compute, {w}, {w}Pages);",
+                    {"km_ok"},
+                )
+            )
+            self.held_blocks.setdefault(self.blocks[-1], []).append((value, w))
         if not self.loops:
             self.finished_casts[value] = broadcast.mover
             movement += self.end_outside_loop(name)
@@ -8410,6 +8436,187 @@ class HandlerCompiler:
         )
         self.handover(node, f"the release of {name}", cpu, ("unpack",))
 
+    def taken_by_field_products(self, name):
+        """Whether products with a field on the left take block `name`
+        (`f(self.p, name[i][r0:r0 + n, :])`): it is then waited for at its cast and
+        freed at the end of the cast's lines, for any number of them."""
+        for node in ast.walk(self.definition):
+            if (
+                isinstance(node, ast.Call)
+                and len(node.args) == 2
+                and self.field_name(node.args[0]) is not None
+                and any(
+                    isinstance(n, ast.Name) and n.id == name
+                    for n in ast.walk(node.args[1])
+                )
+            ):
+                return True
+        return False
+
+    def held_cast_movers(self, node, letters):
+        """Refuses a stream on the mover of a block cast outside a loop that products
+        take: the mover waits at the cast for compute to free the block, which
+        compute does at the end of the cast's lines, after this stream."""
+        for ends in self.held_blocks.values():
+            for name, _ in ends:
+                mover = self.finished_casts.get(name)
+                if mover is not None and any(
+                    each is None or mover in each for each in letters
+                ):
+                    other = "A" if mover == "B" else "B"
+                    self.refuse(
+                        node,
+                        f"{name} was cast outside a loop and products take it, so "
+                        f"mover {mover} waits at the cast for compute to free it, "
+                        "which compute does after this stream, some of whose blocks "
+                        f"mover {mover} moves",
+                        f'read the stream on mover {other}: pattern="{other}"',
+                    )
+
+    def held_block_ends(self, body):
+        """compute's frees of the blocks products took (taken_by_field_products),
+        cast in `body`, at its end."""
+        ends = self.held_blocks.pop(id(body), [])
+        nodes = [
+            Line(f"if (km_ok) {{\n    km::broadcast_done({w}, {w}Pages);\n}}")
+            for _, w in ends
+        ]
+        if not nodes:
+            return []
+        return [Group("the end of the cast's lines: the products' blocks freed", nodes)]
+
+    def arrived_rows(self, node, arg):
+        """`w[i][r0:r0 + n, :]` (or `w[r0:r0 + n, :]`), w a block a broadcast brought:
+        (its Value, the part's slot geometry, r0's C++, n); None when `arg` is not."""
+        if not (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.slice, ast.Tuple)
+            and len(arg.slice.elts) == 2
+        ):
+            return None
+        (rows, cols), inner = arg.slice.elts, arg.value
+        part = None
+        if isinstance(inner, ast.Subscript) and isinstance(inner.value, ast.Name):
+            part, inner = inner.slice, inner.value
+        value = isinstance(inner, ast.Name) and self.scope.get(inner.id)
+        if not value or value.kind != "arrived":
+            return None
+        drawn = f"write {inner.id}[i][r0:r0 + n, :], n the field's tiles"
+        whole = (
+            isinstance(cols, ast.Slice)
+            and cols.lower is cols.upper is cols.step is None
+        )
+        sliced = isinstance(rows, ast.Slice) and rows.step is None
+        known = (  # a:b, both ints the build knows
+            sliced
+            and None not in (rows.lower, rows.upper)
+            and None not in (self.known_int(rows.lower), self.known_int(rows.upper))
+        )
+        if not whole or not (
+            known
+            or sliced
+            and rows.lower is not None
+            and isinstance(rows.upper, ast.BinOp)
+            and isinstance(rows.upper.op, ast.Add)
+            and ast.dump(rows.upper.left) == ast.dump(rows.lower)
+        ):
+            self.refuse(
+                node, "a product's field on the left takes rows r0:r0 + n", drawn
+            )
+        index = 0 if part is None else self.known_int(part)
+        if index is None or not 0 <= index < len(value.parts):
+            self.refuse(
+                node, f"{inner.id} has parts 0 .. {len(value.parts) - 1}", drawn
+            )
+        if known:
+            low, high = self.known_int(rows.lower), self.known_int(rows.upper)
+            return value, value.parts[index], str(low), high - low, inner.id
+        count = self.known_int(rows.upper.right)
+        if count is None:
+            self.refuse(node, "the rows' count is an int the build knows", drawn)
+        return value, value.parts[index], self.integer(rows.lower), count, inner.id
+
+    def field_block_product(self, node, value, function, field_, rows):
+        """`acc += f(self.p, w[i][r0:r0 + n, :])`, self.p a row of n tiles compute
+        wrote, w a block a broadcast brought (products take it: waited at its cast):
+        tile k of the field by row r0 + k of w's part, acc's width a row, into acc's
+        DST; outside a stream loop, any number a block."""
+        block_value, (offset, _, pitch, transposed), first, count, name = rows
+        width = value.width
+        if self.loop_states:
+            self.refuse(
+                node,
+                "a product of a field and a block runs on its own, and this stream "
+                "loop holds the matrix unit's setup for its own products",
+                "write it after the loop",
+            )
+        if field_ not in self.packed:
+            self.refuse(
+                node,
+                f"self.{field_} is not written above in this handler: a product's left "
+                "field is one compute writes",
+                f"write self.{field_}.write(acc) before",
+            )
+        stored = self.compiled.fields[field_]
+        k = math.prod(stored.shape[:-2])
+        if count != k:
+            self.refuse(
+                node,
+                f"self.{field_} is {k} tile(s) and the block's rows {count}",
+                f"take rows r0:r0 + {k}",
+            )
+        if transposed or pitch != width:
+            self.refuse(
+                node,
+                f"the block's part is {pitch or 'a word of'} columns"
+                f"{' (cast turned)' if transposed else ''} and "
+                f"{ast.unparse(node.target)} holds {width}",
+                f"cast a part of {width} columns, not turned",
+            )
+        buffer = block_value.buffer
+        why = product_refusal(stored.format.dtype, buffer.dtype)
+        if why is not None:
+            self.refuse(node, why, "declare the field in a matrix format of the cast's")
+        fidelity = self.product_fidelity(node, function)
+        if self.placed(
+            node,
+            {},
+            function,
+            stored.format.dtype,
+            buffer.dtype,
+            ("tensor", block_value.tensor),
+        ):
+            self.refuse(
+                node,
+                f"{function.name} turns the product, and a field's product on the left "
+                "is built plain",
+                "drop the marker",
+            )
+        self.compiled.includes.add("matmul")
+        self.compiled.products.append(
+            (self.method.name, node.lineno, self.text(node), function, width, str(k))
+            + (fidelity,)
+        )
+        field_buffer, w = f"kField{camel(field_)}", buffer.name
+        self.wait(node, "compute", WAIT_INPUT)
+        calls = "\n".join(
+            f"    matmul_block({field_buffer}, {w}, {t}, {offset} + ({first} + {t}) * "
+            f"{pitch}, {value.dst}, 0, {width}, 1, {k});"
+            for t in range(k)
+        )
+        text = (
+            f"km_ok = km_ok && compute.wait_front({field_buffer}, "
+            f"{field_buffer}Pages);\n"
+            "if (km_ok) {\n"
+            "    // the sums' setup (vector unit) done before the matrix unit adds\n"
+            "    MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
+            f"    KM_UNPACK_FORMATS({w}, {field_buffer});\n"
+            f"    matmul_block_init({field_buffer}, {w}, 0, {width}, 1, {k});\n"
+            f"{calls}\n"
+            "}"
+        )
+        return [], [Line(text, {"km_ok"} | text_uses(first, self))]
+
     def arrived_once(self, node, value):
         """A block a broadcast brought is taken once: a body or a loop over it."""
         if value.popped:
@@ -8430,6 +8637,13 @@ class HandlerCompiler:
                 f"{name} is a block of compute's three CPUs: each waits for it and "
                 "frees it",
                 "take it in a body on compute's three (no on=)",
+            )
+        if getattr(value, "held", False):
+            self.refuse(
+                node,
+                f"{name} is taken by products of a field (waited at its cast, freed at "
+                "the end of its lines), and a body takes a block whole",
+                "take it in products only, or in a body only",
             )
         self.arrived_once(node, value)
         buffer = value.buffer.name

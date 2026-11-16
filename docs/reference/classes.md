@@ -516,6 +516,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
+| `acc += f(self.h, w[i][r0:r0 + n, :])`, w a broadcast's block | the cast as before | the block waited for at the cast; the field waited for, n products by rows of the block; the block freed at the end of the cast's lines (A field by a broadcast's block) |
 | `acc = f(self.o, self.s[r])`, f a step function, self.o an fp32 field compute writes | none | the field's tiles into DST 0 .., state r after them, f's body; acc's write packs the row, then the state (Sums started from a field) |
 | `self.h.write(acc)` (or `f(acc)`, a step's row); `out += f(self.h, wb)` | none | the last write's pages freed, acc packed into the field's; before the loop the field waited for, a row of products a stream row (A product whose left side is a field) |
 | `pages.write(g(acc, self.s[r]))`, g a step function, `self.s` an fp32 field of states | as `pages.write(acc)`; `t.pages(first, n).write(self.s)`: mover B a page at a time | the token taken, state r copied into DST after acc, g's body, the row packed, the state packed into page r and the token pushed (A step function on DST sums) |
@@ -1275,6 +1276,36 @@ for r in range(R):
 Refused at the line: a product of a field not written above in the handler, a write
 to a field that is filled, summed into or a body's, a width not the field's tiles,
 and a stream whose rows are not the field's tiles or whose block is not whole rows.
+
+### A field by a broadcast's block
+
+`acc += f(self.h, w[i][r0:r0 + n, :])` (or `w[r0:r0 + n, :]`, or `w[a:b, :]` of ints
+the build knows), f `return a @ b`, self.h a row of n tiles compute wrote and w a block
+a broadcast brought, takes tile k of the field by row r0 + k of w's part (acc's width
+of columns): n products of the library's, outside a stream loop. Any number of them
+take a block: it is waited for at its cast and freed at the end of the cast's lines
+(a body does not take it then). A hidden layer whose second weights come down the
+column once:
+
+```python
+if column.sender():
+    ws = column.cast(w2.tiles[0:W2_ROWS, 0:N].read())
+else:
+    ws = column.arrive()
+for r in range(R):
+    acc = km.tile.zeros(km.fp32, KH)
+    for xb, wb in zip(km.Stream(..., pattern="A"), km.Stream(..., pattern="A")):
+        acc += project(xb, wb)
+    self.h.write(acc)
+    out = km.tile.zeros(km.fp32, N)
+    out += project(self.h, ws[r * KH : r * KH + KH, :])
+    y.pages(row * N, N).write(out)
+```
+
+Refused at the line: a field not written above, rows that are not the field's
+tiles, a part not of acc's columns or cast turned, a product inside a stream loop,
+and, for a block cast outside a loop, a stream on the cast's mover after it (the
+mover waits at the cast for compute to free the block, at the end of its lines).
 
 ### Sums started from a field
 
