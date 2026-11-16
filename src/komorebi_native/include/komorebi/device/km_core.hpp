@@ -211,6 +211,14 @@ namespace km {
     constexpr uint32_t kWhereLinkUp = 67;        // no hello from the far side
     constexpr uint32_t kWhereRelay = 68;  // link core 0 (km_relay.hpp): an ask not served
     constexpr uint32_t kWhereCoreIndex = 69;  // KM_CHECK_NOC_SOURCES: no core at that index
+    // An ask's or a put line's waits (km_ask.hpp, km_pages.hpp), each by name in a
+    // core's live words while it waits; the give-up word names kWhereAsk.
+    constexpr uint32_t kWhereAskConfirm = 70;  // the far island's word for a line before
+    constexpr uint32_t kWhereAskNumber = 71;  // the link core's answer: the line's number
+    constexpr uint32_t kWhereAskPlace = 72;  // its place in the link core's queue
+    constexpr uint32_t kWhereAskSlot = 73;   // room in a page CPU's ring for a piece
+    constexpr uint32_t kWhereAskSent = 74;   // the line's or the pages' writes leaving
+    constexpr uint32_t kWhereAskCount = 75;  // the port's count of pages asked or put
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -284,7 +292,13 @@ namespace km {
                 kWhereLinkRunFound,
                 kWhereLinkUp,
                 kWhereRelay,
-                kWhereCoreIndex
+                kWhereCoreIndex,
+                kWhereAskConfirm,
+                kWhereAskNumber,
+                kWhereAskPlace,
+                kWhereAskSlot,
+                kWhereAskSent,
+                kWhereAskCount
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

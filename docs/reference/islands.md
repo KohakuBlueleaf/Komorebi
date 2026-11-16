@@ -525,6 +525,12 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   word's top byte. A putting core that gives up after it reserved ring slots leaves
   them unfilled: the ring sends in order, so it stays stopped there until the cores'
   recovery or the next load.
+- While a core waits in an ask or a put line, its live words (a give-up's "waits in")
+  name the wait: `ask_confirm` (the far island's word for its line before on that
+  parity), `ask_number` (link core 0's answer, the line's number), `ask_place` (the
+  line's place in the queue: a get's 32 in flight, the put queue's page CPUs),
+  `ask_slot` (room in a page CPU's ring), `ask_sent` (its writes leaving), `ask_count`
+  (its port's count of the pages); the give-up word itself names `ask`.
 - An ask or put line may name the asker's DRAM instead of its L1 (`KM_ASK_DRAM`: an
   interleaved buffer, or one bank's range, from page `KM_ASK_DRAM_FIRST`): the far
   page CPUs push a get's pages straight into it, or read a put's from it.
