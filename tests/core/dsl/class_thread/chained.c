@@ -14,7 +14,7 @@ int kmx_main(int core) {
         bytes < THREADED_CHAIN_STEPS_BYTES ||
         threaded_chain_steps_write(THREADED_REGION_RECORDS) != KMX_OK ||
         threaded_chain_steps_command(
-            &chain, THREADED_REGION_RECORDS, kmx_args_get()->words[0]
+            &chain, THREADED_REGION_RECORDS, kmx_args_get()->words[0], 0u
         ) != KMX_OK ||
         kmx_submit(&chain, &handle) != KMX_OK
     ) {
