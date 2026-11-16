@@ -27,6 +27,7 @@ from komorebi.device import native
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.dsl.tile.unit import OPS, Insn, decode
+from komorebi.session import process
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -270,7 +271,7 @@ def build(args):
     """Mock device: both bodies built by the runtime's JIT, then compared."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
+    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     cache = HERE.parents[2] / ".logs" / "jit-front" / "mock"
     os.environ["TT_METAL_CACHE"] = str(cache)
     generate()

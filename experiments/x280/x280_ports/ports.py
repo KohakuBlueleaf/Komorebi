@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.session import aiclk_mhz
+from komorebi.session.process import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 T0 = time.monotonic()
