@@ -4578,6 +4578,7 @@ class HandlerCompiler:
                 "tensors": {r["buffer"].name: r["pages"].tensor for r in reads},
                 "letters": [r["letters"] for r in reads],  # None: a pattern word
                 "repeat": reads[0]["repeat"],
+                "most": held_most(reads[0]["pages"]),  # the most pages, where known
                 "line": node.lineno,
             }
         )
@@ -5631,16 +5632,24 @@ class HandlerCompiler:
         row's, unpacked at the next pass; the last writes as on a row in one block."""
         state = self.loop_states[-1]
         block, count = state["block"], known_count(state["count"])
+        if count is None and state.get("most"):  # a word: the per-row pages' most
+            count = state["most"]
         refused = (
             "a wide row read in parts is whole chunks of 2 a block, and its rows "
-            "a constant count"
+            "a constant count or a stated most"
         )
         if block % 2 or count is None or count % item.width:
-            self.refuse(node, refused, "give block= an even part of the row, a count")
+            self.refuse(
+                node,
+                refused,
+                "give block= an even part of the row, and the rows a count or a most: "
+                f"x.{spelling('tiles')}[r:min(r + MOST, r + rows), 0:W]",
+            )
         self.row_chunks(node, function, unit, cxx, item, fields, name)  # its checks
-        rows = chunk_rows_buffer(self.compiled, cxx, node, 2 * count // item.width)
         number = self.stream_loops[-1]
         levels = sum(1 for p in unit.parts if p.startswith("sum"))
+        pair = 2 if levels > 1 else 1  # one sum pass: the values' tile alone a row
+        rows = chunk_rows_buffer(self.compiled, cxx, node, pair * count // item.width)
         value = state.get("value")  # a per-row value into a field: no write pass
         state["passes"] = levels + (value is None)
         at, part = f"km_pass{number}", f"km_part{number}"
@@ -5696,17 +5705,17 @@ class HandlerCompiler:
             ),
             "        tile_regs_commit();",
             "        tile_regs_wait();",
-            f"        cb_reserve_back({rows}, 2);",
+            f"        cb_reserve_back({rows}, {pair});",
             f"        KM_PACK_FORMAT({rows});",
             f"        pack_tile(2, {rows});",
-            f"        pack_tile(3, {rows});",
-            f"        cb_push_back({rows}, 2);",
+            *([f"        pack_tile(3, {rows});"] if pair == 2 else []),
+            f"        cb_push_back({rows}, {pair});",
             "        tile_regs_release();",
             *([] if value is None else ["        }"]),
             "    }",
             "} else {",
             f"    if ({part} == 0) {{",
-            f"        cb_wait_front({rows}, 2);",
+            f"        cb_wait_front({rows}, {pair});",
             "    }",
             f"    {loop}",
             "        tile_regs_acquire();",
@@ -5734,7 +5743,7 @@ class HandlerCompiler:
             "        tile_regs_release();",
             "    }",
             f"    if ({part} == {last}) {{",
-            f"        cb_pop_front({rows}, 2);",
+            f"        cb_pop_front({rows}, {pair});",
             "    }",
             "}",
         ]
