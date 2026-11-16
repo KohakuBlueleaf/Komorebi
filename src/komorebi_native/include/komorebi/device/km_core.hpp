@@ -641,6 +641,9 @@ namespace km {
 
     // A give-up into state word pair `word`: a deadline's per command, the run goes on;
     // any other unless one came first, setting the tile's stop flag (all kernels end).
+#if !defined(COMPILE_FOR_TRISC)  // a mover's give-ups: one copy (cold; large inlined)
+    __attribute__((noinline))
+#endif
     inline void command_gave_up(
         uint32_t control,
         uint32_t word,
