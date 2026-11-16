@@ -1,7 +1,7 @@
-"""Tile wide rows (README.md): the RMS norm and the layer norm over rows of 768
-values (24 tiles), in chunks of 2 tiles, the weight and bias fields a chunk's
-per-column tile each, against float64 on float32 tiles. `build` on a mock device,
-`card`."""
+"""Tile wide rows (README.md): the RMS norm and the layer norm over rows of 736
+values (23 tiles: 11 chunks of 2 and a last of 1), the weight and bias fields a
+chunk's per-column tile each, against float64 on float32 tiles. `build` on a mock
+device, `card`."""
 
 import argparse
 import importlib.util
@@ -26,8 +26,8 @@ DESCRIPTOR = (
     "tt_metal/third_party/umd/tests/cluster_descriptor_examples/blackhole_P150.yaml"
 )
 CORES, ROWS, REPEAT = 12, 4, 3  # cores, rows a core, commands a handler
-WIDE = 24  # tiles a row: 768 values
-CHUNKS = 12  # chunks of 2 tiles a row: the fields' tiles
+WIDE = 23  # tiles a row: 736 values (11 chunks of 2, a last of 1)
+CHUNKS = 12  # chunks a row: the fields' tiles
 EPS_RMS, EPS = 1e-6, 1e-5
 STARTED = time.monotonic()
 
@@ -79,7 +79,7 @@ class Wide(km.Program):
 
 
 def inputs(seed=7):
-    """x: rows of 768 values, normal times 2 plus 0.7; w, b: 768 normals each."""
+    """x: rows of 736 values, normal times 2 plus 0.7; w, b: 736 normals each."""
     rng = np.random.default_rng(seed)
     x = 2.0 * rng.standard_normal((CORES * ROWS * 32, 32 * WIDE)) + 0.7
     w, b = rng.standard_normal((2, 32 * WIDE))
@@ -108,8 +108,11 @@ def errors(got, want):
 
 def chunks(values):
     """A field's pages from a row of WIDE tiles of values: chunk c's per-column tile
-    (`row_operand` of its 64 values) in page c."""
-    pages = [row_operand(values[64 * c : 64 * c + 64], 2) for c in range(WIDE // 2)]
+    (`row_operand` of its 64 values, the last chunk's 32) in page c."""
+    pages = [
+        row_operand(values[64 * c : 64 * c + 64], min(2, WIDE - 2 * c))
+        for c in range(CHUNKS)
+    ]
     return np.asarray(pages, np.float32)
 
 
@@ -123,11 +126,9 @@ def tensors_of(session, data, empty):
         )
     }
     for n in "wb":
-        made[n] = session.empty((WIDE // 2, 1024), "float32")
+        made[n] = session.empty((CHUNKS, 1024), "float32")
         if not empty:
-            session.write(
-                made[n], chunks(data[n]).view(np.uint8).reshape(WIDE // 2, -1)
-            )
+            session.write(made[n], chunks(data[n]).view(np.uint8).reshape(CHUNKS, -1))
     return made
 
 

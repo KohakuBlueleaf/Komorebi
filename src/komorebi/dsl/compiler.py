@@ -5477,8 +5477,11 @@ class HandlerCompiler:
             f"    copy_tile({item.cxx}, {first} + 2 * {chunk} + 1, 1);",
         ]
         lines = ["tile_regs_acquire();", f"MATH((km_tile::{cxx}_start(0)));"]
+        last = f"copy_tile({item.cxx}, {first} + {item.width - 1}, 0);"  # an odd row's
         for part in unit.parts:
-            if part.startswith("sum"):
+            if part.startswith("sum") and part.endswith("_one"):
+                lines += [last, f"MATH((km_tile::{cxx}_{part}(0)));"]
+            elif part.startswith("sum"):
                 call = f"    MATH((km_tile::{cxx}_{part}(0)));"
                 lines += [loop, *copy, call, "}"]
             elif part.startswith("finish"):
@@ -5515,8 +5518,19 @@ class HandlerCompiler:
             "    }",
             "    tile_regs_release();",
             "}",
-            f"cb_pop_front({rows}, 1);",
         ]
+        if item.width % 2:  # the last tile: a chunk of one
+            at = lines.index(loop, lines.index(f"cb_wait_front({rows}, 1);"))
+            body = [x[4:] for x in lines[at + 1 : -1] if "+ 1" not in x[4:]]
+            body = [
+                x.replace(f"{first} + 2 * {chunk}", f"{first} + {item.width - 1}")
+                .replace(f"{tile} + 2 * {chunk}", f"{tile} + {item.width - 1}")
+                .replace(f", {chunk}, ", f", {count}, ")
+                .replace(f"km_tile::{cxx}(0)", f"km_tile::{cxx}_apply_one(0)")
+                for x in body
+            ]
+            lines += body
+        lines.append(f"cb_pop_front({rows}, 1);")
         self.compiled.tile_calls.append(
             (self.method.name, node.lineno, self.text(node), function, cxx)
         )

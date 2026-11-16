@@ -1009,12 +1009,12 @@ CHUNK_ROWS, CHUNK_SUMS, CHUNK_COLS = 2, 3, 4  # the chunk form's Dst tiles
 
 
 def chunk_program(ir, width):
-    """The row form over `width` tiles (even, over 2) in chunks of 2 (Dst 0, 1): part
+    """The row form over `width` tiles (over 2) in chunks of 2 (Dst 0, 1): part
     `start` zeroes the sums (Dst 3), `sum<L>` adds a chunk's share of level L's sums,
     `finish<L>` makes level L's per-row values (Dst 2); the body writes a chunk with
-    resident row k's chunk in Dst 4 + k (docs/reference/tile.md, wide rows)."""
-    if width % CHUNK or width <= CHUNK:
-        fail(f"a wide row is whole chunks of {CHUNK} tiles: {width} tiles given")
+    resident row k's chunk in Dst 4 + k; an odd row's last tile: parts `*_one`."""
+    if width <= CHUNK:
+        fail(f"a wide row is more than {CHUNK} tiles: {width} tiles given")
     if not {t.dtype for t in ir.tensors} <= set(TILE_DTYPES):
         fail(
             f"{ir.name}: tensors are fp32 or of the B family "
@@ -1107,12 +1107,16 @@ def chunk_program(ir, width):
     for at in range(levels):
         mine = [r for r in reduces if level[id(r)] == at]
         done = [p for p in stats if level[id(p)] == at]
-        part(f"sum{at}")
-        pairs += _chunk_sums(b, mine, summed, slot, sums)
+        for tail, tiles in [("", CHUNK), ("_one", 1)][: 1 + width % CHUNK]:
+            part(f"sum{at}{tail}")  # an odd row's last chunk: one tile
+            pairs += _chunk_sums(b, mine, summed, slot, sums, tiles)
         part(f"finish{at}")
         _chunk_finish(b, done, made, slot, sums)
     part("apply")
     pairs += _apply_slots(b, stored, slot, cols, CHUNK)
+    if width % CHUNK:
+        part("apply_one")
+        pairs += _apply_slots(b, stored, slot, cols, 1)
     unit = UnitProgram(ir.name, "fp32")
     unit.operands = [row[0].attrs["view"].tensor.name]
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(b.code)))
@@ -1202,12 +1206,13 @@ def chunk_cost(unit, width):
         probe = UnitProgram(unit.name, unit.dest)
         probe.tile["math"] = items
         n, c, _ = probe.cost("math")
-        times = chunks if name == "apply" or name.startswith("sum") else 1
+        full = name == "apply" or name.startswith("sum") and "_" not in name
+        times = chunks if full else 1
         count, cycles = count + n * times, cycles + c * times
     return count, round(cycles, 1)
 
 
-def _chunk_sums(b, mine, summed, slot, sums):
+def _chunk_sums(b, mine, summed, slot, sums, tiles):
     """Part sum<L>, per row group: each of the level's sums over the chunk's vectors,
     its lanes summed by rotations, added into its slot. Returns the interleave
     pairs."""
@@ -1224,7 +1229,7 @@ def _chunk_sums(b, mine, summed, slot, sums):
             return held[id(node)]
 
         accs = {}
-        for t, c, p in _vectors(CHUNK):
+        for t, c, p in _vectors(tiles):
             address = Layout("tile", 0).address(t, h, c, q, p)
             loaded = {}
             for r in mine:
