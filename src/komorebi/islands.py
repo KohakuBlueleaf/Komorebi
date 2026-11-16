@@ -20,8 +20,8 @@ CORES_MAX = 128  # KM_CORES_MAX: an island's core table
 THREAD_NUMBERS = 256  # 0xFF00 + number in 16 bits; numbers 1 to 255, 0 names none
 NO_LINK = 0xFF  # an island's own entry: no link toward it
 
-# An island table entry, little-endian (km_abi.h mirrors it): u16 first, u16 count, u8
-# next link, u8 hops, u8 ports toward it (bit p: neighbour p on a shortest path), u8 0.
+# An island table entry, little-endian: u16 first, u16 count, u8 next link, u8 hops, u8
+# ports toward it (bit p: neighbour p on a shortest path), u8 its first core (a card's).
 ENTRY = struct.Struct("<HHBBBB")
 PORTS_MAX = 4  # a card's ports (north, south, east, west): neighbours an island
 ENTRY_BYTES = ENTRY.size
@@ -414,7 +414,8 @@ class Graph:
 
     def table(self, island):
         """The island table a core of `island` holds: ENTRY_BYTES an island (layout at
-        ENTRY). On one island: one entry (0, ranks, NO_LINK, 0)."""
+        ENTRY; the last byte its first core on its card). One island: (0, ranks, ...).
+        """
         return b"".join(
             ENTRY.pack(
                 self.firsts[other],
@@ -422,7 +423,7 @@ class Graph:
                 self.next_link(island, other),
                 self.hops(island, other),
                 self.ports_toward(island, other),
-                0,
+                self.islands[other].cores[0] if self.islands[other].cores else 0,
             )
             for other in range(len(self.islands))
         )

@@ -2099,6 +2099,11 @@ class Session:
                     "the islands' dispatchers differ in LIM base: "
                     f"{[hex(dispatch.lim_base) for dispatch in dispatches]}"
                 )
+            if len({dispatch.upload_bytes for dispatch in dispatches}) != 1:
+                raise StartError(  # the link area after it: one place on every one
+                    "the islands' dispatchers differ in upload region: "
+                    f"{[dispatch.upload_bytes for dispatch in dispatches]}"
+                )
             first = _Backend(self, dispatches[0], mhz, trace)
             first.split = (graph, list(dispatches), tags, rows, set())
             first.state_tensor = states[0]
@@ -2123,10 +2128,11 @@ class Session:
                 )
             first.load_overlays(program, descriptor)
             self._log_built(descriptor, built_at, program)
-            if prebuild.active():  # built: a mock run stands in for the launch
+            if prebuild.active():  # built: a mock run an island for the launch
                 self._starting = None
-                self.run = prebuild.Run()
-                return self.run
+                runs = [prebuild.Run(counted=False) for _ in rows]
+                self.run, self.island = runs[0], (graph, 0)
+                return runs
             for island, dispatch in enumerate(dispatches):
                 backend = first if island == 0 else copy.copy(first)
                 backend.port, backend.state_tensor = dispatch, states[island]
