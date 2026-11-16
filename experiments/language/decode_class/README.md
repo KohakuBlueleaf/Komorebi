@@ -68,17 +68,30 @@ What the chain met on the way:
   which is not base + step x index; the chain refused it. It is now read as the eight
   tiles that end at the value, the value at tile 4 of them (`HEAD`), the same tiles for
   every head.
-- Four slots a CPU hold four of the five handlers' parts (`kOverlaySlotsMax` is 4), so
-  on cores 0 to 95, which run all five, a chain loads parts in every record. A fifth
-  slot set (82,880 B) fits the L1 left.
+- Four slots a CPU held four of the five handlers' parts, so on cores 0 to 95, which
+  run all five, a chain loaded parts in every record. The slots now follow the program:
+  by default five a CPU here (423,040 B, L1 1,320,992 of 1,429,376 B), and
+  `program.slots(count=4)` gives the old four.
 - A class with some handlers resident and others overlays is refused when a resident
   handler has tile code: the overlay's compute part keeps its own copy of the
   unpacker's state (`unpack_num_faces_c_dim` and three more), and the resident
   kernel's is the one that counts.
 
-On the card it is not run yet. The two earlier hangs of a chain form of this class
-(the q/k roots of qkv, compute waiting for input) came with movers whose waits
-recorded nothing; those waits now give up by name (`core.wait`, `km::copy_l1`).
+On the card (2026-11-16, card 0, AICLK 1,350 MHz, T 256, median of 10 chains), all
+seven tensors equal the hand's word for word at both slot counts, and every kernel ended
+clean:
+
+| | A layer (us) | Overlay load a record, median (us) |
+|---|---:|---:|
+| class chain, five slots a CPU (the default) | 342.25 | 0.4 to 1.2 |
+| class chain, four slots a CPU | 390.86 | 3.8 to 16.6 |
+| the hand's chain (`card.Decode(chain=True)`), same job | 316.06 | |
+| the hand's command a step, same job | 363.34 | |
+
+The fifth slot set takes the parts' loads out of every record (48.6 us a layer). What
+is left against the hand's chain is in the records' bodies and input waits
+(`chain_stamps.terms`). The waits of the movers give up by name (`core.wait`,
+`km::copy_l1`); none gave up.
 
 ## The products alone (layer_class.py)
 
