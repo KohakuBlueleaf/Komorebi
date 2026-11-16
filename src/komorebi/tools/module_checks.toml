@@ -16,11 +16,6 @@ imports = "komorebi.islands.session"
 owner = "the session and islands split: Session.__new__ builds an IslandSession"
 
 [[pending]]
-path = "src/komorebi/session/__init__.py"
-imports = "komorebi.session.session"
-owner = "the session and islands split: the package's lazy names"
-
-[[pending]]
 path = "src/komorebi/dsl/compiler.py"
 imports = "komorebi.session.session"
 owner = "the compiler split: the session's flags come in as an argument"

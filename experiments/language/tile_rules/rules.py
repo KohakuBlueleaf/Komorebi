@@ -20,7 +20,6 @@ os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
 import numpy as np
 
 import komorebi as km
-from komorebi import session as km_session
 from komorebi.device import native
 from komorebi.dsl.tile import emit, row_operand, trace, unit_program
 from komorebi.dsl.tile.ir import BF16, F32, KernelIR, TensorParam
@@ -28,6 +27,8 @@ from komorebi.dsl.tile.matrix import product_program
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.unit import matrix_cost
+from komorebi.session import process
+from komorebi.session import session as km_session
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -1221,7 +1222,7 @@ def build(args):
     against the kernel buffer; the host checks run on made-up results."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
+    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     generate()
     sizes = {}

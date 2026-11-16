@@ -78,5 +78,5 @@ def __getattr__(name):
         return importlib.import_module("komorebi.chain")
     if name == "Session":
         _env.activate()
-        return importlib.import_module("komorebi.session.session").Session
+        return importlib.import_module("komorebi.sessions").Session
     raise AttributeError(f"module 'komorebi' has no attribute {name!r}")

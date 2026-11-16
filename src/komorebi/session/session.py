@@ -4,7 +4,6 @@ Tensix core and the dispatcher on X280 cluster 0, and hands out a `Run`.
 Needs a tt-metal tree or the runtime package; `import komorebi` does not import it.
 """
 
-import atexit
 import contextlib
 import copy
 import ctypes
@@ -12,11 +11,9 @@ import dataclasses
 import os
 import re
 import secrets
-import signal
 import sys
 import threading
 import time
-import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -35,7 +32,6 @@ from komorebi.errors import (
     ChannelError,
     GridTimeout,
     KernelSizeError,
-    KomorebiError,
     L1BudgetError,
     ProgramError,
     SlowCodeError,
@@ -61,6 +57,7 @@ from komorebi.program.several import (  # COMPUTE_FLAGS: read here by the compil
     COMPUTE_FLAGS,  # noqa: F401
     compute_config,
 )
+from komorebi.session import process, sizes
 from komorebi.session import state as device_state
 from komorebi.session.run import Run
 
@@ -76,29 +73,16 @@ X280_MHZ = 1350
 X280_FALLBACK_MHZ = 1000
 NO_PLL_SOLUTION = "no PLL solution for"
 STATE_DUMP_LINES = 8  # 64-byte lines of the kernel's state logged after a failure
-CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
-CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 PROBE_GAP_S = 0.02  # core 0's pass marker moves every 1,024 passes (about 33 us)
 ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop flag, before the close
 REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
 REGION_CHUNK = 2 << 20  # of this size, with a log line each
-# The runtime's timeout on its waits for the cores, the one at device close included;
-# unset, it is 0, which means no timeout. Read when the process first opens a device.
-OP_TIMEOUT = "TT_METAL_OPERATION_TIMEOUT_SECONDS"
-OP_TIMEOUT_DEFAULT = 30.0  # the runtime's own example value
-# A Blackhole Tensix core's L1 and where the runtime's kernel buffer starts in it
-# (MEM_L1_SIZE, MEM_MAP_END); the buffer ends where the allocator's L1 base begins.
-L1_BYTES = 1536 * 1024
-KERNEL_BUFFER_BASE = 41088
-KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B)
-KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
 GROUP_DEFINE = "-DKM_PROGRAM_GROUP"  # a group's runtime kernels are built apart
 GROUP_LINE = re.compile(r"^#define KM_PROGRAM_GROUP (\d+)$", re.M)
 # a name the compiler gives a source file's own symbol (trisck.cc.4c8b3e06): the
 # build's hash, which no part refers to
 UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
 TAKEN_ROW = "L1 held by the session (its L1 tensors, runs not stopped)"
-KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 # A taken branch to code at or above this L1 address costs about 4 cycles more: the
 # kernels and the slots go below it, the circular buffers above them.
 L1_FAST_CODE = 1 << 20
@@ -110,117 +94,6 @@ DRAM_PIECE_ALIGN = 64  # a piece of a DRAM page written apart starts this aligne
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 WORDS_SPIN_S = 300e-6  # a transfer's words looked at without a pause this long
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
-SPLIT_ISLANDS_MAX = 4  # a card split into islands: a dispatcher an X280 cluster
-
-
-# sessions holding a device they opened or an X280 runtime; weak, so that the exit
-# hooks never keep a session alive
-_LIVE = weakref.WeakSet()
-_HOOKED = []  # [True] once the exit hooks are installed
-# What this process opened: "mesh" (cards as a fabric mesh), "alone" (a card by itself)
-_OPENED = {"mesh": [], "alone": []}
-
-
-def refuse_reopen(kind, cards):
-    """Refuses opening `cards` as `kind` ("mesh" or "alone") in a process that already
-    opened the other kind; then records the attempt (see the hazards page)."""
-    other = "alone" if kind == "mesh" else "mesh"
-    if _OPENED[other]:
-        was = ",".join(str(card) for card in _OPENED[other][0])
-        now = ",".join(str(card) for card in cards)
-        said = {"mesh": f"cards {was} as a fabric mesh", "alone": f"card {was} alone"}
-        raise KomorebiError(
-            f"{'cards ' + now + ' as a mesh' if kind == 'mesh' else 'card ' + now}: "
-            f"this process opened {said[other]}; tt-metal would re-initialise its "
-            "context over every card the process holds, which left both cards' "
-            "Ethernet cores inactive until a board reset: open it in a new process"
-        )
-    _OPENED[kind].append(tuple(cards))
-
-
-def _release_all(why, close_device=True):
-    """The exit hooks' clean-up: every live session's run is stopped through the X280
-    runtime (with a timeout), then the device it opened is closed."""
-    for session in list(_LIVE):
-        session._release(why, close_device)
-
-
-def _on_sigterm(signum, frame):
-    """SIGTERM: the runtimes are closed while the devices are open, then the process
-    exits through its `with` blocks and the exit hook, which close the devices."""
-    _release_all("SIGTERM", close_device=False)
-    raise SystemExit(128 + signum)
-
-
-def _hook_exit():
-    """atexit for every session; SIGTERM too when the process has no handler of its
-    own (signals are set from the main thread only)."""
-    if _HOOKED:
-        return
-    _HOOKED.append(True)
-    atexit.register(_release_all, "exit")
-    if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL:
-        with contextlib.suppress(ValueError):  # not the main thread
-            signal.signal(signal.SIGTERM, _on_sigterm)
-
-
-def _command(pid):
-    """A process's command line, shortened, or "?"."""
-    try:
-        words = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except OSError:
-        return "?"
-    return " ".join(word.decode(errors="replace") for word in words if word)[:160]
-
-
-def aiclk_mhz(card=None):
-    """The Tensix clock of the card this process uses, from the driver (MHz)."""
-    card = card if card is not None else visible_card()
-    path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
-    return int(path.read_text().split()[0])
-
-
-def exit_timeout(environ, log):
-    """Sets OP_TIMEOUT to its default in `environ` when unset or empty and logs it; a
-    value already there is kept. The timeout in seconds (0: none; None: not a number).
-    """
-    value = environ.get(OP_TIMEOUT, "")
-    if value.strip():
-        try:
-            return max(float(value), 0.0)
-        except ValueError:
-            return None  # the runtime rejects it at the open
-    environ[OP_TIMEOUT] = f"{OP_TIMEOUT_DEFAULT:g}"
-    log(f"{OP_TIMEOUT} unset: set to {OP_TIMEOUT_DEFAULT:g} s (the exit's timeout)")
-    return OP_TIMEOUT_DEFAULT
-
-
-def exit_wait(environ=None):
-    """How long the device's close waits for the cores, as a phrase."""
-    value = (os.environ if environ is None else environ).get(OP_TIMEOUT, "")
-    try:
-        seconds = float(value)
-    except ValueError:
-        seconds = 0.0
-    return f"up to {seconds:g} s" if seconds > 0 else "without a timeout"
-
-
-def worker_l1_size(kernel_bytes):
-    """The runtime's worker_l1_size for a kernel buffer of `kernel_bytes` (None: the
-    default, nothing passed); a size the runtime would not give exactly is rejected."""
-    if kernel_bytes is None:
-        return None
-    if (
-        not isinstance(kernel_bytes, int)
-        or kernel_bytes % KERNEL_BUFFER_ALIGN
-        or not KERNEL_BUFFER_ALIGN <= kernel_bytes <= KERNEL_BUFFER_MAX
-    ):
-        raise ValueError(
-            f"kernel_bytes={kernel_bytes!r}: a multiple of {KERNEL_BUFFER_ALIGN} from "
-            f"{KERNEL_BUFFER_ALIGN} to {KERNEL_BUFFER_MAX} (default "
-            f"{KERNEL_BUFFER_DEFAULT})"
-        )
-    return L1_BYTES - KERNEL_BUFFER_BASE - kernel_bytes
 
 
 def kernel_sizes(build):
@@ -277,48 +150,6 @@ LINK_DEFINES = (
 )
 # Every define the island load gives a program; a plan's runtime kernels get them.
 ISLAND_DEFINES = (*LINK_DEFINES, "KM_WIRE")
-
-
-def far_bytes(defines):
-    """The link cores' places for puts between islands past the next (KM_FAR_PUTS),
-    after the put queue (km_abi.h KM_FAR_BYTES); 0 without."""
-    if not defines.get("KM_FAR_PUTS"):
-        return 0
-    h = abi.headers()
-    n, lines = (
-        int(defines.get("KM_ISLANDS_MAX", h["KM_ISLANDS_MAX"])),
-        h["KM_FAR_LINES"],
-    )
-    return -(-(12 + 4 * lines) * n // 64) * 64 + 64 * lines * n
-
-
-def deliver_bytes(defines):
-    """The link cores' places for deliveries (KM_DELIVER), after the forward rooms
-    (km_abi.h KM_DELIVER_BYTES); 0 without."""
-    if not defines.get("KM_DELIVER"):
-        return 0
-    n, slots, size = (
-        int(defines[name])
-        for name in ("KM_DELIVER_ISLANDS", "KM_DELIVER_SLOTS", "KM_DELIVER_SLOT_BYTES")
-    )
-    return -(-(12 + 4 * slots) * n // 64) * 64 + 64 + 64 * slots * n + size * slots * n
-
-
-def forward_bytes(defines):
-    """A link core's forward rooms (KM_FORWARD), after its far places (km_abi.h
-    KM_FORWARD_BYTES): a room a writer core and CPU and a hop level; 0 without."""
-    if not defines.get("KM_FORWARD"):
-        return 0
-    h = abi.headers()
-    cpus = int(defines.get("KM_FORWARD_CPUS", 1))
-    rooms = (
-        int(defines.get("KM_FORWARD_CORES", 3))
-        * cpus
-        * int(defines.get("KM_FORWARD_LEVELS", 1))
-    )
-    headers = -(-(32 * rooms + 4 * 2 * rooms + 4) // 64) * 64
-    slots = rooms * h["KM_FORWARD_SLOTS"] * h["KM_FORWARD_SLOT_BYTES"]
-    return headers + 2 * 0x80 * cpus + slots
 
 
 def _link_kernels(island, program, split, cores):
@@ -499,38 +330,6 @@ def slot_index(used):
     if not free:
         raise ProgramError(f"no circular buffer index below {max(used)} for the slots")
     return max(free)
-
-
-def visible_card():
-    return int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
-
-
-def chip_holder(card, path=None):
-    """The PID of another live process that holds `card`'s chip lock, else None. Read
-    from UMD's lock file (a pthread mutex, a 64-bit word, the owner's TID and PID)
-    without taking it; UMD keeps the lock from a process's first open to its exit."""
-    if mock.active():  # a mock: no chip to hold
-        return None
-    # the file's mtime cannot date the PID: UMD writes the lock through a mapping,
-    # which leaves the mtime unchanged
-    path = Path(path or CHIP_LOCK.format(card=card))
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if len(data) != CHIP_LOCK_BYTES:
-        return None
-    pid = int.from_bytes(data[CHIP_LOCK_PID : CHIP_LOCK_PID + 4], "little", signed=True)
-    if pid <= 0 or pid == os.getpid():
-        return None
-    try:  # the owner holds it only while it maps the file: a zombie, a reused PID
-        # or a process that died holding the lock does not
-        with open(f"/proc/{pid}/maps") as maps:
-            return pid if any(str(path) in line for line in maps) else None
-    except (FileNotFoundError, ProcessLookupError):
-        return None  # the process ended
-    except PermissionError:
-        return pid  # alive, another user's
 
 
 def _state_page():
@@ -812,7 +611,7 @@ class Session:
         self._dram = extents.Registry()  # its DRAM tensors: KM_GUARD's page bounds
         self.page_bounds = extents.MOST  # the most a load's list holds (0: none)
         self.slow_code = slow_code  # slots may end above L1_FAST_CODE
-        self._worker_l1 = worker_l1_size(kernel_bytes)
+        self._worker_l1 = sizes.worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
             raise ValueError("kernel_bytes is set when the session opens the device")
         self._memory = None  # the remembered kernel buffer (komorebi.device.remembered)
@@ -822,8 +621,8 @@ class Session:
         self._built_before = []  # (found, compiled) built before the next load
         if kernel_bytes is None and device is None:
             self._memory = remembered.Memory(self.log, expect)
-            if self._memory.size and self._memory.size <= KERNEL_BUFFER_MAX:
-                self._worker_l1 = worker_l1_size(self._memory.size)
+            if self._memory.size and self._memory.size <= sizes.KERNEL_BUFFER_MAX:
+                self._worker_l1 = sizes.worker_l1_size(self._memory.size)
         self.run = None
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
@@ -870,25 +669,29 @@ class Session:
                 raise ValueError(f"card {self.card} is not visible ({visible})")
             os.environ["TT_VISIBLE_DEVICES"] = str(self.card)
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
-        if exit_timeout(os.environ, self.log) == 0:
-            self.log(f"{OP_TIMEOUT}=0: an exit after a grid that did not return hangs")
-        card = self.card if self.card is not None else visible_card()
-        holder = chip_holder(card)
+        if process.exit_timeout(os.environ, self.log) == 0:
+            self.log(
+                f"{process.OP_TIMEOUT}=0: an exit after a grid that did not return "
+                "hangs"
+            )
+        card = self.card if self.card is not None else process.visible_card()
+        holder = process.chip_holder(card)
         if holder is not None:
             raise CardBusy(
-                f"card {card} is held by process {holder} ({_command(holder)}): "
-                "an open would wait until that process exits",
+                f"card {card} is held by process {holder} "
+                f"({process._command(holder)}): an open would wait until that process "
+                "exits",
                 pid=holder,
             )
-        refuse_reopen("alone", [card])
+        process.refuse_reopen("alone", [card])
         self._module = self._module or native.load_module(self.tree)
         if self._region is None:
             self.device = self._module.Device(self._worker_l1)  # program cache off
         else:
             with _output_seen() as seen:  # the driver's warning, if it gives one
                 self.device = self._module.Device(self._worker_l1)
-        _hook_exit()
-        _LIVE.add(self)
+        process._hook_exit()
+        process._LIVE.add(self)
         self._own_device = True
         if self._region is not None:
             self._open_channel(b"".join(seen).decode(errors="replace"))
@@ -948,15 +751,15 @@ class Session:
         if self.stuck:
             self.log(
                 "device not closed by the session: the grid did not return; at the "
-                f"process's exit the runtime waits {exit_wait()} for the cores, then "
-                "puts them in reset (a stuck thread recovers at the next open, a "
-                "compute unit left running does not)"
+                f"process's exit the runtime waits {process.exit_wait()} for the "
+                "cores, then puts them in reset (a stuck thread recovers at the next "
+                "open, a compute unit left running does not)"
             )
             return
         if self.device is not None and self._own_device:
             self.device.close()
             self.device = None
-        _LIVE.discard(self)
+        process._LIVE.discard(self)
 
     def _release(self, why, close_device):
         """The exit hooks' timed clean-up of this session: closes the X280 runtime of
@@ -1363,7 +1166,7 @@ class Session:
             tensor.address, page, first, pages, 0, region.words, region.bytes, nonce,
             buffer, chunk,
         )  # fmt: skip
-        channel_module.check(transfer, count, L1_BYTES)
+        channel_module.check(transfer, count, sizes.L1_BYTES)
         words = channel_module.words_view(self.channel, region, count)
         words[:] = 0
         want = channel_module.sequence_words(nonce, pages, page, count)
@@ -1388,7 +1191,7 @@ class Session:
                 tensor.address, page, first, pages, 0, region.words, region.bytes,
                 secrets.randbits(32), 0, h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, pages, L1_BYTES)
+            channel_module.check(transfer, pages, sizes.L1_BYTES)
             words = channel_module.words_view(self.channel, region, pages)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, pages, page, pages)
@@ -1405,7 +1208,7 @@ class Session:
                 region.bytes, secrets.randbits(32), run.backend.transfer.address,
                 h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, count, L1_BYTES)
+            channel_module.check(transfer, count, sizes.L1_BYTES)
             words = channel_module.words_view(self.channel, region, count)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, count, page, count)
@@ -1580,7 +1383,7 @@ class Session:
             return run
         finally:
             self._kept.loading = loading
-        kernel_buffer.reopen(self, size, worker_l1_size(size), why)
+        kernel_buffer.reopen(self, size, sizes.worker_l1_size(size), why)
         self._kept.loading = True
         try:
             run = self._try_load(program, *args, **options)
@@ -1636,8 +1439,8 @@ class Session:
                 "it did not open its card"
                 if not self._own_device or self.island is not None
                 else (
-                    f"{size} B is over the most, {KERNEL_BUFFER_MAX} B"
-                    if size > KERNEL_BUFFER_MAX
+                    f"{size} B is over the most, {sizes.KERNEL_BUFFER_MAX} B"
+                    if size > sizes.KERNEL_BUFFER_MAX
                     else self._kept.refused()
                 )
             )
@@ -1741,14 +1544,14 @@ class Session:
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
             sources = programs.runtime_kernels()
-        mhz = mock.MHZ if mock.active() else aiclk_mhz(self.card)
+        mhz = mock.MHZ if mock.active() else process.aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
         regions = _bank_regions(self, owner, works)
         dispatch = self._open_dispatch(module)
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
-        _hook_exit()
-        _LIVE.add(self)
+        process._hook_exit()
+        process._LIVE.add(self)
         self._starting = dispatch
         dispatch.settle_microseconds = settle_microseconds
         backend, launched = None, False
@@ -1825,9 +1628,9 @@ class Session:
             )
             if build[-1]:
                 self._log_built(descriptor, built_at, program)
-                refused = self._resize(program.sizes.total or KERNEL_BUFFER_MAX)
+                refused = self._resize(program.sizes.total or sizes.KERNEL_BUFFER_MAX)
                 raise KernelSizeError(
-                    program.name, program.sizes, KERNEL_BUFFER_MAX, refused
+                    program.name, program.sizes, sizes.KERNEL_BUFFER_MAX, refused
                 )
             if insn_check.enabled():
                 insn_check.check_kernels(
@@ -1998,7 +1801,7 @@ class Session:
                 f"{program.name}: X280 threads, ports and ranks need the work "
                 "clusters, which a split card's dispatchers take"
             )
-        rows = _split_rows(graph, self.grid)
+        rows = sizes._split_rows(graph, self.grid)
         self.link_plans, self.link_plan, self.link_area = links, None, 0
         self.tensor_table = tensors
         image = Path(image) if image else native.image_path(self.tree)
@@ -2007,11 +1810,11 @@ class Session:
         module = self._module = native.load_module(self.tree)
         depth = depth or program.depth
         sources = program.sources()
-        mhz = mock.MHZ if mock.active() else aiclk_mhz(self.card)
+        mhz = mock.MHZ if mock.active() else process.aiclk_mhz(self.card)
         dispatches = _Dispatches([self._open_dispatch(module)])
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
-        _hook_exit()
-        _LIVE.add(self)
+        process._hook_exit()
+        process._LIVE.add(self)
         self._starting = dispatches
         backends, launched = [], False
         try:
@@ -2082,7 +1885,9 @@ class Session:
             program.sizes = kernel_sizes(build)
             self._last_total = program.sizes.total
             if build[-1]:
-                raise KernelSizeError(program.name, program.sizes, KERNEL_BUFFER_MAX)
+                raise KernelSizeError(
+                    program.name, program.sizes, sizes.KERNEL_BUFFER_MAX
+                )
             if insn_check.enabled():
                 insn_check.check_kernels(
                     program.name,
@@ -2185,32 +1990,6 @@ def _island_word(island):
         return 0
     graph, here = island
     return graph.first(here) | graph.count(here) << 16
-
-
-def _split_rows(graph, grid):
-    """[(first row, rows)] of each island of a card split into islands: its cores whole
-    rows of the grid in order, its ranks then its link cores (the dispatcher's
-    mapping), at most one island an X280 cluster."""
-    columns, rows = grid
-    out, at = [], 0
-    if not 2 <= len(graph.islands) <= SPLIT_ISLANDS_MAX:
-        raise ValueError(f"{len(graph.islands)} islands: 2 to {SPLIT_ISLANDS_MAX}")
-    for island, ranks in enumerate(graph.rank_cores):
-        cores = ranks + graph.link_cores[island]
-        if (
-            cores != tuple(range(at, at + len(cores)))
-            or at % columns
-            or len(cores) % columns
-        ):
-            raise ValueError(
-                f"island {island}: its ranks, then its link cores, are not whole rows "
-                f"of the {columns} x {rows} grid after the island before it"
-            )
-        out.append((at // columns, len(cores) // columns))
-        at += len(cores)
-    if at != columns * rows:
-        raise ValueError(f"the islands hold {at} cores of {columns * rows}")
-    return out
 
 
 class _Dispatches(list):
@@ -3138,9 +2917,9 @@ class _Backend:
             )
         size = (
             h["KM_QUEUE_BYTES"]
-            + far_bytes(program.defines)
-            + forward_bytes(program.defines)
-            + deliver_bytes(program.defines)
+            + sizes.far_bytes(program.defines)
+            + sizes.forward_bytes(program.defines)
+            + sizes.deliver_bytes(program.defines)
             + 2 * chunk
         )
         launch.cb(rects, index, "uint32", size, size)
@@ -3166,9 +2945,9 @@ class _Backend:
             - self._held_bytes()
             - apart
             - abi.headers()["KM_QUEUE_BYTES"]
-            - far_bytes(program.defines)
-            - forward_bytes(program.defines)
-            - deliver_bytes(program.defines)
+            - sizes.far_bytes(program.defines)
+            - sizes.forward_bytes(program.defines)
+            - sizes.deliver_bytes(program.defines)
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
@@ -3379,7 +3158,7 @@ class _Backend:
     def _slot_buffer(self, descriptor, slot_bytes):
         """Every core's slots as the launch's first circular buffer, at the L1 base,
         so they lie below 1 MB and the buffers above them; returns their address."""
-        base = L1_BYTES - self.session.l1()[1]
+        base = sizes.L1_BYTES - self.session.l1()[1]
         address, size, _ = slot_area(
             base, slot_bytes, self.cb_indices, self.session.slow_code
         )
@@ -3822,7 +3601,8 @@ class _Backend:
             raise GridTimeout(
                 f"the grid's kernels did not return within {timeout} s after the stop. "
                 "The session does not close the device; at the process's exit the "
-                f"runtime waits {exit_wait()} for the cores, then puts them in reset. "
+                f"runtime waits {process.exit_wait()} for the cores, then puts them in "
+                "reset. "
                 "A thread that is only stuck is recovered by the next open; a kernel "
                 "that left a compute unit running is not, and if the next open fails "
                 "the card needs a reset"

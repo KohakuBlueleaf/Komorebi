@@ -15,7 +15,7 @@ import numpy as np
 from komorebi import abi, formats
 from komorebi.device import channel as channel_module
 from komorebi.errors import KomorebiError
-from komorebi.session import L1_BYTES
+from komorebi.session.sizes import L1_BYTES
 from projects.decode import model as md
 from projects.dense import plan as pl
 from projects.nn import nn
