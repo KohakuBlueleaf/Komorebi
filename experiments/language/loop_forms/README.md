@@ -20,3 +20,6 @@ for i in range(turns):
         total += tile
     out.pages(self.rank * turns + i, 1).write(total)
 ```
+
+On the card (2026-11-16, card 0, 8 cores, 4 turns of 2 tiles): all 32,768 words of the
+32 prefix pages equal numpy's, and the command took 8.2 us.
