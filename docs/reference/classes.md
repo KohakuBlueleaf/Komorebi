@@ -2528,9 +2528,11 @@ a value is a value, `km.at_submit("n")` is the chain's per-submit word, and
 the make and joins the load's words. The chain is described and proven at the make as
 `run.chain` does it, and its refusals name the class's line. The header then has
 `<class>_chain_steps_write(region)`, which writes the records into the thread's region
-(the last first, each naming the next), and `<class>_chain_steps_command(&command,
-region, word)`, which fills the chain command for `kmx_submit` (its cores, the program field, the
-exclusive flag); `<CLASS>_CHAIN_STEPS_BYTES` is the region's least size. A `km.direct` input needs nothing more from the thread: the
+(the last first, each naming the next; each 256th with next 0), and
+`<class>_chain_steps_command(&command, region, word, piece)`, which fills piece `piece`
+of the chain command for `kmx_submit` (its cores, the program field, the exclusive
+flag; one piece a 256 records, `<CLASS>_CHAIN_STEPS_PIECES`, each submitted once the one
+before is done); `<CLASS>_CHAIN_STEPS_BYTES` is the region's least size. A `km.direct` input needs nothing more from the thread: the
 record's flag is the set-up, the landing area is the program's, and the host refuses
 to read that tensor's DRAM (it has no copy) until a write. Every record matches
 `run.chain`'s word for word, except `next`, which is the region's address

@@ -348,16 +348,16 @@ class Run:
         or cluster `cluster`'s X280 thread; returns its handle. `result`: ask the result
         word; `queued`: the kernel picks the cores; `block`: bytes its handlers read;
         `part`: an island's part; `span`: a chain's sequence numbers (a9 + 1)."""
-        # a chain (run.chain): one exclusive command, `words` its per-submit word
+        # a chain (run.chain): an exclusive command a piece of kChainRecordsMax
+        # records, `words` its per-submit word; the pieces before the last waited for
         if isinstance(handler, chain_module.Chain):
             chain = handler
-            handle = self.submit(
-                chain.handler,
-                chain.group,
-                chain.args(words),
-                exclusive=True,
-                span=chain.span,
-            )
+            for piece in range(chain.pieces):
+                handle = self.submit(
+                    chain.handler, chain.group, chain.args(words, piece), exclusive=True
+                )
+                if piece + 1 < chain.pieces:
+                    self.wait(handle)
             tensor_module.sent_direct(chain.written, chain.direct)
             return handle
         if words:

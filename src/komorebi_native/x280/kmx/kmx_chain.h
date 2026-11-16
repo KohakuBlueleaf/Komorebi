@@ -119,13 +119,3 @@ static inline int kmx_chain_command(
     chain->a4 = mode;
     return KMX_OK;
 }
-
-/* A chain command of `records` records: past kChainRecordsMax it takes one sequence
- * number for each kChainRecordsMax (KM_FLAG_SPAN, a9), else the reader refuses it. */
-static inline void kmx_chain_span(km_command_t* chain, uint32_t records) {
-    const uint32_t span = (records + kChainRecordsMax - 1u) / kChainRecordsMax;
-    if (span > 1u) {
-        chain->hdr |= KM_FLAG_SPAN << 8;
-        chain->a9 = span - 1u;
-    }
-}

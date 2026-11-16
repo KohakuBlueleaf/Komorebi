@@ -127,21 +127,26 @@ def test_run_chain_writes_once_and_submit_takes_its_word():
         run.submit(chain, m=7)
 
 
-def test_a_long_chain_takes_a_sequence_number_for_each_256_records():
+def test_a_long_chain_runs_as_a_command_for_each_256_records():
     port = FakePort()
-    run = Run(BlockBackend(port), (12, 10))
-    assert [kc.Chain(1, (0, 8), 0, 0, None, None, {}, [0] * n).span
+    backend = BlockBackend(port)
+    run = Run(backend, (12, 10))
+    assert [kc.Chain(1, (0, 8), 0, 0, None, None, {}, [0] * n).pieces
             for n in (1, 256, 257, 1000)] == [1, 1, 2, 4]  # fmt: skip
-    first = run.submit(1, (0, 8), [5], exclusive=True, span=4)
-    after = run.submit(1, (0, 8), [6])
-    run._hand()  # the host's own count of the kernel's numbers (run._sequence)
-    mirror = [int(run._sequence[handle - run._base]) for handle in (first, after)]
-    run.wait([first, after])
-    sent = port.ring[first]
-    assert sent[run._arg_at[9]] == 3
-    assert sent[run._hdr] >> 8 & abi.headers()["KM_FLAG_SPAN"]
-    numbers = [number for _, number, *_ in port.submitted[-2:]]
-    assert numbers[1] - numbers[0] == 4 and mirror == numbers
+    calls = [kc.Call(1, (i,), (0, 8), 1, 1, "y", "y", ranges=(kc.Range(0, 1, 1),))
+             for i in range(300)]  # fmt: skip
+    calls[0] = calls[0]._replace(input=None, ranges=())
+    records = kc.records(calls, ADDRESS)
+    nexts = records[:, W["kChainNext"]]
+    assert nexts[255] == 0 and nexts[254] == ADDRESS + 255 * 64 and nexts[299] == 0
+    marked = records[:, W["kChainInfo"]] & W["kChainMarked"]
+    assert marked[255] and not marked[256] and marked[257]  # a command's first: DRAM
+    chain = run.chain(calls)
+    handle = run.submit(chain)
+    run.wait(handle)
+    sent = [port.ring[number] for number in (handle - 1, handle)]
+    assert [one[run._arg_at[7]] for one in sent] == [ADDRESS, ADDRESS + 256 * 64]
+    assert not sent[1][run._hdr] >> 8 & abi.headers()["KM_FLAG_SPAN"]
 
 
 def test_a_record_names_its_handler_and_its_stamp_row():
