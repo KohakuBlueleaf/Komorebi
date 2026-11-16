@@ -103,5 +103,19 @@ km_overlay_entry(void* kernel, const void* argument) {
     // this part's copy of the math library's cached flag value: unknown at entry
     ckernel::math::_invalidate_src_zero_flag_state_();
 #endif
+#if defined(TRISC_MATH) && defined(KM_OVERLAY_MOP_STATUS)
+    // the builder's guard: this part defines matmul.h's throttled_mop_status, which
+    // names the programmed matmul MOP (0 or 1): 2 is neither, so its next init runs
+    ckernel::throttled_mop_status = 2;
+#endif
+#if defined(TRISC_MATH) && defined(KM_OVERLAY_RESIDENT_MOP_STATUS)
+    const uint32_t result = (
+        km::overlay_invoke<KM_OVERLAY_KERNEL>(KM_OVERLAY_FUNCTION, kernel, argument)
+    );
+    // the resident kernel's copy (its address): the part may have changed the MOP
+    *reinterpret_cast<volatile uint32_t*>(KM_OVERLAY_RESIDENT_MOP_STATUS) = 2;
+    return result;
+#else
     return km::overlay_invoke<KM_OVERLAY_KERNEL>(KM_OVERLAY_FUNCTION, kernel, argument);
+#endif
 }
