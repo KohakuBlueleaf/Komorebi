@@ -1375,9 +1375,8 @@ class IslandSession:
             columns, rows = session.grid
             self.graph = islands.one(columns * rows, columns)
             if self.split > 1:  # one device, a dispatcher an island, wires between
-                self.graph = _split_graph(
-                    columns, rows, self.split, self._split_pairs()
-                )
+                pairs = fewest_links(self._split_pairs(), self.log)
+                self.graph = _split_graph(columns, rows, self.split, pairs)
                 check_wired(self.graph, self.split)
                 self.link_cores = self.graph.link_cores
                 self._forward_packet()
@@ -1451,7 +1450,9 @@ class IslandSession:
                 session.l1_held = lambda island=island: self._held_l1(island)
                 session.packet = self.packet
             self.records = chain_records.Region(self.sessions)  # allocators alike now
-            pairs = self._fabric_pairs() if len(self.chips) > 1 else []
+            pairs = []
+            if len(self.chips) > 1:
+                pairs = fewest_links(self._fabric_pairs(), self.log)
             self.graph = cards_graph([session.grid for session in self.sessions], pairs)
             check_wired(self.graph, 1)
             if pairs:  # the page CPUs a pair: the fewest links of any pair
@@ -3350,6 +3351,22 @@ def cards_graph(grids, pairs):
         parts.append(islands.Island(tuple(range(cores)), columns, THREADS))
         link_cores.append(tuple(range(cores - taken, cores)))
     return islands.Graph(parts, joined, link_cores=link_cores)
+
+
+def fewest_links(pairs, log):
+    """`pairs` with every pair cut to the fewest links any pair has (an island's put
+    rings and page CPUs are one set, sized by one count); each cut is logged."""
+    links = islands.links_of(pairs)
+    if not links:
+        return list(pairs)
+    fewest = min(link.count for link in links)
+    for link in links:
+        if link.count > fewest:
+            log(
+                f"islands {link.a} and {link.b}: {fewest} of {link.count} links used, "
+                f"{link.count - fewest} left out (every pair uses the fewest a pair)"
+            )
+    return [(link.a, link.b) for link in links for _ in range(fewest)]
 
 
 def check_wired(graph, split):
