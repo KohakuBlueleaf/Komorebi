@@ -134,8 +134,8 @@ operand order are the same.
 ### Time and power
 
 Measured on 2026-11-13 on one p150a with the X280 at 1,000 MHz (the session's default),
-each row's output committed in `results/` (`ours-<preset>[-approx].json` from `bench.py
---json`, `ktt-<preset>[-approx].json` from `reference/ktt_bench.py --json`),
+each row's output written to `results/`, not kept in git (`ours-<preset>[-approx].json`
+from `bench.py --json`, `ktt-<preset>[-approx].json` from `reference/ktt_bench.py --json`),
 ours (`bench.py --shape <preset> [--approx] --cuts`) and Kohaku-TT's `ktt_flash` at
 ac81ff2 (`reference/ktt_bench.py`) one after the other in the same session, 15 s apart;
 host load (1 min) 3 to 9. Rows 8x16x256x64, 1x8x1024x64 causal and 2x8x1024x128 were
@@ -303,7 +303,7 @@ variable-length batches, masks, ragged lengths.
 | `run.py` | one shape run and checked |
 | `bench.py` | time, power, clock, the profile and the cut-down runs of one shape |
 | `graph.py` | the same call as one command or one command per job, from the host and from a kept graph |
-| `results/` | the JSON behind the tables of results |
+| `results/` | where the runs write their JSON (not kept in git; each table names its command) |
 | `reference/sdpa.py` | the float64 attention, inputs, sampled rows |
 | `reference/ktt_bench.py` | Kohaku-TT's kernel on the same inputs, checked the same way |
 | `bench_ttnn.py` | TT-NN's attention on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |

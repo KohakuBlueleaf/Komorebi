@@ -112,6 +112,8 @@ def render(epilogue, name="epilogue"):
 
 def renders(args):
     """Each kernel's stored expressions of the schedule, rendered or refused."""
+    if not SCHEDULE.is_file():
+        sys.exit(f"{SCHEDULE} is missing: `schedule.py --json {SCHEDULE}` writes it")
     schedule = json.loads(SCHEDULE.read_text())
     for model, items in schedule.items():
         for i, item in enumerate(items):
