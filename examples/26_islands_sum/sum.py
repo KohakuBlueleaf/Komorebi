@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import formats, power
+from komorebi import formats, islands, power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "sum.h", known=km.abi.headers().constants)
@@ -32,9 +32,10 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line",
-        action="store_true",
-        help="--islands joined in a line (neighbours only): parts forwarded on",
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument(
@@ -98,8 +99,8 @@ def main():
     report = {"cards": cards, "tiles": args.tiles, "part": args.part, "far": args.far}
     links = 1 if len(cards) > 1 else 0
     opened = {"cards": cards, "links": links}
-    if args.islands:  # one card split: a wire a pair of islands (--line: neighbours)
-        opened = {"card": cards[0], "islands": args.islands, "line": args.line}
+    if args.islands:  # one card split: a wire a pair (--graph: the pairs given)
+        opened = {"card": cards[0], "islands": args.islands, "graph": args.graph}
     with km.Session(**opened, log=log) as session:
         ranks = session.ranks
         report["islands"] = [

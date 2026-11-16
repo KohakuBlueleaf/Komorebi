@@ -51,8 +51,8 @@ on a float32 copy of 64 pages, each island's copy its own integers in [-8, 8], a
 checks every copy against numpy (`reduce_to`: the root's).
 
 ```
-python pages/pages.py --islands 3 --shape line --rounds 3   # card 0 split in a line
-python pages/pages.py --islands 4 --shape ring --rounds 3   # ... in a ring
+python pages/pages.py --islands 3 --graph 0-1,1-2 --rounds 3   # card 0 split in a line
+python pages/pages.py --islands 4 --graph 0-1,1-2,2-3,3-0 --rounds 3   # ... in a ring
 ```
 
 2026-11-16, card 0, the root the last island, the median of 3 commands on the card,

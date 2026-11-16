@@ -67,13 +67,6 @@ LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
 LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
 # A link core's L1 for deliveries (km_deliver.hpp), shared by the source islands
 DELIVER_ROOM = 64 << 10
-# a split card's shapes and how the log names them
-SPLIT_SHAPES = {
-    "mesh": "each joined to each",
-    "line": "in a line",
-    "ring": "in a ring",
-    "grid": "a 2 x 2 grid with wrap",
-}
 # Two cards' kernel buffer: the largest build, a dynamic program with a message service
 # a link (about 159,400 B), in steps of 16 KiB. kernel_bytes= overrides it.
 KERNEL_BYTES = 160 * 1024
@@ -1205,6 +1198,11 @@ class IslandRun(TreeCalls):
         return self.wait(ticket, timeout)
 
 
+def _links_of(pairs, count=None):
+    """islands.links_of (IslandSession's argument `islands` hides the module)."""
+    return islands.links_of(pairs, count)
+
+
 def check_link_queues(places):
     """Refuses islands whose link cores' put queues (offset from their buffers' base,
     chunk bytes) differ: a sender writes its lines' arrival at its own queue's place."""
@@ -1217,10 +1215,10 @@ def check_link_queues(places):
 
 
 class IslandSession:
-    """Cards as islands of one 1 x n fabric mesh, the X280 runtime once over it, a
-    Session an island (one card: its own; `islands` 2 to 4: it split into rows). Two
-    cards use every link found (`links`: at most that many), a link core a pair. A
-    context manager. `host_reaches`: see the islands reference (a test)."""
+    """Cards as islands of one fabric mesh joined as the fabric reports, the X280
+    runtime once over it, a Session an island (one card: its own; `islands` 2 to 4: it
+    split into rows). `graph`: island pairs (a pair k times: k links). A context
+    manager. `host_reaches`: see the islands reference (a test)."""
 
     LINKS_MAX = 4  # a byte each in a PAGES command's link word
     # How an ask for another island's pages reaches the holder: "core" (the read call
@@ -1241,10 +1239,9 @@ class IslandSession:
         slow_code=False,
         host_reaches=None,
         card_dram=False,
-        line=False,
         packet=None,
         message_links=False,
-        shape=None,
+        graph=None,
         expect=None,
         tensors=None,
         tensor_cache=None,
@@ -1282,20 +1279,17 @@ class IslandSession:
         # a split card: tensors held by island (pages asked across, as over cards);
         # card_dram: one tensor in the card's DRAM, every page local to every island
         self.card_dram = bool(card_dram) and self.split > 1
-        # a split card as a line: only neighbouring islands joined, the others
-        # reached through those between (forwarded)
-        self.line = bool(line)
-        if self.line and self.split < 2:
-            raise ValueError("line=True: a card split into islands")
-        # its shape: "mesh" (each joined to each), "line", "ring" or "grid" (2 x 2)
-        self.shape = shape or ("line" if self.line else "mesh")
-        if self.shape not in SPLIT_SHAPES or (shape and self.split < 2):
-            raise ValueError(
-                f"shape={shape!r}: a card split into islands, one of {SPLIT_SHAPES}"
-            )
-        if self.line and self.shape != "line":
-            raise ValueError(f"line=True and shape={shape!r}")
-        self.line = self.shape == "line"
+        # the islands' pairs, a pair k times k links (None: a split card's every pair
+        # `links` times; cards: the fabric's graph); islands beyond a pair forward
+        self.pairs = None if graph is None else [tuple(pair) for pair in graph]
+        if self.pairs is not None:
+            if links:
+                raise ValueError(
+                    f"links={links} with graph=: a pair k times is k links"
+                )
+            if self.split < 2 and len(self.cards) < 2:
+                raise ValueError("graph=: cards, or a card split into islands")
+            _links_of(self.pairs, max(self.split, len(self.cards)))
         if host_reaches is not None and (
             len(self.cards) != 2 or not set(host_reaches) < {0, 1} or not host_reaches
         ):
@@ -1317,7 +1311,10 @@ class IslandSession:
         # two cards: every link found, at most `links` (set at the open), link 0
         # always (commands ride it); a split card: `links` wires a pair (default 1)
         self._links_asked = links or None
-        self.links = 1 if len(self.cards) > 1 else (links or 1) if self.split > 1 else 0
+        # the page CPUs a pair (the fewest links of any pair; set at the open on cards)
+        self.links = 1 if len(self.cards) > 1 else 0
+        if self.split > 1:
+            self.links = min(link.count for link in _links_of(self._split_pairs()))
         self.log = log or (lambda message: None)
         self._options = {
             "pll_mhz": pll_mhz,
@@ -1378,15 +1375,20 @@ class IslandSession:
             self.graph = islands.one(columns * rows, columns)
             if self.split > 1:  # one device, a dispatcher an island, wires between
                 self.graph = _split_graph(
-                    columns, rows, self.split, self.links, self.shape
+                    columns, rows, self.split, self._split_pairs()
                 )
                 check_wired(self.graph, self.split)
                 self.link_cores = self.graph.link_cores
                 self._forward_packet()
-                self.channels = ((0,) * self.links,) * self.split  # no router: a wire
+                self.channels = tuple(  # no router: a wire
+                    link_slots(self.graph, island, lambda there, k: 0)
+                    for island in range(self.split)
+                )
                 session_module._LIVE.add(self)
-                shape = SPLIT_SHAPES[self.shape]
-                self.log(f"card {self.cards[0]} as {self.split} islands, {shape}")
+                self.log(
+                    f"card {self.cards[0]} as {self.split} islands, "
+                    f"pairs {self.graph.pairs()}"
+                )
             return
         listed = ",".join(str(card) for card in self.cards)
         visible = os.environ.get("TT_VISIBLE_DEVICES")
@@ -1448,26 +1450,11 @@ class IslandSession:
                 session.l1_held = lambda island=island: self._held_l1(island)
                 session.packet = self.packet
             self.records = chain_records.Region(self.sessions)  # allocators alike now
-            if len(self.chips) > 1:
-                # the fabric's 1 x n mesh: the links of each chip and the next, as many
-                # a pair as the fewest found (a link core's two CPUs, a link each)
-                found = [
-                    int(self.mesh.link(i, i + 1, 0)[0])
-                    for i in range(len(self.chips) - 1)
-                ]
-                most = min(min(found), self.LINKS_MAX)
-                if len(self.chips) > 2:  # a link core a neighbour, a link a CPU
-                    if most < 2:
-                        raise KomorebiError(
-                            f"links {found} between the cards in turn: three or more "
-                            "cards take two a pair (a link core's two CPUs)"
-                        )
-                    most = 2
-                self.links = min(self._links_asked or most, most)
-                self.log(f"links: {self.links} a pair of {found} found")
-            self.graph = cards_graph(
-                [session.grid for session in self.sessions], self.links
-            )
+            pairs = self._fabric_pairs() if len(self.chips) > 1 else []
+            self.graph = cards_graph([session.grid for session in self.sessions], pairs)
+            check_wired(self.graph, 1)
+            if pairs:  # the page CPUs a pair: the fewest links of any pair
+                self.links = min(link.count for link in self.graph.links)
             self.link_cores = self.graph.link_cores
             self._forward_packet()
             if self.links:
@@ -1475,6 +1462,35 @@ class IslandSession:
         except BaseException:
             self.close()
             raise
+
+    def _split_pairs(self):
+        """A split card's pairs: graph=, else every pair `links` times (default 1)."""
+        if self.pairs is not None:
+            return self.pairs
+        every = [(a, b) for a in range(self.split) for b in range(a + 1, self.split)]
+        return every * (self._links_asked or 1)
+
+    def _fabric_pairs(self):
+        """The pairs of the open mesh as the fabric joins them, a pair as many times
+        as its links (at most LINKS_MAX, and `links`); graph= takes a part of them."""
+        fabric = {}
+        for a in range(len(self.chips)):
+            for b in range(a + 1, len(self.chips)):
+                if self.mesh.adjacent(a, b):
+                    found = int(self.mesh.link(a, b, 0)[0])
+                    fabric[a, b] = min(
+                        found, self.LINKS_MAX, self._links_asked or found
+                    )
+        self.log(f"the fabric's links: {fabric}")
+        if self.pairs is None:
+            return [pair for pair, count in fabric.items() for _ in range(count)]
+        for link in islands.links_of(self.pairs, len(self.chips)):
+            if link.count > fabric.get((link.a, link.b), 0):
+                raise ValueError(
+                    f"graph=: {link.count} links between cards {link.a} and {link.b}, "
+                    f"the fabric has {fabric.get((link.a, link.b), 0)}"
+                )
+        return self.pairs
 
     def _forward_packet(self):
         """More than two islands: the kernels' packets no larger than a forward slot's
@@ -1491,17 +1507,23 @@ class IslandSession:
         that a page's DRAM bank sits at the same NoC place on every island."""
         channels = []
         for island in range(len(self.sessions)):
-            found = [  # in link core order: each neighbour's links
-                self.mesh.link(island, there, k)
-                for there in self.graph.neighbours(island)
-                for k in range(self.links)
-            ]
-            if any(link[0] < self.links for link in found):
-                raise KomorebiError(
-                    f"island {island}: {min(link[0] for link in found)} links found "
-                    f"to a neighbour, {self.links} asked"
+            for there in self.graph.neighbours(island):
+                asked = self.graph.between(island, there).count
+                found = int(self.mesh.link(island, there, 0)[0])
+                if found < asked:
+                    raise KomorebiError(
+                        f"island {island}: {found} links found to island {there}, "
+                        f"{asked} asked"
+                    )
+            channels.append(  # in link core order: each neighbour's links
+                link_slots(
+                    self.graph,
+                    island,
+                    lambda there, k, island=island: int(
+                        self.mesh.link(island, there, k)[1]
+                    ),
                 )
-            channels.append(tuple(int(link[1]) for link in found))
+            )
         self.channels = tuple(channels)
         banks = []
         for session in self.sessions:
@@ -2322,7 +2344,6 @@ class IslandSession:
         h = abi.headers()
         there, first, far = self.pair(here, k)
         buffer, chunk = self.staging(here)
-        links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
         words = [0] * 10
         words[h["KM_PAGES_FIRST"]] = first
         words[h["KM_PAGES_TO_CORE"]] = chunk // 64 << 16
@@ -2330,7 +2351,7 @@ class IslandSession:
         words[h["KM_PAGES_COUNTER"]] = (
             self.noc_of(there, far) | 1 << 16 | h["KM_PAGES_OPEN"] << 24
         )
-        words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
+        words[h["KM_PAGES_LINKS"]] = self.links_word(here, there)
         words[h["KM_PAGES_BUFFER"]] = buffer
         return self.run.island(here)._queue_command(
             h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, 1), words
@@ -2350,8 +2371,12 @@ class IslandSession:
             raise ValueError(f"island {island}: no link core {k} in a run with links")
         run = self.run.island(island)
         core = self.link_cores[island][k]
+        none = h["KM_PAGES_NO_LINK"]
         held = [
-            2 * k + cpu for cpu in range(2) if 2 * k + cpu < len(self.channels[island])
+            2 * k + cpu
+            for cpu in range(2)
+            if 2 * k + cpu < len(self.channels[island])
+            and self.channels[island][2 * k + cpu] != none
         ]
         drops = []
         areas = getattr(self, "_areas", None)
@@ -2428,7 +2453,7 @@ class IslandSession:
             for at in range(2 * len(self.link_cores[island])):
                 there, first, _ = self.pair(island, at // 2)
                 link = at - 2 * first  # its link toward `there`
-                if link >= self.links:
+                if link >= self.graph.between(island, there).count:
                     continue
                 row = words[at]
                 low = h["KM_CROSS_BYTES"]
@@ -2526,11 +2551,20 @@ class IslandSession:
         """Link core `k` of `island`: (the island its links go to, the first link core
         toward it, the far island's link core across from this one). A neighbour's
         links take ceil(links / 2) link cores in neighbour order, two CPUs a core."""
-        per = (self.links + 1) // 2
-        neighbours = self.graph.neighbours(island)
-        there = neighbours[k // per]
-        far = self.graph.neighbours(there).index(island) * per + k % per
-        return there, k // per * per, self.link_cores[there][far]
+        for there in self.graph.neighbours(island):
+            first, cores = self.graph.link_cores_toward(island, there)
+            if first <= k < first + cores:
+                far = self.graph.link_cores_toward(there, island)[0] + k - first
+                return there, first, self.link_cores[there][far]
+        raise ValueError(f"island {island}: no link core {k}")
+
+    def links_word(self, here, there):
+        """The PAGES word of `here`'s links toward neighbour `there`: their channels, a
+        byte each from its first link core's CPU 0, KM_PAGES_NO_LINK past them."""
+        none = abi.headers()["KM_PAGES_NO_LINK"]
+        first, cores = self.graph.link_cores_toward(here, there)
+        mine = list(self.channels[here][2 * first : 2 * (first + cores)])
+        return int.from_bytes(bytes((mine + [none] * self.LINKS_MAX)[:4]), "little")
 
     def noc_of(self, island, core):
         """x | y << 8: the NoC place of local core `core` of `island` (core table)."""
@@ -2633,7 +2667,6 @@ class IslandSession:
         counted = counted if counted is not None else self.pair(here, k)[2]
         port = h["KM_PORTS"] - 1 if port is None else port
         buffer, chunk = self.staging(here)
-        links = list(self.channels[here]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
         words = [0] * 10
         words[h["KM_PAGES_FROM"]] = start
         words[h["KM_PAGES_PAGE"]] = page
@@ -2646,7 +2679,7 @@ class IslandSession:
         words[h["KM_PAGES_COUNTER"]] = (
             self.noc_of(there, counted) | 1 << 16 | h["KM_PAGES_SEND"] << 24
         )
-        words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
+        words[h["KM_PAGES_LINKS"]] = self.links_word(here, there)
         if not self._regions:  # no message service holds link 0: it carries pages too
             shape |= h["KM_PAGES_SHAPE_LINK0"]
         words[h["KM_PAGES_BUFFER"]] = buffer | shape << h["KM_PAGES_SHAPE_SHIFT"]
@@ -2665,8 +2698,7 @@ class IslandSession:
             raise ValueError(f"islands {here} and {there} are not neighbours")
         if len(self.graph.neighbours(here)) == 1:
             return 0, len(self.link_cores[here])
-        per = (self.links + 1) // 2
-        return self.graph.neighbours(here).index(there) * per, per
+        return self.graph.link_cores_toward(here, there)
 
     def ask(self, tensor, first, pages, island, core, to, port):
         """Pages first .. of `tensor`, held by another island, into L1 address `to` of
@@ -2705,7 +2737,6 @@ class IslandSession:
         if not 0 <= port < h["KM_PORT_SLOTS"] or ranks > 0xFFFF:
             raise ValueError(f"port {port}, ranks {ranks}")
         buffer, chunk = self.staging(holder)
-        links = list(self.channels[holder]) + [h["KM_PAGES_NO_LINK"]] * self.LINKS_MAX
         words = [0] * 10
         words[h["KM_PAGES_FROM"]] = tensor.addresses[holder]
         words[h["KM_PAGES_PAGE"]] = tensor.aligned_page_bytes
@@ -2716,7 +2747,7 @@ class IslandSession:
         words[h["KM_PAGES_TO_CORE"]] = core | chunk // 64 << 16
         words[h["KM_PAGES_COUNT"]] = self.port_address(island, port)
         words[h["KM_PAGES_COUNTER"]] = ranks | 1 << 16 | h["KM_PAGES_RANGE"] << 24
-        words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
+        words[h["KM_PAGES_LINKS"]] = self.links_word(holder, island)
         words[h["KM_PAGES_BUFFER"]] = buffer
         handle = self.run.island(holder)._queue_command(
             h["KM_HANDLER_PAGES"],
@@ -3296,66 +3327,58 @@ def _with_link(program, words, services=1):
     return linked
 
 
-def _split_pairs(parts, links, shape):
-    """The wired pairs of a split card's `shape` (SPLIT_SHAPES) of `parts` islands:
-    Link values, `links` wires a pair (the 2 x 2 grid: its wrap doubles each pair)."""
-    if shape == "grid":
-        if parts != 4:
-            raise ValueError(f"shape='grid': 4 islands (2 x 2), not {parts}")
-        order = (0, 1, 3, 2)  # the 2 x 2 row by row: 0 1 / 2 3, around it
-        return [
-            islands.Link(*sorted((order[i], order[(i + 1) % 4])), 2 * links)
-            for i in range(4)
-        ]
-    ring = shape == "ring" and parts > 2
-    return [
-        islands.Link(a, b, links)
-        for a in range(parts)
-        for b in range(a + 1, parts)
-        if shape == "mesh" or b == a + 1 or (ring and (a, b) == (0, parts - 1))
-    ]
-
-
-def cards_graph(grids, links):
-    """The cards of a 1 x n fabric mesh as a line of islands, `links` a pair: each
-    island's last cores its link cores, ceil(links / 2) a neighbour."""
-    joined = [islands.Link(i, i + 1, max(links, 1)) for i in range(len(grids) - 1)]
+def cards_graph(grids, pairs):
+    """Cards as islands joined as `pairs` (islands.links_of): each island's last cores
+    its link cores, ceil(links / 2) a neighbour."""
+    joined = islands.links_of(pairs, len(grids))
     parts, link_cores = [], []
     for island, (columns, rows) in enumerate(grids):
         cores = columns * rows
-        near = sum(island in (link.a, link.b) for link in joined)
-        taken = (links + 1) // 2 * near
+        taken = sum(
+            (link.count + 1) // 2 for link in joined if island in (link.a, link.b)
+        )
         parts.append(islands.Island(tuple(range(cores)), columns, THREADS))
         link_cores.append(tuple(range(cores - taken, cores)))
     return islands.Graph(parts, joined, link_cores=link_cores)
 
 
 def check_wired(graph, split):
-    """Refuses by name a graph the session cannot wire (Graph itself refuses more
-    than islands.ISLANDS_MAX): more than PORTS_MAX neighbours, and beyond two islands
-    more than two wires a pair (a link core a neighbour, a link a CPU)."""
-    count = len(graph.islands)
-    for island in range(count):
+    """Refuses by name a graph the session cannot wire (Graph itself refuses one not
+    connected): more than PORTS_MAX neighbours an island, more than
+    IslandSession.LINKS_MAX links a pair (a byte each in a PAGES command's word)."""
+    for island in range(len(graph.islands)):
         near = graph.neighbours(island)
         if len(near) > islands.PORTS_MAX:
             raise ValueError(
                 f"island {island}: {len(near)} neighbours, a card's ports "
                 f"{islands.PORTS_MAX}"
             )
-    wires = {link.count for link in graph.links}
-    if count > 2 and max(wires) > 2:
-        raise ValueError(
-            f"{count} islands with {max(wires)} wires a pair: beyond two islands a "
-            "link core a neighbour carries two"
-        )
+    for link in graph.links:
+        if link.count > IslandSession.LINKS_MAX:
+            raise ValueError(
+                f"islands {link.a} and {link.b}: {link.count} links, at most "
+                f"{IslandSession.LINKS_MAX} a pair (a byte each in a PAGES command)"
+            )
 
 
-def _split_graph(columns, rows, parts, links, shape="mesh"):
-    """One card of `columns` x `rows` cores as `parts` islands of whole rows, the pairs
-    of `shape` joined by `links` wires (_split_pairs); an island's link cores its last
+def link_slots(graph, island, channel_of):
+    """`island`'s links as two slots a link core (a CPU each) in link core order:
+    `channel_of(neighbour, k)` for link k toward each neighbour, KM_PAGES_NO_LINK in
+    a core's second slot when its neighbour's links are odd."""
+    none = abi.headers()["KM_PAGES_NO_LINK"]
+    slots = []
+    for there in graph.neighbours(island):
+        count = graph.between(island, there).count
+        slots += [channel_of(there, k) for k in range(count)] + [none] * (count % 2)
+    return tuple(slots)
+
+
+def _split_graph(columns, rows, parts, pairs):
+    """One card of `columns` x `rows` cores as `parts` islands of whole rows joined as
+    `pairs` (islands.links_of: a wire a pair given); an island's link cores its last
     cores (two CPUs a core, a link each, a neighbour after another), its ranks the
     cores before them."""
-    pairs = _split_pairs(parts, links, shape)
+    pairs = islands.links_of(pairs, parts)
     parts_, link_cores = [], []
     for part in range(parts):
         start, length = (

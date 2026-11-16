@@ -102,9 +102,11 @@ island, as over two cards: a page another island holds is asked for across
 (`card_dram=True` keeps one copy in the card's DRAM, every page local, for kernels that
 read a tensor by its bank address).
 
-Three or more cards in a row are a line, not a mesh, and a split card is one too with
-`km.Session(card=0, islands=n, line=True)`: only neighbouring islands are joined, so
-island 0 reaches island 2 through island 1. A link core that receives what is not for
+The islands' links are a graph given as island pairs, a pair k times k links: cards
+take the one the fabric reports (three or more cards in a row are a line), and a split
+card takes `km.Session(card=0, islands=n, graph=islands.line_pairs(n))` or any other
+connected pairs. Where only neighbouring islands are joined, island 0 reaches island 2
+through island 1. A link core that receives what is not for
 its island sends it on by its island's next link toward the target, to the island's
 link core toward it, which sends it across; no other core of the island between does
 anything. What is forwarded: a command's line and its DONE, an ask and its pages, an
@@ -342,7 +344,8 @@ The far link core needs nothing.
   flat ranks ([islands](../reference/islands.md#the-run)); an island's X280 ports
   serve its own ranks, and a thread of one island fetches and stores tensors the other
   holds.
-- **More than two cards.** The mesh opens as 1 x n; two were tried.
+- **More than two cards.** The mesh opens as 1 x n, so the fabric reports a line; two
+  were tried.
 - **A link core reset by its dispatcher.** The dispatcher resets only ranks; a link core
   that hangs is named by its dispatcher and reset by the host (`run.reset_link`), as
   [how reset works](reset.md#4-reset-a-link-core-from-the-host) says. Its lost traffic

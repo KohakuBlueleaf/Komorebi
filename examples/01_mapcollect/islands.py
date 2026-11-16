@@ -14,7 +14,7 @@ import numpy as np
 from mapcollect import rank_sums
 
 import komorebi as km
-from komorebi import formats, power
+from komorebi import formats, islands, power
 from komorebi.errors import describe_core
 
 HERE = Path(__file__).resolve().parent
@@ -39,9 +39,10 @@ def parse():
         help="split the one card of --cards into this many islands (2 to 4)",
     )
     parser.add_argument(
-        "--line",
-        action="store_true",
-        help="--islands joined in a line (neighbours only), not each to each",
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument("--nop-rounds", type=int, default=3)
     parser.add_argument("--nop-jobs", type=int, default=20000, help="per round")
@@ -144,7 +145,7 @@ def open_session(args, cards):
     """Two or more cards as islands, or one card split into `--islands` islands."""
     if args.islands:
         (card,) = cards
-        return km.Session(card=card, islands=args.islands, line=args.line, log=log)
+        return km.Session(card=card, islands=args.islands, graph=args.graph, log=log)
     # the page calls over islands take the kernels past the runtime's 69 KiB buffer
     reaches = None if args.host_reaches is None else [args.host_reaches]
     return km.Session(cards=cards, log=log, host_reaches=reaches)

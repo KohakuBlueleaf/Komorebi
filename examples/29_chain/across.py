@@ -16,7 +16,7 @@ import chain_steps as cs
 
 import komorebi as km
 from komorebi import chain as kc
-from komorebi import power
+from komorebi import islands, power
 
 WORDS = cs.WORDS
 
@@ -25,7 +25,12 @@ def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0")
     parser.add_argument("--islands", type=int, default=0, help="one card split in N")
-    parser.add_argument("--line", action="store_true", help="the split card a line")
+    parser.add_argument(
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
+    )
     parser.add_argument("--cores", type=int, default=8, help="ranks a call")
     parser.add_argument("--width", type=int, default=2, help="tiles a rank")
     parser.add_argument("--runs", type=int, default=50, help="timed runs each way")
@@ -150,9 +155,9 @@ def main():
     if len(cards) > 1 or args.islands:
         options["cards"] = cards
     if args.islands:
-        options.update(islands=args.islands, line=args.line)
+        options.update(islands=args.islands, graph=args.graph)
     generator = np.random.default_rng(args.seed)
-    result = {"cards": cards, "islands_split": args.islands, "line": args.line}
+    result = {"cards": cards, "islands_split": args.islands, "graph": args.graph}
     with km.Session(**options) as session:
         islands, edge, groups = placed(session, args.cores)
         tiles = args.cores * args.width

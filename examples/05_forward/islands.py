@@ -23,7 +23,7 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import power  # noqa: E402
+from komorebi import islands, power  # noqa: E402
 
 FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
@@ -44,7 +44,10 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line", action="store_true", help="the islands in a line (neighbours only)"
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument(
         "--links",
@@ -103,11 +106,11 @@ def message_ranks(session, counters, group):
 
 def open_session(args, cards):
     """Two cards joined by `--links` links, or one card split into `--islands`
-    islands joined by wires (`--line`: neighbours only); the session's default kernel
-    buffer."""
+    islands joined by wires (`--graph`: the pairs, else each to each); the session's
+    default kernel buffer."""
     if args.islands:
         (card,) = cards
-        return km.Session(card=card, islands=args.islands, line=args.line, log=log)
+        return km.Session(card=card, islands=args.islands, graph=args.graph, log=log)
     return km.Session(
         cards=cards,
         links=args.links,
