@@ -1,7 +1,7 @@
 // The data-movement kernel of both CPUs: each copies the blocks the pattern gives it,
 // reading them into its own half of the pair and writing them on from there.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 #include "handlers.h"
 
 void kernel_main() {

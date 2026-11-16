@@ -96,8 +96,8 @@ written for islands runs on one card unchanged.
 
 - **Kernel buffer.** On islands with links the ranks and the link cores load
   different kernels from one program: the ranks the program's kernels with the client
-  side of the page calls only (posting an ask, a put or an L1 write, a wait on its port), the link cores the runtime's link kernels (`kernels/link_reader.cpp`,
-  `link_writer.cpp`, `link_compute.cpp`, built with `KM_LINK_SERVICES`): the page
+  side of the page calls only (posting an ask, a put or an L1 write, a wait on its port), the link cores the runtime's link kernels (`kernels/link/reader.cpp`,
+  `link/writer.cpp`, `link/compute.cpp`, built with `KM_LINK_SERVICES`): the page
   CPUs' service, the lines and messages. A rank still
   serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
   holds each CPU's largest text over the two groups. A program with messages and a

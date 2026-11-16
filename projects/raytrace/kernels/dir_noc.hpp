@@ -6,7 +6,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "raytrace.h"
 
 // Starts the read of this core's entry into L1 `destination`: by bank address from the

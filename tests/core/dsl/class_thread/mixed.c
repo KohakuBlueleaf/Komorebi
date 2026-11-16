@@ -14,7 +14,7 @@ int kmx_main(int core) {
         bytes < MIXED_CHAIN_STEPS_BYTES ||
         mixed_chain_steps_write(MIXED_REGION_RECORDS) != KMX_OK ||
         mixed_chain_steps_command(
-            &chain, MIXED_REGION_RECORDS, kmx_args_get()->words[0]
+            &chain, MIXED_REGION_RECORDS, kmx_args_get()->words[0], 0u
         ) != KMX_OK ||
         kmx_submit(&chain, &handle) != KMX_OK
     ) {

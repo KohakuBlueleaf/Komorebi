@@ -81,12 +81,12 @@ def messages_units(tree):
     return [
         (
             "messages_reader",
-            kernels / "messages_reader.cpp",
+            kernels / "messages/reader.cpp",
             ["-std=c++17", "-Dkernel_main=kmsim_messages_reader_main"],
         ),
         (
             "messages_writer",
-            kernels / "messages_writer.cpp",
+            kernels / "messages/writer.cpp",
             ["-std=c++17", "-Dkernel_main=kmsim_messages_writer_main"],
         ),
         *[

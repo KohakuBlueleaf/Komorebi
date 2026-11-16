@@ -25,7 +25,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "harness.hpp"
-#include "komorebi/device/km_core.hpp"
+#include "komorebi/device/core/km_core.hpp"
 
 namespace kmsim {
 

@@ -9,7 +9,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "checks.hpp"
-#include "komorebi/device/km_core.hpp"
+#include "komorebi/device/core/km_core.hpp"
 
 namespace scen {
 

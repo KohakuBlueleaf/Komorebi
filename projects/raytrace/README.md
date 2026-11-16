@@ -130,7 +130,7 @@ python -m projects.raytrace.framegraph --cameras 2
 python -m projects.raytrace.run --scene tiny --reps 5 --json tiny.json
 python -m projects.raytrace.run --scene s10k --treelets 128 --tiles 0 300 528 1000
 python -m projects.raytrace.arith --n 4096 --scene tiny
-KMR_CARD=1 python -m pytest tests/hardware/test_raytrace_card.py
+KMR_CARD=1 python -m pytest tests/hardware/workloads/test_raytrace_card.py
 ```
 
 A tree larger than L1 runs with `--treelets KIB`: each core keeps the top of the tree,

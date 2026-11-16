@@ -137,7 +137,7 @@ A program in the **runtime's form** has a source per kernel that defines, in pla
 program:
 
 ```c++
-#include "komorebi/device/km_program.hpp"
+#include "komorebi/device/core/km_program.hpp"
 
 void km_program(km::Reader& reader, const km_command_t& command) {
     switch (km::handler(command)) {

@@ -1,8 +1,8 @@
 // The reader: loads and calls the overlay a command names, and writes its result and
 // the cycles of load() and call() to the core's line of the lines tensor.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "overlays.h"
 
 void kernel_main() {

@@ -11,7 +11,7 @@ from komorebi.program import overlay
 
 BASE = overlay.LINK_BASE
 ENTRY = Path(overlay.__file__).parent / (
-    "../../komorebi_native/include/komorebi/device/km_overlay_entry.hpp"
+    "../../komorebi_native/include/komorebi/device/overlays/km_overlay_entry.hpp"
 )
 
 

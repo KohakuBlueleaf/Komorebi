@@ -180,9 +180,9 @@ def main():
         program = km.Program(
             "forward",
             kernels={
-                "reader": RUNTIME / "messages_reader.cpp",
+                "reader": RUNTIME / "messages/reader.cpp",
                 "compute": HERE / "kernels" / "compute.cpp",
-                "writer": RUNTIME / "messages_writer.cpp",
+                "writer": RUNTIME / "messages/writer.cpp",
             },
             args=lambda core: ([], [], [address]),
             handlers={"forward": FORWARD["kHandlerForward"]},

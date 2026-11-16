@@ -26,7 +26,7 @@ event still holds, naming both handles, unless it is submitted `exclusive=True`;
 thread's submits are not checked.
 
 ```c++
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 
 constexpr km::Arrival arrival = {kCbArrive, kArrivePages};  // the program's arrival buffer
 
@@ -97,7 +97,7 @@ if (!km::reduce_result(writer, kCbOut, 1)) return false;  // then write the resu
 The combine order is fixed by rank in both forms, so a result does not depend on
 arrival order; on exact-valued inputs both forms give the same bits.
 `km::reduce_send(g, form)`, `km::reduce_wants(g, form, port)` and
-`km::reduce_slots(g, form)` give the schedule itself (`komorebi/device/km_group.hpp`,
+`km::reduce_slots(g, form)` give the schedule itself (`komorebi/device/core/km_group.hpp`,
 free of tt-metal headers). A buffer with too few slots gives up with `bad_item`. A
 class's tree over the command's group sizes its buffer for the session's islands: the
 flat tree's 7 rounds, or an island's most ranks' rounds plus a slot for each other
@@ -126,10 +126,10 @@ each switch, so they are not covered
 ## All-reduce: the sum at every rank
 
 The same reduce, and then its sum cast back to every rank of the group, in the same
-command (`komorebi/device/km_tree.hpp`):
+command (`komorebi/device/movement/km_tree.hpp`):
 
 ```cpp
-#include "komorebi/device/km_tree.hpp"
+#include "komorebi/device/movement/km_tree.hpp"
 // reader
 km::all_reduce_arrive(reader, command, arrival, group, form);
 // writer: rank 0's sum stays at the front of kCbOut (reduce_result, then pop)
@@ -193,12 +193,12 @@ launch runs.
 ## X280 ports
 
 A port between a Tensix core and the X280 core that serves it, without the dispatcher
-(`komorebi/device/km_x280.hpp`; the X280 core's side and the declaration are in
+(`komorebi/device/core/km_x280.hpp`; the X280 core's side and the declaration are in
 [X280 threads](../threads.md#x280-ports)). A message is a sequence number and three
 words, one 16-byte NoC write each way:
 
 ```c++
-#include "komorebi/device/km_x280.hpp"
+#include "komorebi/device/core/km_x280.hpp"
 
 km::X280Port port(reader);  // owned by the reader; X280Port(writer, km::kStWriter): the writer
 km::X280Msg message;

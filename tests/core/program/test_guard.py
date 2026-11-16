@@ -48,7 +48,7 @@ def test_class_key_differs_off_and_keeps_its_value_on():
 
 
 def test_the_header_default_and_its_one_switch_macro():
-    text = (CORE / "km_core.hpp").read_text()
+    text = (CORE / "core" / "km_core.hpp").read_text()
     assert "#if !defined(KM_GUARD)\n#define KM_GUARD 1\n#endif" in text
     assert "#define KM_GUARDED(...) __VA_ARGS__" in text
 

@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 
 // LOAD: a0 w_address (W in DRAM, [K, N] tiles row-major), a1 w_buffer, a3 k_tiles, a4
 // n_tiles. Every core reads all of W into that buffer and keeps it for later commands.

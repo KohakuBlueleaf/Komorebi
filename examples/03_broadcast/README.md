@@ -25,7 +25,7 @@ slot only after every receiver has marked it. A broadcast holds B blocks in flig
 
 ## How it maps onto the runtime
 
-| Step | Kernel | Call (`komorebi/device/km_broadcast.hpp`) |
+| Step | Kernel | Call (`komorebi/device/movement/km_broadcast.hpp`) |
 |---|---|---|
 | rows: the block of A goes out, the others wait | reader, NoC0 (runs +x: the sender is the row's left end) | `broadcast.reserve(block)`, DRAM reads into the slot, `broadcast.cast(block)`; `broadcast.arrive(block)`; `broadcast.finish()` |
 | columns: the block of W goes out, the others wait | writer, NoC1 (runs -y: the sender is the column's bottom end) | the same calls on the column broadcast |

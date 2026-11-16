@@ -21,9 +21,9 @@ with km.Session() as session:
     program = km.Program(
         "routed_message",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": KERNELS / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         handlers=KERNELS / "handlers.h",
     ).dynamic("route", message_bytes=64, max_live=4096, queue_messages=4096)

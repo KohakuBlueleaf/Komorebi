@@ -1,7 +1,7 @@
 // The compute kernel of two dynamic handlers: a message climbs from rank to rank,
 // adding each rank to its value, then lands on the core where its hops ran out.
 #include "api/compute/common.h"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 

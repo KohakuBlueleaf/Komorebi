@@ -333,7 +333,7 @@ ports line: each X280 core's next `kmx_port_open` returns 0, its `function` retu
 all have, `kmx_port_run` returns the event. Nothing is stored into a Tensix core after
 that; a command that times out ends the serve the same way (its event is
 `KM_EVENT_TIMEOUT`), and a stop or the deadline also ends it (`KMX_STOPPED`, `KMX_LATE`).
-On the Tensix core (`komorebi/device/km_x280.hpp`):
+On the Tensix core (`komorebi/device/core/km_x280.hpp`):
 
 ```cpp
 km::Reader reader;
