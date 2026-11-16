@@ -1211,6 +1211,13 @@ two calls, its setup and its body, each between two `tensix_sync()`: the page ho
 setup's span then a body's for each step in turn. In the decayed rows below, with
 `@km.handler(stamps="t")`, a command's page holds 2 n spans after the empty ones: the
 cost of loading `decay`'s constants and the cost of its arithmetic, row by row.
+A handler that calls steps also writes, in the page's last 9 words, each compute
+CPU's (unpack, math, pack) wall clock from the handler's start to its end, the time it
+waited for inputs (a wait for pages, a token or a block; pack's wait for math's DST)
+and the time it waited for room (a reserve; math's wait for pack to free DST); its
+spans then end 9 words earlier, and a page of fewer than 28 words is refused. What a
+CPU did not wait is its own work: on math that includes the stalls of its unit on
+unpack's sources, which no wait of its thread shows.
 
 What the tile compiler does not lower is refused, naming the handler's line, the
 function and the compiler's sentence, with "write this body inline: km.cxx(...,
@@ -1362,6 +1369,16 @@ for b in range(B):
 Refused at the line: a part not of acc's columns, a constant row past the held
 block's (a word is checked at run time), a stream whose rows' tiles the build does
 not know, and a product inside a stream loop.
+
+A cast whose rectangle may be shorter than its slot (a side `r:min(r + m, e)`) leaves
+the slot's tail holding an earlier block. A window into such a part whose end the
+build does not know, here or in a field's product by the block's rows, is checked at
+run time against the rectangle, and a window past it gives up. It is not checked
+where the sums started from a row of a field (`s = start(self.mask[i], self.s[r])`),
+whose -inf columns make the tail's scores vanish, nor in a product whose left field
+was written from such sums. So a row of X can take W^T's blocks three columns at a
+time with the last step part empty: the mask row for that step holds -inf past the
+block's columns, and P is zero there.
 
 ### Sums started from a field
 
