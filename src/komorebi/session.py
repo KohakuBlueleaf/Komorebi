@@ -30,6 +30,7 @@ from komorebi import (
     added_program,
     chain,
     dram,
+    extents,
     formats,
     insn_check,
     island_session,
@@ -813,6 +814,8 @@ class Session:
         self.grid_timeout = grid_timeout
         self.kernel_bytes = kernel_bytes  # None: the runtime's, then the kernels'
         self._kept = kernel_buffer.Kept()  # the tensors made before the first load
+        self._dram = extents.Registry()  # its DRAM tensors: KM_GUARD's page bounds
+        self.page_bounds = extents.MOST  # the most a load's list holds (0: none)
         self.slow_code = slow_code  # slots may end above L1_FAST_CODE
         self._worker_l1 = worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
@@ -1006,6 +1009,7 @@ class Session:
         else:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
         self._kept.keep(tensor, data=(data, transposed_tiles))  # after: not the raw
+        self._dram.add(tensor)
         tensor.loaded = self._run_loaded
         return tensor
 
@@ -1016,6 +1020,7 @@ class Session:
             self._module, self.device, shape, dtype, layout, shard_grid, address
         )
         self._kept.keep(tensor, address)
+        self._dram.add(tensor)
         self._note_page(tensor)
         tensor.loaded = self._run_loaded
         return tensor
@@ -1073,7 +1078,20 @@ class Session:
             rows.append(
                 ("direct messages (tables, slots)", messages.direct_bytes(cores))
             )
+        bounds = self.page_bounds_list(placed.programs if placed else [program])
+        if bounds is not None:
+            rows.append(("page bounds list", bounds[0].nbytes))
         return rows + list(self.l1_held()) + self.l1_taken()
+
+    def page_bounds_list(self, programs):
+        """KM_GUARD's list of this session's DRAM tensors for a load of `programs`
+        (komorebi.extents.listed); None: none (every program unguarded, or the load's
+        tensor table bounds them, or page_bounds 0)."""
+        if not self.page_bounds or not any(getattr(p, "guard", True) for p in programs):
+            return None
+        if any(name.startswith("session: tensor table") for name, _ in self.l1_held()):
+            return None
+        return extents.listed(self._dram.live(), self.page_bounds)
 
     def _hand_nocs(self, program):
         """A program written as a class whose rectangle needs the grid's NoCs gets
@@ -2652,13 +2670,14 @@ class _Backend:
             "given_up": int(read["given_up"]),
         }
 
-    def _control_blocks(self, cores, grid, port_lines=None, area_bytes=0):
+    def _control_blocks(self, cores, grid, port_lines=None, area_bytes=0, bounds=None):
         """Zeroed control blocks, one shard per core, padded so that the block can
         start on a 64-byte line: the same L1 address on every core. `port_lines`: the
         KM_X280_TO line of each served core, written once the address is known.
         `area_bytes`: the overlay area after each block (written by load_overlays)."""
         abi_headers = abi.headers()
         words = (abi_headers["KM_CONTROL_BYTES"] + area_bytes + CONTROL_ALIGN) // 4
+        words += 0 if bounds is None else bounds[0].size
         self.control = _words(self.session, np.zeros((cores, words)), grid)
         base = self.control.address
         self.control_addr = (base + CONTROL_ALIGN - 1) // CONTROL_ALIGN * CONTROL_ALIGN
@@ -2666,6 +2685,7 @@ class _Backend:
         check_bases({"control block": self.control_addr})
         self.control_rows = np.zeros((cores, words), dtype=np.uint32)
         self._island_rows(cores, grid[0])
+        self._page_bounds_rows(bounds, area_bytes)
         if port_lines is not None:
             rows = self.control_rows
             to_offset = (
@@ -2677,6 +2697,26 @@ class _Backend:
                 rows[core, to_offset + abi_headers["KM_X280_TO_BOX"]] = box
             self.control.write(rows)
         return self.control_addr
+
+    def _page_bounds_rows(self, bounds, area_bytes):
+        """KM_GUARD's list after the control block and overlay area, its address in
+        the island area's table word (km_extent.hpp); its tensors kept alive by the run
+        (an address freed and made again would not be the listed tensor)."""
+        self.bounds_tensors = []
+        if bounds is None or self.session.tensor_table:
+            return
+        words, self.bounds_tensors, left = bounds
+        abi_headers = abi.headers()
+        offset = (abi_headers["KM_CONTROL_BYTES"] + area_bytes) // 4
+        rows = self.control_rows
+        rows[
+            :, self.control_offset + offset : self.control_offset + offset + words.size
+        ] = words
+        table = abi_headers["KM_CONTROL_ISLANDS"] + abi_headers["KM_ISLAND_TENSORS"]
+        rows[:, self.control_offset + table // 4] = self.control_addr + 4 * offset
+        said = extents.unchecked_says(left, self.session.page_bounds)
+        if said:
+            self.session.log(said)
 
     def _island_rows(self, cores, columns):
         """Every core's island area in control_rows: island i of the load's graph,
@@ -2815,7 +2855,8 @@ class _Backend:
         self.slots_most = slots_most(program, placed)
         # the service overlay's too, and the records of slots past 4
         self.area_bytes = overlay.area_bytes(self.slots_most)
-        control = self._control_blocks(cores, grid, port_lines, self.area_bytes)
+        bounds = self.session.page_bounds_list(placed.programs if placed else [program])
+        control = self._control_blocks(cores, grid, port_lines, self.area_bytes, bounds)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
         cores_tensor = _words(self.session, table)
@@ -3103,6 +3144,7 @@ class _Backend:
         trace, all read back) given back, so a later load of the session has them."""
         self.io = [tensor for tensor in self.io if tensor.in_dram]
         self.control = self.trace_tensor = None
+        self.bounds_tensors = []
 
     def _held_bytes(self):
         """The bytes of _held_rows."""

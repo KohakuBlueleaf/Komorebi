@@ -76,14 +76,20 @@ def replay(tokens, hops, pattern, ranks, cores):
     return visits, records
 
 
-def load(session, direct, args):
-    """The ring loaded with `direct` declared: (run, results tensor, record room)."""
+def load(session, direct, body_bytes, args):
+    """The ring loaded with `direct` declared and bodies of `body_bytes` (0: none):
+    (run, results tensor, record room)."""
     grid = session.grid
     cores = grid[0] * grid[1]
     room = max(args.tokens * (cores - 2), 1)
     words = RING["kResRecords"] + RING["kRecordWords"] * room
     results = session.tensor(
         np.zeros((cores, words), np.uint32), "uint32", shard_grid=grid
+    )
+    seed = session.tensor(  # a token's first body
+        np.zeros((cores, max(body_bytes, 64) // 4), np.uint32),
+        "uint32",
+        shard_grid=grid,
     )
     program = km.Program(
         "direct_ring",
@@ -92,9 +98,16 @@ def load(session, direct, args):
             "compute": HERE / "kernels" / "compute.cpp",
             "writer": RUNTIME / "messages_writer.cpp",
         },
-        args=lambda core: ([], [], [results.address]),
+        args=lambda core: ([], [], [results.address, seed.address]),
         handlers={"ring": RING["kHandlerRing"]},
-    ).dynamic("ring", max_live=1024, queue_messages=1024, counters=2, direct=direct)
+    ).dynamic(
+        "ring",
+        max_live=1024,
+        queue_messages=1024,
+        counters=2,
+        direct=direct,
+        body_bytes=body_bytes,
+    )
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     return run, results, room
 
@@ -134,6 +147,16 @@ def one_run(run, results, room, case, args, replays):
         "run": bool((group[:, RING["kResRun"]] == sequence).all()),
         "visits": bool((group[:, RING["kResVisits"]] == visits).all()),
         "records": seen_records == records,
+        "bodies": not any(  # every body's checksum where it ended
+            rows[core, at + 3]
+            for core in range(count)
+            for at in range(
+                RING["kResRecords"],
+                RING["kResRecords"]
+                + RING["kRecordWords"] * int(rows[core, RING["kResConsumed"]]),
+                RING["kRecordWords"],
+            )
+        ),
         "hops": mode == "kModeQueue" or went + busy == hops_total,
     }
     microseconds = event.microseconds if event else None
@@ -161,6 +184,10 @@ def main():
     parser.add_argument("--wait", type=float, default=1.0)
     parser.add_argument("--json", default=None)
     parser.add_argument("--cores", type=int, default=120, help="the card's grid")
+    parser.add_argument("--body", type=int, default=2048, help="the body case's bytes")
+    parser.add_argument(
+        "--cases", nargs="+", default=["small", "ring", "pairs", "body"]
+    )
     args = parser.parse_args()
     report = {"load_before": Path("/proc/loadavg").read_text().split()[:3], "runs": []}
     cores, small = args.cores, 4  # first: four ranks of a group of six cores
@@ -171,31 +198,34 @@ def main():
         "ring": replay(args.tokens, args.hops, RING["kPatternRing"], ranks, cores),
         "pairs": replay(args.tokens, args.hops, RING["kPatternPairs"], ranks, cores),
     }
+    replays["body"] = replays["ring"]
     log("replayed")
     with km.Session(log=log) as session:
         log("device open")
         if session.grid[0] * session.grid[1] != cores:
             raise SystemExit(f"the grid has {session.grid}, not {cores} cores")
         loads = [
-            (pairs_of(RING["kPatternRing"], small), [("small", 6, small, 1, 10)]),
-            ((1,), [("ring", cores, ranks, args.tokens, args.hops)]),
+            (pairs_of(RING["kPatternRing"], small), 0, ("small", 6, small, 1, 10)),
+            ((1,), 0, ("ring", cores, ranks, args.tokens, args.hops)),
             (
                 pairs_of(RING["kPatternPairs"], ranks),
-                [("pairs", cores, ranks, args.tokens, args.hops)],
+                0,
+                ("pairs", cores, ranks, args.tokens, args.hops),
             ),
+            ((1,), args.body, ("body", cores, ranks, args.tokens, args.hops)),
         ]
-        for direct, cases in loads:
-            for name, count, case_ranks, tokens, hops in cases:
-                pattern = "kPatternPairs" if name == "pairs" else "kPatternRing"
-                for mode in ("kModeDirect", "kModeQueue"):  # a load a run: read stopped
-                    log(f"loading: {len(direct)} direct declarations")
-                    run, results, room = load(session, direct, args)
-                    case = (name, count, case_ranks, tokens, hops, mode, pattern)
-                    entry = one_run(run, results, room, case, args, replays)
-                    entry["mode"] = mode
-                    report["runs"].append(entry)
-                    if not entry["ok"]:
-                        break
+        loads = [one for one in loads if one[2][0] in args.cases]
+        for direct, body_bytes, (name, count, case_ranks, tokens, hops) in loads:
+            pattern = "kPatternPairs" if name == "pairs" else "kPatternRing"
+            for mode in ("kModeDirect", "kModeQueue"):  # a load a run: read stopped
+                log(f"loading: {len(direct)} direct declarations, body {body_bytes} B")
+                run, results, room = load(session, direct, body_bytes, args)
+                case = (name, count, case_ranks, tokens, hops, mode, pattern)
+                entry = one_run(run, results, room, case, args, replays)
+                entry["mode"] = mode
+                report["runs"].append(entry)
+                if not entry["ok"]:
+                    break
     report["load_after"] = Path("/proc/loadavg").read_text().split()[:3]
     report["ok"] = all(entry["ok"] for entry in report["runs"]) and len(
         report["runs"]

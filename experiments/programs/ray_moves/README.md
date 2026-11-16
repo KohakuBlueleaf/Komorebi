@@ -223,10 +223,13 @@ Blackhole card, AICLK 1350 MHz before and after every run (one sample 1343), hos
 | zero-copy | 4096 | 64 | 2048 | 6.53 | 26.7 | 5 / 114 |
 | bodies | 64 + 2048 | 32 | 2048 | 30.31 | 62.1 | 13 / 2091 |
 | bodies | 64 + 4096 | 64 | 2048 | 29.35 | 120.2 | 26 / 2205 |
+| bodies, overlapped writer | 64 + 2048 | 32 | 2048 | 34.63 | 70.9 | not read |
+| bodies, overlapped writer | 64 + 4096 | 64 | 2048 | 33.75 | 138.2 | not read |
 
 The bodies rows: card 1, 2026-11-16, AICLK 1350 MHz before and after every run, host
 load 4.4 to 4.1, best of 3 pairs (the pairs within 0.2 %); the check column is the
-cycles of the end check over all visits.
+cycles of the end check over all visits. The overlapped-writer rows: the same command
+after the writer's two-stage flush (below), card 1, one run each size, exact.
 
 - One message per ray: Sponza's bounce moves 16.9 million rays, 347 ms at 64 bytes,
   more than today's whole bounce trace; 117 ms at 256 bytes if every message carries 4
@@ -247,6 +250,9 @@ cycles of the end check over all visits.
   position, written the body and the line and committed (about 2,100 cycles a visit);
   the busiest core's 16,010 visits at that cost are the run. Zero-copy's own bound was
   its reader's checksum of every page as it landed, which the bodies runs leave out.
+- The writer's two-stage flush commits the last bin while the next bin's reservation
+  travels, and a forward of a body that arrived no longer waits for its bin (the packet's
+  `done` does): 34.6 and 33.8 M a second, 14 to 15 % more.
 
 After `transport.py destinations PATHS_JSON` (a part A report of one scene with its
 per-core lists) regenerates `kernels/destinations.h`, run the repository's C++

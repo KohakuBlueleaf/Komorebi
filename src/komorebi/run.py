@@ -14,7 +14,7 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi, added, added_program, overlay
+from komorebi import abi, added, added_program, overlay, page_bounds
 from komorebi import chain as chain_module
 from komorebi import state as device_state
 from komorebi import tensor as tensor_module
@@ -141,6 +141,7 @@ class Run:
         island_span=None,
     ):
         self.h = abi_headers or abi.headers()
+        self._page_bounds = page_bounds.Checked()  # a class's ranges, at submit
         self.backend = backend
         self.port = backend.port
         self.port.batch = batch
@@ -354,7 +355,7 @@ class Run:
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         started = time.perf_counter()
-        program_field, method = 0, None
+        program_field, method, given = 0, None, args
         if isinstance(handler, HandlerMethod | ClassHandler):
             handler = self._built_for(handler, args)
             method = handler if isinstance(handler, HandlerMethod) else handler.method
@@ -381,6 +382,9 @@ class Run:
             if method is not None:
                 self._check_rectangle(method, program_field, group)
                 self._check_reduce_groups(method, program_field, group)
+                self._page_bounds.check(
+                    method, given, args, group, self.programs[program_field]
+                )
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(word) <= M32 for word in args):

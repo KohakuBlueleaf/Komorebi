@@ -591,7 +591,7 @@ def island_of(placement, page, island=0):
 # The tensor table at word KM_ISLAND_TENSORS of a core's island area (km_abi.h mirrors):
 # a reference word below TENSORS_MAX is its entry's index, any other a bank address.
 TENSORS_MAX = 32
-TENSOR_HEADER = struct.Struct("<4I")  # aligned page bytes, steps, pages a step, copy
+TENSOR_HEADER = struct.Struct("<4I")  # page bytes, steps, inner, copy | pages << 2
 TENSOR_PART = struct.Struct("<4I")  # part's bank address, first step, steps, bytes
 TENSOR_BANK = 2  # header word 3 of a range of one DRAM bank (km::BankRange)
 DRAM_BANKS = 8  # an interleaved part's pages over its island's banks
@@ -606,7 +606,10 @@ def tensor_entry(placement, aligned_page_bytes, addresses):
     """A tensor's entry: its header, then each island's part (its bank address in
     `addresses`, 0 where the island holds none; its bytes in each bank)."""
     head = TENSOR_HEADER.pack(
-        aligned_page_bytes, placement.steps, placement.inner, int(placement.copy)
+        aligned_page_bytes,
+        placement.steps,
+        placement.inner,
+        int(placement.copy) | placement.pages << 2,  # its pages: KM_GUARD's bound
     )
     return head + b"".join(
         TENSOR_PART.pack(

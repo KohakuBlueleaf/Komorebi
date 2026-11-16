@@ -658,7 +658,8 @@ KM_STATIC_ASSERT(
  * its first's (asks posted, credit, landed, state, lines) */
 #define KM_RELAY_SECOND (KM_RELAY_INBOX + 64u + KM_RELAY_MAX)
 #define KM_RELAY_BYTES (KM_RELAY_SECOND + 128u)
-/* then a word (byte offset): the tensor table's L1 address on this island (0: none) */
+/* then a word (byte offset): the tensor table's L1 address on this island (0: none);
+ * a build without one (KM_TENSOR_TABLE): the session's extent list (km_extent.hpp) */
 #define KM_ISLAND_TENSORS ((KM_ISLAND_RELAY_TILE + 1u) * 4u)
 /* then a word (byte offset): the forward area's L1 address on this island (0: none) */
 #define KM_ISLAND_FORWARD (KM_ISLAND_TENSORS + 4u)
@@ -710,7 +711,8 @@ KM_STATIC_ASSERT(
 #ifndef KM_TENSORS_MAX
 #define KM_TENSORS_MAX 32u
 #endif
-/* an entry: {aligned page bytes, steps of the split dimension, pages a step, copy} */
+/* an entry: {aligned page bytes, steps of the split dimension, pages a step, copy |
+ * its pages << 2 (km_extent.hpp's bound)} */
 #define KM_TENSOR_HEADER_BYTES 16u
 /* then each island's part: {its bank address, first step, steps, 0} */
 #define KM_TENSOR_PART_BYTES 16u
