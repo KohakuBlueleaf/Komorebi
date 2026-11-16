@@ -87,6 +87,25 @@ class Split(km.Program):
             results.push(apply(xt, wt, self.s))
 
 
+@km.tile_function
+def square_sums(row):
+    return km.reduce_sum(row * row, exact=True).col()
+
+
+class SplitNorm(km.Program):
+    part: km.L1[km.fp32, 1, 32, 32]
+
+    @km.handler
+    def norm(self, x: km.Tensor, w: km.Tensor, out: km.Tensor):
+        for row in km.Stream(x.pages(0, 64), block=8, row=64):
+            self.part.write(square_sums(row))
+        results = km.Stream(out.pages(0, 4), write=True, block=2)
+        for xt, wt in zip(
+            km.Stream(x.pages(0, 4), block=2), km.Stream(w.pages(0, 4), block=2)
+        ):
+            results.push(apply(xt, wt, self.part))
+
+
 def built(cls):
     tensors = {n: Tensor(Pages(4096), (64, 32 * W), "float32", "tile") for n in "xo"}
     tensors["out"] = tensors.pop("o")
@@ -98,6 +117,11 @@ def built(cls):
         tensors = {n: Tensor(Pages(4096), (32, 128), "float32", "tile") for n in "xw"}
         tensors["s"] = Tensor(Pages(4096), (32, 32), "float32", "tile")
         tensors["out"] = Tensor(Pages(4096), (32, 128), "float32", "tile")
+    if cls is SplitNorm:
+        tensors = {
+            n: Tensor(Pages(2048), (32, 2048), "bfloat16", "tile")
+            for n in ("x", "w", "out")
+        }
     if cls is Plain:
         tensors = {n: tensors[n] for n in ("x", "out")}
     return compile_class(cls, {}, tensors)
@@ -124,9 +148,17 @@ def test_what_the_passes_do_not_take_is_refused():
         built(Plain)
     with pytest.raises(Refused, match="its rows a constant count"):
         built(Counted)
-    with pytest.raises(Refused, match=r"self.weight \(bfloat16\) is a wide row's"):
-        built(Halves)
     assert known_count("(2 * 32)") == 64 and known_count("rows * 32") is None
+
+
+def test_a_bf16_field_is_unpacked_in_its_own_setup():
+    case = compute_source(built(Halves))
+    case = case[case.index("case kHandlerRows") :]
+    own = "KM_UNPACK_FORMAT_A(kFieldWeight);\ncopy_init(kFieldWeight);\ncopy_tile("
+    assert own in "\n".join(line.strip() for line in case.splitlines())
+    assert "copy_init(kChunkRowsLayer);\ncopy_tile(kFieldBias" in "\n".join(
+        line.strip() for line in case.splitlines()
+    )
 
 
 def test_a_field_by_col_is_broadcast_and_a_stream_row_reads_its_half():
@@ -134,3 +166,13 @@ def test_a_field_by_col_is_broadcast_and_a_stream_row_reads_its_half():
     case = case[case.index("case kHandlerApply") :]
     assert "unary_bcast<BroadcastType::COL>(kFieldS, 0, " in case
     assert "unary_bcast<BroadcastType::ROW>(km_half1, " in case
+
+
+def test_a_row_s_per_row_value_goes_to_a_field_read_by_col():
+    case = compute_source(built(SplitNorm))
+    case = case[case.index("case kHandlerNorm") :]
+    assert "km_block0 < km_blocks0;" in case  # one pass: no write pass
+    assert "MATH((km_tile::square_sums_value(0)));" in case
+    assert "pack_tile(0, kFieldPart);" in case
+    assert "unary_bcast<BroadcastType::COL>(kFieldPart, 0, " in case
+    assert case.count("cb_pop_front(kFieldPart, kFieldPartPages);") == 2  # write, end

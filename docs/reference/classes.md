@@ -1239,7 +1239,8 @@ sums, then once more for the writes (the read stream's repeat). A sum pass holds
 for the row across its blocks and packs the per-row values' and the sums' tiles to a
 page pair of the row's (`kChunkRows<F>`, a pair a row), unpacked again at the next
 pass; the last pass writes each block. A row that fits its block takes the chunk form
-above unchanged. A field of a wide row is float32 (refused otherwise, by name). From
+above unchanged. A field of a wide row may be bf16 (half the L1): its tile is unpacked
+in its own setup, then the values' page's again. From
 [tile long](../../experiments/language/tile_long/tile_long.py), rows of 4,096 values in
 blocks of 8 tiles (L1: 933,888 B, the two fields 524,288 B of it):
 
@@ -1258,6 +1259,16 @@ class Long4096(km.Program):
 ```
 
 A load whose buffers do not fit names its four largest with their bytes.
+
+A row function whose result is a per-row value alone (`return
+km.reduce_sum(row * row, exact=True).col()`) may write it to a 1-tile float32 field of
+compute's own, `self.part.write(square_sums(row))`: its sum passes run over the row,
+then its part `value` puts each row's value in every column of one tile, packed into
+the field (no write pass). A later loop of the handler reads the field by `.col()`; the
+next write frees it. The decode's norm of one row over 16 cores, each core reading the
+whole row for its sums and writing its own 4 tiles
+([tile split](../../experiments/language/tile_split/README.md): 15.7 to 16.6 us a
+command on bf16 tiles). A function whose result reads the row is refused there.
 
 In a call on a stream's tiles, a field may be read by `.col()` alone: its column 0,
 each row's value, is unpacked to every column (`unary_bcast<BroadcastType::COL>`) and
