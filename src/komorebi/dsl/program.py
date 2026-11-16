@@ -184,6 +184,7 @@ def make(
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
+    self.rect_lines = compiled.rect_lines
     self.reduce_groups = compiled.reduce_groups
     self.port_handlers = set(compiled.port_handlers)
     if compiled.rectangle:
@@ -1383,6 +1384,8 @@ def header(compiled):
     ]
     if "port" in compiled.includes:
         lines.append('#include "komorebi/device/km_port.hpp"')
+    if "tree" in compiled.includes:
+        lines.append('#include "komorebi/device/km_tree.hpp"')
     if "broadcast" in compiled.includes:
         lines.append('#include "komorebi/device/km_broadcast.hpp"')
     lines.append("")
@@ -1610,6 +1613,8 @@ def movement_includes(compiled):
     ]
     if "port" in compiled.includes:
         lines.append('#include "komorebi/device/km_port.hpp"')
+    if "tree" in compiled.includes:
+        lines.append('#include "komorebi/device/km_tree.hpp"')
     if compiled.includes & {"broadcast", "ask"}:
         lines.append('#include "komorebi/device/km_ask.hpp"')
     if "broadcast" in compiled.includes:
@@ -1808,6 +1813,7 @@ COMPUTE_INCLUDES = [
     ("komorebi/device/km_broadcast.hpp", "broadcast"),
     ("komorebi/device/km_movement.hpp", None),
     ("komorebi/device/km_port.hpp", "port"),
+    ("komorebi/device/km_tree.hpp", "tree"),
     ("komorebi/device/km_worker.hpp", None),
 ]
 

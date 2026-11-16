@@ -577,6 +577,8 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B; in a range loop a reduce a turn, a sender waiting from turn 2 for its receiver's credit ([ports](ports.md#reduce)) | `km::reduce`, the arrivals added in rank order |
 | `whole = km.reduce(acc, form="tree", group=S)`, `acc` n tiles | the same in `km::digit_group(command, me, 1, S)`: S consecutive ranks a group, n tiles a slot | each of the n tiles added through DST tile n (n + 1 tiles of DST) |
 | `whole = km.reduce(self.part, form="tree", group=S)`, `self.part` a float32 field of sums | `km::reduce_arrive` on mover A into slots of the field's tiles; `km::reduce_emit` of the field's pages on mover B (a sender) | each arrival copied into DST and packed onto the field with the packer's L1 accumulation; the field handed on (Products) |
+| `whole = km.all_reduce(total, form=form)` | `km::all_reduce_arrive` on mover A, `km::all_reduce_emit` on mover B: rank 0 casts the sum into every other rank's slot 0 ([ports](ports.md#all-reduce-the-sum-at-every-rank)) | as `km.reduce`'s, then `km::all_reduce_take`: a rank but 0 packs the sum cast to it; `whole` is every rank's, written without the leader's if |
+| `km.all_reduce(self.part)`, `self.part` a float32 field compute wrote | the same, of an out buffer of the field's tiles | the field into DST, the arrivals added, the sum packed for mover B and (rank 0) into the field; every other rank packs the sum cast to it into the field, which a later loop's tile function takes |
 | `km.reduce(self.state, form="tree", group=S, combine=MERGE)`, `self.state` an own float32 field written in place | the same, of the state's pages | the MERGE body on each arrival, which writes the state in place; a sender's state pushed for mover B; the root's stays in place (A state merged, not added) |
 | `t.tiles[r0:r1, c0:c1]`, where a page range is taken | the first page `r0 x T + c0` (T the tensor's tile columns); one row, or all T columns, is a page range; more rows a `km::Walk` of whole rows, `T` apart; r and c any ints of the handler (words at run time) | |
 | `t.tiles[r0:r1:s, c0:c1]` | its rows s rows of t apart, `(r1 - r0 + s - 1) / s` of them: a `km::Walk` of whole rows `s x T` apart (s an int or a word) | |
@@ -2336,7 +2338,13 @@ kernels, so the C and the class cannot drift apart. It holds:
   bank address and bank, a region parameter's two words;
 - a function for each built handler that fills its whole command (`kmx_command`, the
   flags, the group, each word) from typed arguments: the make's tensors and the
-  thread's regions come from the load, so they are not arguments.
+  thread's regions come from the load, so they are not arguments;
+- for a handler with tensor parameters, `<function>_with(...)`: the same arguments,
+  then each tensor parameter's load-word place (`<NAME>_WORD_<TENSOR>`, of the make's
+  tensors or of `thread_tensors=`, which join the load's words), and its pages words
+  from that tensor. It returns `KMX_BAD` when the named tensor is of another kind than
+  the make's (page bytes, format, layout or place: the kernels were built for the
+  make's), else `KMX_OK`.
 
 The class states its thread in its body: its regions with `km.region(bytes)` (an int
 or of the class's constants; ids in body order), and its C with

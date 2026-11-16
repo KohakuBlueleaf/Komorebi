@@ -58,6 +58,8 @@ the call to its return:
 | 0 and 1 | float32 | 2 | 134.6 µs | 134.5 µs | 400.1 µs | exact |
 | 0 and 1 | bfloat16 | 256 (512 KiB) | | | 548.7 µs | exact |
 | 0 split in 3 (`--islands 3`) | float32 | 256 | 978.2 µs | 978.6 µs | 1339.7 µs | exact |
+| 0 and 1, over the trees (2026-11-16) | float32 | 256 | 180.0 µs | 180.5 µs | 481.0 / 470.8 µs | exact |
+| 0 split in 3, over the trees (2026-11-16) | float32 | 256 | 959.4 µs | 960.9 µs | 1386.7 / 1371.3 µs | exact |
 | 0 (one island) | float32 | 256 | 2.2 µs | no command | 3.7 µs | exact |
 
 The bfloat16 row is from a run before the card's time was recorded. On one island the

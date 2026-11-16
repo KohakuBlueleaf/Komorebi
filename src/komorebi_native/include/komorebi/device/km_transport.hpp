@@ -191,6 +191,8 @@ namespace km {
         uint32_t route;    // 1 + the island the packets sent now go to; 0: across
         uint32_t field;    // the KM_CROSS_* field they count in on each link
         uint32_t turning;  // a turn runs: its waits do not turn again
+        uint32_t cpu;      // its CPU among those that send on (KM_FORWARD_CPUS)
+        uint32_t turns;    // 1: this CPU takes the rooms' packets on (link 0's)
     };
 
     inline ForwardHeld forward_held;
@@ -486,6 +488,12 @@ namespace km {
         return 1 + (writer < owner ? writer : writer - 1);
     }
 
+    // The room of writer core `part` (0: the far one), its CPU `cpu`, at hop level
+    // `level`: its slots, landed and taken counts, and the writer's sent and credit.
+    constexpr uint32_t forward_room(uint32_t part, uint32_t cpu, uint32_t level) {
+        return (part * KM_FORWARD_CPUS + cpu) * KM_FORWARD_LEVELS + level;
+    }
+
     // The NoC address of `address` on core `core` of this card.
     inline uint64_t forward_core(uint32_t core, uint32_t address) {
         const uint32_t xy = (
@@ -584,18 +592,30 @@ namespace km {
             count();
             return kForwardSent;
         }
-        const uint32_t d = j == k ? 0 : forward_part(k, j);  // its destination
+        // the room by hop level: across, the links it will have crossed less one; to
+        // a sibling, those it crossed less one (a level only grows along a path)
+        const uint32_t crossed = words[3] + (j == k ? 1 : 0);
+        const uint32_t level = crossed > 0 ? crossed - 1 : 0;
+        if (level >= KM_FORWARD_LEVELS) {
+            return kForwardBad;
+        }
+        const uint32_t d = (
+            forward_room(j == k ? 0 : forward_part(k, j), held.cpu, level)
+        );
         volatile tt_l1_ptr uint32_t* state = forward_state();
-        const uint32_t sent = state[KM_FORWARD_PARTS + d];
+        const uint32_t sent = state[KM_FORWARD_ROOMS + d];
         if (sent - l1(held.area + KM_FORWARD_CREDIT + 16 * d)[0] >= KM_FORWARD_SLOTS) {
             return kForwardWait;
         }
-        const uint32_t part = j == k ? 0 : forward_part(j, k);  // its part there
+        const uint32_t room = (
+            forward_room(j == k ? 0 : forward_part(j, k), held.cpu, level)
+        );
         const uint32_t at = (
             held.area + KM_FORWARD_SLOT +
-            (part * KM_FORWARD_SLOTS + sent % KM_FORWARD_SLOTS) * KM_FORWARD_SLOT_BYTES
+            (room * KM_FORWARD_SLOTS + sent % KM_FORWARD_SLOTS) * KM_FORWARD_SLOT_BYTES
         );
-        const uint32_t landed = held.area + KM_FORWARD_LANDED + 16 * part;
+        const uint32_t landed = held.area + KM_FORWARD_LANDED + 16 * room;
+        words[3] = crossed;
         bool ok = false;
         if (j != k) {  // the island's link core toward it, over this card's NoC
             const uint32_t core = view.base() + view.ranks() + j;
@@ -613,16 +633,20 @@ namespace km {
                 });
             }
         } else if (payload == head + 128) {  // across, whole: one counted write
-            const LinkHeaderAt made = link_header(held.area + KM_FORWARD_HEADERS, 1);
+            const LinkHeaderAt made = (
+                link_header(held.area + KM_FORWARD_HEADERS + 128 * held.cpu, 1)
+            );
             link_counted_write(
                 made, forward_far(at), forward_far(landed), 1, 128 + bytes
             );
             ok = forward_across(made, head, 128 + bytes);
         } else {  // across, the head then the payload counted
-            LinkHeaderAt made = link_header(held.area + KM_FORWARD_HEADERS, 1);
+            LinkHeaderAt made = (
+                link_header(held.area + KM_FORWARD_HEADERS + 128 * held.cpu, 1)
+            );
             link_write(made, forward_far(at), 128);
             ok = forward_across(made, head, 128);
-            made = link_header(held.area + KM_FORWARD_HEADERS, 1);
+            made = link_header(held.area + KM_FORWARD_HEADERS + 128 * held.cpu, 1);
             if (bytes != 0) {
                 link_counted_write(
                     made, forward_far(at + 128), forward_far(landed), 1, bytes
@@ -635,25 +659,34 @@ namespace km {
         if (!ok) {
             return kForwardBad;
         }
-        state[KM_FORWARD_PARTS + d] = sent + 1;
+        state[KM_FORWARD_ROOMS + d] = sent + 1;
         if (j == k) {
             count();
         }
         return kForwardSent;
     }
 
-    // Part `part`'s count taken, back to its writer: the far link core across (its
-    // destination 0), or the island's link core that writes it.
+    // Room `room`'s count taken, back to its writer: the far link core across (its
+    // destination 0), or the island's link core that writes it; its CPU and level.
     template <int = 0>
     __attribute__((noinline)) void forward_credit(
-        const Islands& view, uint32_t part, uint32_t taken
+        const Islands& view, uint32_t room, uint32_t taken
     ) {
         ForwardHeld& held = forward_held;
+        const uint32_t part = room / (KM_FORWARD_CPUS * KM_FORWARD_LEVELS);
+        const uint32_t cpu = room / KM_FORWARD_LEVELS % KM_FORWARD_CPUS;
+        const uint32_t level = room % KM_FORWARD_LEVELS;
         if (part == 0) {
             const LinkHeaderAt made = (
-                link_header(held.area + KM_FORWARD_HEADERS + 64, 1)
+                link_header(held.area + KM_FORWARD_HEADERS + 128 * held.cpu + 64, 1)
             );
-            link_inline(made, forward_far(held.area + KM_FORWARD_CREDIT), taken);
+            link_inline(
+                made,
+                forward_far(
+                    held.area + KM_FORWARD_CREDIT + 16 * forward_room(0, cpu, level)
+                ),
+                taken
+            );
             forward_across(made, 0, 0);
             return;
         }
@@ -662,7 +695,8 @@ namespace km {
         noc_inline_dw_write(
             forward_core(
                 view.base() + view.ranks() + writer,
-                held.area + KM_FORWARD_CREDIT + 16 * forward_part(writer, k)
+                held.area + KM_FORWARD_CREDIT +
+                    16 * forward_room(forward_part(writer, k), cpu, level)
             ),
             taken
         );
@@ -676,7 +710,7 @@ namespace km {
     template <int = 0>
     __attribute__((noinline)) void forward_turn() {
         ForwardHeld& held = forward_held;
-        if (held.area == 0 || held.turning != 0) {
+        if (held.area == 0 || held.turning != 0 || held.turns == 0) {
             return;
         }
         held.turning = 1;
@@ -684,15 +718,15 @@ namespace km {
         held.route = 0;
         const Islands view(island_area());
         volatile tt_l1_ptr uint32_t* state = forward_state();
-        for (uint32_t part = 0; part < KM_FORWARD_PARTS; part++) {
+        for (uint32_t room = 0; room < KM_FORWARD_ROOMS; room++) {
             invalidate_l1_cache();
-            const uint32_t taken = state[part];
-            if (l1(held.area + KM_FORWARD_LANDED + 16 * part)[0] == taken) {
+            const uint32_t taken = state[room];
+            if (l1(held.area + KM_FORWARD_LANDED + 16 * room)[0] == taken) {
                 continue;
             }
             const uint32_t slot = (
                 held.area + KM_FORWARD_SLOT +
-                (part * KM_FORWARD_SLOTS + taken % KM_FORWARD_SLOTS) *
+                (room * KM_FORWARD_SLOTS + taken % KM_FORWARD_SLOTS) *
                     KM_FORWARD_SLOT_BYTES
             );
             const uint32_t done = forward_on(view, slot, slot + 128, true);
@@ -702,8 +736,8 @@ namespace km {
             if (done == kForwardBad) {
                 state[KM_FORWARD_FAILED] += 1;
             }
-            state[part] = taken + 1;
-            forward_credit(view, part, taken + 1);
+            state[room] = taken + 1;
+            forward_credit(view, room, taken + 1);
         }
         held.route = route;
         held.turning = 0;
@@ -718,11 +752,12 @@ namespace km {
             return false;
         }
         const Islands view(island_area());
-        const uint32_t head = held.area + KM_FORWARD_STAGE;
+        const uint32_t head = held.area + KM_FORWARD_STAGE + 128 * held.cpu;
         volatile tt_l1_ptr uint32_t* words = l1(head);
         words[0] = held.route - 1;
         words[1] = bytes;
         words[2] = held.field;
+        words[3] = 0;  // links crossed
         const volatile tt_l1_ptr uint32_t*
             own = (reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(header));
         for (uint32_t w = 0; w < sizeof(LinkHeader) / 4; w++) {
