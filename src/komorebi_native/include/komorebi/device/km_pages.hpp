@@ -1539,13 +1539,13 @@ namespace km {
             r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
             r.page <= pages_packet() && r.to % 16 == 0 && r.count % 16 == 0
         );
-        // an island further on holds it: on by this island's link toward it (one
-        // page CPU a link)
+        // an island further on holds it: on by this island's link toward it (queued
+        // there once, by the lead page CPU)
         const uint32_t toward = holder < view.count() ? view.link(holder) : 0xFFu;
 #if defined(KM_FORWARD)
         const bool onward = (
-            holder != view.here() && fits && page_cpus(area) == 1 &&
-            toward != KM_ISLAND_NO_LINK && toward != forward_index(view)
+            holder != view.here() && fits && toward != KM_ISLAND_NO_LINK &&
+            toward != forward_index(view)
         );
 #else
         const bool onward = false;
@@ -1553,7 +1553,7 @@ namespace km {
         const bool good = holder == view.here() && fits;
         const uint32_t j = page_index(area);
         const Partition share = page_share(area, r.pages, j);
-        if (onward) {
+        if (onward && j == page_lead(area)) {
 #if defined(KM_FORWARD)
             bool later = false;
             const uint32_t core = view.base() + view.ranks() + toward;
@@ -2241,6 +2241,15 @@ namespace km {
         uint32_t ring[KM_PAGE_CPUS];
         uint32_t core[KM_PAGE_CPUS];
     };
+
+    // `rings` all zero, a field at a time: a block clear (`PutRings rings{}`) may
+    // compile to a memset call, which an overlay part cannot make (put_run_clear).
+    inline void put_rings_clear(PutRings& rings) {
+        rings.read = rings.cpus = rings.slots = rings.far = rings.queue = 0;
+        for (uint32_t j = 0; j < KM_PAGE_CPUS; ++j) {
+            rings.ring[j] = rings.core[j] = 0;
+        }
+    }
 
     constexpr uint32_t kPutNoLine = 0xFFFFFFFFu;
 

@@ -1300,7 +1300,7 @@ A class (`km.Program` written as a class) is made with the island session as its
 | `self.rank`, `self.size`, `self.leader` | the flat rank less the command's first, the group's count: as on one card |
 | a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
 | `km.reduce(..., group=S)` | each group of S consecutive ranks on one island; a command whose group of S spans two islands is refused by name, with the first rank to start at |
-| `km.Broadcast`, `self.x`, `self.y` | the rectangle is one island's: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores); a group that is not, such as a row across the link, is refused, saying a broadcast stays on one island. With no `rect=`, the rectangle is an island's rank cores (its link cores never inside): every rank core for `self.x` and `self.y`, the whole rows of them for a broadcast. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
+| `km.Broadcast`, `self.x`, `self.y` | the rectangle is one island's: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores); a group that is not, such as a row across the link, is refused, saying a broadcast stays on one island. With no `rect=`, the rectangle is an island's rank cores (its link cores never inside): every rank core for `self.x` and `self.y`, the whole rows of them for a broadcast. On a split card each island has its own: its own rank rows (islands of different rank counts each their own rectangle), and a `rect=` is in each island's own rows, refused naming an island whose ranks do not hold it. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
 
 A command's group may start and end anywhere in the flat ranks. A class that works by
 `self.rank` and `self.size` is exact across an island's edge (the Linear class's split on
@@ -1328,8 +1328,8 @@ on one card.
   its own slot ring of the far island's places (the slots split, the L1 the same), and
   the far CPU j confirms ring j, so the far chain runs on as many CPUs as links. A
   kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
-  page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
-  link, and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
+  page CPU; over more than two islands an ask is forwarded (queued on by the lead page
+  CPU of each island between), and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
   time, a line a run of the chunk; a copy that asks pages another island holds sends a
   line a run, all in flight ([pages across a link](#pages-across-a-link)).
 - Uploads over islands (an engine's stream or graph runs on the island it is uploaded
