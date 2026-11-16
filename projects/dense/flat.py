@@ -270,10 +270,6 @@ def main():
         report["crossed_a_call"] = {
             key: round(value / calls, 1) for key, value in crossed.total().items()
         }
-        report["parts_by_link"] = {  # the relay's parts a call, link and direction
-            f"{link} {source}->{target}": round(row["parts"] / calls, 1)
-            for (link, source, target), row in sorted(crossed.rows.items())
-        }
         report["run"] = product.stop()
         rows = ref.sampled_rows(m_rows)
         got = card.read_rows(session, tensors["y"], rows, log)

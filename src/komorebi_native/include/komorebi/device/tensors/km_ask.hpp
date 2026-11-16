@@ -2440,28 +2440,16 @@ namespace km {
     }
 
     // km::all_gather and km::all_reduce: every rank of the command calls one; the first
-    // of an island's ranks posts the lines along the line of islands, all share a fold.
+    // of an island's ranks sends its shares over the islands' tree, all share a fold.
 
     // The collectives' wall clocks (KM_COLL_STAMPS: a copy's reference word, a 128-byte
     // page a flat rank, written at the return); compiled out by default.
     enum CollStamp : uint32_t {
         kCsEntry,
         kCsMet,
-        kCsPosted,
-        kCsArrived,
+        kCsArrived = 3,
         kCsConfirmed,
         kCsReleased,
-        kCsLeftArrived,
-        kCsLeftGo,
-        kCsLeftFolded,
-        kCsLeftPassed,
-        kCsRightArrived,
-        kCsRightGo,
-        kCsRightFolded,
-        kCsRightPassed,
-        kCsKeptGo,
-        kCsKeptFolded,
-        kCsKeptMet,
         kCsReadCycles = 20,  // sums over this call's folds: waits for the reads,
         kCsAddCycles,        // the adds, waits for the writes, the words added
         kCsWriteCycles,

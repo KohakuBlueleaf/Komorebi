@@ -415,8 +415,8 @@ class LinkPlanMixin:
             for k, link_core in enumerate(self.link_cores[island]):
                 there, _, peer = self.pair(island, k)
                 place = self.noc_of(there, peer)
-                plans[-1].relay_tiles[link_core] = (place & 0xFF) | (place >> 8) << 16
-            plans[-1].relay = [0, 0, plans[-1].relay_tiles[core]]
+                plans[-1].far_tiles[link_core] = (place & 0xFF) | (place >> 8) << 16
+            plans[-1].relay = [0, 0, plans[-1].far_tiles[core]]
             self.log(
                 f"island {island}: commands across on link core {core}, channel "
                 f"{self.channels[island][0]}, area {area:#x}"

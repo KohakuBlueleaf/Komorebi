@@ -257,14 +257,14 @@
  * in the rings; the far lead page CPU writes its records, then confirms (no page) */
 #define KM_ASK_RING_BATCH 3u
 /* Then what crossed, a row a CPU of the core, counted only on a link core by that CPU:
- * messages, command lines, asks, pages, relayed parts, bytes (low, high) it sent */
+ * messages, command lines, asks, pages, a reserved word, bytes (low, high) it sent */
 #define KM_LINK_CROSS (KM_ASK_INBOX + KM_ASK_SLOTS * 64u)
 #define KM_CROSS_ROW 32u
 #define KM_CROSS_MESSAGES 0u
 #define KM_CROSS_LINES 1u
 #define KM_CROSS_ASKS 2u
 #define KM_CROSS_PAGES 3u
-#define KM_CROSS_PARTS 4u
+#define KM_CROSS_PARTS 4u /* reserved: nothing counts it */
 #define KM_CROSS_BYTES 5u /* the low word; the high word after it */
 #define KM_CROSS_PUTS 7u  /* put lines and their confirmations */
 /* A get line of part of a page (km::read_bytes): KM_ASK_RING KM_ASK_GET_BYTES, 1 page
