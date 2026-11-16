@@ -190,9 +190,8 @@
 #define KM_FAR_COUNT(n) (12u * (n))
 #define KM_FAR_LINE(n) (((12u + 4u * KM_FAR_LINES) * (n) + 63u) / 64u * 64u)
 #define KM_FAR_BYTES(n) (KM_FAR_LINE(n) + 64u * KM_FAR_LINES * (n))
-/* Then deliveries (KM_DELIVER, km_deliver.hpp), n islands, s slots of b bytes a source:
- * sent to d, d's taken, taken from s, slot i's pieces, a scratch, lines, then the slots
- */
+/* Then deliveries (KM_DELIVER, km_deliver.hpp), n islands, s slots of b bytes each:
+ * sent to d, d's taken, taken from s, slot i's pieces, a scratch, lines, the slots */
 #define KM_DELIVER_SENT(n) 0u
 #define KM_DELIVER_CREDIT(n) (4u * (n))
 #define KM_DELIVER_TAKEN(n) (8u * (n))

@@ -242,8 +242,7 @@ namespace km {
     }
 
     // The far lead, slot `slot`'s line for run `entry`: reserved on the rank's counter
-    // tile, written into its queue, committed by its mark; `held`: no READY yet.
-    // kWhere*.
+    // tile, written into its queue, committed by its mark; `held`: no READY. kWhere*.
     template <typename Kernel>
     inline uint32_t deliver_bin(
         const Kernel& kernel,

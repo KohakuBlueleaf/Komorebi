@@ -56,7 +56,8 @@ static int dynamic_valid(const volatile kmd_args_t* arguments) {
     }
     const uint32_t cluster = KMD_X280_RANKS_CLUSTER(handlers);
     const uint32_t count = KMD_X280_RANKS_COUNT(handlers);
-    if (handlers >> 40 != 0 || (cluster == 0) != (count == 0)) {
+    /* bit 40: the run's deliveries (KMD_MESSAGES_DELIVER) */
+    if (handlers >> 41 != 0 || (cluster == 0) != (count == 0)) {
         return 0;
     }
     return (

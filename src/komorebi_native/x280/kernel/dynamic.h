@@ -60,7 +60,7 @@ KMD_HOT void messages_submitted(
     run->request = request;
     run->source = source;
     run->run_handler = (uint32_t)(line[0] >> 32) & 0xFFu;
-    run->id = run->round = run->asked = run->ended = run->have_last = 0;
+    run->id = run->round = run->ended = run->have_last = 0; /* a ROUND or START kept */
     run->round_number = 0;
     run->next_round = 0;
     if (run->deliver && dispatcher->link_on) {
