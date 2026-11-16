@@ -765,8 +765,15 @@ def rectangle_of(program, compiled):
                     f"{compiled.name} uses self.x, self.y or a broadcast: load it with "
                     f"Session.load, or make it with {spelling('nocs')}=session.nocs()"
                 )
-            rect = state["rect"] or (0, 0, *nocs.grid)
-            state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
+            ranks = state.get("ranks")  # an island's rank cores (island_session)
+            if state["rect"] is None and ranks is not None:
+                state["args"], state["group"], made = rank_rectangle(
+                    compiled, nocs, ranks
+                )
+                state["rect"] = made
+            else:
+                rect = state["rect"] or (0, 0, *nocs.grid)
+                state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
         return state["args"](core)
 
     return args
@@ -797,6 +804,27 @@ def words_of(compiled, tensors, rectangle):
             )
         addresses.append(tensor.address)
     return lambda core: ([], [], addresses)
+
+
+def rank_rectangle(compiled, nocs, ranks):
+    """A class's default rectangle on an island whose first `ranks` cores are its
+    ranks and the rest its link cores (never inside): (args, group, rect). With a
+    broadcast, its whole rows of rank cores; else every rank core (self.x, self.y)."""
+    columns, rows = nocs.grid
+    if ranks >= columns * rows:
+        return (*rectangle_args(compiled, (0, 0, columns, rows), nocs), None)
+    if compiled.broadcasts:
+        rect = (0, 0, columns, ranks // columns)
+        return (*rectangle_args(compiled, rect, nocs), rect)
+    args, _ = rectangle_args(compiled, (0, 0, columns, rows), nocs)
+    outside = [0, 0, 0, columns, rows]
+
+    def program_args(core):
+        if core < ranks:
+            return args(core)
+        return list(outside), list(outside), list(outside)
+
+    return program_args, (0, ranks), None
 
 
 def session_nocs(program, nocs):

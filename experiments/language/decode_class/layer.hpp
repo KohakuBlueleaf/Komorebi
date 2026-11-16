@@ -928,12 +928,9 @@ namespace layer {
     // A timed cb_reserve_back on either mover (mover B's runtime has no reserve).
     template <typename Kernel>
     inline bool reserve(const Kernel& core, uint32_t cb, uint32_t pages) {
-        if (core.poll(
-            [&] {
-                return cb_pages_reservable_at_back(cb, pages);
-            },
-            core.args().wait_limit
-        ) != km::kGaveNone) {
+        if (!core.wait([&] {
+            return cb_pages_reservable_at_back(cb, pages);
+        })) {
             return false;
         }
         cb_reserve_back(cb, pages);
@@ -943,12 +940,9 @@ namespace layer {
     // A timed cb_wait_front on either mover.
     template <typename Kernel>
     inline bool wait(const Kernel& core, uint32_t cb, uint32_t pages) {
-        return core.poll(
-            [&] {
-                return cb_pages_available_at_front(cb, pages);
-            },
-            core.args().wait_limit
-        ) == km::kGaveNone;
+        return core.wait([&] {
+            return cb_pages_available_at_front(cb, pages);
+        });
     }
 
     // One of two movers reading halves of `cb`'s item: its `pages` freed (both frees,
@@ -965,12 +959,9 @@ namespace layer {
     // Whether the mover's reads have landed, timed.
     template <typename Kernel>
     inline bool reads_flushed(const Kernel& core) {
-        return core.poll(
-            [] {
-                return ncrisc_noc_reads_flushed(noc_index);
-            },
-            core.args().wait_limit
-        ) == km::kGaveNone;
+        return core.wait([] {
+            return ncrisc_noc_reads_flushed(noc_index);
+        });
     }
 
     // head_tiles' item, pushed: identity and mean tile (`table`'s pages 0, 1) in pages
@@ -1036,6 +1027,9 @@ namespace layer {
         }
         const uint32_t from = get_write_ptr(scratch);
         const uint32_t to = get_write_ptr(rope);
+        if (KM_GUARD && rows > 32u) {  // the copy below writes rows of one tile
+            return core.gave_up_at(km::kGaveBadItem, km::kWhereData, __LINE__);
+        }
         uint32_t asked = 0;
         for (uint32_t row = first; row < first + rows;) {
             const uint32_t in_page = row % kRowsAPage;
@@ -1066,14 +1060,15 @@ namespace layer {
         for (uint32_t row = 0; row < rows; row++) {
             const uint32_t at = ((row >> 4) * 2) * 512 + (row & 15) * 32;
             for (uint32_t piece = 0; piece < 2 * kTiles; piece++) {
-                volatile tt_l1_ptr uint32_t* out = (
-                    km::l1(to + (piece >> 1) * kLayerTileBytes + (piece & 1) * 512 + at)
-                );
-                const volatile tt_l1_ptr uint32_t* in = (
-                    km::l1(from + row * DC_ROPE_ROW + piece * 32)
-                );
-                for (uint32_t word = 0; word < 8; word++) {
-                    out[word] = in[word];
+                if (!km::copy_l1(
+                    core,
+                    to + (piece >> 1) * kLayerTileBytes + (piece & 1) * 512 + at,
+                    rope,
+                    from + row * DC_ROPE_ROW + piece * 32,
+                    scratch,
+                    8
+                )) {
+                    return false;
                 }
             }
         }
@@ -1167,16 +1162,13 @@ namespace layer {
     // Whether the mover's writes have gone, timed.
     template <typename Kernel>
     inline bool writes_flushed(const Kernel& core) {
-        return core.poll(
-            [] {
-                return ncrisc_noc_nonposted_writes_flushed(noc_index);
-            },
-            core.args().wait_limit
-        ) == km::kGaveNone;
+        return core.wait([] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        });
     }
 
-    // The root: the token tiles' key (value) rows (`token`: L1 address of its 4 tiles)
-    // put into the cache's tiles, written back, then pushed as this core's last.
+    // The root: the token tiles' key (value) rows (`token`: L1 address of its 4 tiles
+    // in buffer `tokens`) put into the cache's tiles, written back, pushed as its last.
     template <typename Kernel, typename Cache>
     inline bool append(
         const Kernel& core,
@@ -1185,11 +1177,19 @@ namespace layer {
         uint32_t head,
         uint32_t cb,
         const Cache& cache,
-        uint32_t token
+        uint32_t token,
+        uint32_t tokens
     ) {
         const uint32_t slot = get_write_ptr(cb);
         const uint32_t page = cache_page(head, at.last);
         const uint32_t pages = (1u + at.span) * DC_HEAD_TILES;
+        // the copy below: rows of the token's tile into at most two cache tiles
+        if (
+            KM_GUARD &&
+            (at.span > 1u || at.rows > 32u || at.row + at.rows > (1u + at.span) * 32u)
+        ) {
+            return core.gave_up_at(km::kGaveBadItem, km::kWhereData, __LINE__);
+        }
         if (
             !km::read_pages(core, command, cache, page, pages, slot) ||
             !reads_flushed(core)
@@ -1209,14 +1209,15 @@ namespace layer {
             for (uint32_t tile = 0; tile < DC_HEAD_TILES; tile++) {
                 for (uint32_t face = 0; face < 2; face++) {
                     const uint32_t at_face = tile * kLayerTileBytes + face * kFaceBytes;
-                    volatile tt_l1_ptr uint32_t* to = (
-                        km::l1(slot + at_face + to_offset)
-                    );
-                    const volatile tt_l1_ptr uint32_t* from = (
-                        km::l1(token + at_face + from_offset)
-                    );
-                    for (uint32_t word = 0; word < 8; word++) {
-                        to[word] = from[word];
+                    if (!km::copy_l1(
+                        core,
+                        slot + at_face + to_offset,
+                        cb,
+                        token + at_face + from_offset,
+                        tokens,
+                        8
+                    )) {
+                        return false;
                     }
                 }
             }
