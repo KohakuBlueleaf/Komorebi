@@ -17,6 +17,12 @@
 #define KM_OVERLAY_SHIFT 0
 #endif
 
+// The slots of one part a run's programs have at most (the host's, a define of its
+// kernels when over 4; else 4): records of slots 4 and up follow the overlay area.
+#if !defined(KM_OVERLAY_SLOTS)
+#define KM_OVERLAY_SLOTS 4
+#endif
+
 namespace km {
 
     // The overlay area: kOverlayAreaBytes after the control block, written by the
@@ -26,16 +32,17 @@ namespace km {
     constexpr uint32_t kOverlayPartReader = 0;
     constexpr uint32_t kOverlayPartWriter = 1;
     constexpr uint32_t kOverlayPartUnpack = 2;
-    constexpr uint32_t kOverlaySlotsMax = 4;  // slots of one part
-    constexpr uint32_t kOverlaysMax = 64;     // numbers 1 to 63; 0 names none
-    constexpr uint32_t kOverlayBanks = 8;     // core i reads its copy in bank i % 8
+    constexpr uint32_t kOverlaySlotsMax = KM_OVERLAY_SLOTS;  // slots of one part
+    constexpr uint32_t kOverlaySlotsFixed = 4;  // of them, records in the area's block
+    constexpr uint32_t kOverlaysMax = 64;       // numbers 1 to 63; 0 names none
+    constexpr uint32_t kOverlayBanks = 8;       // core i reads its copy in bank i % 8
     // Header words: table entries; first slot, slots and slot bytes of each part.
     constexpr uint32_t kOverlayCount = 0;
     constexpr uint32_t kOverlayBase = 1;
     constexpr uint32_t kOverlaySlots = 6;
     constexpr uint32_t kOverlaySlotBytes = 11;
-    // A 16-byte record per (part, slot): the overlay held (0: none; the reader writes
-    // it), the part's own check (below), the calls running, the slot's address (host).
+    // A 16-byte record per (part, slot 0 to 3; 4 on: kOverlayMoreRecords): the overlay
+    // held (0: none), the part's own check (below), the calls running, its address.
     constexpr uint32_t kOverlayRecords = 64;
     constexpr uint32_t kOverlayHeld = 0;
     constexpr uint32_t kOverlayChecked = 1;
@@ -50,7 +57,7 @@ namespace km {
     // The clock line (32 bytes): the uses of overlays, then the epoch (24 bits), which
     // the reader steps after it changes any record's held word.
     constexpr uint32_t kOverlayClock = (
-        kOverlayRecords + 16 * kOverlayParts * kOverlaySlotsMax
+        kOverlayRecords + 16 * kOverlayParts * kOverlaySlotsFixed
     );
     constexpr uint32_t kOverlayEpoch = kOverlayClock + 4;
     constexpr uint32_t kOverlayEpochMask = 0xFFFFFFu;
@@ -102,6 +109,13 @@ namespace km {
     constexpr uint32_t kRecordBuffers = 16;
     constexpr uint32_t kRecordBytes = 4 * (kRecordBuffers + 4 * 32);
     constexpr uint32_t kOverlayAreaBytes = kOverlayRecord + kRecordBytes;
+    // The records of slots 4 and up (a run with more than 4 slots of a part), after
+    // the area in the run's control blocks: 16 * (more * part + slot - 4) from here.
+    constexpr uint32_t kOverlayMoreRecords = kOverlayAreaBytes;
+    constexpr uint32_t kOverlaySlotsMore = kOverlaySlotsMax - kOverlaySlotsFixed;
+    static_assert(
+        kOverlaySlotsMax >= kOverlaySlotsFixed, "KM_OVERLAY_SLOTS is 4 or more"
+    );
     static_assert(
         kOverlayEpoch < kOverlayMet && kOverlayServiceSlot + 4 <= kOverlayUsed &&
             kOverlayTable % 64 == 0 && KM_CONTROL_BYTES % 64 == 0 &&
@@ -130,10 +144,20 @@ namespace km {
     inline volatile tt_l1_ptr uint32_t* overlay_record(
         uint32_t control, uint32_t part, uint32_t slot
     ) {
+        if constexpr (kOverlaySlotsMore != 0) {
+            if (slot >= kOverlaySlotsFixed) {
+                return (
+                    l1(
+                        control + kOverlayArea + kOverlayMoreRecords +
+                        16 * (kOverlaySlotsMore * part + slot - kOverlaySlotsFixed)
+                    )
+                );
+            }
+        }
         return (
             l1(
                 control + kOverlayArea + kOverlayRecords +
-                16 * (kOverlaySlotsMax * part + slot)
+                16 * (kOverlaySlotsFixed * part + slot)
             )
         );
     }
