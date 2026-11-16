@@ -705,6 +705,10 @@ KM_STATIC_ASSERT(
 /* header word 3 of a range of one bank (km::BankRange): {holder, bank, bytes, 2}, the
  * holder's part {its bank address, 0, 0, 0}, the other parts 0 */
 #define KM_TENSOR_BANK 2u
+/* a table of more entries lives in each island's DRAM, a row a page of 64 B lines;
+ * its L1 place holds a head (word 0: that table's address) */
+#define KM_TABLE_CACHE_ENTRIES 32u
+#define KM_TABLE_HEAD_BYTES 64u
 /* KM_RING_SLOTS commands, the last part of the block */
 #define KM_CONTROL_RING (KM_CONTROL_ISLANDS + KM_ISLANDS_BYTES)
 #define KM_CONTROL_BYTES (KM_CONTROL_RING + KM_RING_SLOTS * 64u)

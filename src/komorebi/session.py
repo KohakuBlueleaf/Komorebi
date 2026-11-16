@@ -309,7 +309,13 @@ def link_chunk_least(packet):
 
 
 # The defines of an island run that the link cores' own kernels are built with too.
-LINK_DEFINES = ("KM_PAGE_LINKS", "KM_TENSOR_TABLE", "KM_ASKS_BY_HOST", "KM_TENSORS_MAX")
+LINK_DEFINES = (
+    "KM_PAGE_LINKS",
+    "KM_TENSOR_TABLE",
+    "KM_ASKS_BY_HOST",
+    "KM_TENSORS_MAX",
+    "KM_TABLE_CACHE",
+)
 # Every define the island load gives a program; a plan's runtime kernels get them.
 ISLAND_DEFINES = (*LINK_DEFINES, "KM_FORWARD", "KM_WIRE")
 

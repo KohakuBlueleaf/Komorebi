@@ -5,6 +5,9 @@
 #include <stdint.h>
 
 #include "km_island.hpp"
+#if defined(KM_TABLE_CACHE)
+#include "km_table_cache.hpp"
+#endif
 
 namespace km {
 
@@ -24,10 +27,14 @@ namespace km {
         if (tensor >= KM_TENSORS_MAX || table == 0) {
             return nullptr;
         }
+#if defined(KM_TABLE_CACHE)
+        return cached_entry(view, table, tensor);
+#else
         const uint32_t bytes = (
             KM_TENSOR_HEADER_BYTES + view.count() * KM_TENSOR_PART_BYTES
         );
         return reinterpret_cast<const volatile uint32_t*>(table + tensor * bytes);
+#endif
     }
 
     // Where page `page` of tensor `tensor` (its reference word) lives; a word naming

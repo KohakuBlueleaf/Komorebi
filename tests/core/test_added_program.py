@@ -452,3 +452,32 @@ def test_a_loaded_program_with_own_overlays_gets_two_slots_in_their_kernels():
     session_module._own_slots_kept(
         plain_alone, lowered
     )  # no own overlay: one is enough
+
+
+def test_a_class_made_after_the_load_takes_the_shift_of_its_kind_named_ahead():
+    named = twice(form="runtime")
+    named.program_field, named.added_own_shift = 1, 4
+    loaded = SimpleNamespace(added_ahead_programs=[named])
+    runs = [SimpleNamespace(programs=[loaded])]
+    later = twice(form="runtime")  # its tensors made while the run lives
+    assert added_program._ahead_twin_shift(runs, later, 1) == 4
+    assert added_program._ahead_twin_shift(runs, later, 2) is None  # another field
+    assert added_program._ahead_twin_shift(runs, named, 1) is None  # itself
+    named.added_live = True  # added already: its numbers are taken
+    assert added_program._ahead_twin_shift(runs, later, 1) is None
+
+
+def test_an_added_part_over_its_slot_says_how_to_keep_more(monkeypatch):
+    def too_big(*args):
+        raise overlay.OverlayError(
+            "overlay columns, math part: 2148 bytes (code, data and .bss) do not fit "
+            "its slot of 2112 bytes"
+        )
+
+    monkeypatch.setattr(overlay, "build_part_cached", too_big)
+    each = SimpleNamespace(slots={"math": (1, 2112)}, recipes={"math": None})
+    made = SimpleNamespace(name="columns")
+    with pytest.raises(
+        added.AddError, match=r"name the class ahead, or give the loaded"
+    ):
+        added._part(None, each, made, "math", "math")
