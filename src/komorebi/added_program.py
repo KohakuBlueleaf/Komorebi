@@ -86,6 +86,17 @@ def ahead_own_kernels(placed):
     }
 
 
+def ahead_parts(placed):
+    """The parts of the classes named ahead, their own overlays' too: the rows the
+    load's room keeps for them (each within a row: the load built them, so the row,
+    its widest image, holds any one); 0 for a load naming none."""
+    return sum(
+        len(made.parts())
+        for other in _ahead_of(placed)
+        for made in [programs.program_overlay(other, True), *own_overlays(other)]
+    )
+
+
 def _ahead_of(placed):
     out = []
     for program in placed.programs:
@@ -398,8 +409,9 @@ def _kernel_wide(compute, session):
     return {name: value for name, value in out.items() if value}
 
 
-def refused(run, program):
-    """Why `program` cannot be added to `run`, by name; "" when it can."""
+def refused(run, program, island=False):
+    """Why `program` cannot be added to `run`, by name; "" when it can (`island`: the
+    run is one island's, added by IslandRun.addon on every island)."""
     loaded = run.programs[0]
     session = importlib.import_module("komorebi.session")
     if not isinstance(program, Program) or program.form() != "program":
@@ -419,8 +431,16 @@ def refused(run, program):
             "only a run whose groups switch program has the load command and the "
             "switch area an added program takes"
         )
-    if run.island_ranks != run.cores or getattr(run.backend, "island", None):
-        return f"{program.name}: an island run (its parts are built per island)"
+    if getattr(run.backend, "split", None) is not None:
+        return (
+            f"{program.name}: a card split into islands (one launch, its programs in "
+            "the kernel form)"
+        )
+    if run.island_ranks != run.cores and not island:
+        return (
+            f"{program.name}: one island's run of an island run: add it through the "
+            "run session.load returned (its addon adds it on every island)"
+        )
     if getattr(run.backend, "trace_cap", 0):
         return f"{program.name}: a traced run (the trace buffer is placed at launch)"
     if getattr(program, "merged_sources", None) is not None:
@@ -486,7 +506,59 @@ def refused(run, program):
 def add(run, program):
     """run.addon(program): `program` one more program of the live run; returns its
     program field. Nothing is written to the card when it is refused."""
-    why = refused(run, program)
+    return _commit(run, program, _prepared(run, program, _shift_of(run, program)))
+
+
+def add_islands(runs, program, defines):
+    """IslandRun.addon(program): `program` one more program of every island's run
+    (`runs`), all or none: each island's checks and parts (built with the island
+    `defines`) first, then each island's record, rows, parts and entries; one program
+    field and one overlay numbering on every island. Returns the field."""
+    fields = sorted({len(run.programs) for run in runs})
+    if len(fields) != 1:
+        raise added.AddError(
+            f"{program.name}: the islands' runs hold {fields} programs: an added class "
+            "takes the same field on every island"
+        )
+    own = dict(program.defines)
+    program.defines = {**own, **defines}
+    try:
+        shift = _shift_of(runs, program)
+        prepared, fields = [], []
+        for step in ("prepare", "commit"):
+            for island, run in enumerate(runs):
+                try:
+                    if step == "prepare":
+                        prepared.append(_prepared(run, program, shift, island=True))
+                    else:
+                        fields.append(_commit(run, program, prepared[island]))
+                except ProgramError as error:
+                    error.added_island = island  # IslandRun names it
+                    raise
+        return fields[0]
+    finally:
+        for name in defines:  # the island's defines off again, the add's own kept
+            if name in own:
+                program.defines[name] = own[name]
+            else:
+                program.defines.pop(name, None)
+
+
+def _shift_of(runs, program):
+    """The own overlays' shift: the one the load gave a class named ahead, else the
+    lowest free on every run of `runs` (a run, or each island's)."""
+    runs = list(runs) if isinstance(runs, list | tuple) else [runs]
+    field = len(runs[0].programs)
+    shift = getattr(program, "added_own_shift", None)
+    if shift is None or program.program_field != field:
+        shift = _own_shift(runs, program, field)
+    return shift
+
+
+def _prepared(run, program, shift, island=False):
+    """Everything of an add that writes nothing to the card: the checks, the field,
+    the rows, the layout and the parts built; a namespace for _commit."""
+    why = refused(run, program, island)
     if why:
         raise added.AddError(why)
     run._check_alive()
@@ -499,9 +571,6 @@ def add(run, program):
         )
     backend, started = run.backend, time.perf_counter()
     session = backend.session
-    shift = getattr(program, "added_own_shift", None)
-    if shift is None or program.program_field != field:
-        shift = _own_shift(run, program, field)
     service = overlay.constants()["kOverlayService"]
     if service - 1 - field in backend.added_own:
         raise added.AddError(
@@ -534,31 +603,46 @@ def add(run, program):
         _check_included(group.recipes[part], made, kernel, part)
         images[part], cached = linked.image, cached and hit
     own = _own_parts(run, program, group)
-    built_s = time.perf_counter() - started
-    placed = added._place(run, made, [images])[0]
+    _check_room(room, program, [images, *(each for _, _, each in own)])
+    return SimpleNamespace(
+        field=field, rows=rows, row_bytes=row_bytes, layout=layout, at=at, end=end,
+        start=start, made=made, images=images, cached=cached, own=own,
+        started=started, built_s=time.perf_counter() - started,
+    )  # fmt: skip
+
+
+def _commit(run, program, p):
+    """The add's writes to the card (its parts placed, its rows, its record, its own
+    overlays' entries) and the run's tables; returns the field."""
+    backend, session, field = run.backend, run.backend.session, p.field
+    placed = added._place(run, p.made, [p.images])[0]
     table = [placed.get(part, (0, 0)) for part in overlay.PARTS]
-    words = programs.record_words(field, layout, table)
-    if rows:  # the per-core rows: a DRAM page a core, copied by the load (kRecordArgs)
+    words = programs.record_words(field, p.layout, table)
+    if (
+        p.rows
+    ):  # the per-core rows: a DRAM page a core, copied by the load (kRecordArgs)
         c = overlay.constants()
-        table = np.zeros((run.cores, row_bytes // 4), np.uint32)
-        for core, row in enumerate(rows):
+        table = np.zeros((run.cores, p.row_bytes // 4), np.uint32)
+        for core, row in enumerate(p.rows):
             table[core, : len(row)] = row
         rows_tensor = importlib.import_module("komorebi.session")._words(session, table)
         backend.io.append(rows_tensor)
-        if rows_tensor.aligned_page_bytes != row_bytes:
-            raise added.AddError(f"{program.name}: rows of {row_bytes} B are not pages")
+        if rows_tensor.aligned_page_bytes != p.row_bytes:
+            raise added.AddError(
+                f"{program.name}: rows of {p.row_bytes} B are not pages"
+            )
         words[c["kRecordArgs"]] = rows_tensor.address
-        words[c["kRecordArgsBytes"]] = row_bytes
-        words[c["kRecordArgsL1"]] = at
+        words[c["kRecordArgsBytes"]] = p.row_bytes
+        words[c["kRecordArgsL1"]] = p.at
     address, row = run._switch["spare"].pop(field)
     banks = overlay.constants()["kOverlayBanks"]
     tensor = run._switch["tensor"]
     page = np.zeros((banks, tensor.page_bytes), np.uint8)
     page[:, : words.nbytes] = np.frombuffer(words.tobytes(), np.uint8)
     session.write(tensor, page, first=banks * row)  # a copy in each bank, as loaded
-    backend.switch_layouts[field] = layout
+    backend.switch_layouts[field] = p.layout
     run._switch["records"][field] = address
-    entries_s = _own_entries(run, own)
+    entries_s = _own_entries(run, p.own)
     run.programs.append(program)
     program.added_live = True  # a refusal naming the class's programs tells it
     if run._holds is not None:
@@ -567,31 +651,53 @@ def add(run, program):
         thread.write_records(run._switch)
     session.log(
         f"added program {program.name} as field {field}: parts "
-        f"{ {p: len(i) for p, i in images.items()} } built in {built_s * 1e3:.1f} ms"
-        f"{' (cached)' if cached else ''}; buffers {end - start:,} B in the switch "
-        f"area; {time.perf_counter() - started:.2f} s"
+        f"{ {part: len(i) for part, i in p.images.items()} } built in "
+        f"{p.built_s * 1e3:.1f} ms{' (cached)' if p.cached else ''}; buffers "
+        f"{p.end - p.start:,} B in the switch area; "
+        f"{time.perf_counter() - p.started:.2f} s"
         + (
-            f"; own overlays {sorted(number for number, _, _ in own)}, their entries "
+            f"; own overlays {sorted(number for number, _, _ in p.own)}, their entries "
             f"sent to every core in {entries_s * 1e3:.1f} ms"
-            if own
+            if p.own
             else ""
         )
     )
     return field
 
 
-def _own_shift(run, program, field):
+def _check_room(room, program, builds):
+    """Refuses, before anything is written, an add whose parts (the class's and its
+    own overlays', each different image in whole rows, as added._place puts them) do
+    not fit the room the load reserved."""
+    width, seen, rows = room.row_bytes, set(), 0
+    for images in builds:
+        for image in images.values():
+            if image not in seen:
+                seen.add(image)
+                rows += -(-len(image) // width)
+    if room.next + rows > room.end:
+        raise added.AddError(
+            f"{program.name}: its parts and its own overlays' take {rows * width:,} B "
+            f"of the room the load reserved ({rows} rows of {width:,} B, a part in "
+            f"whole rows) and {room.left():,} B are left (session.load(reserve=))"
+        )
+
+
+def _own_shift(runs, program, field):
     """The shift of an added class's own overlays (each declared number + shift): the
     lowest that leaves every number free (the run's overlays, added code, earlier added
-    classes' own) and below every program field's overlay up to `field`."""
+    classes' own) on every run of `runs` (a run, or each island's) and below every
+    program field's overlay up to `field`."""
     if not program.overlays:
         return 0
-    backend, service = run.backend, overlay.constants()["kOverlayService"]
-    room = backend.room
-    taken = set(backend.added_own) | {
-        n for each in (room.groups if room else ()) for n in each.numbers
-    }
-    taken |= {each.number for each in (room.added.values() if room else ())}
+    service = overlay.constants()["kOverlayService"]
+    taken = set()
+    for run in runs if isinstance(runs, list | tuple) else [runs]:
+        backend, room = run.backend, run.backend.room
+        taken |= set(backend.added_own) | {
+            n for each in (room.groups if room else ()) for n in each.numbers
+        }
+        taken |= {each.number for each in (room.added.values() if room else ())}
     lowest = service - 1 - field  # field p is overlay service - 1 - p
     numbers = [each.number for each in program.overlays.values()]
     for shift in range(lowest):
@@ -638,8 +744,11 @@ def _own_entries(run, own):
         made = SimpleNamespace(name=name, number=number)
         placed = added._place(run, made, [images])[0]
         words = added.entry_words(number, False, placed)
-        handles = [
-            run._queue_command(entry, (each.first, each.count), words)
+        part = run._flag_part if run.island_ranks != run.cores else 0
+        handles = [  # the groups in flat ranks; an island's run sends its part only
+            run._queue_command(
+                entry, (each.first + run.island_first, each.count), words, False, part
+            )
             for each in backend.room.groups
         ]
         for handle in handles:
