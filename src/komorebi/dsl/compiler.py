@@ -20,6 +20,7 @@ from komorebi.dsl.compile import (
     broadcasts,
     drained,
     entry_tables,
+    field_fills,
     handler_buffers,
     layout,
     messages,
@@ -1075,7 +1076,7 @@ class HandlerCompiler(Frame):
             movement.append(spans[2])
         for kept, filled in self.filled.items():
             if filled is not None and not (
-                kept in self.waited_fields or self.kept_field(kept)
+                kept in self.waited_fields or field_fills.kept_field(self, kept)
             ):
                 refuse(
                     self.where,
@@ -2190,13 +2191,17 @@ class HandlerCompiler(Frame):
             and func.attr == spelling("fill")
             and scope.field_name(self, func.value)
         ):
-            return self.fill(node, call, scope.field_name(self, func.value))
+            return field_fills.fill(
+                self, node, call, scope.field_name(self, func.value)
+            )
         if (
             isinstance(func, ast.Attribute)
             and func.attr == spelling("zero")
             and scope.field_name(self, func.value)
         ):
-            return self.zero(node, call, scope.field_name(self, func.value))
+            return field_fills.zero(
+                self, node, call, scope.field_name(self, func.value)
+            )
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
             self.field_use(func.value)
         if (
@@ -3599,7 +3604,7 @@ class HandlerCompiler(Frame):
                 f"{value.width}",
                 f"declare self.{field_}: km.L1[km.bf16, {value.width}, 32, 32]",
             )
-        self.producer(node, field_, "product")
+        field_fills.producer(self, node, field_, "product")
         if getattr(value, "row_of", None) is not None:  # sums started from a mask
             self.masked.add(field_)
         else:
@@ -3658,7 +3663,7 @@ class HandlerCompiler(Frame):
                 "compute's own",
                 f"declare self.{field_}: km.L1[km.fp32, 1, 32, 32], not filled",
             )
-        self.producer(node, field_, "product")
+        field_fills.producer(self, node, field_, "product")
         buffer, held = f"kField{camel(field_)}", f"km_packed_{field_}"
         self.compiled.summed_fields.add(buffer)
         if field_ not in self.packed:
@@ -4170,193 +4175,6 @@ class HandlerCompiler(Frame):
             for mover in self.putters
         ]
 
-    def fill(self, node, call, field):
-        """`self.f.fill(km.Stream(t.pages(first, n)))`: mover A reads the n pages into
-        the field's L1 and hands it on; one km.cxx body takes it, then it is free."""
-        if field in self.compiled.own:
-            refuse(
-                self.where,
-                node,
-                f"self.{field} is an own field: only bodies use it, no line fills it",
-                f"declare it without km.{spelling('own')}() to fill it from a stream",
-            )
-        stream = call.args[0] if len(call.args) == 1 and not call.keywords else None
-        if not (
-            self.construct(stream) == "stream"
-            and len(stream.args) == 1
-            and not stream.keywords
-            and ranges.is_range(self, stream.args[0])
-        ):
-            refuse(
-                self.where,
-                node,
-                "a field is filled from a stream of a page range",
-                f"write self.{field}.fill(km.Stream(tensor.pages(first, count)))",
-            )
-        if self.filled.get(field) is not None:
-            refuse(
-                self.where,
-                node,
-                f"self.{field} is filled above and no body took it",
-                "fill it once, before the body that takes it",
-            )
-        pages = ranges.range_of(self, stream.args[0])
-        handler_buffers.pages_only(self, node, pages)
-        dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
-        value = self.compiled.fields[field]
-        if (dtype, page_bytes) != (value.format.dtype, value.format.tile_bytes):
-            refuse(
-                self.where,
-                node,
-                f"{pages.tensor} has {dtype} pages and self.{field} "
-                f"{value.format.dtype} tiles",
-                "fill a field from a tensor of its format",
-            )
-        buffer, pages_name = f"kField{camel(field)}", f"kField{camel(field)}Pages"
-        pitch = None  # a row's tiles in the field: the rectangle's columns, or the
-        if pages.rect is not None and isinstance(pages.rect[1], str):  # field's
-            pitch = self.field_sides(node, field)[1]
-            if pages.bounds[1] is None or pages.bounds[1] > pitch:
-                self.stated_words(stream.args[0], "a fill of a field")
-                refuse(
-                    self.where,
-                    node,
-                    f"the rectangle's columns are a word and self.{field}'s rows are "
-                    f"{pitch} tiles: the build must know they are at most {pitch}",
-                    f"write {pages.tensor}.{spelling('tiles')}[r0:r1, "
-                    f"c:{spelling('min')}(c + {pitch}, e)]",
-                )
-        count = pages.count if pages.rect is None else ("rect", pitch or pages.rect[1])
-        self.producer(node, field, "fill")
-        self.compiled.fills.append((field, count, self.method.name, node.lineno))
-        self.compiled.includes.add("ask")
-        self.filled[field] = (node, self.blocks[-1])
-        self.fill_loops[field] = (len(self.loops), node.lineno)
-        self.fill_loop_of[field] = self.loops[-1] if self.loops else None
-        handler_buffers.moved(self, node, pages.tensor, "fill")
-        tensor = f"{camel(pages.tensor)}({pages.tensor})"
-        text = (
-            f"if (!movement.reserve({buffer}, {pages_name}) ||\n"
-            f"    !km::read_pages(movement, command, {tensor}, {pages.first}, "
-            f"{pages_name}, get_write_ptr({buffer}))) {{\n"
-            "    return false;\n"
-            "}\n"
-            "noc_async_read_barrier();\n"
-            f"cb_push_back({buffer}, {pages_name});"
-        )
-        if pages.rect is not None:  # each row of the rectangle, its run of pages
-            rows, columns, row_step = pages.rect[:3]
-            row = f"km_row_{field}"
-            text = (
-                f"// the rectangle's rows, at most the field's\n"
-                f"if (({rows}) * {pitch or columns} > {pages_name} ||\n"
-                f"    !movement.reserve({buffer}, {pages_name})) {{\n"
-                "    return false;\n"
-                "}\n"
-                f"for (uint32_t {row} = 0; {row} < ({rows}); {row}++) {{\n"
-                f"    if (!km::read_pages(movement, command, {tensor}, {pages.first} + "
-                f"{row} * {row_step}, {columns}, get_write_ptr({buffer}) + {row} * "
-                f"{pitch or columns} * {page_bytes})) {{\n"
-                "        return false;\n"
-                "    }\n"
-                "}\n"
-                "noc_async_read_barrier();\n"
-                f"cb_push_back({buffer}, {pages_name});"
-            )
-        wait(self.where, self.compiled.waits, node, "mover A", WAIT_DATA)
-        compute = []
-        if self.kept_field(field):
-            held = f"km_held_{field}"
-            wait(self.where, self.compiled.waits, node, "compute", WAIT_INPUT)
-            compute.append(
-                Line(
-                    f"// self.{field} stays between commands: the last fill freed "
-                    "before this one\n"
-                    f"static bool {held} = false;\n"
-                    f"if ({held}) {{\n"
-                    f"    if (!compute.wait_front({buffer}, {pages_name})) {{\n"
-                    "        return;\n    }\n"
-                    f"    cb_pop_front({buffer}, {pages_name});\n"
-                    "}\n"
-                    f"{held} = true;"
-                )
-            )
-        return [Line(text, range_uses(pages, self), mover="A")], compute
-
-    def zero(self, node, call, field):
-        """`self.f.zero()`: compute packs a zero tile into each of the field's pages and
-        pushes them, as a fill would (no DRAM read); its lines then read it as a filled
-        field."""
-        if field in self.compiled.own:
-            refuse(
-                self.where,
-                node,
-                f"self.{field} is an own field: only bodies use it, no line zeroes it",
-                f"declare it without km.{spelling('own')}() to zero it",
-            )
-        if call.args or call.keywords:
-            refuse(
-                self.where,
-                node,
-                "a zero takes no arguments",
-                f"write self.{field}.zero()",
-            )
-        if self.filled.get(field) is not None:
-            refuse(
-                self.where,
-                node,
-                f"self.{field} is filled above and no body took it",
-                "zero it once, before the lines that read it",
-            )
-        if self.dst_live is not None:
-            refuse(
-                self.where,
-                node,
-                f"{self.dst_live} still holds DST, and a zero packs DST 0",
-                "write it first",
-            )
-        buffer, pages = f"kField{camel(field)}", f"kField{camel(field)}Pages"
-        self.producer(node, field, "zero")
-        self.compiled.includes |= {"fill", "pack"}
-        self.compiled.summed_fields.add(buffer)  # pack writes it: its pack format
-        self.filled[field] = (node, self.blocks[-1])
-        self.fill_loops[field] = (len(self.loops), node.lineno)
-        wait(self.where, self.compiled.waits, node, "compute", WAIT_OUTPUT)
-        text = (
-            f"// self.{field} zeroed on the core: a zero tile packed into each page\n"
-            "tile_regs_acquire();\n"
-            "fill_tile_init();\n"
-            "fill_tile(0, 0.0f);\n"
-            "tile_regs_commit();\n"
-            "tile_regs_wait();\n"
-            f"if (km_ok && compute.reserve_back({buffer}, {pages})) {{\n"
-            f"    KM_PACK_FORMAT({buffer});\n"
-            f"    for (uint32_t km_page = 0; km_page < {pages}; km_page++) {{\n"
-            f"        pack_tile<true>(0, {buffer}, km_page);\n"
-            "    }\n"
-            f"    cb_push_back({buffer}, {pages});\n"
-            "}\n"
-            "tile_regs_release();"
-        )
-        return [], [Line(text, {"km_ok"})]
-
-    def producer(self, node, field, kind):
-        """A field's pages are pushed by one producer: mover A's fill, or compute's
-        adds of a product, in every handler of the class."""
-        other = self.compiled.producers.setdefault(
-            field, (kind, self.method.name, node.lineno, line_text(self.where, node))
-        )
-        if other[0] != kind:
-            _, handler, line, text = other
-            pusher = "mover A" if other[0] == "fill" else "compute"
-            refuse(
-                self.where,
-                node,
-                f"self.{field} is pushed by {pusher}"
-                f" too ({handler}, line {line}, `{text}`): a buffer has one producer",
-                "fill it, or add products into it, not both: give each its own field",
-            )
-
     def sum_held(self, value):
         """True when `value` is a reduce's sum made outside the range loop a line
         writes it or a body takes it in, under the leader's if: the sum is held
@@ -4405,18 +4223,12 @@ class HandlerCompiler(Frame):
             {"km_ok"},
         )
 
-    def kept_field(self, field):
-        """Whether a field is filled by one handler and read by another: it stays in
-        L1 between commands (its next fill frees it)."""
-        fillers, readers = self.compiled.field_users.get(field, ([], []))
-        return bool(fillers and readers)
-
     def take_field(self, node, field, where, bound, before, after):
         """A field an inline body takes: compute's three its buffer index, one compute
         CPU its L1 address (unpack's, handed on), mover B its address once mover A
         filled it. Freed after the body when filled here; a kept field (another
         handler reads it) stays, also in its filler (its next fill frees it)."""
-        stays = self.kept_field(field)
+        stays = field_fills.kept_field(self, field)
         kept = stays and field not in self.filled
         if not kept and (field not in self.filled or self.filled[field] is None):
             refuse(

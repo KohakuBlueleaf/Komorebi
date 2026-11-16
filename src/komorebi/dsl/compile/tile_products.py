@@ -5,7 +5,7 @@ tiles into DST or a field of sums."""
 import ast
 import math
 
-from komorebi.dsl.compile import broadcasts, page_streams, scope
+from komorebi.dsl.compile import broadcasts, field_fills, page_streams, scope
 from komorebi.dsl.compile.cxx import camel, text_uses
 from komorebi.dsl.compile.dst_code import (
     DST_HALF,
@@ -564,7 +564,7 @@ def field_product(frame, node, field_, call):
     )  # a subblock: height x width tiles of DST
     buffer = f"kField{camel(field_)}"
     row, column, k = (f"km_{n}{node.lineno}" for n in ("sub_row", "sub_column", "k"))
-    frame.producer(node, field_, "product")
+    field_fills.producer(frame, node, field_, "product")
     sums = frame.summed.get(field_)
     if sums is None:
         sums = f"km_sums_{field_}"
@@ -655,7 +655,7 @@ def fill_turn_loop(frame, field):
     each turn (its fill a line of that loop, the loop still open, the field read
     by this handler alone), or None."""
     loop = frame.fill_loop_of.get(field)
-    if loop is None or frame.kept_field(field):
+    if loop is None or field_fills.kept_field(frame, field):
         return None
     return loop if any(open_ is loop for open_ in frame.loops) else None
 
@@ -992,7 +992,7 @@ def product(frame, node, value, call):
                 f"if (!compute.wait_front({buffer}, {buffer}Pages)) {{\n"
                 "    return;\n}\n"
             )
-            if not frame.kept_field(field_):
+            if not field_fills.kept_field(frame, field_):
                 field_freed(frame, field_, buffer)
         state["inits"].append(
             Line(
@@ -1232,7 +1232,7 @@ def sums_field(frame, node, field_):
             f"self.{field_} holds sums: fp32 tiles, rows x columns of them",
             f"declare self.{field_}: km.L1[km.fp32, rows, columns, 32, 32]",
         )
-    frame.producer(node, field_, "product")
+    field_fills.producer(frame, node, field_, "product")
     sums = frame.summed.get(field_)
     if sums is None:
         sums = f"km_sums_{field_}"
@@ -1288,7 +1288,7 @@ def turned_product(frame, node, value, function, item, field_, columns):
                 f"if (!compute.wait_front({buffer}, {buffer}Pages)) {{\n"
                 "    return;\n}\n"
             )
-            if not frame.kept_field(field_):
+            if not field_fills.kept_field(frame, field_):
                 field_freed(frame, field_, buffer)
         state["inits"].append(
             Line(
