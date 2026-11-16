@@ -214,6 +214,14 @@ namespace km {
     // No free slot for an overlay's part, each running one: the gave-up word's top
     // byte is the kernel's slots, the byte below it the overlay's number.
     constexpr uint32_t kWhereOverlaySlots = 70;
+    // An ask's or a put line's waits (km_ask.hpp, km_pages.hpp), each by name in a
+    // core's live words while it waits; the give-up word names kWhereAsk.
+    constexpr uint32_t kWhereAskConfirm = 71;  // the far island's word for a line before
+    constexpr uint32_t kWhereAskNumber = 72;  // the link core's answer: the line's number
+    constexpr uint32_t kWhereAskPlace = 73;  // its place in the link core's queue
+    constexpr uint32_t kWhereAskSlot = 74;   // room in a page CPU's ring for a piece
+    constexpr uint32_t kWhereAskSent = 75;   // the line's or the pages' writes leaving
+    constexpr uint32_t kWhereAskCount = 76;  // the port's count of pages asked or put
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -288,7 +296,13 @@ namespace km {
                 kWhereLinkUp,
                 kWhereRelay,
                 kWhereCoreIndex,
-                kWhereOverlaySlots
+                kWhereOverlaySlots,
+                kWhereAskConfirm,
+                kWhereAskNumber,
+                kWhereAskPlace,
+                kWhereAskSlot,
+                kWhereAskSent,
+                kWhereAskCount
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

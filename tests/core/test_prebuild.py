@@ -83,6 +83,7 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
         taken.append("success")
     assert taken == ["success"]
     assert run.state() == [] and run.inspect() == [] and run.drain() == 0
+    assert run.trace().command(1).shape == (0, 4)  # a traced phase goes on
     assert json.dumps({"us": run.chain().report}) == '{"us": 0.0}'  # no known shape
     run.stop()
     assert run.stopped and not run.alive()
@@ -93,7 +94,7 @@ def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
     event = run.wait(run.submit())
     assert event.kind == "done" and len(event) == 2 and event.parts[1].kind == "done"
     assert [block["error_name"] for block in run.result()] == ["none", "none"]
-    run.stop()
+    assert [block["error_name"] for block in run.stop()] == ["none", "none"]
     assert all(part.stopped for part in run.parts)
 
 
@@ -136,3 +137,14 @@ def test_loads_that_cannot_share_one_size_are_said_with_both(monkeypatch, tmp_pa
         "12) needs 200,000 B, deep (line 30) fits only at 120,000 B or less; give "
         "them sessions of their own"
     )
+
+
+def test_a_pass_that_changed_the_kept_size_is_run_again_at_it(tmp_path):
+    memory, said, sizes = tmp_path / "kernel_buffer.json", [], [97600, 97600]
+
+    def one_pass():  # an island script: opens with nothing kept, keeps its size
+        memory.write_text(json.dumps({"scripts": {"s|islands 2": sizes.pop(0)}}))
+        return SimpleNamespace(returncode=0)
+
+    assert prebuild.converge(one_pass, memory, said.append) == 0
+    assert sizes == [] and len(said) == 1 and "again" in said[0]
