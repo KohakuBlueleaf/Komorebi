@@ -1150,6 +1150,7 @@ class HandlerCompiler:
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
         self.fill_loops = {}  # field -> (the range loops around its fill, its line)
         self.fill_loop_of = {}  # field -> the range loop its stream fill stands in
+        self.leader_condition = None  # the C++ of `self.rank == self.leader`, uses
         self.masked = set()  # fields last written from sums started from a row
         self.waited_fields = set()  # fields compute waited for (a product's, once)
         self.stepped = {}  # a step's state field -> its pages (a state tile a page)
@@ -4398,6 +4399,7 @@ class HandlerCompiler:
             )
         movement = [Block(head, "}", body_m, uses)] if body_m else []
         compute = [Block(head_c, "}", body_c, uses | {"km_ok"})] if body_c else []
+        compute += loop.pop("after", [])  # a sum held across the loop, freed
         for broadcast in loop["casts"]:
             m, c = self.broadcast_end(broadcast, end, uses)
             movement += m
@@ -5457,11 +5459,13 @@ class HandlerCompiler:
             return self.write_word(node, pages, value)
         self.not_paired(node, name)
         carried = self.carries(node, value)
+        held_sum = self.sum_held(value)
         if (
             value is not None
             and value.kind in ("tile", "reduced")
             and not value.popped
             and not carried
+            and not (held_sum and not value.summed)
         ):
             self.same_loops(node, name, value, "this write", *self.once_text(value))
         if value is not None and value.kind == "reduced" and value.summed:
@@ -5529,7 +5533,13 @@ class HandlerCompiler:
             buffer = value.buffer
             self.leader_writes.add(name)
             dtype, page_bytes = self.tensor_format(node, pages.tensor)
-            if dtype != buffer.dtype:  # the sum packed again in the tensor's format
+            if held_sum:
+                buffer = self.out_buffer(
+                    dtype, page_bytes, f"line {node.lineno}: {self.text(node)}", width
+                )
+                compute.append(self.held_sum_copy(value, buffer, width))
+                converted = True
+            elif dtype != buffer.dtype:  # the sum packed again in the tensor's format
                 source = buffer
                 buffer = self.out_buffer(
                     dtype, page_bytes, f"line {node.lineno}: {self.text(node)}", width
@@ -6698,6 +6708,8 @@ class HandlerCompiler:
         leader, self.in_leader = self.in_leader, self.in_leader or self.leader_test(
             node
         )
+        if self.leader_test(node):
+            self.leader_condition = (condition, uses)  # a held sum's free (sum_held)
         before = set(self.scope)
         then_m, then_c = self.statements(node.body)
         self.scoped("if", node, before)
@@ -7119,6 +7131,54 @@ class HandlerCompiler:
                 f" too ({handler}, line {line}, `{text}`): a buffer has one producer",
                 "fill it, or add products into it, not both: give each its own field",
             )
+
+    def sum_held(self, value):
+        """True when `value` is a reduce's sum made outside the range loop a line
+        writes it or a body takes it in, under the leader's if: the sum is held
+        (waited for each turn, never freed in it) and freed after that loop."""
+        return (
+            value is not None
+            and value.kind == "reduced"
+            and not value.popped
+            and value.made_at is not None
+            and value.made_at[0] < len(self.loops)
+            and self.in_leader
+            and self.leader_condition is not None
+        )
+
+    def sum_freed_after(self, value, freed):
+        """A held sum's free: after the outermost loop the sum was made outside of,
+        under the leader's condition (only the leader holds the sum)."""
+        condition, uses = self.leader_condition
+        loop = self.loops[value.made_at[0]]
+        loop.setdefault("after", []).append(
+            Line(
+                f"if ({condition}) {{  // {value.cxx}, held across the loop, freed\n"
+                f"    {freed}\n}}",
+                set(uses),
+            )
+        )
+
+    def held_sum_copy(self, value, buffer, width):
+        """A turn's write of a held sum: its tiles copied (fp32, exact) from the sum's
+        buffer into DST and packed into the write's own `buffer`, the sum kept for
+        the next turn."""
+        source = value.buffer
+        self.compiled.unpack_fp32.add(source.name)
+        copies = "\n".join(f"copy_tile({source.name}, {t}, {t});" for t in range(width))
+        again = f"{copies}\n" + pack(0, buffer.name, width)
+        body = "\n".join("    " + line for line in again.split("\n"))
+        self.sum_freed_after(value, f"cb_pop_front({source.name}, {width});")
+        return Line(
+            f"// {value.cxx}, the sum held across the loop, copied for this turn\n"
+            f"km_ok = km_ok && compute.wait_front({source.name}, {width});\n"
+            "if (km_ok) {\n"
+            f"    KM_UNPACK_FORMAT_A({source.name});\n"
+            f"    copy_init({source.name});\n"
+            "    tile_regs_acquire();\n"
+            f"{body}\n}}",
+            {"km_ok"},
+        )
 
     def fill_turn_loop(self, field):
         """The range loop around a product of `field` in which the field is filled
@@ -9074,7 +9134,9 @@ class HandlerCompiler:
                 f"take it once in a body under `if self.{spelling('rank')} == "
                 f"self.{spelling('leader')}:`",
             )
-        self.same_loops(node, name, value, "this body", *self.once_text(value))
+        held = self.sum_held(value)
+        if not held:
+            self.same_loops(node, name, value, "this body", *self.once_text(value))
         if where != "compute":
             self.refuse(
                 node,
@@ -9093,7 +9155,11 @@ class HandlerCompiler:
         )
         bound.append(f"const uint32_t {name}{spelling('tile_buffer')} = {buffer};")
         bound.append(f"const uint32_t {name}{spelling('tile_index')} = 0;")
-        after.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);  // {name} freed"))
+        freed = f"cb_pop_front({buffer}, {buffer}Pages);  // {name} freed"
+        if held:
+            self.sum_freed_after(value, freed)
+        else:
+            after.append(Line(freed))
         self.wait(node, "compute", WAIT_INPUT)
         return set()
 

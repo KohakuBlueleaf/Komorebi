@@ -2564,7 +2564,7 @@ class is refused at the consuming line, naming the line that made the object:
 | `total = km.tile.zeros(...)` outside a range loop | `self.f.write(total)` in it | the write: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
 | `whole = km.reduce(...)` in a range loop (any reduce, a running total's too) | the reduce itself | the reduce: "a reduce in a range loop: the port has no flow control between turns yet" | reduce after the loop, or one reduce a command ([hazards](hazards.md#a-reduce-repeated-in-a-loop-of-one-command)) |
 | a running total (below) | its write or reduce under an `if` or in an inner loop of the range loop | the line: "total is a running total (made at line N, outside this loop): it is written or reduced once a turn, as a line of the range loop's own body" | move the line into the range loop's body |
-| a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
+| a reduce's sum, outside a loop | written in a loop off the leader's `if`, or a field's sum written in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write it under the leader's `if` (a sum held across turns, below); or reduce and write both outside |
 | `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) after that loop | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or read it in the loop that fills it (a field filled each turn, below) |
 | a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside; for every turn's pages drained once, make it before the loop, its body lines in the loop, its end and drain after |
 
@@ -2617,6 +2617,22 @@ for i in range(turns):
 The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py); on
 the card, every word equal to the same rows with the block cast each turn
 ([loop forms](../../experiments/language/loop_forms/README.md)).
+
+**A sum held across turns.** A reduce's sum made before a range loop and written in it
+under the leader's `if` (`out.pages(i, 1).write(whole)`, the same sum on page i each
+turn), or taken there by a body (`km.cxx(..., takes=[whole])`), is held. Each turn
+waits for it without freeing it, and the leader frees it once, after the loop. A turn's
+write copies the sum's tiles (fp32, exact) into DST and packs them into the write's own
+pages, which mover B writes and frees as any page write. One write line or one take
+line of the sum a loop. A field's sum (`km.reduce(self.sums, ...)`) written in a loop
+is refused as before.
+
+```python
+whole = km.reduce(total, form="tree")
+for i in range(2):
+    if self.rank == self.leader:
+        out.pages(i, 1).write(whole)  # the sum beside each row block
+```
 
 **A field filled each turn.** A field filled by a line of a range loop's body
 (`self.w.fill(km.Stream(...))`) and read by a product in that loop (turn i's product
