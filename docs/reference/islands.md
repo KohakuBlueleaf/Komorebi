@@ -203,8 +203,11 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   `island i:` and carries `error.island`; a `CommandTimeout` (a time-out or a give-up)
   names its ticket, and the cores it lists, where each waited and those reset and
   loaded again (`recovered`), by flat rank with the island and core as information:
-  `rank 128 (island 1, core 10) reader waits in port`. A `WaitTimeout`'s `pending`
-  lists tickets.
+  `rank 128 (island 1, core 10) reader waits in port`. A given-up command's
+  `CommandTimeout` lists the cores of every island that held a part: each other
+  island's part as its own dispatcher's inspect of the deadline read it. This covers a
+  group sent through one island's `run.island(i)`, whose far part that island's
+  dispatcher crossed. A `WaitTimeout`'s `pending` lists tickets.
 - `run.inspect(ranks=None)` reads what each rank of `ranks` (first, count; default
   every rank) is doing while the run goes on, each island's part asked of its own
   dispatcher, as `Run.inspect` does; each core's dict also holds its `rank` and

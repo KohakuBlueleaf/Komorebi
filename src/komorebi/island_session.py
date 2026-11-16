@@ -28,6 +28,7 @@ from komorebi import chain as chain_module
 from komorebi import channel as channel_module
 from komorebi import programs as programs_module
 from komorebi import session as session_module
+from komorebi import state as device_state
 from komorebi.dsl import front
 from komorebi.errors import (
     CardBusy,
@@ -428,6 +429,8 @@ class IslandRun:
         # a line ("log"), raised after it ran ("error"), or not read ("off")
         self.crossing_line = "log"
         self._crossed_seen, self._measured = set(), {}
+        for island, run in enumerate(self.runs):  # a time-out names every island's part
+            run.far_cores = lambda group, island=island: self._far_cores(island, group)
 
     def island(self, island):
         """Island `island`'s own Run (local ranks)."""
@@ -885,13 +888,39 @@ class IslandRun:
                     out.append(key)
         return out
 
+    def _far_cores(self, island, group):
+        """At a time-out of island `island`'s run: every other island's part of flat
+        `group` as its dispatcher's inspect of the deadline read it (a complete timeout
+        of that part's cores), its cores ranked and marked `far`; [] where none is."""
+        out = []
+        for other, _first, _count in self.graph.split(tuple(group)):
+            run = self.runs[other]
+            local = run._local(group)
+            if other == island or local[1] == 0 or not hasattr(run.backend, "inspect"):
+                continue
+            block = device_state.inspect(run.backend.inspect(local[1])["block"], run.h)
+            if (
+                block["complete"]
+                and block["kind"] == "timeout"
+                and (block["first"], block["count"]) == local
+            ):
+                out += [
+                    {**core, "far": True}
+                    for core in self._ranked(other, block["cores"])
+                ]
+        return out
+
     def _ranked(self, island, cores):
         """Core dicts of island `island` (its own core numbers in `core`) with their
-        flat `rank` and `island`; a link core's rank is None, its `link` its index."""
+        flat `rank` and `island`; a link core's rank is None, its `link` its index. A
+        core of another island's part (`far`) is kept as it is."""
         mine, links = self.graph.rank_cores[island], self.graph.link_cores[island]
         first = self.graph.first(island)
         out = []
         for core in cores:
+            if core.get("far"):
+                out.append(core)
+                continue
             named = {**core, "rank": None, "island": island}
             if core["core"] in mine:
                 named["rank"] = first + mine.index(core["core"])
@@ -905,7 +934,9 @@ class IslandRun:
         CommandTimeout by its ticket and the flat ranks of its cores."""
         if isinstance(error, CommandTimeout) and getattr(error, "island", None) is None:
             cores = self._ranked(island, error.cores)
-            ranks = {core["core"]: core["rank"] for core in cores}
+            ranks = {
+                core["core"]: core["rank"] for core in cores if not core.get("far")
+            }
             tickets = self._tickets(island, [error.handle])
             CommandTimeout.__init__(
                 error,
