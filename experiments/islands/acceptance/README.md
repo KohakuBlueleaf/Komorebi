@@ -84,6 +84,8 @@ the decode layer's crossings are its own (its README).
    a class's broadcast stays inside one island, and an island of a card has 9 whole
    rows of ranks (its last two cores are link cores), where the class's column broadcast
    is 10 long. The project program, which plans its broadcasts inside each island, runs.
+   Since 2026-11-17 a `rect=` taller than island 0 is one rectangle over the islands and
+   its broadcasts cross the edge; this class's default rectangle is still an island's.
 2. **The attention class on a split card** is refused by name: `ValueError: group (0,
    120) of 116 ranks` (112 on four islands). Its plan, made on the session's grid, has
    120 jobs, and a split card has fewer ranks (its link cores). Before the split loads

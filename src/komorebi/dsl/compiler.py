@@ -1417,19 +1417,12 @@ class HandlerCompiler(Frame):
             return
         for nodes, me in ((movement, "movement"), (compute, "compute")):
             nodes.append(
-                Glue(
-                    "uint32_t km_grid_words[kGridWords];\n"
-                    "for (uint32_t i = 0; i < kGridWords; i++) {\n"
-                    f"    km_grid_words[i] = {me}.arg(kArgGrid + i);\n"
-                    "}\n"
-                    "const km::RectGrid km_grid = km::rect_grid(km_grid_words);",
-                    {"km_grid"},
-                )
+                Glue(island_place.grid(me, self.compiled.islands), {"km_grid"})
             )
             nodes.append(
                 Glue(
                     "const km::RectPlace km_place = km::rect_place("
-                    f"{island_place.card_core(me, self.compiled.islands)}, "
+                    f"{island_place.place(me, self.compiled.islands)}, "
                     f"km_grid.width, {self.rect_param});",
                     {"km_place"},
                     {"km_grid", self.rect_param},
@@ -1977,8 +1970,6 @@ class HandlerCompiler(Frame):
             if kind == "leader":
                 return self.leader_text
             if kind in ("x", "y"):
-                where = f"line {node.lineno}"
-                self.compiled.rect_lines.setdefault(self.method.name, where)
                 self.compiled.rectangle = True
                 self.compiled.rect_plain |= self.rect_param is None
                 self.rect_read = True
@@ -5635,12 +5626,27 @@ class HandlerCompiler(Frame):
             value.buffer = buffer
             wait(self.where, self.compiled.waits, node, "compute", WAIT_OUTPUT)
         else:
-            if not self.in_leader:
+            if not self.in_leader and not (
+                value.everywhere
+                and not held_sum
+                and self.tensor_format(node, pages.tensor)[0] == value.buffer.dtype
+            ):
                 refuse(
                     self.where,
                     node,
-                    f"{name} is the reduce's sum, which only the leader holds",
-                    f"write it under `if self.{spelling('rank')} == "
+                    (
+                        f"{name} is km.{spelling('all_reduce')}'s sum, float32 at "
+                        "every rank; packed again in another format by compute, whose "
+                        "buffer front at a rank but the leader is the part it sent"
+                        if value.everywhere
+                        else f"{name} is the reduce's sum, which only the leader holds"
+                    ),
+                    (
+                        "write it to a float32 tensor, or"
+                        if value.everywhere
+                        else "write it"
+                    )
+                    + f" under `if self.{spelling('rank')} == "
                     f"self.{spelling('leader')}:`",
                 )
             buffer = value.buffer
@@ -7666,6 +7672,7 @@ class HandlerCompiler(Frame):
                 buffer=out,
                 width=width,
                 made_at=(len(self.loops), node.lineno),
+                everywhere=everywhere,
             )
             if not everywhere:  # its sum is the leader's alone
                 self.reduced.append(name)
@@ -7681,6 +7688,7 @@ class HandlerCompiler(Frame):
             buffer=out,
             width=width,
             made_at=(len(self.loops), node.lineno),
+            everywhere=everywhere,
         )
         if not everywhere:
             self.reduced.append(name)
