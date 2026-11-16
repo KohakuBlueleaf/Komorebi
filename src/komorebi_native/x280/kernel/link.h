@@ -29,7 +29,7 @@ typedef struct {
     uint64_t line[8]; /* the command line each part carries */
 } kmd_crossing_t;
 
-/* A dynamic run's wave packet from island `island` (dynamic.h). */
+/* A dynamic run's wave packet from island `island` (waves.h). */
 static void messages_wave(kmd_t* dispatcher, uint32_t island, const uint64_t* packet);
 
 /* A command from another island, taken into the link ring: whose it is. */
