@@ -5,7 +5,7 @@ import pytest
 
 import komorebi as km
 from komorebi.errors import L1LayoutError, ProgramError
-from komorebi.run import Run
+from komorebi.session.run import Run
 
 PROGRAM = "void km_program(km::{kind}& kernel, const km_command_t& command) {{}}\n"
 IN = km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16)

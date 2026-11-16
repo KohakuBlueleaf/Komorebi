@@ -11,9 +11,10 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi import native, programs
-from komorebi import session as km_session
-from komorebi.program import Program
+from komorebi.device import native
+from komorebi.program import several as programs
+from komorebi.program.description import Program
+from komorebi.session import session as km_session
 
 
 class Built(BaseException):
