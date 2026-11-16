@@ -83,6 +83,7 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
         taken.append("success")
     assert taken == ["success"]
     assert run.state() == [] and run.inspect() == [] and run.drain() == 0
+    assert run.trace().command(1).shape == (0, 4)  # a traced phase goes on
     assert json.dumps({"us": run.chain().report}) == '{"us": 0.0}'  # no known shape
     run.stop()
     assert run.stopped and not run.alive()

@@ -2533,8 +2533,8 @@ class _Backend:
         set once the overlays are built (_slot_buffer): what is built is launched."""
         self.link_cb = None
         launch = self._describe(*args, **options)
-        link_cb = set() if self.link_cb is None else {self.link_cb}  # the link cores'
-        self.slot_index = slot_index(self.cb_indices | link_cb)
+        # below the highest index of the ranks' own: the link cores' buffer is above
+        self.slot_index = slot_index(self.cb_indices)
         launch.cb(self._slot_cores(), self.slot_index, "uint32", 64, 64, first=True)
         return launch
 

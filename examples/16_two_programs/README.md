@@ -84,13 +84,13 @@ A Komorebi install and a card prepared as in [Running on a card](../../docs/inst
 ```
 python two_programs.py                           # every phase, every core of the grid
 python two_programs.py --phase combined --cores 10 --rounds 10
-python two_programs.py --cards 0,1                # two cards: disjoint, combined, live
+python two_programs.py --cards 0,1                # every phase on two cards
 ```
 
 `--cores 0` (the default) is every core of the grid. The script exits non-zero if a result
 differs or the host does not refuse. On two cards the groups are flat ranks over both
-islands; the phases that read a trace (price, switch, load, merged) are one card's, since
-on two cards the trace's buffer index is the link cores' own and such a load is refused.
+islands, and a phase that reads a trace reads each command's rows over both cards
+(`run.trace().command(ticket)`, each island's in its own clock).
 
 ## Numbers
 

@@ -186,7 +186,10 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   the one timeout.
   A ticket completes when every part has; its result is the tuple of its parts' events
   in island order, which also reads as one card's event (`kind` "done" only if every
-  part is, else the first other part's; `microseconds` the slowest part's; `reason`). `run.drain`, `run.stop` and `run.abort` act on every island within
+  part is, else the first other part's; `microseconds` the slowest part's; `reason`).
+  A run loaded with `trace=` gives `run.trace().command(ticket)`, the ticket's parts'
+  rows in flat rank order, each in its island's clock (`.island(i)`: that island's
+  own trace, for phases and leads). `run.drain`, `run.stop` and `run.abort` act on every island within
   one timeout; `run.state()` lists every rank in flat order, each with its `rank` and
   `island`, `run.result()` every island's result block.
 - The run is addressed and reported by flat rank. An error from an island starts

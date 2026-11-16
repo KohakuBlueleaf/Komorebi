@@ -341,6 +341,34 @@ def _check_reduce_islands(graph, handler, group):
             )
 
 
+class IslandTrace:
+    """An island run's trace: a ticket's rows are its parts' rows in island order (flat
+    rank order). Each island's clock is its own: phases and leads are an island's."""
+
+    def __init__(self, traces, parts):
+        self.traces, self._parts = list(traces), parts
+
+    @property
+    def capacity(self):
+        return min(trace.capacity for trace in self.traces)
+
+    def island(self, island):
+        """Island `island`'s own Trace (its handles, its clock)."""
+        return self.traces[island]
+
+    def command(self, ticket):
+        """[count, 4] words (seen, done, sent, extra) of the ticket's ranks, each part's
+        in its island's clock; None when a part was not traced."""
+        rows = []
+        for island, trace in enumerate(self.traces):
+            handle = int(self._parts[island][ticket])
+            if handle:
+                rows.append(trace.command(handle))
+        if not rows or any(part is None for part in rows):
+            return None
+        return np.concatenate(rows)
+
+
 class IslandEvent(tuple):
     """A finished command of an island run: the tuple of its parts' events in island
     order, which also reads as one card's event (docs/reference/islands.md#runs)."""
@@ -863,6 +891,12 @@ class IslandRun:
     def result(self):
         """Every island's result block, in island order; valid after the stop."""
         return [run.result() for run in self.runs]
+
+    def trace(self):
+        """The per-command trace over islands (IslandTrace), or None if the run was not
+        traced; valid after the stop."""
+        traces = [run.trace() for run in self.runs]
+        return None if None in traces else IslandTrace(traces, self._parts)
 
     def state(self):
         """Every rank's state words, as Run.state gives them, in flat rank order, each

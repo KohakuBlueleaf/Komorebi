@@ -85,6 +85,20 @@ NOTHING = Nothing()
 TICKS = 50  # a mock command's time: 1 us of the X280's 50 MHz timer
 
 
+class EmptyTrace:
+    """A mock run's trace: no core's words for any command; phases and leads None."""
+
+    capacity = 0
+
+    def command(self, handle):
+        return np.zeros((0, 4), np.int64)
+
+    def phases(self, handle):
+        return None
+
+    lead = island = lambda self, *args: None
+
+
 class Run:
     """The run a prebuild's load returns in place of the card's: what a run in which
     every command succeeds answers (done events, a clean result block, empty state and
@@ -162,11 +176,8 @@ class Run:
         return []
 
     def trace(self):
-        """An empty trace: no core, no command."""
-        from komorebi import abi, state  # noqa: PLC0415
-
-        h = abi.headers()
-        return state.Trace(np.zeros((0, 0, h["kTraceWords"])), {}, {}, MHZ, h)
+        """An empty trace: a command's rows are none (its [0, 4] words)."""
+        return EmptyTrace()
 
     def __getattr__(self, name):
         if name.startswith("__"):
