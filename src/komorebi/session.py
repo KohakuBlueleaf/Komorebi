@@ -33,6 +33,7 @@ from komorebi import (
     extents,
     formats,
     insn_check,
+    island_names,
     island_session,
     islands,
     kernel_buffer,
@@ -2117,10 +2118,11 @@ class Session:
                 )
             first.load_overlays(program, descriptor)
             self._log_built(descriptor, built_at, program)
-            if prebuild.active():  # built: a mock run stands in for the launch
+            if prebuild.active():  # built: a mock run an island for the launch
                 self._starting = None
-                self.run = prebuild.Run()
-                return self.run
+                runs = [prebuild.Run(counted=False) for _ in rows]
+                self.run, self.island = runs[0], (graph, 0)
+                return runs
             for island, dispatch in enumerate(dispatches):
                 backend = first if island == 0 else copy.copy(first)
                 backend.port, backend.state_tensor = dispatch, states[island]
@@ -2899,6 +2901,7 @@ class _Backend:
         self.slots_most = slots_most(program, placed)
         # the service overlay's too, and the records of slots past 4
         self.area_bytes = overlay.area_bytes(self.slots_most)
+        island_names.check(placed.programs if placed else [program], self.session.log)
         bounds = self.session.page_bounds_list(placed.programs if placed else [program])
         control = self._control_blocks(cores, grid, port_lines, self.area_bytes, bounds)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)

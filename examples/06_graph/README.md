@@ -93,3 +93,22 @@ graph ends with reason 8 at node 0 and the kernel with error 4, without a reset.
 | `LEFT`, `RIGHT` | a0 `state_address` |
 | `NORM` | a0 `state_address`, a1 `pages` to sum |
 | `STALL` (a test) | a0 `stalled_rank`, the rank that never reports |
+
+## Over islands
+
+`islands.py` runs the same graph over every rank of a run of several islands, from
+island 0 alone: `STEP` and `NORM` on all of them, `LEFT` on the first half and `RIGHT`
+on the second, which with two islands of equal ranks is island 1's. Host-fed through
+island 0's run (`run.island(0).run_hostfed`), then uploaded to island 0's dispatcher and
+run by its engine; island 0's dispatcher sends each node's island-1 part across
+([commands across islands](../../docs/reference/threads.md#commands-across-islands)).
+Each case's rounds, registers and every rank's state word are checked against the numpy
+replay.
+
+    python islands.py [--cards 0,1] [--first ITERATION LIMIT] [--again ITERATION LIMIT]
+                      [--max-runs N] [--deadline S]
+
+On two p150a cards (2026-11-16, 236 ranks, 118 an island, X280 at 1350 MHz): host-fed and
+on island 0's X280 alike, the first case ends after 4 rounds and the kept graph's run
+after 6, as in the replay, every one of the 236 state words right on both paths, no
+kernel error on either island.

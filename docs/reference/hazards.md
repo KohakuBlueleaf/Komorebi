@@ -1084,11 +1084,13 @@ the tensor the class was made with into each tensor parameter's word. A thread t
 means the command for another tensor gets the make's tensor: it reads or writes the
 wrong pages, and nothing fails.
 
-**The rule.** For another tensor, set the word after the function
-(`command->a<n>`, `n` the place `<NAME>_<HANDLER>_<PARAMETER>` gives), or make the
-class with that tensor.
+**The rule.** For another tensor, give it at the make in `thread_tensors=` (it joins the
+load's words) and fill the command with `<function>_with(...)`, which takes each tensor
+parameter's load-word place; or make the class with that tensor.
 
-**The guard.** Nothing.
+**The guard.** `<function>_with` returns `KMX_BAD` for a tensor of another kind than the
+make's (page bytes, format, layout or place), and takes its pages words from the named
+tensor. A word set by hand after either function (`command->a<n>`) is not checked.
 
 Described in [classes, X280 threads](classes.md#x280-threads).
 
@@ -1119,8 +1121,12 @@ only. A kernel that calls it, or builds a tensor's address itself
 **The rule.** A kernel reads and writes a tensor's pages through `km::read_pages` and
 `km::write_pages` (and the byte calls), with the tensor as a `km::Tensor`.
 
-**The guard.** Nothing: a program loaded on one island is built without the tensor table,
-and each of Komorebi's calls compiles to exactly the tt-metal call it replaces there.
+**The guard.** Refused at a load of islands with the tensor table: a program whose reader
+or writer source, or a file it includes by a quoted path beside it, names one of these
+calls (comments and strings aside) raises `ProgramError` with the file, the line and the
+call to use; `Program(own_island_pages=True)` says the calls mean the core's own island's
+bank, and the load's log says so. A call made through a macro of an included library, or
+an address built without these names, is not seen. On one island nothing is looked at.
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 
