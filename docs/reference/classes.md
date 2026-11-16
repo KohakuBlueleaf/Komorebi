@@ -2328,7 +2328,7 @@ class is refused at the consuming line, naming the line that made the object:
 
 | Made | Used | Refused at | Right forms |
 |---|---|---|---|
-| `total = km.tile.zeros(...)` outside a range loop | `pages.write(total)` or `km.reduce(total)` in it | the write or the reduce: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
+| `total = km.tile.zeros(...)` outside a range loop | `pages.write(total)`, `self.f.write(total)` or `km.reduce(total)` in it | the write or the reduce: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
 | a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
 | a cast block, outside a loop | `for tile in tiles:` or a body that takes it, in a loop | the take: "tiles was made at line N, outside the loop this take stands in" | cast in the loop that takes it, or take once outside the loops |
 | `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or take it with a body in the loop that fills it |

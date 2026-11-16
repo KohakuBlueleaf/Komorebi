@@ -5267,6 +5267,7 @@ class HandlerCompiler:
                 f"write self.{field_}.write(acc), acc made by km.tile.zeros and added "
                 "to",
             )
+        self.same_loops(node, written.id, value, "this write", *self.once_text(value))
         stored = self.compiled.fields[field_]
         pages = math.prod(stored.shape[:-2])
         fillers = self.compiled.field_users.get(field_, ([], []))[0]

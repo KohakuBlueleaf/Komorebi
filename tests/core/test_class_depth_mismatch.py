@@ -437,3 +437,32 @@ def test_a_chain_of_a_broadcast_handler_is_refused_at_the_cast_if(cores):
     ):
         call = Casts.first(shared["x"], shared["w"], shared["y"])
         run_of(program).chain([call], cores=cores)
+
+
+class FieldWriteInLoop(km.Program):
+    """A tile made outside a loop, packed into a field in it."""
+
+    h: km.L1[km.bf16, 4, 32, 32]
+
+    @km.handler
+    def run(self, x: km.Tensor, w1: km.Tensor, w2: km.Tensor, y: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 4)
+        for r in range(2):
+            for xb, wb in zip(
+                km.Stream(x.tiles[r : r + 1, 0:8], block=2),
+                km.Stream(w1.tiles[0:8, 0:4], block=8),
+            ):
+                acc += project(xb, wb)
+            self.h.write(acc)
+
+
+def test_a_tile_made_outside_a_loop_and_packed_into_a_field_in_it_is_refused():
+    both = {name: grid() for name in ("x", "w1", "w2", "y")}
+    with pytest.raises(
+        Refused,
+        match=(
+            r"FieldWriteInLoop\.run, line \d+, `self\.h\.write\(acc\)`: acc was made "
+            r"at line \d+, outside the loop this write stands in"
+        ),
+    ):
+        compile_class(FieldWriteInLoop, {}, both)
