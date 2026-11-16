@@ -214,8 +214,8 @@ On one Blackhole card, AICLK 1,350 MHz, medians over cores and commands
 ## A program as an overlay
 
 A program in the runtime's form ([host](host.md#several-programs-in-one-run)) is an
-overlay under kernels the runtime owns (`src/komorebi_native/kernels/program_reader.cpp`,
-`program_writer.cpp`, `program_compute.cpp`). Program field `p` is overlay number `62 - p`
+overlay under kernels the runtime owns (`src/komorebi_native/kernels/program/reader.cpp`,
+`program/writer.cpp`, `program/compute.cpp`). Program field `p` is overlay number `62 - p`
 (`km::program_overlay(p)`); 63 is the service overlay ([below](#transfers-to-and-from-the-host)). For each command the runtime's kernels run
 
 ```c++
@@ -331,7 +331,7 @@ region of the host channel while a run is loaded ([host](host.md#the-host-channe
 (`KM_HANDLER_PUSH`, card to host) and 242 (`KM_HANDLER_PULL`, host to card). Their code
 (`komorebi/device/tensors/km_transfer.hpp`) is the reader part of the runtime's **service
 overlay**, number 63 (`km::kOverlayService`, source
-`src/komorebi_native/kernels/service_reader.cpp`), which every run builds and places
+`src/komorebi_native/kernels/program/service_reader.cpp`), which every run builds and places
 beside the program's own overlays: a program declares nothing. A core's reader loads it
 on the first such command (`km::serve`) and holds it while no other reader overlay
 needs its slot. The load chooses where it goes and the L1 budget table says why (`slots:

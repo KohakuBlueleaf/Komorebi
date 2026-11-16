@@ -144,7 +144,7 @@ def service():
     include = _env.include_directory()
     if include is None:
         raise FileNotFoundError("the native kernels are not beside the package")
-    source = include.parent / "kernels" / "service_reader.cpp"
+    source = include.parent / "kernels" / "program" / "service_reader.cpp"
     return Overlay("service", constants()["kOverlayService"], {"reader": source})
 
 

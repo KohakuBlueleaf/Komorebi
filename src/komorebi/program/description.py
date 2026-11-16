@@ -569,8 +569,8 @@ class Program:
 def message_kernels():
     """{"reader", "compute", "writer"}: the runtime's kernels of a dynamic program
     whose handlers are overlay parts."""
-    folder = _env.include_directory().parent / "kernels"
-    return {kernel: folder / f"messages_{kernel}.cpp" for kernel in KERNELS}
+    folder = _env.include_directory().parent / "kernels" / "messages"
+    return {kernel: folder / f"{kernel}.cpp" for kernel in KERNELS}
 
 
 def direct_declared(direct):

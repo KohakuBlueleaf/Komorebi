@@ -71,9 +71,9 @@ def main():
         print(json.dumps({"ok": False, "rejected": str(error)}), flush=True)
         sys.exit(1)
     kernels = fed.Kernels(
-        reader=KERNELS / "messages_reader.cpp",
+        reader=KERNELS / "messages/reader.cpp",
         compute=EXAMPLE / "kernels" / "compute.cpp",
-        writer=KERNELS / "messages_writer.cpp",
+        writer=KERNELS / "messages/writer.cpp",
         cbs=[
             (buffer.index, "uint32", buffer.page_bytes, buffer.pages)
             for buffer in messages.buffers()

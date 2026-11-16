@@ -1809,7 +1809,7 @@ def part_includes(lines):
 
 def dynamic_source(compiled):
     """The compute kernel of a dynamic class: its handler's message loop (the reader
-    and writer are the runtime's, messages_reader.cpp and messages_writer.cpp)."""
+    and writer are the runtime's, messages/reader.cpp and messages/writer.cpp)."""
     name = compiled.dynamic
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
@@ -1841,7 +1841,7 @@ def dynamic_source(compiled):
 def runtime_kernels():
     """The runtime's message movers, the reader and writer of a dynamic class."""
     folder = _env.include_directory().parent / "kernels"
-    return folder / "messages_reader.cpp", folder / "messages_writer.cpp"
+    return folder / "messages/reader.cpp", folder / "messages/writer.cpp"
 
 
 def movement_source(compiled):

@@ -26,7 +26,7 @@ A program has up to four dynamic handlers, and each message names the one that h
 it where it lands ([A message names its handler](#a-message-names-its-handler)). The
 program writes the handlers' bodies in its compute kernel. The reader and writer
 kernels of a dynamic run are generic and ship with the runtime
-(`src/komorebi_native/kernels/messages_reader.cpp` and `messages_writer.cpp`). In the
+(`src/komorebi_native/kernels/messages/reader.cpp` and `messages/writer.cpp`). In the
 other form, each handler's body is an overlay that a core loads when a message for it
 arrives, and a program has up to 16 handlers
 ([Handlers as overlays](#handlers-as-overlays)). A message can carry data of up to
@@ -160,7 +160,7 @@ one dynamic handler has its number there, as before.
 A handler's body can be an [overlay](overlays.md): a compute part that a core loads into
 a slot when a message for that handler arrives and the core does not hold it. The runtime
 then owns all three kernels, the message loop among them
-(`src/komorebi_native/kernels/messages_compute.cpp`), and the program supplies one source
+(`src/komorebi_native/kernels/messages/compute.cpp`), and the program supplies one source
 per handler:
 
 ```c++

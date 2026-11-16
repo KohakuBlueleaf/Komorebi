@@ -541,8 +541,8 @@ handler of another program held by the same cores only with:
 - **The walk.** In the runtime's form the walk runs inside one program's part, and the
   runtime's kernels load a program's part per command, not per record (a part loading
   another program's part has not been tried). The walk would move into the
-  runtime's three kernels (`program_reader.cpp`, `program_writer.cpp`,
-  `program_compute.cpp`): for each record, load the part of the record's program on
+  runtime's three kernels (`program/reader.cpp`, `program/writer.cpp`,
+  `program/compute.cpp`): for each record, load the part of the record's program on
   every kernel of the core (as a command to that program does) and call it with the
   record's command. The marks, the credits and the record slots stay as they are.
 - **The buffers.** Both programs' buffers in the run's one layout, as a list's
