@@ -120,13 +120,15 @@ Question: can the decode project's layer
 inline and unchanged? And does one layer give the hand's output, word for word, at T
 256?
 
-Not yet. Each of the four products is the hand's K split, and the class's lines state
-it: `layer_class.py`'s handlers `qkv`, `o`, `gate_up` and `down`, each in its plan (16
-groups of 7, 8 of 15, 48 of 2, 8 of 15), give the hand's Y word for word for qkv and o,
-in the hand's time. What the hand does after the sum (each root's operation: the norms,
-the rotation, the residual, silu), attend's merge, and the layer as a chain each need a
-line the class does not have yet. The handlers stop there: the hand's operation bodies
-are not written over in lines, and no line is built here.
+It can, and it ran: this section is the first step, the four products alone, and the
+top of the page is the whole layer. `layer_class.py`'s handlers `qkv`, `o`, `gate_up`
+and `down`, each in its plan (16 groups of 7, 8 of 15, 48 of 2, 8 of 15), are the hand's
+K splits in the class's lines. Run with no operation after the sum, qkv and o give the
+hand's Y word for word, in the hand's time; gate_up and down were wrong in a mixed order
+until the fix above, and are right against float64 since. The operations after the sum
+(each root's norms, rotation, residual and silu), attend's merge and the layer as a
+chain are in `decode_layer.py` (the top of this page); the handler below is the product
+alone, so its root writes the group's sum and no operation.
 
 ```python
 @km.handler
@@ -213,19 +215,20 @@ python layer_class.py --skip-hand       # the class alone
 python layer_class.py --products qkv o  # some of them
 ```
 
-## The lines the layer still needs
+## The lines the layer needed, and the form each took
 
-Each with two forms it could take.
+Each had two forms it could take; the layer (`decode_layer.py`, the top of this page)
+uses one of them for each.
 
-| # | Where | What the hand does | Form 1 | Form 2 |
-|---|---|---|---|---|
-| 1 | qkv, o, gate_up, down | The group's root calls an operation on the sum where it would pack it (`split_op.hpp`): o and down add the residual's block and make the rows' squares, qkv and gate_up scale by 1 / rms (qkv also each head's norm and the rotation, gate_up silu and the gate). Today a body cannot take the reduce's result: `whole is a reduced here` (and a tile function takes only a loop's tiles, `self.total = whole` is refused) | `km.cxx(ADD, takes=[whole, residual, out])` at the root: `whole_buffer` the group's sum in float32, waited for, freed after the body, as the hand's hook | `km.reduce(self.sums, form="tree", group=S, then=ADD, takes=[residual, out])`: the body the root runs on the sum, named at the reduce |
-| 2 | o, down, in a chain | Each writes two tensors, x and its rows' squares (a tile a group), and the next norm reads both. A chain's call has one output: the second write is refused | `kc.Call` with several outputs, each with its block a group and its own marks; the class deriving each write | The squares as tiles of the output (x one tile column wider, the root writing block g and tile N + g): one output, read by the next call as a range |
-| 3 | qkv, in a chain | The rotary table's rows at the token's position: 32-byte rows of a page (`km::ask_bytes`), put into tile faces. As an inline body on mover A taking the table, the class builds it, but a chain cannot describe a tensor a body reads (refused) | `km.cxx(ROTARY, takes=[qk, position], reads=[qk])`: the body states what it reads, the build treats it as an outside input | `qk.rows(first, count, size=DC_ROPE_ROW)`: a read stream whose item is a row, put into faces by a compute or mover body |
-| 4 | attend | A KV head's group merges its cores' attention states (row max, sum, O) up a tree over the ports, a merge body at each round, not a sum | `km.reduce(state, form="tree", group=S, combine=MERGE)`: the arrival merged into the core's state by an inline body | Port lines: `km.Port(self).send(state, to=rank)` and `.arrive()` a round, the merge a body between |
-| 5 | attend | The token's key and value written as rows of the cache at the position (a row inside a tile) | `keys.rows(position, rows).write(k)`: a write of rows of a tile tensor | A body on mover B taking `keys` (built today), with `writes=[keys]` for a chain |
+| # | Where | What the hand does | Form used |
+|---|---|---|---|
+| 1 | qkv, o, gate_up, down | The group's root calls an operation on the sum where it would pack it (`split_op.hpp`): o and down add the residual's block and make the rows' squares, qkv and gate_up scale by 1 / rms (qkv also each head's norm and the rotation, gate_up silu and the gate) | Form 1: `km.cxx(ADD, takes=[whole, residual, out, part, ...])` at the root, `whole` being the group's sum |
+| 2 | o, down, in a chain | Each writes two tensors, x and its rows' squares (a tile a group), and the next norm reads both | Neither form: no chain call has several outputs here. The squares are a tensor each handler takes beside x, written through a stream (`squares.tiles[0:1, group : group + 1]`, `write=True`) and read by the next norm as pages |
+| 3 | qkv | The rotary table's rows at the token's position, put into tile faces | Form 1: an inline body on mover A, `km.cxx(ROTARY, takes=[qk, first, layer_index, position, live, ...], reads=[qk])`, the body stating what it reads |
+| 4 | attend | A KV head's group merges its cores' attention states up a tree, a merge body at each round | Form 1: `km.reduce(self.state, form="tree", group=self.O_GROUP, combine=MERGE)` |
+| 5 | attend | The token's key and value written as rows of the cache at the position | Form 2: a body on mover B taking `keys`, with `writes=[keys]` (and `values`), as `km.cxx(..., writes=[keys])` |
 
-The layer as a chain needs 1 to 5.
+The layer as a chain used 1 and 3 to 5 as the table says and 2 in its own way.
 
 ## One chain, a position each submit
 

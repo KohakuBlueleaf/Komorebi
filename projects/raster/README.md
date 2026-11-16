@@ -357,6 +357,12 @@ per frame"; the committed rows of `reference/README.md`, Sponza and Bistro in
 | Bistro interior (1,020,903) | first | 82 | 2,142 | 59 | 91 | 736 | 102 | 3,535 | 2,095 | 8,762 | 850 | 350 | 5,610 | 5,990 | 0.68 | 66.9 |
 | Bistro interior (1,020,903) | settled | 82 | 1,266 | 59 | 91 | 753 | 102 | 2,135 | 2,095 | 6,503 | 850 | 350 | 5,610 | 5,990 | 0.92 | 69.4 |
 
+The same command run again on 2026-11-16, card 1, on a tree whose runtime and headers had
+changed since (AICLK 1,350 MHz, X280 1,000 MHz, same 5 loads each): the images are exact
+(0 pixels differ) and the frames are 2 to 3 % shorter than the table's: 10^6 settled 6,196 us
+(first, `--no-balance`, 6,792), Sponza settled 3,692, Bistro interior settled 6,311. The
+table keeps the 2026-11-14 figures; no run behind it was changed.
+
 Each column is the thread's time from submitting a command to its event (the middle pass: from
 SUM's event to PLACE's submit, HIST and HSUM apart), so the frame is the sum plus the
 thread's own bookkeeping. The middle pass's parts (10^6, us, cores): taking the totals 73 (1),
